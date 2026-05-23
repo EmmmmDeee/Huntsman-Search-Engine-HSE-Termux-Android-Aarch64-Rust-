@@ -10,6 +10,50 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed (review feedback on PR #6)
+- **Severity sort was broken**: `Severity::to_string()` produced
+  `"CRITICAL"` (uppercase) but `correlations_for_scan` ORDER BY matched
+  `'critical'` (lowercase), so every row hit `ELSE 4` and sort was a no-op.
+  Added `Severity::as_canonical() -> &'static str` returning the canonical
+  lowercase form, used in both `upsert_correlation` and the JSON serialised
+  form (via `#[serde(rename_all = "lowercase")]`). Display impl keeps the
+  uppercase form for the CLI table.
+- **scan_id inconsistency across interfaces**: API used
+  `format!("{:?}", kind).to_lowercase()` ("ipaddress"), CLI used the raw
+  user-provided `--kind` value ("ip" / "ipaddress"). Same target produced
+  different scan_ids depending on the interface, breaking idempotency.
+  Added `TargetKind::canonical_str() -> &'static str` returning the
+  serde-canonical snake_case form ("ip_address", "full_name", …), now used
+  by every `scan_id()` caller (`cli/mod.rs`, `api/handlers.rs`,
+  `core/engine.rs`, `storage/store.rs`).
+- **CORS policy ignored bind address**: previously always permissive
+  (`allow_origin(Any)`), which is fine for the default 127.0.0.1 bind but
+  dangerous if a user sets `--bind 0.0.0.0:8080`. Now `router(state, bind)`
+  takes the bind string and chooses CORS accordingly:
+  * loopback (`127.x`, `::1`, `localhost`) → permissive
+  * anything else → restrictive (`Access-Control-Allow-Origin` limited to
+    `http://<bind>` / `https://<bind>`)
+  Two new unit tests cover the loopback detector across IPv4, IPv6, and
+  hostname syntaxes.
+- **alienvault_otx swallowed operational failures**: code returned an
+  empty `ModuleResult` for any non-success status, including 429 (rate
+  limit) and 5xx (outage). Now 404 stays "no findings" (per OTX API), but
+  other non-2xx statuses produce `Error::module(…, format!("HTTP {status}"))`
+  so the engine emits a `module_error` event and the user sees the failure.
+- **whois parser allocated per line per key**: `line.to_lowercase()` and
+  `key.to_lowercase()` were called inside the inner loop. Replaced with a
+  zero-allocation `eq_ignore_ascii_case` prefix check (`starts_with_ascii_ci`
+  helper) — WHOIS keys are pure ASCII.
+- **SPA `min_expand_confidence` rejected legitimate 0 input**:
+  `parseFloat(v) || 0.75` treated `0` as falsy and substituted the default.
+  Replaced with an explicit `Number.isFinite(v)` check so `0` is accepted.
+- **SPA entity-merge dropped tags**: when an `entity_found` event arrived
+  for a UID already on screen, the JS merge updated `confidence` and
+  `corroboration` but left `tags` stale, so tags added by later modules
+  never appeared in the Entities table. Now union-merges tags by UID.
+
+(58 tests pass — 51 lib + 7 integration; +2 new for `is_loopback_bind`.)
+
 ## [0.4.0] — 2026-05-23
 
 ### Added

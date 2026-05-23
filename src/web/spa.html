@@ -292,7 +292,8 @@ function buildOptions(){
   const tm=+$('f-throttle').value;if(tm>0)opts.throttle_ms=tm;
   const to=$('f-timeout').value;if(to)opts.module_timeout_ms=+to;
   opts.depth=+$('f-depth').value||0;
-  opts.min_expand_confidence=parseFloat($('f-mxc').value)||0.75;
+  // Explicit NaN check — `|| 0.75` would reject a legitimate 0 input.
+  const mxc=parseFloat($('f-mxc').value);opts.min_expand_confidence=Number.isFinite(mxc)?mxc:0.75;
   const me=$('f-maxe').value;if(me)opts.max_entities=+me;
   const mt=$('f-maxt').value;if(mt)opts.max_wall_time_secs=+mt;
   const mc=$('f-minc').value;if(mc)opts.min_confidence=parseFloat(mc);
@@ -374,8 +375,16 @@ function addLog(msg){
 
 function mergeEntity(e){
   const i=S.entities.findIndex(x=>x.uid===e.uid);
-  if(i>=0){if(e.confidence>S.entities[i].confidence)S.entities[i].confidence=e.confidence;S.entities[i].corroboration=(S.entities[i].corroboration||1)+1;}
-  else S.entities.push(e);
+  if(i>=0){
+    const cur=S.entities[i];
+    if(e.confidence>cur.confidence)cur.confidence=e.confidence;
+    cur.corroboration=(cur.corroboration||1)+1;
+    // Union-merge tags so the Entities table reflects tags added by later modules.
+    if(e.tags&&e.tags.length){
+      const seen=new Set(cur.tags||[]);cur.tags=cur.tags||[];
+      for(const t of e.tags){if(!seen.has(t)){cur.tags.push(t);seen.add(t);}}
+    }
+  } else S.entities.push(e);
 }
 
 // ── entities ─────────────────────────────────────────────────
