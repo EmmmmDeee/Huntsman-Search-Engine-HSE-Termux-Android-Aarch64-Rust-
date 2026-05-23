@@ -9,6 +9,7 @@ suitable for scripting.
 hse scan      Run a single scan, print results
 hse modules   List registered modules with cost / target / passive flags
 hse doctor    Verify environment (DB, keys, Termux, modules)
+hse serve     Start the HTTP server + SPA (browse to http://127.0.0.1:8080)
 hse --help    Top-level help
 hse --version Print version
 ```
@@ -183,6 +184,75 @@ ip_geo                       28  free       no       ip
 ```
 
 See [`MODULES.md`](MODULES.md) for what each one does and its synergy notes.
+
+---
+
+## `hse serve` (v0.3+)
+
+Starts an axum HTTP server with an embedded single-file SPA. Browse to
+`http://127.0.0.1:8080` from Chrome or Firefox on the device.
+
+```
+hse serve [--bind <HOST:PORT>]
+```
+
+| Flag / env | Default | Notes |
+|------------|---------|-------|
+| `-b, --bind <HOST:PORT>` | `127.0.0.1:8080` | Localhost-only. Architecture invariant; change at your own risk. |
+| env `HSE_BIND`           | (overrides flag) | |
+
+Graceful shutdown on `Ctrl-C` / `SIGTERM`.
+
+### API endpoints
+
+All endpoints are under `/api/v1/`.
+
+| Method | Path                       | Notes |
+|--------|----------------------------|-------|
+| GET    | `/health`                  | `{ "status": "ok", "version": "0.3.0" }` |
+| GET    | `/version`                 | `{ "version": "0.3.0" }` |
+| GET    | `/modules`                 | `{ "count": N, "modules": [{ name, priority, cost, passive }, ...] }` |
+| POST   | `/scans`                   | Body: `ScanRequest` (`{ kind, value, options? }`). Returns `202 { scan_id, status }`. |
+| GET    | `/scans`                   | 200 most recent scans. |
+| GET    | `/scans/{id}`              | Single scan record. 404 if unknown. |
+| GET    | `/scans/{id}/entities`     | `{ count, entities: [Entity, ...] }`. |
+| GET    | `/scans/{id}/events`       | **SSE** — `text/event-stream` of `EventKind` JSON payloads. |
+
+### SSE event types
+
+Each SSE `data:` payload is a JSON object discriminated by a `type` field:
+
+```json
+{ "type": "scan_start",      "target_kind": "domain", "target_value": "example.com" }
+{ "type": "module_start",    "module": "crtsh" }
+{ "type": "module_done",     "module": "crtsh", "found": 47 }
+{ "type": "module_error",    "module": "ip_geo", "error": "timeout" }
+{ "type": "module_skipped",  "module": "hudsonrock", "reason": "not in allowlist" }
+{ "type": "entity_found",    "entity": { ...Entity... } }
+{ "type": "expansion_tick",  "depth": 1, "queued": 12, "visited": 47 }
+{ "type": "expansion_stop",  "reason": "no more high-confidence candidates" }
+{ "type": "scan_complete",   "scan_id": "...", "entity_count": 47 }
+```
+
+The browser's `EventSource` API decodes these as `event.data` strings;
+parse with `JSON.parse(event.data)`. The SPA at `/` does exactly this.
+
+### Example session
+
+```bash
+# In one terminal:
+hse serve
+
+# In another (or from the browser DevTools console):
+curl -s http://127.0.0.1:8080/api/v1/health
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"kind":"domain","value":"example.com","options":{"depth":1}}' \
+  http://127.0.0.1:8080/api/v1/scans
+# → {"scan_id":"abc...","status":"queued"}
+
+curl -N http://127.0.0.1:8080/api/v1/scans/abc.../events
+# (stays open, streams SSE)
+```
 
 ---
 
