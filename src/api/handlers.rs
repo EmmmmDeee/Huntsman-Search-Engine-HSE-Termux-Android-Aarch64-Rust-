@@ -67,7 +67,9 @@ pub async fn scan_create(
     Json(req): Json<ScanRequest>,
 ) -> impl IntoResponse {
     let target = Target::new(req.kind, req.value.clone());
-    let sid = scan_id(&format!("{:?}", req.kind).to_lowercase(), &req.value);
+    // Canonical snake_case form so CLI and API generate identical scan_ids
+    // for the same target.
+    let sid = scan_id(req.kind.canonical_str(), &req.value);
     let scan = Scan::new(sid.clone(), target.clone()).with_options(req.options.clone());
 
     if let Err(e) = s.store.upsert_scan(&scan) {
