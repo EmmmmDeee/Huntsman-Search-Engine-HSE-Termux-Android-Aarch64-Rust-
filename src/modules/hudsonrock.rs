@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -43,10 +43,6 @@ impl Module for HudsonRock {
 
     fn priority(&self) -> u8 {
         130
-    }
-
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -152,10 +148,5 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::Email, "x")));
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x")));
         assert!(!m.accepts(&Target::new(TargetKind::Username, "x")));
-    }
-
-    #[test]
-    fn is_free() {
-        assert_eq!(HudsonRock.cost(), ModuleCost::Free);
     }
 }

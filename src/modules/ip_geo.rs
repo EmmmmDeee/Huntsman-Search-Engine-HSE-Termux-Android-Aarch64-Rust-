@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -37,10 +37,6 @@ impl Module for IpGeo {
 
     fn priority(&self) -> u8 {
         28
-    }
-
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
     }
 
     fn accepts(&self, t: &Target) -> bool {

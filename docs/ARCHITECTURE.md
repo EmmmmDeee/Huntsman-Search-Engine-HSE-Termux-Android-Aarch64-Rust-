@@ -184,7 +184,7 @@ CREATE TABLE scans (
 
 CREATE TABLE entities (
     uid           TEXT PRIMARY KEY,
-    scan_id       TEXT NOT NULL,   -- last-scan-wins on upsert conflict
+    scan_id       TEXT NOT NULL,   -- last-scan-wins on upsert; kept for back-compat
     kind          TEXT NOT NULL,
     value         TEXT NOT NULL,
     confidence    REAL NOT NULL,
@@ -193,9 +193,21 @@ CREATE TABLE entities (
     data_json     TEXT NOT NULL    -- full Entity struct, source of truth
 );
 
+-- v0.7+: every (entity, scan) observation pair the engine has seen.
+-- `entities_for_scan` joins against this rather than the entities.scan_id
+-- column, so older scans keep their entities visible after a re-scan.
+CREATE TABLE entity_observations (
+    entity_uid  TEXT NOT NULL,
+    scan_id     TEXT NOT NULL,
+    observed_at INTEGER NOT NULL,
+    PRIMARY KEY (entity_uid, scan_id)
+);
+
 CREATE INDEX idx_entities_scan ON entities(scan_id);
 CREATE INDEX idx_entities_kind ON entities(kind);
 CREATE INDEX idx_scans_started ON scans(started_at DESC);
+CREATE INDEX idx_obs_scan      ON entity_observations(scan_id);
+CREATE INDEX idx_obs_entity    ON entity_observations(entity_uid);
 ```
 
 `data_json` is authoritative; the typed columns exist for query and index.
@@ -204,10 +216,19 @@ PRAGMAs: `journal_mode=WAL`, `synchronous=NORMAL`, `temp_store=MEMORY`,
 `foreign_keys=ON`. WAL is critical — concurrent reads during a long scan
 don't block; database survives Termux process kills mid-scan.
 
-### Known limitation (v0.2)
+### Multi-scan entity tracking (v0.7+)
 
-Entity-to-scan mapping is **last-scan-wins**: re-scanning the same target
-updates the `scan_id` column, so the entity disappears from the older scan's
-listing. The `data_json` of the newest scan is preserved with corroboration
-counted. A junction table for full multi-scan tracking is on the roadmap for
-v0.7+.
+Resolved by the `entity_observations` junction table. Every time
+`upsert_entity` runs, it records the (uid, scan_id) pair so an entity
+observed by multiple scans appears in every observer's
+`entities_for_scan` listing, with corroboration accumulated across them.
+
+The legacy `entities.scan_id` column is preserved for back-compat but
+no longer consulted by `entities_for_scan`. New helper methods
+`scan_ids_for_entity(uid)` and `observation_count(uid)` expose the
+junction directly for callers that want a "seen in N scans" indicator
+without pulling the full entity record.
+
+Migration: on `Store::open`, a one-time `INSERT OR IGNORE INTO
+entity_observations SELECT uid, scan_id, observed_at FROM entities`
+backfills the junction from any pre-v0.7 entities table.

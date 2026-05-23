@@ -45,6 +45,7 @@ hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 |------|-------------|
 | `-t, --throttle <MS>`  | Sleep this long between module dispatches (default 0) |
 | `--timeout <MS>`       | Per-module timeout override (default 3000) |
+| `--max-concurrent <N>` | Modules to run in parallel; `0` (default) = sequential. Opt-in since v0.8 — useful with `--depth` for big expansion rounds. |
 
 ### Filtering output
 

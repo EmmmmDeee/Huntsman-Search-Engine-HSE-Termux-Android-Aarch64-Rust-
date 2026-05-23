@@ -10,6 +10,174 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed (review feedback on PR #8 + PR #9)
+
+Thirteen real findings across `gemini-code-assist` and
+`copilot-pull-request-reviewer`; nothing rejected on security/correctness
+grounds. Single follow-up commit on the v0.8 branch so PR #9 stays
+mergeable from `main`.
+
+#### Security
+
+- **`whois::query` had no read size cap.** `tokio::io::AsyncReadExt::
+  read_to_string` was allowed to consume the entire stream — a malicious
+  or misconfigured WHOIS server could OOM the engine on Termux. Now
+  capped at 64 KiB via `(&mut stream).take(65_536)`. Real WHOIS responses
+  are 2–8 KiB.
+- **`liveLog()` in `spa.html` used `innerHTML` with unescaped
+  event-derived strings.** A crafted `ev.error` / `ev.reason` /
+  `ev.target_value` containing `<script>` would XSS the SPA. Refactored
+  to build the row via `createElement` + `textContent` (which html-escapes
+  by definition).
+- **CORS was permissive (`allow_origin(Any)`) on loopback binds.** Any
+  website opened in Chrome could XHR to `127.0.0.1:8080/api/v1/scans`
+  and read the user's scan history. Now allows only the matching
+  `http(s)://<bind>` origins, plus the `localhost`/`127.0.0.1`/`[::1]`
+  aliases on the same port for loopback binds. The SPA is same-origin
+  so this loses no in-product functionality.
+
+#### Correctness
+
+- **`engine::run` left scans stuck in `Running` on persistence error.**
+  If `upsert_entity` or the final `upsert_scan` failed (disk full, db
+  locked), the run returned an `Err` without ever marking the scan
+  `Failed`, leaving the History tab with an entry that never finishes.
+  Now any persist-phase error short-circuits to `Failed` + persisted
+  `error` string + emitted `ScanComplete{entity_count:0}` event so
+  SSE consumers don't hang.
+- **`termux_cmd` left timed-out child processes running.** Tokio's
+  `timeout()` cancels the future but doesn't kill the child unless
+  `Command::kill_on_drop(true)` is set. Now set, so a hung
+  `termux-location` is SIGKILLed when its timeout fires.
+- **`cli::cmd_live` matched on JSON substring.** Detected the
+  terminator with `s.contains("\"type\":\"live_stop\"")` — fragile
+  against any future serialiser change. Now pattern-matches
+  `EventKind::LiveStop { .. }` before serialising and threads an
+  `is_terminator` bool through the stream.
+
+#### API consistency
+
+- **`modules_list` serialised `ModuleCost` via `format!("{:?}", x).
+  to_lowercase()`.** Produced `"keygated"` rather than the established
+  serde snake_case `"key_gated"`. Now serialises via `serde_json::
+  to_value` so JSON callers see the canonical form.
+
+#### Performance
+
+- **`LiveSession.scan_ids` was a `Vec<String>`.** Every event on the
+  shared `EventBus` triggered an O(N) linear scan inside
+  `session_owns_scan` (called per event per live SSE subscriber). Now
+  a `HashSet<String>` — O(1) per-event. Big win for long-running
+  sessions with hundreds of iterations.
+- **`whois::find_referral` kept allocating `to_lowercase` strings per
+  line** despite the v0.5 commit that introduced the zero-alloc
+  `starts_with_ascii_ci` helper for the other parsers. Now uses the
+  helper consistently.
+
+#### Memory leaks
+
+- **`LiveInner` retained unused `JoinHandle`s forever.** The `joins`
+  map was written to in `start()` but never read from — purely dead
+  state that grew with every new live session. Field deleted; tokio
+  reaps spawned tasks itself.
+- **`cancels` map never pruned terminal sessions.** `mark_completed`
+  and `mark_stopped` now remove the entry. `sessions` is left intact
+  so `GET /api/v1/live/{id}` keeps returning the completed record.
+
+#### Docs / comments
+
+- **`TargetKind::canonical_str` docstring claimed CLI and API would
+  produce "the same scan_id for the same target".** False — `scan_id()`
+  mixes `unix_now()` so the id changes every invocation. The actual
+  invariant is narrower: both interfaces feed the same canonical kind
+  string into the hash. Reworded.
+- **`api::handlers::scan_create` carried the same misleading docstring.**
+  Same fix.
+
+#### Verification
+
+- `cargo fmt --check` — clean
+- `cargo clippy --all-targets -D warnings` — clean (re-stripped one
+  `Any` import made unused by the CORS cleanup)
+- `cargo test` — **94 pass** (84 lib + 10 integration)
+- `shellcheck --severity=warning install.sh` — clean
+- Release binary 4.9 MB stripped — unchanged
+
+## [0.8.0] — 2026-05-23
+
+### Added
+- **Parallel module dispatch.** `ScanOptions::max_concurrent` has been a
+  documented field since v0.1 but was never honoured — the engine ran
+  modules sequentially. Now, when `max_concurrent > 0`, the engine spawns
+  up to that many module tasks in flight at once via
+  `tokio::sync::Semaphore` + `tokio::task::JoinSet`. Wall-time on a
+  scan with N accepting modules drops from `sum(module_durations)` to
+  roughly `max(module_durations) × ceil(N / max_concurrent)`.
+- Default remains `max_concurrent = 0` → sequential, byte-identical to
+  v0.1–v0.7. The change is fully opt-in.
+
+### Notes
+- The sequential and concurrent paths share all module filter logic
+  (allowlist, exclude, free_only, passive_only, accepts) so behaviour
+  differs only in scheduling.
+- Event ordering: with concurrent dispatch, `ModuleStart` events from
+  different modules interleave with each other and with `EntityFound`
+  events from faster modules. Each event is self-describing (`type` +
+  `module`), so SSE consumers handle this transparently. CLI tracing
+  logs will look interleaved — accepted trade-off for the speedup.
+- 94 tests pass (84 lib + 10 integration); +3 new integration tests
+  cover: concurrent execution is faster than sequential (4 × 200 ms
+  modules with max_concurrent=4 complete in < 600 ms instead of > 800 ms);
+  semaphore cap is respected (6 modules with max_concurrent=2 never see
+  peak in-flight > 2); max_concurrent=0 still uses the sequential path
+  (peak in-flight stays exactly 1).
+- Release binary stays at 4.8 MB stripped — `JoinSet` / `Semaphore` are
+  in the existing tokio feature set, no dependency added.
+
+## [0.7.0] — 2026-05-23
+
+### Added
+- **Junction table `entity_observations(entity_uid, scan_id, observed_at)`**
+  replaces the v0.2 last-scan-wins semantics that hid entities from
+  older scans after a re-scan.
+- New store methods:
+  - `Store::scan_ids_for_entity(uid)` — every scan that observed this
+    entity, most recent first.
+  - `Store::observation_count(uid)` — cheap "seen in N scans" aggregate.
+
+### Changed
+- `Store::entities_for_scan(scan_id)` now joins through the junction
+  table; returns every entity that scan observed regardless of which
+  scan currently "owns" the legacy `entities.scan_id` column.
+- `Store::upsert_entity` wraps its insert + observation row in a
+  transaction so the two stay in lock-step.
+
+### Fixed
+- **Re-scanning the same target no longer hides the entity from older
+  scans.** Empirically verified end-to-end:
+  ```
+  hse scan --kind email --value test@example.com (twice, 2s apart)
+  scan 138c779a  via_junction=1  via_old_column=0   ← previously broken
+  scan f8957375  via_junction=1  via_old_column=1
+  observations table: 2 rows, 1 distinct entity
+  ```
+
+### Migration
+- On `Store::open` a one-time idempotent backfill populates
+  `entity_observations` from the existing `entities` table:
+  `INSERT OR IGNORE ... SELECT uid, scan_id, observed_at FROM entities`.
+  Existing databases gain multi-scan tracking from the moment they
+  next see an entity upsert; pre-v0.7 entities keep their single
+  recorded observation.
+
+### Notes
+- 84 tests pass (77 lib + 7 integration); +4 new junction-table tests
+  cover: entity observed by two scans appears in both; `scan_ids_for_entity`
+  returns all observers newest-first; entity only in scan A doesn't leak
+  into scan B; re-observing the same (uid, scan_id) pair is idempotent.
+- Release binary stays at 4.8 MB stripped — no new deps, ~80 lines of
+  new code in `store.rs`.
+
 ## [0.6.0] — 2026-05-23
 
 ### Added
@@ -333,7 +501,9 @@ onto this branch so the v0.5 PR isn't merged with regressions.
   - Classification derived, never stored
   - Passwords / credentials never written to evidence
 
-[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.8.0
+[0.7.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.7.0
 [0.6.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.6.0
 [0.5.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.5.0
 [0.4.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.4.0

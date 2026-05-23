@@ -24,7 +24,6 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -83,9 +82,11 @@ pub struct LiveSession {
     pub started_at: u64,
     pub last_iteration_at: Option<u64>,
     pub iteration: u32,
-    /// scan_ids spawned by this session so far (used by the SSE handler
-    /// to know which scan-level events belong to this live session).
-    pub scan_ids: Vec<String>,
+    /// scan_ids spawned by this session so far. Stored as a `HashSet` so
+    /// the SSE handler's per-event `session_owns_scan` check is O(1)
+    /// rather than O(N) — important for long-running sessions where each
+    /// broadcast event would otherwise trigger a linear scan.
+    pub scan_ids: std::collections::HashSet<String>,
 }
 
 /// The request payload for starting a live session via API or CLI.
@@ -108,9 +109,12 @@ pub struct LiveScanner {
 }
 
 struct LiveInner {
+    // Map keys are `live_id`. Entries are pruned when `session_loop`
+    // exits (either via natural iteration count or explicit stop) — see
+    // the cleanup at the bottom of `session_loop` below. This keeps the
+    // registry bounded in long-running `hse serve` processes.
     sessions: RwLock<HashMap<String, LiveSession>>,
     cancels: RwLock<HashMap<String, Arc<AtomicBool>>>,
-    joins: RwLock<HashMap<String, JoinHandle<()>>>,
     engine: Arc<ScanEngine>,
     bus: EventBus,
 }
@@ -121,7 +125,6 @@ impl LiveScanner {
             inner: Arc::new(LiveInner {
                 sessions: RwLock::new(HashMap::new()),
                 cancels: RwLock::new(HashMap::new()),
-                joins: RwLock::new(HashMap::new()),
                 engine,
                 bus,
             }),
@@ -141,7 +144,7 @@ impl LiveScanner {
             started_at: unix_now(),
             last_iteration_at: None,
             iteration: 0,
-            scan_ids: Vec::new(),
+            scan_ids: std::collections::HashSet::new(),
         };
 
         let cancel = Arc::new(AtomicBool::new(false));
@@ -155,7 +158,11 @@ impl LiveScanner {
         let live_id_for_task = live_id.clone();
         let cancel_for_task = Arc::clone(&cancel);
 
-        let handle = tokio::spawn(async move {
+        // The JoinHandle is intentionally dropped — we don't need it for
+        // shutdown (the tokio runtime cleans up tasks when it stops) or
+        // for cancellation (the AtomicBool covers that). Storing it would
+        // grow `LiveInner` unboundedly with completed handles.
+        tokio::spawn(async move {
             session_loop(
                 inner,
                 live_id_for_task,
@@ -167,8 +174,6 @@ impl LiveScanner {
             .await;
         });
 
-        self.inner.joins.write().insert(live_id.clone(), handle);
-
         info!(live_id = %live_id, "live session started");
         live_id
     }
@@ -176,12 +181,10 @@ impl LiveScanner {
     /// Request a session to stop after the current iteration. Returns
     /// `true` if a matching session was found.
     pub fn stop(&self, live_id: &str) -> bool {
-        if let Some(c) = self.inner.cancels.read().get(live_id) {
+        self.inner.cancels.read().get(live_id).is_some_and(|c| {
             c.store(true, Ordering::Relaxed);
             true
-        } else {
-            false
-        }
+        })
     }
 
     pub fn get(&self, live_id: &str) -> Option<LiveSession> {
@@ -193,14 +196,14 @@ impl LiveScanner {
     }
 
     /// True if the given `scan_id` was spawned by `live_id`. Used by the
-    /// SSE handler to forward scan-level events to live-session subscribers.
+    /// SSE handler to forward scan-level events to live-session
+    /// subscribers. O(1) thanks to `scan_ids` being a `HashSet`.
     pub fn session_owns_scan(&self, live_id: &str, scan_id: &str) -> bool {
         self.inner
             .sessions
             .read()
             .get(live_id)
-            .map(|s| s.scan_ids.iter().any(|s| s == scan_id))
-            .unwrap_or(false)
+            .is_some_and(|s| s.scan_ids.contains(scan_id))
     }
 }
 
@@ -252,7 +255,7 @@ async fn session_loop(
         // Register the scan_id with the session BEFORE running, so the SSE
         // handler can forward its events the moment they fire.
         if let Some(s) = inner.sessions.write().get_mut(&live_id) {
-            s.scan_ids.push(sid.clone());
+            s.scan_ids.insert(sid.clone());
         }
 
         let _ = inner.bus.send(Event::new(
@@ -304,6 +307,11 @@ fn mark_completed(inner: &LiveInner, live_id: &str, reason: &'static str) {
     if let Some(s) = inner.sessions.write().get_mut(live_id) {
         s.status = LiveStatus::Completed;
     }
+    // Session has ended — no further `stop()` calls can meaningfully act on
+    // it, so drop the AtomicBool entry to bound `cancels` map growth in
+    // long-running `hse serve` processes. The `sessions` entry stays so
+    // GET /api/v1/live/{id} keeps returning the completed record.
+    inner.cancels.write().remove(live_id);
     let _ = inner.bus.send(Event::new(
         live_id,
         EventKind::LiveStop {
@@ -323,6 +331,9 @@ fn mark_stopped(inner: &LiveInner, live_id: &str) {
             s.status = LiveStatus::Stopped;
         }
     }
+    // Same cleanup as `mark_completed` — drop the cancel flag once the
+    // session is terminal. See note there.
+    inner.cancels.write().remove(live_id);
     if emit_event {
         let _ = inner.bus.send(Event::new(
             live_id,

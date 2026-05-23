@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::Target,
 };
 use crate::util::termux::termux_cmd;
@@ -36,9 +36,6 @@ impl Module for GpsFix {
     fn priority(&self) -> u8 {
         68
     }
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
-    }
     fn is_passive(&self) -> bool {
         true
     }
@@ -50,11 +47,11 @@ impl Module for GpsFix {
         // Network provider is much faster than GPS (~1s vs minutes) and works
         // indoors. A 15s ceiling keeps the engine snappy even when the device
         // is genuinely unable to acquire a fix.
-        let stdout =
-            match termux_cmd("termux-location", &["-p", "network", "-r", "once"], 15_000).await {
-                Some(s) => s,
-                None => return Ok(ModuleResult::new()),
-            };
+        let Some(stdout) =
+            termux_cmd("termux-location", &["-p", "network", "-r", "once"], 15_000).await
+        else {
+            return Ok(ModuleResult::new());
+        };
         Ok(parse_fix(&stdout, &ctx.scan_id))
     }
 }
@@ -96,9 +93,8 @@ mod tests {
     use crate::core::scan::TargetKind;
 
     #[test]
-    fn passive_and_free() {
+    fn is_passive() {
         assert!(GpsFix.is_passive());
-        assert_eq!(GpsFix.cost(), ModuleCost::Free);
     }
 
     #[test]

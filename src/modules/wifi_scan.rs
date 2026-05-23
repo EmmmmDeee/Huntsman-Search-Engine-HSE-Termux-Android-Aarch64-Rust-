@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::Target,
 };
 use crate::util::termux::termux_cmd;
@@ -36,9 +36,6 @@ impl Module for WifiScan {
     fn priority(&self) -> u8 {
         65
     }
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
-    }
     fn is_passive(&self) -> bool {
         true
     }
@@ -47,9 +44,8 @@ impl Module for WifiScan {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let stdout = match termux_cmd("termux-wifi-scaninfo", &[], 3000).await {
-            Some(s) => s,
-            None => return Ok(ModuleResult::new()),
+        let Some(stdout) = termux_cmd("termux-wifi-scaninfo", &[], 3000).await else {
+            return Ok(ModuleResult::new());
         };
         Ok(parse_aps(&stdout, &ctx.scan_id))
     }
@@ -85,9 +81,8 @@ mod tests {
     use crate::core::scan::TargetKind;
 
     #[test]
-    fn passive_and_free() {
+    fn is_passive() {
         assert!(WifiScan.is_passive());
-        assert_eq!(WifiScan.cost(), ModuleCost::Free);
     }
 
     #[test]

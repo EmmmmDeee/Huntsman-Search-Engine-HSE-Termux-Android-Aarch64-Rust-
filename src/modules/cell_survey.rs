@@ -11,7 +11,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::Target,
 };
 use crate::util::termux::termux_cmd;
@@ -42,9 +42,6 @@ impl Module for CellSurvey {
     fn priority(&self) -> u8 {
         62
     }
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
-    }
     fn is_passive(&self) -> bool {
         true
     }
@@ -53,9 +50,8 @@ impl Module for CellSurvey {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let stdout = match termux_cmd("termux-telephony-cellinfo", &[], 3000).await {
-            Some(s) => s,
-            None => return Ok(ModuleResult::new()),
+        let Some(stdout) = termux_cmd("termux-telephony-cellinfo", &[], 3000).await else {
+            return Ok(ModuleResult::new());
         };
         Ok(parse_cells(&stdout, &ctx.scan_id))
     }
@@ -117,9 +113,8 @@ mod tests {
     use crate::core::scan::TargetKind;
 
     #[test]
-    fn passive_and_free() {
+    fn is_passive() {
         assert!(CellSurvey.is_passive());
-        assert_eq!(CellSurvey.cost(), ModuleCost::Free);
     }
 
     #[test]

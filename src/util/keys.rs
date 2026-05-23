@@ -9,13 +9,15 @@ use std::path::PathBuf;
 /// Termux: `$HOME/.huntsman.env` (typically `/data/data/com.termux/files/home/...`).
 /// Falls back to `.huntsman.env` in the current directory if `$HOME` is unset.
 pub fn env_path() -> String {
-    match std::env::var("HOME") {
-        Ok(home) => PathBuf::from(home)
-            .join(".huntsman.env")
-            .to_string_lossy()
-            .into_owned(),
-        Err(_) => ".huntsman.env".to_string(),
-    }
+    std::env::var("HOME").map_or_else(
+        |_| ".huntsman.env".to_string(),
+        |home| {
+            PathBuf::from(home)
+                .join(".huntsman.env")
+                .to_string_lossy()
+                .into_owned()
+        },
+    )
 }
 
 /// Load `HUNTSMAN_*` keys from the env file + process environment.

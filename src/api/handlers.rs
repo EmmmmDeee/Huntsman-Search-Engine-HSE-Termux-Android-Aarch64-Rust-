@@ -23,12 +23,25 @@ use tracing::info;
 use super::AppState;
 use crate::{
     core::{
-        event::EventKind,
         module::ModuleContext,
         scan::{Scan, ScanRequest, Target},
     },
     util::{http::build_client, keys, uid::scan_id},
 };
+
+/// `(500, {"error": "..."})` JSON response for an unexpected failure.
+fn internal_error(err: &impl ToString) -> axum::response::Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "error": err.to_string() })),
+    )
+        .into_response()
+}
+
+/// `(404, {"error": "not found"})` — used by `/scans/:id` and `/live/:id`.
+fn not_found() -> axum::response::Response {
+    (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+}
 
 // ─── Health / Version ────────────────────────────────────────────────────────
 
@@ -48,11 +61,15 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
         .modules()
         .iter()
         .map(|m| {
+            // Serialise `ModuleCost` via serde so JSON callers see the
+            // canonical snake_case form (`"key_gated"`, not `"keygated"`
+            // that `format!("{:?}", ...).to_lowercase()` would produce).
+            let cost = serde_json::to_value(m.cost()).unwrap_or(Value::Null);
             json!({
-                "name":       m.name(),
-                "priority":   m.priority(),
-                "cost":       format!("{:?}", m.cost()).to_lowercase(),
-                "passive":    m.is_passive(),
+                "name":     m.name(),
+                "priority": m.priority(),
+                "cost":     cost,
+                "passive":  m.is_passive(),
             })
         })
         .collect();
@@ -67,17 +84,15 @@ pub async fn scan_create(
     Json(req): Json<ScanRequest>,
 ) -> impl IntoResponse {
     let target = Target::new(req.kind, req.value.clone());
-    // Canonical snake_case form so CLI and API generate identical scan_ids
-    // for the same target.
+    // The CLI and API both feed `kind.canonical_str()` into `scan_id()` so
+    // both interfaces hash the same canonical kind string. `scan_id()`
+    // itself mixes `unix_now()`, so the resulting id is NOT deterministic
+    // across re-scans of the same target — each invocation gets a fresh id.
     let sid = scan_id(req.kind.canonical_str(), &req.value);
-    let scan = Scan::new(sid.clone(), target.clone()).with_options(req.options.clone());
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(req.options);
 
     if let Err(e) = s.store.upsert_scan(&scan) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response();
+        return internal_error(&e);
     }
 
     let ctx = ModuleContext {
@@ -113,11 +128,7 @@ pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             let n = scans.len();
             (StatusCode::OK, Json(json!({ "scans": scans, "count": n }))).into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
+        Err(e) => internal_error(&e),
     }
 }
 
@@ -125,15 +136,11 @@ pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     match s.store.get_scan(&id) {
         Ok(Some(scan)) => (
             StatusCode::OK,
-            Json(serde_json::to_value(&scan).unwrap_or(json!({}))),
+            Json(serde_json::to_value(&scan).unwrap_or_else(|_| json!({}))),
         )
             .into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
+        Ok(None) => not_found(),
+        Err(e) => internal_error(&e),
     }
 }
 
@@ -150,11 +157,7 @@ pub async fn scan_entities(
             )
                 .into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
+        Err(e) => internal_error(&e),
     }
 }
 
@@ -171,11 +174,7 @@ pub async fn scan_correlations(
             )
                 .into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
+        Err(e) => internal_error(&e),
     }
 }
 
@@ -208,10 +207,10 @@ pub async fn live_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     match s.live.get(&id) {
         Some(session) => (
             StatusCode::OK,
-            Json(serde_json::to_value(&session).unwrap_or(json!({}))),
+            Json(serde_json::to_value(&session).unwrap_or_else(|_| json!({}))),
         )
             .into_response(),
-        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+        None => not_found(),
     }
 }
 
@@ -226,7 +225,7 @@ pub async fn live_stop(
         )
             .into_response()
     } else {
-        (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        not_found()
     }
 }
 
@@ -281,12 +280,3 @@ pub async fn scan_events_sse(
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
-
-// Force the EventKind import to remain (clippy::unused_imports otherwise);
-// we serialise it implicitly via Event in the broadcast.
-const _: fn() = || {
-    let _ = EventKind::ScanComplete {
-        scan_id: String::new(),
-        entity_count: 0,
-    };
-};

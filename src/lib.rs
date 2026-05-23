@@ -1,9 +1,10 @@
 //! Huntsman Search Engine (HSE) — prototype.
 //!
 //! Lightweight pure-Rust OSINT/GEOINT scaffold designed to run inside Termux
-//! on aarch64 Android with no root. v0.3 adds `hse serve` — an axum HTTP
-//! server with a minimal hand-rolled SPA bound to `127.0.0.1` for use from
-//! Chrome / Firefox on the device.
+//! on aarch64 Android with no root. Boots either as a CLI (`hse scan|live|
+//! modules|doctor`) or as `hse serve` — an axum HTTP server with a minimal
+//! hand-rolled SPA bound to `127.0.0.1` for use from Chrome / Firefox on
+//! the device.
 //!
 //! Architecture invariants (do not change):
 //!   - `#![forbid(unsafe_code)]`
@@ -48,12 +49,12 @@ pub fn is_termux() -> bool {
 /// Termux: `$HOME/.huntsman/huntsman.db` (typically under `/data/data/com.termux/files/home`).
 /// Falls back to `./huntsman.db` if `$HOME` is unset.
 pub fn default_db_path() -> String {
-    match std::env::var("HOME") {
-        Ok(home) => {
+    std::env::var("HOME").map_or_else(
+        |_| "huntsman.db".to_string(),
+        |home| {
             let dir = std::path::Path::new(&home).join(".huntsman");
             let _ = std::fs::create_dir_all(&dir);
             dir.join("huntsman.db").to_string_lossy().into_owned()
-        }
-        Err(_) => "huntsman.db".to_string(),
-    }
+        },
+    )
 }

@@ -1,4 +1,5 @@
-//! Scan engine — module dispatcher + autonomous expansion (v0.2+).
+//! Scan engine — module dispatcher + autonomous expansion (v0.2+) + parallel
+//! dispatch (v0.8+).
 //!
 //! Each scan has two phases:
 //!   1. Seed dispatch — every accepting module runs against the seed target.
@@ -9,27 +10,31 @@
 //!      naturally. Budgets (`max_entities`, `max_wall_time_secs`) short-circuit
 //!      if exceeded.
 //!
-//! `ScanOptions::max_concurrent` is reserved for v0.3+; dispatch is sequential
-//! per round, which is the right default for a low-power Termux device.
+//! Dispatch mode is selected by `ScanOptions::max_concurrent`:
+//!   * `0` (default) → sequential, byte-identical to v0.1–v0.7 behaviour.
+//!     Best for low-power Termux devices where serialising modules avoids
+//!     I/O contention.
+//!   * `N > 0` → up to N modules in flight concurrently via
+//!     `tokio::sync::Semaphore`. Wall-time roughly divides by
+//!     `min(N, n_accepting_modules)`. Event ordering across concurrent
+//!     modules is interleaved; SSE consumers handle this transparently.
+
+mod dispatch;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::time::{sleep, timeout};
-use tracing::{info, warn};
+use tracing::warn;
 
-use crate::{
-    MODULE_TIMEOUT_MS,
-    core::{
-        entity::{Entity, normalise},
-        error::Result,
-        event::{Event, EventBus, EventKind},
-        module::{Module, ModuleContext, ModuleCost},
-        scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
-    },
-    storage::store::Store,
+use crate::core::{
+    entity::{Entity, normalise},
+    error::Result,
+    event::{Event, EventBus, EventKind},
+    module::{Module, ModuleContext},
+    scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
 };
+use crate::storage::store::Store;
 
 pub struct ScanEngine {
     modules: Vec<Arc<dyn Module>>,
@@ -109,10 +114,31 @@ impl ScanEngine {
                 .await;
         }
 
-        // Persist & complete.
+        // Persist & complete. If either step fails, mark the scan Failed
+        // (rather than leaving it Running forever) and still emit a
+        // terminal ScanComplete-with-zero so SSE consumers don't hang.
         let entity_count = entity_map.len();
-        for entity in entity_map.into_values() {
-            self.store.upsert_entity(&entity)?;
+        let persist_err: Option<String> = entity_map
+            .into_values()
+            .find_map(|entity| self.store.upsert_entity(&entity).err())
+            .map(|e| e.to_string());
+
+        if let Some(err) = persist_err {
+            warn!(scan_id = %scan.id, error = %err, "entity persist failed; marking scan failed");
+            scan.status = ScanStatus::Failed;
+            scan.entity_count = 0;
+            scan.error = Some(err);
+            scan.finished_at = Some(crate::core::entity::unix_now());
+            // Best-effort upsert; if even this fails there's nothing more to do.
+            let _ = self.store.upsert_scan(&scan);
+            let _ = self.bus.send(Event::new(
+                &scan.id,
+                EventKind::ScanComplete {
+                    scan_id: scan.id.clone(),
+                    entity_count: 0,
+                },
+            ));
+            return Ok(scan);
         }
 
         scan.status = ScanStatus::Complete;
@@ -227,143 +253,6 @@ impl ScanEngine {
             }
         }
         StopReason::NoMoreCandidates
-    }
-
-    /// Run every accepting, allowed module against one target. Merges
-    /// results into `entity_map` using GREATEST semantics. Emits events.
-    async fn dispatch_target(
-        &self,
-        scan_id: &str,
-        target: &Target,
-        ctx: &ModuleContext,
-        opts: &ScanOptions,
-        entity_map: &mut HashMap<String, Entity>,
-    ) -> Result<()> {
-        let module_timeout_ms = opts.module_timeout_ms.unwrap_or(MODULE_TIMEOUT_MS);
-
-        for module in &self.modules {
-            let name = module.name();
-
-            if !module.accepts(target) {
-                continue;
-            }
-            if let Some(allow) = &opts.modules
-                && !allow.iter().any(|n| n == name)
-            {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "not in allowlist".into(),
-                    },
-                ));
-                continue;
-            }
-            if opts.exclude_modules.iter().any(|n| n == name) {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "excluded".into(),
-                    },
-                ));
-                continue;
-            }
-            if opts.free_only && !matches!(module.cost(), ModuleCost::Free) {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "requires key/payment".into(),
-                    },
-                ));
-                continue;
-            }
-            if opts.passive_only && !module.is_passive() {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "not passive".into(),
-                    },
-                ));
-                continue;
-            }
-
-            let _ = self.bus.send(Event::new(
-                scan_id,
-                EventKind::ModuleStart {
-                    module: name.into(),
-                },
-            ));
-
-            let result = timeout(
-                Duration::from_millis(module_timeout_ms),
-                module.process(target, ctx),
-            )
-            .await;
-
-            match result {
-                Err(_) => {
-                    warn!(module = name, "timeout");
-                    let _ = self.bus.send(Event::new(
-                        scan_id,
-                        EventKind::ModuleError {
-                            module: name.into(),
-                            error: "timeout".into(),
-                        },
-                    ));
-                }
-                Ok(Err(e)) => {
-                    warn!(module = name, error = %e, "module error");
-                    let _ = self.bus.send(Event::new(
-                        scan_id,
-                        EventKind::ModuleError {
-                            module: name.into(),
-                            error: e.to_string(),
-                        },
-                    ));
-                }
-                Ok(Ok(mut mr)) => {
-                    let mut found = 0usize;
-                    for entity in mr.entities.drain(..) {
-                        if let Some(min) = opts.min_confidence
-                            && entity.confidence < min
-                        {
-                            continue;
-                        }
-
-                        let _ = self.bus.send(Event::new(
-                            scan_id,
-                            EventKind::EntityFound {
-                                entity: entity.clone(),
-                            },
-                        ));
-
-                        let uid = entity.uid.clone();
-                        if let Some(existing) = entity_map.get_mut(&uid) {
-                            existing.merge(entity);
-                        } else {
-                            entity_map.insert(uid, entity);
-                        }
-                        found += 1;
-                    }
-                    let _ = self.bus.send(Event::new(
-                        scan_id,
-                        EventKind::ModuleDone {
-                            module: name.into(),
-                            found,
-                        },
-                    ));
-                    info!(module = name, found, "done");
-                }
-            }
-
-            if opts.throttle_ms > 0 {
-                sleep(Duration::from_millis(opts.throttle_ms)).await;
-            }
-        }
-        Ok(())
     }
 }
 

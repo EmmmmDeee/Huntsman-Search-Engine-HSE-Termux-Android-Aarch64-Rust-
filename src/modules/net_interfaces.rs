@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::Target,
 };
 
@@ -23,9 +23,6 @@ impl Module for NetInterfaces {
     fn priority(&self) -> u8 {
         55
     }
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
-    }
     fn is_passive(&self) -> bool {
         true
     }
@@ -35,9 +32,9 @@ impl Module for NetInterfaces {
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
-        let mut entries = match tokio::fs::read_dir("/sys/class/net").await {
-            Ok(e) => e,
-            Err(_) => return Ok(result), // not Linux — no-op
+        // not Linux — no-op
+        let Ok(mut entries) = tokio::fs::read_dir("/sys/class/net").await else {
+            return Ok(result);
         };
 
         while let Ok(Some(entry)) = entries.next_entry().await {
@@ -86,9 +83,8 @@ mod tests {
     use crate::core::scan::TargetKind;
 
     #[test]
-    fn passive_and_free() {
+    fn is_passive() {
         assert!(NetInterfaces.is_passive());
-        assert_eq!(NetInterfaces.cost(), ModuleCost::Free);
     }
 
     #[test]

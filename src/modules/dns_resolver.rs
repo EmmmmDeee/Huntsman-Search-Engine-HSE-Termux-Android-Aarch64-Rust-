@@ -9,7 +9,7 @@ use hickory_resolver::{
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -23,10 +23,6 @@ impl Module for DnsResolver {
 
     fn priority(&self) -> u8 {
         30
-    }
-
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -73,7 +69,7 @@ impl Module for DnsResolver {
 
         // TXT records → enrich parent
         if let Ok(lookup) = resolver.txt_lookup(domain.as_str()).await {
-            let txts: Vec<String> = lookup.iter().map(|t| t.to_string()).collect();
+            let txts: Vec<String> = lookup.iter().map(ToString::to_string).collect();
             if !txts.is_empty() {
                 let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
                 dom.add_evidence(

@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::Target,
 };
 
@@ -27,9 +27,6 @@ impl Module for ArpScan {
     fn priority(&self) -> u8 {
         58
     }
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
-    }
     fn is_passive(&self) -> bool {
         true
     }
@@ -38,9 +35,9 @@ impl Module for ArpScan {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let content = match tokio::fs::read_to_string("/proc/net/arp").await {
-            Ok(s) => s,
-            Err(_) => return Ok(ModuleResult::new()), // not Linux, no /proc — no-op
+        // not Linux, no /proc — no-op
+        let Ok(content) = tokio::fs::read_to_string("/proc/net/arp").await else {
+            return Ok(ModuleResult::new());
         };
         Ok(parse_arp(&content, &ctx.scan_id))
     }
@@ -92,9 +89,8 @@ mod tests {
     use crate::core::scan::TargetKind;
 
     #[test]
-    fn passive_and_free() {
+    fn is_passive() {
         assert!(ArpScan.is_passive());
-        assert_eq!(ArpScan.cost(), ModuleCost::Free);
     }
 
     #[test]

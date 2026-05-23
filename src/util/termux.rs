@@ -21,8 +21,14 @@ use tokio::time::timeout;
 ///   - the binary doesn't exist on PATH (`Err(NotFound)`)
 ///   - the command exited non-zero
 ///   - the configured `timeout_ms` elapsed first
+///
+/// `kill_on_drop(true)` ensures that when the timeout fires (or the
+/// future is otherwise cancelled), tokio actually SIGKILLs the child
+/// process before reaping it. Without this, a hung `termux-location`
+/// could keep running in the background even after the engine has moved
+/// on — slowly leaking processes on long-running `hse serve` sessions.
 pub async fn termux_cmd(cmd: &str, args: &[&str], timeout_ms: u64) -> Option<Vec<u8>> {
-    let fut = Command::new(cmd).args(args).output();
+    let fut = Command::new(cmd).args(args).kill_on_drop(true).output();
     let output = timeout(Duration::from_millis(timeout_ms), fut)
         .await
         .ok()? // outer timeout

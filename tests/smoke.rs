@@ -116,27 +116,13 @@ impl Module for LowConfidenceModule {
 
 #[tokio::test]
 async fn engine_dispatches_synthetic_module_end_to_end() {
-    let tmp = tempfile_path("end_to_end");
-    let _ = std::fs::remove_file(&tmp);
-
-    let store = Arc::new(Store::open(&tmp).unwrap());
-    let (bus, _rx) = tokio::sync::broadcast::channel(8);
-    let engine = ScanEngine::new(
+    let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(SyntheticModule)],
-        Arc::clone(&store),
-        bus.clone(),
+        "end_to_end",
+        TargetKind::Email,
+        "test@example.com",
     );
-
-    let sid = scan_id("email", "test@example.com");
-    let target = Target::new(TargetKind::Email, "test@example.com");
     let scan = Scan::new(sid.clone(), target.clone());
-
-    let ctx = ModuleContext {
-        scan_id: sid.clone(),
-        bus,
-        http: build_client(),
-        keys: Default::default(),
-    };
 
     let result = engine.run(scan, target, ctx).await.unwrap();
     assert_eq!(result.entity_count, 1);
@@ -145,8 +131,6 @@ async fn engine_dispatches_synthetic_module_end_to_end() {
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].value, "test@example.com");
     assert!(stored[0].has_tag("synthetic"));
-
-    let _ = std::fs::remove_file(&tmp);
 }
 
 #[tokio::test]
@@ -286,6 +270,171 @@ async fn expansion_visited_prevents_cycle() {
     assert_eq!(result.entity_count, 1, "cycle should terminate");
 }
 
+/// Sleeps for `delay_ms`, then emits a tagged Email entity. Used to prove
+/// that v0.8 concurrent dispatch actually overlaps module wall-time.
+struct SlowEchoModule {
+    name_str: &'static str,
+    delay_ms: u64,
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    peak_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl Module for SlowEchoModule {
+    fn name(&self) -> &'static str {
+        self.name_str
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // Track concurrent in-flight count for the cap test.
+        let now = self
+            .in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        self.peak_in_flight
+            .fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        self.in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+
+        let mut r = ModuleResult::new();
+        let mut e = Entity::new(EntityKind::Email, &target.value, 0.9, &ctx.scan_id);
+        e.tag(self.name_str);
+        r.push(e);
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn concurrent_dispatch_is_faster_than_sequential() {
+    // Four 200 ms modules. Sequential ≈ 800 ms wall-time; concurrent
+    // with max_concurrent=4 should complete in ≈ 200 ms.
+    let counters = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let modules: Vec<Arc<dyn Module>> = (0..4)
+        .map(|i| {
+            let name: &'static str = match i {
+                0 => "slow0",
+                1 => "slow1",
+                2 => "slow2",
+                _ => "slow3",
+            };
+            Arc::new(SlowEchoModule {
+                name_str: name,
+                delay_ms: 200,
+                in_flight: Arc::clone(&counters),
+                peak_in_flight: Arc::clone(&peak),
+            }) as Arc<dyn Module>
+        })
+        .collect();
+
+    let (engine, _store, sid, target, ctx) =
+        setup(modules, "concurrent_fast", TargetKind::Email, "x@y.com");
+
+    let opts = ScanOptions {
+        max_concurrent: 4,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+
+    let started = std::time::Instant::now();
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    let elapsed = started.elapsed();
+
+    assert_eq!(result.entity_count, 1, "4 modules echo the same email UID");
+    // Sequential would be 800 ms; concurrent should clear well under 600 ms.
+    assert!(
+        elapsed < std::time::Duration::from_millis(600),
+        "concurrent dispatch took {elapsed:?} — expected < 600ms"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_dispatch_respects_max_concurrent_cap() {
+    // 6 modules, max_concurrent=2: peak in-flight should be ≤ 2.
+    let counters = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let modules: Vec<Arc<dyn Module>> = (0..6)
+        .map(|i| {
+            let name: &'static str = match i {
+                0 => "m0",
+                1 => "m1",
+                2 => "m2",
+                3 => "m3",
+                4 => "m4",
+                _ => "m5",
+            };
+            Arc::new(SlowEchoModule {
+                name_str: name,
+                delay_ms: 50,
+                in_flight: Arc::clone(&counters),
+                peak_in_flight: Arc::clone(&peak),
+            }) as Arc<dyn Module>
+        })
+        .collect();
+
+    let (engine, _store, sid, target, ctx) =
+        setup(modules, "concurrent_cap", TargetKind::Email, "x@y.com");
+
+    let opts = ScanOptions {
+        max_concurrent: 2,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let _ = engine.run(scan, target, ctx).await.unwrap();
+
+    let observed = peak.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        observed <= 2,
+        "peak in-flight was {observed}, expected ≤ max_concurrent=2"
+    );
+    assert!(
+        observed >= 2,
+        "peak in-flight was {observed}, expected ≥ 2 (semaphore should let two run)"
+    );
+}
+
+#[tokio::test]
+async fn max_concurrent_zero_uses_sequential_path() {
+    // With max_concurrent=0, peak in-flight should be exactly 1 — modules
+    // run one at a time in priority order (the v0.1 behaviour).
+    let counters = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let modules: Vec<Arc<dyn Module>> = (0..4)
+        .map(|i| {
+            let name: &'static str = match i {
+                0 => "s0",
+                1 => "s1",
+                2 => "s2",
+                _ => "s3",
+            };
+            Arc::new(SlowEchoModule {
+                name_str: name,
+                delay_ms: 10,
+                in_flight: Arc::clone(&counters),
+                peak_in_flight: Arc::clone(&peak),
+            }) as Arc<dyn Module>
+        })
+        .collect();
+
+    let (engine, _store, sid, target, ctx) =
+        setup(modules, "sequential_zero", TargetKind::Email, "x@y.com");
+
+    let scan = Scan::new(sid.clone(), target.clone()); // default opts → max_concurrent = 0
+    let _ = engine.run(scan, target, ctx).await.unwrap();
+
+    let observed = peak.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        observed, 1,
+        "sequential path should never have two in-flight"
+    );
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn setup(
@@ -299,7 +448,7 @@ fn setup(
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(64);
     let engine = ScanEngine::new(modules, Arc::clone(&store), bus.clone());
-    let sid = scan_id(&format!("{kind:?}").to_lowercase(), value);
+    let sid = scan_id(kind.canonical_str(), value);
     let target = Target::new(kind, value.to_string());
     let ctx = ModuleContext {
         scan_id: sid.clone(),

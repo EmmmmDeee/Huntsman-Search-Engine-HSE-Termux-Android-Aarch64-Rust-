@@ -1,7 +1,8 @@
-//! CLI (v0.3): scan / modules / doctor / serve.
+//! CLI: scan / modules / doctor / serve / live.
 //!
 //! Surfaces every `ScanOptions` field as a flag so each scan is fully
-//! customisable before launch. `serve` boots the HTTP server + SPA. See
+//! customisable before launch. `serve` boots the HTTP server + SPA;
+//! `live` re-runs the same scan on a fixed interval (v0.5+). See
 //! `docs/USAGE.md` for the full reference.
 
 use std::sync::Arc;
@@ -84,6 +85,11 @@ pub enum Command {
         /// Hard cap on total wall-time in seconds. Stops expansion when exceeded.
         #[arg(long)]
         max_wall_time: Option<u64>,
+        /// Modules to run in parallel per round (v0.8+). 0 = sequential
+        /// (default). Higher values cut wall-time on modules that are
+        /// I/O-bound — most useful with `--depth` for big expansion rounds.
+        #[arg(long, default_value_t = 0)]
+        max_concurrent: usize,
         /// Output format: table | json.
         #[arg(short, long, default_value = "table")]
         output: String,
@@ -152,6 +158,7 @@ pub async fn run() -> Result<()> {
             min_expand_confidence,
             max_entities,
             max_wall_time,
+            max_concurrent,
             output,
         } => {
             cmd_scan(ScanCmd {
@@ -168,6 +175,7 @@ pub async fn run() -> Result<()> {
                 min_expand_confidence,
                 max_entities,
                 max_wall_time_secs: max_wall_time,
+                max_concurrent,
                 output,
             })
             .await
@@ -220,9 +228,7 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     let target = Target::new(target_kind, cmd.value.clone());
 
     let scan_options = ScanOptions {
-        modules: cmd
-            .modules
-            .map(|s| s.split(',').map(|m| m.trim().to_string()).collect()),
+        modules: split_csv(cmd.modules),
         free_only: cmd.free_only,
         passive_only: cmd.passive_only,
         depth: cmd.depth,
@@ -233,9 +239,7 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         iterations: cmd.iterations,
     };
 
-    let store = Arc::new(Store::open(&default_db_path())?);
-    let (bus, _rx) = tokio::sync::broadcast::channel(1024);
-    let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
+    let (_store, bus, engine) = build_runtime(1024)?;
     let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
 
     let live_id = scanner.start(target, scan_options, live_options);
@@ -244,12 +248,18 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     let rx = bus.subscribe();
     let scanner_clone = scanner.clone();
     let target_lid = live_id.clone();
+    // Yield (json_line, is_terminator) tuples so the consumer loop checks
+    // the structured EventKind variant rather than substring-matching the
+    // serialised JSON. Saves us if the wire format ever changes.
     let mut stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
         Ok(event)
             if event.scan_id == target_lid
                 || scanner_clone.session_owns_scan(&target_lid, &event.scan_id) =>
         {
-            Some(serde_json::to_string(&event.kind).unwrap_or_default())
+            let is_terminator =
+                matches!(event.kind, crate::core::event::EventKind::LiveStop { .. });
+            let line = serde_json::to_string(&event.kind).unwrap_or_default();
+            Some((line, is_terminator))
         }
         _ => None,
     });
@@ -262,9 +272,9 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
                 scanner.stop(&live_id);
             }
             line = stream.next() => match line {
-                Some(s) => {
+                Some((s, is_terminator)) => {
                     println!("{s}");
-                    if s.contains("\"type\":\"live_stop\"") {
+                    if is_terminator {
                         break;
                     }
                 }
@@ -280,9 +290,7 @@ async fn cmd_serve(bind: String) -> Result<()> {
     use crate::api::{AppState, routes::router};
     use crate::core::live::LiveScanner;
 
-    let store = Arc::new(Store::open(&default_db_path())?);
-    let (bus, _rx) = tokio::sync::broadcast::channel(1024);
-    let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
+    let (store, bus, engine) = build_runtime(1024)?;
     let live = LiveScanner::new(Arc::clone(&engine), bus.clone());
     let state = Arc::new(AppState {
         store,
@@ -329,8 +337,8 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        () = ctrl_c => {},
+        () = terminate => {},
     }
 }
 
@@ -348,6 +356,7 @@ struct ScanCmd {
     min_expand_confidence: f64,
     max_entities: Option<usize>,
     max_wall_time_secs: Option<u64>,
+    max_concurrent: usize,
     output: String,
 }
 
@@ -356,15 +365,10 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
     let target = Target::new(target_kind, cmd.value.clone());
 
     let options = ScanOptions {
-        modules: cmd
-            .modules
-            .map(|s| s.split(',').map(|m| m.trim().to_string()).collect()),
-        exclude_modules: cmd
-            .exclude
-            .map(|s| s.split(',').map(|m| m.trim().to_string()).collect())
-            .unwrap_or_default(),
+        modules: split_csv(cmd.modules),
+        exclude_modules: split_csv(cmd.exclude).unwrap_or_default(),
         throttle_ms: cmd.throttle_ms,
-        max_concurrent: 0,
+        max_concurrent: cmd.max_concurrent,
         module_timeout_ms: cmd.module_timeout_ms,
         min_confidence: cmd.min_confidence,
         free_only: cmd.free_only,
@@ -378,9 +382,7 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
     // Use the parsed TargetKind's canonical form, not the raw user input,
     // so `--kind ip` and `--kind ipaddress` produce the same scan_id.
     let sid = scan_id(target_kind.canonical_str(), &cmd.value);
-    let store = Arc::new(Store::open(&default_db_path())?);
-    let (bus, _rx) = tokio::sync::broadcast::channel(64);
-    let engine = ScanEngine::new(registry(), Arc::clone(&store), bus.clone());
+    let (store, bus, engine) = build_runtime(64)?;
 
     let scan = Scan::new(sid.clone(), target.clone()).with_options(options);
     let ctx = ModuleContext {
@@ -394,57 +396,54 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
     let entities = store.entities_for_scan(&sid)?;
     let correlations = store.correlations_for_scan(&sid)?;
 
-    match cmd.output.as_str() {
-        "json" => {
+    if cmd.output == "json" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "scan": scan,
+                "entities": entities,
+                "correlations": correlations,
+            }))?
+        );
+    } else {
+        println!(
+            "\nScan {} — {} entities for {}={}\n",
+            &sid[..8],
+            entities.len(),
+            cmd.kind,
+            cmd.value
+        );
+        println!(
+            "{:<16} {:<46} {:>6} {:>6}  CLASS",
+            "KIND", "VALUE", "CONF", "C_EFF"
+        );
+        println!("{}", "-".repeat(86));
+        for e in &entities {
+            let val = truncate(&e.value, 46);
             println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "scan": scan,
-                    "entities": entities,
-                    "correlations": correlations,
-                }))?
+                "{:<16} {:<46} {:>6.3} {:>6.3}  {}",
+                e.kind.to_string(),
+                val,
+                e.confidence,
+                e.c_effective(),
+                e.classify()
             );
         }
-        _ => {
+        if !correlations.is_empty() {
+            println!("\n{} correlations:\n", correlations.len());
             println!(
-                "\nScan {} — {} entities for {}={}\n",
-                &sid[..8],
-                entities.len(),
-                cmd.kind,
-                cmd.value
-            );
-            println!(
-                "{:<16} {:<46} {:>6} {:>6}  CLASS",
-                "KIND", "VALUE", "CONF", "C_EFF"
+                "{:<10} {:<10} {:<40} DESCRIPTION",
+                "RULE", "SEVERITY", "NAME"
             );
             println!("{}", "-".repeat(86));
-            for e in &entities {
-                let val = truncate(&e.value, 46);
+            for c in &correlations {
                 println!(
-                    "{:<16} {:<46} {:>6.3} {:>6.3}  {}",
-                    e.kind.to_string(),
-                    val,
-                    e.confidence,
-                    e.c_effective(),
-                    e.classify()
+                    "{:<10} {:<10} {:<40} {}",
+                    c.rule_id,
+                    c.severity.to_string(),
+                    truncate(&c.rule_name, 40),
+                    c.description
                 );
-            }
-            if !correlations.is_empty() {
-                println!("\n{} correlations:\n", correlations.len());
-                println!(
-                    "{:<10} {:<10} {:<40} DESCRIPTION",
-                    "RULE", "SEVERITY", "NAME"
-                );
-                println!("{}", "-".repeat(86));
-                for c in &correlations {
-                    println!(
-                        "{:<10} {:<10} {:<40} {}",
-                        c.rule_id,
-                        c.severity.to_string(),
-                        truncate(&c.rule_name, 40),
-                        c.description
-                    );
-                }
             }
         }
     }
@@ -560,6 +559,25 @@ fn cost_label(c: ModuleCost) -> &'static str {
         ModuleCost::KeyGated => "key-gated",
         ModuleCost::Paid => "paid",
     }
+}
+
+/// Parse `--modules foo,bar,baz` (or `--exclude`) into a trimmed Vec.
+/// `None` input stays `None`; empty entries are kept (caller's problem).
+fn split_csv(s: Option<String>) -> Option<Vec<String>> {
+    s.map(|s| s.split(',').map(|m| m.trim().to_string()).collect())
+}
+
+/// Boot the bits every command needs: store, broadcast bus, engine.
+/// `bus_capacity` is the broadcast channel buffer — small for one-shot
+/// `scan`, large for `serve`/`live` where it has to absorb many parallel
+/// subscribers.
+fn build_runtime(
+    bus_capacity: usize,
+) -> Result<(Arc<Store>, crate::core::event::EventBus, Arc<ScanEngine>)> {
+    let store = Arc::new(Store::open(&default_db_path())?);
+    let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
+    let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
+    Ok((store, bus, engine))
 }
 
 fn truncate(s: &str, max: usize) -> String {
