@@ -104,8 +104,10 @@ if [[ "$CURRENT_YEAR" -lt 2024 ]]; then
 fi
 
 # Disk space — release build takes ~500MB, target dir up to 2GB.
+# Use END + NF-based indexing — robust to df wrapping long filesystem names
+# onto a second line (per gemini-code-assist review on PR #4).
 if command -v df >/dev/null 2>&1; then
-    DISK_AVAIL_MB=$(df -m "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+    DISK_AVAIL_MB=$(df -m "$HOME" 2>/dev/null | awk 'END {print $(NF-2)}')
     if ! [[ "$DISK_AVAIL_MB" =~ ^[0-9]+$ ]]; then
         DISK_AVAIL_MB=0
     fi
