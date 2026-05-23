@@ -10,19 +10,108 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
-### Fixed (post-v0.8.0 merge — Termux installer + doc polish)
+## [0.9.0] — 2026-05-23
 
+### Added
+
+- **`xposed_or_not`** breach module (pri 128). Free, keyless. Queries
+  `https://api.xposedornot.com/v1/check-email/<email>` for the list of
+  named breaches an address appears in (never credentials). With this
+  module the dormant **AU-001** correlator rule (multi-source breach
+  corroboration, severity Critical) finally activates — `hudsonrock` +
+  `xposed_or_not` together meet the ≥2-source threshold on any
+  free-only configuration.
+- **`username_search`** (pri 110). Sherlock / Maigret-style. Fans out
+  parallel HTTP probes against ~30 popular sites (GitHub, Reddit,
+  Mastodon, Keybase, Twitch, Patreon, Lobsters, Hacker News, Telegram,
+  …). Per-site timeout 2.5 s, all probes concurrent via
+  `futures::join_all`. Emits one `Url` per platform plus a summary
+  `Username` entity with the cross-platform count.
+- **`github_user`** (pri 108). Public GitHub REST profile lookup, no
+  key (60 req/hr unauthenticated). Emits Username metadata + optional
+  Person (real name) + optional Email (when published) + optional Url
+  (personal site).
+- **`gravatar`** (pri 85). MD5 of the email → `gravatar.com/{hash}.json`.
+  Confirms an email is in active use; surfaces display name, location,
+  linked URLs when published.
+- **`wayback`** (pri 38). Wayback CDX API. Snapshot count + first /
+  last-seen timestamps (ISO formatted) for a domain — confirms a
+  domain isn't newly-registered.
+- **`reverse_dns`** (pri 29). IpAddress → PTR via Cloudflare. Emits one
+  Domain entity per PTR result tagged `ptr`.
+- **`bgpview`** (pri 25). Accepts Asn and IpAddress. Closes the ASN
+  target gap (was 0 modules). Holder, country, RIR, allocation date,
+  contact emails, website.
+- **`phone_intl`** (pri 140). Pure-offline E.164 parse + 175-country
+  prefix table (longest-prefix-first so the NANP and Caribbean
+  +1-NNN ranges resolve correctly). Closes the Phone target gap
+  (was 0 modules).
+- **`Module::max_timeout_ms() -> u64`** trait method with default
+  `MODULE_TIMEOUT_MS` (3 s). Modules that legitimately need more
+  (`gps_fix` → 20 s, `whois` → 10 s) override; engine consults the
+  override when the user hasn't pinned `--timeout`. User override
+  still wins.
+- **`util::http::error_snippet(resp) -> String`** helper. Reads up
+  to 200 chars of the response body for HTTP error messages,
+  collapses newlines, returns `<empty>` / `<unreadable>` sentinels.
+  Every HTTP-based module now embeds the snippet in
+  `Error::module(...)` so `HTTP 400` events tell the operator
+  *why*, not just *what*.
+
+### Changed
+
+- `dns_resolver` upgraded from A / MX / TXT to A / AAAA / MX / NS / SOA /
+  TXT. Lookups run concurrently via `tokio::join!`. SOA emits primary
+  NS + serial + intervals and decodes the RNAME field into a real
+  `Email` entity tagged `dns-admin` (RFC 1035 §3.3.13). NS records
+  emit Domain entities tagged `ns` so DNS chaining picks them up at
+  `depth>=1`. TXT auto-tags the parent Domain `spf` / `dkim` /
+  `dmarc` / `google-verified` / `ms-verified` when matching markers
+  appear.
+- `whois` extracts 18 fields instead of 6: adds registrar IANA ID +
+  URL + updated date + admin/tech/abuse contact emails + status
+  flags + DNSSEC state + registrant org/country/state. Each contact
+  email and each nameserver becomes a discrete entity for autonomous
+  expansion. Status flags (`clientTransferProhibited`,
+  `pendingDelete`, `redemptionPeriod`, …) become entity tags.
+- `alienvault_otx` augments pulse count with the top 5 pulse names,
+  the deduplicated tag set (capped at 20), the top pulse's adversary,
+  the most recent TLP marking, and the earliest pulse-created
+  timestamp. Auto-tags `ti:malware` / `ti:apt` / `ti:phishing` etc.
+- Shared HTTP User-Agent bumped from the slug `HSE/0.8.0` to the
+  RFC 7231 §5.5.3 form `huntsman-search-engine/0.9.0 (+https://...)`.
+  Anti-bot WAFs (HudsonRock's cavalier among them) routinely 400 on
+  short slug UAs.
+- `ip_geo`'s 4xx branch no longer silently swallows the failure
+  (ip-api.com's 45 req/min rate-limit was invisible). Now surfaces
+  as a real `module_error`, consistent with every other HTTP module.
+- `hse modules` CLI `ACCEPTS` column now includes `asn` (was missing
+  from the target-kind probe list so ASN-only modules looked like
+  they accepted nothing).
+- Module count: 13 → 21.
+
+### Fixed
+
+- **Engine killed long-running modules at 3 s ceiling.** `gps_fix`
+  on Termux 0.118.x called `termux-location` with an internal 15 s
+  timeout, but the engine's `tokio::time::timeout(3_000)` wrapper
+  fired first → `WARN timeout module="gps_fix"` every iteration.
+  `Module::max_timeout_ms()` lets the module declare its own
+  ceiling; the engine honours it when the user hasn't pinned a
+  global `--timeout`. Two regression tests in `tests/smoke.rs`
+  enforce both the new behaviour and the user-override precedence.
 - **`install.sh` aborted on Termux 0.118.x** during the disk-space
-  sanity check with `awk: fatal: attempt to access field -2`. `df -m
-  $HOME` on Android can emit a row with too few fields, and the
-  unconditional `$(NF-2)` becomes a negative field index — fatal under
-  `set -euo pipefail`. Reproduced end-to-end on a real device
-  (`TERMUX_VERSION=0.118.3`, aarch64, Android SDK 34). The awk script
-  now guards `NF >= 4`, the pipeline is wrapped in `{...} || true`,
-  and a `DISK_AVAIL_MB -eq 0` branch prints "could not read free disk
-  space — skipping check" instead of falsely claiming "Only 0MB free".
-  Earlier PR #4 "robust df parsing" fix only handled the *wrap-long-
-  filesystem-name* case — this closes the *short-row-on-Android* gap.
+  sanity check with `awk: fatal: attempt to access field -2`.
+  `df -m $HOME` on Android can emit a row with too few fields, and
+  the unconditional `$(NF-2)` becomes a negative field index — fatal
+  under `set -euo pipefail`. Reproduced end-to-end on a real device
+  (`TERMUX_VERSION=0.118.3`, aarch64, Android SDK 34). The awk
+  script now guards `NF >= 4`, the pipeline is wrapped in `{...} ||
+  true`, and a `DISK_AVAIL_MB -eq 0` branch prints "could not read
+  free disk space — skipping check" instead of falsely claiming
+  "Only 0MB free". Earlier PR #4 "robust df parsing" fix only
+  handled the *wrap-long-filesystem-name* case — this closes the
+  *short-row-on-Android* gap.
 
 ### Changed (docs)
 
@@ -31,7 +120,7 @@ versions can include breaking changes; patch versions are bug-fix-only.
   that's the headline use case on Termux. `hse live` joined the CLI
   section.
 - `docs/INSTALL.md` "Verifying the install" snippet refreshed
-  (0.2.0 → 0.8.0; 5 modules → 13 modules; added a web-UI smoke test).
+  (0.2.0 → 0.9.0; module count refreshed; added a web-UI smoke test).
 - `docs/ROADMAP.md` — added the missing v0.5.0 (Live mode) and v0.8.0
   (Parallel module dispatch) entries; both were marked still-planned
   even though they shipped. "After 1.0" + non-goals unchanged.
@@ -39,98 +128,37 @@ versions can include breaking changes; patch versions are bug-fix-only.
 - `docs/TROUBLESHOOTING.md` — added the awk-NF-2 failure mode with
   the workaround pointing at the manual install path.
 
-### Fixed (review feedback on PR #8 + PR #9)
+### Coverage matrix (after)
 
-Thirteen real findings across `gemini-code-assist` and
-`copilot-pull-request-reviewer`; nothing rejected on security/correctness
-grounds. Single follow-up commit on the v0.8 branch so PR #9 stays
-mergeable from `main`.
+  Email      hudsonrock + xposed_or_not + email_to_username + gravatar  (4)
+  Username   username_search + github_user                              (2)
+  Phone      phone_intl                                                 (1) ← was 0
+  Domain     hudsonrock + alienvault_otx + crtsh + dns_resolver
+             + whois + wayback                                          (6)
+  IpAddress  alienvault_otx + whois + reverse_dns + ip_geo + bgpview    (5) ← +2
+  Asn        bgpview                                                    (1) ← was 0
+  + 6 Termux sensors fire on any target (passive, no-op without
+    termux-api)
 
-#### Security
+### Architecture invariants — unchanged
 
-- **`whois::query` had no read size cap.** `tokio::io::AsyncReadExt::
-  read_to_string` was allowed to consume the entire stream — a malicious
-  or misconfigured WHOIS server could OOM the engine on Termux. Now
-  capped at 64 KiB via `(&mut stream).take(65_536)`. Real WHOIS responses
-  are 2–8 KiB.
-- **`liveLog()` in `spa.html` used `innerHTML` with unescaped
-  event-derived strings.** A crafted `ev.error` / `ev.reason` /
-  `ev.target_value` containing `<script>` would XSS the SPA. Refactored
-  to build the row via `createElement` + `textContent` (which html-escapes
-  by definition).
-- **CORS was permissive (`allow_origin(Any)`) on loopback binds.** Any
-  website opened in Chrome could XHR to `127.0.0.1:8080/api/v1/scans`
-  and read the user's scan history. Now allows only the matching
-  `http(s)://<bind>` origins, plus the `localhost`/`127.0.0.1`/`[::1]`
-  aliases on the same port for loopback binds. The SPA is same-origin
-  so this loses no in-product functionality.
+`#![forbid(unsafe_code)]`; rustls + bundled-sqlite only (`md-5`
+added for Gravatar — pure-Rust, no native code); GREATEST entity
+merge; SHA-256 deterministic UIDs;
+`C_eff = clamp(C × (1 + 0.15 × ln(corroboration)), 0, 1)`;
+classification derived, never stored; no credentials in evidence
+(`xposed_or_not` returns breach company names, never passwords).
 
-#### Correctness
-
-- **`engine::run` left scans stuck in `Running` on persistence error.**
-  If `upsert_entity` or the final `upsert_scan` failed (disk full, db
-  locked), the run returned an `Err` without ever marking the scan
-  `Failed`, leaving the History tab with an entry that never finishes.
-  Now any persist-phase error short-circuits to `Failed` + persisted
-  `error` string + emitted `ScanComplete{entity_count:0}` event so
-  SSE consumers don't hang.
-- **`termux_cmd` left timed-out child processes running.** Tokio's
-  `timeout()` cancels the future but doesn't kill the child unless
-  `Command::kill_on_drop(true)` is set. Now set, so a hung
-  `termux-location` is SIGKILLed when its timeout fires.
-- **`cli::cmd_live` matched on JSON substring.** Detected the
-  terminator with `s.contains("\"type\":\"live_stop\"")` — fragile
-  against any future serialiser change. Now pattern-matches
-  `EventKind::LiveStop { .. }` before serialising and threads an
-  `is_terminator` bool through the stream.
-
-#### API consistency
-
-- **`modules_list` serialised `ModuleCost` via `format!("{:?}", x).
-  to_lowercase()`.** Produced `"keygated"` rather than the established
-  serde snake_case `"key_gated"`. Now serialises via `serde_json::
-  to_value` so JSON callers see the canonical form.
-
-#### Performance
-
-- **`LiveSession.scan_ids` was a `Vec<String>`.** Every event on the
-  shared `EventBus` triggered an O(N) linear scan inside
-  `session_owns_scan` (called per event per live SSE subscriber). Now
-  a `HashSet<String>` — O(1) per-event. Big win for long-running
-  sessions with hundreds of iterations.
-- **`whois::find_referral` kept allocating `to_lowercase` strings per
-  line** despite the v0.5 commit that introduced the zero-alloc
-  `starts_with_ascii_ci` helper for the other parsers. Now uses the
-  helper consistently.
-
-#### Memory leaks
-
-- **`LiveInner` retained unused `JoinHandle`s forever.** The `joins`
-  map was written to in `start()` but never read from — purely dead
-  state that grew with every new live session. Field deleted; tokio
-  reaps spawned tasks itself.
-- **`cancels` map never pruned terminal sessions.** `mark_completed`
-  and `mark_stopped` now remove the entry. `sessions` is left intact
-  so `GET /api/v1/live/{id}` keeps returning the completed record.
-
-#### Docs / comments
-
-- **`TargetKind::canonical_str` docstring claimed CLI and API would
-  produce "the same scan_id for the same target".** False — `scan_id()`
-  mixes `unix_now()` so the id changes every invocation. The actual
-  invariant is narrower: both interfaces feed the same canonical kind
-  string into the hash. Reworded.
-- **`api::handlers::scan_create` carried the same misleading docstring.**
-  Same fix.
-
-#### Verification
-
-- `cargo fmt --check` — clean
-- `cargo clippy --all-targets -D warnings` — clean (re-stripped one
-  `Any` import made unused by the CORS cleanup)
-- `cargo test` — **94 pass** (84 lib + 10 integration)
-- `shellcheck --severity=warning install.sh` — clean
-- Release binary 4.9 MB stripped — unchanged
+> Note: the [Unreleased] section that lived here through May 23
+> contained PR #8/#9 review-feedback notes (security: WHOIS read
+> cap + SPA XSS + CORS hardening; correctness: persist-failure
+> scan-status + termux_cmd kill-on-drop + cli/live event match;
+> performance: LiveSession.scan_ids HashSet + WHOIS find_referral
+> zero-alloc; API consistency: ModuleCost serde; memory leaks:
+> LiveInner pruning). All of those items were squash-merged into
+> the v0.8.0 release commit (PR #9) and so are part of 0.8.0
+> functionally. The detailed bullet list lives in the PR #9 merge
+> commit message.
 
 ## [0.8.0] — 2026-05-23
 
@@ -530,7 +558,8 @@ onto this branch so the v0.5 PR isn't merged with regressions.
   - Classification derived, never stored
   - Passwords / credentials never written to evidence
 
-[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.9.0
 [0.8.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.8.0
 [0.7.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.7.0
 [0.6.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.6.0
