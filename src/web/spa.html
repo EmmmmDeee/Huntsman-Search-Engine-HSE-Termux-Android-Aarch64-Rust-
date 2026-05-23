@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Huntsman Search Engine</title>
+<style>
+:root{
+  --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;
+  --fg:#e6edf3;--fg2:#8b949e;--fg3:#484f58;
+  --acc:#7c3aed;--acc2:#a78bfa;
+  --ok:#22c55e;--err:#f87171;--warn:#fbbf24;--info:#60a5fa;--teal:#2dd4bf;--coral:#fb923c;
+  --rad:6px;--mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:13px;height:100%}
+button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit}
+
+#app{display:flex;flex-direction:column;min-height:100vh}
+
+header{background:var(--bg2);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:10}
+header h1{font-size:14px;font-weight:600;letter-spacing:.04em}
+header h1 span{color:var(--acc2)}
+.ver{font-size:10px;color:var(--fg3);margin-left:auto}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--fg3);flex-shrink:0}
+.dot.ok{background:var(--ok)}.dot.err{background:var(--err)}
+
+nav{display:flex;background:var(--bg2);border-bottom:1px solid var(--border);overflow-x:auto}
+nav::-webkit-scrollbar{display:none}
+.tab{padding:10px 14px;font-size:12px;color:var(--fg2);cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;user-select:none}
+.tab.active{color:var(--acc2);border-bottom-color:var(--acc2)}
+
+main{flex:1;overflow:auto}
+.panel{display:none;padding:12px}
+.panel.active{display:block}
+
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--rad);padding:12px;margin-bottom:10px}
+.card-h{font-size:11px;font-weight:600;color:var(--fg2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px}
+
+.fld{margin-bottom:8px}
+.fld label{display:block;font-size:11px;color:var(--fg2);margin-bottom:4px}
+.fld input,.fld select,.fld textarea{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--rad);padding:7px 9px;outline:none}
+.fld input:focus,.fld select:focus,.fld textarea:focus{border-color:var(--acc)}
+.fld.row{display:flex;gap:8px}.fld.row>*{flex:1}
+.checks{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--fg2)}
+.checks label{display:flex;align-items:center;gap:5px;cursor:pointer}
+.adv{font-size:11px;color:var(--fg3);cursor:pointer;user-select:none;display:inline-block;margin-bottom:6px}
+.adv:before{content:"▸ "}.adv.open:before{content:"▾ "}
+.advbox{display:none}.advbox.open{display:block}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 14px;border-radius:var(--rad);border:none;cursor:pointer;font-weight:500;user-select:none}
+.btn-p{background:var(--acc);color:#fff}.btn-p:active{background:#6d28d9}.btn-p:disabled{background:var(--bg3);color:var(--fg3);cursor:default}
+.btn-g{background:transparent;color:var(--fg2);border:1px solid var(--border)}.btn-g:active{background:var(--bg3)}
+.btn-sm{padding:5px 9px;font-size:11px}
+.btn-full{width:100%}
+
+.bar{height:3px;background:var(--bg3);border-radius:2px;overflow:hidden;margin:6px 0}
+.bar>div{height:100%;background:var(--acc);transition:width .25s;width:0%}
+.modrow{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:11px}
+.modrow .nm{color:var(--fg2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bdg{font-size:10px;padding:1px 6px;border-radius:10px;white-space:nowrap}
+.b-run{background:#1e3a5f;color:var(--info)}.b-ok{background:#14352a;color:var(--ok)}
+.b-err{background:#3b1515;color:var(--err)}.b-skip{background:var(--bg3);color:var(--fg3)}
+
+table{width:100%;border-collapse:collapse;font-size:11px}
+th{text-align:left;padding:6px 8px;color:var(--fg3);font-weight:500;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:top;word-break:break-all}
+tr:last-child td{border-bottom:none}
+.kind{display:inline-block;font-size:10px;padding:1px 6px;border-radius:10px;background:var(--bg3);color:var(--fg2);white-space:nowrap}
+.k-email{background:#1e1b4b;color:#a5b4fc}.k-username{background:#14352a;color:var(--teal)}
+.k-phone{background:#3b2a10;color:var(--warn)}.k-ip_address{background:#1e3a5f;color:var(--info)}
+.k-domain{background:#14352a;color:var(--ok)}.k-coordinates{background:#3b1f10;color:var(--coral)}
+.k-organisation{background:#2d1b4e;color:var(--acc2)}.k-mac_address{background:#2a2a2a;color:var(--fg2)}
+.k-person{background:#1a2a1a;color:#86efac}.k-asn{background:#1a1a2a;color:#93c5fd}
+.k-abn_acn{background:#2a1a00;color:#fcd34d}
+.cls{font-size:10px}.c-VERIFIED{color:var(--ok)}.c-PROBABLE{color:var(--warn)}.c-CANDIDATE{color:var(--err)}
+.tg{font-size:10px;color:var(--fg3);margin-left:4px}
+
+.scrolly{overflow-y:auto;-webkit-overflow-scrolling:touch}
+
+.hist{padding:9px 10px;border-bottom:1px solid var(--border);cursor:pointer}
+.hist:last-child{border-bottom:none}.hist:active{background:var(--bg3)}
+.hist .tg-target{color:var(--fg);font-size:12px;word-break:break-all}
+.hist .meta{font-size:10px;color:var(--fg3);margin-top:2px}
+.st{font-size:10px;padding:2px 7px;border-radius:10px;float:right;margin-left:6px}
+.s-complete{background:#14352a;color:var(--ok)}.s-running{background:#1e3a5f;color:var(--info)}
+.s-failed{background:#3b1515;color:var(--err)}.s-pending{background:var(--bg3);color:var(--fg2)}
+
+#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--bg2);border:1px solid var(--border);border-radius:var(--rad);padding:10px 16px;font-size:12px;z-index:99;transition:transform .25s;max-width:90vw;text-align:center}
+#toast.show{transform:translateX(-50%) translateY(0)}
+#toast.ok{border-color:var(--ok);color:var(--ok)}
+#toast.err{border-color:var(--err);color:var(--err)}
+</style>
+</head>
+<body>
+<div id="app">
+
+<header>
+  <div class="dot" id="hdot"></div>
+  <h1>HSE <span>·</span> Huntsman</h1>
+  <span class="ver" id="hver">v?</span>
+</header>
+
+<nav>
+  <div class="tab active" data-tab="scan">Scan</div>
+  <div class="tab" data-tab="entities">Entities</div>
+  <div class="tab" data-tab="history">History</div>
+  <div class="tab" data-tab="modules">Modules</div>
+</nav>
+
+<main>
+
+<!-- ══ SCAN ════════════════════════════════════════════════════ -->
+<div class="panel active" id="p-scan">
+  <div class="card">
+    <div class="card-h">New scan</div>
+    <div class="fld row">
+      <div>
+        <label>Target kind</label>
+        <select id="f-kind">
+          <option value="email">Email</option>
+          <option value="username">Username</option>
+          <option value="phone">Phone</option>
+          <option value="full_name">Full name</option>
+          <option value="ip_address">IP address</option>
+          <option value="domain">Domain</option>
+          <option value="asn">ASN</option>
+          <option value="coordinates">Coordinates</option>
+          <option value="address">Address</option>
+        </select>
+      </div>
+    </div>
+    <div class="fld">
+      <label>Target value</label>
+      <input type="text" id="f-value" placeholder="e.g. example.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    </div>
+
+    <div class="adv" id="adv-toggle">Advanced</div>
+    <div class="advbox" id="adv-box">
+      <div class="fld">
+        <label>Modules (comma-separated allowlist, blank = all)</label>
+        <input type="text" id="f-modules" placeholder="crtsh,dns_resolver">
+      </div>
+      <div class="fld">
+        <label>Exclude modules</label>
+        <input type="text" id="f-exclude" placeholder="">
+      </div>
+      <div class="fld row">
+        <div><label>Throttle (ms)</label><input type="number" id="f-throttle" value="0" min="0"></div>
+        <div><label>Module timeout (ms)</label><input type="number" id="f-timeout" placeholder="3000" min="100"></div>
+      </div>
+      <div class="fld row">
+        <div><label>Depth</label><input type="number" id="f-depth" value="0" min="0" max="5"></div>
+        <div><label>Min expand C_eff</label><input type="number" id="f-mxc" value="0.75" min="0" max="1" step="0.05"></div>
+      </div>
+      <div class="fld row">
+        <div><label>Max entities</label><input type="number" id="f-maxe" placeholder="none" min="1"></div>
+        <div><label>Max wall-time (sec)</label><input type="number" id="f-maxt" placeholder="none" min="1"></div>
+      </div>
+      <div class="fld">
+        <label>Min confidence (drop below)</label>
+        <input type="number" id="f-minc" placeholder="none" min="0" max="1" step="0.05">
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="f-free"> Free-only</label>
+        <label><input type="checkbox" id="f-pass"> Passive-only</label>
+      </div>
+    </div>
+
+    <button class="btn btn-p btn-full" id="run-btn">▶ Run scan</button>
+  </div>
+
+  <div class="card" id="prog-card" style="display:none">
+    <div class="card-h" id="prog-h">Running…</div>
+    <div class="bar"><div id="prog-fill"></div></div>
+    <div id="ec" style="font-size:11px;color:var(--fg2);margin-bottom:6px"></div>
+    <div id="modlog" class="scrolly" style="max-height:200px"></div>
+  </div>
+</div>
+
+<!-- ══ ENTITIES ════════════════════════════════════════════════ -->
+<div class="panel" id="p-entities">
+  <div class="card">
+    <div class="card-h" id="ent-h">No scan selected</div>
+    <div class="fld row" style="margin-bottom:6px">
+      <input type="text" id="ent-filter" placeholder="Filter value…" oninput="renderEnt()">
+      <select id="ent-kf" onchange="renderEnt()">
+        <option value="">All kinds</option>
+        <option value="email">email</option><option value="username">username</option>
+        <option value="phone">phone</option><option value="ip_address">ip</option>
+        <option value="domain">domain</option><option value="organisation">org</option>
+        <option value="coordinates">coords</option>
+      </select>
+    </div>
+    <div class="scrolly" style="max-height:calc(100vh - 260px)">
+      <table>
+        <thead><tr><th onclick="sortEnt('kind')">Kind</th><th onclick="sortEnt('value')">Value</th><th onclick="sortEnt('ceff')">C_eff</th><th>Class</th></tr></thead>
+        <tbody id="ent-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ══ HISTORY ════════════════════════════════════════════════ -->
+<div class="panel" id="p-history">
+  <div style="margin-bottom:8px">
+    <button class="btn btn-g btn-sm" onclick="loadHist()">↻ Refresh</button>
+  </div>
+  <div class="card" style="padding:0">
+    <div class="scrolly" id="hist-list" style="max-height:calc(100vh - 180px)">
+      <div style="padding:24px;text-align:center;color:var(--fg3);font-size:12px">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODULES ════════════════════════════════════════════════ -->
+<div class="panel" id="p-modules">
+  <div class="card">
+    <div class="card-h">Registered modules</div>
+    <div id="mod-list" style="font-size:11px;color:var(--fg2)">Loading…</div>
+  </div>
+</div>
+
+</main>
+</div>
+<div id="toast"></div>
+
+<script>
+const S={scanId:null,sse:null,entities:[],sortCol:'ceff',sortDir:'desc',modsTotal:0,modsDone:0,modSt:{}};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+// ── init ─────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded',()=>{
+  checkHealth();loadHist();loadMods();
+  $('adv-toggle').onclick=()=>{$('adv-toggle').classList.toggle('open');$('adv-box').classList.toggle('open');};
+  $('run-btn').onclick=runScan;
+  $('f-value').addEventListener('keydown',e=>{if(e.key==='Enter')runScan();});
+  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>switchTab(t.dataset.tab));
+});
+
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
+  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id==='p-'+name));
+  if(name==='history')loadHist();
+  if(name==='modules')loadMods();
+}
+
+function toast(msg,type){
+  const el=$('toast');el.textContent=msg;el.className='show '+(type||'');
+  clearTimeout(toast._t);toast._t=setTimeout(()=>{el.className='';},2500);
+}
+
+async function checkHealth(){
+  try{
+    const r=await fetch('/api/v1/health');const d=await r.json();
+    $('hdot').className='dot ok';
+    if(d.version)$('hver').textContent='v'+d.version;
+  }catch{$('hdot').className='dot err';}
+}
+
+// ── scan ─────────────────────────────────────────────────────
+function buildOptions(){
+  const opts={};
+  const mods=$('f-modules').value.trim();if(mods)opts.modules=mods.split(',').map(s=>s.trim()).filter(Boolean);
+  const ex=$('f-exclude').value.trim();if(ex)opts.exclude_modules=ex.split(',').map(s=>s.trim()).filter(Boolean);
+  const tm=+$('f-throttle').value;if(tm>0)opts.throttle_ms=tm;
+  const to=$('f-timeout').value;if(to)opts.module_timeout_ms=+to;
+  opts.depth=+$('f-depth').value||0;
+  opts.min_expand_confidence=parseFloat($('f-mxc').value)||0.75;
+  const me=$('f-maxe').value;if(me)opts.max_entities=+me;
+  const mt=$('f-maxt').value;if(mt)opts.max_wall_time_secs=+mt;
+  const mc=$('f-minc').value;if(mc)opts.min_confidence=parseFloat(mc);
+  if($('f-free').checked)opts.free_only=true;
+  if($('f-pass').checked)opts.passive_only=true;
+  return opts;
+}
+
+async function runScan(){
+  const kind=$('f-kind').value,value=$('f-value').value.trim();
+  if(!value){toast('Enter a target value','err');return;}
+  $('run-btn').disabled=true;$('run-btn').textContent='⌛ Scanning…';
+  S.entities=[];S.modsTotal=0;S.modsDone=0;S.modSt={};
+  $('modlog').innerHTML='';$('ent-body').innerHTML='';$('ec').textContent='';setProg(0);
+  if(S.sse){S.sse.close();S.sse=null;}
+  try{
+    const r=await fetch('/api/v1/scans',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({kind,value,options:buildOptions()})
+    });
+    const d=await r.json();
+    if(!r.ok){toast(d.error||'Scan failed','err');resetBtn();return;}
+    S.scanId=d.scan_id;
+    $('prog-card').style.display='block';
+    $('prog-h').textContent='Running — '+kind+':'+value;
+    openSSE(S.scanId);
+    toast('Scan started','ok');
+  }catch(e){toast('Network: '+e.message,'err');resetBtn();}
+}
+
+function resetBtn(){$('run-btn').disabled=false;$('run-btn').textContent='▶ Run scan';}
+function setProg(p){$('prog-fill').style.width=p+'%';}
+
+function openSSE(sid){
+  const es=new EventSource('/api/v1/scans/'+encodeURIComponent(sid)+'/events');
+  S.sse=es;
+  es.onmessage=e=>{try{handleEvent(JSON.parse(e.data));}catch{}};
+  es.onerror=()=>{es.close();S.sse=null;};
+}
+
+function handleEvent(ev){
+  switch(ev.type){
+    case 'scan_start':$('prog-h').textContent='Running — '+ev.target_kind+':'+ev.target_value;break;
+    case 'module_skipped':setMod(ev.module,'skip',ev.reason);break;
+    case 'module_start':S.modsTotal++;setMod(ev.module,'run','');setProg(progPct());break;
+    case 'module_done':S.modsDone++;setMod(ev.module,'ok',ev.found+' found');setProg(progPct());break;
+    case 'module_error':S.modsDone++;setMod(ev.module,'err',ev.error);setProg(progPct());break;
+    case 'entity_found':mergeEntity(ev.entity);$('ec').textContent=S.entities.length+' entities';break;
+    case 'expansion_tick':addLog('▶ expansion depth '+ev.depth+' — '+ev.queued+' queued, '+ev.visited+' visited');break;
+    case 'expansion_stop':addLog('● expansion stopped: '+ev.reason);break;
+    case 'scan_complete':
+      setProg(100);$('prog-h').textContent='✓ Complete — '+ev.entity_count+' entities';
+      resetBtn();if(S.sse){S.sse.close();S.sse=null;}
+      renderEnt();$('ent-h').textContent='Scan '+S.scanId.slice(0,8)+' — '+ev.entity_count+' entities';
+      switchTab('entities');break;
+  }
+}
+
+function progPct(){return S.modsTotal===0?5:Math.min(95,Math.round(S.modsDone/S.modsTotal*100));}
+
+function setMod(name,state,detail){
+  S.modSt[name]=state;
+  let row=$('m-'+name.replace(/[^a-z0-9]/g,'_'));
+  if(!row){row=document.createElement('div');row.className='modrow';row.id='m-'+name.replace(/[^a-z0-9]/g,'_');$('modlog').appendChild(row);}
+  const cls=state==='run'?'b-run':state==='ok'?'b-ok':state==='skip'?'b-skip':'b-err';
+  const lbl=state==='run'?'▶':state==='ok'?'✓ '+(detail||''):state==='skip'?'skip — '+detail:'✗ '+detail;
+  row.innerHTML=`<span class="nm">${esc(name)}</span><span class="bdg ${cls}">${esc(lbl)}</span>`;
+  $('modlog').scrollTop=$('modlog').scrollHeight;
+}
+
+function addLog(msg){
+  const d=document.createElement('div');d.className='modrow';d.style.color='var(--fg3)';
+  d.innerHTML=`<span class="nm">${esc(msg)}</span>`;$('modlog').appendChild(d);
+  $('modlog').scrollTop=$('modlog').scrollHeight;
+}
+
+function mergeEntity(e){
+  const i=S.entities.findIndex(x=>x.uid===e.uid);
+  if(i>=0){if(e.confidence>S.entities[i].confidence)S.entities[i].confidence=e.confidence;S.entities[i].corroboration=(S.entities[i].corroboration||1)+1;}
+  else S.entities.push(e);
+}
+
+// ── entities ─────────────────────────────────────────────────
+function cEff(e){return Math.min(1,(e.confidence||0)*(1+0.15*Math.log(Math.max(1,e.corroboration||1))));}
+function classify(e){const c=cEff(e);return c>=0.75?'VERIFIED':c>=0.40?'PROBABLE':'CANDIDATE';}
+function kindCls(k){return 'kind k-'+(k||'').replace(/[^a-z0-9_]/g,'');}
+
+function sortEnt(c){if(S.sortCol===c)S.sortDir=S.sortDir==='asc'?'desc':'asc';else{S.sortCol=c;S.sortDir=c==='ceff'?'desc':'asc';}renderEnt();}
+
+function renderEnt(){
+  const filt=$('ent-filter').value.toLowerCase(),kf=$('ent-kf').value;
+  let vis=S.entities.filter(e=>{if(kf&&e.kind!==kf)return false;if(filt&&!e.value.toLowerCase().includes(filt))return false;return true;});
+  vis.sort((a,b)=>{let va,vb;
+    if(S.sortCol==='ceff'){va=cEff(a);vb=cEff(b);}
+    else if(S.sortCol==='kind'){va=a.kind;vb=b.kind;}
+    else{va=a.value;vb=b.value;}
+    const c=va<vb?-1:va>vb?1:0;return S.sortDir==='asc'?c:-c;});
+  const tb=$('ent-body');tb.innerHTML='';
+  vis.forEach(e=>{
+    const c=cEff(e).toFixed(3),cl=classify(e),tr=document.createElement('tr');
+    const tags=(e.tags||[]).slice(0,3).map(t=>`<span class="tg">#${esc(t)}</span>`).join('');
+    tr.innerHTML=`<td><span class="${kindCls(e.kind)}">${esc(e.kind)}</span></td>
+      <td>${esc(e.value)}${tags}</td>
+      <td class="cls c-${cl}">${c}</td>
+      <td class="cls c-${cl}">${cl}</td>`;
+    tb.appendChild(tr);
+  });
+}
+
+// ── history ──────────────────────────────────────────────────
+async function loadHist(){
+  const el=$('hist-list');
+  try{
+    const r=await fetch('/api/v1/scans');const d=await r.json();const scans=d.scans||[];
+    if(!scans.length){el.innerHTML='<div style="padding:24px;text-align:center;color:var(--fg3)">No scans yet</div>';return;}
+    el.innerHTML=scans.map(s=>{
+      const st=(s.status||'pending').toLowerCase(),sb='st s-'+st;
+      const ts=s.started_at?new Date(s.started_at*1000).toLocaleString():'';
+      return `<div class="hist" onclick="loadScan('${esc(s.id)}')">
+        <span class="${sb}">${esc(s.status||'')}</span>
+        <div class="tg-target">${esc(s.target.kind)}:${esc(s.target.value)}</div>
+        <div class="meta">${esc(ts)} · ${s.entity_count||0} entities · ${esc(s.id.slice(0,8))}</div>
+      </div>`;
+    }).join('');
+  }catch(e){el.innerHTML='<div style="padding:24px;color:var(--err)">Error: '+esc(e.message)+'</div>';}
+}
+
+async function loadScan(sid){
+  S.scanId=sid;
+  try{
+    const r=await fetch('/api/v1/scans/'+encodeURIComponent(sid)+'/entities');const d=await r.json();
+    S.entities=d.entities||[];$('ent-h').textContent='Scan '+sid.slice(0,8)+' — '+S.entities.length+' entities';
+    renderEnt();switchTab('entities');
+  }catch(e){toast('Load failed: '+e.message,'err');}
+}
+
+// ── modules ──────────────────────────────────────────────────
+async function loadMods(){
+  try{
+    const r=await fetch('/api/v1/modules');const d=await r.json();
+    const mods=(d.modules||[]).sort((a,b)=>b.priority-a.priority);
+    $('mod-list').innerHTML=mods.map(m=>`<div class="modrow">
+      <span class="nm">${esc(m.name)}</span>
+      <span class="bdg b-skip">pri ${m.priority}</span>
+      <span class="bdg ${m.cost==='free'?'b-ok':'b-err'}">${esc(m.cost)}</span>
+      <span class="bdg ${m.passive?'b-ok':'b-skip'}">${m.passive?'passive':'network'}</span>
+    </div>`).join('');
+  }catch(e){$('mod-list').innerHTML='<span style="color:var(--err)">Error: '+esc(e.message)+'</span>';}
+}
+</script>
+</body>
+</html>
