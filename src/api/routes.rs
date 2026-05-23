@@ -55,13 +55,13 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             "/api/v1/scans",
             post(handlers::scan_create).get(handlers::scan_list),
         )
-        .route("/api/v1/scans/{id}", get(handlers::scan_get))
-        .route("/api/v1/scans/{id}/entities", get(handlers::scan_entities))
+        .route("/api/v1/scans/:id", get(handlers::scan_get))
+        .route("/api/v1/scans/:id/entities", get(handlers::scan_entities))
         .route(
-            "/api/v1/scans/{id}/correlations",
+            "/api/v1/scans/:id/correlations",
             get(handlers::scan_correlations),
         )
-        .route("/api/v1/scans/{id}/events", get(handlers::scan_events_sse))
+        .route("/api/v1/scans/:id/events", get(handlers::scan_events_sse))
         // ── SPA fallback (catch-all) ──
         .fallback(spa_handler)
         .with_state(state)
