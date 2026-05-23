@@ -227,9 +227,7 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     let target = Target::new(target_kind, cmd.value.clone());
 
     let scan_options = ScanOptions {
-        modules: cmd
-            .modules
-            .map(|s| s.split(',').map(|m| m.trim().to_string()).collect()),
+        modules: split_csv(cmd.modules),
         free_only: cmd.free_only,
         passive_only: cmd.passive_only,
         depth: cmd.depth,
@@ -240,9 +238,7 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         iterations: cmd.iterations,
     };
 
-    let store = Arc::new(Store::open(&default_db_path())?);
-    let (bus, _rx) = tokio::sync::broadcast::channel(1024);
-    let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
+    let (_store, bus, engine) = build_runtime(1024)?;
     let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
 
     let live_id = scanner.start(target, scan_options, live_options);
@@ -293,9 +289,7 @@ async fn cmd_serve(bind: String) -> Result<()> {
     use crate::api::{AppState, routes::router};
     use crate::core::live::LiveScanner;
 
-    let store = Arc::new(Store::open(&default_db_path())?);
-    let (bus, _rx) = tokio::sync::broadcast::channel(1024);
-    let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
+    let (store, bus, engine) = build_runtime(1024)?;
     let live = LiveScanner::new(Arc::clone(&engine), bus.clone());
     let state = Arc::new(AppState {
         store,
@@ -370,13 +364,8 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
     let target = Target::new(target_kind, cmd.value.clone());
 
     let options = ScanOptions {
-        modules: cmd
-            .modules
-            .map(|s| s.split(',').map(|m| m.trim().to_string()).collect()),
-        exclude_modules: cmd
-            .exclude
-            .map(|s| s.split(',').map(|m| m.trim().to_string()).collect())
-            .unwrap_or_default(),
+        modules: split_csv(cmd.modules),
+        exclude_modules: split_csv(cmd.exclude).unwrap_or_default(),
         throttle_ms: cmd.throttle_ms,
         max_concurrent: cmd.max_concurrent,
         module_timeout_ms: cmd.module_timeout_ms,
@@ -392,9 +381,7 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
     // Use the parsed TargetKind's canonical form, not the raw user input,
     // so `--kind ip` and `--kind ipaddress` produce the same scan_id.
     let sid = scan_id(target_kind.canonical_str(), &cmd.value);
-    let store = Arc::new(Store::open(&default_db_path())?);
-    let (bus, _rx) = tokio::sync::broadcast::channel(64);
-    let engine = ScanEngine::new(registry(), Arc::clone(&store), bus.clone());
+    let (store, bus, engine) = build_runtime(64)?;
 
     let scan = Scan::new(sid.clone(), target.clone()).with_options(options);
     let ctx = ModuleContext {
@@ -571,6 +558,25 @@ fn cost_label(c: ModuleCost) -> &'static str {
         ModuleCost::KeyGated => "key-gated",
         ModuleCost::Paid => "paid",
     }
+}
+
+/// Parse `--modules foo,bar,baz` (or `--exclude`) into a trimmed Vec.
+/// `None` input stays `None`; empty entries are kept (caller's problem).
+fn split_csv(s: Option<String>) -> Option<Vec<String>> {
+    s.map(|s| s.split(',').map(|m| m.trim().to_string()).collect())
+}
+
+/// Boot the bits every command needs: store, broadcast bus, engine.
+/// `bus_capacity` is the broadcast channel buffer — small for one-shot
+/// `scan`, large for `serve`/`live` where it has to absorb many parallel
+/// subscribers.
+fn build_runtime(
+    bus_capacity: usize,
+) -> Result<(Arc<Store>, crate::core::event::EventBus, Arc<ScanEngine>)> {
+    let store = Arc::new(Store::open(&default_db_path())?);
+    let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
+    let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
+    Ok((store, bus, engine))
 }
 
 fn truncate(s: &str, max: usize) -> String {
