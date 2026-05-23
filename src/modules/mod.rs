@@ -11,10 +11,14 @@ pub mod cell_survey;
 pub mod crtsh;
 pub mod dns_resolver;
 pub mod email_to_username;
+pub mod github_user;
 pub mod gps_fix;
+pub mod gravatar;
 pub mod hudsonrock;
 pub mod ip_geo;
 pub mod net_interfaces;
+pub mod username_search;
+pub mod wayback;
 pub mod whois;
 pub mod wifi_connect;
 pub mod wifi_scan;
@@ -34,6 +38,13 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(whois::Whois),
         Arc::new(ip_geo::IpGeo),
         Arc::new(email_to_username::EmailToUsername),
+        // Username / identity expansion (v0.9 — sherlock/Maigret-style)
+        Arc::new(username_search::UsernameSearch),
+        Arc::new(github_user::GithubUser),
+        // Email identity
+        Arc::new(gravatar::Gravatar),
+        // Domain history
+        Arc::new(wayback::Wayback),
         // Termux sensors (v0.6+). Accept any target, is_passive=true.
         // Off-device they no-op cleanly via the termux_cmd helper.
         Arc::new(wifi_connect::WifiConnect),
