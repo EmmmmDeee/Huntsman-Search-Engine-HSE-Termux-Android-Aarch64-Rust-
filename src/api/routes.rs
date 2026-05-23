@@ -13,6 +13,11 @@
 //! | GET    | `/api/v1/scans/:id/entities`      | `scan_entities`          |
 //! | GET    | `/api/v1/scans/:id/correlations`  | `scan_correlations` (v0.4+) |
 //! | GET    | `/api/v1/scans/:id/events`        | `scan_events_sse` (SSE)  |
+//! | POST   | `/api/v1/live`                    | `live_create` (v0.5+)    |
+//! | GET    | `/api/v1/live`                    | `live_list`              |
+//! | GET    | `/api/v1/live/:id`                | `live_get`               |
+//! | DELETE | `/api/v1/live/:id`                | `live_stop`              |
+//! | GET    | `/api/v1/live/:id/events`         | `live_events_sse` (SSE)  |
 //! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
 
 use std::sync::Arc;
@@ -57,6 +62,16 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::scan_correlations),
         )
         .route("/api/v1/scans/{id}/events", get(handlers::scan_events_sse))
+        // ── live (v0.5+) ──
+        .route(
+            "/api/v1/live",
+            post(handlers::live_create).get(handlers::live_list),
+        )
+        .route(
+            "/api/v1/live/{id}",
+            get(handlers::live_get).delete(handlers::live_stop),
+        )
+        .route("/api/v1/live/{id}/events", get(handlers::live_events_sse))
         // ── SPA fallback (catch-all) ──
         .fallback(spa_handler)
         .with_state(state)
