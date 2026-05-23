@@ -30,27 +30,28 @@ events. The SPA mirrors the CLI's full `ScanOptions` surface — same
 modular customisation before launching a scan, plus live progress feed.
 4 jobs CI green; 4.6 MB stripped binary.
 
+### v0.4.0 — Correlator + 2 new free modules (2026-05-23)
+
+Rule-based post-scan correlator with 4 initial rules
+(AU-001 multi-breach, AU-002 identity cluster, AU-003 high
+corroboration, AU-010 infrastructure consensus). Severity scoring
+(Low/Medium/High/Critical), persisted to a new `correlations` table,
+surfaced in CLI table output + SPA Correlate tab + `GET /api/v1/scans/
+{id}/correlations` endpoint + SSE `correlation_found` events. Two new
+free modules: `alienvault_otx` (HTTP, no key, threat-intel pulses) and
+`whois` (TCP/43, no key, registrar metadata). 56 tests pass; 4.7 MB
+stripped binary.
+
 ## In flight
 
-### v0.4.0 — Correlator + breach/identity module catalog
+### v0.5.0 — Live mode
 
-- `src/core/correlator.rs` with rule-based post-scan analysis.
-  Initial rules (AU-001 → AU-003): multi-source breach corroboration,
-  identity cluster (Email + Username + Phone), AU business exposure
-  (ABN + breach email).
-- Severity scoring (Low / Medium / High / Critical), persisted to a
-  `correlations` table.
-- Surfaced in CLI table output and SPA's new "Correlate" tab.
-- New free modules:
-  - `breach_directory` — free, no key
-  - `alienvault_otx` — public, no key
-  - `urlscan` — public search, no key
-  - `whois` — TCP/43 query (no root)
-  - `asn_lookup` — via ip-api free tier
-- New key-gated modules (free tier where available):
-  - `hibp` — Have I Been Pwned (paid key required)
-  - `hunter` — Hunter.io (free tier 25 req/month)
-  - `virustotal` — VT (free tier 500 req/day)
+(was below — promoted to current in-flight)
+
+(See the "Shipped" section above for what landed.)
+Deferred to v0.5+: `breach_directory`, `urlscan`, `asn_lookup` modules.
+Deferred to v0.7+: key-gated modules (`hibp`, `hunter`, `virustotal`,
+`dehashed`, `oathnet_pro`, `shodan`).
 
 ### v0.5.0 — Live mode
 

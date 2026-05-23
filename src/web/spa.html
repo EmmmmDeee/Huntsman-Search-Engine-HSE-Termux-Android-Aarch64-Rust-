@@ -76,6 +76,18 @@ tr:last-child td{border-bottom:none}
 .cls{font-size:10px}.c-VERIFIED{color:var(--ok)}.c-PROBABLE{color:var(--warn)}.c-CANDIDATE{color:var(--err)}
 .tg{font-size:10px;color:var(--fg3);margin-left:4px}
 
+.corr{padding:10px;border-left:3px solid var(--border);margin-bottom:8px;border-radius:0 var(--rad) var(--rad) 0;background:var(--bg3)}
+.cv-critical{border-color:var(--err);background:#1a0808}
+.cv-high{border-color:var(--warn);background:#1a1008}
+.cv-medium{border-color:var(--info);background:#081828}
+.cv-low{border-color:var(--fg3);background:var(--bg3)}
+.corr-h{display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:10px;color:var(--fg3);font-weight:600}
+.corr-sev{padding:1px 6px;border-radius:10px;font-weight:600}
+.cs-critical{background:#7f1d1d;color:var(--err)}.cs-high{background:#451a03;color:var(--warn)}
+.cs-medium{background:#0c1a2e;color:var(--info)}.cs-low{background:var(--bg3);color:var(--fg2)}
+.corr-name{color:var(--fg2);font-size:11px;margin-bottom:3px}
+.corr-d{font-size:11px;color:var(--fg)}
+
 .scrolly{overflow-y:auto;-webkit-overflow-scrolling:touch}
 
 .hist{padding:9px 10px;border-bottom:1px solid var(--border);cursor:pointer}
@@ -104,6 +116,7 @@ tr:last-child td{border-bottom:none}
 <nav>
   <div class="tab active" data-tab="scan">Scan</div>
   <div class="tab" data-tab="entities">Entities</div>
+  <div class="tab" data-tab="correlate">Correlate</div>
   <div class="tab" data-tab="history">History</div>
   <div class="tab" data-tab="modules">Modules</div>
 </nav>
@@ -201,6 +214,17 @@ tr:last-child td{border-bottom:none}
   </div>
 </div>
 
+<!-- ══ CORRELATE ════════════════════════════════════════════════ -->
+<div class="panel" id="p-correlate">
+  <div class="card">
+    <div class="card-h" id="corr-h">No scan selected</div>
+    <div id="corr-empty" style="color:var(--fg3);font-size:12px;padding:14px;text-align:center">
+      Run a scan, or pick one from History — correlations appear after the scan completes.
+    </div>
+    <div id="corr-list" class="scrolly" style="max-height:calc(100vh - 240px)"></div>
+  </div>
+</div>
+
 <!-- ══ HISTORY ════════════════════════════════════════════════ -->
 <div class="panel" id="p-history">
   <div style="margin-bottom:8px">
@@ -226,7 +250,7 @@ tr:last-child td{border-bottom:none}
 <div id="toast"></div>
 
 <script>
-const S={scanId:null,sse:null,entities:[],sortCol:'ceff',sortDir:'desc',modsTotal:0,modsDone:0,modSt:{}};
+const S={scanId:null,sse:null,entities:[],correlations:[],sortCol:'ceff',sortDir:'desc',modsTotal:0,modsDone:0,modSt:{}};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
@@ -244,6 +268,7 @@ function switchTab(name){
   document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id==='p-'+name));
   if(name==='history')loadHist();
   if(name==='modules')loadMods();
+  if(name==='correlate')renderCorr();
 }
 
 function toast(msg,type){
@@ -280,8 +305,8 @@ async function runScan(){
   const kind=$('f-kind').value,value=$('f-value').value.trim();
   if(!value){toast('Enter a target value','err');return;}
   $('run-btn').disabled=true;$('run-btn').textContent='⌛ Scanning…';
-  S.entities=[];S.modsTotal=0;S.modsDone=0;S.modSt={};
-  $('modlog').innerHTML='';$('ent-body').innerHTML='';$('ec').textContent='';setProg(0);
+  S.entities=[];S.correlations=[];S.modsTotal=0;S.modsDone=0;S.modSt={};
+  $('modlog').innerHTML='';$('ent-body').innerHTML='';$('ec').textContent='';$('corr-list').innerHTML='';setProg(0);
   if(S.sse){S.sse.close();S.sse=null;}
   try{
     const r=await fetch('/api/v1/scans',{
@@ -318,10 +343,13 @@ function handleEvent(ev){
     case 'entity_found':mergeEntity(ev.entity);$('ec').textContent=S.entities.length+' entities';break;
     case 'expansion_tick':addLog('▶ expansion depth '+ev.depth+' — '+ev.queued+' queued, '+ev.visited+' visited');break;
     case 'expansion_stop':addLog('● expansion stopped: '+ev.reason);break;
+    case 'correlation_found':S.correlations.push(ev.correlation);addLog('★ '+ev.correlation.rule_id+' ['+ev.correlation.severity.toUpperCase()+'] '+ev.correlation.description);break;
+    case 'correlations_done':addLog('● correlator done — '+ev.count+' rule(s) fired');break;
     case 'scan_complete':
-      setProg(100);$('prog-h').textContent='✓ Complete — '+ev.entity_count+' entities';
+      setProg(100);$('prog-h').textContent='✓ Complete — '+ev.entity_count+' entities, '+S.correlations.length+' correlation(s)';
       resetBtn();if(S.sse){S.sse.close();S.sse=null;}
-      renderEnt();$('ent-h').textContent='Scan '+S.scanId.slice(0,8)+' — '+ev.entity_count+' entities';
+      renderEnt();renderCorr();
+      $('ent-h').textContent='Scan '+S.scanId.slice(0,8)+' — '+ev.entity_count+' entities';
       switchTab('entities');break;
   }
 }
@@ -398,10 +426,36 @@ async function loadHist(){
 async function loadScan(sid){
   S.scanId=sid;
   try{
-    const r=await fetch('/api/v1/scans/'+encodeURIComponent(sid)+'/entities');const d=await r.json();
-    S.entities=d.entities||[];$('ent-h').textContent='Scan '+sid.slice(0,8)+' — '+S.entities.length+' entities';
-    renderEnt();switchTab('entities');
+    const [er,cr]=await Promise.all([
+      fetch('/api/v1/scans/'+encodeURIComponent(sid)+'/entities'),
+      fetch('/api/v1/scans/'+encodeURIComponent(sid)+'/correlations')
+    ]);
+    const ed=await er.json(),cd=await cr.json();
+    S.entities=ed.entities||[];S.correlations=cd.correlations||[];
+    $('ent-h').textContent='Scan '+sid.slice(0,8)+' — '+S.entities.length+' entities';
+    renderEnt();renderCorr();switchTab('entities');
   }catch(e){toast('Load failed: '+e.message,'err');}
+}
+
+// ── correlate ────────────────────────────────────────────────
+function renderCorr(){
+  const empty=$('corr-empty'),list=$('corr-list');
+  $('corr-h').textContent=S.scanId?('Scan '+S.scanId.slice(0,8)+' — '+S.correlations.length+' correlation(s)'):'No scan selected';
+  if(!S.correlations.length){empty.style.display='block';list.innerHTML='';return;}
+  empty.style.display='none';
+  const ord={critical:0,high:1,medium:2,low:3};
+  const sorted=[...S.correlations].sort((a,b)=>(ord[a.severity]??4)-(ord[b.severity]??4));
+  list.innerHTML=sorted.map(c=>{
+    const sv=(c.severity||'low').toLowerCase();
+    return `<div class="corr cv-${sv}">
+      <div class="corr-h">
+        <span>${esc(c.rule_id)}</span>
+        <span class="corr-sev cs-${sv}">${sv.toUpperCase()}</span>
+      </div>
+      <div class="corr-name">${esc(c.rule_name||'')}</div>
+      <div class="corr-d">${esc(c.description)}</div>
+    </div>`;
+  }).join('');
 }
 
 // ── modules ──────────────────────────────────────────────────

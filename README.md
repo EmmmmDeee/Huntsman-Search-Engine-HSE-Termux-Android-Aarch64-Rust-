@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Edition 2024](https://img.shields.io/badge/edition-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
-[![Status: prototype](https://img.shields.io/badge/status-prototype%20(0.3.x)-yellow.svg)](docs/ROADMAP.md)
+[![Status: prototype](https://img.shields.io/badge/status-prototype%20(0.4.x)-yellow.svg)](docs/ROADMAP.md)
 
 Pure-Rust OSINT / GEOINT scaffold that runs **entirely inside Termux on
 Android aarch64** with no root, and is operable through any local browser
@@ -60,10 +60,17 @@ hse scan --kind domain --value example.com --output json    # machine-readable
 hse serve                                                   # web UI on http://127.0.0.1:8080 (v0.3+)
 ```
 
-Five free modules (no API keys required):
-`hudsonrock`, `crtsh`, `dns_resolver`, `ip_geo`, `email_to_username`.
-See [`docs/MODULES.md`](docs/MODULES.md) for the full catalogue and the
-synergy map that makes them chain automatically.
+Seven free modules (no API keys required):
+`hudsonrock`, `alienvault_otx`, `crtsh`, `dns_resolver`, `whois`,
+`ip_geo`, `email_to_username`. See [`docs/MODULES.md`](docs/MODULES.md)
+for the full catalogue and the synergy map that makes them chain
+automatically.
+
+Post-scan **correlator** (v0.4+) evaluates declarative rules over the
+collected entities and surfaces severity-tagged findings — multi-source
+breach corroboration, identity clusters, infrastructure consensus.
+Surfaced in the CLI table output, the SPA's Correlate tab, and the
+`/api/v1/scans/{id}/correlations` endpoint.
 
 ## Web UI (v0.3+)
 
@@ -137,12 +144,12 @@ rationale):
 
 ## Status
 
-**v0.3.0 — prototype.** 4.6 MB stripped binary, 38 tests, zero unsafe.
-Foundation + autonomous expansion engine + five free modules + CLI +
-HTTP server + browser SPA + SSE.
+**v0.4.0 — prototype.** 4.7 MB stripped binary, 56 tests, zero unsafe.
+Foundation + autonomous expansion engine + seven free modules + CLI +
+HTTP server + browser SPA + SSE + rule-based correlator.
 
-Coming next: correlator + more modules (v0.4), live re-poll mode (v0.5),
-Termux sensors (v0.6). Full plan in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+Coming next: live re-poll mode (v0.5), Termux sensors (v0.6), batch +
+paid modules (v0.7+). Full plan in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 

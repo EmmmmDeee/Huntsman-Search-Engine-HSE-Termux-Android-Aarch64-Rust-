@@ -64,6 +64,14 @@ pub enum EventKind {
     ExpansionStop {
         reason: String,
     },
+    /// Correlator rule fired post-scan (v0.4+).
+    CorrelationFound {
+        correlation: crate::core::correlator::Correlation,
+    },
+    /// Correlator finished evaluating all rules (v0.4+).
+    CorrelationsDone {
+        count: usize,
+    },
     ScanComplete {
         scan_id: String,
         entity_count: usize,

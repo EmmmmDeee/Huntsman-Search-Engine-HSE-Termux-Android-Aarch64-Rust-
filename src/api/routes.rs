@@ -11,6 +11,7 @@
 //! | GET    | `/api/v1/scans`                   | `scan_list`              |
 //! | GET    | `/api/v1/scans/:id`               | `scan_get`               |
 //! | GET    | `/api/v1/scans/:id/entities`      | `scan_entities`          |
+//! | GET    | `/api/v1/scans/:id/correlations`  | `scan_correlations` (v0.4+) |
 //! | GET    | `/api/v1/scans/:id/events`        | `scan_events_sse` (SSE)  |
 //! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
 
@@ -51,6 +52,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/scans/{id}", get(handlers::scan_get))
         .route("/api/v1/scans/{id}/entities", get(handlers::scan_entities))
+        .route(
+            "/api/v1/scans/{id}/correlations",
+            get(handlers::scan_correlations),
+        )
         .route("/api/v1/scans/{id}/events", get(handlers::scan_events_sse))
         // ── SPA fallback (catch-all) ──
         .fallback(spa_handler)
