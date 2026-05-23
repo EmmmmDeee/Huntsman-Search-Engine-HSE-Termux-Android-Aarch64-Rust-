@@ -61,9 +61,20 @@ hse serve                                                   # web UI on http://1
 hse live --kind domain --value example.com --interval 60    # re-scan every 60s (v0.5+)
 ```
 
-Thirteen free modules (no API keys required):
-- **Network**: `hudsonrock`, `alienvault_otx`, `crtsh`, `dns_resolver`,
-  `whois`, `ip_geo`, `email_to_username`
+Twenty-one free modules (no API keys required):
+- **Breach** (v0.4 / v0.9): `hudsonrock`, `xposed_or_not` —
+  together activate the AU-001 multi-source Critical correlation
+- **Identity / username** (v0.9): `username_search` (~30 sites,
+  Sherlock/Maigret-style), `github_user`, `gravatar`,
+  `email_to_username`
+- **Domain / network** (v0.1–v0.9): `crtsh`, `dns_resolver`
+  (A / AAAA / MX / NS / SOA / TXT), `whois` (18 fields incl.
+  status flags + DNSSEC + admin/tech/abuse contacts),
+  `alienvault_otx`, `wayback`
+- **IP / ASN** (v0.1 / v0.9): `ip_geo`, `reverse_dns` (PTR),
+  `bgpview` (ASN holder + announcing-AS reverse lookup)
+- **Phone** (v0.9, offline): `phone_intl` — E.164 parse, 175
+  country prefixes
 - **Termux sensors** (v0.6+, passive, on-device GEOINT): `arp_scan`,
   `net_interfaces`, `wifi_scan`, `wifi_connect`, `gps_fix`, `cell_survey`
 
@@ -148,15 +159,17 @@ rationale):
 
 ## Status
 
-**v0.8.0 — prototype.** 4.8 MB stripped binary, 94 tests, zero unsafe.
-Foundation + autonomous expansion engine + **13 free modules** (seven
-network + six Termux sensors) + CLI + HTTP server + browser SPA + SSE +
-rule-based correlator + live mode + multi-scan entity tracking + opt-in
-parallel module dispatch.
+**v0.9.0 — prototype.** ~5 MB stripped binary, 110 tests, zero unsafe.
+Foundation + autonomous expansion engine + **21 free modules** (15
+network/identity/breach + 6 Termux sensors) + CLI + HTTP server +
+browser SPA + SSE + rule-based correlator (AU-001 multi-breach now
+live with 2 free sources) + live mode + multi-scan entity tracking +
+opt-in parallel module dispatch + per-module timeout ceiling.
 
-Coming next: batch queries, paid-key modules, adaptive throttling, three
-deferred free modules (`breach_directory`, `urlscan`, `asn_lookup`).
-Full plan in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+Coming next: batch queries, paid-key modules (`hibp`, `dehashed`,
+`shodan`, …), adaptive throttling, three deferred free modules
+(`breach_directory`, `urlscan`, `asn_lookup`). Full plan in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 

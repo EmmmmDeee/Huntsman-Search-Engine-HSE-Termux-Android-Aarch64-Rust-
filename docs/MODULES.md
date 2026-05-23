@@ -4,19 +4,30 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (v0.8 — 13 modules)
+## Catalogue (v0.9 — 21 modules)
 
-### Network modules (target-driven)
+### Network / identity modules (target-driven)
+
+All free, no API key required. Sorted by priority (engine runs
+higher-priority first; ordering doesn't affect output).
 
 | Module | Targets | Cost | Passive | Priority | Output kinds |
 |--------|---------|------|---------|----------|--------------|
-| [`hudsonrock`](#hudsonrock)                 | `email`, `domain`     | free | no  | 130 | Email / Domain (with stealer-log evidence) |
+| [`phone_intl`](#phone_intl)                 | `phone`               | free | **yes** | 140 | Phone (E.164, country) — offline |
+| [`hudsonrock`](#hudsonrock)                 | `email`, `domain`     | free | no  | 130 | Email / Domain (stealer-log evidence) |
+| `xposed_or_not`                             | `email`               | free | no  | 128 | Email (named-breach list) — pairs with hudsonrock for AU-001 |
+| `username_search`                           | `username`            | free | no  | 110 | Url × N (per-platform profile links) — Sherlock/Maigret-style |
+| `github_user`                               | `username`            | free | no  | 108 | Username + Person + Email + Url (GitHub public profile) |
 | [`email_to_username`](#email_to_username)   | `email`               | free | **yes** | 95  | Username × N candidates |
-| [`alienvault_otx`](#alienvault_otx)         | `ip`, `domain`        | free | no  | 78  | IpAddress / Domain (threat-intel pulses) |
-| [`crtsh`](#crtsh)                           | `domain`              | free | no  | 35  | Domain (subdomains) |
-| [`whois`](#whois)                           | `domain`, `ip`        | free | no  | 32  | Domain / IpAddress (registrar, dates, registrant) |
-| [`dns_resolver`](#dns_resolver)             | `domain`              | free | no  | 30  | IpAddress (A), Domain (MX), Domain (TXT) |
+| `gravatar`                                  | `email`               | free | no  | 85  | Email (Gravatar profile metadata) |
+| [`alienvault_otx`](#alienvault_otx)         | `ip`, `domain`        | free | no  | 78  | IpAddress / Domain (threat-intel pulses + tags + TLP) |
+| `wayback`                                   | `domain`              | free | no  | 38  | Domain (snapshot count + first/last seen) |
+| [`crtsh`](#crtsh)                           | `domain`              | free | no  | 35  | Domain (subdomains via certificate transparency) |
+| [`whois`](#whois)                           | `domain`, `ip`        | free | no  | 32  | Domain / IpAddress + contact Emails + nameserver Domains (18 fields) |
+| [`dns_resolver`](#dns_resolver)             | `domain`              | free | no  | 30  | IpAddress (A/AAAA), Domain (MX/NS/SOA), Email (SOA admin) |
+| `reverse_dns`                               | `ip`                  | free | no  | 29  | Domain × N (PTR records) |
 | [`ip_geo`](#ip_geo)                         | `ip`                  | free | no  | 28  | Coordinates, Organisation |
+| `bgpview`                                   | `asn`, `ip`           | free | no  | 25  | Asn (holder + contacts) — also reverse-maps IPs to announcing ASN |
 
 ### Termux sensors (v0.6+, environmental — accept any target)
 
@@ -29,9 +40,22 @@ records. The engine knows nothing else — every module is a one-file change.
 | [`arp_scan`](#arp_scan)           | free | **yes** | 58 | IpAddress + MacAddress per ARP entry        | no  |
 | [`net_interfaces`](#net_interfaces) | free | **yes** | 55 | MacAddress per local interface              | no  |
 
-All v0.6 modules are **free** (no API key required). Sensors fire on
+All sensor modules are **free** (no API key required). Sensors fire on
 every scan as environmental enrichment; off-device, the `termux-*`
 binary-based modules no-op cleanly (no `module_error` events).
+
+### Target-kind coverage matrix
+
+| Target | Modules that fire |
+|---|---|
+| `email`    | hudsonrock + xposed_or_not + email_to_username + gravatar |
+| `username` | username_search + github_user |
+| `phone`    | phone_intl |
+| `domain`   | hudsonrock + alienvault_otx + crtsh + dns_resolver + whois + wayback |
+| `ip`       | alienvault_otx + whois + reverse_dns + ip_geo + bgpview |
+| `asn`      | bgpview |
+
+Any target also fires the 6 Termux sensors (passive, no-op without `termux-api`).
 
 Suppress the sensor suite for a particular scan with:
 ```bash
