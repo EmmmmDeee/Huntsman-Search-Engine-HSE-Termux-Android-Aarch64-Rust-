@@ -4,7 +4,9 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (v0.4)
+## Catalogue (v0.6)
+
+### Network modules (target-driven)
 
 | Module | Targets | Cost | Passive | Priority | Output kinds |
 |--------|---------|------|---------|----------|--------------|
@@ -16,9 +18,28 @@ records. The engine knows nothing else — every module is a one-file change.
 | [`dns_resolver`](#dns_resolver)             | `domain`              | free | no  | 30  | IpAddress (A), Domain (MX), Domain (TXT) |
 | [`ip_geo`](#ip_geo)                         | `ip`                  | free | no  | 28  | Coordinates, Organisation |
 
-All v0.4 modules are **free** (no API key required). They were picked
-specifically for synergy under the autonomous-expansion engine and the
-v0.4 correlator's rule set.
+### Termux sensors (v0.6+, environmental — accept any target)
+
+| Module | Cost | Passive | Priority | Output kinds | Needs `termux-api` |
+|--------|------|---------|----------|--------------|---------------------|
+| [`wifi_connect`](#wifi_connect)   | free | **yes** | 70 | MacAddress (connected AP), IpAddress (local) | yes |
+| [`gps_fix`](#gps_fix)             | free | **yes** | 68 | Coordinates                                 | yes |
+| [`wifi_scan`](#wifi_scan)         | free | **yes** | 65 | MacAddress × N (visible APs)                | yes |
+| [`cell_survey`](#cell_survey)     | free | **yes** | 62 | DeviceId × N (cell towers)                  | yes |
+| [`arp_scan`](#arp_scan)           | free | **yes** | 58 | IpAddress + MacAddress per ARP entry        | no  |
+| [`net_interfaces`](#net_interfaces) | free | **yes** | 55 | MacAddress per local interface              | no  |
+
+All v0.6 modules are **free** (no API key required). Sensors fire on
+every scan as environmental enrichment; off-device, the `termux-*`
+binary-based modules no-op cleanly (no `module_error` events).
+
+Suppress the sensor suite for a particular scan with:
+```bash
+hse scan --kind email --value foo@bar.com \
+  --exclude arp_scan,net_interfaces,wifi_scan,wifi_connect,gps_fix,cell_survey
+```
+…or use the allowlist `--modules` flag to opt in only the modules you
+want.
 
 ---
 
@@ -161,6 +182,93 @@ Returns an empty `ModuleResult` if none of those fields could be parsed
 **Quirks**: each lookup makes 1–2 TCP connections; each is bounded by a
 4 s timeout. Failures (network, timeout, malformed response) produce a
 `module_error` event and contribute no entities, but never crash the scan.
+
+### `arp_scan`
+
+Parses `/proc/net/arp` — the kernel's resolved ARP table. No `termux-api`
+binary, no network traffic, no root. Pure passive observation.
+
+**Targets accepted**: any (sensor).
+**Off-device**: no `/proc/net/arp` on macOS/Windows → empty `ModuleResult`.
+
+**Returns**: one `IpAddress` and one `MacAddress` entity per complete
+ARP row (rows with the placeholder `00:00:00:00:00:00` MAC are skipped).
+Confidence 0.95 for both. Evidence carries the cross-reference (the IP's
+evidence has the MAC + interface; the MAC's evidence has the IP +
+interface).
+
+### `net_interfaces`
+
+Reads `/sys/class/net/*/address` and `/operstate` — the kernel's view
+of each local network interface. No `termux-api`, no network traffic.
+
+**Targets accepted**: any (sensor).
+**Off-device**: no `/sys/class/net` on macOS → empty `ModuleResult`.
+
+**Returns**: one `MacAddress` entity per non-loopback interface,
+confidence 0.95, tagged `local-interface`. Evidence records the
+interface name (`wlan0` etc.) and `operstate` (`up`/`down`/`unknown`).
+
+### `wifi_scan`
+
+Invokes `termux-wifi-scaninfo` — a synchronous WiFi scan that lists all
+APs the radio can see. Free, no key, no root.
+
+**Targets accepted**: any (sensor).
+**Off-device** or `termux-api` missing: helper returns `None` → empty
+`ModuleResult` (no `module_error` event).
+
+**Returns**: one `MacAddress` entity per AP (BSSID-keyed), confidence
+0.95, tagged `wifi-ap`. Evidence: SSID (or `<hidden>`), frequency,
+RSSI, timestamp.
+
+### `wifi_connect`
+
+Invokes `termux-wifi-connectioninfo` — info about the currently-connected
+AP. Free, no key, no root.
+
+**Targets accepted**: any (sensor).
+**Returns**: zero entities if disconnected (`02:00:00:00:00:00` MAC
+placeholder and `0.0.0.0` IP are filtered). Otherwise:
+- one `MacAddress` for the connected AP, tagged `wifi-connected`,
+  evidence has SSID, frequency, RSSI, link-speed, supplicant-state
+- one `IpAddress` for the device's local IP on that network, tagged
+  `local-wifi`
+
+### `gps_fix`
+
+Invokes `termux-location -p network -r once` for a single fast fix via
+the network location provider (fast indoor, m-scale accuracy). Free,
+no key. Requires the Termux:API Android app to have Location permission
+granted in Android Settings.
+
+**Targets accepted**: any (sensor).
+**Returns**: one `Coordinates` entity (`lat,lon` with 7-decimal-place
+precision), tagged `geoint` and `provider:<network|gps>`. Confidence
+0.90 for GPS provider, 0.65 for network. Evidence captures latitude,
+longitude, altitude, accuracy-metres, speed, bearing, provider.
+
+**Quirks**: a 15 s timeout caps the wait when the device genuinely can't
+acquire a fix. The default network provider is much faster than `gps`
+(~1 s vs minutes) and works indoors; use `--exclude gps_fix` and a
+custom modified module if you specifically need GPS-provider data.
+
+### `cell_survey`
+
+Invokes `termux-telephony-cellinfo` — every registered cell the modem
+can see. Free, no key. Android Q+ restricts cell info to apps with
+foreground location permission; ensure Termux:API has location-allowed
+in Android Settings.
+
+**Targets accepted**: any (sensor).
+**Returns**: one `DeviceId` entity per cell, keyed
+`<mcc>-<mnc>-<lac|tac>-<cid>` (TAC for LTE/NR, LAC for GSM/UMTS).
+Confidence 0.80. Tagged `cell-tower` and `radio:<lte|gsm|umts|nr>`.
+Evidence: type, MCC, MNC, LAC/TAC, CID, PCI, dBm, ASU, level,
+registered.
+
+**Quirks**: `mcc`/`mnc` arrive as either `"505"` (string) or `505`
+(integer) across Android versions; the parser normalises both.
 
 ### `ip_geo`
 
