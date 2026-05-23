@@ -67,9 +67,16 @@ impl Module for AlienVaultOtx {
             .await
             .map_err(|e| Error::module("alienvault_otx", e.to_string()))?;
 
-        // 404 = target not in OTX — treat as no findings, not an error.
-        if resp.status().as_u16() == 404 || !resp.status().is_success() {
+        let status = resp.status();
+        // 404 = target not in OTX — treat as no findings (per OTX API).
+        if status.as_u16() == 404 {
             return Ok(ModuleResult::new());
+        }
+        // Any other non-2xx (429 rate limit, 5xx outage) is an operational
+        // failure — surface it as a module_error event rather than silently
+        // returning empty.
+        if !status.is_success() {
+            return Err(Error::module("alienvault_otx", format!("HTTP {status}")));
         }
 
         let data: OtxResp = resp
