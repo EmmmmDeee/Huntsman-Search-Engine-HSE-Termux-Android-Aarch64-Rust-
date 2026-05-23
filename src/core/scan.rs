@@ -60,6 +60,25 @@ impl TargetKind {
             Self::Address => EntityKind::Address,
         }
     }
+
+    /// Canonical lowercase snake_case identifier — matches the serde-serialised
+    /// form (`#[serde(rename_all = "snake_case")]`). Use this everywhere a
+    /// machine-readable target-kind string is required (notably `scan_id`
+    /// derivation, which must be identical across CLI and HTTP paths so the
+    /// same target always yields the same id).
+    pub fn canonical_str(&self) -> &'static str {
+        match self {
+            Self::Email => "email",
+            Self::Username => "username",
+            Self::Phone => "phone",
+            Self::FullName => "full_name",
+            Self::IpAddress => "ip_address",
+            Self::Domain => "domain",
+            Self::Asn => "asn",
+            Self::Coordinates => "coordinates",
+            Self::Address => "address",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

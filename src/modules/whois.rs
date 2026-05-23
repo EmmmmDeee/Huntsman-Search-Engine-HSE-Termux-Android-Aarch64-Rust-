@@ -143,12 +143,17 @@ fn find_referral(text: &str) -> Option<String> {
     None
 }
 
+/// True if `line`'s leading bytes match `key` ignoring ASCII case. Avoids the
+/// per-line `to_lowercase()` allocation a `lower.starts_with(&lkey)` check
+/// would force (WHOIS keys are pure ASCII).
+fn starts_with_ascii_ci(line: &str, key: &str) -> bool {
+    line.len() >= key.len() && line.as_bytes()[..key.len()].eq_ignore_ascii_case(key.as_bytes())
+}
+
 fn field(text: &str, keys: &[&str]) -> Option<String> {
     for line in text.lines() {
-        let lower = line.to_lowercase();
         for key in keys {
-            let lkey = key.to_lowercase();
-            if lower.starts_with(&lkey)
+            if starts_with_ascii_ci(line, key)
                 && let Some((_, rest)) = line.split_once(':')
             {
                 let v = rest.trim().to_string();
@@ -164,10 +169,8 @@ fn field(text: &str, keys: &[&str]) -> Option<String> {
 fn all_fields(text: &str, keys: &[&str]) -> Vec<String> {
     let mut out = Vec::new();
     for line in text.lines() {
-        let lower = line.to_lowercase();
         for key in keys {
-            let lkey = key.to_lowercase();
-            if lower.starts_with(&lkey)
+            if starts_with_ascii_ci(line, key)
                 && let Some((_, rest)) = line.split_once(':')
             {
                 let v = rest.trim().to_string();

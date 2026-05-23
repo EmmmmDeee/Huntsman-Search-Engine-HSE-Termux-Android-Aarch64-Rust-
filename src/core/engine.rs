@@ -80,7 +80,7 @@ impl ScanEngine {
         let _ = self.bus.send(Event::new(
             &scan.id,
             EventKind::ScanStart {
-                target_kind: format!("{:?}", target.kind).to_lowercase(),
+                target_kind: target.kind.canonical_str().to_string(),
                 target_value: target.value.clone(),
             },
         ));

@@ -33,6 +33,23 @@ pub enum Severity {
     Critical,
 }
 
+impl Severity {
+    /// Canonical, lowercase, stable identifier. This is the form serialised to
+    /// JSON (via `#[serde(rename_all = "lowercase")]`), persisted in the
+    /// SQLite `correlations.severity` column, and matched in the
+    /// `correlations_for_scan` ORDER BY expression. Use this everywhere a
+    /// machine-readable severity string is required — the [`Display`] impl
+    /// produces an uppercase form for human-facing tables.
+    pub fn as_canonical(&self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
 impl std::fmt::Display for Severity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
