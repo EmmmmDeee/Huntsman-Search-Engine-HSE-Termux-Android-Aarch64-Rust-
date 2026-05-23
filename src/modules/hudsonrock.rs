@@ -16,6 +16,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::error_snippet;
 
 pub struct HudsonRock;
 
@@ -69,13 +70,14 @@ impl Module for HudsonRock {
             .await
             .map_err(|e| Error::module("hudsonrock", e.to_string()))?;
 
-        if resp.status().as_u16() == 404 {
+        let status = resp.status();
+        if status.as_u16() == 404 {
             return Ok(ModuleResult::new());
         }
-        if !resp.status().is_success() {
+        if !status.is_success() {
             return Err(Error::module(
                 "hudsonrock",
-                format!("HTTP {}", resp.status()),
+                format!("HTTP {status}: {}", error_snippet(resp).await),
             ));
         }
 

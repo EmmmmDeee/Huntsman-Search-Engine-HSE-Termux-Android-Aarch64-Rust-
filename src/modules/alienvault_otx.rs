@@ -16,6 +16,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::error_snippet;
 
 pub struct AlienVaultOtx;
 
@@ -72,7 +73,10 @@ impl Module for AlienVaultOtx {
         // failure — surface it as a module_error event rather than silently
         // returning empty.
         if !status.is_success() {
-            return Err(Error::module("alienvault_otx", format!("HTTP {status}")));
+            return Err(Error::module(
+                "alienvault_otx",
+                format!("HTTP {status}: {}", error_snippet(resp).await),
+            ));
         }
 
         let data: OtxResp = resp
