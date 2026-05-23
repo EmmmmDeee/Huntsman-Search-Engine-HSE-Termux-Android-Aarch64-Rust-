@@ -221,7 +221,7 @@ async fn session_loop(
         &live_id,
         EventKind::LiveStart {
             live_id: live_id.clone(),
-            target_kind: format!("{:?}", target.kind).to_lowercase(),
+            target_kind: target.kind.canonical_str().to_string(),
             target_value: target.value.clone(),
             interval_secs: live.interval_secs,
         },
@@ -245,8 +245,9 @@ async fn session_loop(
         };
 
         // Spawn a fresh scan for this iteration. scan_id() mixes unix_now()
-        // so back-to-back ticks get distinct ids.
-        let sid = scan_id(&format!("{:?}", target.kind).to_lowercase(), &target.value);
+        // so back-to-back ticks get distinct ids. Canonical snake_case form
+        // matches CLI/API scan_id derivation.
+        let sid = scan_id(target.kind.canonical_str(), &target.value);
 
         // Register the scan_id with the session BEFORE running, so the SSE
         // handler can forward its events the moment they fire.
