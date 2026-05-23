@@ -10,6 +10,50 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-05-23
+
+### Added
+- **Junction table `entity_observations(entity_uid, scan_id, observed_at)`**
+  replaces the v0.2 last-scan-wins semantics that hid entities from
+  older scans after a re-scan.
+- New store methods:
+  - `Store::scan_ids_for_entity(uid)` — every scan that observed this
+    entity, most recent first.
+  - `Store::observation_count(uid)` — cheap "seen in N scans" aggregate.
+
+### Changed
+- `Store::entities_for_scan(scan_id)` now joins through the junction
+  table; returns every entity that scan observed regardless of which
+  scan currently "owns" the legacy `entities.scan_id` column.
+- `Store::upsert_entity` wraps its insert + observation row in a
+  transaction so the two stay in lock-step.
+
+### Fixed
+- **Re-scanning the same target no longer hides the entity from older
+  scans.** Empirically verified end-to-end:
+  ```
+  hse scan --kind email --value test@example.com (twice, 2s apart)
+  scan 138c779a  via_junction=1  via_old_column=0   ← previously broken
+  scan f8957375  via_junction=1  via_old_column=1
+  observations table: 2 rows, 1 distinct entity
+  ```
+
+### Migration
+- On `Store::open` a one-time idempotent backfill populates
+  `entity_observations` from the existing `entities` table:
+  `INSERT OR IGNORE ... SELECT uid, scan_id, observed_at FROM entities`.
+  Existing databases gain multi-scan tracking from the moment they
+  next see an entity upsert; pre-v0.7 entities keep their single
+  recorded observation.
+
+### Notes
+- 84 tests pass (77 lib + 7 integration); +4 new junction-table tests
+  cover: entity observed by two scans appears in both; `scan_ids_for_entity`
+  returns all observers newest-first; entity only in scan A doesn't leak
+  into scan B; re-observing the same (uid, scan_id) pair is idempotent.
+- Release binary stays at 4.8 MB stripped — no new deps, ~80 lines of
+  new code in `store.rs`.
+
 ## [0.6.0] — 2026-05-23
 
 ### Added
@@ -333,7 +377,8 @@ onto this branch so the v0.5 PR isn't merged with regressions.
   - Classification derived, never stored
   - Passwords / credentials never written to evidence
 
-[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.7.0
 [0.6.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.6.0
 [0.5.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.5.0
 [0.4.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.4.0

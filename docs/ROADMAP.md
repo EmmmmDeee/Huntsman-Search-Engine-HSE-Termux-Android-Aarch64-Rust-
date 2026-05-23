@@ -62,20 +62,29 @@ helper. New `MacAddress` / `Coordinates` / `DeviceId` entity flow gives
 the correlator (AU-010 infrastructure consensus) more local data to
 cluster on. 80 tests pass; 4.8 MB stripped binary.
 
-### v0.7.0+ — Hardening
+### v0.7.0 — Junction table for multi-scan entity tracking (2026-05-23)
 
-- Junction table `entity_observations(entity_uid, scan_id, observed_at)`
-  to track every (entity, scan) pair, replacing the v0.2 last-scan-wins
-  upsert. Migration path documented.
+Shipped. `entity_observations(entity_uid, scan_id, observed_at)`
+replaces the v0.2 last-scan-wins behaviour. `entities_for_scan` joins
+through the junction, so an entity observed by multiple scans appears
+in every observer's listing with corroboration intact across all of
+them. Idempotent backfill from existing `entities` table on Store::open.
+84 tests pass; 4.8 MB stripped binary.
+
+### v0.8.0+ — Hardening (still planned)
+
 - Batch query CLI (`hse batch --file targets.csv`) and matching
   `/api/v1/batch` endpoints.
 - Debug harness: per-module health check that runs a synthetic target
   through one module and reports timing + sample output.
-- Paid-key modules: `dehashed`, `oathnet_pro`, `shodan` etc., all gated
-  behind `cost() == Paid` so `--free-only` covers them.
+- Paid-key modules: `hibp`, `hunter`, `virustotal`, `dehashed`,
+  `oathnet_pro`, `shodan` — all gated behind `cost() == Paid` so
+  `--free-only` covers them.
 - Parallel module dispatch using `tokio::sync::Semaphore` (honours the
   existing `ScanOptions::max_concurrent` field).
 - Adaptive throttling: per-source circuit breaker on 429 responses.
+- Three deferred free modules from earlier cycles: `breach_directory`,
+  `urlscan`, `asn_lookup`.
 
 ## After 1.0
 
