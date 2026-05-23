@@ -139,16 +139,25 @@ pkg update -y
 
 ### Optional: termux-api for on-device sensors (v0.6+)
 
-Sensor modules (`gps_fix`, `wifi_scan`, `cell_survey`, `wifi_connect`,
-arriving in v0.6) need:
+The four `termux-*` sensor modules (`wifi_scan`, `wifi_connect`,
+`gps_fix`, `cell_survey`) need both the binaries and the companion app:
 
 ```bash
-pkg install termux-api      # binaries
-# AND install the "Termux:API" app from F-Droid (separate APK)
+pkg install termux-api
+# Then install the "Termux:API" app from F-Droid (separate APK):
+#   https://f-droid.org/en/packages/com.termux.api/
 ```
 
-When termux-api is unavailable the sensor modules return empty results
-rather than erroring, so HSE remains usable.
+After installing the app, grant it the relevant Android permissions
+(Location, Phone, Wi-Fi as required) in Android Settings. The Termux:API
+app must have *Allow all the time* location permission for `cell_survey`
+to work (Android Q+ restricts cell info to apps with foreground
+location).
+
+When termux-api is unavailable, the four sensor modules return empty
+results rather than erroring (via `util::termux::termux_cmd` helper),
+so HSE remains fully usable. The two file-reading sensors (`arp_scan`,
+`net_interfaces`) don't need termux-api and work on any Linux host.
 
 ### Storage paths
 

@@ -10,6 +10,61 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-23
+
+### Added
+- **Six Termux sensor modules** for on-device GEOINT enrichment. All
+  `is_passive() == true`, all `cost() == Free`, all accept any target
+  (sensors are environmental — they fire on every scan unless excluded).
+  Off-device or with `termux-api` uninstalled, the four `termux-*`
+  binary-based modules no-op cleanly (no `module_error` events).
+  - `arp_scan` (pri 58) — parses `/proc/net/arp`. No termux-api needed.
+    Emits one `IpAddress` + one `MacAddress` per complete ARP row.
+    Tagged `local-arp`.
+  - `net_interfaces` (pri 55) — reads `/sys/class/net/*/address` and
+    `/operstate`. No termux-api needed. Emits one `MacAddress` per
+    non-loopback interface. Tagged `local-interface`.
+  - `wifi_scan` (pri 65) — calls `termux-wifi-scaninfo`. One
+    `MacAddress` per visible AP, evidence carries SSID / frequency /
+    RSSI. Tagged `wifi-ap`.
+  - `wifi_connect` (pri 70) — calls `termux-wifi-connectioninfo`. The
+    connected AP as a `MacAddress` (tagged `wifi-connected`) plus the
+    device's local IP on that network as an `IpAddress` (tagged
+    `local-wifi`). Filters out the `02:00:00:00:00:00` MAC-restricted
+    placeholder and `0.0.0.0` disconnected-state IP.
+  - `gps_fix` (pri 68) — calls `termux-location -p network -r once`
+    (network provider, fast indoor fix). Emits one `Coordinates`
+    entity. Confidence 0.90 for GPS provider, 0.65 for network, tagged
+    `geoint` and `provider:<network|gps>`.
+  - `cell_survey` (pri 62) — calls `termux-telephony-cellinfo`. One
+    `DeviceId` entity per registered cell tower keyed
+    `<mcc>-<mnc>-<lac|tac>-<cid>`. Evidence includes radio type
+    (lte/gsm/umts/nr), dBm, ASU, level. Handles `mcc`/`mnc` arriving
+    as either string or integer (varies by Android version).
+- **New helper** `src/util/termux.rs::termux_cmd(cmd, args, timeout_ms)`.
+  Returns `Option<Vec<u8>>` — `None` for not-found / non-zero exit /
+  timeout, so sensor modules can short-circuit with a single `?`-style
+  match. Same helper used by all four `termux-*` modules.
+
+### Changed
+- Module count 7 → 13. Default scans on a Termux device with
+  `termux-api` installed now pick up environmental WiFi / GPS / cell
+  context as enrichment. Off-device, only the file-reading sensors
+  (`arp_scan` if `/proc/net/arp` exists, `net_interfaces` if
+  `/sys/class/net` exists) contribute.
+- Recommended pattern when sensors are unwanted: `hse scan ...
+  --exclude arp_scan,net_interfaces,wifi_scan,wifi_connect,gps_fix,cell_survey`
+  or use the allowlist `--modules` flag to opt in specifically.
+
+### Notes
+- 80 tests pass (73 lib + 7 integration); +18 new sensor-module tests
+  cover passive/free flags, accepts() for any target, and parse-fixture
+  output for arp_scan, wifi_scan, wifi_connect, gps_fix, cell_survey.
+- Release binary 4.7 MB → 4.8 MB stripped (six small modules +
+  termux_cmd helper).
+- No new external dependencies (`tokio::process::Command` was already
+  in the tokio feature set from v0.1).
+
 ## [0.5.0] — 2026-05-23
 
 ### Added
@@ -278,7 +333,8 @@ onto this branch so the v0.5 PR isn't merged with regressions.
   - Classification derived, never stored
   - Passwords / credentials never written to evidence
 
-[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.6.0
 [0.5.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.5.0
 [0.4.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.4.0
 [0.3.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.3.0
