@@ -199,7 +199,7 @@ hse serve [--bind <HOST:PORT>]
 | Flag / env | Default | Notes |
 |------------|---------|-------|
 | `-b, --bind <HOST:PORT>` | `127.0.0.1:8080` | Localhost-only. Architecture invariant; change at your own risk. |
-| env `HSE_BIND`           | (overrides flag) | |
+| env `HSE_BIND`           | Used if `--bind` is not set | |
 
 Graceful shutdown on `Ctrl-C` / `SIGTERM`.
 
