@@ -5,11 +5,13 @@
 //!
 //! Nothing else in the codebase needs to know about the new module.
 
+pub mod alienvault_otx;
 pub mod crtsh;
 pub mod dns_resolver;
 pub mod email_to_username;
 pub mod hudsonrock;
 pub mod ip_geo;
+pub mod whois;
 
 use std::sync::Arc;
 
@@ -19,8 +21,10 @@ use crate::core::module::Module;
 pub fn registry() -> Vec<Arc<dyn Module>> {
     vec![
         Arc::new(hudsonrock::HudsonRock),
+        Arc::new(alienvault_otx::AlienVaultOtx),
         Arc::new(crtsh::Crtsh),
         Arc::new(dns_resolver::DnsResolver),
+        Arc::new(whois::Whois),
         Arc::new(ip_geo::IpGeo),
         Arc::new(email_to_username::EmailToUsername),
     ]
