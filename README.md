@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Edition 2024](https://img.shields.io/badge/edition-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
-[![Status: prototype](https://img.shields.io/badge/status-prototype%20(0.6.x)-yellow.svg)](docs/ROADMAP.md)
+[![Status: prototype](https://img.shields.io/badge/status-prototype%20(0.7.x)-yellow.svg)](docs/ROADMAP.md)
 
 Pure-Rust OSINT / GEOINT scaffold that runs **entirely inside Termux on
 Android aarch64** with no root, and is operable through any local browser
@@ -148,13 +148,14 @@ rationale):
 
 ## Status
 
-**v0.6.0 — prototype.** 4.8 MB stripped binary, 80 tests, zero unsafe.
+**v0.7.0 — prototype.** 4.8 MB stripped binary, 84 tests, zero unsafe.
 Foundation + autonomous expansion engine + **13 free modules** (seven
 network + six Termux sensors) + CLI + HTTP server + browser SPA + SSE +
-rule-based correlator + live mode.
+rule-based correlator + live mode + multi-scan entity tracking via the
+new `entity_observations` junction table.
 
-Coming next: batch + paid modules + junction-table multi-scan tracking
-(v0.7+). Full plan in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+Coming next: batch queries, paid-key modules, parallel module dispatch,
+adaptive throttling. Full plan in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
