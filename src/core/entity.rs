@@ -323,7 +323,7 @@ impl From<&Entity> for EntityRef {
 /// Derive a deterministic SHA-256 UID from kind + normalised value.
 ///
 /// Format: `hex(SHA-256("<kind_str>:<normalised_value>"))`
-pub fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
+pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
     let mut h = Sha256::new();
     h.update(kind.to_string().as_bytes());
     h.update(b":");
@@ -339,7 +339,7 @@ pub fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
 /// - IpAddress → trim
 /// - Phone → strip non-digits (keep leading +)
 /// - Everything else → trim
-pub fn normalise(kind: &EntityKind, value: &str) -> String {
+pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
         EntityKind::Email | EntityKind::Domain | EntityKind::Username => value
             .trim()
@@ -366,7 +366,7 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
 
 /// Current Unix timestamp in seconds.
 #[inline]
-pub fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
