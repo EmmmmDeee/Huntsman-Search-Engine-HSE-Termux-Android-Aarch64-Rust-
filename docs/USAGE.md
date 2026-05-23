@@ -207,17 +207,17 @@ Graceful shutdown on `Ctrl-C` / `SIGTERM`.
 
 All endpoints are under `/api/v1/`.
 
-| Method | Path                       | Notes |
-|--------|----------------------------|-------|
-| GET    | `/health`                  | `{ "status": "ok", "version": "0.3.0" }` |
-| GET    | `/version`                 | `{ "version": "0.3.0" }` |
-| GET    | `/modules`                 | `{ "count": N, "modules": [{ name, priority, cost, passive }, ...] }` |
-| POST   | `/scans`                   | Body: `ScanRequest` (`{ kind, value, options? }`). Returns `202 { scan_id, status }`. |
-| GET    | `/scans`                   | 200 most recent scans. |
-| GET    | `/scans/{id}`              | Single scan record. 404 if unknown. |
-| GET    | `/scans/{id}/entities`     | `{ count, entities: [Entity, ...] }`. |
-| GET    | `/scans/{id}/correlations` | `{ count, correlations: [Correlation, ...] }` (v0.4+). |
-| GET    | `/scans/{id}/events`       | **SSE** — `text/event-stream` of `EventKind` JSON payloads. |
+| Method | Path                              | Notes |
+|--------|-----------------------------------|-------|
+| GET    | `/api/v1/health`                  | `{ "status": "ok", "version": "0.4.0" }` |
+| GET    | `/api/v1/version`                 | `{ "version": "0.4.0" }` |
+| GET    | `/api/v1/modules`                 | `{ "count": N, "modules": [{ name, priority, cost, passive }, ...] }` |
+| POST   | `/api/v1/scans`                   | Body: `ScanRequest` (`{ kind, value, options? }`). Returns `202 { scan_id, status }`. |
+| GET    | `/api/v1/scans`                   | 200 most recent scans. |
+| GET    | `/api/v1/scans/{id}`              | Single scan record. 404 if unknown. |
+| GET    | `/api/v1/scans/{id}/entities`     | `{ count, entities: [Entity, ...] }`. |
+| GET    | `/api/v1/scans/{id}/correlations` | `{ count, correlations: [Correlation, ...] }` (v0.4+). |
+| GET    | `/api/v1/scans/{id}/events`       | **SSE** — `text/event-stream` of `EventKind` JSON payloads. |
 
 ### SSE event types
 
