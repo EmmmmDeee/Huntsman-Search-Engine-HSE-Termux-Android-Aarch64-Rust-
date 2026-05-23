@@ -6,6 +6,17 @@ and include the full `~/.cache/hse-install.log` plus `hse doctor` output.
 
 ## Installation
 
+### `awk: fatal: attempt to access field -2` during sanity checks
+
+Seen on Termux 0.118.x where `df -m $HOME` emits a row with too few
+fields and the disk-space probe in `install.sh` indexes a negative
+field. Fixed in commit `4ee49ec` (the awk now guards `NF >= 4` and
+falls back to "could not read free disk space — skipping check").
+
+If you still hit it, you're on an older `install.sh`. Pull the latest
+and retry, or use the manual install path in
+[`INSTALL.md`](INSTALL.md#manual-install) which skips the probe.
+
 ### `pkg update: failed`
 
 Termux's `pkg` is just a wrapper around `apt` with their package mirror.

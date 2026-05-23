@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (v0.6)
+## Catalogue (v0.8 — 13 modules)
 
 ### Network modules (target-driven)
 

@@ -10,6 +10,35 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed (post-v0.8.0 merge — Termux installer + doc polish)
+
+- **`install.sh` aborted on Termux 0.118.x** during the disk-space
+  sanity check with `awk: fatal: attempt to access field -2`. `df -m
+  $HOME` on Android can emit a row with too few fields, and the
+  unconditional `$(NF-2)` becomes a negative field index — fatal under
+  `set -euo pipefail`. Reproduced end-to-end on a real device
+  (`TERMUX_VERSION=0.118.3`, aarch64, Android SDK 34). The awk script
+  now guards `NF >= 4`, the pipeline is wrapped in `{...} || true`,
+  and a `DISK_AVAIL_MB -eq 0` branch prints "could not read free disk
+  space — skipping check" instead of falsely claiming "Only 0MB free".
+  Earlier PR #4 "robust df parsing" fix only handled the *wrap-long-
+  filesystem-name* case — this closes the *short-row-on-Android* gap.
+
+### Changed (docs)
+
+- `install.sh` post-install footer now leads with the **Web UI quick
+  start** (`hse serve` + `http://127.0.0.1:8080` opened in Chrome) —
+  that's the headline use case on Termux. `hse live` joined the CLI
+  section.
+- `docs/INSTALL.md` "Verifying the install" snippet refreshed
+  (0.2.0 → 0.8.0; 5 modules → 13 modules; added a web-UI smoke test).
+- `docs/ROADMAP.md` — added the missing v0.5.0 (Live mode) and v0.8.0
+  (Parallel module dispatch) entries; both were marked still-planned
+  even though they shipped. "After 1.0" + non-goals unchanged.
+- `docs/MODULES.md` — catalogue heading bumped v0.6 → v0.8.
+- `docs/TROUBLESHOOTING.md` — added the awk-NF-2 failure mode with
+  the workaround pointing at the manual install path.
+
 ### Fixed (review feedback on PR #8 + PR #9)
 
 Thirteen real findings across `gemini-code-assist` and

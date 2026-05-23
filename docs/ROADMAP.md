@@ -42,13 +42,15 @@ free modules: `alienvault_otx` (HTTP, no key, threat-intel pulses) and
 `whois` (TCP/43, no key, registrar metadata). 56 tests pass; 4.7 MB
 stripped binary.
 
-## In flight
+### v0.5.0 — Live mode (2026-05-23)
 
-Three free-module slots originally planned for v0.4/v0.5 are still
-deferred: `breach_directory`, `urlscan`, `asn_lookup`. Key-gated modules
-deferred to v0.7+: `hibp`, `hunter`, `virustotal`, `dehashed`,
-`oathnet_pro`, `shodan`. They'll land alongside the v0.7 hardening
-work below when there's a natural place to slot them.
+`hse live` and the `/api/v1/live/*` endpoints. Re-runs a scan on a
+fixed interval with the same `ScanOptions` and the same engine path
+(expansion + correlator included). Sessions are tokio tasks tracked
+in an in-memory registry; cancellation is via `Arc<AtomicBool>` — no
+extra dependency. New event variants (`live_start` / `live_tick` /
+`live_stop`); the per-session SSE stream demultiplexes events from
+every scan a session spawned. SPA gains a Live tab. 62 tests; 4.7 MB.
 
 ### v0.6.0 — Termux sensor modules (2026-05-23)
 
@@ -71,20 +73,37 @@ in every observer's listing with corroboration intact across all of
 them. Idempotent backfill from existing `entities` table on Store::open.
 84 tests pass; 4.8 MB stripped binary.
 
-### v0.8.0+ — Hardening (still planned)
+### v0.8.0 — Parallel module dispatch (2026-05-23)
+
+Shipped. `ScanOptions::max_concurrent` has been a documented field
+since v0.1 but was never honoured. Engine now spawns up to N module
+tasks in flight at once via `tokio::sync::Semaphore` +
+`tokio::task::JoinSet`. Default stays `max_concurrent = 0` →
+sequential, byte-identical to v0.1–v0.7. Sequential and concurrent
+paths share `module_skip_reason` so event payloads are identical
+between modes. 94 tests (84 lib + 10 integration; +3 cover the
+concurrency cap). 4.8 MB stripped binary.
+
+## In flight
+
+Three free-module slots originally planned for v0.4/v0.5 are still
+deferred: `breach_directory`, `urlscan`, `asn_lookup`. Key-gated
+modules also deferred: `hibp`, `hunter`, `virustotal`, `dehashed`,
+`oathnet_pro`, `shodan`. They land alongside the hardening work below
+when there's a natural place to slot them.
+
+## Planned
 
 - Batch query CLI (`hse batch --file targets.csv`) and matching
   `/api/v1/batch` endpoints.
 - Debug harness: per-module health check that runs a synthetic target
   through one module and reports timing + sample output.
-- Paid-key modules: `hibp`, `hunter`, `virustotal`, `dehashed`,
-  `oathnet_pro`, `shodan` — all gated behind `cost() == Paid` so
-  `--free-only` covers them.
-- Parallel module dispatch using `tokio::sync::Semaphore` (honours the
-  existing `ScanOptions::max_concurrent` field).
+- Paid-key modules behind `cost() == Paid` so `--free-only` covers them.
 - Adaptive throttling: per-source circuit breaker on 429 responses.
-- Three deferred free modules from earlier cycles: `breach_directory`,
-  `urlscan`, `asn_lookup`.
+- Three deferred free modules: `breach_directory`, `urlscan`, `asn_lookup`.
+- Global semaphore on `scan_create` HTTP task spawning so a flood of
+  POST /api/v1/scans can't OOM `hse serve` (PR #9 review item — held
+  open for a real-world measurement before picking a default cap).
 
 ## After 1.0
 
