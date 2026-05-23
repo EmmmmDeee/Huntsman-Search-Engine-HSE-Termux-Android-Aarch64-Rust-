@@ -11,6 +11,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | Module | Targets | Cost | Passive | Priority | Output kinds |
 |--------|---------|------|---------|----------|--------------|
 | [`hudsonrock`](#hudsonrock)                 | `email`, `domain`     | free | no  | 130 | Email / Domain (with stealer-log evidence) |
+| [`xposed_or_not`](#xposed_or_not)           | `email`               | free | no  | 128 | Email tagged `breach` with breach-list evidence |
 | [`email_to_username`](#email_to_username)   | `email`               | free | **yes** | 95  | Username × N candidates |
 | [`alienvault_otx`](#alienvault_otx)         | `ip`, `domain`        | free | no  | 78  | IpAddress / Domain (threat-intel pulses) |
 | [`crtsh`](#crtsh)                           | `domain`              | free | no  | 35  | Domain (subdomains) |
@@ -146,6 +147,34 @@ config). Free, no key.
 
 **Quirks**: errors from any individual record type (A / MX / TXT) are
 silently swallowed inside the module — partial results are still returned.
+
+### `xposed_or_not`
+
+Free email-to-breach-list lookup via [XposedOrNot](https://xposedornot.com/).
+No API key, no rate-limit billing.
+
+**Targets accepted**: `email`.
+
+**Endpoint**: `https://api.xposedornot.com/v1/check-email/<email>`.
+
+**Returns**: if any breaches match, one `Email` entity (confidence
+0.85), tagged `breach`, with evidence carrying the breach count and
+a comma-joined list of breach company names ("MyFitnessPal, Quizlet,
+LinkedIn"). The endpoint never returns credentials — only named
+breaches — so this is safer than COMB-style aggregators.
+
+**Activates `AU-001`**: this module's evidence source name
+(`xposed_or_not`) is in `core::correlator::rule_au_001_multi_breach`'s
+`BREACH_SOURCES` allow-list. When both `hudsonrock` and
+`xposed_or_not` flag the same email, the rule fires Critical-severity
+multi-source breach corroboration.
+
+**Quirks**:
+- 404 = clean (treated as "no findings", not an error).
+- Other non-2xx (429, 5xx) → `Error::module(...)` → `module_error`
+  event. Operational failures stay visible.
+- The endpoint occasionally returns `{"breaches": [[]]}` for clean
+  lookups instead of an `Error` field; the parser handles both.
 
 ### `alienvault_otx`
 

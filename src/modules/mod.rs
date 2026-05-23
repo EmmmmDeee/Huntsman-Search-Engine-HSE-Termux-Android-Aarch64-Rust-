@@ -18,6 +18,7 @@ pub mod net_interfaces;
 pub mod whois;
 pub mod wifi_connect;
 pub mod wifi_scan;
+pub mod xposed_or_not;
 
 use std::sync::Arc;
 
@@ -26,8 +27,9 @@ use crate::core::module::Module;
 /// Built-in module set. The engine sorts by priority — order here is irrelevant.
 pub fn registry() -> Vec<Arc<dyn Module>> {
     vec![
-        // Identity / breach / infrastructure (v0.1 → v0.4)
+        // Identity / breach / infrastructure (v0.1 → v0.4, v0.9)
         Arc::new(hudsonrock::HudsonRock),
+        Arc::new(xposed_or_not::XposedOrNot),
         Arc::new(alienvault_otx::AlienVaultOtx),
         Arc::new(crtsh::Crtsh),
         Arc::new(dns_resolver::DnsResolver),

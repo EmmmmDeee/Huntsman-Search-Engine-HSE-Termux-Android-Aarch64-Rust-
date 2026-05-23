@@ -10,6 +10,40 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-23
+
+### Added
+- **`xposed_or_not` module** — free public email-to-breach-list lookup
+  (XposedOrNot API). Returns named breach companies the email appears
+  in, never credentials. Accepts `email`, priority 128, `cost() == Free`.
+
+### Changed
+- **`AU-001` correlator rule activated.** It was wired up in v0.4 but
+  dormant — the rule required ≥2 distinct breach sources and we only
+  shipped `hudsonrock`. With `xposed_or_not` joining the breach-source
+  set, a scan against a previously-breached email now fires the
+  Critical-severity AU-001 correlation. Verified end-to-end via the
+  existing `au001_fires_at_two_breach_sources` unit test (which was
+  already covering this code path against synthetic sources).
+- Module count 13 → 14.
+- `BREACH_SOURCES` list in `core::correlator` extended with
+  `"xposed_or_not"`. Note in the rule's docstring updated to reflect
+  the rule is now active by default.
+
+### Synergy
+- High-leverage single-file change: one module, one line change in
+  the correlator's source allow-list, AU-001 goes from dormant to
+  live. Embodies the "find better ways to integrate existing features"
+  brief — no new infrastructure, just one missing piece that unlocks
+  pre-built behaviour.
+
+### Notes
+- 100 tests pass (90 lib + 10 integration); +6 new xposed_or_not tests
+  cover: accepts-email-only, free + not-passive, name-matches-correlator,
+  empty response → no entity, populated response → tagged email entity
+  with correct evidence source, nested-empty-array edge case.
+- Release binary stays at 4.9 MB stripped — no new dependencies.
+
 ## [0.8.0] — 2026-05-23
 
 ### Added
@@ -408,7 +442,8 @@ onto this branch so the v0.5 PR isn't merged with regressions.
   - Classification derived, never stored
   - Passwords / credentials never written to evidence
 
-[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.9.0
 [0.8.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.8.0
 [0.7.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.7.0
 [0.6.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.6.0

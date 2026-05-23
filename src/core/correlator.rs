@@ -122,13 +122,15 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 /// `AU-001` — same email appears in ≥2 distinct breach-tagged sources.
 ///
 /// "Breach source" = any evidence whose `source` is in the breach-modules
-/// allowlist below. With v0.4's module set, only `hudsonrock` populates
-/// this for emails — the rule stays dormant until v0.5 adds more breach
-/// modules (`breach_directory`, `dehashed`, `hibp` etc.). Threshold lowered
-/// from spec's 3 → 2 so a small scan can demonstrate it once v0.5 ships.
+/// allowlist below. Active since v0.9: `hudsonrock` (stealer logs) +
+/// `xposed_or_not` (XposedOrNot breach list) ≥ 2 sources → rule fires
+/// Critical. Threshold lowered from spec's 3 → 2 to keep the rule alive
+/// with the current free-module set; v0.x+ can restore 3 once paid
+/// breach modules (`hibp`, `dehashed`, `oathnet_pro`) ship.
 fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     const BREACH_SOURCES: &[&str] = &[
         "hudsonrock",
+        "xposed_or_not",
         "breach_directory",
         "dehashed",
         "hibp",

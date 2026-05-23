@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Edition 2024](https://img.shields.io/badge/edition-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
-[![Status: prototype](https://img.shields.io/badge/status-prototype%20(0.8.x)-yellow.svg)](docs/ROADMAP.md)
+[![Status: prototype](https://img.shields.io/badge/status-prototype%20(0.9.x)-yellow.svg)](docs/ROADMAP.md)
 
 Pure-Rust OSINT / GEOINT scaffold that runs **entirely inside Termux on
 Android aarch64** with no root, and is operable through any local browser
@@ -61,9 +61,9 @@ hse serve                                                   # web UI on http://1
 hse live --kind domain --value example.com --interval 60    # re-scan every 60s (v0.5+)
 ```
 
-Thirteen free modules (no API keys required):
-- **Network**: `hudsonrock`, `alienvault_otx`, `crtsh`, `dns_resolver`,
-  `whois`, `ip_geo`, `email_to_username`
+Fourteen free modules (no API keys required):
+- **Network**: `hudsonrock`, `xposed_or_not` (v0.9+), `alienvault_otx`,
+  `crtsh`, `whois`, `dns_resolver`, `ip_geo`, `email_to_username`
 - **Termux sensors** (v0.6+, passive, on-device GEOINT): `arp_scan`,
   `net_interfaces`, `wifi_scan`, `wifi_connect`, `gps_fix`, `cell_survey`
 
@@ -148,15 +148,15 @@ rationale):
 
 ## Status
 
-**v0.8.0 — prototype.** 4.8 MB stripped binary, 94 tests, zero unsafe.
-Foundation + autonomous expansion engine + **13 free modules** (seven
+**v0.9.0 — prototype.** 4.9 MB stripped binary, 100 tests, zero unsafe.
+Foundation + autonomous expansion engine + **14 free modules** (eight
 network + six Termux sensors) + CLI + HTTP server + browser SPA + SSE +
-rule-based correlator + live mode + multi-scan entity tracking + opt-in
-parallel module dispatch.
+rule-based correlator (Critical-severity `AU-001` now active) + live
+mode + multi-scan entity tracking + opt-in parallel module dispatch.
 
-Coming next: batch queries, paid-key modules, adaptive throttling, three
-deferred free modules (`breach_directory`, `urlscan`, `asn_lookup`).
-Full plan in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+Coming next: batch queries, paid-key modules, adaptive throttling, two
+remaining deferred free modules (`urlscan`, `asn_lookup`). Full plan in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
