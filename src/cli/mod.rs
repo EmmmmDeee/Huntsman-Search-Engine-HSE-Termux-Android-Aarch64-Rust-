@@ -466,6 +466,7 @@ fn cmd_modules() -> Result<()> {
         ("phone", TargetKind::Phone),
         ("domain", TargetKind::Domain),
         ("ip", TargetKind::IpAddress),
+        ("asn", TargetKind::Asn),
         ("name", TargetKind::FullName),
         ("coords", TargetKind::Coordinates),
         ("address", TargetKind::Address),
