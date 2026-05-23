@@ -1,140 +1,160 @@
 # Huntsman Search Engine (HSE)
 
-Prototype pure-Rust OSINT/GEOINT scaffold designed to run inside Termux on
-Android aarch64 with no root, viewed through any web browser on the device
-(planned for v0.2+).
+[![CI](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/actions/workflows/ci.yml/badge.svg)](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+[![Edition 2024](https://img.shields.io/badge/edition-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
+[![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
+[![Status: prototype](https://img.shields.io/badge/status-prototype%20(0.2.x)-yellow.svg)](docs/ROADMAP.md)
 
-**Status: v0.2.0 prototype.** Foundation + autonomous expansion engine.
-Five free modules now act like a tightly-integrated suite via depth-bounded
-auto-chaining. No HTTP server / SPA yet (next). See `CLAUDE.md` for the
-long-term design north star.
+Pure-Rust OSINT / GEOINT scaffold that runs **entirely inside Termux on
+Android aarch64** with no root, and is operable through any local browser
+on the device (Chrome / Firefox, Web UI from v0.3).
 
-## Roadmap
+Designed around three principles:
 
-| Tag | Scope |
-|---|---|
-| v0.1.0 | core + 5 free modules + CLI |
-| **v0.2.0** | autonomous expansion engine (auto-chain modules, depth + budgets) |
-| v0.3.0 | axum HTTP server + minimal SPA + SSE |
-| v0.4.0 | correlator + more breach/identity modules |
-| v0.5.0 | `live` mode (re-poll on interval + sensor modules) |
-| v0.6.0 | Termux sensor modules (arp/wifi/gps/cell) |
-| v0.7.0+ | batch, paid modules, debug harness, junction table for multi-scan entity tracking |
+1. **Synergy over feature accretion.** A small set of free, key-less
+   sources, automatically chained via depth-bounded expansion, produces
+   more useful intelligence than a large catalogue of disconnected modules.
+2. **Intelligent autonomy without LLMs.** All "smart" behaviour is
+   deterministic — confidence thresholds, depth caps, visited sets,
+   wall-time budgets. No models, no heuristics that need tuning.
+3. **One-file modularity.** Adding a data source is a single new file
+   plus two-line registry change. The engine never imports a specific
+   module by name.
 
-## Build (Termux aarch64)
+---
 
-```bash
-pkg install rust git
-git clone <this repo>
-cd Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-
-cargo build --release
-./target/release/hse doctor
-```
-
-Builds without root, without openssl, without native TLS — only rustls and
-bundled SQLite. Default storage path is `$HOME/.huntsman/huntsman.db`.
-
-## Usage
+## Install (one command)
 
 ```bash
-# List registered modules with cost tier and accepted target kinds:
-hse modules
-
-# Run a fully-customised scan:
-hse scan --kind domain --value example.com
-hse scan --kind email  --value foo@bar.com --modules hudsonrock,email_to_username
-hse scan --kind domain --value example.com --throttle 200 --free-only --output json
-
-# Autonomous expansion — engine auto-feeds discovered entities as new targets
-# (depth=2 means up to 2 rounds of follow-on scans).
-# Defaults are conservative: only entities with c_eff ≥ 0.75 (Verified) expand.
-hse scan --kind domain --value example.com --depth 2
-
-# Loosen the expansion threshold and add budgets:
-hse scan --kind domain --value example.com \
-  --depth 3 --min-expand-confidence 0.5 \
-  --max-entities 500 --max-wall-time 60
-
-# Verify environment:
-hse doctor
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
 ```
+
+Works on Termux (aarch64), Debian/Ubuntu, and macOS. The installer:
+
+- detects the platform (Termux / Linux / macOS)
+- installs build deps (`rust`, `git`, `clang`, `make`, `pkg-config`)
+- sanity-checks clock / disk / RAM and applies workarounds (e.g. `CARGO_BUILD_JOBS=1` on low-RAM devices)
+- retries `pkg update`, `pkg install`, and `cargo build` on transient network failure
+- clones / updates to `$HOME/.local/share/hse`
+- installs the binary to `$PREFIX/bin/hse` (or `$HOME/.local/bin/hse`)
+- creates a chmod-0600 keys template at `$HOME/.huntsman.env`
+- runs `hse doctor` to verify
+- logs everything to `$HOME/.cache/hse-install.log`
+
+For manual installation, tuning knobs, and uninstall steps, see
+[`docs/INSTALL.md`](docs/INSTALL.md).
+
+---
+
+## Quick start
+
+```bash
+hse doctor                                                  # verify environment
+hse modules                                                 # list registered modules
+hse scan --kind domain --value example.com                  # single-round scan
+hse scan --kind domain --value example.com --depth 2        # autonomous expansion
+hse scan --kind email  --value foo@bar.com --free-only      # no key-gated modules
+hse scan --kind domain --value example.com --output json    # machine-readable
+```
+
+Five free modules (no API keys required) ship in v0.2:
+`hudsonrock`, `crtsh`, `dns_resolver`, `ip_geo`, `email_to_username`.
+See [`docs/MODULES.md`](docs/MODULES.md) for the full catalogue and the
+synergy map that makes them chain automatically.
+
+---
 
 ## Autonomous expansion (v0.2+)
 
-A single scan can run multiple rounds of dispatch without manual chaining.
-Each round picks high-confidence entities discovered so far, converts them
-to new scan targets via `TargetKind::from_entity_kind`, and runs every
-accepting module on each one. This makes the 5 modules synergistic:
+One `hse scan` invocation can dispatch modules across **multiple bounded
+rounds**, feeding each round's high-confidence entities into the next as
+fresh scan targets:
 
 ```
 hse scan --kind domain --value example.com --depth 2
 └─ Round 0 (seed):  example.com
-   ├─ crtsh         → 50 subdomain entities
+   ├─ crtsh         → ~50 subdomain entities
    └─ dns_resolver  → A / MX / TXT records
-└─ Round 1: each high-confidence subdomain becomes a new Domain target
-   ├─ crtsh         → more subdomains (skipped if already visited)
+└─ Round 1: each high-confidence subdomain → new Domain target
+   ├─ crtsh         → more subdomains (visited set skips dupes)
    └─ dns_resolver  → IPs discovered
-└─ Round 2: each high-confidence IP becomes a new IpAddress target
+└─ Round 2: each high-confidence IP → new IpAddress target
    └─ ip_geo        → coordinates + ASN / org
 ```
 
-The engine guarantees termination:
-- **Visited set** — `(target_kind, normalised_value)` pairs are never scanned twice in one scan.
-- **`--min-expand-confidence`** — default `0.75` (Verified tier). Low-confidence findings don't trigger more scanning.
-- **`--max-entities`** — hard cap on total entities collected.
-- **`--max-wall-time`** — hard cap on total scan seconds.
-- **`--depth`** — hard cap on rounds.
+Every expansion is bounded by deterministic guards:
 
-Combine these with `--free-only`, `--passive-only`, `--modules`, or
-`--exclude` for full control. Every knob is a `ScanOptions` field
-serialisable to JSON, so the future SPA can render exactly the same
-controls as the CLI flags.
+| Knob | Default | Purpose |
+|------|---------|---------|
+| `--depth N`                  | `0`    | Hard cap on expansion rounds |
+| `--min-expand-confidence F`  | `0.75` | Only Verified-tier entities trigger more scans |
+| `--max-entities N`           | none   | Stop when total entities reach N |
+| `--max-wall-time SECS`       | none   | Stop when wall-time exceeds SECS |
+| (visited set)                | n/a    | Same target never scanned twice in one scan |
 
-### Available v0.1.0 modules (all free, no keys required)
+Combine with `--modules`, `--exclude`, `--free-only`, `--passive-only`,
+`--throttle`, `--timeout`, `--min-confidence` for full pre-scan customisation.
+Every knob is a `ScanOptions` field, serialisable to JSON — the future SPA
+renders the same controls as the CLI flags.
 
-| Module | Targets | What it does |
-|---|---|---|
-| `hudsonrock` | email, domain | Public stealer-log lookup (Cavalier API). Aggregate metadata only — credentials never stored |
-| `crtsh` | domain | Certificate-transparency subdomain enumeration |
-| `dns_resolver` | domain | Cloudflare DNS: A, MX, TXT records |
-| `ip_geo` | ip | ip-api.com free-tier geolocation + ASN/org |
-| `email_to_username` | email | Local derivation of plausible usernames (no network) |
-
-## API keys (optional, for future modules)
-
-Keys live in `$HOME/.huntsman.env` (0600). Variables must be prefixed
-`HUNTSMAN_`. v0.1.0 modules don't require any.
+---
 
 ## Architecture invariants
 
-These are enforced and must not be relaxed:
+These are enforced and reviewed on every PR
+([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) has the full list and
+rationale):
 
 - `#![forbid(unsafe_code)]`
-- No native-TLS, no openssl, no C-linked deps (rustls + bundled-sqlite only)
-- GREATEST-semantics entity merge (confidence/corroboration only ever increase)
+- rustls + bundled-sqlite only (no openssl, no native TLS, no C-linked deps)
+- GREATEST-semantics entity merge (confidence and corroboration only ever increase)
 - SHA-256 deterministic entity UIDs
-- `C_eff = clamp(confidence × (1 + 0.15 × ln(corroboration)), 0.0, 1.0)`
+- `C_eff = clamp(C × (1 + 0.15 × ln(corroboration)), 0, 1)`
 - Classification is derived, never stored
-- Passwords / credentials never appear in evidence
+- Passwords / hashes / credentials never appear in evidence
 
-## Modularity
+---
 
-Adding a new module is a one-file change:
+## Status
 
-1. Create `src/modules/foo.rs` implementing `Module`.
-2. `pub mod foo;` in `src/modules/mod.rs`.
-3. Push `Arc::new(foo::Foo)` into `registry()`.
+**v0.2.0 — prototype.** 4.3 MB stripped binary, 38 tests, zero unsafe.
+Foundation + autonomous expansion engine + five free modules + CLI.
 
-Nothing else needs to know about the new module. The engine never imports
-from `modules/`.
+Coming next: HTTP server + browser SPA (v0.3), correlator + more modules
+(v0.4), live re-poll mode (v0.5), Termux sensors (v0.6). Full plan in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-## Customisability
+---
 
-Every scan accepts `ScanOptions` — allowlist/denylist of modules, throttle,
-per-module timeout, min-confidence filter, free-only / passive-only toggles,
-recursion depth (for future live mode). The CLI surfaces all of these as
-flags; the SPA (v0.2+) will render them as form controls before each scan.
+## Documentation
+
+| Document | What it covers |
+|----------|----------------|
+| [`docs/INSTALL.md`](docs/INSTALL.md)         | Every install path + every Termux quirk |
+| [`docs/USAGE.md`](docs/USAGE.md)             | Full CLI reference + JSON schema |
+| [`docs/MODULES.md`](docs/MODULES.md)         | Module catalogue, synergy map, author checklist |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Design, invariants, data flow, engine internals |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common errors and their fixes |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md)         | Version-by-version plan and non-goals |
+| [`docs/DESIGN.md`](docs/DESIGN.md)           | Long-term design north-star (large features not yet built) |
+| [`CHANGELOG.md`](CHANGELOG.md)               | Versioned change log (Keep a Changelog format) |
+| [`SECURITY.md`](SECURITY.md)                 | Security model + responsible disclosure |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md)         | How to add a module + code style + PR workflow |
+
+---
 
 ## Licence
 
-MIT OR Apache-2.0.
+Dual-licensed under either:
+
+- [MIT licence](LICENSE-MIT)
+- [Apache Licence, Version 2.0](LICENSE-APACHE)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in HSE by you, as defined in the Apache-2.0
+licence, shall be dual-licensed as above, without any additional terms
+or conditions.

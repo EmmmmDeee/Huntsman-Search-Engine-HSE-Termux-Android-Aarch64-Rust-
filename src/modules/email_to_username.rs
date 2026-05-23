@@ -84,9 +84,12 @@ impl Module for EmailToUsername {
             let mut entity = Entity::new(EntityKind::Username, &candidate, 0.45, &ctx.scan_id);
             entity.tag("derived");
             entity.add_evidence(
-                Evidence::new("email_to_username", format!("Derived from {}", target.value))
-                    .with_attr("source_email", &target.value)
-                    .with_attr("derivation", "local_part"),
+                Evidence::new(
+                    "email_to_username",
+                    format!("Derived from {}", target.value),
+                )
+                .with_attr("source_email", &target.value)
+                .with_attr("derivation", "local_part"),
             );
             result.push(entity);
         }

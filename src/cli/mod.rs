@@ -1,4 +1,7 @@
-//! Minimal CLI for v0.1.0 — scan / modules / doctor.
+//! CLI (v0.2): scan / modules / doctor.
+//!
+//! Surfaces every `ScanOptions` field as a flag so each scan is fully
+//! customisable before launch. See `docs/USAGE.md` for the full reference.
 
 use std::sync::Arc;
 
@@ -19,7 +22,14 @@ use crate::{
 };
 
 #[derive(Parser)]
-#[command(name = "hse", version = crate::VERSION, about = "Huntsman Search Engine — prototype")]
+#[command(
+    name = "hse",
+    version = crate::VERSION,
+    about = "Huntsman Search Engine — Termux aarch64 OSINT / GEOINT prototype",
+    long_about = "Pure-Rust OSINT scaffold for Termux on Android aarch64.\n\
+                  Five free modules, autonomous depth-bounded expansion.\n\
+                  Docs: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -296,7 +306,10 @@ fn cmd_doctor() -> Result<()> {
     }
 
     let loaded = keys::load();
-    let huntsman_keys: Vec<_> = loaded.keys().filter(|k| k.starts_with("HUNTSMAN_")).collect();
+    let huntsman_keys: Vec<_> = loaded
+        .keys()
+        .filter(|k| k.starts_with("HUNTSMAN_"))
+        .collect();
     println!("\nHUNTSMAN_* keys loaded: {}", huntsman_keys.len());
     for k in &huntsman_keys {
         println!("  - {k}");

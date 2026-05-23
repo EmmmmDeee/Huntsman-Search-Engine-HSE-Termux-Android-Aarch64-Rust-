@@ -34,10 +34,8 @@ impl Module for DnsResolver {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let resolver = TokioAsyncResolver::tokio(
-            ResolverConfig::cloudflare(),
-            ResolverOpts::default(),
-        );
+        let resolver =
+            TokioAsyncResolver::tokio(ResolverConfig::cloudflare(), ResolverOpts::default());
 
         let domain = &target.value;
         let mut result = ModuleResult::new();
