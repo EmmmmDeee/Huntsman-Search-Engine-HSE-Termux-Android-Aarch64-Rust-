@@ -44,25 +44,23 @@ stripped binary.
 
 ## In flight
 
-Three free-module slots originally planned for v0.4/v0.5 were deferred:
-`breach_directory`, `urlscan`, `asn_lookup`. Plus key-gated modules
+Three free-module slots originally planned for v0.4/v0.5 are still
+deferred: `breach_directory`, `urlscan`, `asn_lookup`. Key-gated modules
 deferred to v0.7+: `hibp`, `hunter`, `virustotal`, `dehashed`,
-`oathnet_pro`, `shodan`. They'll land alongside the next on-roadmap
-milestone (v0.6 sensors) when there's a natural place to slot them.
+`oathnet_pro`, `shodan`. They'll land alongside the v0.7 hardening
+work below when there's a natural place to slot them.
 
-### v0.6.0 — Termux sensor modules
+### v0.6.0 — Termux sensor modules (2026-05-23)
 
-Now that termux-api wiring is well-understood:
-
-- `arp_scan` — reads `/proc/net/arp`, no termux-api needed
-- `net_interfaces` — reads `/sys/class/net/*/address`
-- `wifi_scan` — calls `termux-wifi-scaninfo`
-- `wifi_connect` — calls `termux-wifi-connectioninfo`
-- `gps_fix` — calls `termux-location -p network -r once`
-- `cell_survey` — calls `termux-telephony-cellinfo`
-
-All graceful no-ops off-device (missing binary → empty `ModuleResult`).
-`is_passive() == true` for each (no network, local sensors only).
+Shipped as the v0.6.0 release. Six new free passive modules for
+on-device GEOINT enrichment. Two work on any Linux (`arp_scan` reads
+`/proc/net/arp`, `net_interfaces` reads `/sys/class/net`), four call
+termux-api binaries (`termux-wifi-scaninfo`, `termux-wifi-connectioninfo`,
+`termux-location`, `termux-telephony-cellinfo`). Off-device, all four
+termux-* modules gracefully no-op via the new `util::termux::termux_cmd`
+helper. New `MacAddress` / `Coordinates` / `DeviceId` entity flow gives
+the correlator (AU-010 infrastructure consensus) more local data to
+cluster on. 80 tests pass; 4.8 MB stripped binary.
 
 ### v0.7.0+ — Hardening
 
