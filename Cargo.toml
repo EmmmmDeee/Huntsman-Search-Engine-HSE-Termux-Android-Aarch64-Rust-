@@ -2,7 +2,7 @@
 name        = "huntsman-search-engine"
 version     = "0.2.0"
 edition     = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Huntsman Search Engine — prototype OSINT/GEOINT platform for Termux aarch64 (no root)"
 authors     = ["Huntsman OSINT"]
 license     = "MIT OR Apache-2.0"

@@ -10,6 +10,37 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+- CI: MSRV bumped 1.85 → 1.88 to match the `let_chains` feature actually
+  used by the engine. Updated `Cargo.toml` `rust-version`, the dedicated
+  CI MSRV job, the installer's `RUST_MIN_VERSION`, and all doc / badge
+  references.
+- CI: four clippy-deny-warnings findings introduced in the v0.2.0 +
+  docs/installer PR.
+  - `clippy::large_enum_variant` on `Command::Scan` — annotated with
+    `#[allow]` (intentional: the variant is the full `ScanOptions`
+    surface as clap-derived flags; boxing each field would obscure the
+    one-flag-per-field mapping).
+  - `clippy::print_literal` in `cli::cmd_scan` — `"CLASS"` moved into
+    the format string.
+  - `clippy::unnecessary_sort_by` × 2 — `cli::cmd_modules` and
+    `ScanEngine::new` switched to `sort_by_key(|m| Reverse(m.priority()))`.
+- CI: `install.sh` shellcheck warnings.
+  - SC2154: `trap '...' EXIT` body refactored to a named `on_exit()`
+    function so shellcheck sees the `rc` assignment.
+  - SC2059: every `printf "${COLOUR}...${NC}\n"` rewritten to
+    `printf '%s...%s\n' "$COLOUR" "$NC"`.
+  - SC1091: `# shellcheck source=/dev/null` directive on `source
+    "$HOME/.cargo/env"`.
+- `install.sh`: the system-clock hint was an unrunnable awk command
+  (single-quote / double-quote escaping was wrong, and the suggested
+  `date -s '$(...)'` quoting would have been treated as literal anyway).
+  Replaced with two clearer hints (Android Settings, or manual
+  `date -s 'YYYY-MM-DD HH:MM:SS'`).
+- `install.sh`: disk-space probe was vulnerable to empty `df` output
+  yielding a non-numeric `DISK_AVAIL_MB`. Now validates with a regex
+  before the arithmetic comparison.
+
 ### Added
 - Single-shot installer script (`install.sh`) with full Termux aarch64
   support, dependency installation, retry-with-backoff, clock / disk /

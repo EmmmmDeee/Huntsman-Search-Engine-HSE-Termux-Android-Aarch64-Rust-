@@ -36,6 +36,9 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
+// Scan has many fields (intentional — full ScanOptions surface as CLI flags).
+// Boxing every field is uglier than the size disparity warrants.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// Run a single scan and print the entities found.
     Scan {
@@ -215,8 +218,8 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
                 cmd.value
             );
             println!(
-                "{:<16} {:<46} {:>6} {:>6}  {}",
-                "KIND", "VALUE", "CONF", "C_EFF", "CLASS"
+                "{:<16} {:<46} {:>6} {:>6}  CLASS",
+                "KIND", "VALUE", "CONF", "C_EFF"
             );
             println!("{}", "-".repeat(86));
             for e in &entities {
@@ -237,7 +240,7 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
 
 fn cmd_modules() -> Result<()> {
     let mut mods = registry();
-    mods.sort_by(|a, b| b.priority().cmp(&a.priority()));
+    mods.sort_by_key(|m| std::cmp::Reverse(m.priority()));
 
     println!(
         "{:<26} {:>4}  {:<10} {:<8} ACCEPTS",

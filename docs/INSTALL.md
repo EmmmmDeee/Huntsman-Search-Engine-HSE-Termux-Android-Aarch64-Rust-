@@ -1,7 +1,7 @@
 # Installation guide
 
 HSE is designed primarily for **Termux on Android aarch64** but works on
-any Unix with Rust 1.85+ and git. The installer is idempotent — re-running
+any Unix with Rust 1.88+ and git. The installer is idempotent — re-running
 upgrades in place.
 
 ---
@@ -19,7 +19,7 @@ That's everything. The installer:
 1. Detects Termux vs standard Unix.
 2. Sanity-checks: clock, disk (≥ 2 GB), RAM (≥ 1.5 GB else uses `CARGO_BUILD_JOBS=1`).
 3. Installs system dependencies (rust, git, clang, make, pkg-config, openssl-tool).
-4. Verifies `rustc >= 1.85`; bootstraps `rustup` on non-Termux Unix if missing.
+4. Verifies `rustc >= 1.88`; bootstraps `rustup` on non-Termux Unix if missing.
 5. Clones / updates the repo to `$HOME/.local/share/hse`.
 6. Builds in release mode (`--locked`) with retry-on-network-error.
 7. Installs the binary to `$PREFIX/bin` (Termux) or `$HOME/.local/bin`.

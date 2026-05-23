@@ -25,8 +25,8 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --all --locked
 ```
 
-Rust 1.85+ (edition 2024) is the minimum supported version (MSRV). The CI
-verifies this with a dedicated job.
+Rust 1.88+ (edition 2024, let-chains stable) is the minimum supported
+version (MSRV). The CI verifies this with a dedicated job.
 
 ## Adding a new module
 

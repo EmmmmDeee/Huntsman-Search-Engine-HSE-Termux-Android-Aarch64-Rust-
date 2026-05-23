@@ -56,7 +56,7 @@ impl StopReason {
 
 impl ScanEngine {
     pub fn new(mut modules: Vec<Arc<dyn Module>>, store: Arc<Store>, bus: EventBus) -> Self {
-        modules.sort_by(|a, b| b.priority().cmp(&a.priority()));
+        modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
         Self {
             modules,
             store,
