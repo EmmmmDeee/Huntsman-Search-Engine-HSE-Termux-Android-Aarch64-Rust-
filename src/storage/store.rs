@@ -203,10 +203,10 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT data_json FROM correlations WHERE scan_id = ?1
              ORDER BY CASE severity
-                 WHEN 'critical' THEN 0
-                 WHEN 'high'     THEN 1
-                 WHEN 'medium'   THEN 2
-                 WHEN 'low'      THEN 3
+                 WHEN 'CRITICAL' THEN 0
+                 WHEN 'HIGH'     THEN 1
+                 WHEN 'MEDIUM'   THEN 2
+                 WHEN 'LOW'      THEN 3
                  ELSE 4
              END, id",
         )?;
