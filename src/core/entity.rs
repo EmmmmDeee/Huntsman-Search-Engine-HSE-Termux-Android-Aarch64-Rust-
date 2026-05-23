@@ -342,9 +342,11 @@ pub fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
 /// - Everything else → trim
 pub fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
-        EntityKind::Email | EntityKind::Domain | EntityKind::Username => {
-            value.trim().to_lowercase().trim_end_matches('.').to_string()
-        }
+        EntityKind::Email | EntityKind::Domain | EntityKind::Username => value
+            .trim()
+            .to_lowercase()
+            .trim_end_matches('.')
+            .to_string(),
         EntityKind::IpAddress => value.trim().to_string(),
         EntityKind::Phone => {
             let mut out = String::new();
@@ -508,7 +510,10 @@ mod tests {
 
     #[test]
     fn normalise_domain_strips_trailing_dot() {
-        assert_eq!(normalise(&EntityKind::Domain, "example.com."), "example.com");
+        assert_eq!(
+            normalise(&EntityKind::Domain, "example.com."),
+            "example.com"
+        );
     }
 
     // ── Tags ─────────────────────────────────────────────────────────────────

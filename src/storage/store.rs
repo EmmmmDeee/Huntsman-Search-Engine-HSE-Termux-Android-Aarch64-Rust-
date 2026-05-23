@@ -113,10 +113,15 @@ impl Store {
     pub fn upsert_entity(&self, entity: &Entity) -> Result<()> {
         let json = serde_json::to_string(entity)?;
         let conn = self.conn.lock();
+        // scan_id is updated on conflict so the most recent scan's listing
+        // includes the entity. Past scans lose the entity from their listing —
+        // accepted trade-off for v0.2. Future: junction table tracking every
+        // (entity, scan) pair observed.
         conn.execute(
             "INSERT INTO entities(uid, scan_id, kind, value, confidence, corroboration, observed_at, data_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(uid) DO UPDATE SET
+               scan_id       = excluded.scan_id,
                confidence    = MAX(confidence, excluded.confidence),
                corroboration = corroboration + excluded.corroboration,
                observed_at   = MAX(observed_at, excluded.observed_at),

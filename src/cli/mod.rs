@@ -1,4 +1,7 @@
-//! Minimal CLI for v0.1.0 — scan / modules / doctor.
+//! CLI (v0.2): scan / modules / doctor.
+//!
+//! Surfaces every `ScanOptions` field as a flag so each scan is fully
+//! customisable before launch. See `docs/USAGE.md` for the full reference.
 
 use std::sync::Arc;
 
@@ -19,7 +22,14 @@ use crate::{
 };
 
 #[derive(Parser)]
-#[command(name = "hse", version = crate::VERSION, about = "Huntsman Search Engine — prototype")]
+#[command(
+    name = "hse",
+    version = crate::VERSION,
+    about = "Huntsman Search Engine — Termux aarch64 OSINT / GEOINT prototype",
+    long_about = "Pure-Rust OSINT scaffold for Termux on Android aarch64.\n\
+                  Five free modules, autonomous depth-bounded expansion.\n\
+                  Docs: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -56,6 +66,20 @@ pub enum Command {
         /// Per-module timeout override, in milliseconds.
         #[arg(long)]
         timeout: Option<u64>,
+        /// Recursive expansion depth. 0 = single round; 1+ auto-feeds discovered
+        /// entities back as new scan targets, up to N rounds deep.
+        #[arg(short, long, default_value_t = 0)]
+        depth: u32,
+        /// Only expand entities whose C_eff is at least this. Default 0.75
+        /// (Verified tier) — strong filter to keep expansion focused.
+        #[arg(long, default_value_t = 0.75)]
+        min_expand_confidence: f64,
+        /// Hard cap on total entities. Stops expansion when reached.
+        #[arg(long)]
+        max_entities: Option<usize>,
+        /// Hard cap on total wall-time in seconds. Stops expansion when exceeded.
+        #[arg(long)]
+        max_wall_time: Option<u64>,
         /// Output format: table | json.
         #[arg(short, long, default_value = "table")]
         output: String,
@@ -86,6 +110,10 @@ pub async fn run() -> Result<()> {
             free_only,
             passive_only,
             timeout,
+            depth,
+            min_expand_confidence,
+            max_entities,
+            max_wall_time,
             output,
         } => {
             cmd_scan(ScanCmd {
@@ -98,6 +126,10 @@ pub async fn run() -> Result<()> {
                 free_only,
                 passive_only,
                 module_timeout_ms: timeout,
+                depth,
+                min_expand_confidence,
+                max_entities,
+                max_wall_time_secs: max_wall_time,
                 output,
             })
             .await
@@ -117,6 +149,10 @@ struct ScanCmd {
     free_only: bool,
     passive_only: bool,
     module_timeout_ms: Option<u64>,
+    depth: u32,
+    min_expand_confidence: f64,
+    max_entities: Option<usize>,
+    max_wall_time_secs: Option<u64>,
     output: String,
 }
 
@@ -138,7 +174,10 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
         min_confidence: cmd.min_confidence,
         free_only: cmd.free_only,
         passive_only: cmd.passive_only,
-        depth: 0,
+        depth: cmd.depth,
+        min_expand_confidence: cmd.min_expand_confidence,
+        max_entities: cmd.max_entities,
+        max_wall_time_secs: cmd.max_wall_time_secs,
     };
 
     let sid = scan_id(&cmd.kind, &cmd.value);
@@ -267,7 +306,10 @@ fn cmd_doctor() -> Result<()> {
     }
 
     let loaded = keys::load();
-    let huntsman_keys: Vec<_> = loaded.keys().filter(|k| k.starts_with("HUNTSMAN_")).collect();
+    let huntsman_keys: Vec<_> = loaded
+        .keys()
+        .filter(|k| k.starts_with("HUNTSMAN_"))
+        .collect();
     println!("\nHUNTSMAN_* keys loaded: {}", huntsman_keys.len());
     for k in &huntsman_keys {
         println!("  - {k}");
