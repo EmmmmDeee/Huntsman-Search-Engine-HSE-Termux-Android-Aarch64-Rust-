@@ -291,7 +291,7 @@ async fn cmd_serve(bind: String) -> Result<()> {
         live,
     });
 
-    let app = router(state);
+    let app = router(state, &bind);
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .map_err(|e| Error::Other(format!("bind {bind}: {e}")))?;
@@ -375,7 +375,9 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
         max_wall_time_secs: cmd.max_wall_time_secs,
     };
 
-    let sid = scan_id(&cmd.kind, &cmd.value);
+    // Use the parsed TargetKind's canonical form, not the raw user input,
+    // so `--kind ip` and `--kind ipaddress` produce the same scan_id.
+    let sid = scan_id(target_kind.canonical_str(), &cmd.value);
     let store = Arc::new(Store::open(&default_db_path())?);
     let (bus, _rx) = tokio::sync::broadcast::channel(64);
     let engine = ScanEngine::new(registry(), Arc::clone(&store), bus.clone());

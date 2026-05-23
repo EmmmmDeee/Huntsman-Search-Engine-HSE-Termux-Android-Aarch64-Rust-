@@ -82,7 +82,7 @@ impl Store {
                data_json    = excluded.data_json",
             params![
                 scan.id,
-                format!("{:?}", scan.target.kind).to_lowercase(),
+                scan.target.kind.canonical_str(),
                 scan.target.value,
                 format!("{:?}", scan.status).to_lowercase(),
                 scan.started_at as i64,
@@ -184,7 +184,9 @@ impl Store {
             params![
                 c.scan_id,
                 c.rule_id,
-                c.severity.to_string(),
+                // canonical lowercase matches the ORDER BY expression below
+                // and serde's serialised form — keep these three in sync.
+                c.severity.as_canonical(),
                 c.description,
                 uids,
                 c.ts as i64,
