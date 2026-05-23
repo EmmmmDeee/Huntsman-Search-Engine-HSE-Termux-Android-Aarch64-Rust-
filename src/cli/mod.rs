@@ -1,7 +1,8 @@
-//! CLI (v0.2): scan / modules / doctor.
+//! CLI (v0.3): scan / modules / doctor / serve.
 //!
 //! Surfaces every `ScanOptions` field as a flag so each scan is fully
-//! customisable before launch. See `docs/USAGE.md` for the full reference.
+//! customisable before launch. `serve` boots the HTTP server + SPA. See
+//! `docs/USAGE.md` for the full reference.
 
 use std::sync::Arc;
 
@@ -91,6 +92,12 @@ pub enum Command {
     Modules,
     /// Verify environment: DB path, key file, Termux detection, module counts.
     Doctor,
+    /// Start the HTTP server + SPA (browse to http://127.0.0.1:8080 from Chrome).
+    Serve {
+        /// Bind address. Localhost-only by default — change at your own risk.
+        #[arg(short, long, default_value = crate::DEFAULT_BIND, env = "HSE_BIND")]
+        bind: String,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -139,6 +146,58 @@ pub async fn run() -> Result<()> {
         }
         Command::Modules => cmd_modules(),
         Command::Doctor => cmd_doctor(),
+        Command::Serve { bind } => cmd_serve(bind).await,
+    }
+}
+
+async fn cmd_serve(bind: String) -> Result<()> {
+    use crate::api::{AppState, routes::router};
+
+    let store = Arc::new(Store::open(&default_db_path())?);
+    let (bus, _rx) = tokio::sync::broadcast::channel(1024);
+    let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
+    let state = Arc::new(AppState { store, engine, bus });
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .map_err(|e| Error::Other(format!("bind {bind}: {e}")))?;
+
+    tracing::info!("hse v{} — listening on http://{}", crate::VERSION, bind);
+    tracing::info!("  open in Chrome / Firefox on this device");
+    tracing::info!("  Ctrl-C to stop");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|e| Error::Other(format!("serve: {e}")))?;
+
+    tracing::info!("server stopped");
+    Ok(())
+}
+
+/// Wait for SIGINT (Ctrl-C) or SIGTERM. Returns when either arrives.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("install Ctrl-C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
     }
 }
 

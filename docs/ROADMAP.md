@@ -21,28 +21,16 @@ modules, dramatically more output. Five new tests cover depth, threshold,
 budget, and cycle behaviour. One real bug fixed (`scan_id` preservation in
 upsert).
 
+### v0.3.0 — HTTP + SPA + SSE (2026-05-23)
+
+`hse serve` boots an axum 0.8 HTTP server bound to `127.0.0.1:8080` with
+an embedded single-file SPA (no CDN, no JS frameworks, ~520 lines). Eight
+endpoints covering health/version, modules, scans CRUD + entities + SSE
+events. The SPA mirrors the CLI's full `ScanOptions` surface — same
+modular customisation before launching a scan, plus live progress feed.
+4 jobs CI green; 4.6 MB stripped binary.
+
 ## In flight
-
-### v0.3.0 — HTTP + SPA + SSE
-
-Goal: see scans (and expansion) live in a browser on the device.
-
-- `hse serve` subcommand (axum 0.8, tower-http, CORS for localhost only).
-- Endpoints (full list mirrors `docs/USAGE.md` CLI):
-  - `POST /api/v1/scans` — create scan with full `ScanOptions` body
-  - `GET /api/v1/scans` / `GET /api/v1/scans/:id` / `DELETE /api/v1/scans/:id`
-  - `GET /api/v1/scans/:id/entities`
-  - `GET /api/v1/scans/:id/events` — Server-Sent Events stream
-  - `GET /api/v1/modules` — registry listing with cost / passive flags
-  - `GET /api/v1/health` / `GET /api/v1/version`
-- Minimal hand-rolled SPA at `src/web/spa.html`, served via `Axum::fallback`:
-  - No CDN dependencies, < 1000 lines, pure CSS + JS.
-  - Tabs: Scan / Entities / History / Debug.
-  - Scan tab: full `ScanOptions` form before launching — module checklist,
-    depth slider, throttle, free-only / passive-only toggles, budget inputs.
-  - Live entity table fed from SSE.
-- No JS frameworks. No graphs (lightweight per the design brief).
-- Bound to `127.0.0.1:8080` by default; no LAN exposure.
 
 ### v0.4.0 — Correlator + breach/identity module catalog
 
