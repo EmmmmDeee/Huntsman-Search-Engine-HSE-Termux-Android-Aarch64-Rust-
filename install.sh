@@ -291,10 +291,15 @@ echo
 # ─── Done ────────────────────────────────────────────────────────────────────
 echo
 printf '%s%sInstallation complete!%s\n\n' "$GREEN" "$BOLD" "$NC"
-printf '%sQuick start:%s\n' "$CYAN" "$NC"
+printf '%sWeb UI (recommended on Termux):%s\n' "$CYAN" "$NC"
+printf '  hse serve                                           # binds 127.0.0.1:8080\n'
+printf '  Then open in Chrome (or Firefox) on the device:\n'
+printf '    %shttp://127.0.0.1:8080%s\n\n' "$BOLD" "$NC"
+printf '%sCLI quick start:%s\n' "$CYAN" "$NC"
 printf '  hse modules                                         # list available modules\n'
 printf '  hse scan --kind domain --value example.com          # one-shot scan\n'
-printf '  hse scan --kind domain --value example.com --depth 2 # with autonomous expansion\n'
+printf '  hse scan --kind domain --value example.com --depth 2 # autonomous expansion\n'
+printf '  hse live --kind domain --value example.com --interval 60  # re-scan every 60s\n'
 printf '  hse doctor                                          # re-check environment\n\n'
 printf '%sLogs:%s\n' "$CYAN" "$NC"
 printf '  Install log:  %s\n' "$LOG_FILE"
