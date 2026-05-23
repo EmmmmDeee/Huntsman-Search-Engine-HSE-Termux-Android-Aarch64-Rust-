@@ -72,6 +72,27 @@ pub enum EventKind {
     CorrelationsDone {
         count: usize,
     },
+    /// Live session started (v0.5+). `scan_id` field on the wrapping
+    /// `Event` carries the live_id, not a scan_id.
+    LiveStart {
+        live_id: String,
+        target_kind: String,
+        target_value: String,
+        interval_secs: u64,
+    },
+    /// A live iteration is about to begin (v0.5+). `scan_id` field on the
+    /// wrapping `Event` carries the live_id; the iteration's own scan_id
+    /// is in this variant's `scan_id` field.
+    LiveTick {
+        live_id: String,
+        iteration: u32,
+        scan_id: String,
+    },
+    /// Live session ended (v0.5+).
+    LiveStop {
+        live_id: String,
+        reason: String,
+    },
     ScanComplete {
         scan_id: String,
         entity_count: usize,

@@ -7,6 +7,7 @@ suitable for scripting.
 
 ```
 hse scan      Run a single scan, print results
+hse live      Re-run a scan periodically (v0.5+)
 hse modules   List registered modules with cost / target / passive flags
 hse doctor    Verify environment (DB, keys, Termux, modules)
 hse serve     Start the HTTP server + SPA (browse to http://127.0.0.1:8080)
@@ -218,6 +219,11 @@ All endpoints are under `/api/v1/`.
 | GET    | `/scans/{id}/entities`     | `{ count, entities: [Entity, ...] }`. |
 | GET    | `/scans/{id}/correlations` | `{ count, correlations: [Correlation, ...] }` (v0.4+). |
 | GET    | `/scans/{id}/events`       | **SSE** — `text/event-stream` of `EventKind` JSON payloads. |
+| POST   | `/live`                    | `LiveRequest` body. Returns `202 { live_id, status }` (v0.5+). |
+| GET    | `/live`                    | `{ count, sessions: [LiveSession, ...] }`. |
+| GET    | `/live/{id}`               | Single `LiveSession`. 404 if unknown. |
+| DELETE | `/live/{id}`               | Request graceful stop. |
+| GET    | `/live/{id}/events`        | **SSE** — live-level + owned-scan events. |
 
 ### SSE event types
 
@@ -235,6 +241,9 @@ Each SSE `data:` payload is a JSON object discriminated by a `type` field:
 { "type": "correlation_found", "correlation": { "rule_id": "AU-010", "severity": "medium", ... } }
 { "type": "correlations_done", "count": 2 }
 { "type": "scan_complete",   "scan_id": "...", "entity_count": 47 }
+{ "type": "live_start",      "live_id": "live-abc...", "target_kind": "domain", "target_value": "...", "interval_secs": 30 }
+{ "type": "live_tick",       "live_id": "live-abc...", "iteration": 3, "scan_id": "..." }
+{ "type": "live_stop",       "live_id": "live-abc...", "reason": "iterations reached" }
 ```
 
 The browser's `EventSource` API decodes these as `event.data` strings;
@@ -255,6 +264,46 @@ curl -X POST -H 'Content-Type: application/json' \
 
 curl -N http://127.0.0.1:8080/api/v1/scans/abc.../events
 # (stays open, streams SSE)
+```
+
+---
+
+## `hse live` (v0.5+)
+
+Re-runs a target on a fixed interval. Each iteration is a normal scan
+(same expansion + correlator + ScanOptions filters); the live session
+owns the spawned scans and demultiplexes their events through one SSE
+stream.
+
+```
+hse live --kind <KIND> --value <VALUE>
+         [--interval <SECS>] [--iterations <N>]
+         [--depth <N>] [--modules <CSV>]
+         [--free-only] [--passive-only]
+```
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `-i, --interval <SECS>` | `30` | Seconds between iterations. |
+| `--iterations <N>`      | none | Stop after this many; omit for infinite (Ctrl-C to stop). |
+| `-d, --depth <N>`       | `0`  | Per-iteration expansion (same semantics as `scan --depth`). |
+| `-m, --modules <CSV>`   | none | Same allowlist as `scan --modules`. |
+| `--free-only`           | off  | Same as `scan --free-only`. |
+| `--passive-only`        | off  | Same as `scan --passive-only`. |
+
+Prints each event as one line of compact JSON. Ctrl-C requests a
+graceful stop; the session ends after the current iteration finishes.
+
+### Example
+
+```bash
+hse live --kind domain --value example.com --interval 60 --iterations 5 --depth 1
+# {"type":"live_start","live_id":"live-...","interval_secs":60,...}
+# {"type":"live_tick","live_id":"...","iteration":1,"scan_id":"..."}
+# {"type":"module_start","module":"crtsh"}
+# {"type":"entity_found","entity":{...}}
+# ... etc, one event per line ...
+# {"type":"live_stop","live_id":"...","reason":"iterations reached"}
 ```
 
 ---
