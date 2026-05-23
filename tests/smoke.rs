@@ -116,27 +116,13 @@ impl Module for LowConfidenceModule {
 
 #[tokio::test]
 async fn engine_dispatches_synthetic_module_end_to_end() {
-    let tmp = tempfile_path("end_to_end");
-    let _ = std::fs::remove_file(&tmp);
-
-    let store = Arc::new(Store::open(&tmp).unwrap());
-    let (bus, _rx) = tokio::sync::broadcast::channel(8);
-    let engine = ScanEngine::new(
+    let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(SyntheticModule)],
-        Arc::clone(&store),
-        bus.clone(),
+        "end_to_end",
+        TargetKind::Email,
+        "test@example.com",
     );
-
-    let sid = scan_id("email", "test@example.com");
-    let target = Target::new(TargetKind::Email, "test@example.com");
     let scan = Scan::new(sid.clone(), target.clone());
-
-    let ctx = ModuleContext {
-        scan_id: sid.clone(),
-        bus,
-        http: build_client(),
-        keys: Default::default(),
-    };
 
     let result = engine.run(scan, target, ctx).await.unwrap();
     assert_eq!(result.entity_count, 1);
@@ -145,8 +131,6 @@ async fn engine_dispatches_synthetic_module_end_to_end() {
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].value, "test@example.com");
     assert!(stored[0].has_tag("synthetic"));
-
-    let _ = std::fs::remove_file(&tmp);
 }
 
 #[tokio::test]
@@ -464,7 +448,7 @@ fn setup(
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(64);
     let engine = ScanEngine::new(modules, Arc::clone(&store), bus.clone());
-    let sid = scan_id(&format!("{kind:?}").to_lowercase(), value);
+    let sid = scan_id(kind.canonical_str(), value);
     let target = Target::new(kind, value.to_string());
     let ctx = ModuleContext {
         scan_id: sid.clone(),
