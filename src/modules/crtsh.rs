@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -31,10 +31,6 @@ impl Module for Crtsh {
 
     fn priority(&self) -> u8 {
         35
-    }
-
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -99,10 +95,5 @@ mod tests {
         let m = Crtsh;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "x")));
-    }
-
-    #[test]
-    fn is_free() {
-        assert_eq!(Crtsh.cost(), ModuleCost::Free);
     }
 }

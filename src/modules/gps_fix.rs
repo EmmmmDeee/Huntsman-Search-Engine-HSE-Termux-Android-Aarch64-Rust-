@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::Target,
 };
 use crate::util::termux::termux_cmd;
@@ -35,9 +35,6 @@ impl Module for GpsFix {
     }
     fn priority(&self) -> u8 {
         68
-    }
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
     }
     fn is_passive(&self) -> bool {
         true
@@ -96,9 +93,8 @@ mod tests {
     use crate::core::scan::TargetKind;
 
     #[test]
-    fn passive_and_free() {
+    fn is_passive() {
         assert!(GpsFix.is_passive());
-        assert_eq!(GpsFix.cost(), ModuleCost::Free);
     }
 
     #[test]

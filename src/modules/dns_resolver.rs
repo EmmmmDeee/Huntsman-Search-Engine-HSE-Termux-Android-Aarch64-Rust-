@@ -9,7 +9,7 @@ use hickory_resolver::{
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -23,10 +23,6 @@ impl Module for DnsResolver {
 
     fn priority(&self) -> u8 {
         30
-    }
-
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
     }
 
     fn accepts(&self, t: &Target) -> bool {

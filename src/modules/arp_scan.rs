@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::Target,
 };
 
@@ -26,9 +26,6 @@ impl Module for ArpScan {
     }
     fn priority(&self) -> u8 {
         58
-    }
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
     }
     fn is_passive(&self) -> bool {
         true
@@ -92,9 +89,8 @@ mod tests {
     use crate::core::scan::TargetKind;
 
     #[test]
-    fn passive_and_free() {
+    fn is_passive() {
         assert!(ArpScan.is_passive());
-        assert_eq!(ArpScan.cost(), ModuleCost::Free);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -20,10 +20,6 @@ impl Module for EmailToUsername {
 
     fn priority(&self) -> u8 {
         95
-    }
-
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
     }
 
     fn is_passive(&self) -> bool {

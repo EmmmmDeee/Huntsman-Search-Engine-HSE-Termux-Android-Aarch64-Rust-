@@ -14,7 +14,7 @@ use tokio::time::timeout;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -31,10 +31,6 @@ impl Module for Whois {
 
     fn priority(&self) -> u8 {
         32
-    }
-
-    fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -197,11 +193,6 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x.com")));
         assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
-    }
-
-    #[test]
-    fn is_free() {
-        assert_eq!(Whois.cost(), ModuleCost::Free);
     }
 
     #[test]
