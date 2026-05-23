@@ -435,6 +435,92 @@ async fn max_concurrent_zero_uses_sequential_path() {
     );
 }
 
+// ── Regression: per-module max_timeout_ms override ──────────────────────────
+//
+// Bug repro: a module that sleeps longer than the crate-wide
+// `MODULE_TIMEOUT_MS = 3 s` ceiling was killed before `process()`
+// returned. gps_fix observed this on Termux 0.118.x — internal
+// 15 s timeout for `termux-location`, outer 3 s engine cap won,
+// `WARN timeout module="gps_fix"` every iteration.
+//
+// Fix: Module trait gained `fn max_timeout_ms() -> u64` with default
+// `MODULE_TIMEOUT_MS`; engine consults the module's override when
+// the user hasn't pinned `ScanOptions::module_timeout_ms`.
+//
+// This test enforces that contract — a 3.5 s sleep inside a module
+// that declares `max_timeout_ms() == 6_000` must succeed (would have
+// timed out under the old behaviour).
+
+struct SlowModule;
+
+#[async_trait]
+impl Module for SlowModule {
+    fn name(&self) -> &'static str {
+        "slow_module"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    fn max_timeout_ms(&self) -> u64 {
+        6_000
+    }
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        tokio::time::sleep(std::time::Duration::from_millis(3_500)).await;
+        let mut r = ModuleResult::new();
+        let mut e = Entity::new(EntityKind::Email, &target.value, 0.9, &ctx.scan_id);
+        e.tag("slow-completed");
+        r.push(e);
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn module_max_timeout_override_extends_engine_cap() {
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(SlowModule)],
+        "slow_timeout",
+        TargetKind::Email,
+        "slow@example.com",
+    );
+    let scan = Scan::new(sid.clone(), target.clone()); // no opts.module_timeout_ms
+
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    assert_eq!(
+        result.entity_count, 1,
+        "slow module should complete because it declared a 6 s ceiling, \
+         not be killed by the default 3 s"
+    );
+    let entities = store.entities_for_scan(&sid).unwrap();
+    assert!(entities.iter().any(|e| e.has_tag("slow-completed")));
+}
+
+#[tokio::test]
+async fn user_timeout_override_still_wins_over_module_max() {
+    // The user-pinned `--timeout` must override the module's declared
+    // ceiling — that's how an operator throttles a misbehaving module
+    // without recompiling.
+    let (engine, _store, sid, target, ctx) = setup(
+        vec![Arc::new(SlowModule)],
+        "user_timeout_wins",
+        TargetKind::Email,
+        "slow@example.com",
+    );
+    let opts = ScanOptions {
+        module_timeout_ms: Some(500), // user says "kill at 500ms"
+        ..Default::default()
+    };
+    let scan = Scan::new(sid, target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    assert_eq!(
+        result.entity_count, 0,
+        "user-set 500 ms ceiling must override module's 6 s declaration; \
+         slow module's 3.5 s sleep should be killed"
+    );
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn setup(
