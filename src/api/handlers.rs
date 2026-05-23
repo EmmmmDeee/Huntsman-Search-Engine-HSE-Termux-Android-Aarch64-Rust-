@@ -179,6 +179,84 @@ pub async fn scan_correlations(
     }
 }
 
+// ─── Live mode (v0.5+) ───────────────────────────────────────────────────────
+
+pub async fn live_create(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<crate::core::live::LiveRequest>,
+) -> impl IntoResponse {
+    let target = Target::new(req.kind, req.value);
+    let live_id = s.live.start(target, req.options, req.live);
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "live_id": live_id, "status": "running" })),
+    )
+        .into_response()
+}
+
+pub async fn live_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    let sessions = s.live.list();
+    let n = sessions.len();
+    (
+        StatusCode::OK,
+        Json(json!({ "sessions": sessions, "count": n })),
+    )
+        .into_response()
+}
+
+pub async fn live_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
+    match s.live.get(&id) {
+        Some(session) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(&session).unwrap_or(json!({}))),
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+    }
+}
+
+pub async fn live_stop(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if s.live.stop(&id) {
+        (
+            StatusCode::OK,
+            Json(json!({ "live_id": id, "status": "stopping" })),
+        )
+            .into_response()
+    } else {
+        (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+    }
+}
+
+/// SSE stream for one live session. Forwards:
+///  * live-level events whose `scan_id` field equals `live_id`
+///  * scan-level events whose `scan_id` field is owned by `live_id`
+///
+/// Live sessions can spawn multiple scans over their lifetime, so the
+/// scan-ownership check is re-evaluated on every event.
+pub async fn live_events_sse(
+    State(s): State<Arc<AppState>>,
+    Path(target_lid): Path<String>,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    let rx = s.bus.subscribe();
+    let live = s.live.clone();
+
+    let stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
+        Ok(event)
+            if event.scan_id == target_lid
+                || live.session_owns_scan(&target_lid, &event.scan_id) =>
+        {
+            let payload = serde_json::to_string(&event.kind).unwrap_or_default();
+            Some(Ok(SseEvent::default().data(payload)))
+        }
+        _ => None,
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 // ─── SSE event stream ────────────────────────────────────────────────────────
 //
 // Subscribes to the shared `EventBus` (tokio broadcast) and forwards events

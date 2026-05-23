@@ -98,6 +98,34 @@ pub enum Command {
         #[arg(short, long, default_value = crate::DEFAULT_BIND, env = "HSE_BIND")]
         bind: String,
     },
+    /// Run a target continuously, re-scanning on an interval. Streams events
+    /// to stdout as compact JSON until Ctrl-C or `--iterations` is exhausted.
+    Live {
+        /// Target kind (same vocabulary as `scan --kind`).
+        #[arg(short, long)]
+        kind: String,
+        /// Target value.
+        #[arg(short, long)]
+        value: String,
+        /// Seconds between iterations.
+        #[arg(short, long, default_value_t = crate::LIVE_DEFAULT_INTERVAL_SECS)]
+        interval: u64,
+        /// Stop after this many iterations. Omit for infinite.
+        #[arg(long)]
+        iterations: Option<u32>,
+        /// Same as `scan --depth` — applies to each iteration.
+        #[arg(short, long, default_value_t = 0)]
+        depth: u32,
+        /// Same as `scan --free-only`.
+        #[arg(long)]
+        free_only: bool,
+        /// Same as `scan --passive-only`.
+        #[arg(long)]
+        passive_only: bool,
+        /// Comma-separated module allowlist.
+        #[arg(short, long)]
+        modules: Option<String>,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -147,16 +175,121 @@ pub async fn run() -> Result<()> {
         Command::Modules => cmd_modules(),
         Command::Doctor => cmd_doctor(),
         Command::Serve { bind } => cmd_serve(bind).await,
+        Command::Live {
+            kind,
+            value,
+            interval,
+            iterations,
+            depth,
+            free_only,
+            passive_only,
+            modules,
+        } => {
+            cmd_live(LiveCmd {
+                kind,
+                value,
+                interval,
+                iterations,
+                depth,
+                free_only,
+                passive_only,
+                modules,
+            })
+            .await
+        }
     }
 }
 
-async fn cmd_serve(bind: String) -> Result<()> {
-    use crate::api::{AppState, routes::router};
+struct LiveCmd {
+    kind: String,
+    value: String,
+    interval: u64,
+    iterations: Option<u32>,
+    depth: u32,
+    free_only: bool,
+    passive_only: bool,
+    modules: Option<String>,
+}
+
+async fn cmd_live(cmd: LiveCmd) -> Result<()> {
+    use crate::core::live::{LiveOptions, LiveScanner};
+    use tokio_stream::StreamExt;
+    use tokio_stream::wrappers::BroadcastStream;
+
+    let target_kind = parse_target_kind(&cmd.kind)?;
+    let target = Target::new(target_kind, cmd.value.clone());
+
+    let scan_options = ScanOptions {
+        modules: cmd
+            .modules
+            .map(|s| s.split(',').map(|m| m.trim().to_string()).collect()),
+        free_only: cmd.free_only,
+        passive_only: cmd.passive_only,
+        depth: cmd.depth,
+        ..Default::default()
+    };
+    let live_options = LiveOptions {
+        interval_secs: cmd.interval,
+        iterations: cmd.iterations,
+    };
 
     let store = Arc::new(Store::open(&default_db_path())?);
     let (bus, _rx) = tokio::sync::broadcast::channel(1024);
     let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
-    let state = Arc::new(AppState { store, engine, bus });
+    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
+
+    let live_id = scanner.start(target, scan_options, live_options);
+    eprintln!("live session {live_id} — Ctrl-C to stop");
+
+    let rx = bus.subscribe();
+    let scanner_clone = scanner.clone();
+    let target_lid = live_id.clone();
+    let mut stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
+        Ok(event)
+            if event.scan_id == target_lid
+                || scanner_clone.session_owns_scan(&target_lid, &event.scan_id) =>
+        {
+            Some(serde_json::to_string(&event.kind).unwrap_or_default())
+        }
+        _ => None,
+    });
+
+    // Stream events until Ctrl-C OR the session naturally completes.
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nstopping live session…");
+                scanner.stop(&live_id);
+            }
+            line = stream.next() => match line {
+                Some(s) => {
+                    println!("{s}");
+                    if s.contains("\"type\":\"live_stop\"") {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_serve(bind: String) -> Result<()> {
+    use crate::api::{AppState, routes::router};
+    use crate::core::live::LiveScanner;
+
+    let store = Arc::new(Store::open(&default_db_path())?);
+    let (bus, _rx) = tokio::sync::broadcast::channel(1024);
+    let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
+    let live = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    let state = Arc::new(AppState {
+        store,
+        engine,
+        bus,
+        live,
+    });
 
     let app = router(state, &bind);
     let listener = tokio::net::TcpListener::bind(&bind)

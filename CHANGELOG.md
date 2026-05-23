@@ -10,49 +10,74 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
-### Fixed (review feedback on PR #6)
-- **Severity sort was broken**: `Severity::to_string()` produced
-  `"CRITICAL"` (uppercase) but `correlations_for_scan` ORDER BY matched
-  `'critical'` (lowercase), so every row hit `ELSE 4` and sort was a no-op.
-  Added `Severity::as_canonical() -> &'static str` returning the canonical
-  lowercase form, used in both `upsert_correlation` and the JSON serialised
-  form (via `#[serde(rename_all = "lowercase")]`). Display impl keeps the
-  uppercase form for the CLI table.
-- **scan_id inconsistency across interfaces**: API used
-  `format!("{:?}", kind).to_lowercase()` ("ipaddress"), CLI used the raw
-  user-provided `--kind` value ("ip" / "ipaddress"). Same target produced
-  different scan_ids depending on the interface, breaking idempotency.
-  Added `TargetKind::canonical_str() -> &'static str` returning the
-  serde-canonical snake_case form ("ip_address", "full_name", …), now used
-  by every `scan_id()` caller (`cli/mod.rs`, `api/handlers.rs`,
-  `core/engine.rs`, `storage/store.rs`).
-- **CORS policy ignored bind address**: previously always permissive
-  (`allow_origin(Any)`), which is fine for the default 127.0.0.1 bind but
-  dangerous if a user sets `--bind 0.0.0.0:8080`. Now `router(state, bind)`
-  takes the bind string and chooses CORS accordingly:
-  * loopback (`127.x`, `::1`, `localhost`) → permissive
-  * anything else → restrictive (`Access-Control-Allow-Origin` limited to
-    `http://<bind>` / `https://<bind>`)
-  Two new unit tests cover the loopback detector across IPv4, IPv6, and
-  hostname syntaxes.
-- **alienvault_otx swallowed operational failures**: code returned an
-  empty `ModuleResult` for any non-success status, including 429 (rate
-  limit) and 5xx (outage). Now 404 stays "no findings" (per OTX API), but
-  other non-2xx statuses produce `Error::module(…, format!("HTTP {status}"))`
-  so the engine emits a `module_error` event and the user sees the failure.
-- **whois parser allocated per line per key**: `line.to_lowercase()` and
-  `key.to_lowercase()` were called inside the inner loop. Replaced with a
-  zero-allocation `eq_ignore_ascii_case` prefix check (`starts_with_ascii_ci`
-  helper) — WHOIS keys are pure ASCII.
-- **SPA `min_expand_confidence` rejected legitimate 0 input**:
-  `parseFloat(v) || 0.75` treated `0` as falsy and substituted the default.
-  Replaced with an explicit `Number.isFinite(v)` check so `0` is accepted.
-- **SPA entity-merge dropped tags**: when an `entity_found` event arrived
-  for a UID already on screen, the JS merge updated `confidence` and
-  `corroboration` but left `tags` stale, so tags added by later modules
-  never appeared in the Entities table. Now union-merges tags by UID.
+## [0.5.0] — 2026-05-23
 
-(58 tests pass — 51 lib + 7 integration; +2 new for `is_loopback_bind`.)
+### Added
+- **Live mode** (`src/core/live.rs`). Re-run a scan on a fixed interval,
+  with the same `ScanOptions` and the same engine path (expansion +
+  correlator included). Sessions are tokio tasks tracked in an in-memory
+  registry; cancellation is via `Arc<AtomicBool>` — no extra dependency.
+- New types: `LiveOptions { interval_secs, iterations }`, `LiveSession`,
+  `LiveStatus`, `LiveRequest`, `LiveScanner` (cheap-to-clone `Arc` wrapper).
+- New event variants:
+  - `LiveStart { live_id, target_kind, target_value, interval_secs }`
+  - `LiveTick { live_id, iteration, scan_id }`
+  - `LiveStop { live_id, reason }`
+- HTTP endpoints:
+  - `POST   /api/v1/live` — start a session (returns `live_id`)
+  - `GET    /api/v1/live` — list active/completed sessions
+  - `GET    /api/v1/live/{id}` — single session record
+  - `DELETE /api/v1/live/{id}` — request graceful stop
+  - `GET    /api/v1/live/{id}/events` — SSE stream that demultiplexes
+    both live-level events and the events of every scan the session has
+    spawned, so observers see the full picture per iteration.
+- CLI subcommand: `hse live --kind … --value … [--interval N] [--iterations N]
+  [--depth N] [--free-only] [--passive-only] [--modules CSV]`. Prints
+  events as compact JSON to stdout until Ctrl-C.
+- SPA: new **Live** tab (sits between Scan and Entities). Form mirrors the
+  HTTP request payload (target + interval + iterations + ScanOptions
+  knobs); Start/Stop buttons; iteration counter; rolling event log fed
+  by the live SSE stream.
+
+### Fixed (ported from PR #6 v0.4 review)
+These fixes originated as review feedback on the v0.4 PR and apply equally
+to v0.5 since the live engine reuses the same code paths. Cherry-picked
+onto this branch so the v0.5 PR isn't merged with regressions.
+- **Severity sort was broken**: `Severity::to_string()` produced
+  `"CRITICAL"` but `correlations_for_scan` ORDER BY matched `'critical'`,
+  so every row hit `ELSE 4` and sort was a no-op. Added
+  `Severity::as_canonical()` returning the lowercase form; storage now
+  uses that, keeping the column / serde JSON / SQL ORDER BY in sync.
+- **scan_id inconsistency CLI vs API**: API used
+  `format!("{:?}", kind).to_lowercase()` ("ipaddress"), CLI used the raw
+  user-provided `--kind` value ("ip"). Same target → different scan_ids.
+  Added `TargetKind::canonical_str()` returning the snake_case form,
+  used by every `scan_id()` caller (including the new live module).
+- **CORS permissive on non-loopback bind**: `router(state, bind)` now
+  inspects the bind address and applies restrictive CORS when not bound
+  to loopback. Two new unit tests cover the detector.
+- **alienvault_otx swallowed 429 / 5xx**: now only 404 is treated as
+  "no findings"; other non-2xx statuses surface as `module_error` events.
+- **whois parser allocated per line per key**: replaced `to_lowercase()`
+  with a zero-allocation `eq_ignore_ascii_case` prefix check.
+- **SPA `min_expand_confidence` rejected 0**: explicit `Number.isFinite`
+  check instead of `|| 0.75` falsy fallback.
+- **SPA entity-merge dropped tags**: now union-merges tags by UID.
+
+### Implementation notes
+- Each tick spawns a fresh scan via `engine.run()`. Scan IDs are
+  generated by the existing `scan_id()` (which mixes `unix_now()` so
+  back-to-back ticks get distinct IDs).
+- Cancellation polls every 250 ms while sleeping the interval, so a Stop
+  request takes at most that long to take effect even on long intervals.
+- The SSE handler demultiplexes by `event.scan_id == live_id ||
+  scanner.session_owns_scan(live_id, event.scan_id)` — newly-spawned
+  scans show up in real time without subscribing per scan.
+- Sessions are in-memory only (lost on restart, by design). Persistence
+  deferred to v0.7+.
+- 62 tests pass (55 lib + 7 integration); +4 new live-module tests,
+  +2 new `is_loopback_bind` tests (cherry-picked).
+- Release binary stays at 4.7 MB stripped — no new deps.
 
 ## [0.4.0] — 2026-05-23
 
@@ -253,7 +278,8 @@ versions can include breaking changes; patch versions are bug-fix-only.
   - Classification derived, never stored
   - Passwords / credentials never written to evidence
 
-[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.5.0
 [0.4.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.4.0
 [0.3.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.3.0
 [0.2.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.2.0

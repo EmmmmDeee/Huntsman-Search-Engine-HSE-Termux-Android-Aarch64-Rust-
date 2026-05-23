@@ -13,19 +13,23 @@ pub mod routes;
 
 use std::sync::Arc;
 
-use crate::{core::engine::ScanEngine, core::event::EventBus, storage::store::Store};
+use crate::{
+    core::engine::ScanEngine, core::event::EventBus, core::live::LiveScanner, storage::store::Store,
+};
 
 /// Application state shared across all HTTP handlers. Cloned per request via
 /// axum's [`State`](axum::extract::State) extractor.
 ///
-/// Holds three `Arc`'d singletons:
+/// Holds four `Arc`'d (or cheaply-cloneable) singletons:
 /// * `store` — SQLite WAL store (single connection behind a `parking_lot::Mutex`).
 /// * `engine` — the scan engine; its `bus` field is what the SSE handler subscribes to.
 /// * `bus` — the same `EventBus` exposed on `ScanEngine`, kept here for convenience
 ///   when a handler wants to subscribe without going through the engine.
+/// * `live` — the live-session registry (v0.5+); manages periodic re-scans.
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
     pub engine: Arc<ScanEngine>,
     pub bus: EventBus,
+    pub live: LiveScanner,
 }

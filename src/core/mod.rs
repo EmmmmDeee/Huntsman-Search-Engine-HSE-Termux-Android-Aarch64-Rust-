@@ -8,6 +8,7 @@ pub mod engine;
 pub mod entity;
 pub mod error;
 pub mod event;
+pub mod live;
 pub mod module;
 pub mod scan;
 
@@ -16,5 +17,6 @@ pub use engine::ScanEngine;
 pub use entity::{Classification, Entity, EntityKind, Evidence};
 pub use error::{Error, Result};
 pub use event::{Event, EventBus, EventKind};
+pub use live::{LiveOptions, LiveRequest, LiveScanner, LiveSession, LiveStatus};
 pub use module::{Module, ModuleContext, ModuleCost, ModuleInfo, ModuleResult};
 pub use scan::{Scan, ScanOptions, ScanRequest, ScanStatus, Target, TargetKind};

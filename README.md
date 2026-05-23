@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Edition 2024](https://img.shields.io/badge/edition-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
-[![Status: prototype](https://img.shields.io/badge/status-prototype%20(0.4.x)-yellow.svg)](docs/ROADMAP.md)
+[![Status: prototype](https://img.shields.io/badge/status-prototype%20(0.5.x)-yellow.svg)](docs/ROADMAP.md)
 
 Pure-Rust OSINT / GEOINT scaffold that runs **entirely inside Termux on
 Android aarch64** with no root, and is operable through any local browser
@@ -58,6 +58,7 @@ hse scan --kind domain --value example.com --depth 2        # autonomous expansi
 hse scan --kind email  --value foo@bar.com --free-only      # no key-gated modules
 hse scan --kind domain --value example.com --output json    # machine-readable
 hse serve                                                   # web UI on http://127.0.0.1:8080 (v0.3+)
+hse live --kind domain --value example.com --interval 60    # re-scan every 60s (v0.5+)
 ```
 
 Seven free modules (no API keys required):
@@ -144,12 +145,12 @@ rationale):
 
 ## Status
 
-**v0.4.0 — prototype.** 4.7 MB stripped binary, 56 tests, zero unsafe.
+**v0.5.0 — prototype.** 4.7 MB stripped binary, 60 tests, zero unsafe.
 Foundation + autonomous expansion engine + seven free modules + CLI +
-HTTP server + browser SPA + SSE + rule-based correlator.
+HTTP server + browser SPA + SSE + rule-based correlator + live mode.
 
-Coming next: live re-poll mode (v0.5), Termux sensors (v0.6), batch +
-paid modules (v0.7+). Full plan in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+Coming next: Termux sensors (v0.6), batch + paid modules (v0.7+). Full
+plan in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
