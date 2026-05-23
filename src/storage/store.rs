@@ -1,10 +1,10 @@
-//! SQLite WAL store. v0.1.0 ships only `scans` and `entities`; correlation,
-//! batch, debug tables land in later versions when their features arrive.
+//! SQLite WAL store. v0.4 adds the `correlations` table on top of v0.1's
+//! `scans` + `entities`. Batch and debug tables land in v0.7+.
 
 use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
-use crate::core::{entity::Entity, error::Result, scan::Scan};
+use crate::core::{correlator::Correlation, entity::Entity, error::Result, scan::Scan};
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -43,9 +43,22 @@ impl Store {
                 data_json     TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS correlations (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id     TEXT NOT NULL,
+                rule_id     TEXT NOT NULL,
+                severity    TEXT NOT NULL,
+                description TEXT NOT NULL,
+                entity_uids TEXT NOT NULL,
+                ts          INTEGER NOT NULL,
+                data_json   TEXT NOT NULL,
+                UNIQUE(scan_id, rule_id, description)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_corr_scan     ON correlations(scan_id);
             ",
         )?;
         Ok(Self {
@@ -150,6 +163,56 @@ impl Store {
         for row in rows {
             if let Ok(e) = serde_json::from_str(&row?) {
                 out.push(e);
+            }
+        }
+        Ok(out)
+    }
+
+    // ── Correlations (v0.4+) ─────────────────────────────────────────────────
+
+    /// Insert a correlation, ignoring duplicates on
+    /// `(scan_id, rule_id, description)` — re-running the correlator on the
+    /// same scan is idempotent.
+    pub fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
+        let json = serde_json::to_string(c)?;
+        let uids = serde_json::to_string(&c.entity_uids)?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO correlations(scan_id, rule_id, severity, description, entity_uids, ts, data_json)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(scan_id, rule_id, description) DO NOTHING",
+            params![
+                c.scan_id,
+                c.rule_id,
+                c.severity.to_string(),
+                c.description,
+                uids,
+                c.ts as i64,
+                json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>> {
+        let conn = self.conn.lock();
+        // Sort by severity desc (Critical > High > Medium > Low) using a CASE
+        // because SQLite text comparison alone won't order them correctly.
+        let mut stmt = conn.prepare(
+            "SELECT data_json FROM correlations WHERE scan_id = ?1
+             ORDER BY CASE severity
+                 WHEN 'critical' THEN 0
+                 WHEN 'high'     THEN 1
+                 WHEN 'medium'   THEN 2
+                 WHEN 'low'      THEN 3
+                 ELSE 4
+             END, id",
+        )?;
+        let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            if let Ok(c) = serde_json::from_str(&row?) {
+                out.push(c);
             }
         }
         Ok(out)

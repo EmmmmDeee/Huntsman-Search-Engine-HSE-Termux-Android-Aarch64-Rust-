@@ -156,6 +156,27 @@ pub async fn scan_entities(
     }
 }
 
+pub async fn scan_correlations(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.correlations_for_scan(&id) {
+        Ok(corr) => {
+            let n = corr.len();
+            (
+                StatusCode::OK,
+                Json(json!({ "correlations": corr, "count": n })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 // ─── SSE event stream ────────────────────────────────────────────────────────
 //
 // Subscribes to the shared `EventBus` (tokio broadcast) and forwards events

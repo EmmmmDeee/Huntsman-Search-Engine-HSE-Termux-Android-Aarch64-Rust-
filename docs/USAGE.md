@@ -216,6 +216,7 @@ All endpoints are under `/api/v1/`.
 | GET    | `/scans`                   | 200 most recent scans. |
 | GET    | `/scans/{id}`              | Single scan record. 404 if unknown. |
 | GET    | `/scans/{id}/entities`     | `{ count, entities: [Entity, ...] }`. |
+| GET    | `/scans/{id}/correlations` | `{ count, correlations: [Correlation, ...] }` (v0.4+). |
 | GET    | `/scans/{id}/events`       | **SSE** — `text/event-stream` of `EventKind` JSON payloads. |
 
 ### SSE event types
@@ -231,6 +232,8 @@ Each SSE `data:` payload is a JSON object discriminated by a `type` field:
 { "type": "entity_found",    "entity": { ...Entity... } }
 { "type": "expansion_tick",  "depth": 1, "queued": 12, "visited": 47 }
 { "type": "expansion_stop",  "reason": "no more high-confidence candidates" }
+{ "type": "correlation_found", "correlation": { "rule_id": "AU-010", "severity": "medium", ... } }
+{ "type": "correlations_done", "count": 2 }
 { "type": "scan_complete",   "scan_id": "...", "entity_count": 47 }
 ```
 
