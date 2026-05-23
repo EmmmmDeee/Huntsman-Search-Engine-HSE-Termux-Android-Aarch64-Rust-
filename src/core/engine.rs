@@ -300,44 +300,12 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(allow) = &opts.modules
-                && !allow.iter().any(|n| n == name)
-            {
+            if let Some(reason) = module_skip_reason(&**module, opts) {
                 let _ = self.bus.send(Event::new(
                     scan_id,
                     EventKind::ModuleSkipped {
                         module: name.into(),
-                        reason: "not in allowlist".into(),
-                    },
-                ));
-                continue;
-            }
-            if opts.exclude_modules.iter().any(|n| n == name) {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "excluded".into(),
-                    },
-                ));
-                continue;
-            }
-            if opts.free_only && !matches!(module.cost(), ModuleCost::Free) {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "requires key/payment".into(),
-                    },
-                ));
-                continue;
-            }
-            if opts.passive_only && !module.is_passive() {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "not passive".into(),
+                        reason: reason.into(),
                     },
                 ));
                 continue;
@@ -451,44 +419,12 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(allow) = &opts.modules
-                && !allow.iter().any(|n| n == name)
-            {
+            if let Some(reason) = module_skip_reason(&**module, opts) {
                 let _ = self.bus.send(Event::new(
                     scan_id,
                     EventKind::ModuleSkipped {
                         module: name.into(),
-                        reason: "not in allowlist".into(),
-                    },
-                ));
-                continue;
-            }
-            if opts.exclude_modules.iter().any(|n| n == name) {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "excluded".into(),
-                    },
-                ));
-                continue;
-            }
-            if opts.free_only && !matches!(module.cost(), ModuleCost::Free) {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "requires key/payment".into(),
-                    },
-                ));
-                continue;
-            }
-            if opts.passive_only && !module.is_passive() {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "not passive".into(),
+                        reason: reason.into(),
                     },
                 ));
                 continue;
@@ -617,6 +553,28 @@ fn visit_key(target: &Target) -> (TargetKind, String) {
     let entity_kind = target.kind.to_entity_kind();
     let normalised = normalise(&entity_kind, &target.value);
     (target.kind, normalised)
+}
+
+/// Returns `Some(reason)` if `module` should be skipped under `opts`.
+/// `accepts(target)` is intentionally NOT checked here — that case skips
+/// silently with no `ModuleSkipped` event, the others all emit one.
+fn module_skip_reason(module: &dyn Module, opts: &ScanOptions) -> Option<&'static str> {
+    let name = module.name();
+    if let Some(allow) = &opts.modules
+        && !allow.iter().any(|n| n == name)
+    {
+        return Some("not in allowlist");
+    }
+    if opts.exclude_modules.iter().any(|n| n == name) {
+        return Some("excluded");
+    }
+    if opts.free_only && !matches!(module.cost(), ModuleCost::Free) {
+        return Some("requires key/payment");
+    }
+    if opts.passive_only && !module.is_passive() {
+        return Some("not passive");
+    }
+    None
 }
 
 fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> Option<StopReason> {

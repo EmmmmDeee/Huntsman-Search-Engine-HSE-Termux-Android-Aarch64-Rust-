@@ -119,29 +119,31 @@ impl Store {
     }
 
     pub fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT data_json FROM scans WHERE id = ?1")?;
-        let mut rows = stmt.query(params![id])?;
-        if let Some(row) = rows.next()? {
-            let json: String = row.get(0)?;
-            Ok(Some(serde_json::from_str(&json)?))
-        } else {
-            Ok(None)
-        }
+        let json: Option<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare("SELECT data_json FROM scans WHERE id = ?1")?;
+            let mut rows = stmt.query(params![id])?;
+            rows.next()?.map(|r| r.get(0)).transpose()?
+        };
+        json.map(|j| serde_json::from_str(&j))
+            .transpose()
+            .map_err(Into::into)
     }
 
     pub fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
-        let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT data_json FROM scans ORDER BY started_at DESC LIMIT ?1")?;
-        let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            if let Ok(s) = serde_json::from_str(&row?) {
-                out.push(s);
-            }
-        }
-        Ok(out)
+        // Collect raw JSON under the lock; deserialise after release so a
+        // long parse doesn't block concurrent writers.
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt =
+                conn.prepare("SELECT data_json FROM scans ORDER BY started_at DESC LIMIT ?1")?;
+            let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+            rows.filter_map(std::result::Result::ok).collect()
+        };
+        Ok(raw
+            .into_iter()
+            .filter_map(|s| serde_json::from_str(&s).ok())
+            .collect())
     }
 
     // ── Entities + observations ──────────────────────────────────────────────
@@ -195,22 +197,22 @@ impl Store {
     /// table, so this returns rows even if some other later scan rewrote
     /// `entities.scan_id`.
     pub fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT e.data_json
-             FROM entities e
-             JOIN entity_observations o ON o.entity_uid = e.uid
-             WHERE o.scan_id = ?1
-             ORDER BY e.confidence DESC",
-        )?;
-        let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            if let Ok(e) = serde_json::from_str(&row?) {
-                out.push(e);
-            }
-        }
-        Ok(out)
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare(
+                "SELECT e.data_json
+                 FROM entities e
+                 JOIN entity_observations o ON o.entity_uid = e.uid
+                 WHERE o.scan_id = ?1
+                 ORDER BY e.confidence DESC",
+            )?;
+            let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
+            rows.filter_map(std::result::Result::ok).collect()
+        };
+        Ok(raw
+            .into_iter()
+            .filter_map(|s| serde_json::from_str(&s).ok())
+            .collect())
     }
 
     /// Every `scan_id` that observed this entity (newest first).
@@ -222,11 +224,7 @@ impl Store {
              ORDER BY observed_at DESC",
         )?;
         let rows = stmt.query_map(params![entity_uid], |r| r.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for s in rows.flatten() {
-            out.push(s);
-        }
-        Ok(out)
+        Ok(rows.flatten().collect())
     }
 
     /// Total distinct scans that observed an entity. Cheap aggregate for
@@ -268,27 +266,27 @@ impl Store {
     }
 
     pub fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>> {
-        let conn = self.conn.lock();
         // Sort by severity desc (Critical > High > Medium > Low) using a CASE
         // because SQLite text comparison alone won't order them correctly.
-        let mut stmt = conn.prepare(
-            "SELECT data_json FROM correlations WHERE scan_id = ?1
-             ORDER BY CASE severity
-                 WHEN 'critical' THEN 0
-                 WHEN 'high'     THEN 1
-                 WHEN 'medium'   THEN 2
-                 WHEN 'low'      THEN 3
-                 ELSE 4
-             END, id",
-        )?;
-        let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            if let Ok(c) = serde_json::from_str(&row?) {
-                out.push(c);
-            }
-        }
-        Ok(out)
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare(
+                "SELECT data_json FROM correlations WHERE scan_id = ?1
+                 ORDER BY CASE severity
+                     WHEN 'critical' THEN 0
+                     WHEN 'high'     THEN 1
+                     WHEN 'medium'   THEN 2
+                     WHEN 'low'      THEN 3
+                     ELSE 4
+                 END, id",
+            )?;
+            let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
+            rows.filter_map(std::result::Result::ok).collect()
+        };
+        Ok(raw
+            .into_iter()
+            .filter_map(|s| serde_json::from_str(&s).ok())
+            .collect())
     }
 }
 
