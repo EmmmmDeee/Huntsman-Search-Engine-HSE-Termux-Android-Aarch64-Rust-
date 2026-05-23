@@ -105,13 +105,19 @@ fi
 
 # Disk space — release build takes ~500MB, target dir up to 2GB.
 # Use END + NF-based indexing — robust to df wrapping long filesystem names
-# onto a second line (per gemini-code-assist review on PR #4).
+# onto a second line. Guard NF >= 4 to handle Termux/Android, where df may
+# print a single-field row (and `$(NF-2)` with NF<3 is a fatal awk error
+# that aborts the script under set -e). The `|| true` is belt-and-braces
+# for older awks that exit nonzero from the guard.
 if command -v df >/dev/null 2>&1; then
-    DISK_AVAIL_MB=$(df -m "$HOME" 2>/dev/null | awk 'END {print $(NF-2)}')
+    DISK_AVAIL_MB=$({ df -m "$HOME" 2>/dev/null \
+        | awk 'END { if (NF >= 4) print $(NF-2) }' 2>/dev/null; } || true)
     if ! [[ "$DISK_AVAIL_MB" =~ ^[0-9]+$ ]]; then
         DISK_AVAIL_MB=0
     fi
-    if [[ "$DISK_AVAIL_MB" -lt 2048 ]]; then
+    if [[ "$DISK_AVAIL_MB" -eq 0 ]]; then
+        warn "Could not read free disk space from df — skipping check"
+    elif [[ "$DISK_AVAIL_MB" -lt 2048 ]]; then
         warn "Only ${DISK_AVAIL_MB}MB free in \$HOME. Build needs ~2GB."
         hint "Free space or set HSE_INSTALL_DIR / CARGO_TARGET_DIR to a larger volume."
     else
