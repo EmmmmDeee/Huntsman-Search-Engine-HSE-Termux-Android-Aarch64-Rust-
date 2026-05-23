@@ -115,6 +115,7 @@ tr:last-child td{border-bottom:none}
 
 <nav>
   <div class="tab active" data-tab="scan">Scan</div>
+  <div class="tab" data-tab="live">Live</div>
   <div class="tab" data-tab="entities">Entities</div>
   <div class="tab" data-tab="correlate">Correlate</div>
   <div class="tab" data-tab="history">History</div>
@@ -191,6 +192,54 @@ tr:last-child td{border-bottom:none}
   </div>
 </div>
 
+<!-- ══ LIVE ════════════════════════════════════════════════════ -->
+<div class="panel" id="p-live">
+  <div class="card">
+    <div class="card-h">Live session</div>
+    <div class="fld row">
+      <div>
+        <label>Target kind</label>
+        <select id="lf-kind">
+          <option value="email">Email</option>
+          <option value="username">Username</option>
+          <option value="phone">Phone</option>
+          <option value="full_name">Full name</option>
+          <option value="ip_address">IP address</option>
+          <option value="domain" selected>Domain</option>
+          <option value="asn">ASN</option>
+          <option value="coordinates">Coordinates</option>
+          <option value="address">Address</option>
+        </select>
+      </div>
+    </div>
+    <div class="fld"><label>Target value</label>
+      <input type="text" id="lf-value" placeholder="example.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    </div>
+    <div class="fld row">
+      <div><label>Interval (sec)</label><input type="number" id="lf-int" value="30" min="1"></div>
+      <div><label>Iterations (blank = forever)</label><input type="number" id="lf-iter" min="1"></div>
+    </div>
+    <div class="fld row">
+      <div><label>Depth</label><input type="number" id="lf-depth" value="0" min="0" max="5"></div>
+      <div><label>Modules (optional)</label><input type="text" id="lf-mods" placeholder=""></div>
+    </div>
+    <div class="checks">
+      <label><input type="checkbox" id="lf-free"> Free-only</label>
+      <label><input type="checkbox" id="lf-pass"> Passive-only</label>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:6px">
+      <button class="btn btn-p" id="live-start-btn" onclick="startLive()">▶ Start</button>
+      <button class="btn btn-g" id="live-stop-btn" onclick="stopLive()" disabled>■ Stop</button>
+    </div>
+  </div>
+
+  <div class="card" id="live-status-card" style="display:none">
+    <div class="card-h" id="live-h">Live session</div>
+    <div id="live-meta" style="font-size:11px;color:var(--fg2);margin-bottom:8px"></div>
+    <div id="live-log" class="scrolly" style="max-height:300px"></div>
+  </div>
+</div>
+
 <!-- ══ ENTITIES ════════════════════════════════════════════════ -->
 <div class="panel" id="p-entities">
   <div class="card">
@@ -250,7 +299,7 @@ tr:last-child td{border-bottom:none}
 <div id="toast"></div>
 
 <script>
-const S={scanId:null,sse:null,entities:[],correlations:[],sortCol:'ceff',sortDir:'desc',modsTotal:0,modsDone:0,modSt:{}};
+const S={scanId:null,sse:null,entities:[],correlations:[],sortCol:'ceff',sortDir:'desc',modsTotal:0,modsDone:0,modSt:{},liveId:null,liveSse:null,liveIter:0,liveTotalEntities:0};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
@@ -456,6 +505,74 @@ function renderCorr(){
       <div class="corr-d">${esc(c.description)}</div>
     </div>`;
   }).join('');
+}
+
+// ── live ─────────────────────────────────────────────────────
+function liveLog(html,cls){
+  const d=document.createElement('div');d.className='modrow';
+  d.innerHTML=`<span class="nm" ${cls?'style="color:var(--'+cls+')"':''}>${html}</span>`;
+  const log=$('live-log');log.appendChild(d);log.scrollTop=log.scrollHeight;
+}
+
+async function startLive(){
+  const kind=$('lf-kind').value,value=$('lf-value').value.trim();
+  if(!value){toast('Enter a target value','err');return;}
+  const opts={depth:+$('lf-depth').value||0};
+  const mods=$('lf-mods').value.trim();if(mods)opts.modules=mods.split(',').map(s=>s.trim()).filter(Boolean);
+  if($('lf-free').checked)opts.free_only=true;
+  if($('lf-pass').checked)opts.passive_only=true;
+  const live={interval_secs:+$('lf-int').value||30};
+  const it=$('lf-iter').value;if(it)live.iterations=+it;
+
+  try{
+    const r=await fetch('/api/v1/live',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({kind,value,options:opts,live})});
+    const d=await r.json();
+    if(!r.ok){toast(d.error||'Start failed','err');return;}
+    S.liveId=d.live_id;S.liveIter=0;S.liveTotalEntities=0;
+    $('live-status-card').style.display='block';$('live-log').innerHTML='';
+    $('live-start-btn').disabled=true;$('live-stop-btn').disabled=false;
+    $('live-h').textContent='Live '+S.liveId.slice(0,12)+' — '+kind+':'+value;
+    updateLiveMeta();
+    openLiveSSE(S.liveId);
+    toast('Live session started','ok');
+  }catch(e){toast('Network: '+e.message,'err');}
+}
+
+async function stopLive(){
+  if(!S.liveId)return;
+  try{
+    await fetch('/api/v1/live/'+encodeURIComponent(S.liveId),{method:'DELETE'});
+    toast('Stop requested','ok');
+  }catch(e){toast('Stop failed: '+e.message,'err');}
+}
+
+function updateLiveMeta(){
+  $('live-meta').textContent='Iteration '+S.liveIter+' · '+S.liveTotalEntities+' total entities seen';
+}
+
+function openLiveSSE(lid){
+  const es=new EventSource('/api/v1/live/'+encodeURIComponent(lid)+'/events');
+  S.liveSse=es;
+  es.onmessage=e=>{try{handleLiveEvent(JSON.parse(e.data));}catch{}};
+  es.onerror=()=>{es.close();S.liveSse=null;};
+}
+
+function handleLiveEvent(ev){
+  switch(ev.type){
+    case 'live_start':liveLog('● live started — interval '+ev.interval_secs+'s');break;
+    case 'live_tick':S.liveIter=ev.iteration;liveLog('▶ tick '+ev.iteration+' — scan '+ev.scan_id.slice(0,8));updateLiveMeta();break;
+    case 'live_stop':
+      liveLog('● live stopped: '+ev.reason);
+      $('live-start-btn').disabled=false;$('live-stop-btn').disabled=true;
+      if(S.liveSse){S.liveSse.close();S.liveSse=null;}
+      break;
+    case 'module_done':liveLog('  ✓ '+ev.module+' — '+ev.found+' found','fg2');break;
+    case 'module_error':liveLog('  ✗ '+ev.module+' — '+ev.error,'err');break;
+    case 'entity_found':S.liveTotalEntities++;updateLiveMeta();break;
+    case 'correlation_found':liveLog('★ '+ev.correlation.rule_id+' ['+ev.correlation.severity.toUpperCase()+'] '+ev.correlation.description,'acc2');break;
+    case 'scan_complete':liveLog('  ● scan '+ev.scan_id.slice(0,8)+' done — '+ev.entity_count+' entities','fg2');break;
+  }
 }
 
 // ── modules ──────────────────────────────────────────────────
