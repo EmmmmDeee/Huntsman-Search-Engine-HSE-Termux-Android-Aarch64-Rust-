@@ -25,6 +25,7 @@ pub mod wayback;
 pub mod whois;
 pub mod wifi_connect;
 pub mod wifi_scan;
+pub mod xposed_or_not;
 
 use std::sync::Arc;
 
@@ -35,6 +36,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
     vec![
         // Identity / breach / infrastructure (v0.1 → v0.4)
         Arc::new(hudsonrock::HudsonRock),
+        Arc::new(xposed_or_not::XposedOrNot),
         Arc::new(alienvault_otx::AlienVaultOtx),
         Arc::new(crtsh::Crtsh),
         Arc::new(dns_resolver::DnsResolver),
