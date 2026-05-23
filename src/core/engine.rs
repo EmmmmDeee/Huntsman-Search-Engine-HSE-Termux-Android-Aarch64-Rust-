@@ -116,10 +116,31 @@ impl ScanEngine {
                 .await;
         }
 
-        // Persist & complete.
+        // Persist & complete. If either step fails, mark the scan Failed
+        // (rather than leaving it Running forever) and still emit a
+        // terminal ScanComplete-with-zero so SSE consumers don't hang.
         let entity_count = entity_map.len();
-        for entity in entity_map.into_values() {
-            self.store.upsert_entity(&entity)?;
+        let persist_err: Option<String> = entity_map
+            .into_values()
+            .find_map(|entity| self.store.upsert_entity(&entity).err())
+            .map(|e| e.to_string());
+
+        if let Some(err) = persist_err {
+            warn!(scan_id = %scan.id, error = %err, "entity persist failed; marking scan failed");
+            scan.status = ScanStatus::Failed;
+            scan.entity_count = 0;
+            scan.error = Some(err);
+            scan.finished_at = Some(crate::core::entity::unix_now());
+            // Best-effort upsert; if even this fails there's nothing more to do.
+            let _ = self.store.upsert_scan(&scan);
+            let _ = self.bus.send(Event::new(
+                &scan.id,
+                EventKind::ScanComplete {
+                    scan_id: scan.id.clone(),
+                    entity_count: 0,
+                },
+            ));
+            return Ok(scan);
         }
 
         scan.status = ScanStatus::Complete;

@@ -10,6 +10,99 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed (review feedback on PR #8 + PR #9)
+
+Thirteen real findings across `gemini-code-assist` and
+`copilot-pull-request-reviewer`; nothing rejected on security/correctness
+grounds. Single follow-up commit on the v0.8 branch so PR #9 stays
+mergeable from `main`.
+
+#### Security
+
+- **`whois::query` had no read size cap.** `tokio::io::AsyncReadExt::
+  read_to_string` was allowed to consume the entire stream — a malicious
+  or misconfigured WHOIS server could OOM the engine on Termux. Now
+  capped at 64 KiB via `(&mut stream).take(65_536)`. Real WHOIS responses
+  are 2–8 KiB.
+- **`liveLog()` in `spa.html` used `innerHTML` with unescaped
+  event-derived strings.** A crafted `ev.error` / `ev.reason` /
+  `ev.target_value` containing `<script>` would XSS the SPA. Refactored
+  to build the row via `createElement` + `textContent` (which html-escapes
+  by definition).
+- **CORS was permissive (`allow_origin(Any)`) on loopback binds.** Any
+  website opened in Chrome could XHR to `127.0.0.1:8080/api/v1/scans`
+  and read the user's scan history. Now allows only the matching
+  `http(s)://<bind>` origins, plus the `localhost`/`127.0.0.1`/`[::1]`
+  aliases on the same port for loopback binds. The SPA is same-origin
+  so this loses no in-product functionality.
+
+#### Correctness
+
+- **`engine::run` left scans stuck in `Running` on persistence error.**
+  If `upsert_entity` or the final `upsert_scan` failed (disk full, db
+  locked), the run returned an `Err` without ever marking the scan
+  `Failed`, leaving the History tab with an entry that never finishes.
+  Now any persist-phase error short-circuits to `Failed` + persisted
+  `error` string + emitted `ScanComplete{entity_count:0}` event so
+  SSE consumers don't hang.
+- **`termux_cmd` left timed-out child processes running.** Tokio's
+  `timeout()` cancels the future but doesn't kill the child unless
+  `Command::kill_on_drop(true)` is set. Now set, so a hung
+  `termux-location` is SIGKILLed when its timeout fires.
+- **`cli::cmd_live` matched on JSON substring.** Detected the
+  terminator with `s.contains("\"type\":\"live_stop\"")` — fragile
+  against any future serialiser change. Now pattern-matches
+  `EventKind::LiveStop { .. }` before serialising and threads an
+  `is_terminator` bool through the stream.
+
+#### API consistency
+
+- **`modules_list` serialised `ModuleCost` via `format!("{:?}", x).
+  to_lowercase()`.** Produced `"keygated"` rather than the established
+  serde snake_case `"key_gated"`. Now serialises via `serde_json::
+  to_value` so JSON callers see the canonical form.
+
+#### Performance
+
+- **`LiveSession.scan_ids` was a `Vec<String>`.** Every event on the
+  shared `EventBus` triggered an O(N) linear scan inside
+  `session_owns_scan` (called per event per live SSE subscriber). Now
+  a `HashSet<String>` — O(1) per-event. Big win for long-running
+  sessions with hundreds of iterations.
+- **`whois::find_referral` kept allocating `to_lowercase` strings per
+  line** despite the v0.5 commit that introduced the zero-alloc
+  `starts_with_ascii_ci` helper for the other parsers. Now uses the
+  helper consistently.
+
+#### Memory leaks
+
+- **`LiveInner` retained unused `JoinHandle`s forever.** The `joins`
+  map was written to in `start()` but never read from — purely dead
+  state that grew with every new live session. Field deleted; tokio
+  reaps spawned tasks itself.
+- **`cancels` map never pruned terminal sessions.** `mark_completed`
+  and `mark_stopped` now remove the entry. `sessions` is left intact
+  so `GET /api/v1/live/{id}` keeps returning the completed record.
+
+#### Docs / comments
+
+- **`TargetKind::canonical_str` docstring claimed CLI and API would
+  produce "the same scan_id for the same target".** False — `scan_id()`
+  mixes `unix_now()` so the id changes every invocation. The actual
+  invariant is narrower: both interfaces feed the same canonical kind
+  string into the hash. Reworded.
+- **`api::handlers::scan_create` carried the same misleading docstring.**
+  Same fix.
+
+#### Verification
+
+- `cargo fmt --check` — clean
+- `cargo clippy --all-targets -D warnings` — clean (re-stripped one
+  `Any` import made unused by the CORS cleanup)
+- `cargo test` — **94 pass** (84 lib + 10 integration)
+- `shellcheck --severity=warning install.sh` — clean
+- Release binary 4.9 MB stripped — unchanged
+
 ## [0.8.0] — 2026-05-23
 
 ### Added

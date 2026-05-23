@@ -251,12 +251,18 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     let rx = bus.subscribe();
     let scanner_clone = scanner.clone();
     let target_lid = live_id.clone();
+    // Yield (json_line, is_terminator) tuples so the consumer loop checks
+    // the structured EventKind variant rather than substring-matching the
+    // serialised JSON. Saves us if the wire format ever changes.
     let mut stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
         Ok(event)
             if event.scan_id == target_lid
                 || scanner_clone.session_owns_scan(&target_lid, &event.scan_id) =>
         {
-            Some(serde_json::to_string(&event.kind).unwrap_or_default())
+            let is_terminator =
+                matches!(event.kind, crate::core::event::EventKind::LiveStop { .. });
+            let line = serde_json::to_string(&event.kind).unwrap_or_default();
+            Some((line, is_terminator))
         }
         _ => None,
     });
@@ -269,9 +275,9 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
                 scanner.stop(&live_id);
             }
             line = stream.next() => match line {
-                Some(s) => {
+                Some((s, is_terminator)) => {
                     println!("{s}");
-                    if s.contains("\"type\":\"live_stop\"") {
+                    if is_terminator {
                         break;
                     }
                 }

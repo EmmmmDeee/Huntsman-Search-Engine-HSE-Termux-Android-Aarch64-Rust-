@@ -380,7 +380,15 @@ function openSSE(sid){
   const es=new EventSource('/api/v1/scans/'+encodeURIComponent(sid)+'/events');
   S.sse=es;
   es.onmessage=e=>{try{handleEvent(JSON.parse(e.data));}catch{}};
-  es.onerror=()=>{es.close();S.sse=null;};
+  // If the SSE stream drops (server restart, network hiccup, scan errored
+  // server-side), re-enable the Run button and toast so the UI doesn't
+  // sit stuck in "Scanning…" forever.
+  es.onerror=()=>{
+    es.close();S.sse=null;
+    resetBtn();
+    $('prog-h').textContent='⚠ Connection lost';
+    toast('Scan event stream disconnected','err');
+  };
 }
 
 function handleEvent(ev){
@@ -517,10 +525,18 @@ function renderCorr(){
 }
 
 // ── live ─────────────────────────────────────────────────────
-function liveLog(html,cls){
-  const d=document.createElement('div');d.className='modrow';
-  d.innerHTML=`<span class="nm" ${cls?'style="color:var(--'+cls+')"':''}>${html}</span>`;
-  const log=$('live-log');log.appendChild(d);log.scrollTop=log.scrollHeight;
+// `text` is treated as plain text (set via textContent), NOT as HTML.
+// Server-supplied strings (ev.error, ev.reason, ev.target_value, etc.)
+// must never be interpolated as innerHTML — otherwise a crafted module
+// error or target value containing `<script>` could XSS the SPA. The
+// argument is named `text` rather than `html` as a documentation hint.
+function liveLog(text,cls){
+  const row=document.createElement('div');row.className='modrow';
+  const span=document.createElement('span');span.className='nm';
+  if(cls)span.style.color='var(--'+cls+')';
+  span.textContent=text;
+  row.appendChild(span);
+  const log=$('live-log');log.appendChild(row);log.scrollTop=log.scrollHeight;
 }
 
 async function startLive(){
@@ -564,7 +580,15 @@ function openLiveSSE(lid){
   const es=new EventSource('/api/v1/live/'+encodeURIComponent(lid)+'/events');
   S.liveSse=es;
   es.onmessage=e=>{try{handleLiveEvent(JSON.parse(e.data));}catch{}};
-  es.onerror=()=>{es.close();S.liveSse=null;};
+  // Same recovery story as the scan SSE — surface the disconnect rather
+  // than silently leaving the Live tab in "running" state.
+  es.onerror=()=>{
+    es.close();S.liveSse=null;
+    $('live-start-btn').disabled=false;
+    $('live-stop-btn').disabled=true;
+    liveLog('⚠ event stream disconnected','err');
+    toast('Live event stream disconnected','err');
+  };
 }
 
 function handleLiveEvent(ev){

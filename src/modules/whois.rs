@@ -119,9 +119,12 @@ async fn query(server: &str, q: &str) -> std::io::Result<String> {
     .await??;
     stream.write_all(format!("{q}\r\n").as_bytes()).await?;
     let mut buf = String::new();
+    // Cap the read at 64 KiB so a malicious or misconfigured whois server
+    // can't OOM the engine by streaming forever. Real WHOIS responses are
+    // ≪ 64 KiB (typically 2–8 KiB).
     timeout(
         Duration::from_millis(QUERY_TIMEOUT_MS),
-        stream.read_to_string(&mut buf),
+        (&mut stream).take(65_536).read_to_string(&mut buf),
     )
     .await??;
     Ok(buf)
@@ -129,12 +132,13 @@ async fn query(server: &str, q: &str) -> std::io::Result<String> {
 
 fn find_referral(text: &str) -> Option<String> {
     for line in text.lines() {
-        let lower = line.to_lowercase();
-        if let Some(v) = lower
-            .strip_prefix("whois:")
-            .or_else(|| lower.strip_prefix("refer:"))
+        // Use the zero-alloc helper for consistency with field() /
+        // all_fields() below. The previous per-line `to_lowercase()`
+        // allocation here contradicted the v0.5 "zero allocation" promise.
+        if (starts_with_ascii_ci(line, "whois:") || starts_with_ascii_ci(line, "refer:"))
+            && let Some((_, rest)) = line.split_once(':')
         {
-            let v = v.trim().to_string();
+            let v = rest.trim().to_string();
             if !v.is_empty() {
                 return Some(v);
             }

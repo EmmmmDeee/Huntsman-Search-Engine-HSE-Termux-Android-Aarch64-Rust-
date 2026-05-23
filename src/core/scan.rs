@@ -61,11 +61,17 @@ impl TargetKind {
         }
     }
 
-    /// Canonical lowercase snake_case identifier — matches the serde-serialised
-    /// form (`#[serde(rename_all = "snake_case")]`). Use this everywhere a
-    /// machine-readable target-kind string is required (notably `scan_id`
-    /// derivation, which must be identical across CLI and HTTP paths so the
-    /// same target always yields the same id).
+    /// Canonical lowercase snake_case identifier — matches the
+    /// serde-serialised form (`#[serde(rename_all = "snake_case")]`).
+    ///
+    /// Used at every site that needs a machine-readable target-kind
+    /// string (storage column, event payload, scan-id input). Per-scan
+    /// IDs are *not* deterministic across re-scans of the same target —
+    /// `util::uid::scan_id()` mixes `unix_now()` so each invocation
+    /// produces a fresh id. The invariant this method enforces is the
+    /// narrower one: CLI and HTTP API feed the same canonical string
+    /// into the hash, so a given run produces the same id regardless of
+    /// which interface launched the scan.
     pub fn canonical_str(&self) -> &'static str {
         match self {
             Self::Email => "email",

@@ -48,11 +48,15 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
         .modules()
         .iter()
         .map(|m| {
+            // Serialise `ModuleCost` via serde so JSON callers see the
+            // canonical snake_case form (`"key_gated"`, not `"keygated"`
+            // that `format!("{:?}", ...).to_lowercase()` would produce).
+            let cost = serde_json::to_value(m.cost()).unwrap_or(Value::Null);
             json!({
-                "name":       m.name(),
-                "priority":   m.priority(),
-                "cost":       format!("{:?}", m.cost()).to_lowercase(),
-                "passive":    m.is_passive(),
+                "name":     m.name(),
+                "priority": m.priority(),
+                "cost":     cost,
+                "passive":  m.is_passive(),
             })
         })
         .collect();
@@ -67,8 +71,10 @@ pub async fn scan_create(
     Json(req): Json<ScanRequest>,
 ) -> impl IntoResponse {
     let target = Target::new(req.kind, req.value.clone());
-    // Canonical snake_case form so CLI and API generate identical scan_ids
-    // for the same target.
+    // The CLI and API both feed `kind.canonical_str()` into `scan_id()` so
+    // both interfaces hash the same canonical kind string. `scan_id()`
+    // itself mixes `unix_now()`, so the resulting id is NOT deterministic
+    // across re-scans of the same target — each invocation gets a fresh id.
     let sid = scan_id(req.kind.canonical_str(), &req.value);
     let scan = Scan::new(sid.clone(), target.clone()).with_options(req.options.clone());
 

@@ -28,7 +28,7 @@ use axum::{
     response::Html,
     routing::{get, post},
 };
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 
 use super::{AppState, handlers};
 
@@ -109,32 +109,38 @@ fn is_loopback_bind(bind: &str) -> bool {
 }
 
 fn build_cors_layer(bind: &str) -> CorsLayer {
-    let base = CorsLayer::new().allow_methods([
-        Method::GET,
-        Method::POST,
-        Method::DELETE,
-        Method::OPTIONS,
-    ]);
+    // Bound to the matching `http(s)://<bind>` origin even on loopback —
+    // the previous `allow_origin(Any)` for loopback meant ANY website the
+    // user visited in Chrome could XHR to 127.0.0.1:8080 and read their
+    // scan history (an attack vector copilot flagged on PR #9). The SPA
+    // is served same-origin from this binary so it never needs cross-
+    // origin in normal use.
+    let base = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_headers([axum::http::header::CONTENT_TYPE]);
+
+    let mut allowed: Vec<HeaderValue> = Vec::new();
+    let mut push = |o: String| {
+        if let Ok(v) = HeaderValue::from_str(&o) {
+            allowed.push(v);
+        }
+    };
+    push(format!("http://{bind}"));
+    push(format!("https://{bind}"));
+
+    // For loopback binds, also accept the `localhost` alias (since users
+    // routinely type both `127.0.0.1:8080` and `localhost:8080` in the
+    // browser). If the user is intentionally exposing the API on a non-
+    // loopback interface they get only the bind-matching origin and must
+    // proxy through their own CORS-aware front-end for anything else.
     if is_loopback_bind(bind) {
-        // Local-only bind: any local browser tab is trusted.
-        base.allow_origin(Any).allow_headers(Any)
-    } else {
-        // Network-exposed: lock CORS down to the matching origin so random
-        // websites can't make cross-origin requests against the API. If a
-        // user genuinely wants a wider CORS policy, the right path is to
-        // expose the API through their own reverse proxy.
-        let http_origin = format!("http://{bind}");
-        let https_origin = format!("https://{bind}");
-        let mut allowed: Vec<HeaderValue> = Vec::new();
-        if let Ok(v) = HeaderValue::from_str(&http_origin) {
-            allowed.push(v);
-        }
-        if let Ok(v) = HeaderValue::from_str(&https_origin) {
-            allowed.push(v);
-        }
-        base.allow_origin(allowed)
-            .allow_headers([axum::http::header::CONTENT_TYPE])
+        let port = bind.rsplit_once(':').map(|(_, p)| p).unwrap_or("8080");
+        push(format!("http://localhost:{port}"));
+        push(format!("http://127.0.0.1:{port}"));
+        push(format!("http://[::1]:{port}"));
     }
+
+    base.allow_origin(allowed)
 }
 
 #[cfg(test)]
