@@ -1,0 +1,49 @@
+[package]
+name        = "huntsman-search-engine"
+version     = "0.1.0"
+edition     = "2024"
+rust-version = "1.85"
+description = "Huntsman Search Engine — prototype OSINT/GEOINT platform for Termux aarch64 (no root)"
+authors     = ["Huntsman OSINT"]
+license     = "MIT OR Apache-2.0"
+default-run = "hse"
+
+[[bin]]
+name = "hse"
+path = "src/main.rs"
+
+[lib]
+name = "huntsman_search_engine"
+path = "src/lib.rs"
+
+[dependencies]
+tokio              = { version = "1",    features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util", "net", "fs", "signal"] }
+serde              = { version = "1",    features = ["derive"] }
+serde_json         = "1"
+sha2               = "0.10"
+hex                = "0.4"
+reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rusqlite           = { version = "0.31", features = ["bundled"] }
+clap               = { version = "4",    features = ["derive", "env"] }
+thiserror          = "1"
+async-trait        = "0.1"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+parking_lot        = "0.12"
+url                = "2"
+hickory-resolver   = { version = "0.24", default-features = false, features = ["tokio-runtime"] }
+dotenvy            = "0.15"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+
+[profile.release]
+opt-level     = "z"
+lto           = true
+codegen-units = 1
+strip         = true
+panic         = "abort"
+
+[profile.dev]
+opt-level = 0
+debug     = 1

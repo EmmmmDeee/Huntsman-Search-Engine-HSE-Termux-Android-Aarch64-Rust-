@@ -1,0 +1,18 @@
+# Rust build artefacts
+/target/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Runtime database / keys (HSE writes to $HOME, not repo, but be safe)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.huntsman.env
