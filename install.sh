@@ -48,13 +48,19 @@ warn() { printf "  ${YELLOW}!${NC} %s\n" "$*"; }
 die()  { printf "  ${RED}✗${NC} %s\n" "$*" >&2; echo; echo "Full log: $LOG_FILE"; exit 1; }
 hint() { printf "    ${DIM}%s${NC}\n" "$*"; }
 
-trap 'rc=$?; if [[ $rc -ne 0 ]]; then printf "\n${RED}Installation failed (exit %d).${NC}\n  Full log: %s\n" "$rc" "$LOG_FILE" >&2; fi' EXIT
+on_exit() {
+    local rc=$?
+    if [[ $rc -ne 0 ]]; then
+        printf '\n%sInstallation failed (exit %d).%s\n  Full log: %s\n' "$RED" "$rc" "$NC" "$LOG_FILE" >&2
+    fi
+}
+trap on_exit EXIT
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 HSE_REPO_URL="${HSE_REPO_URL:-https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git}"
 HSE_REF="${HSE_REF:-main}"
 HSE_INSTALL_DIR="${HSE_INSTALL_DIR:-$HOME/.local/share/hse}"
-RUST_MIN_VERSION="1.85"
+RUST_MIN_VERSION="1.88"
 
 # ─── Detect environment ──────────────────────────────────────────────────────
 step "Detecting environment"
@@ -92,13 +98,17 @@ step "Sanity checks"
 # Clock — TLS handshakes fail with a wildly wrong clock.
 CURRENT_YEAR="$(date +%Y)"
 if [[ "$CURRENT_YEAR" -lt 2024 ]]; then
-    warn "System clock looks wrong ($(date)). TLS may fail."
-    hint "Fix on Termux: pkg install termux-tools && date -s '$(curl -fsSL https://www.google.com -I | awk -F: '/^[Dd]ate:/ {sub(/^ */,\"\",$2); print $2\":\"$3\":\"$4}')'"
+    warn "System clock looks wrong ($(date)). TLS will likely fail."
+    hint "Fix on Termux: Android Settings -> System -> Date & time -> Set automatically"
+    hint "Or manually: date -s 'YYYY-MM-DD HH:MM:SS'"
 fi
 
 # Disk space — release build takes ~500MB, target dir up to 2GB.
 if command -v df >/dev/null 2>&1; then
-    DISK_AVAIL_MB=$(df -m "$HOME" 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)
+    DISK_AVAIL_MB=$(df -m "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+    if ! [[ "$DISK_AVAIL_MB" =~ ^[0-9]+$ ]]; then
+        DISK_AVAIL_MB=0
+    fi
     if [[ "$DISK_AVAIL_MB" -lt 2048 ]]; then
         warn "Only ${DISK_AVAIL_MB}MB free in \$HOME. Build needs ~2GB."
         hint "Free space or set HSE_INSTALL_DIR / CARGO_TARGET_DIR to a larger volume."
@@ -166,7 +176,7 @@ if ! command -v cargo >/dev/null 2>&1; then
     fi
     warn "cargo not found — bootstrapping rustup"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-    # shellcheck disable=SC1090
+    # shellcheck source=/dev/null
     source "$HOME/.cargo/env"
 fi
 
@@ -278,19 +288,19 @@ echo
 
 # ─── Done ────────────────────────────────────────────────────────────────────
 echo
-printf "${GREEN}${BOLD}Installation complete!${NC}\n\n"
-printf "${CYAN}Quick start:${NC}\n"
-printf "  hse modules                                         # list available modules\n"
-printf "  hse scan --kind domain --value example.com          # one-shot scan\n"
-printf "  hse scan --kind domain --value example.com --depth 2 # with autonomous expansion\n"
-printf "  hse doctor                                          # re-check environment\n\n"
-printf "${CYAN}Logs:${NC}\n"
-printf "  Install log:  %s\n" "$LOG_FILE"
-printf "  Build cache:  %s\n" "$CARGO_TARGET_DIR"
-printf "  Database:     %s/.huntsman/huntsman.db\n" "$HOME"
-printf "  Keys file:    %s\n\n" "$KEYS_PATH"
-printf "${CYAN}Add an API key (optional):${NC}\n"
-printf "  edit %s and uncomment a line\n\n" "$KEYS_PATH"
-printf "${CYAN}Re-install or upgrade:${NC} re-run the same curl-pipe command.\n"
+printf '%s%sInstallation complete!%s\n\n' "$GREEN" "$BOLD" "$NC"
+printf '%sQuick start:%s\n' "$CYAN" "$NC"
+printf '  hse modules                                         # list available modules\n'
+printf '  hse scan --kind domain --value example.com          # one-shot scan\n'
+printf '  hse scan --kind domain --value example.com --depth 2 # with autonomous expansion\n'
+printf '  hse doctor                                          # re-check environment\n\n'
+printf '%sLogs:%s\n' "$CYAN" "$NC"
+printf '  Install log:  %s\n' "$LOG_FILE"
+printf '  Build cache:  %s\n' "$CARGO_TARGET_DIR"
+printf '  Database:     %s/.huntsman/huntsman.db\n' "$HOME"
+printf '  Keys file:    %s\n\n' "$KEYS_PATH"
+printf '%sAdd an API key (optional):%s\n' "$CYAN" "$NC"
+printf '  edit %s and uncomment a line\n\n' "$KEYS_PATH"
+printf '%sRe-install or upgrade:%s re-run the same curl-pipe command.\n' "$CYAN" "$NC"
 
 trap - EXIT
