@@ -1,7 +1,8 @@
-//! CLI (v0.3): scan / modules / doctor / serve.
+//! CLI: scan / modules / doctor / serve / live.
 //!
 //! Surfaces every `ScanOptions` field as a flag so each scan is fully
-//! customisable before launch. `serve` boots the HTTP server + SPA. See
+//! customisable before launch. `serve` boots the HTTP server + SPA;
+//! `live` re-runs the same scan on a fixed interval (v0.5+). See
 //! `docs/USAGE.md` for the full reference.
 
 use std::sync::Arc;

@@ -1,9 +1,10 @@
 //! Huntsman Search Engine (HSE) — prototype.
 //!
 //! Lightweight pure-Rust OSINT/GEOINT scaffold designed to run inside Termux
-//! on aarch64 Android with no root. v0.3 adds `hse serve` — an axum HTTP
-//! server with a minimal hand-rolled SPA bound to `127.0.0.1` for use from
-//! Chrome / Firefox on the device.
+//! on aarch64 Android with no root. Boots either as a CLI (`hse scan|live|
+//! modules|doctor`) or as `hse serve` — an axum HTTP server with a minimal
+//! hand-rolled SPA bound to `127.0.0.1` for use from Chrome / Firefox on
+//! the device.
 //!
 //! Architecture invariants (do not change):
 //!   - `#![forbid(unsafe_code)]`
