@@ -10,6 +10,37 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-05-23
+
+### Added
+- **Parallel module dispatch.** `ScanOptions::max_concurrent` has been a
+  documented field since v0.1 but was never honoured — the engine ran
+  modules sequentially. Now, when `max_concurrent > 0`, the engine spawns
+  up to that many module tasks in flight at once via
+  `tokio::sync::Semaphore` + `tokio::task::JoinSet`. Wall-time on a
+  scan with N accepting modules drops from `sum(module_durations)` to
+  roughly `max(module_durations) × ceil(N / max_concurrent)`.
+- Default remains `max_concurrent = 0` → sequential, byte-identical to
+  v0.1–v0.7. The change is fully opt-in.
+
+### Notes
+- The sequential and concurrent paths share all module filter logic
+  (allowlist, exclude, free_only, passive_only, accepts) so behaviour
+  differs only in scheduling.
+- Event ordering: with concurrent dispatch, `ModuleStart` events from
+  different modules interleave with each other and with `EntityFound`
+  events from faster modules. Each event is self-describing (`type` +
+  `module`), so SSE consumers handle this transparently. CLI tracing
+  logs will look interleaved — accepted trade-off for the speedup.
+- 94 tests pass (84 lib + 10 integration); +3 new integration tests
+  cover: concurrent execution is faster than sequential (4 × 200 ms
+  modules with max_concurrent=4 complete in < 600 ms instead of > 800 ms);
+  semaphore cap is respected (6 modules with max_concurrent=2 never see
+  peak in-flight > 2); max_concurrent=0 still uses the sequential path
+  (peak in-flight stays exactly 1).
+- Release binary stays at 4.8 MB stripped — `JoinSet` / `Semaphore` are
+  in the existing tokio feature set, no dependency added.
+
 ## [0.7.0] — 2026-05-23
 
 ### Added
@@ -377,7 +408,8 @@ onto this branch so the v0.5 PR isn't merged with regressions.
   - Classification derived, never stored
   - Passwords / credentials never written to evidence
 
-[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.8.0
 [0.7.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.7.0
 [0.6.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.6.0
 [0.5.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.5.0
