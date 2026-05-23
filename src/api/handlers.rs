@@ -121,11 +121,14 @@ pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 
 pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
     match s.store.get_scan(&id) {
-        Ok(Some(scan)) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(&scan).unwrap_or(json!({}))),
-        )
-            .into_response(),
+        Ok(Some(scan)) => match serde_json::to_value(&scan) {
+            Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response(),
+        },
         Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
