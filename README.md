@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Edition 2024](https://img.shields.io/badge/edition-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
-[![Status: prototype](https://img.shields.io/badge/status-prototype%20(0.2.x)-yellow.svg)](docs/ROADMAP.md)
+[![Status: prototype](https://img.shields.io/badge/status-prototype%20(0.3.x)-yellow.svg)](docs/ROADMAP.md)
 
 Pure-Rust OSINT / GEOINT scaffold that runs **entirely inside Termux on
 Android aarch64** with no root, and is operable through any local browser
@@ -57,12 +57,30 @@ hse scan --kind domain --value example.com                  # single-round scan
 hse scan --kind domain --value example.com --depth 2        # autonomous expansion
 hse scan --kind email  --value foo@bar.com --free-only      # no key-gated modules
 hse scan --kind domain --value example.com --output json    # machine-readable
+hse serve                                                   # web UI on http://127.0.0.1:8080 (v0.3+)
 ```
 
-Five free modules (no API keys required) ship in v0.2:
+Five free modules (no API keys required):
 `hudsonrock`, `crtsh`, `dns_resolver`, `ip_geo`, `email_to_username`.
 See [`docs/MODULES.md`](docs/MODULES.md) for the full catalogue and the
 synergy map that makes them chain automatically.
+
+## Web UI (v0.3+)
+
+`hse serve` boots a localhost-bound axum HTTP server with an embedded
+single-file SPA. Open `http://127.0.0.1:8080` in Chrome or Firefox on the
+device. Four tabs:
+
+- **Scan** — the full `ScanOptions` surface (modules allowlist, depth, throttle,
+  budgets, free-only / passive-only) plus live module-progress via SSE.
+- **Entities** — table of discovered entities with kind filter + value search.
+- **History** — recent scans (click to reload).
+- **Modules** — registered modules with priority / cost / passive badges.
+
+Same engine, same data model, same `ScanOptions` schema — the SPA and the
+CLI use identical fields. No CDN, no JS frameworks, ~520 lines of HTML
+including CSS and JS. Binds to `127.0.0.1` only (architecture invariant —
+no LAN exposure).
 
 ---
 
@@ -119,12 +137,12 @@ rationale):
 
 ## Status
 
-**v0.2.0 — prototype.** 4.3 MB stripped binary, 38 tests, zero unsafe.
-Foundation + autonomous expansion engine + five free modules + CLI.
+**v0.3.0 — prototype.** 4.6 MB stripped binary, 38 tests, zero unsafe.
+Foundation + autonomous expansion engine + five free modules + CLI +
+HTTP server + browser SPA + SSE.
 
-Coming next: HTTP server + browser SPA (v0.3), correlator + more modules
-(v0.4), live re-poll mode (v0.5), Termux sensors (v0.6). Full plan in
-[`docs/ROADMAP.md`](docs/ROADMAP.md).
+Coming next: correlator + more modules (v0.4), live re-poll mode (v0.5),
+Termux sensors (v0.6). Full plan in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
