@@ -10,46 +10,6 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
-## [0.3.0] — 2026-05-23
-
-### Added
-- **HTTP server + minimal SPA + Server-Sent Events.** New `hse serve`
-  subcommand boots an axum 0.8 server bound to `127.0.0.1:8080` (localhost
-  only — no LAN exposure by design). Open `http://127.0.0.1:8080` in
-  Chrome / Firefox on the device.
-- New CLI flag: `hse serve --bind <HOST:PORT>` (env `HSE_BIND`).
-- HTTP API (`/api/v1/...`):
-  - `GET /health`, `GET /version`
-  - `GET /modules` — full registry with cost / passive flags
-  - `POST /scans` — create a scan with full `ScanOptions` body
-  - `GET /scans` — recent history (capped at 200)
-  - `GET /scans/{id}` — single scan record
-  - `GET /scans/{id}/entities` — entities discovered by the scan
-  - `GET /scans/{id}/events` — Server-Sent Events stream (live progress)
-- New embedded SPA at `src/web/spa.html` — single self-contained file
-  (no CDN, no JS frameworks, ~520 lines including inline CSS + JS):
-  - Scan tab with full `ScanOptions` form (incl. expansion knobs)
-  - Live module-progress log fed by SSE
-  - Entities tab with kind filter + value search + sortable columns
-  - History tab (clickable to reload past scans)
-  - Modules tab listing the registry with priority / cost / passive badges
-- `tower_http::cors::CorsLayer::permissive()` (safe because we bind to
-  loopback only).
-- Graceful shutdown on `SIGINT` / `SIGTERM` via `tokio::signal`.
-
-### Changed
-- New dependencies: `axum 0.8`, `tower 0.5`, `tower-http 0.6`,
-  `tokio-stream 0.1` (sync feature), `futures 0.3`. All rustls-compatible,
-  no native-TLS, no openssl, no C-linked deps.
-- Release binary 4.3 MB → 4.6 MB stripped (axum + tower bring ~300 KB).
-
-### Notes
-- No new core data-model changes; the existing `ScanOptions` /
-  `EventBus` / `ScanEngine` carry the HTTP server with zero refactors.
-- SSE stream closes when the client disconnects; no auto-close on
-  `ScanComplete` for v0.3 — browser `EventSource` handles teardown
-  cleanly when the user navigates away.
-
 ### Fixed
 - CI: MSRV bumped 1.85 → 1.88 to match the `let_chains` feature actually
   used by the engine. Updated `Cargo.toml` `rust-version`, the dedicated
