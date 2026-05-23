@@ -10,6 +10,140 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed (review feedback on PR #6)
+- **Severity sort was broken**: `Severity::to_string()` produced
+  `"CRITICAL"` (uppercase) but `correlations_for_scan` ORDER BY matched
+  `'critical'` (lowercase), so every row hit `ELSE 4` and sort was a no-op.
+  Added `Severity::as_canonical() -> &'static str` returning the canonical
+  lowercase form, used in both `upsert_correlation` and the JSON serialised
+  form (via `#[serde(rename_all = "lowercase")]`). Display impl keeps the
+  uppercase form for the CLI table.
+- **scan_id inconsistency across interfaces**: API used
+  `format!("{:?}", kind).to_lowercase()` ("ipaddress"), CLI used the raw
+  user-provided `--kind` value ("ip" / "ipaddress"). Same target produced
+  different scan_ids depending on the interface, breaking idempotency.
+  Added `TargetKind::canonical_str() -> &'static str` returning the
+  serde-canonical snake_case form ("ip_address", "full_name", …), now used
+  by every `scan_id()` caller (`cli/mod.rs`, `api/handlers.rs`,
+  `core/engine.rs`, `storage/store.rs`).
+- **CORS policy ignored bind address**: previously always permissive
+  (`allow_origin(Any)`), which is fine for the default 127.0.0.1 bind but
+  dangerous if a user sets `--bind 0.0.0.0:8080`. Now `router(state, bind)`
+  takes the bind string and chooses CORS accordingly:
+  * loopback (`127.x`, `::1`, `localhost`) → permissive
+  * anything else → restrictive (`Access-Control-Allow-Origin` limited to
+    `http://<bind>` / `https://<bind>`)
+  Two new unit tests cover the loopback detector across IPv4, IPv6, and
+  hostname syntaxes.
+- **alienvault_otx swallowed operational failures**: code returned an
+  empty `ModuleResult` for any non-success status, including 429 (rate
+  limit) and 5xx (outage). Now 404 stays "no findings" (per OTX API), but
+  other non-2xx statuses produce `Error::module(…, format!("HTTP {status}"))`
+  so the engine emits a `module_error` event and the user sees the failure.
+- **whois parser allocated per line per key**: `line.to_lowercase()` and
+  `key.to_lowercase()` were called inside the inner loop. Replaced with a
+  zero-allocation `eq_ignore_ascii_case` prefix check (`starts_with_ascii_ci`
+  helper) — WHOIS keys are pure ASCII.
+- **SPA `min_expand_confidence` rejected legitimate 0 input**:
+  `parseFloat(v) || 0.75` treated `0` as falsy and substituted the default.
+  Replaced with an explicit `Number.isFinite(v)` check so `0` is accepted.
+- **SPA entity-merge dropped tags**: when an `entity_found` event arrived
+  for a UID already on screen, the JS merge updated `confidence` and
+  `corroboration` but left `tags` stale, so tags added by later modules
+  never appeared in the Entities table. Now union-merges tags by UID.
+
+(58 tests pass — 51 lib + 7 integration; +2 new for `is_loopback_bind`.)
+
+## [0.4.0] — 2026-05-23
+
+### Added
+- **Correlator** (`src/core/correlator.rs`). Rule-based post-scan analysis
+  that runs synchronously after every scan completes and emits one
+  `Correlation` per firing rule. Rules are pure functions over the
+  collected entities; adding a rule is a 10-line append to
+  `evaluate_rules`. Initial rule set:
+  - `AU-001` Multi-source breach corroboration (Critical) — email in ≥2
+    distinct breach sources. Dormant in v0.4 (only `hudsonrock` is a
+    breach source so far); activates as v0.5+ adds more.
+  - `AU-002` Identity cluster (High) — Email + Username + Phone all
+    co-located in the same scan.
+  - `AU-003` High cross-source corroboration (Medium) — any entity with
+    `corroboration ≥ 3` independent sources reporting the same fact.
+  - `AU-010` Infrastructure consensus (Medium) — Domain or IP confirmed
+    by ≥3 distinct module sources at the evidence level.
+- New `Severity` enum (`Low < Medium < High < Critical`), persisted to
+  the `correlations` SQLite table with severity-sorted retrieval.
+- `EventKind::CorrelationFound { correlation }` and
+  `EventKind::CorrelationsDone { count }` event variants — surfaced via
+  SSE so the SPA renders correlations live as they fire.
+- `GET /api/v1/scans/{id}/correlations` endpoint.
+- SPA: new **Correlate** tab with severity-coloured cards. Correlations
+  also live-stream into the scan log during the run.
+- CLI: `hse scan` table output now includes a correlations section
+  beneath the entities. `--output json` adds a `correlations` field.
+- Two new free modules:
+  - `alienvault_otx` (Free, no key) — accepts `ip` and `domain`. Queries
+    AlienVault OTX for threat-intel pulse count. Adds a third source
+    that contributes to `AU-010` consensus.
+  - `whois` (Free, no key) — raw whois protocol over TCP port 43 (works
+    in Termux with no root). Follows IANA referrals once, parses
+    registrar / dates / nameservers / registrant email.
+
+### Changed
+- Module registry grew 5 → 7. Default scans now hit OTX and whois
+  alongside the existing modules, so AU-010 can plausibly fire on
+  popular domains (crtsh + dns_resolver + whois + OTX = 4 sources).
+- Schema: added `correlations` table with a `UNIQUE(scan_id, rule_id,
+  description)` constraint so re-running the correlator on the same scan
+  is idempotent.
+
+### Notes
+- 56 tests pass (49 lib + 7 integration); 14 of those are new
+  (10 correlator rule tests, 4 new module accepts/cost tests).
+- Release binary 4.6 MB → 4.7 MB stripped.
+- No new external dependencies — `whois` uses `tokio::net::TcpStream`,
+  `alienvault_otx` reuses the existing rustls reqwest client.
+
+## [0.3.0] — 2026-05-23
+
+### Added
+- **HTTP server + minimal SPA + Server-Sent Events.** New `hse serve`
+  subcommand boots an axum 0.8 server bound to `127.0.0.1:8080` (localhost
+  only — no LAN exposure by design). Open `http://127.0.0.1:8080` in
+  Chrome / Firefox on the device.
+- New CLI flag: `hse serve --bind <HOST:PORT>` (env `HSE_BIND`).
+- HTTP API (`/api/v1/...`):
+  - `GET /health`, `GET /version`
+  - `GET /modules` — full registry with cost / passive flags
+  - `POST /scans` — create a scan with full `ScanOptions` body
+  - `GET /scans` — recent history (capped at 200)
+  - `GET /scans/{id}` — single scan record
+  - `GET /scans/{id}/entities` — entities discovered by the scan
+  - `GET /scans/{id}/events` — Server-Sent Events stream (live progress)
+- New embedded SPA at `src/web/spa.html` — single self-contained file
+  (no CDN, no JS frameworks, ~520 lines including inline CSS + JS):
+  - Scan tab with full `ScanOptions` form (incl. expansion knobs)
+  - Live module-progress log fed by SSE
+  - Entities tab with kind filter + value search + sortable columns
+  - History tab (clickable to reload past scans)
+  - Modules tab listing the registry with priority / cost / passive badges
+- `tower_http::cors::CorsLayer::permissive()` (safe because we bind to
+  loopback only).
+- Graceful shutdown on `SIGINT` / `SIGTERM` via `tokio::signal`.
+
+### Changed
+- New dependencies: `axum 0.8`, `tower 0.5`, `tower-http 0.6`,
+  `tokio-stream 0.1` (sync feature), `futures 0.3`. All rustls-compatible,
+  no native-TLS, no openssl, no C-linked deps.
+- Release binary 4.3 MB → 4.6 MB stripped (axum + tower bring ~300 KB).
+
+### Notes
+- No new core data-model changes; the existing `ScanOptions` /
+  `EventBus` / `ScanEngine` carry the HTTP server with zero refactors.
+- SSE stream closes when the client disconnects; no auto-close on
+  `ScanComplete` for v0.3 — browser `EventSource` handles teardown
+  cleanly when the user navigates away.
+
 ### Fixed
 - CI: MSRV bumped 1.85 → 1.88 to match the `let_chains` feature actually
   used by the engine. Updated `Cargo.toml` `rust-version`, the dedicated
@@ -119,7 +253,8 @@ versions can include breaking changes; patch versions are bug-fix-only.
   - Classification derived, never stored
   - Passwords / credentials never written to evidence
 
-[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.4.0
 [0.3.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.3.0
 [0.2.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.2.0
 [0.1.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.1.0

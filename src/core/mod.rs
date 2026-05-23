@@ -3,6 +3,7 @@
 //! Nothing in `core` imports from `modules/` — modules depend on core, never
 //! the other way around. This keeps the engine module-agnostic.
 
+pub mod correlator;
 pub mod engine;
 pub mod entity;
 pub mod error;
@@ -10,6 +11,7 @@ pub mod event;
 pub mod module;
 pub mod scan;
 
+pub use correlator::{Correlation, Correlator, Severity};
 pub use engine::ScanEngine;
 pub use entity::{Classification, Entity, EntityKind, Evidence};
 pub use error::{Error, Result};

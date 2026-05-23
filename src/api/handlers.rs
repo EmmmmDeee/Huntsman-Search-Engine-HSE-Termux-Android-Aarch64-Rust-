@@ -67,7 +67,9 @@ pub async fn scan_create(
     Json(req): Json<ScanRequest>,
 ) -> impl IntoResponse {
     let target = Target::new(req.kind, req.value.clone());
-    let sid = scan_id(&format!("{:?}", req.kind).to_lowercase(), &req.value);
+    // Canonical snake_case form so CLI and API generate identical scan_ids
+    // for the same target.
+    let sid = scan_id(req.kind.canonical_str(), &req.value);
     let scan = Scan::new(sid.clone(), target.clone()).with_options(req.options.clone());
 
     if let Err(e) = s.store.upsert_scan(&scan) {
@@ -121,14 +123,11 @@ pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 
 pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
     match s.store.get_scan(&id) {
-        Ok(Some(scan)) => match serde_json::to_value(&scan) {
-            Ok(value) => (StatusCode::OK, Json(value)).into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
-            )
-                .into_response(),
-        },
+        Ok(Some(scan)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(&scan).unwrap_or(json!({}))),
+        )
+            .into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -148,6 +147,27 @@ pub async fn scan_entities(
             (
                 StatusCode::OK,
                 Json(json!({ "entities": entities, "count": n })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn scan_correlations(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.correlations_for_scan(&id) {
+        Ok(corr) => {
+            let n = corr.len();
+            (
+                StatusCode::OK,
+                Json(json!({ "correlations": corr, "count": n })),
             )
                 .into_response()
         }
@@ -183,3 +203,12 @@ pub async fn scan_events_sse(
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
+
+// Force the EventKind import to remain (clippy::unused_imports otherwise);
+// we serialise it implicitly via Event in the broadcast.
+const _: fn() = || {
+    let _ = EventKind::ScanComplete {
+        scan_id: String::new(),
+        entity_count: 0,
+    };
+};

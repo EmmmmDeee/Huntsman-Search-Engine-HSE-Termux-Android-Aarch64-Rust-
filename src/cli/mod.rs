@@ -158,7 +158,7 @@ async fn cmd_serve(bind: String) -> Result<()> {
     let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
     let state = Arc::new(AppState { store, engine, bus });
 
-    let app = router(state);
+    let app = router(state, &bind);
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .map_err(|e| Error::Other(format!("bind {bind}: {e}")))?;
@@ -242,7 +242,9 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
         max_wall_time_secs: cmd.max_wall_time_secs,
     };
 
-    let sid = scan_id(&cmd.kind, &cmd.value);
+    // Use the parsed TargetKind's canonical form, not the raw user input,
+    // so `--kind ip` and `--kind ipaddress` produce the same scan_id.
+    let sid = scan_id(target_kind.canonical_str(), &cmd.value);
     let store = Arc::new(Store::open(&default_db_path())?);
     let (bus, _rx) = tokio::sync::broadcast::channel(64);
     let engine = ScanEngine::new(registry(), Arc::clone(&store), bus.clone());
@@ -257,6 +259,7 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
 
     let scan = engine.run(scan, target, ctx).await?;
     let entities = store.entities_for_scan(&sid)?;
+    let correlations = store.correlations_for_scan(&sid)?;
 
     match cmd.output.as_str() {
         "json" => {
@@ -265,6 +268,7 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
                 serde_json::to_string_pretty(&serde_json::json!({
                     "scan": scan,
                     "entities": entities,
+                    "correlations": correlations,
                 }))?
             );
         }
@@ -291,6 +295,23 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
                     e.c_effective(),
                     e.classify()
                 );
+            }
+            if !correlations.is_empty() {
+                println!("\n{} correlations:\n", correlations.len());
+                println!(
+                    "{:<10} {:<10} {:<40} DESCRIPTION",
+                    "RULE", "SEVERITY", "NAME"
+                );
+                println!("{}", "-".repeat(86));
+                for c in &correlations {
+                    println!(
+                        "{:<10} {:<10} {:<40} {}",
+                        c.rule_id,
+                        c.severity.to_string(),
+                        truncate(&c.rule_name, 40),
+                        c.description
+                    );
+                }
             }
         }
     }
