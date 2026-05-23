@@ -12,6 +12,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::error_snippet;
 
 pub struct IpGeo;
 
@@ -57,8 +58,16 @@ impl Module for IpGeo {
             .await
             .map_err(|e| Error::module("ip_geo", e.to_string()))?;
 
-        if !resp.status().is_success() {
-            return Ok(ModuleResult::new());
+        let status = resp.status();
+        if !status.is_success() {
+            // ip-api.com free tier rate-limits at 45 req/min and returns
+            // HTTP 429 with a JSON body when exceeded. Surface as a real
+            // module_error so the user can see the limit was hit; previous
+            // silent-empty behaviour made rate-limit conditions invisible.
+            return Err(Error::module(
+                "ip_geo",
+                format!("HTTP {status}: {}", error_snippet(resp).await),
+            ));
         }
 
         let data: IpApiResp = resp

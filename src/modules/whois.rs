@@ -54,6 +54,17 @@ impl Module for Whois {
 
         // 3) Parse the response into the fields we surface.
         let registrar = field(&response, &["Registrar:", "Sponsoring Registrar:"]);
+        let registrar_iana = field(&response, &["Registrar IANA ID:", "Registrar IANA Number:"]);
+        let registrar_url = field(&response, &["Registrar URL:", "Registrar Website:"]);
+        let updated = field(
+            &response,
+            &[
+                "Updated Date:",
+                "Last Modified:",
+                "Last updated:",
+                "changed:",
+            ],
+        );
         let created = field(&response, &["Creation Date:", "created:", "Created On:"]);
         let expires = field(
             &response,
@@ -61,6 +72,7 @@ impl Module for Whois {
                 "Registry Expiry Date:",
                 "Registrar Registration Expiration Date:",
                 "expires:",
+                "paid-till:",
             ],
         );
         let registrant_email = field(
@@ -68,10 +80,30 @@ impl Module for Whois {
             &["Registrant Email:", "Tech Email:", "Admin Email:"],
         )
         .filter(|e| e.contains('@'));
+        let registrant_org = field(
+            &response,
+            &["Registrant Organization:", "Registrant Organisation:", "org:"],
+        );
+        let registrant_country = field(&response, &["Registrant Country:", "country:"]);
+        let registrant_state = field(
+            &response,
+            &["Registrant State/Province:", "Registrant State:"],
+        );
+        let admin_email =
+            field(&response, &["Admin Email:"]).filter(|e| e.contains('@'));
+        let tech_email = field(&response, &["Tech Email:"]).filter(|e| e.contains('@'));
+        let abuse_email = field(
+            &response,
+            &["Registrar Abuse Contact Email:", "abuse-mailbox:", "OrgAbuseEmail:"],
+        )
+        .filter(|e| e.contains('@'));
         let nameservers = all_fields(&response, &["Name Server:", "nserver:"]);
+        let statuses = all_fields(&response, &["Domain Status:", "status:"]);
+        let dnssec = field(&response, &["DNSSEC:", "dnssec:"]);
 
         // No actionable data parsed — skip the entity to avoid noise.
-        if registrar.is_none() && created.is_none() && nameservers.is_empty() {
+        if registrar.is_none() && created.is_none() && nameservers.is_empty() && statuses.is_empty()
+        {
             return Ok(ModuleResult::new());
         }
 
@@ -82,12 +114,58 @@ impl Module for Whois {
 
         let mut entity = Entity::new(kind, &target.value, 0.85, &_ctx.scan_id);
 
+        // Status flags become tags so the SPA can highlight them. These
+        // are the most operationally interesting: lock states, hold flags,
+        // pending transfers, etc.
+        for status in &statuses {
+            let lower = status.to_lowercase();
+            for flag in [
+                "clienttransferprohibited",
+                "clientdeleteprohibited",
+                "clientholdprohibited",
+                "clientupdateprohibited",
+                "servertransferprohibited",
+                "serverdeleteprohibited",
+                "serverholdprohibited",
+                "serverupdateprohibited",
+                "redemptionperiod",
+                "pendingdelete",
+                "pendingtransfer",
+                "addperiod",
+                "autorenewperiod",
+                "ok",
+            ] {
+                if lower.contains(flag) {
+                    entity.tag(format!("status:{flag}"));
+                }
+            }
+        }
+        if let Some(d) = &dnssec
+            && d.to_lowercase().contains("unsigned")
+        {
+            entity.tag("dnssec:unsigned");
+        }
+        if let Some(d) = &dnssec
+            && d.to_lowercase().contains("signed")
+        {
+            entity.tag("dnssec:signed");
+        }
+
         let mut ev = Evidence::new("whois", format!("WHOIS for {}", target.value));
         if let Some(v) = &registrar {
             ev = ev.with_attr("registrar", v);
         }
+        if let Some(v) = &registrar_iana {
+            ev = ev.with_attr("registrar_iana_id", v);
+        }
+        if let Some(v) = &registrar_url {
+            ev = ev.with_attr("registrar_url", v);
+        }
         if let Some(v) = &created {
             ev = ev.with_attr("created", v);
+        }
+        if let Some(v) = &updated {
+            ev = ev.with_attr("updated", v);
         }
         if let Some(v) = &expires {
             ev = ev.with_attr("expires", v);
@@ -95,14 +173,75 @@ impl Module for Whois {
         if !nameservers.is_empty() {
             ev = ev.with_attr("name_servers", nameservers.join(", "));
         }
+        if !statuses.is_empty() {
+            ev = ev.with_attr("statuses", statuses.join(", "));
+        }
+        if let Some(v) = &dnssec {
+            ev = ev.with_attr("dnssec", v);
+        }
+        if let Some(v) = &registrant_org {
+            ev = ev.with_attr("registrant_org", v);
+        }
+        if let Some(v) = &registrant_country {
+            ev = ev.with_attr("registrant_country", v);
+        }
+        if let Some(v) = &registrant_state {
+            ev = ev.with_attr("registrant_state", v);
+        }
         if let Some(v) = &registrant_email {
             ev = ev.with_attr("registrant_email", v);
+        }
+        if let Some(v) = &admin_email {
+            ev = ev.with_attr("admin_email", v);
+        }
+        if let Some(v) = &tech_email {
+            ev = ev.with_attr("tech_email", v);
+        }
+        if let Some(v) = &abuse_email {
+            ev = ev.with_attr("abuse_email", v);
         }
 
         entity.add_evidence(ev);
 
         let mut result = ModuleResult::new();
         result.push(entity);
+
+        // Surface contact emails as discrete Email entities so they fan
+        // out as scan targets in autonomous-expansion mode.
+        for (email, role) in [
+            (&registrant_email, "registrant"),
+            (&admin_email, "admin"),
+            (&tech_email, "tech"),
+            (&abuse_email, "abuse"),
+        ] {
+            if let Some(addr) = email {
+                let mut e = Entity::new(EntityKind::Email, addr, 0.78, &_ctx.scan_id);
+                e.tag(format!("whois-{role}"));
+                e.add_evidence(
+                    Evidence::new("whois", format!("WHOIS {role} contact for {}", target.value))
+                        .with_attr("role", role)
+                        .with_attr("parent_target", target.value.as_str()),
+                );
+                result.push(e);
+            }
+        }
+
+        // Surface nameservers as Domain entities too so DNS chaining
+        // picks them up at depth>=1.
+        for ns in &nameservers {
+            let host = ns.trim_end_matches('.').to_lowercase();
+            if host.is_empty() {
+                continue;
+            }
+            let mut e = Entity::new(EntityKind::Domain, &host, 0.82, &_ctx.scan_id);
+            e.tag("whois-ns");
+            e.add_evidence(
+                Evidence::new("whois", format!("Nameserver for {}", target.value))
+                    .with_attr("parent_target", target.value.as_str()),
+            );
+            result.push(e);
+        }
+
         Ok(result)
     }
 }

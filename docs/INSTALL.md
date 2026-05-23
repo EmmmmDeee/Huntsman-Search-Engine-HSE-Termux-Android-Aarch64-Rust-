@@ -177,10 +177,22 @@ In Termux, `$HOME` resolves to `/data/data/com.termux/files/home`.
 ## Verifying the install
 
 ```bash
-hse --version           # → hse 0.2.0
-hse doctor              # environment report
-hse modules             # 5 modules listed
+hse --version           # → hse 0.8.0
+hse doctor              # environment report — should print "Termux: detected" on-device
+hse modules             # 13 modules listed (7 network + 6 Termux sensors)
 hse scan --kind email --value test@example.com --modules email_to_username
 ```
+
+### Web UI smoke test
+
+```bash
+hse serve               # listens on 127.0.0.1:8080
+```
+
+Open Chrome (or Firefox) on the device and visit
+[`http://127.0.0.1:8080`](http://127.0.0.1:8080). The SPA loads with five
+tabs: Scan, Live, Entities, Correlate, History, Modules. Trigger a scan
+from the Scan tab — module-progress events stream in via SSE as the
+engine dispatches.
 
 If anything looks wrong, see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).

@@ -13,6 +13,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::error_snippet;
 
 pub struct Crtsh;
 
@@ -47,8 +48,12 @@ impl Module for Crtsh {
             .await
             .map_err(|e| Error::module("crtsh", e.to_string()))?;
 
-        if !resp.status().is_success() {
-            return Err(Error::module("crtsh", format!("HTTP {}", resp.status())));
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(Error::module(
+                "crtsh",
+                format!("HTTP {status}: {}", error_snippet(resp).await),
+            ));
         }
 
         let entries: Vec<CrtEntry> = resp
