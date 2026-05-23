@@ -30,7 +30,7 @@ use crate::{
 };
 
 /// `(500, {"error": "..."})` JSON response for an unexpected failure.
-fn internal_error(err: impl ToString) -> axum::response::Response {
+fn internal_error(err: &impl ToString) -> axum::response::Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({ "error": err.to_string() })),
@@ -92,7 +92,7 @@ pub async fn scan_create(
     let scan = Scan::new(sid.clone(), target.clone()).with_options(req.options);
 
     if let Err(e) = s.store.upsert_scan(&scan) {
-        return internal_error(e);
+        return internal_error(&e);
     }
 
     let ctx = ModuleContext {
@@ -128,7 +128,7 @@ pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             let n = scans.len();
             (StatusCode::OK, Json(json!({ "scans": scans, "count": n }))).into_response()
         }
-        Err(e) => internal_error(e),
+        Err(e) => internal_error(&e),
     }
 }
 
@@ -140,7 +140,7 @@ pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
         )
             .into_response(),
         Ok(None) => not_found(),
-        Err(e) => internal_error(e),
+        Err(e) => internal_error(&e),
     }
 }
 
@@ -157,7 +157,7 @@ pub async fn scan_entities(
             )
                 .into_response()
         }
-        Err(e) => internal_error(e),
+        Err(e) => internal_error(&e),
     }
 }
 
@@ -174,7 +174,7 @@ pub async fn scan_correlations(
             )
                 .into_response()
         }
-        Err(e) => internal_error(e),
+        Err(e) => internal_error(&e),
     }
 }
 
