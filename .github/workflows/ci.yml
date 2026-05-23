@@ -63,9 +63,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash -n install.sh
+      # shellcheck ships preinstalled on ubuntu-latest — call it directly
+      # rather than via a third-party action so a master-pinned drift
+      # can't break this job for reasons unrelated to install.sh
+      # (saw `git exit 128 / terminal prompts disabled` after a
+      # ludeeus/action-shellcheck@master revision in 2026-05).
       - name: ShellCheck
-        uses: ludeeus/action-shellcheck@master
-        with:
-          scandir: '.'
-          check_together: 'yes'
-          severity: warning
+        run: shellcheck --severity=warning install.sh
