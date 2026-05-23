@@ -120,6 +120,30 @@ impl ScanEngine {
         scan.finished_at = Some(crate::core::entity::unix_now());
         self.store.upsert_scan(&scan)?;
 
+        // Post-scan correlator (v0.4+). Runs synchronously after entities
+        // are persisted — it reads from the store, not the in-memory map,
+        // so the upsert above must complete first. Errors don't fail the
+        // scan; correlations are an enrichment, not a correctness invariant.
+        match crate::core::correlator::Correlator::new(Arc::clone(&self.store)).run(&scan.id) {
+            Ok(firings) => {
+                for c in &firings {
+                    let _ = self.bus.send(Event::new(
+                        &scan.id,
+                        EventKind::CorrelationFound {
+                            correlation: c.clone(),
+                        },
+                    ));
+                }
+                let _ = self.bus.send(Event::new(
+                    &scan.id,
+                    EventKind::CorrelationsDone {
+                        count: firings.len(),
+                    },
+                ));
+            }
+            Err(e) => warn!(scan_id = %scan.id, error = %e, "correlator failed"),
+        }
+
         let _ = self.bus.send(Event::new(
             &scan.id,
             EventKind::ScanComplete {

@@ -10,6 +10,56 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-23
+
+### Added
+- **Correlator** (`src/core/correlator.rs`). Rule-based post-scan analysis
+  that runs synchronously after every scan completes and emits one
+  `Correlation` per firing rule. Rules are pure functions over the
+  collected entities; adding a rule is a 10-line append to
+  `evaluate_rules`. Initial rule set:
+  - `AU-001` Multi-source breach corroboration (Critical) — email in ≥2
+    distinct breach sources. Dormant in v0.4 (only `hudsonrock` is a
+    breach source so far); activates as v0.5+ adds more.
+  - `AU-002` Identity cluster (High) — Email + Username + Phone all
+    co-located in the same scan.
+  - `AU-003` High cross-source corroboration (Medium) — any entity with
+    `corroboration ≥ 3` independent sources reporting the same fact.
+  - `AU-010` Infrastructure consensus (Medium) — Domain or IP confirmed
+    by ≥3 distinct module sources at the evidence level.
+- New `Severity` enum (`Low < Medium < High < Critical`), persisted to
+  the `correlations` SQLite table with severity-sorted retrieval.
+- `EventKind::CorrelationFound { correlation }` and
+  `EventKind::CorrelationsDone { count }` event variants — surfaced via
+  SSE so the SPA renders correlations live as they fire.
+- `GET /api/v1/scans/{id}/correlations` endpoint.
+- SPA: new **Correlate** tab with severity-coloured cards. Correlations
+  also live-stream into the scan log during the run.
+- CLI: `hse scan` table output now includes a correlations section
+  beneath the entities. `--output json` adds a `correlations` field.
+- Two new free modules:
+  - `alienvault_otx` (Free, no key) — accepts `ip` and `domain`. Queries
+    AlienVault OTX for threat-intel pulse count. Adds a third source
+    that contributes to `AU-010` consensus.
+  - `whois` (Free, no key) — raw whois protocol over TCP port 43 (works
+    in Termux with no root). Follows IANA referrals once, parses
+    registrar / dates / nameservers / registrant email.
+
+### Changed
+- Module registry grew 5 → 7. Default scans now hit OTX and whois
+  alongside the existing modules, so AU-010 can plausibly fire on
+  popular domains (crtsh + dns_resolver + whois + OTX = 4 sources).
+- Schema: added `correlations` table with a `UNIQUE(scan_id, rule_id,
+  description)` constraint so re-running the correlator on the same scan
+  is idempotent.
+
+### Notes
+- 56 tests pass (49 lib + 7 integration); 14 of those are new
+  (10 correlator rule tests, 4 new module accepts/cost tests).
+- Release binary 4.6 MB → 4.7 MB stripped.
+- No new external dependencies — `whois` uses `tokio::net::TcpStream`,
+  `alienvault_otx` reuses the existing rustls reqwest client.
+
 ## [0.3.0] — 2026-05-23
 
 ### Added
@@ -159,7 +209,8 @@ versions can include breaking changes; patch versions are bug-fix-only.
   - Classification derived, never stored
   - Passwords / credentials never written to evidence
 
-[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.4.0
 [0.3.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.3.0
 [0.2.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.2.0
 [0.1.0]: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/tag/v0.1.0

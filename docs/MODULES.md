@@ -4,18 +4,21 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (v0.2)
+## Catalogue (v0.4)
 
 | Module | Targets | Cost | Passive | Priority | Output kinds |
 |--------|---------|------|---------|----------|--------------|
-| [`hudsonrock`](#hudsonrock)                 | `email`, `domain`     | free       | no  | 130 | Email / Domain (with stealer-log evidence) |
-| [`email_to_username`](#email_to_username)   | `email`               | free       | **yes** | 95  | Username × N candidates |
-| [`crtsh`](#crtsh)                           | `domain`              | free       | no  | 35  | Domain (subdomains) |
-| [`dns_resolver`](#dns_resolver)             | `domain`              | free       | no  | 30  | IpAddress (A), Domain (MX), Domain (TXT) |
-| [`ip_geo`](#ip_geo)                         | `ip`                  | free       | no  | 28  | Coordinates, Organisation |
+| [`hudsonrock`](#hudsonrock)                 | `email`, `domain`     | free | no  | 130 | Email / Domain (with stealer-log evidence) |
+| [`email_to_username`](#email_to_username)   | `email`               | free | **yes** | 95  | Username × N candidates |
+| [`alienvault_otx`](#alienvault_otx)         | `ip`, `domain`        | free | no  | 78  | IpAddress / Domain (threat-intel pulses) |
+| [`crtsh`](#crtsh)                           | `domain`              | free | no  | 35  | Domain (subdomains) |
+| [`whois`](#whois)                           | `domain`, `ip`        | free | no  | 32  | Domain / IpAddress (registrar, dates, registrant) |
+| [`dns_resolver`](#dns_resolver)             | `domain`              | free | no  | 30  | IpAddress (A), Domain (MX), Domain (TXT) |
+| [`ip_geo`](#ip_geo)                         | `ip`                  | free | no  | 28  | Coordinates, Organisation |
 
-All v0.2 modules are **free** (no API key required). They were picked
-specifically for synergy under the v0.2+ autonomous-expansion engine.
+All v0.4 modules are **free** (no API key required). They were picked
+specifically for synergy under the autonomous-expansion engine and the
+v0.4 correlator's rule set.
 
 ---
 
@@ -122,6 +125,42 @@ config). Free, no key.
 
 **Quirks**: errors from any individual record type (A / MX / TXT) are
 silently swallowed inside the module — partial results are still returned.
+
+### `alienvault_otx`
+
+Public threat-intel pulse count from
+[AlienVault OTX](https://otx.alienvault.com/). Free, no key.
+
+**Targets accepted**: `ip`, `domain`.
+
+**Returns**: one `IpAddress` or `Domain` entity (depending on target kind),
+confidence 0.72, tagged `threat-intel`. Evidence records `pulse_count` and
+`indicator_type`. No entity is emitted if the target has zero pulses.
+
+**Quirks**: 404 (unknown indicator) is treated as "no findings"
+rather than an error. Rate limits are generous for the public endpoint;
+no throttling needed for normal use.
+
+### `whois`
+
+Raw whois protocol over TCP port 43. Free, no key, no root.
+
+**Targets accepted**: `domain`, `ip`.
+
+**Algorithm**: queries `whois.iana.org:43` for the target, follows one
+referral hop to the authoritative whois server, and parses the response
+for `registrar`, `created`, `expires`, `name_servers`, and
+`registrant_email`. The parser is line-prefix based and case-insensitive
+to handle the half-dozen mostly-but-not-quite-RFC-3912 dialects in use.
+
+**Returns**: one `Domain` (or `IpAddress`) entity, confidence 0.85,
+with evidence containing whatever fields the response actually included.
+Returns an empty `ModuleResult` if none of those fields could be parsed
+(no entity is better than a noisy empty one).
+
+**Quirks**: each lookup makes 1–2 TCP connections; each is bounded by a
+4 s timeout. Failures (network, timeout, malformed response) produce a
+`module_error` event and contribute no entities, but never crash the scan.
 
 ### `ip_geo`
 
