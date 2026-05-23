@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::entity::unix_now;
+use crate::core::entity::{EntityKind, unix_now};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -16,6 +16,50 @@ pub enum TargetKind {
     Asn,
     Coordinates,
     Address,
+}
+
+impl TargetKind {
+    /// Map an entity kind to a target kind, so an entity produced by one
+    /// module can become the input target for another module.
+    ///
+    /// Returns `None` for entity kinds that have no natural scan target
+    /// (organisations, MACs, raw URLs, credentials, etc.).
+    pub fn from_entity_kind(kind: &EntityKind) -> Option<Self> {
+        match kind {
+            EntityKind::Email => Some(Self::Email),
+            EntityKind::Username => Some(Self::Username),
+            EntityKind::Phone => Some(Self::Phone),
+            EntityKind::Person => Some(Self::FullName),
+            EntityKind::IpAddress => Some(Self::IpAddress),
+            EntityKind::Domain => Some(Self::Domain),
+            EntityKind::Asn => Some(Self::Asn),
+            EntityKind::Coordinates => Some(Self::Coordinates),
+            EntityKind::Address => Some(Self::Address),
+            EntityKind::Organisation
+            | EntityKind::AbnAcn
+            | EntityKind::MacAddress
+            | EntityKind::DeviceId
+            | EntityKind::Url
+            | EntityKind::Credential
+            | EntityKind::Password
+            | EntityKind::Other(_) => None,
+        }
+    }
+
+    /// The matching entity kind for normalisation purposes. Always defined.
+    pub fn to_entity_kind(self) -> EntityKind {
+        match self {
+            Self::Email => EntityKind::Email,
+            Self::Username => EntityKind::Username,
+            Self::Phone => EntityKind::Phone,
+            Self::FullName => EntityKind::Person,
+            Self::IpAddress => EntityKind::IpAddress,
+            Self::Domain => EntityKind::Domain,
+            Self::Asn => EntityKind::Asn,
+            Self::Coordinates => EntityKind::Coordinates,
+            Self::Address => EntityKind::Address,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,7 +131,7 @@ pub struct ScanRequest {
 /// behaviour. The engine respects every field at dispatch time.
 ///
 /// Adding a knob = add a field here; CLI/API/UI surface it as needed.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanOptions {
     /// Allowlist of module names. None = run every module that accepts the target.
     pub modules: Option<Vec<String>>,
@@ -119,9 +163,48 @@ pub struct ScanOptions {
     #[serde(default)]
     pub passive_only: bool,
 
-    /// Recursive expansion depth (live-mode use, v0.5+). 0 = no recursion.
+    // ── Autonomous expansion (v0.2+) ────────────────────────────────────────
+    /// Recursive expansion depth. 0 = no expansion (single round, v0.1 behaviour).
+    /// Each round picks high-confidence entities from prior rounds, converts
+    /// them to scan targets, and runs all accepting modules on them.
     #[serde(default)]
     pub depth: u32,
+
+    /// Only expand entities whose `c_effective()` is at least this. Default 0.75
+    /// (Verified tier) — keeps expansion focused on the data the engine itself
+    /// rates as solid. Stronger filter than `min_confidence`, which gates the
+    /// base confidence at first encounter.
+    #[serde(default = "default_min_expand_confidence")]
+    pub min_expand_confidence: f64,
+
+    /// Hard cap on total entities. Stops expansion once reached. `None` = no cap.
+    pub max_entities: Option<usize>,
+
+    /// Hard cap on total wall-time, in seconds. Stops expansion once exceeded. `None` = no cap.
+    pub max_wall_time_secs: Option<u64>,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            modules: None,
+            exclude_modules: Vec::new(),
+            throttle_ms: 0,
+            max_concurrent: 0,
+            module_timeout_ms: None,
+            min_confidence: None,
+            free_only: false,
+            passive_only: false,
+            depth: 0,
+            min_expand_confidence: default_min_expand_confidence(),
+            max_entities: None,
+            max_wall_time_secs: None,
+        }
+    }
+}
+
+fn default_min_expand_confidence() -> f64 {
+    0.75
 }
 
 #[cfg(test)]
@@ -135,6 +218,34 @@ mod tests {
         assert_eq!(o.throttle_ms, 0);
         assert!(!o.free_only);
         assert!(!o.passive_only);
+        assert_eq!(o.depth, 0);
+        assert!((o.min_expand_confidence - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn target_kind_round_trips_via_entity_kind() {
+        for tk in [
+            TargetKind::Email,
+            TargetKind::Username,
+            TargetKind::Phone,
+            TargetKind::FullName,
+            TargetKind::IpAddress,
+            TargetKind::Domain,
+            TargetKind::Asn,
+            TargetKind::Coordinates,
+            TargetKind::Address,
+        ] {
+            let ek = tk.to_entity_kind();
+            assert_eq!(TargetKind::from_entity_kind(&ek), Some(tk));
+        }
+    }
+
+    #[test]
+    fn unscannable_entity_kinds_return_none() {
+        assert!(TargetKind::from_entity_kind(&EntityKind::Organisation).is_none());
+        assert!(TargetKind::from_entity_kind(&EntityKind::MacAddress).is_none());
+        assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
+        assert!(TargetKind::from_entity_kind(&EntityKind::Password).is_none());
     }
 
     #[test]

@@ -4,21 +4,22 @@ Prototype pure-Rust OSINT/GEOINT scaffold designed to run inside Termux on
 Android aarch64 with no root, viewed through any web browser on the device
 (planned for v0.2+).
 
-**Status: v0.1.0 prototype.** Foundation only — CLI, storage, engine, five
-free modules. No HTTP server, no SPA, no live mode yet. See `CLAUDE.md` for
-the long-term design north star.
+**Status: v0.2.0 prototype.** Foundation + autonomous expansion engine.
+Five free modules now act like a tightly-integrated suite via depth-bounded
+auto-chaining. No HTTP server / SPA yet (next). See `CLAUDE.md` for the
+long-term design north star.
 
 ## Roadmap
 
 | Tag | Scope |
 |---|---|
-| **v0.1.0** | core + 5 free modules + CLI |
-| v0.2.0 | axum HTTP server + minimal SPA + SSE |
-| v0.3.0 | per-scan customisation in the UI (module selection, throttle, depth) |
+| v0.1.0 | core + 5 free modules + CLI |
+| **v0.2.0** | autonomous expansion engine (auto-chain modules, depth + budgets) |
+| v0.3.0 | axum HTTP server + minimal SPA + SSE |
 | v0.4.0 | correlator + more breach/identity modules |
-| v0.5.0 | `live` mode (re-poll + recursive expansion) |
+| v0.5.0 | `live` mode (re-poll on interval + sensor modules) |
 | v0.6.0 | Termux sensor modules (arp/wifi/gps/cell) |
-| v0.7.0+ | batch, paid modules, debug harness |
+| v0.7.0+ | batch, paid modules, debug harness, junction table for multi-scan entity tracking |
 
 ## Build (Termux aarch64)
 
@@ -44,9 +45,50 @@ hse scan --kind domain --value example.com
 hse scan --kind email  --value foo@bar.com --modules hudsonrock,email_to_username
 hse scan --kind domain --value example.com --throttle 200 --free-only --output json
 
+# Autonomous expansion — engine auto-feeds discovered entities as new targets
+# (depth=2 means up to 2 rounds of follow-on scans).
+# Defaults are conservative: only entities with c_eff ≥ 0.75 (Verified) expand.
+hse scan --kind domain --value example.com --depth 2
+
+# Loosen the expansion threshold and add budgets:
+hse scan --kind domain --value example.com \
+  --depth 3 --min-expand-confidence 0.5 \
+  --max-entities 500 --max-wall-time 60
+
 # Verify environment:
 hse doctor
 ```
+
+## Autonomous expansion (v0.2+)
+
+A single scan can run multiple rounds of dispatch without manual chaining.
+Each round picks high-confidence entities discovered so far, converts them
+to new scan targets via `TargetKind::from_entity_kind`, and runs every
+accepting module on each one. This makes the 5 modules synergistic:
+
+```
+hse scan --kind domain --value example.com --depth 2
+└─ Round 0 (seed):  example.com
+   ├─ crtsh         → 50 subdomain entities
+   └─ dns_resolver  → A / MX / TXT records
+└─ Round 1: each high-confidence subdomain becomes a new Domain target
+   ├─ crtsh         → more subdomains (skipped if already visited)
+   └─ dns_resolver  → IPs discovered
+└─ Round 2: each high-confidence IP becomes a new IpAddress target
+   └─ ip_geo        → coordinates + ASN / org
+```
+
+The engine guarantees termination:
+- **Visited set** — `(target_kind, normalised_value)` pairs are never scanned twice in one scan.
+- **`--min-expand-confidence`** — default `0.75` (Verified tier). Low-confidence findings don't trigger more scanning.
+- **`--max-entities`** — hard cap on total entities collected.
+- **`--max-wall-time`** — hard cap on total scan seconds.
+- **`--depth`** — hard cap on rounds.
+
+Combine these with `--free-only`, `--passive-only`, `--modules`, or
+`--exclude` for full control. Every knob is a `ScanOptions` field
+serialisable to JSON, so the future SPA can render exactly the same
+controls as the CLI flags.
 
 ### Available v0.1.0 modules (all free, no keys required)
 

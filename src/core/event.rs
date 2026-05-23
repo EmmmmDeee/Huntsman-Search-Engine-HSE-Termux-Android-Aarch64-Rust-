@@ -54,6 +54,16 @@ pub enum EventKind {
     EntityFound {
         entity: Entity,
     },
+    /// Autonomous expansion round about to start.
+    ExpansionTick {
+        depth: u32,
+        queued: usize,
+        visited: usize,
+    },
+    /// Autonomous expansion stopped early (budget, no candidates, etc.).
+    ExpansionStop {
+        reason: String,
+    },
     ScanComplete {
         scan_id: String,
         entity_count: usize,
