@@ -364,14 +364,14 @@ mod tests {
         e.observed_at = 300;
         store.upsert_entity(&e).unwrap();
 
-        let uid = e.uid.clone();
-        let scans = store.scan_ids_for_entity(&uid).unwrap();
+        let uid = &e.uid;
+        let scans = store.scan_ids_for_entity(uid).unwrap();
         assert_eq!(scans.len(), 3);
         // Most recent first
         assert_eq!(scans[0], "s3");
         assert_eq!(scans[2], "s1");
 
-        assert_eq!(store.observation_count(&uid).unwrap(), 3);
+        assert_eq!(store.observation_count(uid).unwrap(), 3);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -403,8 +403,7 @@ mod tests {
         store.upsert_entity(&e).unwrap();
         store.upsert_entity(&e).unwrap();
 
-        let uid = e.uid.clone();
-        assert_eq!(store.observation_count(&uid).unwrap(), 1);
+        assert_eq!(store.observation_count(&e.uid).unwrap(), 1);
 
         let _ = std::fs::remove_file(&path);
     }

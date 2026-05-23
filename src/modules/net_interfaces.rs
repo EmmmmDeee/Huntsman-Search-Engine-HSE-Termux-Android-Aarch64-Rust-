@@ -35,9 +35,9 @@ impl Module for NetInterfaces {
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
-        let mut entries = match tokio::fs::read_dir("/sys/class/net").await {
-            Ok(e) => e,
-            Err(_) => return Ok(result), // not Linux — no-op
+        // not Linux — no-op
+        let Ok(mut entries) = tokio::fs::read_dir("/sys/class/net").await else {
+            return Ok(result);
         };
 
         while let Ok(Some(entry)) = entries.next_entry().await {

@@ -47,9 +47,8 @@ impl Module for WifiConnect {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let stdout = match termux_cmd("termux-wifi-connectioninfo", &[], 3000).await {
-            Some(s) => s,
-            None => return Ok(ModuleResult::new()),
+        let Some(stdout) = termux_cmd("termux-wifi-connectioninfo", &[], 3000).await else {
+            return Ok(ModuleResult::new());
         };
         Ok(parse_conn(&stdout, &ctx.scan_id))
     }

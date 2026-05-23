@@ -48,12 +48,12 @@ pub fn is_termux() -> bool {
 /// Termux: `$HOME/.huntsman/huntsman.db` (typically under `/data/data/com.termux/files/home`).
 /// Falls back to `./huntsman.db` if `$HOME` is unset.
 pub fn default_db_path() -> String {
-    match std::env::var("HOME") {
-        Ok(home) => {
+    std::env::var("HOME").map_or_else(
+        |_| "huntsman.db".to_string(),
+        |home| {
             let dir = std::path::Path::new(&home).join(".huntsman");
             let _ = std::fs::create_dir_all(&dir);
             dir.join("huntsman.db").to_string_lossy().into_owned()
-        }
-        Err(_) => "huntsman.db".to_string(),
-    }
+        },
+    )
 }

@@ -103,7 +103,7 @@ fn is_loopback_bind(bind: &str) -> bool {
         return ip.is_loopback();
     }
     // Hostname forms (no IP parse). Strip an optional trailing `:port`.
-    let host = bind.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind);
+    let host = bind.rsplit_once(':').map_or(bind, |(h, _)| h);
     let host = host.trim_start_matches('[').trim_end_matches(']');
     host == "localhost"
 }
@@ -134,7 +134,7 @@ fn build_cors_layer(bind: &str) -> CorsLayer {
     // loopback interface they get only the bind-matching origin and must
     // proxy through their own CORS-aware front-end for anything else.
     if is_loopback_bind(bind) {
-        let port = bind.rsplit_once(':').map(|(_, p)| p).unwrap_or("8080");
+        let port = bind.rsplit_once(':').map_or("8080", |(_, p)| p);
         push(format!("http://localhost:{port}"));
         push(format!("http://127.0.0.1:{port}"));
         push(format!("http://[::1]:{port}"));

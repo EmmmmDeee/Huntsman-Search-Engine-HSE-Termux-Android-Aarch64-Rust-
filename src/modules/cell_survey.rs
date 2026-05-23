@@ -53,9 +53,8 @@ impl Module for CellSurvey {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let stdout = match termux_cmd("termux-telephony-cellinfo", &[], 3000).await {
-            Some(s) => s,
-            None => return Ok(ModuleResult::new()),
+        let Some(stdout) = termux_cmd("termux-telephony-cellinfo", &[], 3000).await else {
+            return Ok(ModuleResult::new());
         };
         Ok(parse_cells(&stdout, &ctx.scan_id))
     }

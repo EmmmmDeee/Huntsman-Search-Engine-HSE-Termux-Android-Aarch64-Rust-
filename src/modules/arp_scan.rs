@@ -38,9 +38,9 @@ impl Module for ArpScan {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let content = match tokio::fs::read_to_string("/proc/net/arp").await {
-            Ok(s) => s,
-            Err(_) => return Ok(ModuleResult::new()), // not Linux, no /proc — no-op
+        // not Linux, no /proc — no-op
+        let Ok(content) = tokio::fs::read_to_string("/proc/net/arp").await else {
+            return Ok(ModuleResult::new());
         };
         Ok(parse_arp(&content, &ctx.scan_id))
     }

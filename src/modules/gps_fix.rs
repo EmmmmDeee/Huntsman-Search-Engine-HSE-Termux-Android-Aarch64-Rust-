@@ -50,11 +50,11 @@ impl Module for GpsFix {
         // Network provider is much faster than GPS (~1s vs minutes) and works
         // indoors. A 15s ceiling keeps the engine snappy even when the device
         // is genuinely unable to acquire a fix.
-        let stdout =
-            match termux_cmd("termux-location", &["-p", "network", "-r", "once"], 15_000).await {
-                Some(s) => s,
-                None => return Ok(ModuleResult::new()),
-            };
+        let Some(stdout) =
+            termux_cmd("termux-location", &["-p", "network", "-r", "once"], 15_000).await
+        else {
+            return Ok(ModuleResult::new());
+        };
         Ok(parse_fix(&stdout, &ctx.scan_id))
     }
 }

@@ -497,9 +497,9 @@ impl ScanEngine {
             // Acquire BEFORE spawning so dispatch *launches* respect the
             // concurrency cap (not just completions). The permit is held
             // for the duration of the spawned task.
-            let permit = match Arc::clone(&sem).acquire_owned().await {
-                Ok(p) => p,
-                Err(_) => break, // semaphore closed — shouldn't happen
+            // semaphore closed — shouldn't happen
+            let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
+                break;
             };
 
             let module_arc: Arc<dyn Module> = Arc::clone(module);

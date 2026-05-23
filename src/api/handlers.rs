@@ -76,7 +76,7 @@ pub async fn scan_create(
     // itself mixes `unix_now()`, so the resulting id is NOT deterministic
     // across re-scans of the same target — each invocation gets a fresh id.
     let sid = scan_id(req.kind.canonical_str(), &req.value);
-    let scan = Scan::new(sid.clone(), target.clone()).with_options(req.options.clone());
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(req.options);
 
     if let Err(e) = s.store.upsert_scan(&scan) {
         return (
@@ -131,7 +131,7 @@ pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     match s.store.get_scan(&id) {
         Ok(Some(scan)) => (
             StatusCode::OK,
-            Json(serde_json::to_value(&scan).unwrap_or(json!({}))),
+            Json(serde_json::to_value(&scan).unwrap_or_else(|_| json!({}))),
         )
             .into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
@@ -214,7 +214,7 @@ pub async fn live_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     match s.live.get(&id) {
         Some(session) => (
             StatusCode::OK,
-            Json(serde_json::to_value(&session).unwrap_or(json!({}))),
+            Json(serde_json::to_value(&session).unwrap_or_else(|_| json!({}))),
         )
             .into_response(),
         None => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),

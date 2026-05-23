@@ -65,13 +65,12 @@ pub enum EntityKind {
 
 impl fmt::Display for EntityKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Other(s) => write!(f, "other:{s}"),
-            _ => {
-                // serialise via serde_json then strip quotes
-                let raw = serde_json::to_string(self).unwrap_or_default();
-                write!(f, "{}", raw.trim_matches('"'))
-            }
+        if let Self::Other(s) = self {
+            write!(f, "other:{s}")
+        } else {
+            // serialise via serde_json then strip quotes
+            let raw = serde_json::to_string(self).unwrap_or_default();
+            write!(f, "{}", raw.trim_matches('"'))
         }
     }
 }
@@ -187,7 +186,7 @@ impl Entity {
         Self {
             uid,
             kind,
-            value: normalised.clone(),
+            value: normalised,
             raw_value: value,
             confidence: confidence.clamp(0.0, 1.0),
             corroboration: 1,
@@ -205,7 +204,7 @@ impl Entity {
     /// Architecture invariant — do not modify the formula.
     #[inline]
     pub fn c_effective(&self) -> f64 {
-        let boost = 1.0 + CORROBORATION_COEFF * (self.corroboration as f64).ln();
+        let boost = CORROBORATION_COEFF.mul_add((self.corroboration as f64).ln(), 1.0);
         (self.confidence * boost).clamp(0.0, 1.0)
     }
 
@@ -267,7 +266,7 @@ impl Entity {
     /// - `observed_at`  = max(self, other)      — most recent wins
     /// - `evidence` appended
     /// - `tags` union (dedup)
-    pub fn merge(&mut self, other: Entity) {
+    pub fn merge(&mut self, other: Self) {
         debug_assert_eq!(self.uid, other.uid, "merge: UID mismatch");
         if self.uid != other.uid {
             return;
@@ -347,7 +346,6 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
             .to_lowercase()
             .trim_end_matches('.')
             .to_string(),
-        EntityKind::IpAddress => value.trim().to_string(),
         EntityKind::Phone => {
             let mut out = String::new();
             let mut chars = value.chars().peekable();
@@ -416,7 +414,7 @@ mod tests {
         let mut e = email("a@b.com");
         e.corroboration = 4;
         // c_eff = 0.6 * (1 + 0.15 * ln(4)) = 0.6 * 1.2079...
-        let expected = 0.6 * (1.0 + 0.15 * 4f64.ln());
+        let expected = 0.6 * 0.15f64.mul_add(4f64.ln(), 1.0);
         assert!((e.c_effective() - expected).abs() < 1e-9);
     }
 

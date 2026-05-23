@@ -47,14 +47,14 @@ impl Module for EmailToUsername {
         candidates.insert(local.clone());
 
         // Strip +tag suffix → also feeds the splitter below.
-        let detagged = match local.find('+') {
-            Some(pos) => {
+        let detagged = local.find('+').map_or_else(
+            || local.clone(),
+            |pos| {
                 let s = local[..pos].to_string();
                 candidates.insert(s.clone());
                 s
-            }
-            None => local.clone(),
-        };
+            },
+        );
 
         // Strip trailing digits (john42 → john)
         let stripped = detagged.trim_end_matches(|c: char| c.is_ascii_digit());
@@ -65,7 +65,7 @@ impl Module for EmailToUsername {
         // Collapse separators (john.doe → johndoe)
         let collapsed: String = detagged
             .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
+            .filter(char::is_ascii_alphanumeric)
             .collect();
         if collapsed.len() > 2 {
             candidates.insert(collapsed);
@@ -100,6 +100,7 @@ impl Module for EmailToUsername {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn ctx() -> ModuleContext {
         let (bus, _rx) = tokio::sync::broadcast::channel(8);
@@ -107,7 +108,7 @@ mod tests {
             scan_id: "t".into(),
             bus,
             http: crate::util::http::build_client(),
-            keys: Default::default(),
+            keys: HashMap::default(),
         }
     }
 

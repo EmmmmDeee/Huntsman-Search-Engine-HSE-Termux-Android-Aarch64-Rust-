@@ -73,7 +73,7 @@ impl Module for DnsResolver {
 
         // TXT records → enrich parent
         if let Ok(lookup) = resolver.txt_lookup(domain.as_str()).await {
-            let txts: Vec<String> = lookup.iter().map(|t| t.to_string()).collect();
+            let txts: Vec<String> = lookup.iter().map(ToString::to_string).collect();
             if !txts.is_empty() {
                 let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
                 dom.add_evidence(

@@ -342,8 +342,8 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        () = ctrl_c => {},
+        () = terminate => {},
     }
 }
 
@@ -408,57 +408,54 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
     let entities = store.entities_for_scan(&sid)?;
     let correlations = store.correlations_for_scan(&sid)?;
 
-    match cmd.output.as_str() {
-        "json" => {
+    if cmd.output == "json" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "scan": scan,
+                "entities": entities,
+                "correlations": correlations,
+            }))?
+        );
+    } else {
+        println!(
+            "\nScan {} — {} entities for {}={}\n",
+            &sid[..8],
+            entities.len(),
+            cmd.kind,
+            cmd.value
+        );
+        println!(
+            "{:<16} {:<46} {:>6} {:>6}  CLASS",
+            "KIND", "VALUE", "CONF", "C_EFF"
+        );
+        println!("{}", "-".repeat(86));
+        for e in &entities {
+            let val = truncate(&e.value, 46);
             println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "scan": scan,
-                    "entities": entities,
-                    "correlations": correlations,
-                }))?
+                "{:<16} {:<46} {:>6.3} {:>6.3}  {}",
+                e.kind.to_string(),
+                val,
+                e.confidence,
+                e.c_effective(),
+                e.classify()
             );
         }
-        _ => {
+        if !correlations.is_empty() {
+            println!("\n{} correlations:\n", correlations.len());
             println!(
-                "\nScan {} — {} entities for {}={}\n",
-                &sid[..8],
-                entities.len(),
-                cmd.kind,
-                cmd.value
-            );
-            println!(
-                "{:<16} {:<46} {:>6} {:>6}  CLASS",
-                "KIND", "VALUE", "CONF", "C_EFF"
+                "{:<10} {:<10} {:<40} DESCRIPTION",
+                "RULE", "SEVERITY", "NAME"
             );
             println!("{}", "-".repeat(86));
-            for e in &entities {
-                let val = truncate(&e.value, 46);
+            for c in &correlations {
                 println!(
-                    "{:<16} {:<46} {:>6.3} {:>6.3}  {}",
-                    e.kind.to_string(),
-                    val,
-                    e.confidence,
-                    e.c_effective(),
-                    e.classify()
+                    "{:<10} {:<10} {:<40} {}",
+                    c.rule_id,
+                    c.severity.to_string(),
+                    truncate(&c.rule_name, 40),
+                    c.description
                 );
-            }
-            if !correlations.is_empty() {
-                println!("\n{} correlations:\n", correlations.len());
-                println!(
-                    "{:<10} {:<10} {:<40} DESCRIPTION",
-                    "RULE", "SEVERITY", "NAME"
-                );
-                println!("{}", "-".repeat(86));
-                for c in &correlations {
-                    println!(
-                        "{:<10} {:<10} {:<40} {}",
-                        c.rule_id,
-                        c.severity.to_string(),
-                        truncate(&c.rule_name, 40),
-                        c.description
-                    );
-                }
             }
         }
     }

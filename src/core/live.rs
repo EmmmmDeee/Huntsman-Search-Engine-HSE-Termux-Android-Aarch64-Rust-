@@ -181,12 +181,10 @@ impl LiveScanner {
     /// Request a session to stop after the current iteration. Returns
     /// `true` if a matching session was found.
     pub fn stop(&self, live_id: &str) -> bool {
-        if let Some(c) = self.inner.cancels.read().get(live_id) {
+        self.inner.cancels.read().get(live_id).is_some_and(|c| {
             c.store(true, Ordering::Relaxed);
             true
-        } else {
-            false
-        }
+        })
     }
 
     pub fn get(&self, live_id: &str) -> Option<LiveSession> {
@@ -205,8 +203,7 @@ impl LiveScanner {
             .sessions
             .read()
             .get(live_id)
-            .map(|s| s.scan_ids.contains(scan_id))
-            .unwrap_or(false)
+            .is_some_and(|s| s.scan_ids.contains(scan_id))
     }
 }
 
