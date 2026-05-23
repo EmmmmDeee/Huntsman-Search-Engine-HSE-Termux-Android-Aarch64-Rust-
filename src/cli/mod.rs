@@ -257,6 +257,7 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
 
     let scan = engine.run(scan, target, ctx).await?;
     let entities = store.entities_for_scan(&sid)?;
+    let correlations = store.correlations_for_scan(&sid)?;
 
     match cmd.output.as_str() {
         "json" => {
@@ -265,6 +266,7 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
                 serde_json::to_string_pretty(&serde_json::json!({
                     "scan": scan,
                     "entities": entities,
+                    "correlations": correlations,
                 }))?
             );
         }
@@ -291,6 +293,23 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
                     e.c_effective(),
                     e.classify()
                 );
+            }
+            if !correlations.is_empty() {
+                println!("\n{} correlations:\n", correlations.len());
+                println!(
+                    "{:<10} {:<10} {:<40} DESCRIPTION",
+                    "RULE", "SEVERITY", "NAME"
+                );
+                println!("{}", "-".repeat(86));
+                for c in &correlations {
+                    println!(
+                        "{:<10} {:<10} {:<40} {}",
+                        c.rule_id,
+                        c.severity.to_string(),
+                        truncate(&c.rule_name, 40),
+                        c.description
+                    );
+                }
             }
         }
     }
