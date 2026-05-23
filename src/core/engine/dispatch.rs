@@ -18,15 +18,12 @@ use tokio::time::{sleep, timeout};
 use tracing::{info, warn};
 
 use super::ScanEngine;
-use crate::{
-    MODULE_TIMEOUT_MS,
-    core::{
-        entity::Entity,
-        error::Result,
-        event::{Event, EventKind},
-        module::{Module, ModuleContext, ModuleCost},
-        scan::{ScanOptions, Target},
-    },
+use crate::core::{
+    entity::Entity,
+    error::Result,
+    event::{Event, EventKind},
+    module::{Module, ModuleContext, ModuleCost},
+    scan::{ScanOptions, Target},
 };
 
 /// What a spawned per-module task returns to the consumer loop.
@@ -88,8 +85,6 @@ impl ScanEngine {
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
     ) -> Result<()> {
-        let module_timeout_ms = opts.module_timeout_ms.unwrap_or(MODULE_TIMEOUT_MS);
-
         for module in &self.modules {
             let name = module.name();
 
@@ -114,6 +109,11 @@ impl ScanEngine {
                 },
             ));
 
+            // Per-module timeout: user override > module's declared max.
+            // gps_fix needs 15+ s, whois can chain 2× 4 s referrals, etc.
+            let module_timeout_ms = opts
+                .module_timeout_ms
+                .unwrap_or_else(|| module.max_timeout_ms());
             let result = timeout(
                 Duration::from_millis(module_timeout_ms),
                 module.process(target, ctx),
@@ -205,7 +205,6 @@ impl ScanEngine {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
 
-        let module_timeout_ms = opts.module_timeout_ms.unwrap_or(MODULE_TIMEOUT_MS);
         let sem = Arc::new(Semaphore::new(opts.max_concurrent));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
 
@@ -240,6 +239,10 @@ impl ScanEngine {
             let bus = self.bus.clone();
             let scan_id_owned = scan_id.to_string();
             let throttle_ms = opts.throttle_ms;
+            // Per-module timeout: user override > module's declared max.
+            let module_timeout_ms = opts
+                .module_timeout_ms
+                .unwrap_or_else(|| module_arc.max_timeout_ms());
 
             set.spawn(async move {
                 let _permit = permit;

@@ -33,6 +33,13 @@ impl Module for Whois {
         32
     }
 
+    /// IANA query + one referral follow-up, each capped at
+    /// `QUERY_TIMEOUT_MS = 4000`. Worst case 2 × 4 s = 8 s; round up
+    /// to give the response read some headroom past connect timeout.
+    fn max_timeout_ms(&self) -> u64 {
+        10_000
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
     }

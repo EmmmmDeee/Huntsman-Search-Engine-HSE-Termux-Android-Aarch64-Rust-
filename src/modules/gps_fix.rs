@@ -39,6 +39,15 @@ impl Module for GpsFix {
     fn is_passive(&self) -> bool {
         true
     }
+
+    /// termux-location network provider typically returns in 1–5 s but
+    /// can take 15 s indoors. The crate-wide 3 s ceiling killed it
+    /// every time (`WARN timeout module="gps_fix"` reproduced live on
+    /// Termux 0.118.x). Bump to 20 s for headroom.
+    fn max_timeout_ms(&self) -> u64 {
+        20_000
+    }
+
     fn accepts(&self, _t: &Target) -> bool {
         true
     }

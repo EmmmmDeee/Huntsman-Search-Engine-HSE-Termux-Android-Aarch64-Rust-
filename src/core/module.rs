@@ -62,6 +62,20 @@ pub trait Module: Send + Sync {
         false
     }
 
+    /// Maximum time the engine will wait for one `process()` call before
+    /// emitting `ModuleError { error: "timeout" }`.
+    ///
+    /// Default is the crate-wide `MODULE_TIMEOUT_MS` (3 s). Modules that
+    /// legitimately need longer (GPS fixes can take 15 s, two-stage
+    /// WHOIS referrals can take ~8 s) override this so the engine
+    /// doesn't kill them prematurely.
+    ///
+    /// User-supplied `ScanOptions::module_timeout_ms` still wins — this
+    /// is only consulted when the user hasn't pinned a global cap.
+    fn max_timeout_ms(&self) -> u64 {
+        crate::MODULE_TIMEOUT_MS
+    }
+
     /// Built from the other methods — don't override.
     fn info(&self) -> ModuleInfo {
         ModuleInfo {
