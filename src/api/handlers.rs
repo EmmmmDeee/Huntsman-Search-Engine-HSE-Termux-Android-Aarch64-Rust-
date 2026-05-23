@@ -180,12 +180,3 @@ pub async fn scan_events_sse(
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
-
-// Force the EventKind import to remain (clippy::unused_imports otherwise);
-// we serialise it implicitly via Event in the broadcast.
-const _: fn() = || {
-    let _ = EventKind::ScanComplete {
-        scan_id: String::new(),
-        entity_count: 0,
-    };
-};
