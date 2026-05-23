@@ -177,10 +177,10 @@ In Termux, `$HOME` resolves to `/data/data/com.termux/files/home`.
 ## Verifying the install
 
 ```bash
-hse --version           # → hse 0.8.0
+hse --version           # → hse 0.9.0
 hse doctor              # environment report — should print "Termux: detected" on-device
-hse modules             # 13 modules listed (7 network + 6 Termux sensors)
-hse scan --kind email --value test@example.com --modules email_to_username
+hse modules             # 21 modules listed (15 network/identity + 6 Termux sensors)
+hse scan --kind email --value test@example.com --modules email_to_username,gravatar
 ```
 
 ### Web UI smoke test
