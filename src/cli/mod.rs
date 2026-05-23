@@ -84,6 +84,11 @@ pub enum Command {
         /// Hard cap on total wall-time in seconds. Stops expansion when exceeded.
         #[arg(long)]
         max_wall_time: Option<u64>,
+        /// Modules to run in parallel per round (v0.8+). 0 = sequential
+        /// (default). Higher values cut wall-time on modules that are
+        /// I/O-bound — most useful with `--depth` for big expansion rounds.
+        #[arg(long, default_value_t = 0)]
+        max_concurrent: usize,
         /// Output format: table | json.
         #[arg(short, long, default_value = "table")]
         output: String,
@@ -152,6 +157,7 @@ pub async fn run() -> Result<()> {
             min_expand_confidence,
             max_entities,
             max_wall_time,
+            max_concurrent,
             output,
         } => {
             cmd_scan(ScanCmd {
@@ -168,6 +174,7 @@ pub async fn run() -> Result<()> {
                 min_expand_confidence,
                 max_entities,
                 max_wall_time_secs: max_wall_time,
+                max_concurrent,
                 output,
             })
             .await
@@ -348,6 +355,7 @@ struct ScanCmd {
     min_expand_confidence: f64,
     max_entities: Option<usize>,
     max_wall_time_secs: Option<u64>,
+    max_concurrent: usize,
     output: String,
 }
 
@@ -364,7 +372,7 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
             .map(|s| s.split(',').map(|m| m.trim().to_string()).collect())
             .unwrap_or_default(),
         throttle_ms: cmd.throttle_ms,
-        max_concurrent: 0,
+        max_concurrent: cmd.max_concurrent,
         module_timeout_ms: cmd.module_timeout_ms,
         min_confidence: cmd.min_confidence,
         free_only: cmd.free_only,
