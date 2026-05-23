@@ -44,25 +44,11 @@ stripped binary.
 
 ## In flight
 
-### v0.5.0 — Live mode
-
-(was below — promoted to current in-flight)
-
-(See the "Shipped" section above for what landed.)
-Deferred to v0.5+: `breach_directory`, `urlscan`, `asn_lookup` modules.
-Deferred to v0.7+: key-gated modules (`hibp`, `hunter`, `virustotal`,
-`dehashed`, `oathnet_pro`, `shodan`).
-
-### v0.5.0 — Live mode
-
-- `hse live` CLI subcommand and `/api/v1/live` endpoints.
-- A scan that re-runs on a configurable interval and uses the v0.2
-  expansion engine each iteration. Same `ScanOptions` plus:
-  - `interval_secs` (default 30)
-  - `iterations` (default infinite)
-  - Live SSE stream of new entities only (diff against prior iteration).
-- SPA "Live" tab with start/stop, tick counter, rolling event log
-  capped at 200 events.
+Three free-module slots originally planned for v0.4/v0.5 were deferred:
+`breach_directory`, `urlscan`, `asn_lookup`. Plus key-gated modules
+deferred to v0.7+: `hibp`, `hunter`, `virustotal`, `dehashed`,
+`oathnet_pro`, `shodan`. They'll land alongside the next on-roadmap
+milestone (v0.6 sensors) when there's a natural place to slot them.
 
 ### v0.6.0 — Termux sensor modules
 
