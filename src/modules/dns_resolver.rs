@@ -16,6 +16,8 @@
 //! Uses `hickory-resolver` 0.26 — see `RUSTSEC-2026-0119` for the
 //! O(n²) name-compression fix that motivated the 0.24 → 0.26 bump.
 
+use std::sync::OnceLock;
+
 use async_trait::async_trait;
 use hickory_resolver::{
     TokioResolver,
@@ -26,10 +28,27 @@ use hickory_resolver::{
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+
+/// Process-wide DNS resolver. Building the resolver allocates a thread
+/// pool, a connection pool, and a TLS session cache; doing it once and
+/// reusing across scans materially reduces per-scan latency on Termux.
+/// `TokioResolver` is internally `Arc`-y so concurrent scans share the
+/// same caches safely.
+fn shared_resolver() -> &'static TokioResolver {
+    static RESOLVER: OnceLock<TokioResolver> = OnceLock::new();
+    RESOLVER.get_or_init(|| {
+        TokioResolver::builder_with_config(
+            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
+            TokioRuntimeProvider::default(),
+        )
+        .build()
+        .expect("hardcoded Cloudflare resolver config must build")
+    })
+}
 
 pub struct DnsResolver;
 
@@ -48,13 +67,7 @@ impl Module for DnsResolver {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let resolver = TokioResolver::builder_with_config(
-            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
-            TokioRuntimeProvider::default(),
-        )
-        .build()
-        .map_err(|e| Error::module("dns_resolver", format!("resolver build: {e}")))?;
-
+        let resolver = shared_resolver();
         let domain = target.value.as_str();
         let mut result = ModuleResult::new();
 

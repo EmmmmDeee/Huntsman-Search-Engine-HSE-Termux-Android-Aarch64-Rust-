@@ -8,6 +8,7 @@
 
 use async_trait::async_trait;
 use std::net::IpAddr;
+use std::sync::OnceLock;
 
 use hickory_resolver::{
     TokioResolver,
@@ -18,10 +19,26 @@ use hickory_resolver::{
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+
+/// Shared resolver — see `dns_resolver::shared_resolver`. Each DNS
+/// module keeps its own OnceLock so neither module pulls the other in
+/// at link time; runtime initialisation is independent but the
+/// underlying hickory resolver is internally cached the same way.
+fn shared_resolver() -> &'static TokioResolver {
+    static RESOLVER: OnceLock<TokioResolver> = OnceLock::new();
+    RESOLVER.get_or_init(|| {
+        TokioResolver::builder_with_config(
+            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
+            TokioRuntimeProvider::default(),
+        )
+        .build()
+        .expect("hardcoded Cloudflare resolver config must build")
+    })
+}
 
 pub struct ReverseDns;
 
@@ -47,13 +64,7 @@ impl Module for ReverseDns {
             Err(_) => return Ok(ModuleResult::new()),
         };
 
-        let resolver = TokioResolver::builder_with_config(
-            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
-            TokioRuntimeProvider::default(),
-        )
-        .build()
-        .map_err(|e| Error::module("reverse_dns", format!("resolver build: {e}")))?;
-
+        let resolver = shared_resolver();
         let lookup = match resolver.reverse_lookup(ip).await {
             Ok(l) => l,
             // NXDOMAIN / no PTR / network error → no findings rather than

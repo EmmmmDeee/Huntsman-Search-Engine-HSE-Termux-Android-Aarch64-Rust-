@@ -265,6 +265,35 @@ impl Store {
         Ok(())
     }
 
+    /// Cascade-delete a scan and its dependent rows: correlations,
+    /// entity_observations, and any entity rows that are no longer
+    /// observed by any other scan after the cascade.
+    ///
+    /// Returns `false` if no scan with that id existed.
+    pub fn delete_scan(&self, scan_id: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        // Correlations first — they reference scan_id directly.
+        tx.execute(
+            "DELETE FROM correlations WHERE scan_id = ?1",
+            params![scan_id],
+        )?;
+        // Observations — junction rows for this scan. The cascade we do
+        // *after* the observation delete drops any orphaned entity rows.
+        tx.execute(
+            "DELETE FROM entity_observations WHERE scan_id = ?1",
+            params![scan_id],
+        )?;
+        tx.execute(
+            "DELETE FROM entities
+             WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
+            [],
+        )?;
+        let n = tx.execute("DELETE FROM scans WHERE id = ?1", params![scan_id])?;
+        tx.commit()?;
+        Ok(n > 0)
+    }
+
     pub fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>> {
         // Sort by severity desc (Critical > High > Medium > Low) using a CASE
         // because SQLite text comparison alone won't order them correctly.
@@ -402,6 +431,49 @@ mod tests {
         store.upsert_entity(&e).unwrap();
 
         assert_eq!(store.observation_count(&e.uid).unwrap(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn delete_scan_cascade_removes_orphans_but_keeps_shared_entities() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "scan-doomed");
+        insert_scan(&store, "scan-keeper");
+
+        // Two entities: one observed by both scans, one only by scan-doomed.
+        let shared = Entity::new(EntityKind::Domain, "example.com", 0.8, "scan-doomed");
+        store.upsert_entity(&shared).unwrap();
+        let mut shared2 = Entity::new(EntityKind::Domain, "example.com", 0.8, "scan-keeper");
+        shared2.observed_at = shared.observed_at + 1;
+        store.upsert_entity(&shared2).unwrap();
+
+        let only_doomed = Entity::new(EntityKind::Email, "lonely@example.com", 0.6, "scan-doomed");
+        store.upsert_entity(&only_doomed).unwrap();
+
+        // Sanity: scan-doomed sees both entities.
+        assert_eq!(store.entities_for_scan("scan-doomed").unwrap().len(), 2);
+
+        // Delete.
+        let removed = store.delete_scan("scan-doomed").unwrap();
+        assert!(removed);
+
+        // The shared entity survives (still observed by scan-keeper).
+        let keeper = store.entities_for_scan("scan-keeper").unwrap();
+        assert_eq!(keeper.len(), 1);
+        assert_eq!(keeper[0].value, "example.com");
+
+        // The orphan is gone.
+        assert!(store.scan_ids_for_entity(&only_doomed.uid).unwrap().is_empty());
+        assert_eq!(store.observation_count(&only_doomed.uid).unwrap(), 0);
+
+        // The scan record itself is gone.
+        assert!(store.get_scan("scan-doomed").unwrap().is_none());
+        assert!(store.get_scan("scan-keeper").unwrap().is_some());
+
+        // Deleting again returns false (no-op).
+        assert!(!store.delete_scan("scan-doomed").unwrap());
 
         let _ = std::fs::remove_file(&path);
     }

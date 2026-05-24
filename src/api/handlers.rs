@@ -27,7 +27,7 @@ use crate::{
         module::ModuleContext,
         scan::{Scan, ScanRequest, Target},
     },
-    util::{http::build_client, keys, uid::scan_id},
+    util::{keys, uid::scan_id},
 };
 
 /// `(500, {"error": "..."})` JSON response for an unexpected failure.
@@ -107,6 +107,17 @@ pub async fn scan_create(
     Json(req): Json<ScanRequest>,
 ) -> impl IntoResponse {
     let target = Target::new(req.kind, req.value.clone());
+    // Shape-check the target before queuing the scan. This is the only
+    // place user input enters the system from the network, so it's
+    // where we catch obvious mis-typed values fast (e.g. an "email"
+    // field that has no `@`).
+    if let Err(msg) = target.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("invalid target: {msg}") })),
+        )
+            .into_response();
+    }
     // The CLI and API both feed `kind.canonical_str()` into `scan_id()` so
     // both interfaces hash the same canonical kind string. `scan_id()`
     // itself mixes `unix_now()`, so the resulting id is NOT deterministic
@@ -121,7 +132,7 @@ pub async fn scan_create(
     let ctx = ModuleContext {
         scan_id: sid.clone(),
         bus: s.bus.clone(),
-        http: build_client(),
+        http: s.http.clone(),
         keys: keys::load(),
     };
 
@@ -198,6 +209,132 @@ pub async fn scan_correlations(
                 .into_response()
         }
         Err(e) => internal_error(&e),
+    }
+}
+
+/// `DELETE /api/v1/scans/{id}` — cascade-delete a scan and its
+/// correlations / observations / orphaned entities.
+pub async fn scan_delete(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.delete_scan(&id) {
+        Ok(true) => {
+            info!(scan_id = %id, "scan deleted");
+            (StatusCode::OK, Json(json!({ "deleted": id }))).into_response()
+        }
+        Ok(false) => not_found(),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `POST /api/v1/scans/{id}/rerun` — clone an existing scan with a
+/// fresh scan id and the same target + options. Mirrors Spiderfoot's
+/// "Rescan" button.
+pub async fn scan_rerun(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let original = match s.store.get_scan(&id) {
+        Ok(Some(scan)) => scan,
+        Ok(None) => return not_found(),
+        Err(e) => return internal_error(&e),
+    };
+
+    let sid = scan_id(
+        original.target.kind.canonical_str(),
+        &original.target.value,
+    );
+    let new_scan =
+        Scan::new(sid.clone(), original.target.clone()).with_options(original.options.clone());
+
+    if let Err(e) = s.store.upsert_scan(&new_scan) {
+        return internal_error(&e);
+    }
+
+    let ctx = ModuleContext {
+        scan_id: sid.clone(),
+        bus: s.bus.clone(),
+        http: s.http.clone(),
+        keys: keys::load(),
+    };
+
+    let engine = Arc::clone(&s.engine);
+    let scan_for_run = new_scan.clone();
+    let target_for_run = original.target.clone();
+    tokio::spawn(async move {
+        if let Err(e) = engine.run(scan_for_run, target_for_run, ctx).await {
+            tracing::warn!(scan_id = %sid, error = %e, "rerun failed");
+        }
+    });
+
+    info!(scan_id = %new_scan.id, source = %id, "scan rerun queued");
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "scan_id": new_scan.id,
+            "source_scan_id": id,
+            "status": "queued"
+        })),
+    )
+        .into_response()
+}
+
+/// `GET /api/v1/scans/{id}/entities.csv` — Spiderfoot-style CSV export.
+/// Columns: kind, value, raw_value, confidence, c_effective, corroboration,
+/// classification, observed_at, sources, tags.
+pub async fn scan_entities_csv(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    use std::collections::BTreeSet;
+    let entities = match s.store.entities_for_scan(&id) {
+        Ok(es) => es,
+        Err(e) => return internal_error(&e),
+    };
+
+    let mut body = String::with_capacity(2048);
+    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,tags\n");
+    for e in entities {
+        let eff = e.c_effective();
+        let tier = e.classify().to_string();
+        let sources: BTreeSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
+        let sources = sources.into_iter().collect::<Vec<_>>().join("|");
+        let tags = e.tags.join("|");
+        body.push_str(&format!(
+            "{},{},{},{:.3},{:.3},{},{},{},{},{}\n",
+            csv_escape(&e.kind.to_string()),
+            csv_escape(&e.value),
+            csv_escape(&e.raw_value),
+            e.confidence,
+            eff,
+            e.corroboration,
+            tier,
+            e.observed_at,
+            csv_escape(&sources),
+            csv_escape(&tags),
+        ));
+    }
+
+    let filename = format!("hse-scan-{}.csv", id.chars().take(12).collect::<String>());
+    let disposition = format!("attachment; filename=\"{filename}\"");
+    let mut resp = (StatusCode::OK, body).into_response();
+    let headers = resp.headers_mut();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    if let Ok(v) = axum::http::HeaderValue::from_str(&disposition) {
+        headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
+    }
+    resp
+}
+
+fn csv_escape(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
     }
 }
 

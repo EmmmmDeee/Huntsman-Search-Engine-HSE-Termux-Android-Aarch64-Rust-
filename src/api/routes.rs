@@ -24,8 +24,9 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    http::{HeaderValue, Method},
-    response::Html,
+    extract::Path,
+    http::{HeaderValue, Method, StatusCode, header},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 use tower_http::cors::CorsLayer;
@@ -36,6 +37,66 @@ use super::{AppState, handlers};
 /// Lives in `src/web/spa.html` and is compiled into the binary at build time
 /// so the release artefact is still a single file.
 const SPA_HTML: &str = include_str!("../web/spa.html");
+
+/// Vendor bundle — Spiderfoot's exact stack (Bootstrap 3.4.1, jQuery 3.7,
+/// D3 v3, tablesorter, alertify) plus Spiderfoot's own CSS file. Embedded
+/// at compile time so the release artefact is still a single binary.
+///
+/// All entries are served from `/static/{file}` with a one-year
+/// `Cache-Control` header — browsers cache aggressively, so the ~510 KB
+/// bundle is paid for exactly once per device.
+const VENDOR_FILES: &[(&str, &str, &[u8])] = &[
+    (
+        "bootstrap.min.css",
+        "text/css; charset=utf-8",
+        include_bytes!("../web/vendor/bootstrap.min.css"),
+    ),
+    (
+        "bootstrap.min.js",
+        "application/javascript",
+        include_bytes!("../web/vendor/bootstrap.min.js"),
+    ),
+    (
+        "jquery.min.js",
+        "application/javascript",
+        include_bytes!("../web/vendor/jquery.min.js"),
+    ),
+    (
+        "d3.min.js",
+        "application/javascript",
+        include_bytes!("../web/vendor/d3.min.js"),
+    ),
+    (
+        "jquery.tablesorter.min.js",
+        "application/javascript",
+        include_bytes!("../web/vendor/jquery.tablesorter.min.js"),
+    ),
+    (
+        "jquery.tablesorter.theme.css",
+        "text/css; charset=utf-8",
+        include_bytes!("../web/vendor/jquery.tablesorter.theme.css"),
+    ),
+    (
+        "alertify.min.js",
+        "application/javascript",
+        include_bytes!("../web/vendor/alertify.min.js"),
+    ),
+    (
+        "alertify.min.css",
+        "text/css; charset=utf-8",
+        include_bytes!("../web/vendor/alertify.min.css"),
+    ),
+    (
+        "alertify.bootstrap.min.css",
+        "text/css; charset=utf-8",
+        include_bytes!("../web/vendor/alertify.bootstrap.min.css"),
+    ),
+    (
+        "spiderfoot-style.css",
+        "text/css; charset=utf-8",
+        include_bytes!("../web/vendor/spiderfoot-style.css"),
+    ),
+];
 
 /// Build the full router. `bind` is the host:port the server will listen on;
 /// used **only** to decide the CORS policy:
@@ -60,8 +121,16 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             "/api/v1/scans",
             post(handlers::scan_create).get(handlers::scan_list),
         )
-        .route("/api/v1/scans/{id}", get(handlers::scan_get))
+        .route(
+            "/api/v1/scans/{id}",
+            get(handlers::scan_get).delete(handlers::scan_delete),
+        )
+        .route("/api/v1/scans/{id}/rerun", post(handlers::scan_rerun))
         .route("/api/v1/scans/{id}/entities", get(handlers::scan_entities))
+        .route(
+            "/api/v1/scans/{id}/entities.csv",
+            get(handlers::scan_entities_csv),
+        )
         .route(
             "/api/v1/scans/{id}/correlations",
             get(handlers::scan_correlations),
@@ -82,6 +151,8 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             "/api/v1/settings/keys",
             get(handlers::settings_keys_get).put(handlers::settings_keys_put),
         )
+        // ── static vendor bundle (Bootstrap 3, jQuery, D3, tablesorter, alertify) ──
+        .route("/static/{file}", get(vendor_handler))
         // ── SPA fallback (catch-all) ──
         .fallback(spa_handler)
         .with_state(state)
@@ -90,6 +161,34 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
 
 async fn spa_handler() -> Html<&'static str> {
     Html(SPA_HTML)
+}
+
+/// Serve one of the embedded vendor files (Bootstrap, jQuery, etc.).
+/// Returns 404 for any name not in [`VENDOR_FILES`] — there's no
+/// path traversal to worry about because the match is on the exact
+/// filename and `Path<String>` doesn't decode slashes by default.
+async fn vendor_handler(Path(file): Path<String>) -> Response {
+    for (name, ct, bytes) in VENDOR_FILES {
+        if *name == file {
+            return (
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, HeaderValue::from_static(ct)),
+                    // Aggressively cache the vendor bundle — these are
+                    // versioned by content (the binary hash). When the
+                    // binary updates, the embedded bytes change, and the
+                    // browser will re-fetch on the next reload.
+                    (
+                        header::CACHE_CONTROL,
+                        HeaderValue::from_static("public, max-age=31536000, immutable"),
+                    ),
+                ],
+                *bytes,
+            )
+                .into_response();
+        }
+    }
+    (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
 /// Loopback check. Robust to all reasonable bind syntaxes:

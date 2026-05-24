@@ -302,11 +302,17 @@ async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
 
     let (store, bus, engine) = build_runtime(1024)?;
     let live = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    // Build the HTTP client ONCE per server lifetime — its internal
+    // connection pool, DNS cache, and TLS session cache then survive
+    // across scans, which materially reduces wall-time on Termux where
+    // every TLS handshake is expensive over a cellular link.
+    let http = build_client();
     let state = Arc::new(AppState {
         store,
         engine,
         bus,
         live,
+        http,
         allow_key_write,
     });
 
