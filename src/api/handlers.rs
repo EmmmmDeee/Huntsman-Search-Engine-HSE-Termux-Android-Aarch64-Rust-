@@ -4,11 +4,11 @@
 //! `(StatusCode, Json)`, and `Sse<...>` freely. Error paths emit a
 //! `{"error": "..."}` JSON body with the appropriate status.
 
-use std::{convert::Infallible, sync::Arc};
+use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc};
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::StatusCode,
     response::{
         IntoResponse,
@@ -16,6 +16,7 @@ use axum::{
     },
 };
 use futures::Stream;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_stream::{StreamExt as _, wrappers::BroadcastStream};
 use tracing::info;
@@ -56,6 +57,22 @@ pub async fn version() -> Json<Value> {
 // ─── Modules ─────────────────────────────────────────────────────────────────
 
 pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
+    use crate::core::scan::TargetKind;
+    // Probe each module against a dummy of every TargetKind to surface
+    // which kinds it accepts. The wizard uses this to skip impossible
+    // module/target combinations without round-tripping back to the API.
+    const ALL_KINDS: [TargetKind; 9] = [
+        TargetKind::Email,
+        TargetKind::Username,
+        TargetKind::Phone,
+        TargetKind::FullName,
+        TargetKind::IpAddress,
+        TargetKind::Domain,
+        TargetKind::Asn,
+        TargetKind::Coordinates,
+        TargetKind::Address,
+    ];
+
     let mods: Vec<Value> = s
         .engine
         .modules()
@@ -65,11 +82,17 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
             // canonical snake_case form (`"key_gated"`, not `"keygated"`
             // that `format!("{:?}", ...).to_lowercase()` would produce).
             let cost = serde_json::to_value(m.cost()).unwrap_or(Value::Null);
+            let accepts: Vec<&'static str> = ALL_KINDS
+                .iter()
+                .filter(|k| m.accepts(&Target::new(**k, "probe")))
+                .map(|k| k.canonical_str())
+                .collect();
             json!({
                 "name":     m.name(),
                 "priority": m.priority(),
                 "cost":     cost,
                 "passive":  m.is_passive(),
+                "accepts":  accepts,
             })
         })
         .collect();
@@ -279,4 +302,103 @@ pub async fn scan_events_sse(
     });
 
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// ─── Settings ────────────────────────────────────────────────────────────────
+//
+// `GET /api/v1/settings/keys`  — list known + currently-set HUNTSMAN_* keys.
+//                               Values are NEVER returned, only set-or-not.
+// `PUT /api/v1/settings/keys`  — write `~/.huntsman.env`. Two-layer guard:
+//                               server must be started with `--allow-key-write`
+//                               AND the request must come from a loopback peer.
+
+pub async fn settings_keys_get(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    use std::path::PathBuf;
+    let path = keys::env_path();
+    // Read the env file directly — see `keys::load_from_file_only`
+    // docs for why we can't reuse `load()` here.
+    let loaded = keys::load_from_file_only(&PathBuf::from(&path));
+    let mut all_names: std::collections::BTreeSet<String> =
+        keys::KNOWN_KEYS.iter().map(|s| (*s).to_string()).collect();
+    for k in loaded.keys() {
+        all_names.insert(k.clone());
+    }
+    let entries: Vec<Value> = all_names
+        .into_iter()
+        .map(|name| {
+            let set = loaded.contains_key(&name);
+            json!({ "name": name, "set": set })
+        })
+        .collect();
+    let count = entries.len();
+    Json(json!({
+        "keys": entries,
+        "count": count,
+        "write_enabled": s.allow_key_write,
+        "env_path": path,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct KeysPutRequest {
+    #[serde(default)]
+    pub updates: BTreeMap<String, String>,
+    #[serde(default)]
+    pub deletes: Vec<String>,
+}
+
+pub async fn settings_keys_put(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<KeysPutRequest>,
+) -> impl IntoResponse {
+    if !s.allow_key_write {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
+            })),
+        )
+            .into_response();
+    }
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "key writes are loopback-only"
+            })),
+        )
+            .into_response();
+    }
+    if req.updates.is_empty() && req.deletes.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "no updates or deletes"})),
+        )
+            .into_response();
+    }
+    match keys::write_keys(&req.updates, &req.deletes) {
+        Ok(()) => {
+            info!(
+                updates = req.updates.len(),
+                deletes = req.deletes.len(),
+                "settings/keys written"
+            );
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "ok",
+                    "updated": req.updates.len(),
+                    "deleted": req.deletes.len(),
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
 }

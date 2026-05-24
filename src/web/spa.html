@@ -2,625 +2,1630 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Huntsman Search Engine</title>
 <style>
+/* ───────── Theme ───────── */
 :root{
-  --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;
-  --fg:#e6edf3;--fg2:#8b949e;--fg3:#484f58;
-  --acc:#7c3aed;--acc2:#a78bfa;
-  --ok:#22c55e;--err:#f87171;--warn:#fbbf24;--info:#60a5fa;--teal:#2dd4bf;--coral:#fb923c;
-  --rad:6px;--mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --bg:#0b1220; --bg2:#111a2b; --bg3:#1a2538; --bg4:#243049;
+  --bd:#2a3550; --bd2:#37456a;
+  --fg:#e7ecf3; --fg2:#9aa6bf; --fg3:#5a6786;
+  --acc:#5b9dff; --acc2:#7eb3ff; --acc-dim:#1d3a66;
+  --ok:#3fbf7f; --warn:#f0b62b; --err:#ef5b5b; --info:#5b9dff; --crit:#d946ef;
+  --teal:#34d4c4; --coral:#fb923c; --rose:#fb7185; --lime:#86efac;
+  --r:6px; --r2:10px;
+  --mono:'JetBrains Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:13px;height:100%}
-button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit}
+html,body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:13.5px;line-height:1.45;min-height:100vh}
+body{display:flex;flex-direction:column}
 
-#app{display:flex;flex-direction:column;min-height:100vh}
+/* ───────── Navbar ───────── */
+.navbar{
+  background:linear-gradient(180deg,#0d1730 0%,#0a1124 100%);
+  border-bottom:1px solid var(--bd);
+  padding:0 16px; height:52px;
+  display:flex;align-items:center;gap:6px;
+  position:sticky;top:0;z-index:50;
+}
+.brand{display:flex;align-items:center;gap:8px;font-weight:600;font-size:15px;letter-spacing:.02em;color:var(--fg);margin-right:18px;text-decoration:none}
+.brand-logo{width:26px;height:26px;background:linear-gradient(135deg,var(--acc) 0%,#9b59ff 100%);border-radius:6px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px}
+.brand b{color:var(--acc2);font-weight:600}
+.brand small{color:var(--fg3);font-size:11px;margin-left:4px;font-weight:400}
+.nav-links{display:flex;gap:2px}
+.nav-link{padding:8px 14px;color:var(--fg2);text-decoration:none;border-radius:var(--r);font-size:13px;font-weight:500;transition:background .15s,color .15s}
+.nav-link:hover{background:var(--bg3);color:var(--fg)}
+.nav-link.active{background:var(--acc-dim);color:var(--acc2)}
+.nav-spacer{flex:1}
+.nav-status{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--fg3)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--fg3);flex-shrink:0;transition:background .2s}
+.dot.ok{background:var(--ok);box-shadow:0 0 6px rgba(63,191,127,.5)}
+.dot.err{background:var(--err)}
+.ver{font-family:var(--mono);font-size:11px;color:var(--fg3);padding:2px 6px;background:var(--bg3);border-radius:4px}
 
-header{background:var(--bg2);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:10}
-header h1{font-size:14px;font-weight:600;letter-spacing:.04em}
-header h1 span{color:var(--acc2)}
-.ver{font-size:10px;color:var(--fg3);margin-left:auto}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--fg3);flex-shrink:0}
-.dot.ok{background:var(--ok)}.dot.err{background:var(--err)}
+/* ───────── Layout ───────── */
+main{flex:1;padding:18px 22px;max-width:1500px;width:100%;margin:0 auto}
+.page-head{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.page-head h1{font-size:22px;font-weight:600;letter-spacing:-.01em}
+.page-head .sub{color:var(--fg3);font-size:12px}
+.page-head .spacer{flex:1}
+.crumbs{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg3);margin-bottom:10px}
+.crumbs a{color:var(--fg2);text-decoration:none}
+.crumbs a:hover{color:var(--acc2)}
+.crumbs span.sep{color:var(--fg3);opacity:.5}
 
-nav{display:flex;background:var(--bg2);border-bottom:1px solid var(--border);overflow-x:auto}
-nav::-webkit-scrollbar{display:none}
-.tab{padding:10px 14px;font-size:12px;color:var(--fg2);cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;user-select:none}
-.tab.active{color:var(--acc2);border-bottom-color:var(--acc2)}
+/* ───────── Card ───────── */
+.card{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r2);margin-bottom:14px;overflow:hidden}
+.card-h{padding:12px 16px;border-bottom:1px solid var(--bd);font-size:12px;font-weight:600;color:var(--fg2);text-transform:uppercase;letter-spacing:.06em;background:rgba(255,255,255,.02);display:flex;align-items:center;gap:10px}
+.card-h .spacer{flex:1}
+.card-b{padding:14px 16px}
+.card-b.tight{padding:0}
+.row{display:flex;gap:12px}.row>*{flex:1}
+.row.wrap{flex-wrap:wrap}
 
-main{flex:1;overflow:auto}
-.panel{display:none;padding:12px}
-.panel.active{display:block}
+/* ───────── Forms ───────── */
+.fld{margin-bottom:12px}
+.fld label{display:block;font-size:11px;color:var(--fg2);margin-bottom:5px;font-weight:500;text-transform:uppercase;letter-spacing:.04em}
+.fld input,.fld select,.fld textarea{
+  width:100%;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);
+  padding:9px 11px;color:var(--fg);outline:none;font-family:inherit;font-size:13px;
+  transition:border-color .15s,box-shadow .15s;
+}
+.fld input:focus,.fld select:focus,.fld textarea:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(91,157,255,.12)}
+.fld input.mono,.fld textarea.mono{font-family:var(--mono)}
+.fld .hint{font-size:11px;color:var(--fg3);margin-top:4px}
+.fld .err-hint{color:var(--err);font-size:11px;margin-top:4px;display:none}
+.fld.error input,.fld.error select{border-color:var(--err)}
+.fld.error .err-hint{display:block}
 
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--rad);padding:12px;margin-bottom:10px}
-.card-h{font-size:11px;font-weight:600;color:var(--fg2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px}
-
-.fld{margin-bottom:8px}
-.fld label{display:block;font-size:11px;color:var(--fg2);margin-bottom:4px}
-.fld input,.fld select,.fld textarea{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--rad);padding:7px 9px;outline:none}
-.fld input:focus,.fld select:focus,.fld textarea:focus{border-color:var(--acc)}
-.fld.row{display:flex;gap:8px}.fld.row>*{flex:1}
-.checks{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--fg2)}
-.checks label{display:flex;align-items:center;gap:5px;cursor:pointer}
-.adv{font-size:11px;color:var(--fg3);cursor:pointer;user-select:none;display:inline-block;margin-bottom:6px}
-.adv:before{content:"▸ "}.adv.open:before{content:"▾ "}
-.advbox{display:none}.advbox.open{display:block}
-
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 14px;border-radius:var(--rad);border:none;cursor:pointer;font-weight:500;user-select:none}
-.btn-p{background:var(--acc);color:#fff}.btn-p:active{background:#6d28d9}.btn-p:disabled{background:var(--bg3);color:var(--fg3);cursor:default}
-.btn-g{background:transparent;color:var(--fg2);border:1px solid var(--border)}.btn-g:active{background:var(--bg3)}
-.btn-sm{padding:5px 9px;font-size:11px}
+/* ───────── Buttons ───────── */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 16px;border-radius:var(--r);border:1px solid transparent;cursor:pointer;font-family:inherit;font-size:13px;font-weight:500;user-select:none;transition:background .15s,border-color .15s,color .15s;text-decoration:none}
+.btn:focus{outline:2px solid var(--acc);outline-offset:1px}
+.btn-p{background:var(--acc);color:#fff}.btn-p:hover{background:#4a8aef}
+.btn-p:disabled{background:var(--bg3);color:var(--fg3);cursor:not-allowed}
+.btn-g{background:var(--bg3);color:var(--fg);border-color:var(--bd)}.btn-g:hover{background:var(--bg4);border-color:var(--bd2)}
+.btn-ghost{background:transparent;color:var(--fg2)}.btn-ghost:hover{background:var(--bg3);color:var(--fg)}
+.btn-danger{background:#3a1e23;color:var(--err);border-color:#5a2630}.btn-danger:hover{background:#4a2730}
+.btn-sm{padding:5px 10px;font-size:11.5px}
+.btn-xs{padding:3px 8px;font-size:11px}
 .btn-full{width:100%}
+.btn-grp{display:inline-flex;gap:6px;flex-wrap:wrap}
 
-.bar{height:3px;background:var(--bg3);border-radius:2px;overflow:hidden;margin:6px 0}
-.bar>div{height:100%;background:var(--acc);transition:width .25s;width:0%}
-.modrow{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:11px}
-.modrow .nm{color:var(--fg2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.bdg{font-size:10px;padding:1px 6px;border-radius:10px;white-space:nowrap}
-.b-run{background:#1e3a5f;color:var(--info)}.b-ok{background:#14352a;color:var(--ok)}
-.b-err{background:#3b1515;color:var(--err)}.b-skip{background:var(--bg3);color:var(--fg3)}
+/* ───────── Pills / badges ───────── */
+.pill{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;padding:2px 8px;border-radius:10px;font-weight:500;line-height:1.5;white-space:nowrap}
+.p-ok{background:rgba(63,191,127,.15);color:var(--ok)}
+.p-run{background:rgba(91,157,255,.15);color:var(--info)}
+.p-err{background:rgba(239,91,91,.15);color:var(--err)}
+.p-warn{background:rgba(240,182,43,.15);color:var(--warn)}
+.p-pending{background:var(--bg3);color:var(--fg2)}
+.p-dim{background:var(--bg3);color:var(--fg3)}
+.p-crit{background:rgba(217,70,239,.15);color:var(--crit)}
+.p-free{background:rgba(63,191,127,.12);color:var(--ok);border:1px solid rgba(63,191,127,.3)}
+.p-keyed{background:rgba(240,182,43,.12);color:var(--warn);border:1px solid rgba(240,182,43,.3)}
+.p-paid{background:rgba(217,70,239,.12);color:var(--crit);border:1px solid rgba(217,70,239,.3)}
 
-table{width:100%;border-collapse:collapse;font-size:11px}
-th{text-align:left;padding:6px 8px;color:var(--fg3);font-weight:500;border-bottom:1px solid var(--border);white-space:nowrap}
-td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:top;word-break:break-all}
-tr:last-child td{border-bottom:none}
-.kind{display:inline-block;font-size:10px;padding:1px 6px;border-radius:10px;background:var(--bg3);color:var(--fg2);white-space:nowrap}
-.k-email{background:#1e1b4b;color:#a5b4fc}.k-username{background:#14352a;color:var(--teal)}
-.k-phone{background:#3b2a10;color:var(--warn)}.k-ip_address{background:#1e3a5f;color:var(--info)}
-.k-domain{background:#14352a;color:var(--ok)}.k-coordinates{background:#3b1f10;color:var(--coral)}
-.k-organisation{background:#2d1b4e;color:var(--acc2)}.k-mac_address{background:#2a2a2a;color:var(--fg2)}
-.k-person{background:#1a2a1a;color:#86efac}.k-asn{background:#1a1a2a;color:#93c5fd}
-.k-abn_acn{background:#2a1a00;color:#fcd34d}
-.cls{font-size:10px}.c-VERIFIED{color:var(--ok)}.c-PROBABLE{color:var(--warn)}.c-CANDIDATE{color:var(--err)}
-.tg{font-size:10px;color:var(--fg3);margin-left:4px}
+/* ───────── Tables ───────── */
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.tbl th{text-align:left;padding:9px 12px;color:var(--fg3);font-weight:500;border-bottom:1px solid var(--bd);background:rgba(255,255,255,.015);text-transform:uppercase;font-size:11px;letter-spacing:.05em;white-space:nowrap}
+.tbl th.sortable{cursor:pointer;user-select:none}.tbl th.sortable:hover{color:var(--fg)}
+.tbl th.sortable:after{content:" ⇅";color:var(--fg3);opacity:.5;font-size:10px}
+.tbl th.sort-asc:after{content:" ▲";opacity:1;color:var(--acc2)}
+.tbl th.sort-desc:after{content:" ▼";opacity:1;color:var(--acc2)}
+.tbl td{padding:9px 12px;border-bottom:1px solid rgba(42,53,80,.5);vertical-align:top;word-break:break-word}
+.tbl tbody tr{transition:background .1s}
+.tbl tbody tr:hover{background:rgba(255,255,255,.025)}
+.tbl tbody tr.clickable{cursor:pointer}
+.tbl tbody tr:last-child td{border-bottom:none}
+.tbl .num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.tbl .mono{font-family:var(--mono);font-size:11.5px}
 
-.corr{padding:10px;border-left:3px solid var(--border);margin-bottom:8px;border-radius:0 var(--rad) var(--rad) 0;background:var(--bg3)}
-.cv-critical{border-color:var(--err);background:#1a0808}
-.cv-high{border-color:var(--warn);background:#1a1008}
-.cv-medium{border-color:var(--info);background:#081828}
-.cv-low{border-color:var(--fg3);background:var(--bg3)}
-.corr-h{display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:10px;color:var(--fg3);font-weight:600}
-.corr-sev{padding:1px 6px;border-radius:10px;font-weight:600}
-.cs-critical{background:#7f1d1d;color:var(--err)}.cs-high{background:#451a03;color:var(--warn)}
-.cs-medium{background:#0c1a2e;color:var(--info)}.cs-low{background:var(--bg3);color:var(--fg2)}
-.corr-name{color:var(--fg2);font-size:11px;margin-bottom:3px}
-.corr-d{font-size:11px;color:var(--fg)}
+/* ───────── Entity kind tints ───────── */
+.kind{display:inline-block;font-size:10.5px;padding:1px 7px;border-radius:10px;background:var(--bg3);color:var(--fg2);white-space:nowrap;font-weight:500}
+.k-email{background:rgba(91,157,255,.15);color:#a5c4ff}
+.k-username{background:rgba(52,212,196,.15);color:var(--teal)}
+.k-phone{background:rgba(240,182,43,.15);color:var(--warn)}
+.k-ip_address{background:rgba(91,157,255,.15);color:#7eb3ff}
+.k-domain{background:rgba(63,191,127,.15);color:var(--ok)}
+.k-coordinates{background:rgba(251,146,60,.15);color:var(--coral)}
+.k-organisation{background:rgba(155,89,255,.15);color:#c4a5ff}
+.k-mac_address{background:rgba(120,120,150,.2);color:var(--fg2)}
+.k-person{background:rgba(134,239,172,.15);color:var(--lime)}
+.k-asn{background:rgba(147,197,253,.15);color:#93c5fd}
+.k-abn_acn{background:rgba(252,211,77,.15);color:#fcd34d}
+.k-url{background:rgba(125,211,252,.15);color:#7dd3fc}
+.k-credential{background:rgba(217,70,239,.15);color:var(--crit)}
+.k-password{background:rgba(217,70,239,.15);color:var(--crit)}
+.k-address{background:rgba(251,113,133,.15);color:var(--rose)}
+.k-device_id{background:var(--bg3);color:var(--fg2)}
+.k-other{background:var(--bg3);color:var(--fg3)}
+.cls{font-family:var(--mono);font-size:10.5px}
+.c-VERIFIED{color:var(--ok)}
+.c-PROBABLE{color:var(--warn)}
+.c-CANDIDATE{color:var(--fg3)}
+.tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;background:var(--bg3);color:var(--fg3);margin-right:3px}
 
-.scrolly{overflow-y:auto;-webkit-overflow-scrolling:touch}
+/* ───────── Wizard ───────── */
+.usecase-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.uc-card{background:var(--bg3);border:1.5px solid var(--bd);border-radius:var(--r);padding:14px;cursor:pointer;transition:all .15s;position:relative}
+.uc-card:hover{border-color:var(--bd2);background:var(--bg4)}
+.uc-card.sel{border-color:var(--acc);background:rgba(91,157,255,.06);box-shadow:0 0 0 3px rgba(91,157,255,.08)}
+.uc-card .uc-h{font-weight:600;font-size:14px;color:var(--fg);margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.uc-card .uc-d{font-size:11.5px;color:var(--fg2);line-height:1.5}
+.uc-card.sel:after{content:"✓";position:absolute;top:10px;right:10px;color:var(--acc);font-weight:700}
 
-.hist{padding:9px 10px;border-bottom:1px solid var(--border);cursor:pointer}
-.hist:last-child{border-bottom:none}.hist:active{background:var(--bg3)}
-.hist .tg-target{color:var(--fg);font-size:12px;word-break:break-all}
-.hist .meta{font-size:10px;color:var(--fg3);margin-top:2px}
-.st{font-size:10px;padding:2px 7px;border-radius:10px;float:right;margin-left:6px}
-.s-complete{background:#14352a;color:var(--ok)}.s-running{background:#1e3a5f;color:var(--info)}
-.s-failed{background:#3b1515;color:var(--err)}.s-pending{background:var(--bg3);color:var(--fg2)}
+/* ───────── Module picker ───────── */
+.mod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px;max-height:380px;overflow-y:auto;padding:2px}
+.mod-row{display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);font-size:12px;cursor:pointer;user-select:none;transition:border-color .1s}
+.mod-row:hover{border-color:var(--bd2)}
+.mod-row input[type=checkbox]{margin:0;accent-color:var(--acc);cursor:pointer}
+.mod-row .mn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:11.5px;color:var(--fg)}
+.mod-row.dimmed{opacity:.45}
+.mod-row.dimmed input{cursor:not-allowed}
 
-#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--bg2);border:1px solid var(--border);border-radius:var(--rad);padding:10px 16px;font-size:12px;z-index:99;transition:transform .25s;max-width:90vw;text-align:center}
+/* ───────── Sub-tabs ───────── */
+.subtabs{display:flex;border-bottom:1px solid var(--bd);margin-bottom:14px;overflow-x:auto;scrollbar-width:none}
+.subtabs::-webkit-scrollbar{display:none}
+.subtab{padding:10px 16px;color:var(--fg2);text-decoration:none;font-size:13px;font-weight:500;border-bottom:2px solid transparent;white-space:nowrap;transition:color .15s,border-color .15s;cursor:pointer}
+.subtab:hover{color:var(--fg)}
+.subtab.active{color:var(--acc2);border-bottom-color:var(--acc2)}
+.subtab .ct{font-family:var(--mono);font-size:11px;color:var(--fg3);margin-left:5px;background:var(--bg3);padding:1px 6px;border-radius:9px}
+.subtab.active .ct{color:var(--acc2);background:var(--acc-dim)}
+
+/* ───────── Stat strip ───────── */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px}
+.stat{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:10px 14px}
+.stat .lab{font-size:10.5px;color:var(--fg3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;font-weight:600}
+.stat .val{font-size:20px;font-weight:600;font-family:var(--mono);color:var(--fg);font-variant-numeric:tabular-nums}
+.stat .val.dim{color:var(--fg2);font-size:14px}
+
+/* ───────── Progress ───────── */
+.progress{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden}
+.progress>div{height:100%;background:linear-gradient(90deg,var(--acc) 0%,var(--acc2) 100%);transition:width .3s}
+
+/* ───────── Filter bar ───────── */
+.filterbar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
+.filterbar input,.filterbar select{background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);padding:7px 10px;color:var(--fg);font-family:inherit;font-size:12px;outline:none}
+.filterbar input:focus,.filterbar select:focus{border-color:var(--acc)}
+.filterbar input[type=search]{min-width:240px;flex:1;max-width:380px}
+.filterbar .sp{flex:1}
+.filterbar .ct{color:var(--fg3);font-size:11.5px;font-family:var(--mono)}
+
+/* ───────── Correlations ───────── */
+.corr{padding:11px 14px;border-left:3px solid var(--bd);background:var(--bg3);border-radius:0 var(--r) var(--r) 0;margin-bottom:8px}
+.cv-critical{border-color:var(--crit);background:linear-gradient(90deg,rgba(217,70,239,.06) 0%,var(--bg3) 60%)}
+.cv-high{border-color:var(--err);background:linear-gradient(90deg,rgba(239,91,91,.06) 0%,var(--bg3) 60%)}
+.cv-medium{border-color:var(--warn);background:linear-gradient(90deg,rgba(240,182,43,.06) 0%,var(--bg3) 60%)}
+.cv-low{border-color:var(--info);background:linear-gradient(90deg,rgba(91,157,255,.06) 0%,var(--bg3) 60%)}
+.corr-h{display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--fg3)}
+.corr-name{font-size:13.5px;color:var(--fg);font-weight:500;margin-bottom:3px}
+.corr-d{font-size:12px;color:var(--fg2)}
+
+/* ───────── Scan log ───────── */
+.log{font-family:var(--mono);font-size:11.5px;line-height:1.65;max-height:560px;overflow-y:auto;padding:10px 14px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r)}
+.log-row{display:flex;gap:10px;padding:1px 0}
+.log-row .ts{color:var(--fg3);flex-shrink:0;width:78px}
+.log-row .typ{flex-shrink:0;width:120px}
+.log-row .msg{color:var(--fg2);flex:1;word-break:break-word}
+.lv-info .typ{color:var(--info)}
+.lv-ok .typ{color:var(--ok)}
+.lv-err .typ{color:var(--err)}
+.lv-warn .typ{color:var(--warn)}
+.lv-skip .typ{color:var(--fg3)}
+.lv-found .typ{color:var(--teal)}
+.lv-corr .typ{color:var(--crit)}
+
+/* ───────── Graph ───────── */
+.graph-wrap{position:relative;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r);overflow:hidden;min-height:520px}
+.graph-wrap svg{display:block;width:100%;height:560px;cursor:grab;background:radial-gradient(circle at 50% 40%,#0d1830 0%,var(--bg) 70%)}
+.graph-wrap svg:active{cursor:grabbing}
+.graph-legend{position:absolute;top:10px;right:10px;background:rgba(11,18,32,.85);backdrop-filter:blur(6px);border:1px solid var(--bd);border-radius:var(--r);padding:8px 12px;font-size:11px;display:flex;flex-direction:column;gap:4px}
+.graph-legend .lr{display:flex;align-items:center;gap:6px;color:var(--fg2)}
+.graph-legend .sw{width:10px;height:10px;border-radius:50%}
+.graph-ctl{position:absolute;bottom:10px;left:10px;display:flex;gap:6px}
+
+/* ───────── Settings ───────── */
+.keygrid{display:grid;gap:8px}
+.keyrow{display:grid;grid-template-columns:1fr auto;gap:10px;padding:10px 14px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);align-items:center}
+.keyrow .kn{font-family:var(--mono);font-size:12.5px;color:var(--fg)}
+.keyrow .kd{font-size:11px;color:var(--fg3);margin-top:1px}
+.keyrow .kstatus{display:flex;align-items:center;gap:8px}
+.keyrow input[type=password]{width:280px;max-width:50vw;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:6px 9px;color:var(--fg);font-family:var(--mono);font-size:12px;outline:none}
+.keyrow input[type=password]:focus{border-color:var(--acc)}
+
+/* ───────── Empty / toast / misc ───────── */
+.empty{padding:36px 20px;text-align:center;color:var(--fg3)}
+.empty h3{color:var(--fg2);font-weight:500;font-size:15px;margin-bottom:6px}
+.empty p{font-size:12px;max-width:380px;margin:0 auto;line-height:1.6}
+.empty .btn{margin-top:14px}
+
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:10px 18px;font-size:12.5px;z-index:99;transition:transform .25s;max-width:90vw;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.4)}
 #toast.show{transform:translateX(-50%) translateY(0)}
 #toast.ok{border-color:var(--ok);color:var(--ok)}
 #toast.err{border-color:var(--err);color:var(--err)}
+#toast.warn{border-color:var(--warn);color:var(--warn)}
+
+code{font-family:var(--mono);font-size:12px;background:var(--bg3);padding:1px 5px;border-radius:3px;color:var(--fg)}
+.mono{font-family:var(--mono);font-size:12px}
+hr.div{border:none;border-top:1px solid var(--bd);margin:12px 0}
+.muted{color:var(--fg3)}.muted-2{color:var(--fg2)}
+.cap{text-transform:uppercase;letter-spacing:.05em;font-size:10.5px;font-weight:600;color:var(--fg3)}
+.spin{display:inline-block;width:13px;height:13px;border:2px solid var(--bd);border-top-color:var(--acc);border-radius:50%;animation:sp 0.7s linear infinite;vertical-align:middle}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+@media (max-width:760px){
+  .navbar{padding:0 10px;height:48px}
+  .brand small{display:none}
+  .nav-link{padding:6px 10px;font-size:12.5px}
+  main{padding:12px 12px}
+  .page-head h1{font-size:18px}
+  .row{flex-direction:column}
+  .keyrow{grid-template-columns:1fr;gap:6px}
+  .keyrow input[type=password]{width:100%;max-width:100%}
+}
 </style>
 </head>
 <body>
-<div id="app">
 
-<header>
-  <div class="dot" id="hdot"></div>
-  <h1>HSE <span>·</span> Huntsman</h1>
-  <span class="ver" id="hver">v?</span>
-</header>
-
-<nav>
-  <div class="tab active" data-tab="scan">Scan</div>
-  <div class="tab" data-tab="live">Live</div>
-  <div class="tab" data-tab="entities">Entities</div>
-  <div class="tab" data-tab="correlate">Correlate</div>
-  <div class="tab" data-tab="history">History</div>
-  <div class="tab" data-tab="modules">Modules</div>
+<nav class="navbar">
+  <a class="brand" href="#/scans">
+    <span class="brand-logo">H</span>
+    <span>Huntsman <b>·</b> Search Engine</span>
+    <small>OSINT / GEOINT</small>
+  </a>
+  <div class="nav-links">
+    <a class="nav-link" data-nav="newscan" href="#/newscan">New Scan</a>
+    <a class="nav-link" data-nav="scans" href="#/scans">Scans</a>
+    <a class="nav-link" data-nav="settings" href="#/settings">Settings</a>
+  </div>
+  <div class="nav-spacer"></div>
+  <div class="nav-status">
+    <div class="dot" id="hdot"></div>
+    <span id="hstat">…</span>
+    <span class="ver" id="hver">v?</span>
+  </div>
 </nav>
 
-<main>
-
-<!-- ══ SCAN ════════════════════════════════════════════════════ -->
-<div class="panel active" id="p-scan">
-  <div class="card">
-    <div class="card-h">New scan</div>
-    <div class="fld row">
-      <div>
-        <label>Target kind</label>
-        <select id="f-kind">
-          <option value="email">Email</option>
-          <option value="username">Username</option>
-          <option value="phone">Phone</option>
-          <option value="full_name">Full name</option>
-          <option value="ip_address">IP address</option>
-          <option value="domain">Domain</option>
-          <option value="asn">ASN</option>
-          <option value="coordinates">Coordinates</option>
-          <option value="address">Address</option>
-        </select>
-      </div>
-    </div>
-    <div class="fld">
-      <label>Target value</label>
-      <input type="text" id="f-value" placeholder="e.g. example.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-    </div>
-
-    <div class="adv" id="adv-toggle">Advanced</div>
-    <div class="advbox" id="adv-box">
-      <div class="fld">
-        <label>Modules (comma-separated allowlist, blank = all)</label>
-        <input type="text" id="f-modules" placeholder="crtsh,dns_resolver">
-      </div>
-      <div class="fld">
-        <label>Exclude modules</label>
-        <input type="text" id="f-exclude" placeholder="">
-      </div>
-      <div class="fld row">
-        <div><label>Throttle (ms)</label><input type="number" id="f-throttle" value="0" min="0"></div>
-        <div><label>Module timeout (ms)</label><input type="number" id="f-timeout" placeholder="3000" min="100"></div>
-      </div>
-      <div class="fld row">
-        <div><label>Depth</label><input type="number" id="f-depth" value="0" min="0" max="5"></div>
-        <div><label>Min expand C_eff</label><input type="number" id="f-mxc" value="0.75" min="0" max="1" step="0.05"></div>
-      </div>
-      <div class="fld row">
-        <div><label>Max entities</label><input type="number" id="f-maxe" placeholder="none" min="1"></div>
-        <div><label>Max wall-time (sec)</label><input type="number" id="f-maxt" placeholder="none" min="1"></div>
-      </div>
-      <div class="fld">
-        <label>Min confidence (drop below)</label>
-        <input type="number" id="f-minc" placeholder="none" min="0" max="1" step="0.05">
-      </div>
-      <div class="checks">
-        <label><input type="checkbox" id="f-free"> Free-only</label>
-        <label><input type="checkbox" id="f-pass"> Passive-only</label>
-      </div>
-    </div>
-
-    <button class="btn btn-p btn-full" id="run-btn">▶ Run scan</button>
-  </div>
-
-  <div class="card" id="prog-card" style="display:none">
-    <div class="card-h" id="prog-h">Running…</div>
-    <div class="bar"><div id="prog-fill"></div></div>
-    <div id="ec" style="font-size:11px;color:var(--fg2);margin-bottom:6px"></div>
-    <div id="modlog" class="scrolly" style="max-height:200px"></div>
-  </div>
-</div>
-
-<!-- ══ LIVE ════════════════════════════════════════════════════ -->
-<div class="panel" id="p-live">
-  <div class="card">
-    <div class="card-h">Live session</div>
-    <div class="fld row">
-      <div>
-        <label>Target kind</label>
-        <select id="lf-kind">
-          <option value="email">Email</option>
-          <option value="username">Username</option>
-          <option value="phone">Phone</option>
-          <option value="full_name">Full name</option>
-          <option value="ip_address">IP address</option>
-          <option value="domain" selected>Domain</option>
-          <option value="asn">ASN</option>
-          <option value="coordinates">Coordinates</option>
-          <option value="address">Address</option>
-        </select>
-      </div>
-    </div>
-    <div class="fld"><label>Target value</label>
-      <input type="text" id="lf-value" placeholder="example.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-    </div>
-    <div class="fld row">
-      <div><label>Interval (sec)</label><input type="number" id="lf-int" value="30" min="1"></div>
-      <div><label>Iterations (blank = forever)</label><input type="number" id="lf-iter" min="1"></div>
-    </div>
-    <div class="fld row">
-      <div><label>Depth</label><input type="number" id="lf-depth" value="0" min="0" max="5"></div>
-      <div><label>Modules (optional)</label><input type="text" id="lf-mods" placeholder=""></div>
-    </div>
-    <div class="checks">
-      <label><input type="checkbox" id="lf-free"> Free-only</label>
-      <label><input type="checkbox" id="lf-pass"> Passive-only</label>
-    </div>
-    <div style="display:flex;gap:8px;margin-top:6px">
-      <button class="btn btn-p" id="live-start-btn" onclick="startLive()">▶ Start</button>
-      <button class="btn btn-g" id="live-stop-btn" onclick="stopLive()" disabled>■ Stop</button>
-    </div>
-  </div>
-
-  <div class="card" id="live-status-card" style="display:none">
-    <div class="card-h" id="live-h">Live session</div>
-    <div id="live-meta" style="font-size:11px;color:var(--fg2);margin-bottom:8px"></div>
-    <div id="live-log" class="scrolly" style="max-height:300px"></div>
-  </div>
-</div>
-
-<!-- ══ ENTITIES ════════════════════════════════════════════════ -->
-<div class="panel" id="p-entities">
-  <div class="card">
-    <div class="card-h" id="ent-h">No scan selected</div>
-    <div class="fld row" style="margin-bottom:6px">
-      <input type="text" id="ent-filter" placeholder="Filter value…" oninput="renderEnt()">
-      <select id="ent-kf" onchange="renderEnt()">
-        <option value="">All kinds</option>
-        <option value="email">email</option><option value="username">username</option>
-        <option value="phone">phone</option><option value="ip_address">ip</option>
-        <option value="domain">domain</option><option value="organisation">org</option>
-        <option value="coordinates">coords</option>
-      </select>
-    </div>
-    <div class="scrolly" style="max-height:calc(100vh - 260px)">
-      <table>
-        <thead><tr><th onclick="sortEnt('kind')">Kind</th><th onclick="sortEnt('value')">Value</th><th onclick="sortEnt('ceff')">C_eff</th><th>Class</th></tr></thead>
-        <tbody id="ent-body"></tbody>
-      </table>
-    </div>
-  </div>
-</div>
-
-<!-- ══ CORRELATE ════════════════════════════════════════════════ -->
-<div class="panel" id="p-correlate">
-  <div class="card">
-    <div class="card-h" id="corr-h">No scan selected</div>
-    <div id="corr-empty" style="color:var(--fg3);font-size:12px;padding:14px;text-align:center">
-      Run a scan, or pick one from History — correlations appear after the scan completes.
-    </div>
-    <div id="corr-list" class="scrolly" style="max-height:calc(100vh - 240px)"></div>
-  </div>
-</div>
-
-<!-- ══ HISTORY ════════════════════════════════════════════════ -->
-<div class="panel" id="p-history">
-  <div style="margin-bottom:8px">
-    <button class="btn btn-g btn-sm" onclick="loadHist()">↻ Refresh</button>
-  </div>
-  <div class="card" style="padding:0">
-    <div class="scrolly" id="hist-list" style="max-height:calc(100vh - 180px)">
-      <div style="padding:24px;text-align:center;color:var(--fg3);font-size:12px">Loading…</div>
-    </div>
-  </div>
-</div>
-
-<!-- ══ MODULES ════════════════════════════════════════════════ -->
-<div class="panel" id="p-modules">
-  <div class="card">
-    <div class="card-h">Registered modules</div>
-    <div id="mod-list" style="font-size:11px;color:var(--fg2)">Loading…</div>
-  </div>
-</div>
-
-</main>
-</div>
+<main id="view"></main>
 <div id="toast"></div>
 
 <script>
-const S={scanId:null,sse:null,entities:[],correlations:[],sortCol:'ceff',sortDir:'desc',modsTotal:0,modsDone:0,modSt:{},liveId:null,liveSse:null,liveIter:0,liveTotalEntities:0};
-const $=id=>document.getElementById(id);
-const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+"use strict";
 
-// ── init ─────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded',()=>{
-  checkHealth();loadHist();loadMods();
-  $('adv-toggle').onclick=()=>{$('adv-toggle').classList.toggle('open');$('adv-box').classList.toggle('open');};
-  $('run-btn').onclick=runScan;
-  $('f-value').addEventListener('keydown',e=>{if(e.key==='Enter')runScan();});
-  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>switchTab(t.dataset.tab));
-});
+/* ═════════════════════════════════════════════════════════════════════
+ * State + constants
+ * ════════════════════════════════════════════════════════════════════ */
 
-function switchTab(name){
-  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
-  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id==='p-'+name));
-  if(name==='history')loadHist();
-  if(name==='modules')loadMods();
-  if(name==='correlate')renderCorr();
+const TARGET_KINDS = [
+  {v:'email',       label:'Email'},
+  {v:'username',    label:'Username'},
+  {v:'phone',       label:'Phone'},
+  {v:'full_name',   label:'Full name'},
+  {v:'ip_address',  label:'IP address'},
+  {v:'domain',      label:'Domain'},
+  {v:'asn',         label:'ASN'},
+  {v:'coordinates', label:'Coordinates (lat,lon)'},
+  {v:'address',     label:'Address'},
+];
+
+// Use-case presets. Each preset filters the live module list returned
+// by /api/v1/modules — so adding modules in registry() picks them up
+// automatically (when matched by predicate) without UI changes.
+const USE_CASES = {
+  all: {
+    label:'All',
+    desc:'Every module that accepts the target. Slower but the most thorough.',
+    pick:(_m)=>true,
+    options:()=>({}),
+  },
+  footprint: {
+    label:'Footprint',
+    desc:'Map the public surface — DNS, certs, history, infrastructure. Skip identity / credential lookups.',
+    pick:(m)=>['crtsh','dns_resolver','reverse_dns','wayback','bgpview','whois','ip_geo','phone_intl'].includes(m.name),
+    options:(picked)=>({ modules: picked }),
+  },
+  investigate: {
+    label:'Investigate',
+    desc:'Identity and breach focus — credential exposure, breach datasets, social presence. Uses paid sources if keys are set.',
+    pick:(m)=>['hudsonrock','xposed_or_not','alienvault_otx','gravatar','github_user','username_search','email_to_username','oathnet_pro'].includes(m.name),
+    options:(picked)=>({ modules: picked }),
+  },
+  passive: {
+    label:'Passive',
+    desc:'Local-only sensors and offline analysis. No outbound network traffic.',
+    pick:(m)=>!!m.passive,
+    options:()=>({ passive_only: true }),
+  },
+};
+
+const S = {
+  route:    {name:'scans', params:{}},
+  version:  '',
+  health:   null,
+  modules:  null,        // [{name, priority, cost, passive, accepts}]
+  scans:    null,        // [Scan]
+  scansAt:  0,           // last fetch ts
+  scan:     null,        // current Scan
+  entities: null,        // [Entity]
+  correlations: null,    // [Correlation]
+  settings: null,        // {keys, write_enabled, env_path}
+  sse:      null,        // EventSource
+  events:   [],          // log entries for the current scan
+  wizard:   {            // wizard scratch state — survives form re-render
+    kind: 'email',
+    value: '',
+    name: '',
+    usecase: 'all',
+    modules: null,       // null = preset-driven; array = manual
+    options: {           // advanced knobs
+      exclude_modules: [],
+      throttle_ms: 0,
+      module_timeout_ms: null,
+      depth: 0,
+      min_expand_confidence: 0.75,
+      max_entities: null,
+      max_wall_time_secs: null,
+      max_concurrent: 0,
+      min_confidence: null,
+      free_only: false,
+    },
+    showAdv: false,
+  },
+};
+
+/* ═════════════════════════════════════════════════════════════════════
+ * Helpers
+ * ════════════════════════════════════════════════════════════════════ */
+
+const $ = (s, r=document)=>r.querySelector(s);
+const $$ = (s, r=document)=>Array.from(r.querySelectorAll(s));
+
+function esc(s){
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function attr(s){ return esc(s); }
+
+function fmtDate(ts){
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+  const h = String(d.getHours()).padStart(2,'0'), mi = String(d.getMinutes()).padStart(2,'0'), s = String(d.getSeconds()).padStart(2,'0');
+  return `${y}-${m}-${day} ${h}:${mi}:${s}`;
+}
+function fmtDuration(secs){
+  if (secs == null || secs < 0) return '—';
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs/60), s = secs%60;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m/60), mm = m%60;
+  return `${h}h ${mm}m`;
+}
+function nowSec(){ return Math.floor(Date.now()/1000); }
+function toast(msg, kind='ok', ms=2400){
+  const t = $('#toast');
+  t.className = `show ${kind}`;
+  t.textContent = msg;
+  clearTimeout(toast._h);
+  toast._h = setTimeout(()=>{ t.className=''; }, ms);
+}
+function setNav(name){
+  $$('.nav-link').forEach(a => a.classList.toggle('active', a.dataset.nav === name));
+}
+function statusPill(status){
+  const m = {complete:'p-ok', running:'p-run', failed:'p-err', pending:'p-pending'};
+  return `<span class="pill ${m[status] || 'p-pending'}">${esc(status || 'pending')}</span>`;
+}
+function costPill(c){
+  return `<span class="pill p-${c === 'free' ? 'free' : c === 'paid' ? 'paid' : 'keyed'}">${esc(c)}</span>`;
 }
 
-function toast(msg,type){
-  const el=$('toast');el.textContent=msg;el.className='show '+(type||'');
-  clearTimeout(toast._t);toast._t=setTimeout(()=>{el.className='';},2500);
-}
+/* ═════════════════════════════════════════════════════════════════════
+ * API client
+ * ════════════════════════════════════════════════════════════════════ */
 
-async function checkHealth(){
-  try{
-    const r=await fetch('/api/v1/health');const d=await r.json();
-    $('hdot').className='dot ok';
-    if(d.version)$('hver').textContent='v'+d.version;
-  }catch{$('hdot').className='dot err';}
-}
-
-// ── scan ─────────────────────────────────────────────────────
-function buildOptions(){
-  const opts={};
-  const mods=$('f-modules').value.trim();if(mods)opts.modules=mods.split(',').map(s=>s.trim()).filter(Boolean);
-  const ex=$('f-exclude').value.trim();if(ex)opts.exclude_modules=ex.split(',').map(s=>s.trim()).filter(Boolean);
-  const tm=+$('f-throttle').value;if(tm>0)opts.throttle_ms=tm;
-  const to=$('f-timeout').value;if(to)opts.module_timeout_ms=+to;
-  opts.depth=+$('f-depth').value||0;
-  // Explicit NaN check — `|| 0.75` would reject a legitimate 0 input.
-  const mxc=parseFloat($('f-mxc').value);opts.min_expand_confidence=Number.isFinite(mxc)?mxc:0.75;
-  const me=$('f-maxe').value;if(me)opts.max_entities=+me;
-  const mt=$('f-maxt').value;if(mt)opts.max_wall_time_secs=+mt;
-  const mc=$('f-minc').value;if(mc)opts.min_confidence=parseFloat(mc);
-  if($('f-free').checked)opts.free_only=true;
-  if($('f-pass').checked)opts.passive_only=true;
-  return opts;
-}
-
-async function runScan(){
-  const kind=$('f-kind').value,value=$('f-value').value.trim();
-  if(!value){toast('Enter a target value','err');return;}
-  $('run-btn').disabled=true;$('run-btn').textContent='⌛ Scanning…';
-  S.entities=[];S.correlations=[];S.modsTotal=0;S.modsDone=0;S.modSt={};
-  $('modlog').innerHTML='';$('ent-body').innerHTML='';$('ec').textContent='';$('corr-list').innerHTML='';setProg(0);
-  if(S.sse){S.sse.close();S.sse=null;}
-  try{
-    const r=await fetch('/api/v1/scans',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({kind,value,options:buildOptions()})
+const API = {
+  async _json(path, opts={}){
+    const r = await fetch(path, {
+      headers: opts.body ? {'Content-Type':'application/json'} : {},
+      ...opts,
     });
-    const d=await r.json();
-    if(!r.ok){toast(d.error||'Scan failed','err');resetBtn();return;}
-    S.scanId=d.scan_id;
-    $('prog-card').style.display='block';
-    $('prog-h').textContent='Running — '+kind+':'+value;
-    openSSE(S.scanId);
-    toast('Scan started','ok');
-  }catch(e){toast('Network: '+e.message,'err');resetBtn();}
+    if (!r.ok) {
+      let detail = '';
+      try { const j = await r.json(); detail = j.error || JSON.stringify(j); }
+      catch { detail = await r.text(); }
+      throw new Error(`HTTP ${r.status}: ${detail}`);
+    }
+    return r.json();
+  },
+  health:    ()=> API._json('/api/v1/health'),
+  version:   ()=> API._json('/api/v1/version'),
+  modules:   ()=> API._json('/api/v1/modules'),
+  scans:     ()=> API._json('/api/v1/scans'),
+  scan:      id => API._json(`/api/v1/scans/${encodeURIComponent(id)}`),
+  entities:  id => API._json(`/api/v1/scans/${encodeURIComponent(id)}/entities`),
+  correlations: id => API._json(`/api/v1/scans/${encodeURIComponent(id)}/correlations`),
+  createScan: body => API._json('/api/v1/scans', {method:'POST', body: JSON.stringify(body)}),
+  keysGet:   ()=> API._json('/api/v1/settings/keys'),
+  keysPut:   body => API._json('/api/v1/settings/keys', {method:'PUT', body: JSON.stringify(body)}),
+};
+
+/* ═════════════════════════════════════════════════════════════════════
+ * Router  (hash-based)
+ * ════════════════════════════════════════════════════════════════════ */
+
+function parseHash(){
+  // Forms supported:
+  //   #/scans
+  //   #/newscan
+  //   #/settings
+  //   #/scan/<id>                          (auto-redirects to /summary)
+  //   #/scan/<id>/summary|browse|graph|log|info[?query=…]
+  const raw = (location.hash || '#/scans').replace(/^#/, '');
+  // Strip query so sub-tab matching isn't polluted; tabs read query
+  // params themselves from `location.hash` when needed.
+  const [path] = raw.split('?');
+  const p = path.split('/').filter(Boolean);
+  if (p.length === 0)              return {name:'scans',     params:{}};
+  if (p[0] === 'scans')            return {name:'scans',     params:{}};
+  if (p[0] === 'newscan')          return {name:'newscan',   params:{}};
+  if (p[0] === 'settings')         return {name:'settings',  params:{}};
+  if (p[0] === 'scan' && p[1]) {
+    const sub = p[2] || 'summary';
+    return {name:'scan', params:{id:p[1], sub}};
+  }
+  return {name:'scans', params:{}};
 }
+function navTo(hash){ location.hash = hash; }
 
-function resetBtn(){$('run-btn').disabled=false;$('run-btn').textContent='▶ Run scan';}
-function setProg(p){$('prog-fill').style.width=p+'%';}
+window.addEventListener('hashchange', ()=>render());
 
-function openSSE(sid){
-  const es=new EventSource('/api/v1/scans/'+encodeURIComponent(sid)+'/events');
-  S.sse=es;
-  es.onmessage=e=>{try{handleEvent(JSON.parse(e.data));}catch{}};
-  // If the SSE stream drops (server restart, network hiccup, scan errored
-  // server-side), re-enable the Run button and toast so the UI doesn't
-  // sit stuck in "Scanning…" forever.
-  es.onerror=()=>{
-    es.close();S.sse=null;
-    resetBtn();
-    $('prog-h').textContent='⚠ Connection lost';
-    toast('Scan event stream disconnected','err');
-  };
-}
+/* ═════════════════════════════════════════════════════════════════════
+ * Top-level render dispatcher
+ * ════════════════════════════════════════════════════════════════════ */
 
-function handleEvent(ev){
-  switch(ev.type){
-    case 'scan_start':$('prog-h').textContent='Running — '+ev.target_kind+':'+ev.target_value;break;
-    case 'module_skipped':setMod(ev.module,'skip',ev.reason);break;
-    case 'module_start':S.modsTotal++;setMod(ev.module,'run','');setProg(progPct());break;
-    case 'module_done':S.modsDone++;setMod(ev.module,'ok',ev.found+' found');setProg(progPct());break;
-    case 'module_error':S.modsDone++;setMod(ev.module,'err',ev.error);setProg(progPct());break;
-    case 'entity_found':mergeEntity(ev.entity);$('ec').textContent=S.entities.length+' entities';break;
-    case 'expansion_tick':addLog('▶ expansion depth '+ev.depth+' — '+ev.queued+' queued, '+ev.visited+' visited');break;
-    case 'expansion_stop':addLog('● expansion stopped: '+ev.reason);break;
-    case 'correlation_found':S.correlations.push(ev.correlation);addLog('★ '+ev.correlation.rule_id+' ['+ev.correlation.severity.toUpperCase()+'] '+ev.correlation.description);break;
-    case 'correlations_done':addLog('● correlator done — '+ev.count+' rule(s) fired');break;
-    case 'scan_complete':
-      setProg(100);$('prog-h').textContent='✓ Complete — '+ev.entity_count+' entities, '+S.correlations.length+' correlation(s)';
-      resetBtn();if(S.sse){S.sse.close();S.sse=null;}
-      renderEnt();renderCorr();
-      $('ent-h').textContent='Scan '+S.scanId.slice(0,8)+' — '+ev.entity_count+' entities';
-      switchTab('entities');break;
+async function render(){
+  closeSse();
+  S.route = parseHash();
+  const v = $('#view');
+  v.innerHTML = `<div class="empty"><span class="spin"></span><p style="margin-top:14px">Loading…</p></div>`;
+
+  try {
+    if (S.route.name === 'scans')     return await renderScans(v);
+    if (S.route.name === 'newscan')   return await renderNewScan(v);
+    if (S.route.name === 'settings')  return await renderSettings(v);
+    if (S.route.name === 'scan')      return await renderScan(v);
+  } catch (e) {
+    console.error(e);
+    v.innerHTML = `<div class="empty"><h3>Error</h3><p>${esc(e.message)}</p>
+      <button class="btn btn-g" onclick="render()">Retry</button></div>`;
   }
 }
 
-function progPct(){return S.modsTotal===0?5:Math.min(95,Math.round(S.modsDone/S.modsTotal*100));}
+/* ═════════════════════════════════════════════════════════════════════
+ * Page: Scans (list / dashboard)
+ * ════════════════════════════════════════════════════════════════════ */
 
-function setMod(name,state,detail){
-  S.modSt[name]=state;
-  let row=$('m-'+name.replace(/[^a-z0-9]/g,'_'));
-  if(!row){row=document.createElement('div');row.className='modrow';row.id='m-'+name.replace(/[^a-z0-9]/g,'_');$('modlog').appendChild(row);}
-  const cls=state==='run'?'b-run':state==='ok'?'b-ok':state==='skip'?'b-skip':'b-err';
-  const lbl=state==='run'?'▶':state==='ok'?'✓ '+(detail||''):state==='skip'?'skip — '+detail:'✗ '+detail;
-  row.innerHTML=`<span class="nm">${esc(name)}</span><span class="bdg ${cls}">${esc(lbl)}</span>`;
-  $('modlog').scrollTop=$('modlog').scrollHeight;
-}
+async function renderScans(v){
+  setNav('scans');
+  const data = await API.scans();
+  S.scans = data.scans || [];
+  S.scansAt = nowSec();
 
-function addLog(msg){
-  const d=document.createElement('div');d.className='modrow';d.style.color='var(--fg3)';
-  d.innerHTML=`<span class="nm">${esc(msg)}</span>`;$('modlog').appendChild(d);
-  $('modlog').scrollTop=$('modlog').scrollHeight;
-}
+  const stats = scanStats(S.scans);
 
-function mergeEntity(e){
-  const i=S.entities.findIndex(x=>x.uid===e.uid);
-  if(i>=0){
-    const cur=S.entities[i];
-    if(e.confidence>cur.confidence)cur.confidence=e.confidence;
-    cur.corroboration=(cur.corroboration||1)+1;
-    // Union-merge tags so the Entities table reflects tags added by later modules.
-    if(e.tags&&e.tags.length){
-      const seen=new Set(cur.tags||[]);cur.tags=cur.tags||[];
-      for(const t of e.tags){if(!seen.has(t)){cur.tags.push(t);seen.add(t);}}
-    }
-  } else S.entities.push(e);
-}
+  v.innerHTML = `
+    <div class="page-head">
+      <h1>Scans</h1>
+      <span class="sub">${stats.total} scan${stats.total === 1 ? '' : 's'} on record</span>
+      <div class="spacer"></div>
+      <button class="btn btn-g btn-sm" onclick="render()">↻ Refresh</button>
+      <a class="btn btn-p" href="#/newscan">+ New Scan</a>
+    </div>
 
-// ── entities ─────────────────────────────────────────────────
-function cEff(e){return Math.min(1,(e.confidence||0)*(1+0.15*Math.log(Math.max(1,e.corroboration||1))));}
-function classify(e){const c=cEff(e);return c>=0.75?'VERIFIED':c>=0.40?'PROBABLE':'CANDIDATE';}
-function kindCls(k){return 'kind k-'+(k||'').replace(/[^a-z0-9_]/g,'');}
+    <div class="stats">
+      <div class="stat"><div class="lab">Total</div><div class="val">${stats.total}</div></div>
+      <div class="stat"><div class="lab">Running</div><div class="val" style="color:${stats.running ? 'var(--info)' : 'var(--fg2)'}">${stats.running}</div></div>
+      <div class="stat"><div class="lab">Complete</div><div class="val" style="color:${stats.complete ? 'var(--ok)' : 'var(--fg2)'}">${stats.complete}</div></div>
+      <div class="stat"><div class="lab">Failed</div><div class="val" style="color:${stats.failed ? 'var(--err)' : 'var(--fg2)'}">${stats.failed}</div></div>
+      <div class="stat"><div class="lab">Entities found</div><div class="val">${stats.entities}</div></div>
+    </div>
 
-function sortEnt(c){if(S.sortCol===c)S.sortDir=S.sortDir==='asc'?'desc':'asc';else{S.sortCol=c;S.sortDir=c==='ceff'?'desc':'asc';}renderEnt();}
+    <div class="card">
+      <div class="card-h">
+        Recent scans
+        <div class="spacer"></div>
+        <input id="scan-search" type="search" placeholder="Filter…" style="background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);padding:5px 9px;color:var(--fg);font-family:inherit;font-size:11.5px;outline:none">
+      </div>
+      <div class="card-b tight" id="scans-table">${renderScansTable(S.scans)}</div>
+    </div>
+  `;
 
-function renderEnt(){
-  const filt=$('ent-filter').value.toLowerCase(),kf=$('ent-kf').value;
-  let vis=S.entities.filter(e=>{if(kf&&e.kind!==kf)return false;if(filt&&!e.value.toLowerCase().includes(filt))return false;return true;});
-  vis.sort((a,b)=>{let va,vb;
-    if(S.sortCol==='ceff'){va=cEff(a);vb=cEff(b);}
-    else if(S.sortCol==='kind'){va=a.kind;vb=b.kind;}
-    else{va=a.value;vb=b.value;}
-    const c=va<vb?-1:va>vb?1:0;return S.sortDir==='asc'?c:-c;});
-  const tb=$('ent-body');tb.innerHTML='';
-  vis.forEach(e=>{
-    const c=cEff(e).toFixed(3),cl=classify(e),tr=document.createElement('tr');
-    const tags=(e.tags||[]).slice(0,3).map(t=>`<span class="tg">#${esc(t)}</span>`).join('');
-    tr.innerHTML=`<td><span class="${kindCls(e.kind)}">${esc(e.kind)}</span></td>
-      <td>${esc(e.value)}${tags}</td>
-      <td class="cls c-${cl}">${c}</td>
-      <td class="cls c-${cl}">${cl}</td>`;
-    tb.appendChild(tr);
+  const search = $('#scan-search');
+  search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    const filtered = q ? S.scans.filter(s =>
+      (s.target?.value || '').toLowerCase().includes(q)
+      || (s.target?.kind || '').toLowerCase().includes(q)
+      || (s.status || '').toLowerCase().includes(q)
+      || (s.id || '').toLowerCase().includes(q)
+    ) : S.scans;
+    $('#scans-table').innerHTML = renderScansTable(filtered);
   });
 }
 
-// ── history ──────────────────────────────────────────────────
-async function loadHist(){
-  const el=$('hist-list');
-  try{
-    const r=await fetch('/api/v1/scans');const d=await r.json();const scans=d.scans||[];
-    if(!scans.length){el.innerHTML='<div style="padding:24px;text-align:center;color:var(--fg3)">No scans yet</div>';return;}
-    el.innerHTML=scans.map(s=>{
-      const st=(s.status||'pending').toLowerCase(),sb='st s-'+st;
-      const ts=s.started_at?new Date(s.started_at*1000).toLocaleString():'';
-      return `<div class="hist" onclick="loadScan('${esc(s.id)}')">
-        <span class="${sb}">${esc(s.status||'')}</span>
-        <div class="tg-target">${esc(s.target.kind)}:${esc(s.target.value)}</div>
-        <div class="meta">${esc(ts)} · ${s.entity_count||0} entities · ${esc(s.id.slice(0,8))}</div>
-      </div>`;
-    }).join('');
-  }catch(e){el.innerHTML='<div style="padding:24px;color:var(--err)">Error: '+esc(e.message)+'</div>';}
+function scanStats(scans){
+  let running=0, complete=0, failed=0, entities=0;
+  for (const s of scans) {
+    if (s.status === 'running' || s.status === 'pending') running++;
+    else if (s.status === 'complete') complete++;
+    else if (s.status === 'failed') failed++;
+    entities += s.entity_count || 0;
+  }
+  return {total: scans.length, running, complete, failed, entities};
 }
 
-async function loadScan(sid){
-  S.scanId=sid;
-  try{
-    const [er,cr]=await Promise.all([
-      fetch('/api/v1/scans/'+encodeURIComponent(sid)+'/entities'),
-      fetch('/api/v1/scans/'+encodeURIComponent(sid)+'/correlations')
-    ]);
-    const ed=await er.json(),cd=await cr.json();
-    S.entities=ed.entities||[];S.correlations=cd.correlations||[];
-    $('ent-h').textContent='Scan '+sid.slice(0,8)+' — '+S.entities.length+' entities';
-    renderEnt();renderCorr();switchTab('entities');
-  }catch(e){toast('Load failed: '+e.message,'err');}
-}
-
-// ── correlate ────────────────────────────────────────────────
-function renderCorr(){
-  const empty=$('corr-empty'),list=$('corr-list');
-  $('corr-h').textContent=S.scanId?('Scan '+S.scanId.slice(0,8)+' — '+S.correlations.length+' correlation(s)'):'No scan selected';
-  if(!S.correlations.length){empty.style.display='block';list.innerHTML='';return;}
-  empty.style.display='none';
-  const ord={critical:0,high:1,medium:2,low:3};
-  const sorted=[...S.correlations].sort((a,b)=>(ord[a.severity]??4)-(ord[b.severity]??4));
-  list.innerHTML=sorted.map(c=>{
-    const sv=(c.severity||'low').toLowerCase();
-    return `<div class="corr cv-${sv}">
-      <div class="corr-h">
-        <span>${esc(c.rule_id)}</span>
-        <span class="corr-sev cs-${sv}">${sv.toUpperCase()}</span>
-      </div>
-      <div class="corr-name">${esc(c.rule_name||'')}</div>
-      <div class="corr-d">${esc(c.description)}</div>
-    </div>`;
+function renderScansTable(scans){
+  if (!scans.length) {
+    return `<div class="empty"><h3>No scans yet</h3>
+      <p>Submit a target to start the first scan. Results stream in real-time and persist for the life of the database.</p>
+      <a class="btn btn-p" href="#/newscan">+ Start a new scan</a></div>`;
+  }
+  const rows = scans.map(s => {
+    const target = `${esc(s.target?.value || '—')}`;
+    const kind = s.target?.kind || '—';
+    const dur = s.finished_at && s.started_at ? s.finished_at - s.started_at
+              : s.status === 'running' ? nowSec() - (s.started_at || nowSec()) : null;
+    return `
+      <tr class="clickable" onclick="navTo('#/scan/${attr(s.id)}/summary')">
+        <td><span class="kind k-${attr(kind)}">${esc(kind)}</span></td>
+        <td>${target}</td>
+        <td>${statusPill(s.status)}</td>
+        <td class="num">${s.entity_count || 0}</td>
+        <td class="mono">${esc(fmtDate(s.started_at))}</td>
+        <td class="mono">${esc(fmtDuration(dur))}</td>
+        <td class="mono" style="color:var(--fg3)">${esc((s.id || '').slice(0,12))}</td>
+      </tr>
+    `;
   }).join('');
+  return `<table class="tbl"><thead><tr>
+    <th>Kind</th><th>Target</th><th>Status</th><th class="num">Entities</th>
+    <th>Started</th><th>Duration</th><th>Scan ID</th>
+  </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-// ── live ─────────────────────────────────────────────────────
-// `text` is treated as plain text (set via textContent), NOT as HTML.
-// Server-supplied strings (ev.error, ev.reason, ev.target_value, etc.)
-// must never be interpolated as innerHTML — otherwise a crafted module
-// error or target value containing `<script>` could XSS the SPA. The
-// argument is named `text` rather than `html` as a documentation hint.
-function liveLog(text,cls){
-  const row=document.createElement('div');row.className='modrow';
-  const span=document.createElement('span');span.className='nm';
-  if(cls)span.style.color='var(--'+cls+')';
-  span.textContent=text;
-  row.appendChild(span);
-  const log=$('live-log');log.appendChild(row);log.scrollTop=log.scrollHeight;
+/* ═════════════════════════════════════════════════════════════════════
+ * Page: New Scan (wizard)
+ * ════════════════════════════════════════════════════════════════════ */
+
+async function renderNewScan(v){
+  setNav('newscan');
+  if (!S.modules) {
+    const m = await API.modules();
+    S.modules = m.modules || [];
+  }
+  const W = S.wizard;
+  v.innerHTML = `
+    <div class="page-head">
+      <h1>New Scan</h1>
+      <span class="sub">Choose a target and a scan profile.</span>
+    </div>
+
+    <div class="card">
+      <div class="card-h">1. Target</div>
+      <div class="card-b">
+        <div class="row">
+          <div class="fld" style="flex:0 0 220px">
+            <label>Kind</label>
+            <select id="w-kind">${TARGET_KINDS.map(k =>
+              `<option value="${attr(k.v)}"${W.kind === k.v ? ' selected':''}>${esc(k.label)}</option>`).join('')}</select>
+          </div>
+          <div class="fld" style="flex:1">
+            <label>Value</label>
+            <input type="text" id="w-value" class="mono" placeholder="${esc(placeholderFor(W.kind))}"
+              value="${attr(W.value)}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+            <div class="err-hint" id="w-value-err">Required.</div>
+          </div>
+        </div>
+        <div class="fld">
+          <label>Scan name (optional)</label>
+          <input type="text" id="w-name" placeholder="leave blank to use the target value" value="${attr(W.name)}">
+          <div class="hint">Stored alongside the target; helps you find the scan later.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h">2. Scan profile</div>
+      <div class="card-b">
+        <div class="usecase-grid" id="w-uc">
+          ${Object.entries(USE_CASES).map(([k, uc])=>`
+            <div class="uc-card${W.usecase === k ? ' sel':''}" data-uc="${attr(k)}">
+              <div class="uc-h">${esc(uc.label)}</div>
+              <div class="uc-d">${esc(uc.desc)}</div>
+            </div>
+          `).join('')}
+        </div>
+        <hr class="div">
+        <div id="w-modlist"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h">
+        3. Advanced options
+        <div class="spacer"></div>
+        <button class="btn btn-ghost btn-xs" id="w-adv-toggle">${W.showAdv ? '▾ Hide' : '▸ Show'}</button>
+      </div>
+      <div class="card-b" id="w-adv" style="${W.showAdv ? '' : 'display:none'}">
+        <div class="row">
+          <div class="fld">
+            <label>Expansion depth</label>
+            <input type="number" id="w-depth" min="0" max="5" value="${W.options.depth}">
+            <div class="hint">0 = single round. ≥1 enables autonomous expansion (entities → new targets).</div>
+          </div>
+          <div class="fld">
+            <label>Min expand C<sub>eff</sub></label>
+            <input type="number" id="w-mxc" min="0" max="1" step="0.05" value="${W.options.min_expand_confidence}">
+            <div class="hint">Only expand entities at or above this effective confidence.</div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="fld">
+            <label>Throttle (ms)</label>
+            <input type="number" id="w-throttle" min="0" value="${W.options.throttle_ms}">
+            <div class="hint">Delay between dispatches.</div>
+          </div>
+          <div class="fld">
+            <label>Module timeout (ms)</label>
+            <input type="number" id="w-timeout" min="100" value="${W.options.module_timeout_ms ?? ''}" placeholder="3000">
+            <div class="hint">Override the per-module hard cap.</div>
+          </div>
+          <div class="fld">
+            <label>Concurrent modules</label>
+            <input type="number" id="w-concurrent" min="0" value="${W.options.max_concurrent}">
+            <div class="hint">0 = sequential. N>0 = up to N in flight.</div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="fld">
+            <label>Max entities</label>
+            <input type="number" id="w-maxent" min="0" value="${W.options.max_entities ?? ''}" placeholder="unlimited">
+          </div>
+          <div class="fld">
+            <label>Max wall time (sec)</label>
+            <input type="number" id="w-maxwt" min="0" value="${W.options.max_wall_time_secs ?? ''}" placeholder="unlimited">
+          </div>
+          <div class="fld">
+            <label>Min confidence</label>
+            <input type="number" id="w-minc" min="0" max="1" step="0.05" value="${W.options.min_confidence ?? ''}" placeholder="no filter">
+          </div>
+        </div>
+        <div class="row">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--fg2)">
+            <input type="checkbox" id="w-free" ${W.options.free_only ? 'checked':''}>
+            <span>Free-only (skip key-gated / paid modules)</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-grp">
+      <button class="btn btn-p" id="w-submit">▶ Launch scan</button>
+      <a class="btn btn-ghost" href="#/scans">Cancel</a>
+    </div>
+  `;
+
+  renderWizardModList();
+
+  $('#w-kind').addEventListener('change', e => {
+    W.kind = e.target.value;
+    $('#w-value').placeholder = placeholderFor(W.kind);
+    renderWizardModList();
+  });
+  $('#w-value').addEventListener('input', e => { W.value = e.target.value; });
+  $('#w-name').addEventListener('input', e => { W.name = e.target.value; });
+
+  $$('.uc-card').forEach(c => c.addEventListener('click', () => {
+    W.usecase = c.dataset.uc;
+    W.modules = null; // re-derive from preset
+    $$('.uc-card').forEach(x => x.classList.toggle('sel', x.dataset.uc === W.usecase));
+    renderWizardModList();
+  }));
+
+  $('#w-adv-toggle').addEventListener('click', () => {
+    W.showAdv = !W.showAdv;
+    $('#w-adv').style.display = W.showAdv ? '' : 'none';
+    $('#w-adv-toggle').textContent = W.showAdv ? '▾ Hide' : '▸ Show';
+  });
+
+  ['depth','mxc','throttle','timeout','concurrent','maxent','maxwt','minc'].forEach(id => {
+    const el = $(`#w-${id}`); if (!el) return;
+    el.addEventListener('input', e => {
+      const v = e.target.value === '' ? null : Number(e.target.value);
+      const map = {depth:'depth', mxc:'min_expand_confidence', throttle:'throttle_ms', timeout:'module_timeout_ms',
+                   concurrent:'max_concurrent', maxent:'max_entities', maxwt:'max_wall_time_secs', minc:'min_confidence'};
+      W.options[map[id]] = v;
+    });
+  });
+  $('#w-free').addEventListener('change', e => { W.options.free_only = e.target.checked; });
+
+  $('#w-submit').addEventListener('click', submitWizard);
 }
 
-async function startLive(){
-  const kind=$('lf-kind').value,value=$('lf-value').value.trim();
-  if(!value){toast('Enter a target value','err');return;}
-  const opts={depth:+$('lf-depth').value||0};
-  const mods=$('lf-mods').value.trim();if(mods)opts.modules=mods.split(',').map(s=>s.trim()).filter(Boolean);
-  if($('lf-free').checked)opts.free_only=true;
-  if($('lf-pass').checked)opts.passive_only=true;
-  const live={interval_secs:+$('lf-int').value||30};
-  const it=$('lf-iter').value;if(it)live.iterations=+it;
-
-  try{
-    const r=await fetch('/api/v1/live',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({kind,value,options:opts,live})});
-    const d=await r.json();
-    if(!r.ok){toast(d.error||'Start failed','err');return;}
-    S.liveId=d.live_id;S.liveIter=0;S.liveTotalEntities=0;
-    $('live-status-card').style.display='block';$('live-log').innerHTML='';
-    $('live-start-btn').disabled=true;$('live-stop-btn').disabled=false;
-    $('live-h').textContent='Live '+S.liveId.slice(0,12)+' — '+kind+':'+value;
-    updateLiveMeta();
-    openLiveSSE(S.liveId);
-    toast('Live session started','ok');
-  }catch(e){toast('Network: '+e.message,'err');}
+function placeholderFor(kind){
+  return ({
+    email:'someone@example.com',
+    username:'jdoe',
+    phone:'+61400000000',
+    full_name:'Jane Doe',
+    ip_address:'1.1.1.1',
+    domain:'example.com',
+    asn:'AS13335',
+    coordinates:'-33.8688,151.2093',
+    address:'1 Loop St',
+  })[kind] || '';
 }
 
-async function stopLive(){
-  if(!S.liveId)return;
-  try{
-    await fetch('/api/v1/live/'+encodeURIComponent(S.liveId),{method:'DELETE'});
-    toast('Stop requested','ok');
-  }catch(e){toast('Stop failed: '+e.message,'err');}
+function renderWizardModList(){
+  const W = S.wizard;
+  const wrap = $('#w-modlist');
+  if (!wrap) return;
+  const uc = USE_CASES[W.usecase];
+
+  // Filter modules to those that accept the chosen target kind, then
+  // apply the use-case predicate (or 'all' = no filter).
+  const accepting = S.modules.filter(m => !m.accepts || m.accepts.includes(W.kind));
+  const ucMatches = accepting.filter(m => uc.pick(m));
+
+  // Resolve the effective active set:
+  //   * If user has manually edited (W.modules != null), use that.
+  //   * Else use the use-case match list, unless 'all'/'passive' (no preset list).
+  let active;
+  if (W.modules !== null) {
+    active = new Set(W.modules);
+  } else if (W.usecase === 'all' || W.usecase === 'passive') {
+    active = new Set(accepting.map(m => m.name));
+  } else {
+    active = new Set(ucMatches.map(m => m.name));
+  }
+
+  wrap.innerHTML = `
+    <div class="filterbar">
+      <span class="cap">Modules</span>
+      <span class="ct">${active.size} of ${accepting.length} selected${W.usecase === 'passive' ? ' · passive-only flag will further restrict' : ''}</span>
+      <div class="sp"></div>
+      <button class="btn btn-ghost btn-xs" id="m-all">Select all</button>
+      <button class="btn btn-ghost btn-xs" id="m-none">Clear</button>
+      <button class="btn btn-ghost btn-xs" id="m-reset">Use preset</button>
+    </div>
+    <div class="mod-grid" id="m-grid">
+      ${accepting.map(m => {
+        const checked = active.has(m.name);
+        const cost = m.cost || 'free';
+        return `
+          <label class="mod-row">
+            <input type="checkbox" data-mod="${attr(m.name)}"${checked ? ' checked':''}>
+            <span class="mn">${esc(m.name)}</span>
+            ${m.passive ? '<span class="pill p-pending" title="local-only sensor">passive</span>' : ''}
+            ${costPill(cost)}
+          </label>
+        `;
+      }).join('')}
+      ${accepting.length === 0 ? `<div class="empty"><p>No modules accept the <code>${esc(W.kind)}</code> target kind.</p></div>` : ''}
+    </div>
+  `;
+  $$('#m-grid input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const set = new Set(W.modules || Array.from(active));
+      if (cb.checked) set.add(cb.dataset.mod); else set.delete(cb.dataset.mod);
+      W.modules = Array.from(set);
+      renderWizardModList();
+    });
+  });
+  $('#m-all').addEventListener('click', () => { W.modules = accepting.map(m => m.name); renderWizardModList(); });
+  $('#m-none').addEventListener('click', () => { W.modules = []; renderWizardModList(); });
+  $('#m-reset').addEventListener('click', () => { W.modules = null; renderWizardModList(); });
 }
 
-function updateLiveMeta(){
-  $('live-meta').textContent='Iteration '+S.liveIter+' · '+S.liveTotalEntities+' total entities seen';
-}
+async function submitWizard(){
+  const W = S.wizard;
+  if (!W.value.trim()) {
+    $('.fld:has(#w-value)')?.classList.add('error');
+    $('#w-value').focus();
+    toast('Target value is required', 'err');
+    return;
+  }
 
-function openLiveSSE(lid){
-  const es=new EventSource('/api/v1/live/'+encodeURIComponent(lid)+'/events');
-  S.liveSse=es;
-  es.onmessage=e=>{try{handleLiveEvent(JSON.parse(e.data));}catch{}};
-  // Same recovery story as the scan SSE — surface the disconnect rather
-  // than silently leaving the Live tab in "running" state.
-  es.onerror=()=>{
-    es.close();S.liveSse=null;
-    $('live-start-btn').disabled=false;
-    $('live-stop-btn').disabled=true;
-    liveLog('⚠ event stream disconnected','err');
-    toast('Live event stream disconnected','err');
+  // Build ScanOptions.
+  const uc = USE_CASES[W.usecase];
+  const base = uc.options(W.modules);
+  const opts = {
+    ...base,
+    exclude_modules: W.options.exclude_modules,
+    throttle_ms: Number(W.options.throttle_ms) || 0,
+    max_concurrent: Number(W.options.max_concurrent) || 0,
+    depth: Number(W.options.depth) || 0,
+    min_expand_confidence: Number(W.options.min_expand_confidence) || 0.75,
+    free_only: !!W.options.free_only,
   };
-}
+  // null-able knobs:
+  if (W.options.module_timeout_ms != null && W.options.module_timeout_ms !== '')
+    opts.module_timeout_ms = Number(W.options.module_timeout_ms);
+  if (W.options.max_entities != null && W.options.max_entities !== '')
+    opts.max_entities = Number(W.options.max_entities);
+  if (W.options.max_wall_time_secs != null && W.options.max_wall_time_secs !== '')
+    opts.max_wall_time_secs = Number(W.options.max_wall_time_secs);
+  if (W.options.min_confidence != null && W.options.min_confidence !== '')
+    opts.min_confidence = Number(W.options.min_confidence);
 
-function handleLiveEvent(ev){
-  switch(ev.type){
-    case 'live_start':liveLog('● live started — interval '+ev.interval_secs+'s');break;
-    case 'live_tick':S.liveIter=ev.iteration;liveLog('▶ tick '+ev.iteration+' — scan '+ev.scan_id.slice(0,8));updateLiveMeta();break;
-    case 'live_stop':
-      liveLog('● live stopped: '+ev.reason);
-      $('live-start-btn').disabled=false;$('live-stop-btn').disabled=true;
-      if(S.liveSse){S.liveSse.close();S.liveSse=null;}
-      break;
-    case 'module_done':liveLog('  ✓ '+ev.module+' — '+ev.found+' found','fg2');break;
-    case 'module_error':liveLog('  ✗ '+ev.module+' — '+ev.error,'err');break;
-    case 'entity_found':S.liveTotalEntities++;updateLiveMeta();break;
-    case 'correlation_found':liveLog('★ '+ev.correlation.rule_id+' ['+ev.correlation.severity.toUpperCase()+'] '+ev.correlation.description,'acc2');break;
-    case 'scan_complete':liveLog('  ● scan '+ev.scan_id.slice(0,8)+' done — '+ev.entity_count+' entities','fg2');break;
+  // If user manually edited the module list, override the preset choice.
+  if (W.modules !== null) opts.modules = W.modules.length ? W.modules : null;
+
+  const body = { kind: W.kind, value: W.value.trim(), options: opts };
+
+  const btn = $('#w-submit');
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Queuing…';
+  try {
+    const r = await API.createScan(body);
+    toast('Scan queued', 'ok');
+    // Reset value so the wizard remembers the form for next time but
+    // doesn't auto-submit the same target.
+    W.value = ''; W.name = '';
+    navTo(`#/scan/${r.scan_id}/summary`);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = '▶ Launch scan';
+    toast(e.message, 'err', 4000);
   }
 }
 
-// ── modules ──────────────────────────────────────────────────
-async function loadMods(){
-  try{
-    const r=await fetch('/api/v1/modules');const d=await r.json();
-    const mods=(d.modules||[]).sort((a,b)=>b.priority-a.priority);
-    $('mod-list').innerHTML=mods.map(m=>`<div class="modrow">
-      <span class="nm">${esc(m.name)}</span>
-      <span class="bdg b-skip">pri ${m.priority}</span>
-      <span class="bdg ${m.cost==='free'?'b-ok':'b-err'}">${esc(m.cost)}</span>
-      <span class="bdg ${m.passive?'b-ok':'b-skip'}">${m.passive?'passive':'network'}</span>
-    </div>`).join('');
-  }catch(e){$('mod-list').innerHTML='<span style="color:var(--err)">Error: '+esc(e.message)+'</span>';}
+/* ═════════════════════════════════════════════════════════════════════
+ * Page: Scan detail (with sub-tabs)
+ * ════════════════════════════════════════════════════════════════════ */
+
+async function renderScan(v){
+  setNav('scans');
+  const {id, sub} = S.route.params;
+
+  // Refresh scan + entities + correlations in parallel; live SSE stream
+  // is opened separately and survives sub-tab switches via render-cache.
+  const [scan, ents, corrs] = await Promise.all([
+    API.scan(id),
+    API.entities(id),
+    API.correlations(id),
+  ]);
+  S.scan = scan;
+  S.entities = ents.entities || [];
+  S.correlations = corrs.correlations || [];
+
+  // Pre-render header + tab strip; the chosen sub-tab fills #scan-body.
+  v.innerHTML = `
+    <div class="crumbs">
+      <a href="#/scans">Scans</a>
+      <span class="sep">›</span>
+      <span>${esc(scan.target?.value || id)}</span>
+    </div>
+
+    <div class="page-head">
+      <h1 style="display:flex;align-items:center;gap:10px">
+        <span class="kind k-${attr(scan.target?.kind)}" style="font-size:13px;padding:3px 9px">${esc(scan.target?.kind)}</span>
+        <span class="mono">${esc(scan.target?.value)}</span>
+      </h1>
+      <div class="spacer"></div>
+      ${statusPill(scan.status)}
+      <button class="btn btn-g btn-sm" onclick="render()">↻ Refresh</button>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="lab">Entities</div><div class="val">${scan.entity_count || S.entities.length}</div></div>
+      <div class="stat"><div class="lab">Correlations</div><div class="val" style="color:${S.correlations.length ? 'var(--crit)' : 'var(--fg2)'}">${S.correlations.length}</div></div>
+      <div class="stat"><div class="lab">Started</div><div class="val dim">${esc(fmtDate(scan.started_at))}</div></div>
+      <div class="stat"><div class="lab">Duration</div><div class="val dim">${esc(fmtDuration(
+        scan.finished_at && scan.started_at ? scan.finished_at - scan.started_at :
+        (scan.status === 'running' ? nowSec() - (scan.started_at || nowSec()) : null)))}</div></div>
+      <div class="stat"><div class="lab">Scan ID</div><div class="val dim mono" style="font-size:12px">${esc(id.slice(0, 16))}</div></div>
+    </div>
+
+    <div class="subtabs">
+      ${subTab('summary', 'Summary', null, sub)}
+      ${subTab('browse',  'Browse',  S.entities.length, sub)}
+      ${subTab('graph',   'Graph',   S.entities.length, sub)}
+      ${subTab('log',     'Scan Log', null, sub)}
+      ${subTab('info',    'Info',    null, sub)}
+    </div>
+    <div id="scan-body"></div>
+  `;
+  $$('.subtab').forEach(a => a.addEventListener('click', e => {
+    e.preventDefault();
+    navTo(`#/scan/${id}/${a.dataset.sub}`);
+  }));
+
+  const body = $('#scan-body');
+  if (sub === 'summary')      renderSummary(body);
+  else if (sub === 'browse')  renderBrowse(body);
+  else if (sub === 'graph')   renderGraph(body);
+  else if (sub === 'log')     renderLog(body, scan);
+  else if (sub === 'info')    renderInfo(body, scan);
+  else                        renderSummary(body);
 }
+
+function subTab(name, label, count, active){
+  return `<a class="subtab${active === name ? ' active':''}" data-sub="${attr(name)}" href="#/scan/${attr(S.route.params.id)}/${attr(name)}">
+    ${esc(label)}${count != null ? `<span class="ct">${count}</span>` : ''}
+  </a>`;
+}
+
+/* ───── Summary sub-tab ───── */
+
+function renderSummary(host){
+  const byKind = new Map();
+  for (const e of S.entities) {
+    byKind.set(e.kind, (byKind.get(e.kind) || 0) + 1);
+  }
+  const kindRows = Array.from(byKind.entries()).sort((a,b)=>b[1]-a[1]).map(([k, n]) =>
+    `<tr class="clickable" onclick="navTo('#/scan/${attr(S.route.params.id)}/browse?k=${attr(k)}')">
+      <td><span class="kind k-${attr(k)}">${esc(k)}</span></td>
+      <td class="num">${n}</td>
+      <td class="num muted">${((n / Math.max(1, S.entities.length)) * 100).toFixed(0)}%</td>
+    </tr>`).join('');
+
+  // Module attribution (count of evidence sources per module).
+  const byModule = new Map();
+  for (const e of S.entities) {
+    for (const ev of (e.evidence || [])) {
+      byModule.set(ev.source, (byModule.get(ev.source) || 0) + 1);
+    }
+  }
+  const modRows = Array.from(byModule.entries()).sort((a,b)=>b[1]-a[1]).slice(0, 20).map(([m, n]) =>
+    `<tr><td class="mono">${esc(m)}</td><td class="num">${n}</td></tr>`).join('');
+
+  // Classification distribution.
+  let v=0, p=0, c=0;
+  for (const e of S.entities) {
+    const eff = effC(e);
+    if (eff >= 0.75) v++; else if (eff >= 0.40) p++; else c++;
+  }
+
+  host.innerHTML = `
+    <div class="row">
+      <div class="card">
+        <div class="card-h">Entities by kind</div>
+        <div class="card-b tight">${
+          kindRows ? `<table class="tbl"><thead><tr><th>Kind</th><th class="num">Count</th><th class="num">Share</th></tr></thead><tbody>${kindRows}</tbody></table>`
+                   : `<div class="empty"><p>No entities yet.</p></div>`
+        }</div>
+      </div>
+      <div class="card">
+        <div class="card-h">Classification</div>
+        <div class="card-b">
+          <div class="stats" style="grid-template-columns:repeat(3,1fr);margin:0">
+            <div class="stat"><div class="lab c-VERIFIED">Verified</div><div class="val" style="color:var(--ok)">${v}</div></div>
+            <div class="stat"><div class="lab c-PROBABLE">Probable</div><div class="val" style="color:var(--warn)">${p}</div></div>
+            <div class="stat"><div class="lab c-CANDIDATE">Candidate</div><div class="val" style="color:var(--fg3)">${c}</div></div>
+          </div>
+          <div class="hint" style="margin-top:10px;font-size:11px;color:var(--fg3)">
+            Tiers derived from <code>C_eff</code> — never stored, always re-computed from confidence × corroboration boost.
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="card">
+        <div class="card-h">Top contributing modules</div>
+        <div class="card-b tight">${
+          modRows ? `<table class="tbl"><thead><tr><th>Module</th><th class="num">Evidence rows</th></tr></thead><tbody>${modRows}</tbody></table>`
+                  : `<div class="empty"><p>No evidence yet.</p></div>`
+        }</div>
+      </div>
+      <div class="card">
+        <div class="card-h">Correlations</div>
+        <div class="card-b">${
+          S.correlations.length === 0
+            ? `<div class="empty"><p>No correlation rules have fired for this scan.</p></div>`
+            : S.correlations.map(corrCard).join('')
+        }</div>
+      </div>
+    </div>
+  `;
+}
+
+function effC(e){
+  const c = e.confidence ?? 0;
+  const corr = Math.max(1, e.corroboration ?? 1);
+  return Math.min(1, Math.max(0, c * (1 + 0.15 * Math.log(corr))));
+}
+function classify(eff){
+  if (eff >= 0.75) return 'VERIFIED';
+  if (eff >= 0.40) return 'PROBABLE';
+  return 'CANDIDATE';
+}
+
+function corrCard(c){
+  const sev = (c.severity || 'low').toLowerCase();
+  return `
+    <div class="corr cv-${attr(sev)}">
+      <div class="corr-h">
+        <span class="pill p-${sev === 'critical' ? 'crit' : sev === 'high' ? 'err' : sev === 'medium' ? 'warn' : 'pending'}">${esc(sev)}</span>
+        <span>${esc(c.rule_id || '')}</span>
+      </div>
+      <div class="corr-name">${esc(c.rule_name || c.rule_id || '—')}</div>
+      <div class="corr-d">${esc(c.description || c.summary || '')}</div>
+    </div>
+  `;
+}
+
+/* ───── Browse sub-tab (entity table) ───── */
+
+function renderBrowse(host){
+  const q0 = new URLSearchParams((location.hash.split('?')[1] || '')).get('k') || '';
+  const kinds = Array.from(new Set(S.entities.map(e => e.kind))).sort();
+  host.innerHTML = `
+    <div class="filterbar">
+      <input type="search" id="b-q" placeholder="Filter value, evidence, tags…">
+      <select id="b-kind">
+        <option value="">All kinds (${S.entities.length})</option>
+        ${kinds.map(k => `<option value="${attr(k)}"${k === q0 ? ' selected':''}>${esc(k)} (${S.entities.filter(e => e.kind === k).length})</option>`).join('')}
+      </select>
+      <select id="b-cls">
+        <option value="">All tiers</option>
+        <option value="VERIFIED">Verified only</option>
+        <option value="PROBABLE">Probable+</option>
+        <option value="CANDIDATE">Candidate only</option>
+      </select>
+      <div class="sp"></div>
+      <span class="ct" id="b-ct"></span>
+    </div>
+    <div class="card">
+      <div class="card-b tight" id="b-table"></div>
+    </div>
+  `;
+  let sort = {col: 'c_eff', dir: 'desc'};
+  function refresh(){
+    const q = $('#b-q').value.trim().toLowerCase();
+    const ks = $('#b-kind').value;
+    const cs = $('#b-cls').value;
+    let rows = S.entities.slice();
+    if (ks) rows = rows.filter(e => e.kind === ks);
+    if (cs) rows = rows.filter(e => classify(effC(e)) === cs || (cs === 'PROBABLE' && effC(e) >= 0.40));
+    if (q) rows = rows.filter(e =>
+      (e.value || '').toLowerCase().includes(q)
+      || (e.tags || []).some(t => t.toLowerCase().includes(q))
+      || (e.evidence || []).some(ev => (ev.summary || '').toLowerCase().includes(q) || (ev.source || '').toLowerCase().includes(q))
+    );
+    rows.sort(sortBy(sort.col, sort.dir));
+    $('#b-ct').textContent = `${rows.length} of ${S.entities.length}`;
+    $('#b-table').innerHTML = renderBrowseTable(rows, sort);
+    $$('#b-table th.sortable').forEach(th => th.addEventListener('click', () => {
+      const c = th.dataset.col;
+      if (sort.col === c) sort.dir = sort.dir === 'asc' ? 'desc' : 'asc';
+      else { sort.col = c; sort.dir = 'desc'; }
+      refresh();
+    }));
+  }
+  function sortBy(col, dir){
+    const sgn = dir === 'asc' ? 1 : -1;
+    return (a, b) => {
+      let va, vb;
+      if (col === 'c_eff') { va = effC(a); vb = effC(b); }
+      else if (col === 'corr') { va = a.corroboration||0; vb = b.corroboration||0; }
+      else if (col === 'observed') { va = a.observed_at||0; vb = b.observed_at||0; }
+      else { va = String(a[col]||''); vb = String(b[col]||''); }
+      if (va < vb) return -1*sgn;
+      if (va > vb) return 1*sgn;
+      return 0;
+    };
+  }
+  $('#b-q').addEventListener('input', refresh);
+  $('#b-kind').addEventListener('change', refresh);
+  $('#b-cls').addEventListener('change', refresh);
+  refresh();
+}
+
+function renderBrowseTable(rows, sort){
+  if (rows.length === 0) {
+    return `<div class="empty"><h3>No entities match</h3><p>Adjust the filter, or check the Scan Log if the scan is still running.</p></div>`;
+  }
+  const head = `<thead><tr>
+    <th>Kind</th>
+    <th class="sortable${sort.col==='value' ? ' sort-'+sort.dir : ''}" data-col="value">Value</th>
+    <th class="num sortable${sort.col==='c_eff' ? ' sort-'+sort.dir : ''}" data-col="c_eff">C<sub>eff</sub></th>
+    <th class="num sortable${sort.col==='corr' ? ' sort-'+sort.dir : ''}" data-col="corr">Corr.</th>
+    <th>Tier</th>
+    <th>Tags</th>
+    <th>Sources</th>
+    <th class="sortable${sort.col==='observed' ? ' sort-'+sort.dir : ''}" data-col="observed">Observed</th>
+  </tr></thead>`;
+  const body = rows.map(e => {
+    const eff = effC(e); const tier = classify(eff);
+    const sources = Array.from(new Set((e.evidence || []).map(ev => ev.source))).sort();
+    return `<tr>
+      <td><span class="kind k-${attr(e.kind)}">${esc(e.kind)}</span></td>
+      <td class="mono">${esc(e.raw_value || e.value)}</td>
+      <td class="num mono">${eff.toFixed(3)}</td>
+      <td class="num mono">${e.corroboration || 1}</td>
+      <td><span class="cls c-${attr(tier)}">${esc(tier)}</span></td>
+      <td>${(e.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('')}</td>
+      <td class="mono" style="font-size:11px">${sources.map(s => `<span class="tag">${esc(s)}</span>`).join('')}</td>
+      <td class="mono">${esc(fmtDate(e.observed_at))}</td>
+    </tr>`;
+  }).join('');
+  return `<table class="tbl">${head}<tbody>${body}</tbody></table>`;
+}
+
+/* ───── Graph sub-tab (force-directed) ───── */
+
+function renderGraph(host){
+  if (S.entities.length === 0) {
+    host.innerHTML = `<div class="empty"><h3>No entities to graph</h3><p>The Graph view becomes available once the scan produces entities.</p></div>`;
+    return;
+  }
+  // Build node/edge model.
+  //  * Seed-target node anchored at center
+  //  * One node per entity, coloured by kind
+  //  * Edge from seed to each entity (corroboration as weight)
+  //  * Additional edges between entities that co-occur in a correlation
+  const target = S.scan.target;
+  const seedId = `__seed__`;
+  const nodes = [{
+    id: seedId, kind: target.kind, label: target.value, isSeed:true, r: 10, fx:null, fy:null,
+  }];
+  for (const e of S.entities) {
+    nodes.push({id: e.uid, kind: e.kind, label: e.value, raw: e.raw_value || e.value, r: 6 + Math.min(8, Math.log(1 + (e.corroboration||1))*3)});
+  }
+  const edges = [];
+  // seed → each entity
+  for (const e of S.entities) edges.push({s: seedId, t: e.uid, w: 1});
+  // entities ↔ entities by shared correlation
+  for (const c of S.correlations) {
+    const uids = (c.entity_uids || c.evidence_uids || c.entities || []);
+    for (let i=0;i<uids.length;i++)
+      for (let j=i+1;j<uids.length;j++)
+        edges.push({s: uids[i], t: uids[j], w: 2, corr: true});
+  }
+
+  host.innerHTML = `
+    <div class="graph-wrap">
+      <svg id="g-svg" preserveAspectRatio="xMidYMid meet" viewBox="0 0 1000 560">
+        <g id="g-edges"></g>
+        <g id="g-nodes"></g>
+      </svg>
+      <div class="graph-legend">
+        <div class="lr"><span class="sw" style="background:var(--acc2);border:2px solid var(--fg)"></span>seed target</div>
+        <div class="lr"><span class="sw" style="background:#a5c4ff"></span>email</div>
+        <div class="lr"><span class="sw" style="background:var(--ok)"></span>domain</div>
+        <div class="lr"><span class="sw" style="background:var(--teal)"></span>username</div>
+        <div class="lr"><span class="sw" style="background:var(--warn)"></span>phone</div>
+        <div class="lr"><span class="sw" style="background:#7eb3ff"></span>ip / asn</div>
+        <div class="lr" style="margin-top:3px;color:var(--fg3);font-size:10.5px">drag nodes · scroll = zoom</div>
+      </div>
+      <div class="graph-ctl">
+        <button class="btn btn-g btn-xs" id="g-relayout">Re-layout</button>
+        <button class="btn btn-g btn-xs" id="g-fit">Fit</button>
+      </div>
+    </div>
+  `;
+  const fg = new ForceGraph(nodes, edges, 1000, 560);
+  fg.runIters(280);
+  fg.mount($('#g-svg'));
+  $('#g-relayout').addEventListener('click', () => { fg.shuffle(); fg.runIters(280); fg.draw(); });
+  $('#g-fit').addEventListener('click', () => fg.fit());
+}
+
+/* ───── Force-directed graph engine ───── */
+
+const NODE_COLOR = {
+  email:'#a5c4ff', domain:'#3fbf7f', username:'#34d4c4', phone:'#f0b62b',
+  ip_address:'#7eb3ff', asn:'#93c5fd', person:'#86efac', credential:'#d946ef',
+  password:'#d946ef', address:'#fb7185', coordinates:'#fb923c', organisation:'#c4a5ff',
+  abn_acn:'#fcd34d', url:'#7dd3fc', mac_address:'#9aa6bf', device_id:'#9aa6bf',
+};
+
+class ForceGraph {
+  constructor(nodes, edges, w, h){
+    this.W = w; this.H = h;
+    this.nodes = nodes.map(n => ({...n,
+      x: w/2 + (Math.random()-0.5)*200,
+      y: h/2 + (Math.random()-0.5)*200,
+      vx: 0, vy: 0,
+    }));
+    // Pin the seed node at center for stable layouts.
+    const seed = this.nodes.find(n => n.isSeed);
+    if (seed) { seed.x = w/2; seed.y = h/2; seed.fx = w/2; seed.fy = h/2; }
+
+    this.byId = Object.fromEntries(this.nodes.map(n => [n.id, n]));
+    this.edges = edges.filter(e => this.byId[e.s] && this.byId[e.t]);
+    this.zoom = 1; this.tx = 0; this.ty = 0;
+  }
+  shuffle(){
+    for (const n of this.nodes) {
+      if (n.fx != null) continue;
+      n.x = this.W/2 + (Math.random()-0.5)*200;
+      n.y = this.H/2 + (Math.random()-0.5)*200;
+      n.vx = 0; n.vy = 0;
+    }
+  }
+  step(){
+    const REPULSE = 1400, IDEAL = 90, K_SPRING = 0.05, K_GRAV = 0.012, FRICTION = 0.84;
+    const ns = this.nodes;
+    // Repulsion (O(n²) — fine for the ~hundreds-of-nodes prototype scale).
+    for (let i=0; i<ns.length; i++) {
+      const a = ns[i]; if (a.fx != null) continue;
+      for (let j=i+1; j<ns.length; j++) {
+        const b = ns[j];
+        let dx = a.x - b.x, dy = a.y - b.y;
+        let d2 = dx*dx + dy*dy;
+        if (d2 < 0.01) { dx = (Math.random()-0.5); dy = (Math.random()-0.5); d2 = 0.01; }
+        const f = REPULSE / d2;
+        const d = Math.sqrt(d2);
+        const fx = (dx/d)*f, fy = (dy/d)*f;
+        a.vx += fx; a.vy += fy;
+        if (b.fx == null) { b.vx -= fx; b.vy -= fy; }
+      }
+    }
+    // Spring attraction.
+    for (const e of this.edges) {
+      const a = this.byId[e.s], b = this.byId[e.t];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.sqrt(dx*dx + dy*dy) || 0.01;
+      const f = (d - IDEAL) * K_SPRING * (e.corr ? 1.2 : 1);
+      const fx = (dx/d)*f, fy = (dy/d)*f;
+      if (a.fx == null) { a.vx += fx; a.vy += fy; }
+      if (b.fx == null) { b.vx -= fx; b.vy -= fy; }
+    }
+    // Center gravity + friction + integrate.
+    for (const n of ns) {
+      if (n.fx != null) { n.x = n.fx; n.y = n.fy; continue; }
+      n.vx += (this.W/2 - n.x) * K_GRAV;
+      n.vy += (this.H/2 - n.y) * K_GRAV;
+      n.vx *= FRICTION; n.vy *= FRICTION;
+      n.x += n.vx; n.y += n.vy;
+    }
+  }
+  runIters(n){ for (let i=0;i<n;i++) this.step(); }
+  fit(){
+    // Compute bbox of node positions, scale viewport via SVG transform.
+    let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+    for (const n of this.nodes) {
+      minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
+      minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+    }
+    const m = 30;
+    const w = (maxX - minX) + m*2, h = (maxY - minY) + m*2;
+    const sx = this.W / w, sy = this.H / h;
+    this.zoom = Math.min(sx, sy, 2);
+    this.tx = -minX + m;
+    this.ty = -minY + m;
+    this.draw();
+  }
+  mount(svg){
+    this.svg = svg;
+    this.edgesG = svg.querySelector('#g-edges');
+    this.nodesG = svg.querySelector('#g-nodes');
+    this.draw();
+
+    // Drag — uses pointer events for touch + mouse.
+    let dragging = null;
+    svg.addEventListener('pointerdown', e => {
+      const t = e.target.closest('[data-nid]');
+      if (!t) return;
+      const id = t.dataset.nid;
+      const n = this.byId[id];
+      if (!n || n.isSeed) return;
+      dragging = n;
+      n.fx = n.x; n.fy = n.y;
+      svg.setPointerCapture(e.pointerId);
+    });
+    svg.addEventListener('pointermove', e => {
+      if (!dragging) return;
+      const r = svg.getBoundingClientRect();
+      const x = (e.clientX - r.left) / r.width  * this.W;
+      const y = (e.clientY - r.top)  / r.height * this.H;
+      const wx = (x - this.tx) / this.zoom;
+      const wy = (y - this.ty) / this.zoom;
+      dragging.fx = wx; dragging.fy = wy;
+      dragging.x = wx; dragging.y = wy;
+      this.runIters(3);
+    });
+    svg.addEventListener('pointerup', e => {
+      if (!dragging) return;
+      dragging.fx = null; dragging.fy = null;
+      dragging = null;
+      svg.releasePointerCapture(e.pointerId);
+    });
+    // Wheel zoom.
+    svg.addEventListener('wheel', e => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 0.9;
+      this.zoom = Math.max(0.3, Math.min(4, this.zoom * factor));
+      this.draw();
+    }, {passive:false});
+  }
+  draw(){
+    if (!this.svg) return;
+    const tx = this.tx, ty = this.ty, z = this.zoom;
+    const X = n => n.x * z + tx;
+    const Y = n => n.y * z + ty;
+
+    this.edgesG.innerHTML = this.edges.map(e => {
+      const a = this.byId[e.s], b = this.byId[e.t];
+      return `<line x1="${X(a).toFixed(1)}" y1="${Y(a).toFixed(1)}" x2="${X(b).toFixed(1)}" y2="${Y(b).toFixed(1)}"
+        stroke="${e.corr ? '#d946ef' : '#37456a'}" stroke-opacity="${e.corr ? 0.6 : 0.35}" stroke-width="${e.corr ? 1.4 : 0.8}"/>`;
+    }).join('');
+
+    this.nodesG.innerHTML = this.nodes.map(n => {
+      const col = n.isSeed ? '#7eb3ff' : (NODE_COLOR[n.kind] || '#9aa6bf');
+      const stroke = n.isSeed ? '#fff' : 'rgba(11,18,32,.85)';
+      const sw = n.isSeed ? 2 : 1.5;
+      const text = (n.label || '').length > 24 ? (n.label.slice(0,22) + '…') : n.label;
+      return `<g data-nid="${attr(n.id)}" style="cursor:grab">
+        <circle cx="${X(n).toFixed(1)}" cy="${Y(n).toFixed(1)}" r="${(n.r*z).toFixed(1)}"
+                fill="${col}" stroke="${stroke}" stroke-width="${sw}"/>
+        <text x="${(X(n)+n.r*z+4).toFixed(1)}" y="${(Y(n)+3).toFixed(1)}"
+              font-family="var(--mono)" font-size="${(10*Math.max(0.7,z)).toFixed(1)}"
+              fill="${n.isSeed ? '#fff' : 'rgba(231,236,243,.85)'}">${esc(text)}</text>
+      </g>`;
+    }).join('');
+  }
+}
+
+/* ───── Scan Log sub-tab ───── */
+
+function renderLog(host, scan){
+  const running = scan.status === 'running' || scan.status === 'pending';
+  host.innerHTML = `
+    <div class="card">
+      <div class="card-h">
+        Event log
+        <div class="spacer"></div>
+        ${running
+          ? '<span class="pill p-run"><span class="spin" style="width:9px;height:9px;border-width:2px"></span> live</span>'
+          : '<span class="pill p-pending">not streaming</span>'}
+        <button class="btn btn-ghost btn-xs" id="log-clear">Clear</button>
+      </div>
+      <div class="card-b tight">
+        <div class="log" id="log-box">${
+          running
+            ? `<div class="log-row lv-info"><span class="ts">${esc(fmtClock())}</span><span class="typ">subscribed</span><span class="msg">waiting for events…</span></div>`
+            : `<div class="empty"><p>Scan completed at ${esc(fmtDate(scan.finished_at))}. Live event history is not retained after the broadcast channel closes — open a running scan to see this view populate in real-time.</p></div>`
+        }</div>
+      </div>
+    </div>
+  `;
+  $('#log-clear').addEventListener('click', () => { $('#log-box').innerHTML = ''; });
+  if (running) openSse(scan.id, ev => appendLog(ev));
+}
+
+function fmtClock(){
+  const d = new Date();
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2,'0')).join(':');
+}
+function appendLog(ev){
+  const box = $('#log-box'); if (!box) return;
+  const m = mapEvent(ev);
+  const row = document.createElement('div');
+  row.className = `log-row lv-${m.lv}`;
+  row.innerHTML = `<span class="ts">${esc(fmtClock())}</span><span class="typ">${esc(m.typ)}</span><span class="msg">${m.msg}</span>`;
+  box.appendChild(row);
+  box.scrollTop = box.scrollHeight;
+}
+function mapEvent(ev){
+  const t = ev.type;
+  if (t === 'module_start')   return {typ:'module', lv:'info',  msg:`▶ ${esc(ev.module)}`};
+  if (t === 'module_done')    return {typ:'module', lv:'ok',    msg:`✓ ${esc(ev.module)} <span class="muted">(${ev.found} found)</span>`};
+  if (t === 'module_error')   return {typ:'module', lv:'err',   msg:`✗ ${esc(ev.module)} <span class="muted">${esc(ev.error)}</span>`};
+  if (t === 'module_skipped') return {typ:'module', lv:'skip',  msg:`◌ ${esc(ev.module)} <span class="muted">${esc(ev.reason)}</span>`};
+  if (t === 'entity_found')   return {typ:'entity', lv:'found', msg:`<span class="kind k-${attr(ev.entity?.kind)}">${esc(ev.entity?.kind)}</span> ${esc(ev.entity?.value)}`};
+  if (t === 'scan_start')     return {typ:'scan',   lv:'info',  msg:`scan started · ${esc(ev.target_kind)}=${esc(ev.target_value)}`};
+  if (t === 'scan_complete')  return {typ:'scan',   lv:'ok',    msg:`scan complete · ${ev.entity_count} entities`};
+  if (t === 'expansion_tick') return {typ:'expand', lv:'info',  msg:`depth ${ev.depth} · queued ${ev.queued} · visited ${ev.visited}`};
+  if (t === 'expansion_stop') return {typ:'expand', lv:'warn',  msg:`expansion stopped · ${esc(ev.reason)}`};
+  if (t === 'correlation_found') return {typ:'corr', lv:'corr', msg:`${esc(ev.correlation?.rule_name || ev.correlation?.rule_id || '?')}`};
+  if (t === 'correlations_done') return {typ:'corr', lv:'info', msg:`correlations done · ${ev.count}`};
+  return {typ: esc(t || '?'), lv:'info', msg: esc(JSON.stringify(ev).slice(0, 220))};
+}
+
+function openSse(scanId, onEv){
+  closeSse();
+  const es = new EventSource(`/api/v1/scans/${encodeURIComponent(scanId)}/events`);
+  es.onmessage = e => {
+    try { onEv(JSON.parse(e.data)); } catch {}
+  };
+  es.onerror = () => { /* browser will reconnect automatically */ };
+  S.sse = es;
+}
+function closeSse(){ if (S.sse) { S.sse.close(); S.sse = null; } }
+
+/* ───── Info sub-tab ───── */
+
+function renderInfo(host, scan){
+  const opts = scan.options || {};
+  const rows = [
+    ['Scan ID', `<code>${esc(scan.id)}</code>`],
+    ['Target kind', `<span class="kind k-${attr(scan.target?.kind)}">${esc(scan.target?.kind)}</span>`],
+    ['Target value', `<code>${esc(scan.target?.value)}</code>`],
+    ['Status', statusPill(scan.status)],
+    ['Started', esc(fmtDate(scan.started_at))],
+    ['Finished', esc(fmtDate(scan.finished_at))],
+    ['Entities recorded', String(scan.entity_count || 0)],
+    ['Error', scan.error ? `<span class="muted-2" style="color:var(--err)">${esc(scan.error)}</span>` : '<span class="muted">none</span>'],
+    ['Modules (allow)', formatList(opts.modules)],
+    ['Modules (exclude)', formatList(opts.exclude_modules)],
+    ['Free-only', String(opts.free_only ?? false)],
+    ['Passive-only', String(opts.passive_only ?? false)],
+    ['Throttle (ms)', String(opts.throttle_ms ?? 0)],
+    ['Module timeout (ms)', opts.module_timeout_ms != null ? String(opts.module_timeout_ms) : '<span class="muted">module default</span>'],
+    ['Max concurrent', String(opts.max_concurrent ?? 0)],
+    ['Min confidence', opts.min_confidence != null ? opts.min_confidence.toFixed(2) : '<span class="muted">no filter</span>'],
+    ['Depth', String(opts.depth ?? 0)],
+    ['Min expand C_eff', String(opts.min_expand_confidence ?? 0.75)],
+    ['Max entities', opts.max_entities != null ? String(opts.max_entities) : '<span class="muted">unlimited</span>'],
+    ['Max wall time (s)', opts.max_wall_time_secs != null ? String(opts.max_wall_time_secs) : '<span class="muted">unlimited</span>'],
+  ];
+  host.innerHTML = `
+    <div class="card">
+      <div class="card-h">Scan parameters</div>
+      <div class="card-b tight">
+        <table class="tbl"><tbody>${rows.map(([k,v]) => `<tr><td style="width:200px;color:var(--fg2)">${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody></table>
+      </div>
+    </div>
+  `;
+}
+function formatList(xs){
+  if (!xs || !xs.length) return '<span class="muted">all (default)</span>';
+  return xs.map(x => `<code>${esc(x)}</code>`).join(' ');
+}
+
+/* ═════════════════════════════════════════════════════════════════════
+ * Page: Settings (API keys)
+ * ════════════════════════════════════════════════════════════════════ */
+
+async function renderSettings(v){
+  setNav('settings');
+  const data = await API.keysGet();
+  S.settings = data;
+
+  v.innerHTML = `
+    <div class="page-head">
+      <h1>Settings</h1>
+      <span class="sub">API keys live in <code>${esc(data.env_path)}</code></span>
+    </div>
+
+    <div class="card">
+      <div class="card-h">
+        Module API keys
+        <div class="spacer"></div>
+        ${data.write_enabled
+          ? '<span class="pill p-warn">write enabled (loopback only)</span>'
+          : '<span class="pill p-pending">read-only</span>'}
+      </div>
+      <div class="card-b">
+        <div class="hint" style="margin-bottom:12px;color:var(--fg2);font-size:12px">
+          ${data.write_enabled
+            ? `Edits write to <code>${esc(data.env_path)}</code> at <code>mode 0600</code>. Comments and non-<code>HUNTSMAN_*</code> lines are preserved.`
+            : `Write access is disabled. Restart with <code>hse serve --allow-key-write</code> to edit keys from this page. Even then, writes require the request to come from a loopback peer.`}
+        </div>
+        <div class="keygrid" id="keygrid">
+          ${data.keys.map(k => keyRow(k, data.write_enabled)).join('')}
+        </div>
+        ${data.write_enabled ? `
+          <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+            <button class="btn btn-p" id="k-save" disabled>Save changes</button>
+            <span class="muted-2" id="k-pending"></span>
+          </div>` : ''}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h">Server</div>
+      <div class="card-b">
+        <table class="tbl"><tbody>
+          <tr><td style="width:180px;color:var(--fg2)">Version</td><td><code>${esc(S.version || '?')}</code></td></tr>
+          <tr><td style="color:var(--fg2)">Health</td><td>${S.health ? '<span class="pill p-ok">ok</span>' : '<span class="pill p-err">unreachable</span>'}</td></tr>
+          <tr><td style="color:var(--fg2)">Env file path</td><td><code>${esc(data.env_path)}</code></td></tr>
+          <tr><td style="color:var(--fg2)">Known keys</td><td>${data.count}</td></tr>
+        </tbody></table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h">About</div>
+      <div class="card-b">
+        <p style="font-size:12.5px;color:var(--fg2);line-height:1.6">
+          Huntsman Search Engine — a pure-Rust OSINT/GEOINT prototype for Termux on Android (aarch64). Single-binary, rustls-only, no native deps,
+          bundled SQLite, embedded SPA. Scan engine drives both the CLI (<code>hse scan</code>) and this web UI.
+        </p>
+        <p style="font-size:12px;color:var(--fg3);margin-top:8px">
+          ⚠️ API keys are sensitive. Even with <code>--allow-key-write</code>, only edit them on devices you control. Never paste keys into chat,
+          screenshots, or shared documents — rotate any key that has been exposed.
+        </p>
+      </div>
+    </div>
+  `;
+
+  if (data.write_enabled) wireKeyEditor();
+}
+
+function keyRow(k, writeEnabled){
+  return `
+    <div class="keyrow" data-key="${attr(k.name)}">
+      <div>
+        <div class="kn">${esc(k.name)}</div>
+        <div class="kd">${k.set ? 'set · click "Update" to overwrite' : 'not set'}</div>
+      </div>
+      <div class="kstatus">
+        ${k.set ? '<span class="pill p-ok">set</span>' : '<span class="pill p-dim">unset</span>'}
+        ${writeEnabled ? `
+          <input type="password" placeholder="${k.set ? 'enter new value' : 'paste key'}" autocomplete="off" data-input>
+          <button class="btn btn-g btn-sm" data-action="update">${k.set ? 'Update' : 'Set'}</button>
+          ${k.set ? '<button class="btn btn-danger btn-sm" data-action="delete">Delete</button>' : ''}
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function wireKeyEditor(){
+  const pending = { updates: {}, deletes: new Set() };
+  const refresh = () => {
+    const n = Object.keys(pending.updates).length + pending.deletes.size;
+    $('#k-save').disabled = n === 0;
+    $('#k-pending').textContent = n === 0 ? '' : `${n} pending change${n === 1 ? '' : 's'}`;
+  };
+  $$('.keyrow').forEach(row => {
+    const name = row.dataset.key;
+    row.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.action;
+        if (action === 'update') {
+          const inp = row.querySelector('input[data-input]');
+          const v = (inp.value || '').trim();
+          if (!v) { inp.focus(); toast('value required', 'warn'); return; }
+          pending.updates[name] = v;
+          pending.deletes.delete(name);
+          inp.value = '';
+          toast(`${name} queued`, 'ok', 1200);
+          refresh();
+        }
+        if (action === 'delete') {
+          // confirm() shows plain text — no HTML escaping needed.
+          if (!confirm(`Delete ${name} from ${S.settings.env_path}?`)) return;
+          pending.deletes.add(name);
+          delete pending.updates[name];
+          refresh();
+        }
+      });
+    });
+  });
+  $('#k-save').addEventListener('click', async () => {
+    const body = { updates: pending.updates, deletes: Array.from(pending.deletes) };
+    try {
+      await API.keysPut(body);
+      toast('Saved', 'ok');
+      // Re-fetch to reflect new state.
+      render();
+    } catch (e) {
+      toast(e.message, 'err', 5000);
+    }
+  });
+}
+
+/* ═════════════════════════════════════════════════════════════════════
+ * Bootstrap
+ * ════════════════════════════════════════════════════════════════════ */
+
+(async function init(){
+  try {
+    const h = await API.health();
+    S.health = h; S.version = h.version || '?';
+    $('#hdot').classList.add('ok');
+    $('#hstat').textContent = 'online';
+    $('#hver').textContent = `v${S.version}`;
+  } catch {
+    $('#hdot').classList.add('err');
+    $('#hstat').textContent = 'unreachable';
+  }
+  await render();
+})();
 </script>
 </body>
 </html>
