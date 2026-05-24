@@ -78,6 +78,28 @@ pub struct Correlation {
     pub ts: u64,
 }
 
+impl Correlation {
+    fn new(
+        rule_id: &str,
+        rule_name: &str,
+        severity: Severity,
+        description: String,
+        entity_uids: Vec<String>,
+        scan_id: &str,
+        ts: u64,
+    ) -> Self {
+        Self {
+            rule_id: rule_id.into(),
+            rule_name: rule_name.into(),
+            severity,
+            description,
+            entity_uids,
+            scan_id: scan_id.into(),
+            ts,
+        }
+    }
+}
+
 // ─── Correlator ──────────────────────────────────────────────────────────────
 
 pub struct Correlator {
@@ -159,20 +181,20 @@ fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<
         if sources.len() >= 2 {
             let mut names: Vec<&str> = sources.into_iter().collect();
             names.sort_unstable();
-            out.push(Correlation {
-                rule_id: "AU-001".into(),
-                rule_name: "Multi-source breach corroboration".into(),
-                severity: Severity::Critical,
-                description: format!(
+            out.push(Correlation::new(
+                "AU-001",
+                "Multi-source breach corroboration",
+                Severity::Critical,
+                format!(
                     "{} found in {} breach sources: {}",
                     e.value,
                     names.len(),
                     names.join(", ")
                 ),
-                entity_uids: vec![e.uid.clone()],
-                scan_id: scan_id.into(),
+                vec![e.uid.clone()],
+                scan_id,
                 ts,
-            });
+            ));
         }
     }
     out
