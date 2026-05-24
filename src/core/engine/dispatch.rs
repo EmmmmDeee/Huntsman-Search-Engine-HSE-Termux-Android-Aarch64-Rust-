@@ -349,35 +349,61 @@ impl ScanEngine {
         // round-boundary signal in `engine/mod.rs` and would be
         // misleading if emitted during a single target's dispatch.
         //
-        // JoinSet::Drop cancels any tasks still in flight when we
-        // `break` out — reqwest honours Drop and aborts the in-flight
-        // request, so no resources leak.
+        // When the budget gate fires we DRAIN the remaining tasks
+        // (rather than letting `JoinSet::Drop` cancel them silently)
+        // and emit a `ModuleSkipped` for each. JoinSet::Drop would
+        // leave their `ModuleStart` events dangling — SSE consumers
+        // and the persisted event log (PR #30) would see a start
+        // without a matching end. Draining as Skipped closes the
+        // lifecycle for every spawned module while still honouring
+        // the budget (their entities are not merged into
+        // `entity_map`, so the cap is respected).
         while let Some(joined) = set.join_next().await {
-            let outcome_name = match joined {
-                Ok(o) => {
-                    let n = o.name;
-                    self.finalise_module_result(
-                        scan_id,
-                        o.name,
-                        opts.min_confidence,
-                        entity_map,
-                        o.result,
-                    );
-                    n
-                }
-                Err(e) => {
-                    warn!(error = %e, "concurrent module task panicked");
-                    "<panicked>"
-                }
-            };
+            match joined {
+                Ok(o) => self.finalise_module_result(
+                    scan_id,
+                    o.name,
+                    opts.min_confidence,
+                    entity_map,
+                    o.result,
+                ),
+                Err(e) => warn!(error = %e, "concurrent module task panicked"),
+            }
             if let Some(stop) = budget_check(opts, started, entity_map.len()) {
+                // Dispatcher-level sentinel event: one per budget
+                // trigger, named `<dispatcher>` so it can't be
+                // confused with an actual module skip and carries
+                // the budget reason (max_entities=N reached, etc.).
                 let _ = self.bus.send(Event::new(
                     scan_id,
                     EventKind::ModuleSkipped {
-                        module: outcome_name.into(),
+                        module: "<dispatcher>".into(),
                         reason: stop.label(),
                     },
                 ));
+                // Drain remaining spawned tasks and close each one's
+                // lifecycle with a `ModuleSkipped` carrying the
+                // module's own name — preserving the
+                // start→{done,error,skip} invariant SSE consumers and
+                // the persisted event log rely on. Entities from these
+                // tasks are deliberately dropped (the work happened
+                // but the budget cap forbids merging them).
+                while let Some(drained) = set.join_next().await {
+                    match drained {
+                        Ok(o) => {
+                            let _ = self.bus.send(Event::new(
+                                scan_id,
+                                EventKind::ModuleSkipped {
+                                    module: o.name.into(),
+                                    reason: "dispatch over budget".into(),
+                                },
+                            ));
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "drained module task panicked")
+                        }
+                    }
+                }
                 break;
             }
         }
