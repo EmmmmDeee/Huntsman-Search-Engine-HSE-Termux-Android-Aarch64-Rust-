@@ -9,22 +9,22 @@
 //! | GET    | `/api/v1/modules`                 | `modules_list`           |
 //! | POST   | `/api/v1/scans`                   | `scan_create`            |
 //! | GET    | `/api/v1/scans`                   | `scan_list`              |
-//! | GET    | `/api/v1/scans/:id`               | `scan_get`               |
-//! | DELETE | `/api/v1/scans/:id`               | `scan_delete`            |
-//! | POST   | `/api/v1/scans/:id/rerun`         | `scan_rerun`             |
-//! | GET    | `/api/v1/scans/:id/entities`      | `scan_entities`          |
-//! | GET    | `/api/v1/scans/:id/entities.csv`  | `scan_entities_csv`      |
-//! | GET    | `/api/v1/scans/:id/correlations`  | `scan_correlations` (v0.4+) |
-//! | GET    | `/api/v1/scans/:id/events`        | `scan_events_sse` (SSE)  |
+//! | GET    | `/api/v1/scans/{id}`              | `scan_get`               |
+//! | DELETE | `/api/v1/scans/{id}`              | `scan_delete`            |
+//! | POST   | `/api/v1/scans/{id}/rerun`        | `scan_rerun`             |
+//! | GET    | `/api/v1/scans/{id}/entities`     | `scan_entities`          |
+//! | GET    | `/api/v1/scans/{id}/entities.csv` | `scan_entities_csv`      |
+//! | GET    | `/api/v1/scans/{id}/correlations` | `scan_correlations` (v0.4+) |
+//! | GET    | `/api/v1/scans/{id}/events`       | `scan_events_sse` (SSE)  |
 //! | POST   | `/api/v1/live`                    | `live_create` (v0.5+)    |
 //! | GET    | `/api/v1/live`                    | `live_list`              |
-//! | GET    | `/api/v1/live/:id`                | `live_get`               |
-//! | DELETE | `/api/v1/live/:id`                | `live_stop`              |
-//! | GET    | `/api/v1/live/:id/events`         | `live_events_sse` (SSE)  |
+//! | GET    | `/api/v1/live/{id}`               | `live_get`               |
+//! | DELETE | `/api/v1/live/{id}`               | `live_stop`              |
+//! | GET    | `/api/v1/live/{id}/events`        | `live_events_sse` (SSE)  |
 //! | GET    | `/api/v1/settings/keys`           | `settings_keys_get` (v0.10+) |
 //! | PUT    | `/api/v1/settings/keys`           | `settings_keys_put`      |
 //! | *      | `/api/*` (unmatched)              | `api_not_found` (JSON 404) |
-//! | GET    | `/static/:file`                   | `vendor_handler`         |
+//! | GET    | `/static/{file}`                  | `vendor_handler`         |
 //! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
 
 use std::sync::Arc;
@@ -179,8 +179,8 @@ async fn spa_handler() -> Html<&'static str> {
 }
 
 /// JSON 404 for any unmatched route under `/api`. Without this the SPA
-/// fallback would catch API typos and silently return 67 KB of HTML
-/// with HTTP 200 — a real defense-in-depth concern for any consumer
+/// fallback would catch API typos and silently return the embedded SPA
+/// HTML with HTTP 200 — a real defense-in-depth concern for any consumer
 /// that doesn't sanity-check `Content-Type` before parsing.
 ///
 /// Uses `OriginalUri` rather than `Uri` so the JSON `path` shows the
