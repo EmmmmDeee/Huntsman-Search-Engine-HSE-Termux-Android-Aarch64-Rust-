@@ -16,7 +16,7 @@ use axum::{
     },
 };
 use futures::Stream;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio_stream::{StreamExt as _, wrappers::BroadcastStream};
 use tracing::info;
@@ -42,6 +42,18 @@ fn internal_error(err: &impl ToString) -> axum::response::Response {
 /// `(404, {"error": "not found"})` — used by `/scans/:id` and `/live/:id`.
 fn not_found() -> axum::response::Response {
     (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+}
+
+/// `(200, { key: [...], "count": N })` — used by every list endpoint.
+fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response::Response {
+    let n = items.len();
+    let mut map = serde_json::Map::new();
+    map.insert(
+        key.to_string(),
+        serde_json::to_value(items).unwrap_or(Value::Null),
+    );
+    map.insert("count".to_string(), Value::Number(n.into()));
+    (StatusCode::OK, Json(Value::Object(map))).into_response()
 }
 
 // ─── Health / Version ────────────────────────────────────────────────────────
@@ -158,10 +170,7 @@ pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     // 200 most recent scans is plenty for the prototype's History tab —
     // older results stay in the DB and reachable via GET /api/v1/scans/{id}.
     match s.store.list_scans(200) {
-        Ok(scans) => {
-            let n = scans.len();
-            (StatusCode::OK, Json(json!({ "scans": scans, "count": n }))).into_response()
-        }
+        Ok(scans) => ok_list("scans", scans),
         Err(e) => internal_error(&e),
     }
 }
@@ -183,14 +192,7 @@ pub async fn scan_entities(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match s.store.entities_for_scan(&id) {
-        Ok(entities) => {
-            let n = entities.len();
-            (
-                StatusCode::OK,
-                Json(json!({ "entities": entities, "count": n })),
-            )
-                .into_response()
-        }
+        Ok(entities) => ok_list("entities", entities),
         Err(e) => internal_error(&e),
     }
 }
@@ -205,14 +207,7 @@ pub async fn scan_events_history(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match s.store.events_for_scan(&id) {
-        Ok(events) => {
-            let n = events.len();
-            (
-                StatusCode::OK,
-                Json(json!({ "events": events, "count": n })),
-            )
-                .into_response()
-        }
+        Ok(events) => ok_list("events", events),
         Err(e) => internal_error(&e),
     }
 }
@@ -222,14 +217,7 @@ pub async fn scan_correlations(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match s.store.correlations_for_scan(&id) {
-        Ok(corr) => {
-            let n = corr.len();
-            (
-                StatusCode::OK,
-                Json(json!({ "correlations": corr, "count": n })),
-            )
-                .into_response()
-        }
+        Ok(corr) => ok_list("correlations", corr),
         Err(e) => internal_error(&e),
     }
 }
@@ -381,13 +369,7 @@ pub async fn live_create(
 }
 
 pub async fn live_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    let sessions = s.live.list();
-    let n = sessions.len();
-    (
-        StatusCode::OK,
-        Json(json!({ "sessions": sessions, "count": n })),
-    )
-        .into_response()
+    ok_list("sessions", s.live.list())
 }
 
 pub async fn live_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
