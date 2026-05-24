@@ -50,6 +50,11 @@ struct Ioc {
     first_seen: Option<String>,
     #[serde(default)]
     last_seen: Option<String>,
+    // ThreatFox attaches high-value contextual labels here
+    // (e.g. `Magecart`, `CobaltStrike`, `WSHRAT`). The field can
+    // be either a JSON array or `null` per the documented samples.
+    #[serde(default)]
+    tags: Option<Vec<String>>,
 }
 
 pub struct ThreatFox;
@@ -144,11 +149,12 @@ impl Module for ThreatFox {
         entity.tag("threat-intel");
         entity.tag("malicious");
 
-        // Aggregate threat families + ioc types.
+        // Aggregate threat families + ioc types + per-IOC context tags.
         let mut families: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut types: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut threat_types: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
+        let mut ioc_tags: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut max_confidence: u32 = 0;
         let mut first_seen: Option<String> = None;
         let mut last_seen: Option<String> = None;
@@ -161,6 +167,13 @@ impl Module for ThreatFox {
             }
             if let Some(t) = ioc.threat_type.as_deref() {
                 threat_types.insert(t.to_string());
+            }
+            if let Some(tags) = ioc.tags.as_deref() {
+                for t in tags {
+                    if !t.trim().is_empty() {
+                        ioc_tags.insert(t.to_string());
+                    }
+                }
             }
             if let Some(c) = ioc.confidence_level {
                 max_confidence = max_confidence.max(c);
@@ -198,6 +211,11 @@ impl Module for ThreatFox {
                 "threat_types",
                 threat_types.into_iter().collect::<Vec<_>>().join(","),
             );
+        }
+        if !ioc_tags.is_empty() {
+            // Cap at 16 so a noisy IOC doesn't blow up the evidence row.
+            let tags_vec: Vec<String> = ioc_tags.into_iter().take(16).collect();
+            ev = ev.with_attr("ioc_tags", tags_vec.join(","));
         }
         if max_confidence > 0 {
             ev = ev.with_attr("max_confidence", max_confidence.to_string());
