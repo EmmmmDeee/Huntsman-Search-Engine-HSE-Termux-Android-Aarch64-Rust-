@@ -577,8 +577,15 @@ fn rule_au_013_local_network_discovery(
     ts: u64,
 ) -> Vec<Correlation> {
     const LAN_TAGS: &[&str] = &["local-arp", "local-interface", "wifi-ap"];
+    // Defensive entity-kind guard: today every emitter of these tags is
+    // an IpAddress/MacAddress (arp_scan, net_interfaces, wifi_scan),
+    // but a future module that tags a Username or Email with one of
+    // these strings (by collision) shouldn't accidentally fire the
+    // local-network correlation. Restrict to the entity kinds that
+    // actually correspond to "host on this LAN".
     let hits: Vec<&Entity> = entities
         .iter()
+        .filter(|e| matches!(e.kind, EntityKind::IpAddress | EntityKind::MacAddress))
         .filter(|e| LAN_TAGS.iter().any(|t| e.has_tag(t)))
         .collect();
     if hits.len() < 2 {
@@ -647,14 +654,14 @@ fn rule_au_015_threat_intel_hit(entities: &[Entity], scan_id: &str, ts: u64) -> 
         .map(|e| {
             // Source attribution from evidence: every threat-intel
             // module sets its evidence.source, so this is the
-            // authoritative feed name rather than a hard-coded one.
-            const TI_SOURCES: &[&str] = &["alienvault_otx", "threatfox"];
-            let sources: std::collections::BTreeSet<&str> = e
-                .evidence
-                .iter()
-                .map(|ev| ev.source.as_str())
-                .filter(|s| TI_SOURCES.contains(s))
-                .collect();
+            // authoritative feed name. We use whatever evidence the
+            // entity carries — no hard-coded whitelist — so a future
+            // TI module that emits the `threat-intel` tag gets correct
+            // attribution without a correlator code edit. The fallback
+            // below covers the unusual case where an entity is tagged
+            // `threat-intel` without any backing evidence at all.
+            let sources: std::collections::BTreeSet<&str> =
+                e.evidence.iter().map(|ev| ev.source.as_str()).collect();
             let attribution = if sources.is_empty() {
                 "a curated threat-intel feed".to_string()
             } else {
