@@ -33,6 +33,10 @@ impl Module for OathnetPro {
         128
     }
 
+    fn description(&self) -> &'static str {
+        "OathNet Pro V2 breach search across email, username, phone, IP, domain. Paid premium; aggregate-only."
+    }
+
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }

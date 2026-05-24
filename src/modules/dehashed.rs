@@ -57,6 +57,10 @@ impl Module for DeHashed {
     fn priority(&self) -> u8 {
         118
     }
+
+    fn description(&self) -> &'static str {
+        "DeHashed credential-leak search across email/username/phone/IP/domain. Paid; passwords NEVER stored in evidence."
+    }
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }

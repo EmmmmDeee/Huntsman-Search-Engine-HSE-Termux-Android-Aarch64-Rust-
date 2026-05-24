@@ -84,6 +84,10 @@ impl Module for BgpView {
         25
     }
 
+    fn description(&self) -> &'static str {
+        "ASN holder + announcing-prefix lookup via BGPView's free public API. Accepts ASN or IP."
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Asn | TargetKind::IpAddress)
     }

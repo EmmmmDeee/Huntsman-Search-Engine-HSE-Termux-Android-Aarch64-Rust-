@@ -88,6 +88,10 @@ impl Module for IpQs {
     fn priority(&self) -> u8 {
         100
     }
+
+    fn description(&self) -> &'static str {
+        "IPQualityScore fraud_score (0–100) + abuse/disposable/leaked flags across IP / email / phone. Key-gated."
+    }
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }

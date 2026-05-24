@@ -726,7 +726,12 @@ function renderWizardModuleTable(){
       ${accepting.map(m=>{
         const checked = active.has(m.name);
         const cost = m.cost || 'free';
-        return `<label>
+        // Native browser tooltip on the row — server returns
+        // `description` for every module (issue #28). Empty descriptions
+        // render no tooltip (graceful degrade for any module added
+        // without overriding the default).
+        const desc = m.description || '';
+        return `<label${desc ? ` title="${attr(desc)}"` : ''}>
           <input type="checkbox" data-mod="${attr(m.name)}" ${checked?'checked':''}>
           <span class="mn">${esc(m.name)}</span>
           ${m.passive ? '<span class="cost-pill" style="background:#eee;color:#666" title="passive (no outbound)">passive</span>':''}

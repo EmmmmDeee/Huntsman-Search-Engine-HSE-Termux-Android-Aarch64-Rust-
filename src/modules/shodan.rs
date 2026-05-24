@@ -59,6 +59,10 @@ impl Module for Shodan {
     fn priority(&self) -> u8 {
         105
     }
+
+    fn description(&self) -> &'static str {
+        "Shodan host record for an IP: open ports, known CVEs, hostnames, ASN/ISP, OS. Paid."
+    }
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }

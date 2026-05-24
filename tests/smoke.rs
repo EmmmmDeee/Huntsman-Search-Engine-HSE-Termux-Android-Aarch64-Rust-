@@ -114,6 +114,35 @@ impl Module for LowConfidenceModule {
     }
 }
 
+#[test]
+fn all_registered_modules_have_descriptions() {
+    // Regression guard for issue #28: every module shipped in the
+    // registry must override `Module::description()` with a non-empty
+    // string. The trait's default returns `""`, which leaves the wizard
+    // tooltip blank — operators new to OSINT can't tell what e.g. `crtsh`
+    // does without one. Failing this test points at the offending
+    // module so it can't slip through review.
+    let modules = huntsman_search_engine::modules::registry();
+    assert!(!modules.is_empty(), "registry should not be empty");
+    let missing: Vec<_> = modules
+        .iter()
+        .filter(|m| m.description().trim().is_empty())
+        .map(|m| m.name())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these modules have no description() override: {missing:?}"
+    );
+    // Sanity: at least one description mentions a recognisable
+    // keyword. Catches accidental " " or "TODO" fillers.
+    let descriptions: Vec<&str> = modules.iter().map(|m| m.description()).collect();
+    let joined = descriptions.join(" ");
+    assert!(
+        joined.contains("DNS") || joined.contains("breach") || joined.contains("subdomain"),
+        "no description mentions any OSINT-domain keyword — descriptions look stubbed"
+    );
+}
+
 #[tokio::test]
 async fn engine_dispatches_synthetic_module_end_to_end() {
     let (engine, store, sid, target, ctx) = setup(

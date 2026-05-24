@@ -26,6 +26,10 @@ impl Module for NetInterfaces {
     fn priority(&self) -> u8 {
         55
     }
+
+    fn description(&self) -> &'static str {
+        "Termux network interface enumeration — IPv4/IPv6 addresses per interface (eth0, wlan0, …). Passive."
+    }
     fn is_passive(&self) -> bool {
         true
     }

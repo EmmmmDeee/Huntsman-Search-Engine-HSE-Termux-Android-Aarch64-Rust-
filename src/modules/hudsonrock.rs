@@ -71,6 +71,10 @@ impl Module for HudsonRock {
         130
     }
 
+    fn description(&self) -> &'static str {
+        "HudsonRock stealer-log breach aggregate for an email or domain. Free; only counts + machine/OS metadata, no credentials."
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

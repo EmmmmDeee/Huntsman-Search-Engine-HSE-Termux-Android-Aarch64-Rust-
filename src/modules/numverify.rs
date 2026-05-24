@@ -59,6 +59,10 @@ impl Module for Numverify {
     fn priority(&self) -> u8 {
         90
     }
+
+    fn description(&self) -> &'static str {
+        "Numverify phone validation: E.164 normalisation + country + carrier + line type. Free tier, key-gated."
+    }
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }

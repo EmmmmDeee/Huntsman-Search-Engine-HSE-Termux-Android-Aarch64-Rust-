@@ -39,6 +39,10 @@ impl Module for WifiConnect {
     fn priority(&self) -> u8 {
         70
     }
+
+    fn description(&self) -> &'static str {
+        "Termux currently-connected WiFi — BSSID, SSID, signal strength of the AP this device is associated with. Passive."
+    }
     fn is_passive(&self) -> bool {
         true
     }

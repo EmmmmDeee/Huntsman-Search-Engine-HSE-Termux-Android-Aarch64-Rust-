@@ -262,6 +262,10 @@ impl Module for UsernameSearch {
         110
     }
 
+    fn description(&self) -> &'static str {
+        "Username presence probe across 29 well-known public profile sites (Github, Reddit, Mastodon, …)."
+    }
+
     fn is_passive(&self) -> bool {
         // Reaches external sites — not passive in the OSINT-mode sense.
         false

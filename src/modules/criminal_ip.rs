@@ -108,6 +108,10 @@ impl Module for CriminalIp {
     fn priority(&self) -> u8 {
         103
     }
+
+    fn description(&self) -> &'static str {
+        "Criminal IP risk scoring + VPN/proxy/Tor/hosting/cloud flags for an IP. Key-gated free tier."
+    }
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }

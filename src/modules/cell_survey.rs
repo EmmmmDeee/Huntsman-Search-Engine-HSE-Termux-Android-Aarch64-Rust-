@@ -47,6 +47,10 @@ impl Module for CellSurvey {
     fn priority(&self) -> u8 {
         62
     }
+
+    fn description(&self) -> &'static str {
+        "Termux cellular tower survey — serving cell + neighbour cells (CID, LAC/TAC, MCC, MNC, signal). Passive."
+    }
     fn is_passive(&self) -> bool {
         true
     }

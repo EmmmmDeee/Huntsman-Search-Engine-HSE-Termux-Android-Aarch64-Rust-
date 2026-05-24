@@ -39,6 +39,10 @@ impl Module for WifiScan {
     fn priority(&self) -> u8 {
         65
     }
+
+    fn description(&self) -> &'static str {
+        "Termux WiFi scan — list of nearby APs with BSSID / SSID / RSSI / frequency. Passive sensor."
+    }
     fn is_passive(&self) -> bool {
         true
     }

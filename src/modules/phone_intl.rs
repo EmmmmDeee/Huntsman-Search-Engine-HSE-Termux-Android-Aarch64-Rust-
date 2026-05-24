@@ -282,6 +282,10 @@ impl Module for PhoneIntl {
         140
     }
 
+    fn description(&self) -> &'static str {
+        "Offline E.164 phone-number normalisation + country code lookup. No network — pure library work."
+    }
+
     fn is_passive(&self) -> bool {
         // Pure local computation — no network.
         true

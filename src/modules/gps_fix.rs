@@ -39,6 +39,10 @@ impl Module for GpsFix {
     fn priority(&self) -> u8 {
         68
     }
+
+    fn description(&self) -> &'static str {
+        "Termux GPS / network location fix — latitude, longitude, accuracy, altitude. Local sensor, passive."
+    }
     fn is_passive(&self) -> bool {
         true
     }

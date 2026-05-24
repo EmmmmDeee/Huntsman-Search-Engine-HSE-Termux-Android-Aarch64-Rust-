@@ -113,6 +113,10 @@ impl Module for DnsBrute {
         22
     }
 
+    fn description(&self) -> &'static str {
+        "Common-name subdomain enumeration: 67 high-frequency labels (www, mail, api, dev, …) against the shared resolver."
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)
     }

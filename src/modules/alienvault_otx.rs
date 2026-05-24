@@ -56,6 +56,10 @@ impl Module for AlienVaultOtx {
         78
     }
 
+    fn description(&self) -> &'static str {
+        "AlienVault OTX threat-intel feed: pulse hits, malware families, and IoC counts for an IP, domain, or hostname."
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress | TargetKind::Domain)
     }
