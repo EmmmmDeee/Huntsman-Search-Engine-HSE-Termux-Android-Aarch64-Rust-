@@ -18,6 +18,7 @@ pub mod gravatar;
 pub mod hudsonrock;
 pub mod ip_geo;
 pub mod net_interfaces;
+pub mod oathnet_pro;
 pub mod phone_intl;
 pub mod reverse_dns;
 pub mod username_search;
@@ -38,6 +39,10 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(hudsonrock::HudsonRock),
         Arc::new(xposed_or_not::XposedOrNot),
         Arc::new(alienvault_otx::AlienVaultOtx),
+        // Paid premium breach search (v0.10+). Key-gated via
+        // HUNTSMAN_OATHNET_KEY; engine emits ModuleError and moves on
+        // if the key is absent or the request fails.
+        Arc::new(oathnet_pro::OathnetPro),
         Arc::new(crtsh::Crtsh),
         Arc::new(dns_resolver::DnsResolver),
         Arc::new(reverse_dns::ReverseDns),
