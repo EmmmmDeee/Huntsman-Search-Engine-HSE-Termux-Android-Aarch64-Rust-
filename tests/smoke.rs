@@ -88,6 +88,41 @@ impl Module for UsernameToPhoneSynth {
     }
 }
 
+/// Per-call chatty module — emits 5 distinct Email entities every call.
+/// Used to verify the in-flight budget gate. Three named copies exist
+/// (`ChattyA` / `ChattyB` / `ChattyC`) because `Module::name()` returns
+/// a fixed `&'static str`, so we can't reuse a single struct.
+macro_rules! chatty_module {
+    ($Ty:ident, $name:literal, $prio:literal) => {
+        struct $Ty;
+        #[async_trait]
+        impl Module for $Ty {
+            fn name(&self) -> &'static str {
+                $name
+            }
+            fn priority(&self) -> u8 {
+                $prio
+            }
+            fn accepts(&self, t: &Target) -> bool {
+                matches!(t.kind, TargetKind::Email)
+            }
+            async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+                let mut r = ModuleResult::new();
+                for i in 0..5 {
+                    let v = format!("{}-{i}@chatty.example", $name);
+                    let mut e = Entity::new(EntityKind::Email, &v, 0.95, &ctx.scan_id);
+                    e.tag("chatty");
+                    r.push(e);
+                }
+                Ok(r)
+            }
+        }
+    };
+}
+chatty_module!(ChattyA, "chatty_a", 110);
+chatty_module!(ChattyB, "chatty_b", 100);
+chatty_module!(ChattyC, "chatty_c", 90);
+
 /// Accepts Email, produces a low-confidence Username — should be ignored
 /// by expansion when min_expand_confidence is 0.75.
 struct LowConfidenceModule;
@@ -221,6 +256,47 @@ async fn expansion_respects_min_expand_confidence() {
         result.entity_count, 1,
         "low-confidence username should not trigger expansion"
     );
+}
+
+#[tokio::test]
+async fn seed_round_in_flight_budget_caps_emission() {
+    // Three chatty modules each emit 5 entities per call. Without the
+    // in-flight gate, the seed round would accumulate 15 entities even
+    // when the user declared `max_entities = 6`. With the gate, the
+    // dispatcher short-circuits after the first chatty module's merge
+    // pushes the running count past the cap — so the persisted count
+    // is bounded by `(cap + 4)` in the worst case (one full module's
+    // 5-entity yield can land before the gate kicks in for the next
+    // module).
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(ChattyA), Arc::new(ChattyB), Arc::new(ChattyC)],
+        "seed_budget",
+        TargetKind::Email,
+        "seed@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 0,
+        max_entities: Some(6),
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    // Without the fix this would be 15 (3 modules × 5 entities each).
+    // With the fix: ChattyA emits 5 → entity_map=5; gate before ChattyB
+    // sees 5 < 6, doesn't fire; ChattyB emits 5 → entity_map=10; gate
+    // before ChattyC sees 10 ≥ 6, fires → ChattyC skipped. Total = 10.
+    assert!(
+        result.entity_count < 15,
+        "in-flight gate should bound emission below the no-gate 15 (got {})",
+        result.entity_count
+    );
+    assert!(
+        result.entity_count <= 10,
+        "in-flight gate should cap after 2 modules merge past budget (got {})",
+        result.entity_count
+    );
+    let stored = store.entities_for_scan(&sid).unwrap();
+    assert_eq!(stored.len(), result.entity_count);
 }
 
 #[tokio::test]

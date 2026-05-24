@@ -43,14 +43,14 @@ pub struct ScanEngine {
 }
 
 /// Reason an expansion round stopped before depth was exhausted.
-enum StopReason {
+pub(super) enum StopReason {
     NoMoreCandidates,
     MaxEntities(usize),
     MaxWallTime(u64),
 }
 
 impl StopReason {
-    fn label(&self) -> String {
+    pub(super) fn label(&self) -> String {
         match self {
             Self::NoMoreCandidates => "no more high-confidence candidates".into(),
             Self::MaxEntities(n) => format!("max_entities={n} reached"),
@@ -97,7 +97,7 @@ impl ScanEngine {
 
         // Round 0 — seed.
         visited.insert(visit_key(&target));
-        self.dispatch_target(&scan.id, &target, &ctx, &opts, &mut entity_map)
+        self.dispatch_target(&scan.id, &target, &ctx, &opts, started, &mut entity_map)
             .await?;
 
         // Rounds 1..=depth — autonomous expansion.
@@ -243,7 +243,7 @@ impl ScanEngine {
                     return stop;
                 }
                 if let Err(e) = self
-                    .dispatch_target(scan_id, nt, ctx, opts, entity_map)
+                    .dispatch_target(scan_id, nt, ctx, opts, started, entity_map)
                     .await
                 {
                     // Per-target dispatch errors are already surfaced as
@@ -265,7 +265,11 @@ fn visit_key(target: &Target) -> (TargetKind, String) {
     (target.kind, normalised)
 }
 
-fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> Option<StopReason> {
+pub(super) fn budget_check(
+    opts: &ScanOptions,
+    started: Instant,
+    current_count: usize,
+) -> Option<StopReason> {
     if let Some(max) = opts.max_entities
         && current_count >= max
     {

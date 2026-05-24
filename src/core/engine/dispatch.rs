@@ -12,12 +12,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::time::{sleep, timeout};
 use tracing::{info, warn};
 
-use super::ScanEngine;
+use super::{ScanEngine, budget_check};
 use crate::core::{
     entity::Entity,
     error::Result,
@@ -133,19 +133,26 @@ pub(super) fn module_skip_reason(module: &dyn Module, opts: &ScanOptions) -> Opt
 impl ScanEngine {
     /// Dispatch every accepting module against `target`. Picks the
     /// sequential or concurrent codepath based on `opts.max_concurrent`.
+    ///
+    /// `started` is the scan's start `Instant`, threaded through so the
+    /// per-module budget gate can enforce `max_entities` and
+    /// `max_wall_time_secs` *during* dispatch, not just between rounds
+    /// — without it a single chatty module on the seed target could
+    /// fill `entity_map` past the user's declared cap.
     pub(super) async fn dispatch_target(
         &self,
         scan_id: &str,
         target: &Target,
         ctx: &ModuleContext,
         opts: &ScanOptions,
+        started: Instant,
         entity_map: &mut HashMap<String, Entity>,
     ) -> Result<()> {
         if opts.max_concurrent == 0 {
-            self.dispatch_target_sequential(scan_id, target, ctx, opts, entity_map)
+            self.dispatch_target_sequential(scan_id, target, ctx, opts, started, entity_map)
                 .await
         } else {
-            self.dispatch_target_concurrent(scan_id, target, ctx, opts, entity_map)
+            self.dispatch_target_concurrent(scan_id, target, ctx, opts, started, entity_map)
                 .await
         }
     }
@@ -158,6 +165,7 @@ impl ScanEngine {
         target: &Target,
         ctx: &ModuleContext,
         opts: &ScanOptions,
+        started: Instant,
         entity_map: &mut HashMap<String, Entity>,
     ) -> Result<()> {
         for module in &self.modules {
@@ -172,6 +180,24 @@ impl ScanEngine {
                     EventKind::ModuleSkipped {
                         module: name.into(),
                         reason: reason.into(),
+                    },
+                ));
+                continue;
+            }
+
+            // In-flight budget gate. If the running entity count already
+            // crossed `max_entities` (or wall-time crossed
+            // `max_wall_time_secs`) before this module runs, stop
+            // dispatching further modules against this target. Modules
+            // that already completed keep their results; remaining ones
+            // emit a `ModuleSkipped` event with the budget reason so
+            // operators see why the dispatcher short-circuited.
+            if let Some(stop) = budget_check(opts, started, entity_map.len()) {
+                let _ = self.bus.send(Event::new(
+                    scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason: stop.label(),
                     },
                 ));
                 continue;
@@ -221,6 +247,7 @@ impl ScanEngine {
         target: &Target,
         ctx: &ModuleContext,
         opts: &ScanOptions,
+        started: Instant,
         entity_map: &mut HashMap<String, Entity>,
     ) -> Result<()> {
         use tokio::sync::Semaphore;
@@ -292,7 +319,21 @@ impl ScanEngine {
 
         // Consume results as tasks finish. entity_map is single-owner
         // in this loop, so no Mutex needed.
+        //
+        // Each iteration also gates on `budget_check` against the
+        // growing entity_map; once `max_entities` (or
+        // `max_wall_time_secs`) is reached we break, and the JoinSet's
+        // Drop cancels every still-running task.
         while let Some(joined) = set.join_next().await {
+            if let Some(stop) = budget_check(opts, started, entity_map.len()) {
+                let _ = self.bus.send(Event::new(
+                    scan_id,
+                    EventKind::ExpansionStop {
+                        reason: stop.label(),
+                    },
+                ));
+                break;
+            }
             let outcome = match joined {
                 Ok(o) => o,
                 Err(e) => {
