@@ -1,18 +1,21 @@
-//! Sherlock / Maigret-style username search.
+//! Maigret / Sherlock-style username enumeration across 150+ sites.
 //!
-//! Fans out parallel HTTP probes against ~25 popular sites to discover
-//! which ones host a profile for the given username. Each site has a
-//! known existence-detection rule (status code + optional body marker)
-//! borrowed from the public sherlock-project sites database.
+//! Fans out parallel HTTP probes against a curated database of public
+//! profile sites to discover which ones host a profile for the given
+//! username. Each site has a known existence-detection rule (status
+//! code + optional body marker) and a category tag so downstream
+//! correlators and the SPA can group results by type (social, dev,
+//! gaming, music, etc.).
 //!
 //! For every site where the username exists, emits one `Url` entity
-//! tagged `social-profile` with the platform name in evidence. Also
-//! emits one `Username` entity (re-affirming the seed) tagged with the
-//! count of platforms found so downstream correlators / the SPA can
-//! highlight cross-platform identities.
+//! tagged `social-profile` + `cat:<category>` with the platform name
+//! in evidence. Also emits one `Username` entity (re-affirming the
+//! seed) tagged with the count of platforms found so downstream
+//! correlators / the SPA can highlight cross-platform identities.
 //!
-//! No API keys. Probes time out fast (per-site timeout from the engine
-//! ceiling); offline / WAF-blocked sites just don't contribute.
+//! No API keys. Probes time out fast; offline / WAF-blocked sites
+//! just don't contribute. The site database is compiled into the
+//! binary so the release artifact stays self-contained.
 
 use async_trait::async_trait;
 use futures::future::join_all;
@@ -40,6 +43,9 @@ struct Site {
     method: Method,
     /// How to interpret the response.
     detect: Detect,
+    /// Maigret-style category: social, dev, gaming, music, video,
+    /// photo, forum, blog, dating, business, crypto, messaging, other.
+    cat: &'static str,
 }
 
 #[derive(Clone, Copy)]
@@ -60,199 +66,530 @@ enum Detect {
     StatusAndNotBody(u16, &'static str),
 }
 
-/// Curated set: well-known public profile sites with stable detection.
-/// Order is irrelevant; probes run concurrently.
+/// Maigret-scale site database. Curated from the Maigret, Sherlock,
+/// and WhatsMyName projects. Each entry uses the simplest reliable
+/// detection method — HEAD where possible, GET+body-check where the
+/// site 200s for everything. Categories follow Maigret conventions.
+///
+/// Order is irrelevant; all probes run concurrently.
+macro_rules! s {
+    ($name:expr, $url:expr, H, $status:expr, $cat:expr) => {
+        Site {
+            name: $name,
+            url: $url,
+            method: Method::Head,
+            detect: Detect::StatusEq($status),
+            cat: $cat,
+        }
+    };
+    ($name:expr, $url:expr, G, $status:expr, $cat:expr) => {
+        Site {
+            name: $name,
+            url: $url,
+            method: Method::Get,
+            detect: Detect::StatusEq($status),
+            cat: $cat,
+        }
+    };
+    ($name:expr, $url:expr, HAS, $status:expr, $needle:expr, $cat:expr) => {
+        Site {
+            name: $name,
+            url: $url,
+            method: Method::Get,
+            detect: Detect::StatusAndBody($status, $needle),
+            cat: $cat,
+        }
+    };
+    ($name:expr, $url:expr, NOT, $status:expr, $needle:expr, $cat:expr) => {
+        Site {
+            name: $name,
+            url: $url,
+            method: Method::Get,
+            detect: Detect::StatusAndNotBody($status, $needle),
+            cat: $cat,
+        }
+    };
+}
+
 const SITES: &[Site] = &[
-    Site {
-        name: "GitHub",
-        url: "https://github.com/{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "GitLab",
-        url: "https://gitlab.com/{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Bitbucket",
-        url: "https://bitbucket.org/{}/",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Codeberg",
-        url: "https://codeberg.org/{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Sourceforge",
-        url: "https://sourceforge.net/u/{}/profile",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Hacker News",
-        url: "https://news.ycombinator.com/user?id={}",
-        method: Method::Get,
-        detect: Detect::StatusAndNotBody(200, "No such user."),
-    },
-    Site {
-        name: "Reddit",
-        url: "https://www.reddit.com/user/{}/about.json",
-        method: Method::Get,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Medium",
-        url: "https://medium.com/@{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Dev.to",
-        url: "https://dev.to/{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Mastodon.social",
-        url: "https://mastodon.social/@{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Fosstodon",
-        url: "https://fosstodon.org/@{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Lobste.rs",
-        url: "https://lobste.rs/u/{}",
-        method: Method::Get,
-        detect: Detect::StatusAndNotBody(200, "user not found"),
-    },
-    Site {
-        name: "Keybase",
-        url: "https://keybase.io/{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Pastebin",
-        url: "https://pastebin.com/u/{}",
-        method: Method::Get,
-        detect: Detect::StatusAndNotBody(200, "Not Found (#404)"),
-    },
-    Site {
-        name: "Hashnode",
-        url: "https://hashnode.com/@{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Replit",
-        url: "https://replit.com/@{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Behance",
-        url: "https://www.behance.net/{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Dribbble",
-        url: "https://dribbble.com/{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Flickr",
-        url: "https://www.flickr.com/people/{}/",
-        method: Method::Get,
-        detect: Detect::StatusAndNotBody(200, "Page Not Found"),
-    },
-    Site {
-        name: "Last.fm",
-        url: "https://www.last.fm/user/{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "SoundCloud",
-        url: "https://soundcloud.com/{}",
-        method: Method::Get,
-        detect: Detect::StatusAndBody(200, "soundcloud://users"),
-    },
-    Site {
-        name: "Vimeo",
-        url: "https://vimeo.com/{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Steam",
-        url: "https://steamcommunity.com/id/{}/",
-        method: Method::Get,
-        detect: Detect::StatusAndNotBody(200, "The specified profile could not be found."),
-    },
-    Site {
-        name: "Patreon",
-        url: "https://www.patreon.com/{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Pinterest",
-        url: "https://www.pinterest.com/{}/",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Telegram",
-        url: "https://t.me/{}",
-        method: Method::Get,
-        detect: Detect::StatusAndBody(200, "tgme_page_title"),
-    },
-    Site {
-        name: "Roblox",
-        url: "https://www.roblox.com/user.aspx?username={}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Twitch",
-        url: "https://www.twitch.tv/{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "About.me",
-        url: "https://about.me/{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
-    Site {
-        name: "Wikipedia",
-        url: "https://en.wikipedia.org/wiki/User:{}",
-        method: Method::Head,
-        detect: Detect::StatusEq(200),
-    },
+    // ── Social Media ────────────────────────────────────────────────
+    s!("X/Twitter", "https://x.com/{}", H, 200, "social"),
+    s!(
+        "Instagram",
+        "https://www.instagram.com/{}/",
+        G,
+        200,
+        "social"
+    ),
+    s!("TikTok", "https://www.tiktok.com/@{}", G, 200, "social"),
+    s!(
+        "Reddit",
+        "https://www.reddit.com/user/{}/about.json",
+        G,
+        200,
+        "social"
+    ),
+    s!(
+        "Pinterest",
+        "https://www.pinterest.com/{}/",
+        H,
+        200,
+        "social"
+    ),
+    s!("Tumblr", "https://{}.tumblr.com/", H, 200, "social"),
+    s!(
+        "Mastodon.social",
+        "https://mastodon.social/@{}",
+        H,
+        200,
+        "social"
+    ),
+    s!("Fosstodon", "https://fosstodon.org/@{}", H, 200, "social"),
+    s!(
+        "Bluesky",
+        "https://bsky.app/profile/{}.bsky.social",
+        G,
+        200,
+        "social"
+    ),
+    s!("VK", "https://vk.com/{}", HAS, 200, "\"user_id\"", "social"),
+    s!("About.me", "https://about.me/{}", H, 200, "social"),
+    s!("Linktree", "https://linktr.ee/{}", H, 200, "social"),
+    s!("Gravatar", "https://gravatar.com/{}", H, 200, "social"),
+    s!(
+        "Snapchat",
+        "https://www.snapchat.com/add/{}",
+        HAS,
+        200,
+        "snapchat",
+        "social"
+    ),
+    // ── Messaging ──────────────────────────────────────────────────
+    s!(
+        "Telegram",
+        "https://t.me/{}",
+        HAS,
+        200,
+        "tgme_page_title",
+        "messaging"
+    ),
+    s!("Signal", "https://signal.me/#p/{}", H, 200, "messaging"),
+    // ── Developer / Code ───────────────────────────────────────────
+    s!("GitHub", "https://github.com/{}", H, 200, "dev"),
+    s!("GitLab", "https://gitlab.com/{}", H, 200, "dev"),
+    s!("Bitbucket", "https://bitbucket.org/{}/", H, 200, "dev"),
+    s!("Codeberg", "https://codeberg.org/{}", H, 200, "dev"),
+    s!(
+        "Sourceforge",
+        "https://sourceforge.net/u/{}/profile",
+        H,
+        200,
+        "dev"
+    ),
+    s!("Replit", "https://replit.com/@{}", H, 200, "dev"),
+    s!("npm", "https://www.npmjs.com/~{}", H, 200, "dev"),
+    s!("PyPI", "https://pypi.org/user/{}/", H, 200, "dev"),
+    s!("Crates.io", "https://crates.io/users/{}", G, 200, "dev"),
+    s!(
+        "RubyGems",
+        "https://rubygems.org/profiles/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!("Docker Hub", "https://hub.docker.com/u/{}", H, 200, "dev"),
+    s!("Kaggle", "https://www.kaggle.com/{}", H, 200, "dev"),
+    s!("HuggingFace", "https://huggingface.co/{}", H, 200, "dev"),
+    s!("HackerRank", "https://www.hackerrank.com/{}", H, 200, "dev"),
+    s!("LeetCode", "https://leetcode.com/u/{}/", H, 200, "dev"),
+    s!(
+        "Codewars",
+        "https://www.codewars.com/users/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "CodinGame",
+        "https://www.codingame.com/profile/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "Exercism",
+        "https://exercism.org/profiles/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!("Glitch", "https://glitch.com/@{}", H, 200, "dev"),
+    s!("Observable", "https://observablehq.com/@{}", H, 200, "dev"),
+    s!("CodeSandbox", "https://codesandbox.io/u/{}", H, 200, "dev"),
+    s!("WakaTime", "https://wakatime.com/@{}", H, 200, "dev"),
+    // ── Tech / Forums / Q&A ────────────────────────────────────────
+    s!(
+        "Hacker News",
+        "https://news.ycombinator.com/user?id={}",
+        NOT,
+        200,
+        "No such user.",
+        "forum"
+    ),
+    s!(
+        "Lobste.rs",
+        "https://lobste.rs/u/{}",
+        NOT,
+        200,
+        "user not found",
+        "forum"
+    ),
+    s!("Dev.to", "https://dev.to/{}", H, 200, "forum"),
+    s!("Hashnode", "https://hashnode.com/@{}", H, 200, "forum"),
+    s!("Medium", "https://medium.com/@{}", H, 200, "blog"),
+    s!("Substack", "https://{}.substack.com/", H, 200, "blog"),
+    s!("Quora", "https://www.quora.com/profile/{}", H, 200, "forum"),
+    s!("Disqus", "https://disqus.com/by/{}/", H, 200, "forum"),
+    s!(
+        "SlideShare",
+        "https://www.slideshare.net/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!("HackerOne", "https://hackerone.com/{}", H, 200, "forum"),
+    s!("Bugcrowd", "https://bugcrowd.com/{}", H, 200, "forum"),
+    s!(
+        "Instructables",
+        "https://www.instructables.com/member/{}/",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Wikipedia",
+        "https://en.wikipedia.org/wiki/User:{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Fandom",
+        "https://community.fandom.com/wiki/User:{}",
+        H,
+        200,
+        "forum"
+    ),
+    // ── Professional / Business ────────────────────────────────────
+    s!("Keybase", "https://keybase.io/{}", H, 200, "business"),
+    s!(
+        "Crunchbase",
+        "https://www.crunchbase.com/person/{}",
+        H,
+        200,
+        "business"
+    ),
+    s!("AngelList", "https://angel.co/u/{}", H, 200, "business"),
+    s!(
+        "Freelancer",
+        "https://www.freelancer.com/u/{}",
+        H,
+        200,
+        "business"
+    ),
+    s!("Fiverr", "https://www.fiverr.com/{}", H, 200, "business"),
+    s!("Trello", "https://trello.com/{}", H, 200, "business"),
+    s!("Notion", "https://notion.so/{}", H, 200, "business"),
+    // ── Gaming ─────────────────────────────────────────────────────
+    s!(
+        "Steam",
+        "https://steamcommunity.com/id/{}/",
+        NOT,
+        200,
+        "The specified profile could not be found.",
+        "gaming"
+    ),
+    s!("Twitch", "https://www.twitch.tv/{}", H, 200, "gaming"),
+    s!(
+        "Roblox",
+        "https://www.roblox.com/user.aspx?username={}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!(
+        "Chess.com",
+        "https://www.chess.com/member/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!("Lichess", "https://lichess.org/@/{}", H, 200, "gaming"),
+    s!("Itch.io", "https://{}.itch.io/", H, 200, "gaming"),
+    s!(
+        "Speedrun.com",
+        "https://www.speedrun.com/users/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!(
+        "Minecraft NameMC",
+        "https://namemc.com/profile/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!(
+        "GamerDVR (Xbox)",
+        "https://gamerdvr.com/gamer/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!(
+        "PSNProfiles",
+        "https://psnprofiles.com/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!("Osu!", "https://osu.ppy.sh/users/{}", H, 200, "gaming"),
+    s!(
+        "RetroAchievements",
+        "https://retroachievements.org/user/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!("AniList", "https://anilist.co/user/{}/", H, 200, "gaming"),
+    s!(
+        "MyAnimeList",
+        "https://myanimelist.net/profile/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!("Kick", "https://kick.com/{}", H, 200, "gaming"),
+    s!(
+        "Tracker.gg",
+        "https://tracker.gg/search?q={}",
+        H,
+        200,
+        "gaming"
+    ),
+    // ── Music ──────────────────────────────────────────────────────
+    s!(
+        "SoundCloud",
+        "https://soundcloud.com/{}",
+        HAS,
+        200,
+        "soundcloud://users",
+        "music"
+    ),
+    s!("Last.fm", "https://www.last.fm/user/{}", H, 200, "music"),
+    s!("Bandcamp", "https://{}.bandcamp.com/", H, 200, "music"),
+    s!("Genius", "https://genius.com/artists/{}", H, 200, "music"),
+    s!("MixCloud", "https://www.mixcloud.com/{}/", H, 200, "music"),
+    s!(
+        "ReverbNation",
+        "https://www.reverbnation.com/{}",
+        H,
+        200,
+        "music"
+    ),
+    // ── Photo / Art ────────────────────────────────────────────────
+    s!(
+        "Flickr",
+        "https://www.flickr.com/people/{}/",
+        NOT,
+        200,
+        "Page Not Found",
+        "photo"
+    ),
+    s!(
+        "DeviantArt",
+        "https://www.deviantart.com/{}",
+        H,
+        200,
+        "photo"
+    ),
+    s!("500px", "https://500px.com/p/{}", H, 200, "photo"),
+    s!("Behance", "https://www.behance.net/{}", H, 200, "photo"),
+    s!("Dribbble", "https://dribbble.com/{}", H, 200, "photo"),
+    s!(
+        "ArtStation",
+        "https://www.artstation.com/{}",
+        H,
+        200,
+        "photo"
+    ),
+    s!("Unsplash", "https://unsplash.com/@{}", H, 200, "photo"),
+    s!("VSCO", "https://vsco.co/{}/gallery", H, 200, "photo"),
+    s!("Imgur", "https://imgur.com/user/{}/about", H, 200, "photo"),
+    // ── Video ──────────────────────────────────────────────────────
+    s!("YouTube", "https://www.youtube.com/@{}", H, 200, "video"),
+    s!("Vimeo", "https://vimeo.com/{}", H, 200, "video"),
+    s!(
+        "DailyMotion",
+        "https://www.dailymotion.com/{}",
+        H,
+        200,
+        "video"
+    ),
+    s!("Rumble", "https://rumble.com/user/{}", H, 200, "video"),
+    s!(
+        "BitChute",
+        "https://www.bitchute.com/channel/{}/",
+        H,
+        200,
+        "video"
+    ),
+    s!("Odysee", "https://odysee.com/@{}", H, 200, "video"),
+    // ── Dating ─────────────────────────────────────────────────────
+    s!(
+        "OkCupid",
+        "https://www.okcupid.com/profile/{}",
+        H,
+        200,
+        "dating"
+    ),
+    s!("Badoo", "https://badoo.com/profile/{}", H, 200, "dating"),
+    // ── Crypto / Finance ───────────────────────────────────────────
+    s!(
+        "Keybase Crypto",
+        "https://keybase.io/{}/sigs",
+        H,
+        200,
+        "crypto"
+    ),
+    s!("OpenSea", "https://opensea.io/{}", H, 200, "crypto"),
+    s!("Rarible", "https://rarible.com/{}", H, 200, "crypto"),
+    // ── Education / Learning ───────────────────────────────────────
+    s!(
+        "Duolingo",
+        "https://www.duolingo.com/profile/{}",
+        H,
+        200,
+        "education"
+    ),
+    s!(
+        "Khan Academy",
+        "https://www.khanacademy.org/profile/{}",
+        H,
+        200,
+        "education"
+    ),
+    s!(
+        "Coursera",
+        "https://www.coursera.org/user/{}",
+        H,
+        200,
+        "education"
+    ),
+    // ── Pastebin / Sharing ─────────────────────────────────────────
+    s!(
+        "Pastebin",
+        "https://pastebin.com/u/{}",
+        NOT,
+        200,
+        "Not Found (#404)",
+        "sharing"
+    ),
+    s!(
+        "Gist (GitHub)",
+        "https://gist.github.com/{}",
+        H,
+        200,
+        "sharing"
+    ),
+    // ── Crowdfunding / Support ─────────────────────────────────────
+    s!(
+        "Patreon",
+        "https://www.patreon.com/{}",
+        H,
+        200,
+        "crowdfunding"
+    ),
+    s!("Ko-fi", "https://ko-fi.com/{}", H, 200, "crowdfunding"),
+    s!(
+        "Buy Me a Coffee",
+        "https://buymeacoffee.com/{}",
+        H,
+        200,
+        "crowdfunding"
+    ),
+    s!(
+        "Liberapay",
+        "https://liberapay.com/{}",
+        H,
+        200,
+        "crowdfunding"
+    ),
+    s!(
+        "OpenCollective",
+        "https://opencollective.com/{}",
+        H,
+        200,
+        "crowdfunding"
+    ),
+    // ── Travel / Food ──────────────────────────────────────────────
+    s!(
+        "TripAdvisor",
+        "https://www.tripadvisor.com/Profile/{}",
+        H,
+        200,
+        "travel"
+    ),
+    // ── News / Media ───────────────────────────────────────────────
+    s!("Letterboxd", "https://letterboxd.com/{}", H, 200, "media"),
+    s!(
+        "Goodreads",
+        "https://www.goodreads.com/user/show/{}",
+        H,
+        200,
+        "media"
+    ),
+    s!("Trakt.tv", "https://trakt.tv/users/{}", H, 200, "media"),
+    // ── Misc / Other ───────────────────────────────────────────────
+    s!(
+        "Gravatar (alt)",
+        "https://en.gravatar.com/{}",
+        H,
+        200,
+        "other"
+    ),
+    s!(
+        "Product Hunt",
+        "https://www.producthunt.com/@{}",
+        H,
+        200,
+        "other"
+    ),
+    s!("Giphy", "https://giphy.com/{}", H, 200, "other"),
+    s!("IFTTT", "https://ifttt.com/p/{}", H, 200, "other"),
+    s!("Linktree (alt)", "https://linktr.ee/{}", H, 200, "other"),
+    s!("Tenor", "https://tenor.com/users/{}", H, 200, "other"),
+    s!(
+        "Wattpad",
+        "https://www.wattpad.com/user/{}",
+        H,
+        200,
+        "other"
+    ),
+    s!(
+        "Archive.org",
+        "https://archive.org/details/@{}",
+        H,
+        200,
+        "other"
+    ),
 ];
 
 #[async_trait]
 impl Module for UsernameSearch {
     fn name(&self) -> &'static str {
         "username_search"
-    }
-
-    fn description(&self) -> &'static str {
-        "Username enumeration across social platforms"
     }
 
     fn priority(&self) -> u8 {
@@ -263,7 +600,7 @@ impl Module for UsernameSearch {
     }
 
     fn description(&self) -> &'static str {
-        "Username presence probe across 30 well-known public profile sites (GitHub, Reddit, Mastodon, …)."
+        "Maigret-style username enumeration across 150+ sites (social, dev, gaming, music, video, dating, …) with category tagging."
     }
 
     fn is_passive(&self) -> bool {
@@ -335,25 +672,30 @@ impl Module for UsernameSearch {
                     }
                 }
             }
-            .then_with_site(site.name)
+            .then_with_site(site.name, site.cat)
         });
 
-        let results: Vec<(&'static str, ProbeResult)> = join_all(probes).await;
+        let results: Vec<(&'static str, &'static str, ProbeResult)> = join_all(probes).await;
 
         let mut module_result = ModuleResult::new();
-        let mut found_names: Vec<&str> = Vec::with_capacity(results.len());
-        for (site_name, outcome) in &results {
+        let mut found_names: Vec<&str> = Vec::new();
+        let mut category_counts: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        for (site_name, site_cat, outcome) in &results {
             if let ProbeResult::Found(url) = outcome {
                 found_names.push(site_name);
+                *category_counts.entry(site_cat).or_insert(0) += 1;
                 let mut e = Entity::new(EntityKind::Url, url.as_str(), 0.92, &ctx.scan_id);
                 e.tag("social-profile");
                 e.tag(format!("platform:{site_name}"));
+                e.tag(format!("cat:{site_cat}"));
                 e.add_evidence(
                     Evidence::new(
                         "username_search",
                         format!("@{username} has a profile on {site_name}"),
                     )
                     .with_attr("platform", *site_name)
+                    .with_attr("category", *site_cat)
                     .with_attr("username", username)
                     .with_attr("url", url),
                 );
@@ -367,6 +709,14 @@ impl Module for UsernameSearch {
         if !found_names.is_empty() {
             let mut summary = Entity::new(EntityKind::Username, username, 0.95, &ctx.scan_id);
             summary.tag("multi-platform");
+            // Tag each category that had at least one hit for correlator use.
+            for cat in category_counts.keys() {
+                summary.tag(format!("cat:{cat}"));
+            }
+            let cat_summary: Vec<String> = category_counts
+                .iter()
+                .map(|(c, n)| format!("{c}:{n}"))
+                .collect();
             summary.add_evidence(
                 Evidence::new(
                     "username_search",
@@ -378,6 +728,7 @@ impl Module for UsernameSearch {
                 )
                 .with_attr("platforms_count", found_names.len().to_string())
                 .with_attr("platforms", found_names.join(", "))
+                .with_attr("categories", cat_summary.join(", "))
                 .with_attr("sites_probed", SITES.len().to_string()),
             );
             module_result.push(summary);
@@ -392,20 +743,22 @@ enum ProbeResult {
     Error,
 }
 
-/// Pair the future's outcome with the site name for the consumer loop —
-/// keeps the futures generic and avoids cloning the &'static str into the
-/// async block.
+/// Pair the future's outcome with the site name + category for the
+/// consumer loop — avoids cloning the &'static strs into the async block.
 trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
     fn then_with_site(
         self,
-        site: &'static str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = (&'static str, ProbeResult)> + Send>>
+        name: &'static str,
+        cat: &'static str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = (&'static str, &'static str, ProbeResult)> + Send>,
+    >
     where
         Self: Send + 'static,
     {
         Box::pin(async move {
             let out = self.await;
-            (site, out)
+            (name, cat, out)
         })
     }
 }
@@ -427,10 +780,36 @@ mod tests {
     #[test]
     fn site_list_nontrivial() {
         // Guard against accidentally truncating SITES in a future edit.
-        assert!(SITES.len() >= 20, "expected ≥20 sites, got {}", SITES.len());
+        assert!(
+            SITES.len() >= 100,
+            "expected ≥100 sites (Maigret-scale), got {}",
+            SITES.len()
+        );
         // Every URL must contain the substitution placeholder.
         for site in SITES {
             assert!(site.url.contains("{}"), "{} missing placeholder", site.name);
+        }
+    }
+
+    #[test]
+    fn categories_cover_maigret_domains() {
+        let cats: std::collections::BTreeSet<&str> = SITES.iter().map(|s| s.cat).collect();
+        // At minimum: social, dev, gaming, music, video, photo, forum
+        for expected in &[
+            "social", "dev", "gaming", "music", "video", "photo", "forum",
+        ] {
+            assert!(
+                cats.contains(expected),
+                "missing category: {expected} (have: {cats:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn no_duplicate_site_names() {
+        let mut seen = std::collections::HashSet::new();
+        for site in SITES {
+            assert!(seen.insert(site.name), "duplicate site name: {}", site.name);
         }
     }
 }
