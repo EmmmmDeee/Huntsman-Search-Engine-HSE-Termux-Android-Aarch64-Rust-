@@ -29,6 +29,33 @@ use crate::{
 /// task returns. (Issue #23.)
 pub type CancelRegistry = Arc<Mutex<HashMap<String, CancelHandle>>>;
 
+/// RAII guard that removes a `CancelRegistry` entry on Drop. Held by
+/// the spawned scan task; the entry is removed whether the future
+/// returns normally OR panics, so a runaway module that panics can't
+/// leak a stale cancel handle into the singleton map. Without this
+/// guard a panicking task would leave an `Arc<CancelHandle>` in the
+/// map indefinitely (and `POST /scans/{id}/cancel` would 200 instead
+/// of 404).
+pub struct CancelRegistryGuard {
+    registry: CancelRegistry,
+    scan_id: String,
+}
+
+impl CancelRegistryGuard {
+    /// Insert `handle` into `registry` keyed by `scan_id` and return a
+    /// guard that removes the entry when dropped.
+    pub fn install(registry: CancelRegistry, scan_id: String, handle: CancelHandle) -> Self {
+        registry.lock().insert(scan_id.clone(), handle);
+        Self { registry, scan_id }
+    }
+}
+
+impl Drop for CancelRegistryGuard {
+    fn drop(&mut self) {
+        self.registry.lock().remove(&self.scan_id);
+    }
+}
+
 /// Application state shared across all HTTP handlers. Cloned per request via
 /// axum's [`State`](axum::extract::State) extractor.
 ///

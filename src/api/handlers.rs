@@ -168,9 +168,15 @@ pub async fn scan_create(
     // Cancellation: stash a fresh handle in the registry under this
     // scan_id so `POST /scans/{id}/cancel` can find it; the same
     // handle goes into `ctx.cancel` so the engine sees the flip
-    // (issue #23). Cleanup is in the spawned task's exit path.
+    // (issue #23). The spawned task owns a `CancelRegistryGuard`, so
+    // the entry is removed on Drop — including the panic path — and
+    // we can never leak a stale handle into the singleton map.
     let cancel = crate::core::cancel::CancelHandle::new();
-    s.cancellations.lock().insert(sid.clone(), cancel.clone());
+    let cancel_guard = super::CancelRegistryGuard::install(
+        Arc::clone(&s.cancellations),
+        sid.clone(),
+        cancel.clone(),
+    );
 
     let ctx = ModuleContext {
         scan_id: sid.clone(),
@@ -183,16 +189,15 @@ pub async fn scan_create(
     // Spawn the scan — handler returns immediately with the scan id so the
     // client can subscribe to /events for live progress.
     let engine = Arc::clone(&s.engine);
-    let cancellations = Arc::clone(&s.cancellations);
     let scan_for_run = scan.clone();
-    let sid_for_cleanup = sid.clone();
     tokio::spawn(async move {
+        // Held for the entire scan lifetime; dropping it on either the
+        // happy path OR via panic-unwind removes the registry entry so
+        // `/cancel` for a completed/panicked scan correctly returns 404.
+        let _cancel_guard = cancel_guard;
         if let Err(e) = engine.run(scan_for_run, target, ctx).await {
             tracing::warn!(scan_id = %sid, error = %e, "scan failed");
         }
-        // Drop the handle from the registry once the engine returns so
-        // /cancel for a completed scan returns 404 cleanly.
-        cancellations.lock().remove(&sid_for_cleanup);
     });
 
     info!(scan_id = %scan.id, kind = ?scan.target.kind, "scan queued");
@@ -325,9 +330,14 @@ pub async fn scan_rerun(
     }
 
     // Same cancellation wiring as scan_create — rerun is just a new
-    // scan with cloned options.
+    // scan with cloned options. RAII guard removes the registry entry
+    // on Drop, including the panic path.
     let cancel = crate::core::cancel::CancelHandle::new();
-    s.cancellations.lock().insert(sid.clone(), cancel.clone());
+    let cancel_guard = super::CancelRegistryGuard::install(
+        Arc::clone(&s.cancellations),
+        sid.clone(),
+        cancel.clone(),
+    );
 
     let ctx = ModuleContext {
         scan_id: sid.clone(),
@@ -338,15 +348,13 @@ pub async fn scan_rerun(
     };
 
     let engine = Arc::clone(&s.engine);
-    let cancellations = Arc::clone(&s.cancellations);
     let scan_for_run = new_scan.clone();
     let target_for_run = original.target.clone();
-    let sid_for_cleanup = sid.clone();
     tokio::spawn(async move {
+        let _cancel_guard = cancel_guard;
         if let Err(e) = engine.run(scan_for_run, target_for_run, ctx).await {
             tracing::warn!(scan_id = %sid, error = %e, "rerun failed");
         }
-        cancellations.lock().remove(&sid_for_cleanup);
     });
 
     info!(scan_id = %new_scan.id, source = %id, "scan rerun queued");

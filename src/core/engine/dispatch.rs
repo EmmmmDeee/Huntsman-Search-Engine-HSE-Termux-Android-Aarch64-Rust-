@@ -203,6 +203,15 @@ impl ScanEngine {
 
             self.finalise_module_result(scan_id, name, opts.min_confidence, entity_map, result);
 
+            // Re-check the cancel flag before the throttle sleep so an
+            // operator cancel between modules doesn't pay the full
+            // `throttle_ms` latency before the next gate at the top of
+            // the loop is reached. The throttle exists to be polite to
+            // upstreams; once the operator has asked us to stop there's
+            // nothing left to be polite about.
+            if ctx.cancel.is_cancelled() {
+                return Ok(());
+            }
             if opts.throttle_ms > 0 {
                 sleep(Duration::from_millis(opts.throttle_ms)).await;
             }
