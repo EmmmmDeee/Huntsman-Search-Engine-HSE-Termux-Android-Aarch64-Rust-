@@ -605,14 +605,30 @@ fn rule_au_014_geo_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<C
         .collect()
 }
 
-/// `AU-015` — Threat-intel hit: any entity tagged `threat-intel` (set
-/// by `alienvault_otx`). Fires per entity; severity High because OTX
-/// pulses are curated.
+/// `AU-015` — Threat-intel hit: any entity tagged `threat-intel`.
+/// Sources include `alienvault_otx` and `threatfox` (and any future
+/// curated-IOC feed that opts into the tag). Severity High because
+/// these feeds are hand-curated.
 fn rule_au_015_threat_intel_hit(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     entities
         .iter()
         .filter(|e| e.has_tag("threat-intel"))
         .map(|e| {
+            // Source attribution from evidence: every threat-intel
+            // module sets its evidence.source, so this is the
+            // authoritative feed name rather than a hard-coded one.
+            const TI_SOURCES: &[&str] = &["alienvault_otx", "threatfox"];
+            let sources: std::collections::BTreeSet<&str> = e
+                .evidence
+                .iter()
+                .map(|ev| ev.source.as_str())
+                .filter(|s| TI_SOURCES.contains(s))
+                .collect();
+            let attribution = if sources.is_empty() {
+                "a curated threat-intel feed".to_string()
+            } else {
+                sources.into_iter().collect::<Vec<_>>().join(" + ")
+            };
             let ti_hints: Vec<&str> = e
                 .tags
                 .iter()
@@ -627,7 +643,7 @@ fn rule_au_015_threat_intel_hit(entities: &[Entity], scan_id: &str, ts: u64) -> 
                 rule_id: "AU-015".into(),
                 rule_name: "Threat-intel hit".into(),
                 severity: Severity::High,
-                description: format!("{} '{}' present in OTX pulse(s){}", e.kind, e.value, detail),
+                description: format!("{} '{}' present in {attribution}{detail}", e.kind, e.value),
                 entity_uids: vec![e.uid.clone()],
                 scan_id: scan_id.into(),
                 ts,
@@ -887,6 +903,28 @@ mod tests {
         let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
         assert_eq!(r.len(), 1);
         assert!(r[0].description.contains("malware"));
+    }
+
+    #[test]
+    fn au015_attribution_names_evidence_source_not_otx() {
+        // Hard-coding 'OTX pulse(s)' in the description misattributed
+        // ThreatFox hits to AlienVault OTX (code-review C3). The fix
+        // pulls the feed name from evidence.source.
+        let mut e = Entity::new(EntityKind::Domain, "bad.example", 0.9, "s");
+        e.tag("threat-intel");
+        e.add_evidence(Evidence::new("threatfox", "t"));
+        let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].description.contains("threatfox"));
+        assert!(!r[0].description.contains("OTX"));
+    }
+
+    #[test]
+    fn au015_attribution_falls_back_when_source_unknown() {
+        let e = tagged(EntityKind::Domain, "bad.example", &["threat-intel"]);
+        let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].description.contains("curated threat-intel feed"));
     }
 
     #[test]
