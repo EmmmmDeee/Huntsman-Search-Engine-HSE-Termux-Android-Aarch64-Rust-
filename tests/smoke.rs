@@ -314,7 +314,6 @@ async fn mid_flight_cancellation_aborts_running_scan() {
     // `cancel()`, and verifies the scan terminates Aborted while
     // preserving the partial results the slow module emitted before
     // its sleep.
-    use std::sync::OnceLock;
     use std::time::Duration;
     use tokio::sync::Notify;
 
@@ -352,8 +351,13 @@ async fn mid_flight_cancellation_aborts_running_scan() {
         }
     }
 
-    static NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
-    let started = Arc::clone(NOTIFY.get_or_init(|| Arc::new(Notify::new())));
+    // Fresh `Notify` per test invocation — a `static OnceLock` would
+    // outlive a single run, so `cargo test --retries` or any harness
+    // that re-runs this test in the same process could carry over a
+    // leftover `notify_one` permit and fire `cancel()` before the
+    // module's `process()` had started, dropping `entity_count` to 0
+    // and breaking the `==1` assertion below.
+    let started = Arc::new(Notify::new());
 
     let modules: Vec<Arc<dyn Module>> = vec![
         Arc::new(SlowSignallingModule {
