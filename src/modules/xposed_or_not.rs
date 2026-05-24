@@ -30,15 +30,14 @@ pub struct XposedOrNot;
 ///   { "breaches": [["MyFitnessPal", "Quizlet", ...]] }  — exposed
 ///   { "Error": "Not found" }                            — clean
 ///
-/// We deserialise both fields as `Option` and treat presence of
-/// `breaches` (with non-empty inner) as the positive signal.
+/// We only need the `breaches` field. The `"Error"` envelope arrives
+/// with no `breaches`, so `build_result` naturally early-returns on
+/// an empty list — no Error field needed in the struct, and serde
+/// silently ignores the unknown JSON key.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct XonResp {
     breaches: Option<Vec<Vec<String>>>,
-    #[serde(rename = "Error")]
-    #[allow(dead_code)] // surfaces in the error case; kept for diagnostic future use
-    error: Option<String>,
 }
 
 #[async_trait]
@@ -164,7 +163,6 @@ mod tests {
                 "Quizlet".into(),
                 "LinkedIn".into(),
             ]]),
-            error: None,
         };
         let target = Target::new(TargetKind::Email, "pwned@example.com");
         let r = build_result(&data, &target, "scan-1");
@@ -187,7 +185,6 @@ mod tests {
         // when the outer envelope is there but no breaches matched.
         let data = XonResp {
             breaches: Some(vec![vec![]]),
-            error: None,
         };
         let target = Target::new(TargetKind::Email, "edge@example.com");
         let r = build_result(&data, &target, "scan-1");
