@@ -300,6 +300,44 @@ async fn seed_round_in_flight_budget_caps_emission() {
 }
 
 #[tokio::test]
+async fn seed_round_in_flight_budget_caps_emission_concurrent() {
+    // Mirror of `seed_round_in_flight_budget_caps_emission` but exercises
+    // the concurrent dispatcher (max_concurrent > 0) — the gate lives in
+    // `dispatch_target_concurrent`'s join_next loop and is distinct from
+    // the sequential path's pre-process gate, so it needs its own
+    // regression test.
+    //
+    // The concurrent gate's bound is looser than sequential because all
+    // accepting modules get SPAWNED upfront (semaphore-bounded) before
+    // the consumer loop runs — the gate stops *merging* further results
+    // once the cap is hit, but already-spawned modules may still complete
+    // and have their futures dropped via JoinSet::Drop.
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(ChattyA), Arc::new(ChattyB), Arc::new(ChattyC)],
+        "seed_budget_conc",
+        TargetKind::Email,
+        "seed@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 0,
+        max_concurrent: 4,
+        max_entities: Some(6),
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    // Without the concurrent-path gate this would be 15; with the gate,
+    // emission stops once entity_map crosses the cap.
+    assert!(
+        result.entity_count < 15,
+        "concurrent in-flight gate should bound emission below the no-gate 15 (got {})",
+        result.entity_count
+    );
+    let stored = store.entities_for_scan(&sid).unwrap();
+    assert_eq!(stored.len(), result.entity_count);
+}
+
+#[tokio::test]
 async fn expansion_respects_max_entities_budget() {
     // 3 modules chain forever in principle, but max_entities=1 stops after seed round.
     let (engine, _store, sid, target, ctx) = setup(
