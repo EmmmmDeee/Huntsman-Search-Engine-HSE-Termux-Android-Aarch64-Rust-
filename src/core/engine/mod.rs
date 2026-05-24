@@ -69,7 +69,13 @@ impl StopReason {
 /// errors just mean nobody is currently subscribed.
 pub(crate) fn emit_event(store: &Store, bus: &EventBus, scan_id: &str, kind: EventKind) {
     let event = Event::new(scan_id, kind);
-    let _ = store.upsert_event(&event);
+    // Persist-first so live SSE subscribers can't have an event that
+    // history-fetch never sees. The DB write is best-effort: surface
+    // failures via tracing so an empty Scan Log tab is at least
+    // diagnosable, but don't abort the scan if SQLite is wedged.
+    if let Err(e) = store.insert_event(&event) {
+        warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
+    }
     let _ = bus.send(event);
 }
 

@@ -1112,15 +1112,27 @@ async function renderLog(host, scan){
   $('#log-clear').addEventListener('click', ()=>{ $('#log-box').innerHTML=''; });
 
   // 1) Pull the persistent history first. The endpoint returns the
-  //    full event stream for this scan, in emission order.
+  //    full event stream for this scan, in emission order. Surface
+  //    fetch failures explicitly so a completed scan with events on
+  //    disk doesn't silently render "No events recorded".
   let history = [];
+  let historyError = null;
   try {
     const r = await fetch('/api/v1/scans/'+encodeURIComponent(scan.id)+'/events.history');
-    if (r.ok){ const j = await r.json(); history = j.events || []; }
-  } catch {}
+    if (r.ok){
+      const j = await r.json();
+      history = j.events || [];
+    } else {
+      historyError = `HTTP ${r.status}`;
+    }
+  } catch (e) {
+    historyError = e && e.message ? e.message : String(e);
+  }
 
   const box = $('#log-box');
-  if (history.length === 0 && !running){
+  if (historyError){
+    box.innerHTML = `<div class="alert alert-danger" style="margin:8px">Failed to load event history: ${esc(historyError)}</div>`;
+  } else if (history.length === 0 && !running){
     box.innerHTML = `<div class="empty-state"><p>No events recorded for this scan.</p></div>`;
   } else {
     box.innerHTML = '';

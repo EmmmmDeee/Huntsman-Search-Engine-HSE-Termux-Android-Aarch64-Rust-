@@ -9,7 +9,11 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
 use crate::core::{
-    correlator::Correlation, entity::Entity, error::Result, event::Event, scan::Scan,
+    correlator::Correlation,
+    entity::Entity,
+    error::Result,
+    event::{Event, EventKind},
+    scan::Scan,
 };
 
 pub struct Store {
@@ -312,6 +316,12 @@ impl Store {
             "DELETE FROM entity_observations WHERE scan_id = ?1",
             params![scan_id],
         )?;
+        // Cascade event log rows so deleting a scan also drops its
+        // persisted timeline. Without this the `events` table grows
+        // monotonically across delete cycles and a future scan that
+        // happens to be assigned the same id would inherit the old
+        // scan's `events.history`.
+        tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
         tx.execute(
             "DELETE FROM entities
              WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
@@ -349,18 +359,39 @@ impl Store {
 
     /// Append an event row. Called from `ScanEngine::emit` alongside the
     /// broadcast send so a completed scan's timeline survives the bus
-    /// closing. Errors are deliberately swallowed by the caller — a
+    /// closing. Errors are logged but not propagated by the caller — a
     /// missing event row should never abort a scan.
-    pub fn upsert_event(&self, event: &Event) -> Result<()> {
-        // event_type is the serde-serialised tag name (e.g. "module_done").
-        // Round-trip through serde_json::Value to get the discriminant
-        // without re-implementing the tag mapping.
+    ///
+    /// Despite the surrounding `upsert_*` naming convention this is an
+    /// append-only INSERT: each call creates a fresh row with a new
+    /// auto-increment `id`. There is no natural key to deduplicate on.
+    pub fn insert_event(&self, event: &Event) -> Result<()> {
+        // `event_type` is the snake_case discriminant of the EventKind
+        // variant. A direct `match` is cheaper than the previous
+        // `serde_json::to_value(...).get("type")` round-trip (which
+        // serialised the entire payload — including potentially-large
+        // `EntityFound { entity }` / `CorrelationFound { correlation }`
+        // variants — just to extract a single string), and the
+        // exhaustive match catches new variants at compile time so a
+        // future EventKind addition can't silently fall through to
+        // `"unknown"`.
+        let event_type = match &event.kind {
+            EventKind::ScanStart { .. } => "scan_start",
+            EventKind::ModuleStart { .. } => "module_start",
+            EventKind::ModuleDone { .. } => "module_done",
+            EventKind::ModuleError { .. } => "module_error",
+            EventKind::ModuleSkipped { .. } => "module_skipped",
+            EventKind::EntityFound { .. } => "entity_found",
+            EventKind::ExpansionTick { .. } => "expansion_tick",
+            EventKind::ExpansionStop { .. } => "expansion_stop",
+            EventKind::CorrelationFound { .. } => "correlation_found",
+            EventKind::CorrelationsDone { .. } => "correlations_done",
+            EventKind::LiveStart { .. } => "live_start",
+            EventKind::LiveTick { .. } => "live_tick",
+            EventKind::LiveStop { .. } => "live_stop",
+            EventKind::ScanComplete { .. } => "scan_complete",
+        };
         let json = serde_json::to_string(event)?;
-        let event_type = serde_json::to_value(&event.kind)
-            .ok()
-            .and_then(|v| v.get("type").cloned())
-            .and_then(|t| t.as_str().map(str::to_string))
-            .unwrap_or_else(|| "unknown".to_string());
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO events(scan_id, ts, event_type, data_json)
@@ -620,13 +651,13 @@ mod tests {
             // Give events distinct ts in case the test machine moves
             // through epoch-second boundaries fast.
             ev.ts = 1000 + i as u64;
-            store.upsert_event(&ev).unwrap();
+            store.insert_event(&ev).unwrap();
         }
 
         // Plant an event for a DIFFERENT scan so we can assert the
         // WHERE filter works.
         let other = Event::new("scan-other", EventKind::ModuleStart { module: "x".into() });
-        store.upsert_event(&other).unwrap();
+        store.insert_event(&other).unwrap();
 
         let evs = store.events_for_scan("scan-evt").unwrap();
         assert_eq!(evs.len(), 3, "expected three events for scan-evt only");
@@ -656,6 +687,62 @@ mod tests {
         let store = Store::open(&path).unwrap();
         let evs = store.events_for_scan("never-existed").unwrap();
         assert!(evs.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn delete_scan_cascades_to_events() {
+        use crate::core::event::{Event, EventKind};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "scan-with-events");
+        insert_scan(&store, "scan-keeper");
+
+        // Plant two events on the doomed scan and one on the keeper.
+        store
+            .insert_event(&Event::new(
+                "scan-with-events",
+                EventKind::ModuleStart {
+                    module: "dns_resolver".into(),
+                },
+            ))
+            .unwrap();
+        store
+            .insert_event(&Event::new(
+                "scan-with-events",
+                EventKind::ModuleDone {
+                    module: "dns_resolver".into(),
+                    found: 1,
+                },
+            ))
+            .unwrap();
+        store
+            .insert_event(&Event::new(
+                "scan-keeper",
+                EventKind::ModuleStart {
+                    module: "whois".into(),
+                },
+            ))
+            .unwrap();
+
+        // Sanity: events are stored.
+        assert_eq!(store.events_for_scan("scan-with-events").unwrap().len(), 2);
+
+        // Delete the doomed scan and confirm its event rows are gone
+        // (otherwise `events.history` would leak the prior timeline if
+        // a future scan reused the same id, and the events table would
+        // grow without bound across delete cycles).
+        assert!(store.delete_scan("scan-with-events").unwrap());
+        assert!(
+            store
+                .events_for_scan("scan-with-events")
+                .unwrap()
+                .is_empty()
+        );
+
+        // The keeper's event is untouched.
+        assert_eq!(store.events_for_scan("scan-keeper").unwrap().len(), 1);
+
         let _ = std::fs::remove_file(&path);
     }
 }
