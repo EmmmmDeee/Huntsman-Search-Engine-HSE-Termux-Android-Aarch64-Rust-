@@ -100,6 +100,85 @@ impl Target {
             value: value.into(),
         }
     }
+
+    /// Light shape-check for the user-supplied value, applied at the
+    /// API boundary so a clearly-bogus scan request fails fast with a
+    /// useful 400 rather than queueing a scan that no module accepts.
+    ///
+    /// This is intentionally lax — it rejects only the cases where the
+    /// shape is *definitely* wrong (empty value, "email" that's missing
+    /// the `@`, IP that doesn't parse). Modules still perform their own
+    /// stricter validation as needed.
+    pub fn validate(&self) -> std::result::Result<(), &'static str> {
+        let v = self.value.trim();
+        if v.is_empty() {
+            return Err("value is empty");
+        }
+        if v.len() > 1024 {
+            return Err("value too long (>1024 chars)");
+        }
+        if v.contains(['\n', '\r', '\0']) {
+            return Err("value contains control characters");
+        }
+        match self.kind {
+            TargetKind::Email => {
+                let (local, host) = v.split_once('@').ok_or("email missing '@'")?;
+                if local.is_empty() || host.is_empty() {
+                    return Err("email has empty local or host part");
+                }
+                if !host.contains('.') {
+                    return Err("email host has no '.'");
+                }
+            }
+            TargetKind::Domain => {
+                if !v.contains('.') {
+                    return Err("domain has no '.'");
+                }
+                if !v
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+                {
+                    return Err("domain has invalid characters");
+                }
+            }
+            TargetKind::IpAddress => {
+                v.parse::<std::net::IpAddr>()
+                    .map_err(|_| "not a valid IPv4 or IPv6 address")?;
+            }
+            TargetKind::Asn => {
+                let digits = v.strip_prefix("AS").unwrap_or(v);
+                if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+                    return Err("ASN must be digits, optionally prefixed by 'AS'");
+                }
+            }
+            TargetKind::Phone => {
+                let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+                if digits.len() < 6 {
+                    return Err("phone needs at least 6 digits");
+                }
+            }
+            TargetKind::Coordinates => {
+                let (lat_s, lon_s) = v.split_once(',').ok_or("coordinates must be 'lat,lon'")?;
+                let lat: f64 = lat_s
+                    .trim()
+                    .parse()
+                    .map_err(|_| "coordinates lat is not a number")?;
+                let lon: f64 = lon_s
+                    .trim()
+                    .parse()
+                    .map_err(|_| "coordinates lon is not a number")?;
+                if !(-90.0..=90.0).contains(&lat) {
+                    return Err("latitude must be in [-90, 90]");
+                }
+                if !(-180.0..=180.0).contains(&lon) {
+                    return Err("longitude must be in [-180, 180]");
+                }
+            }
+            // Free-form text kinds: only the universal checks above apply.
+            TargetKind::Username | TargetKind::FullName | TargetKind::Address => {}
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -297,5 +376,112 @@ mod tests {
         };
         let s = serde_json::to_string(&req).unwrap();
         assert!(s.contains("\"kind\":\"email\""));
+    }
+
+    // ── Target::validate ────────────────────────────────────────────────────
+    #[test]
+    fn validate_rejects_empty_and_oversize() {
+        assert!(Target::new(TargetKind::Email, "").validate().is_err());
+        assert!(
+            Target::new(TargetKind::Email, "x".repeat(2000))
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn validate_rejects_control_chars() {
+        assert!(
+            Target::new(TargetKind::Email, "x@y\ncom")
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn validate_email() {
+        assert!(Target::new(TargetKind::Email, "a@b.com").validate().is_ok());
+        assert!(
+            Target::new(TargetKind::Email, "noatsign")
+                .validate()
+                .is_err()
+        );
+        assert!(Target::new(TargetKind::Email, "@b.com").validate().is_err());
+        assert!(Target::new(TargetKind::Email, "a@b").validate().is_err()); // no dot
+    }
+
+    #[test]
+    fn validate_domain() {
+        assert!(
+            Target::new(TargetKind::Domain, "example.com")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::Domain, "single")
+                .validate()
+                .is_err()
+        ); // no dot
+        assert!(
+            Target::new(TargetKind::Domain, "bad domain.com")
+                .validate()
+                .is_err()
+        ); // space
+    }
+
+    #[test]
+    fn validate_ip() {
+        assert!(
+            Target::new(TargetKind::IpAddress, "1.1.1.1")
+                .validate()
+                .is_ok()
+        );
+        assert!(Target::new(TargetKind::IpAddress, "::1").validate().is_ok());
+        assert!(
+            Target::new(TargetKind::IpAddress, "999.999.999.999")
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn validate_asn() {
+        assert!(Target::new(TargetKind::Asn, "AS13335").validate().is_ok());
+        assert!(Target::new(TargetKind::Asn, "13335").validate().is_ok());
+        assert!(Target::new(TargetKind::Asn, "BS13335").validate().is_err());
+    }
+
+    #[test]
+    fn validate_phone() {
+        assert!(
+            Target::new(TargetKind::Phone, "+1-234-567-8901")
+                .validate()
+                .is_ok()
+        );
+        assert!(Target::new(TargetKind::Phone, "+1").validate().is_err()); // too short
+    }
+
+    #[test]
+    fn validate_coordinates() {
+        assert!(
+            Target::new(TargetKind::Coordinates, "-33.8688,151.2093")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::Coordinates, "91,0")
+                .validate()
+                .is_err()
+        ); // lat out of range
+        assert!(
+            Target::new(TargetKind::Coordinates, "0,181")
+                .validate()
+                .is_err()
+        ); // lon out of range
+        assert!(
+            Target::new(TargetKind::Coordinates, "not-coords")
+                .validate()
+                .is_err()
+        );
     }
 }

@@ -66,7 +66,9 @@ impl Module for XposedOrNot {
 
         // 404 = clean (per XposedOrNot semantics); other non-2xx →
         // surfaced as `module_error` so 429 / 5xx stay visible.
-        let Some(data): Option<XonResp> = fetch_json_or_404(&ctx.http, "xposed_or_not", &url).await? else {
+        let Some(data): Option<XonResp> =
+            fetch_json_or_404(&ctx.http, "xposed_or_not", &url).await?
+        else {
             return Ok(ModuleResult::new());
         };
         Ok(build_result(&data, target, &ctx.scan_id))

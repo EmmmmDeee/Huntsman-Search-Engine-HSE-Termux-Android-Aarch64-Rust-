@@ -15,12 +15,23 @@ use crate::core::error::{Error, Result};
 /// the Settings UI so users see a populated grid before they've configured
 /// anything. Matches the template comments in `install.sh`.
 pub const KNOWN_KEYS: &[&str] = &[
+    // Identity / breach
     "HUNTSMAN_OATHNET_KEY",
     "HUNTSMAN_HIBP_KEY",
+    "HUNTSMAN_DEHASHED_USER",
     "HUNTSMAN_DEHASHED_KEY",
     "HUNTSMAN_HUNTER_KEY",
+    "HUNTSMAN_INTELX_KEY",
+    // Infrastructure / threat intel
     "HUNTSMAN_SHODAN_KEY",
+    "HUNTSMAN_SECTRAILS_KEY",
+    "HUNTSMAN_LEAKIX_KEY",
+    "HUNTSMAN_CRIMINALIP_KEY",
+    "HUNTSMAN_IPQS_KEY",
     "HUNTSMAN_VIRUSTOTAL_KEY",
+    // Validation / enrichment
+    "HUNTSMAN_NUMVERIFY_KEY",
+    "HUNTSMAN_WIGLE_USER",
     "HUNTSMAN_WIGLE_TOKEN",
     "HUNTSMAN_ABR_GUID",
 ];
@@ -153,7 +164,17 @@ pub fn write_keys_at(
         validate_value(name, value)?;
     }
 
-    let existing = fs::read_to_string(path).unwrap_or_default();
+    // Only treat NotFound as "empty file" — any other read error
+    // (permission denied, IO failure) must surface so we don't silently
+    // overwrite a partially-readable env file with our new content and
+    // drop the user's existing keys/comments.
+    let existing = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(Error::Other(format!("read {}: {e}", path.display())));
+        }
+    };
 
     let mut out_lines: Vec<String> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -170,7 +191,11 @@ pub fn write_keys_at(
             out_lines.push(line.to_string());
             continue;
         };
-        let key = &trimmed[..eq];
+        // Trim whitespace around the key so `HUNTSMAN_FOO =bar` and
+        // `HUNTSMAN_FOO= bar` still match the user's `updates`/`deletes`
+        // entries. Comparisons against `updates`/`deletes` keys (always
+        // un-padded) work correctly after trimming.
+        let key = trimmed[..eq].trim_end();
         if !key.starts_with("HUNTSMAN_") {
             out_lines.push(line.to_string());
             continue;
@@ -199,6 +224,12 @@ pub fn write_keys_at(
     }
 
     let tmp = path.with_extension("env.tmp");
+    // Mode-0600 file creation is Unix-specific (the `mode()` builder
+    // method is gated behind `OpenOptionsExt`). HSE is Termux/Android/
+    // Linux-only by design, but we still gate the import so any future
+    // cross-platform build of the crate produces a clean fallback that
+    // writes the file without the mode bit instead of failing to compile.
+    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         let mut f = fs::OpenOptions::new()
@@ -209,6 +240,14 @@ pub fn write_keys_at(
             .open(&tmp)
             .map_err(|e| Error::Other(format!("open {}: {e}", tmp.display())))?;
         f.write_all(body.as_bytes())
+            .map_err(|e| Error::Other(format!("write {}: {e}", tmp.display())))?;
+    }
+    #[cfg(not(unix))]
+    {
+        // On non-Unix the OS doesn't expose `mode()` via the standard
+        // builder; fall back to a plain write. Callers should still treat
+        // the resulting file as sensitive and apply ACLs separately.
+        fs::write(&tmp, body.as_bytes())
             .map_err(|e| Error::Other(format!("write {}: {e}", tmp.display())))?;
     }
     fs::rename(&tmp, path).map_err(|e| {
@@ -380,5 +419,70 @@ mod tests {
         )
         .unwrap();
         assert!(!load_from_file_only(&path).contains_key("HUNTSMAN_OATHNET_KEY"));
+    }
+
+    #[test]
+    fn update_matches_key_with_whitespace_around_equals() {
+        // Regression: previously `HUNTSMAN_FOO =bar` and `HUNTSMAN_FOO = bar`
+        // would slip through the match because the parser took the
+        // substring before `=` literally. Now whitespace is trimmed so
+        // both forms get replaced.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".huntsman.env");
+        fs::write(
+            &path,
+            "HUNTSMAN_OATHNET_KEY =old1\n\
+             HUNTSMAN_HIBP_KEY= old2\n\
+             HUNTSMAN_HUNTER_KEY = old3\n",
+        )
+        .unwrap();
+
+        write_keys_at(
+            &path,
+            &map_of(&[
+                ("HUNTSMAN_OATHNET_KEY", "new1"),
+                ("HUNTSMAN_HIBP_KEY", "new2"),
+                ("HUNTSMAN_HUNTER_KEY", "new3"),
+            ]),
+            &[],
+        )
+        .unwrap();
+
+        let got = fs::read_to_string(&path).unwrap();
+        assert!(
+            got.contains("HUNTSMAN_OATHNET_KEY=new1"),
+            "should update spaced key: {got}"
+        );
+        assert!(
+            got.contains("HUNTSMAN_HIBP_KEY=new2"),
+            "should update right-spaced key: {got}"
+        );
+        assert!(
+            got.contains("HUNTSMAN_HUNTER_KEY=new3"),
+            "should update both-spaced key: {got}"
+        );
+        // None of the old values should remain.
+        assert!(!got.contains("old1"));
+        assert!(!got.contains("old2"));
+        assert!(!got.contains("old3"));
+    }
+
+    #[test]
+    fn read_error_other_than_not_found_surfaces() {
+        // Pointing at a directory triggers IsADirectory, not NotFound —
+        // the function should refuse to clobber rather than silently
+        // treat it as empty.
+        let dir = tempdir().unwrap();
+        let err = write_keys_at(
+            dir.path(), // the directory itself, not a file inside it
+            &map_of(&[("HUNTSMAN_OATHNET_KEY", "v")]),
+            &[],
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("read ") || msg.contains("open ") || msg.contains("write "),
+            "expected a read/open/write error, got: {msg}"
+        );
     }
 }

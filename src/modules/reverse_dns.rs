@@ -9,19 +9,15 @@
 use async_trait::async_trait;
 use std::net::IpAddr;
 
-use hickory_resolver::{
-    TokioResolver,
-    config::{CLOUDFLARE, ResolverConfig},
-    net::runtime::TokioRuntimeProvider,
-    proto::rr::RData,
-};
+use hickory_resolver::proto::rr::RData;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::dns::shared_resolver;
 
 pub struct ReverseDns;
 
@@ -47,13 +43,7 @@ impl Module for ReverseDns {
             Err(_) => return Ok(ModuleResult::new()),
         };
 
-        let resolver = TokioResolver::builder_with_config(
-            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
-            TokioRuntimeProvider::default(),
-        )
-        .build()
-        .map_err(|e| Error::module("reverse_dns", format!("resolver build: {e}")))?;
-
+        let resolver = shared_resolver();
         let lookup = match resolver.reverse_lookup(ip).await {
             Ok(l) => l,
             // NXDOMAIN / no PTR / network error → no findings rather than
@@ -63,7 +53,9 @@ impl Module for ReverseDns {
 
         let mut result = ModuleResult::new();
         for record in lookup.answers() {
-            let RData::PTR(ptr) = &record.data else { continue };
+            let RData::PTR(ptr) = &record.data else {
+                continue;
+            };
             let host = ptr.0.to_ascii();
             let host = host.trim_end_matches('.').to_string();
             if host.is_empty() {

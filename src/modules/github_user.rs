@@ -152,9 +152,12 @@ impl Module for GithubUser {
             let mut p = Entity::new(EntityKind::Person, name.trim(), 0.75, &ctx.scan_id);
             p.tag("derived");
             p.add_evidence(
-                Evidence::new("github_user", format!("Real name from GitHub profile @{}", user.login))
-                    .with_attr("source", "github_profile")
-                    .with_attr("github_login", &user.login),
+                Evidence::new(
+                    "github_user",
+                    format!("Real name from GitHub profile @{}", user.login),
+                )
+                .with_attr("source", "github_profile")
+                .with_attr("github_login", &user.login),
             );
             result.push(p);
         }

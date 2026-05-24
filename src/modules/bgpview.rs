@@ -209,11 +209,8 @@ async fn lookup_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult>
     {
         let mut e = Entity::new(EntityKind::Asn, format!("AS{asn_num}"), 0.88, &ctx.scan_id);
         e.tag("announcing");
-        let mut ev = Evidence::new(
-            "bgpview",
-            format!("ASN announcing {ip}"),
-        )
-        .with_attr("asn_number", asn_num.to_string());
+        let mut ev = Evidence::new("bgpview", format!("ASN announcing {ip}"))
+            .with_attr("asn_number", asn_num.to_string());
         if let Some(p) = prefix.prefix.as_deref() {
             ev = ev.with_attr("prefix", p);
         }

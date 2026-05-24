@@ -17,19 +17,15 @@
 //! O(n²) name-compression fix that motivated the 0.24 → 0.26 bump.
 
 use async_trait::async_trait;
-use hickory_resolver::{
-    TokioResolver,
-    config::{CLOUDFLARE, ResolverConfig},
-    net::runtime::TokioRuntimeProvider,
-    proto::rr::RData,
-};
+use hickory_resolver::proto::rr::RData;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::dns::shared_resolver;
 
 pub struct DnsResolver;
 
@@ -48,13 +44,7 @@ impl Module for DnsResolver {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let resolver = TokioResolver::builder_with_config(
-            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
-            TokioRuntimeProvider::default(),
-        )
-        .build()
-        .map_err(|e| Error::module("dns_resolver", format!("resolver build: {e}")))?;
-
+        let resolver = shared_resolver();
         let domain = target.value.as_str();
         let mut result = ModuleResult::new();
 
@@ -84,7 +74,9 @@ impl Module for DnsResolver {
         // MX records
         if let Ok(lookup) = mxs {
             for record in lookup.answers() {
-                let RData::MX(mx) = &record.data else { continue };
+                let RData::MX(mx) = &record.data else {
+                    continue;
+                };
                 let host = mx.exchange.to_ascii();
                 let host = host.trim_end_matches('.').to_string();
                 if !host.is_empty() {
@@ -104,7 +96,9 @@ impl Module for DnsResolver {
         // NS records — authoritative nameservers
         if let Ok(lookup) = nss {
             for record in lookup.answers() {
-                let RData::NS(ns) = &record.data else { continue };
+                let RData::NS(ns) = &record.data else {
+                    continue;
+                };
                 let host = ns.0.to_ascii();
                 let host = host.trim_end_matches('.').to_string();
                 if !host.is_empty() {

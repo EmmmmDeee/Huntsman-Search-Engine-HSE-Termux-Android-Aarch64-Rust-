@@ -1,1403 +1,1115 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Huntsman Search Engine</title>
-<style>
-/* ───────── Theme ───────── */
-:root{
-  --bg:#0b1220; --bg2:#111a2b; --bg3:#1a2538; --bg4:#243049;
-  --bd:#2a3550; --bd2:#37456a;
-  --fg:#e7ecf3; --fg2:#9aa6bf; --fg3:#5a6786;
-  --acc:#5b9dff; --acc2:#7eb3ff; --acc-dim:#1d3a66;
-  --ok:#3fbf7f; --warn:#f0b62b; --err:#ef5b5b; --info:#5b9dff; --crit:#d946ef;
-  --teal:#34d4c4; --coral:#fb923c; --rose:#fb7185; --lime:#86efac;
-  --r:6px; --r2:10px;
-  --mono:'JetBrains Mono','SF Mono',ui-monospace,Menlo,Consolas,monospace;
-  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-}
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:13.5px;line-height:1.45;min-height:100vh}
-body{display:flex;flex-direction:column}
+  <meta charset="utf-8">
+  <title>Huntsman Search Engine</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-/* ───────── Navbar ───────── */
-.navbar{
-  background:linear-gradient(180deg,#0d1730 0%,#0a1124 100%);
-  border-bottom:1px solid var(--bd);
-  padding:0 16px; height:52px;
-  display:flex;align-items:center;gap:6px;
-  position:sticky;top:0;z-index:50;
-}
-.brand{display:flex;align-items:center;gap:8px;font-weight:600;font-size:15px;letter-spacing:.02em;color:var(--fg);margin-right:18px;text-decoration:none}
-.brand-logo{width:26px;height:26px;background:linear-gradient(135deg,var(--acc) 0%,#9b59ff 100%);border-radius:6px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px}
-.brand b{color:var(--acc2);font-weight:600}
-.brand small{color:var(--fg3);font-size:11px;margin-left:4px;font-weight:400}
-.nav-links{display:flex;gap:2px}
-.nav-link{padding:8px 14px;color:var(--fg2);text-decoration:none;border-radius:var(--r);font-size:13px;font-weight:500;transition:background .15s,color .15s}
-.nav-link:hover{background:var(--bg3);color:var(--fg)}
-.nav-link.active{background:var(--acc-dim);color:var(--acc2)}
-.nav-spacer{flex:1}
-.nav-status{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--fg3)}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--fg3);flex-shrink:0;transition:background .2s}
-.dot.ok{background:var(--ok);box-shadow:0 0 6px rgba(63,191,127,.5)}
-.dot.err{background:var(--err)}
-.ver{font-family:var(--mono);font-size:11px;color:var(--fg3);padding:2px 6px;background:var(--bg3);border-radius:4px}
+  <!-- Spiderfoot's exact vendor stack: Bootstrap 3.4.1, jQuery 3.7.1,
+       D3 v3, tablesorter 2.31, alertify 1.13. Served from the embedded
+       binary so the SPA still loads with zero outbound requests. -->
+  <link href="/static/bootstrap.min.css"           rel="stylesheet">
+  <link href="/static/jquery.tablesorter.theme.css" rel="stylesheet">
+  <link href="/static/alertify.min.css"            rel="stylesheet">
+  <link href="/static/alertify.bootstrap.min.css"  rel="stylesheet">
+  <link href="/static/spiderfoot-style.css"        rel="stylesheet">
 
-/* ───────── Layout ───────── */
-main{flex:1;padding:18px 22px;max-width:1500px;width:100%;margin:0 auto}
-.page-head{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-.page-head h1{font-size:22px;font-weight:600;letter-spacing:-.01em}
-.page-head .sub{color:var(--fg3);font-size:12px}
-.page-head .spacer{flex:1}
-.crumbs{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg3);margin-bottom:10px}
-.crumbs a{color:var(--fg2);text-decoration:none}
-.crumbs a:hover{color:var(--acc2)}
-.crumbs span.sep{color:var(--fg3);opacity:.5}
-
-/* ───────── Card ───────── */
-.card{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r2);margin-bottom:14px;overflow:hidden}
-.card-h{padding:12px 16px;border-bottom:1px solid var(--bd);font-size:12px;font-weight:600;color:var(--fg2);text-transform:uppercase;letter-spacing:.06em;background:rgba(255,255,255,.02);display:flex;align-items:center;gap:10px}
-.card-h .spacer{flex:1}
-.card-b{padding:14px 16px}
-.card-b.tight{padding:0}
-.row{display:flex;gap:12px}.row>*{flex:1}
-.row.wrap{flex-wrap:wrap}
-
-/* ───────── Forms ───────── */
-.fld{margin-bottom:12px}
-.fld label{display:block;font-size:11px;color:var(--fg2);margin-bottom:5px;font-weight:500;text-transform:uppercase;letter-spacing:.04em}
-.fld input,.fld select,.fld textarea{
-  width:100%;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);
-  padding:9px 11px;color:var(--fg);outline:none;font-family:inherit;font-size:13px;
-  transition:border-color .15s,box-shadow .15s;
-}
-.fld input:focus,.fld select:focus,.fld textarea:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(91,157,255,.12)}
-.fld input.mono,.fld textarea.mono{font-family:var(--mono)}
-.fld .hint{font-size:11px;color:var(--fg3);margin-top:4px}
-.fld .err-hint{color:var(--err);font-size:11px;margin-top:4px;display:none}
-.fld.error input,.fld.error select{border-color:var(--err)}
-.fld.error .err-hint{display:block}
-
-/* ───────── Buttons ───────── */
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 16px;border-radius:var(--r);border:1px solid transparent;cursor:pointer;font-family:inherit;font-size:13px;font-weight:500;user-select:none;transition:background .15s,border-color .15s,color .15s;text-decoration:none}
-.btn:focus{outline:2px solid var(--acc);outline-offset:1px}
-.btn-p{background:var(--acc);color:#fff}.btn-p:hover{background:#4a8aef}
-.btn-p:disabled{background:var(--bg3);color:var(--fg3);cursor:not-allowed}
-.btn-g{background:var(--bg3);color:var(--fg);border-color:var(--bd)}.btn-g:hover{background:var(--bg4);border-color:var(--bd2)}
-.btn-ghost{background:transparent;color:var(--fg2)}.btn-ghost:hover{background:var(--bg3);color:var(--fg)}
-.btn-danger{background:#3a1e23;color:var(--err);border-color:#5a2630}.btn-danger:hover{background:#4a2730}
-.btn-sm{padding:5px 10px;font-size:11.5px}
-.btn-xs{padding:3px 8px;font-size:11px}
-.btn-full{width:100%}
-.btn-grp{display:inline-flex;gap:6px;flex-wrap:wrap}
-
-/* ───────── Pills / badges ───────── */
-.pill{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;padding:2px 8px;border-radius:10px;font-weight:500;line-height:1.5;white-space:nowrap}
-.p-ok{background:rgba(63,191,127,.15);color:var(--ok)}
-.p-run{background:rgba(91,157,255,.15);color:var(--info)}
-.p-err{background:rgba(239,91,91,.15);color:var(--err)}
-.p-warn{background:rgba(240,182,43,.15);color:var(--warn)}
-.p-pending{background:var(--bg3);color:var(--fg2)}
-.p-dim{background:var(--bg3);color:var(--fg3)}
-.p-crit{background:rgba(217,70,239,.15);color:var(--crit)}
-.p-free{background:rgba(63,191,127,.12);color:var(--ok);border:1px solid rgba(63,191,127,.3)}
-.p-keyed{background:rgba(240,182,43,.12);color:var(--warn);border:1px solid rgba(240,182,43,.3)}
-.p-paid{background:rgba(217,70,239,.12);color:var(--crit);border:1px solid rgba(217,70,239,.3)}
-
-/* ───────── Tables ───────── */
-.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
-.tbl th{text-align:left;padding:9px 12px;color:var(--fg3);font-weight:500;border-bottom:1px solid var(--bd);background:rgba(255,255,255,.015);text-transform:uppercase;font-size:11px;letter-spacing:.05em;white-space:nowrap}
-.tbl th.sortable{cursor:pointer;user-select:none}.tbl th.sortable:hover{color:var(--fg)}
-.tbl th.sortable:after{content:" ⇅";color:var(--fg3);opacity:.5;font-size:10px}
-.tbl th.sort-asc:after{content:" ▲";opacity:1;color:var(--acc2)}
-.tbl th.sort-desc:after{content:" ▼";opacity:1;color:var(--acc2)}
-.tbl td{padding:9px 12px;border-bottom:1px solid rgba(42,53,80,.5);vertical-align:top;word-break:break-word}
-.tbl tbody tr{transition:background .1s}
-.tbl tbody tr:hover{background:rgba(255,255,255,.025)}
-.tbl tbody tr.clickable{cursor:pointer}
-.tbl tbody tr:last-child td{border-bottom:none}
-.tbl .num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
-.tbl .mono{font-family:var(--mono);font-size:11.5px}
-
-/* ───────── Entity kind tints ───────── */
-.kind{display:inline-block;font-size:10.5px;padding:1px 7px;border-radius:10px;background:var(--bg3);color:var(--fg2);white-space:nowrap;font-weight:500}
-.k-email{background:rgba(91,157,255,.15);color:#a5c4ff}
-.k-username{background:rgba(52,212,196,.15);color:var(--teal)}
-.k-phone{background:rgba(240,182,43,.15);color:var(--warn)}
-.k-ip_address{background:rgba(91,157,255,.15);color:#7eb3ff}
-.k-domain{background:rgba(63,191,127,.15);color:var(--ok)}
-.k-coordinates{background:rgba(251,146,60,.15);color:var(--coral)}
-.k-organisation{background:rgba(155,89,255,.15);color:#c4a5ff}
-.k-mac_address{background:rgba(120,120,150,.2);color:var(--fg2)}
-.k-person{background:rgba(134,239,172,.15);color:var(--lime)}
-.k-asn{background:rgba(147,197,253,.15);color:#93c5fd}
-.k-abn_acn{background:rgba(252,211,77,.15);color:#fcd34d}
-.k-url{background:rgba(125,211,252,.15);color:#7dd3fc}
-.k-credential{background:rgba(217,70,239,.15);color:var(--crit)}
-.k-password{background:rgba(217,70,239,.15);color:var(--crit)}
-.k-address{background:rgba(251,113,133,.15);color:var(--rose)}
-.k-device_id{background:var(--bg3);color:var(--fg2)}
-.k-other{background:var(--bg3);color:var(--fg3)}
-.cls{font-family:var(--mono);font-size:10.5px}
-.c-VERIFIED{color:var(--ok)}
-.c-PROBABLE{color:var(--warn)}
-.c-CANDIDATE{color:var(--fg3)}
-.tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;background:var(--bg3);color:var(--fg3);margin-right:3px}
-
-/* ───────── Wizard ───────── */
-.usecase-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
-.uc-card{background:var(--bg3);border:1.5px solid var(--bd);border-radius:var(--r);padding:14px;cursor:pointer;transition:all .15s;position:relative}
-.uc-card:hover{border-color:var(--bd2);background:var(--bg4)}
-.uc-card.sel{border-color:var(--acc);background:rgba(91,157,255,.06);box-shadow:0 0 0 3px rgba(91,157,255,.08)}
-.uc-card .uc-h{font-weight:600;font-size:14px;color:var(--fg);margin-bottom:4px;display:flex;align-items:center;gap:6px}
-.uc-card .uc-d{font-size:11.5px;color:var(--fg2);line-height:1.5}
-.uc-card.sel:after{content:"✓";position:absolute;top:10px;right:10px;color:var(--acc);font-weight:700}
-
-/* ───────── Module picker ───────── */
-.mod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px;max-height:380px;overflow-y:auto;padding:2px}
-.mod-row{display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);font-size:12px;cursor:pointer;user-select:none;transition:border-color .1s}
-.mod-row:hover{border-color:var(--bd2)}
-.mod-row input[type=checkbox]{margin:0;accent-color:var(--acc);cursor:pointer}
-.mod-row .mn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:11.5px;color:var(--fg)}
-.mod-row.dimmed{opacity:.45}
-.mod-row.dimmed input{cursor:not-allowed}
-
-/* ───────── Sub-tabs ───────── */
-.subtabs{display:flex;border-bottom:1px solid var(--bd);margin-bottom:14px;overflow-x:auto;scrollbar-width:none}
-.subtabs::-webkit-scrollbar{display:none}
-.subtab{padding:10px 16px;color:var(--fg2);text-decoration:none;font-size:13px;font-weight:500;border-bottom:2px solid transparent;white-space:nowrap;transition:color .15s,border-color .15s;cursor:pointer}
-.subtab:hover{color:var(--fg)}
-.subtab.active{color:var(--acc2);border-bottom-color:var(--acc2)}
-.subtab .ct{font-family:var(--mono);font-size:11px;color:var(--fg3);margin-left:5px;background:var(--bg3);padding:1px 6px;border-radius:9px}
-.subtab.active .ct{color:var(--acc2);background:var(--acc-dim)}
-
-/* ───────── Stat strip ───────── */
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px}
-.stat{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:10px 14px}
-.stat .lab{font-size:10.5px;color:var(--fg3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;font-weight:600}
-.stat .val{font-size:20px;font-weight:600;font-family:var(--mono);color:var(--fg);font-variant-numeric:tabular-nums}
-.stat .val.dim{color:var(--fg2);font-size:14px}
-
-/* ───────── Progress ───────── */
-.progress{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden}
-.progress>div{height:100%;background:linear-gradient(90deg,var(--acc) 0%,var(--acc2) 100%);transition:width .3s}
-
-/* ───────── Filter bar ───────── */
-.filterbar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
-.filterbar input,.filterbar select{background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);padding:7px 10px;color:var(--fg);font-family:inherit;font-size:12px;outline:none}
-.filterbar input:focus,.filterbar select:focus{border-color:var(--acc)}
-.filterbar input[type=search]{min-width:240px;flex:1;max-width:380px}
-.filterbar .sp{flex:1}
-.filterbar .ct{color:var(--fg3);font-size:11.5px;font-family:var(--mono)}
-
-/* ───────── Correlations ───────── */
-.corr{padding:11px 14px;border-left:3px solid var(--bd);background:var(--bg3);border-radius:0 var(--r) var(--r) 0;margin-bottom:8px}
-.cv-critical{border-color:var(--crit);background:linear-gradient(90deg,rgba(217,70,239,.06) 0%,var(--bg3) 60%)}
-.cv-high{border-color:var(--err);background:linear-gradient(90deg,rgba(239,91,91,.06) 0%,var(--bg3) 60%)}
-.cv-medium{border-color:var(--warn);background:linear-gradient(90deg,rgba(240,182,43,.06) 0%,var(--bg3) 60%)}
-.cv-low{border-color:var(--info);background:linear-gradient(90deg,rgba(91,157,255,.06) 0%,var(--bg3) 60%)}
-.corr-h{display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--fg3)}
-.corr-name{font-size:13.5px;color:var(--fg);font-weight:500;margin-bottom:3px}
-.corr-d{font-size:12px;color:var(--fg2)}
-
-/* ───────── Scan log ───────── */
-.log{font-family:var(--mono);font-size:11.5px;line-height:1.65;max-height:560px;overflow-y:auto;padding:10px 14px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r)}
-.log-row{display:flex;gap:10px;padding:1px 0}
-.log-row .ts{color:var(--fg3);flex-shrink:0;width:78px}
-.log-row .typ{flex-shrink:0;width:120px}
-.log-row .msg{color:var(--fg2);flex:1;word-break:break-word}
-.lv-info .typ{color:var(--info)}
-.lv-ok .typ{color:var(--ok)}
-.lv-err .typ{color:var(--err)}
-.lv-warn .typ{color:var(--warn)}
-.lv-skip .typ{color:var(--fg3)}
-.lv-found .typ{color:var(--teal)}
-.lv-corr .typ{color:var(--crit)}
-
-/* ───────── Graph ───────── */
-.graph-wrap{position:relative;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r);overflow:hidden;min-height:520px}
-.graph-wrap svg{display:block;width:100%;height:560px;cursor:grab;background:radial-gradient(circle at 50% 40%,#0d1830 0%,var(--bg) 70%)}
-.graph-wrap svg:active{cursor:grabbing}
-.graph-legend{position:absolute;top:10px;right:10px;background:rgba(11,18,32,.85);backdrop-filter:blur(6px);border:1px solid var(--bd);border-radius:var(--r);padding:8px 12px;font-size:11px;display:flex;flex-direction:column;gap:4px}
-.graph-legend .lr{display:flex;align-items:center;gap:6px;color:var(--fg2)}
-.graph-legend .sw{width:10px;height:10px;border-radius:50%}
-.graph-ctl{position:absolute;bottom:10px;left:10px;display:flex;gap:6px}
-
-/* ───────── Settings ───────── */
-.keygrid{display:grid;gap:8px}
-.keyrow{display:grid;grid-template-columns:1fr auto;gap:10px;padding:10px 14px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);align-items:center}
-.keyrow .kn{font-family:var(--mono);font-size:12.5px;color:var(--fg)}
-.keyrow .kd{font-size:11px;color:var(--fg3);margin-top:1px}
-.keyrow .kstatus{display:flex;align-items:center;gap:8px}
-.keyrow input[type=password]{width:280px;max-width:50vw;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:6px 9px;color:var(--fg);font-family:var(--mono);font-size:12px;outline:none}
-.keyrow input[type=password]:focus{border-color:var(--acc)}
-
-/* ───────── Empty / toast / misc ───────── */
-.empty{padding:36px 20px;text-align:center;color:var(--fg3)}
-.empty h3{color:var(--fg2);font-weight:500;font-size:15px;margin-bottom:6px}
-.empty p{font-size:12px;max-width:380px;margin:0 auto;line-height:1.6}
-.empty .btn{margin-top:14px}
-
-#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:10px 18px;font-size:12.5px;z-index:99;transition:transform .25s;max-width:90vw;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.4)}
-#toast.show{transform:translateX(-50%) translateY(0)}
-#toast.ok{border-color:var(--ok);color:var(--ok)}
-#toast.err{border-color:var(--err);color:var(--err)}
-#toast.warn{border-color:var(--warn);color:var(--warn)}
-
-code{font-family:var(--mono);font-size:12px;background:var(--bg3);padding:1px 5px;border-radius:3px;color:var(--fg)}
-.mono{font-family:var(--mono);font-size:12px}
-hr.div{border:none;border-top:1px solid var(--bd);margin:12px 0}
-.muted{color:var(--fg3)}.muted-2{color:var(--fg2)}
-.cap{text-transform:uppercase;letter-spacing:.05em;font-size:10.5px;font-weight:600;color:var(--fg3)}
-.spin{display:inline-block;width:13px;height:13px;border:2px solid var(--bd);border-top-color:var(--acc);border-radius:50%;animation:sp 0.7s linear infinite;vertical-align:middle}
-@keyframes sp{to{transform:rotate(360deg)}}
-
-@media (max-width:760px){
-  .navbar{padding:0 10px;height:48px}
-  .brand small{display:none}
-  .nav-link{padding:6px 10px;font-size:12.5px}
-  main{padding:12px 12px}
-  .page-head h1{font-size:18px}
-  .row{flex-direction:column}
-  .keyrow{grid-template-columns:1fr;gap:6px}
-  .keyrow input[type=password]{width:100%;max-width:100%}
-}
-</style>
+  <style>
+    /* Tiny HSE-specific layer on top of Bootstrap 3 + spiderfoot.css.
+       Anything that diverges visibly from Spiderfoot's chrome belongs
+       in spiderfoot-style.css upstream — these rules are deliberately
+       narrow. */
+    body { background-color: #fff; }
+    .navbar-brand b { color: #059CD7; font-weight: 600; }
+    .navbar-brand small { color: #888; font-weight: 400; font-size: 11px; margin-left: 6px; }
+    .stat-card { background:#f7f7f7; border:1px solid #e3e3e3; border-radius:4px;
+                 padding:10px 14px; margin-bottom:10px; }
+    .stat-card .lab { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:.04em; }
+    .stat-card .val { font-size:22px; font-weight:600; color:#333; line-height:1.2; }
+    .stat-card .val.dim { font-size:14px; color:#666; font-weight:400; }
+    .kind-pill { display:inline-block; font-size:10px; padding:2px 7px; border-radius:10px;
+                 background:#ddd; color:#444; font-weight:500; white-space:nowrap; }
+    .k-email{background:#d9edf7;color:#31708f}
+    .k-domain{background:#dff0d8;color:#3c763d}
+    .k-username{background:#e6f4ea;color:#2c7c40}
+    .k-phone{background:#fcf8e3;color:#8a6d3b}
+    .k-ip_address{background:#d9edf7;color:#31708f}
+    .k-asn{background:#e6e6fa;color:#5a4d8a}
+    .k-person{background:#dff0d8;color:#3c763d}
+    .k-credential{background:#f2dede;color:#a94442}
+    .k-password{background:#f2dede;color:#a94442}
+    .k-address{background:#fce8e6;color:#a94442}
+    .k-coordinates{background:#fde2d4;color:#8a4b1f}
+    .k-organisation{background:#e6e6fa;color:#5a4d8a}
+    .k-url{background:#d9edf7;color:#31708f}
+    .k-other{background:#eee;color:#666}
+    .status-pill { font-size:10px; padding:2px 8px; border-radius:10px; font-weight:500; }
+    .s-complete{background:#dff0d8;color:#3c763d}
+    .s-running{background:#d9edf7;color:#31708f}
+    .s-failed{background:#f2dede;color:#a94442}
+    .s-pending{background:#eee;color:#666}
+    .cost-pill { font-size:10px; padding:1px 7px; border-radius:10px; }
+    .cost-free{background:#dff0d8;color:#3c763d;border:1px solid #c3e0ad}
+    .cost-key_gated{background:#fcf8e3;color:#8a6d3b;border:1px solid #f1e3a7}
+    .cost-paid{background:#f2dede;color:#a94442;border:1px solid #e6b4b4}
+    .cls{font-family:monospace;font-size:11px}
+    .c-VERIFIED{color:#3c763d;font-weight:600}
+    .c-PROBABLE{color:#8a6d3b}
+    .c-CANDIDATE{color:#a94442}
+    .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;
+         background:#eee;color:#666;margin-right:2px}
+    .src-pill{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;
+              background:#e7f3fb;color:#31708f;margin-right:2px;font-family:monospace}
+    .crumbs{color:#888;font-size:12px;margin-bottom:8px}
+    .crumbs a{color:#059CD7;text-decoration:none}
+    .crumbs a:hover{text-decoration:underline}
+    .corr-card{padding:8px 12px;margin-bottom:6px;border-left:4px solid #999;background:#f7f7f7}
+    .cv-critical{border-color:#9b1f9b;background:#fce8fc}
+    .cv-high{border-color:#a94442;background:#fdf2f2}
+    .cv-medium{border-color:#8a6d3b;background:#fcf8e3}
+    .cv-low{border-color:#31708f;background:#eaf4fb}
+    .corr-name{font-weight:600;color:#333}
+    .corr-d{color:#555;font-size:12px}
+    .corr-h{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px}
+    #log-box{font-family:monospace;font-size:11.5px;line-height:1.7;
+             max-height:560px;overflow-y:auto;background:#f7f7f7;border:1px solid #e3e3e3;
+             border-radius:3px;padding:8px 12px}
+    .log-row{display:flex;gap:10px}
+    .log-row .ts{color:#888;flex-shrink:0;width:80px}
+    .log-row .typ{flex-shrink:0;width:120px;font-weight:600}
+    .log-row .msg{color:#444;flex:1;word-break:break-word}
+    .lv-info .typ{color:#31708f} .lv-ok .typ{color:#3c763d} .lv-err .typ{color:#a94442}
+    .lv-warn .typ{color:#8a6d3b} .lv-skip .typ{color:#888}
+    .lv-found .typ{color:#2c7c40} .lv-corr .typ{color:#9b1f9b}
+    #graph-svg{display:block;width:100%;height:560px;
+               background:radial-gradient(circle at 50% 40%,#fbfbfb 0%,#f4f4f4 70%);
+               border:1px solid #e3e3e3;border-radius:3px;cursor:grab}
+    .graph-legend{position:absolute;top:8px;right:14px;background:rgba(255,255,255,.92);
+                  border:1px solid #ddd;border-radius:3px;padding:6px 10px;font-size:11px}
+    .graph-legend .lr{display:flex;align-items:center;gap:6px;margin-bottom:2px;color:#555}
+    .graph-legend .sw{width:10px;height:10px;border-radius:50%;display:inline-block}
+    .graph-ctl{position:absolute;bottom:10px;left:14px}
+    .help-panel{background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;
+                padding:10px;font-size:12px}
+    .help-panel b{color:#333}
+    .help-panel i{color:#666;font-style:normal;font-family:monospace}
+    .keyrow{padding:10px 14px;background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;
+            margin-bottom:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .keyrow .kn{font-family:monospace;font-weight:600;color:#333;min-width:220px}
+    .keyrow .kd{font-size:11px;color:#888}
+    .keyrow input[type=password]{flex:1;min-width:200px}
+    .keyrow .kactions{display:flex;gap:6px;margin-left:auto}
+    .mod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:4px;
+              max-height:380px;overflow-y:auto;padding:2px;border:1px solid #e3e3e3;
+              border-radius:3px;background:#fafafa}
+    .mod-grid label{display:flex;align-items:center;gap:6px;padding:5px 8px;background:#fff;
+                    border:1px solid #e3e3e3;border-radius:3px;font-weight:400;margin:0;cursor:pointer}
+    .mod-grid label:hover{border-color:#aaa}
+    .mod-grid label.dimmed{opacity:.45}
+    .mod-grid .mn{font-family:monospace;font-size:11.5px;flex:1;overflow:hidden;
+                  text-overflow:ellipsis;white-space:nowrap}
+    .navbar-brand{padding-top:14px;padding-bottom:14px}
+    .navbar-brand .brand-logo-text{font-size:18px;letter-spacing:.02em;color:#333}
+    /* Tablesorter v2 theme tweak — make header arrows visible */
+    .tablesorter-default thead .tablesorter-header { background-image: none; padding-right:18px; }
+    .tablesorter-default thead .tablesorter-headerAsc::after  { content:" ▲"; color:#059CD7 }
+    .tablesorter-default thead .tablesorter-headerDesc::after { content:" ▼"; color:#059CD7 }
+    .progress.thin{height:6px;margin-bottom:0}
+    .scan-error{color:#a94442;font-family:monospace;font-size:11px}
+    .empty-state{padding:32px 20px;text-align:center;color:#888}
+    .empty-state h3{color:#555;font-weight:500;font-size:16px;margin-bottom:6px}
+    .empty-state p{font-size:13px;max-width:480px;margin:0 auto 12px;line-height:1.5}
+    /* Dark mode (Spiderfoot-compatible — toggled via #theme-toggler) */
+    body.dark-theme{background:#1a1a1a;color:#ddd}
+    body.dark-theme .navbar-default{background:#222;border-color:#333}
+    body.dark-theme .navbar-default .navbar-brand,
+    body.dark-theme .navbar-default .navbar-nav>li>a{color:#ddd}
+    body.dark-theme .navbar-default .navbar-nav>.active>a{background:#333}
+    body.dark-theme .panel{background:#222;border-color:#333}
+    body.dark-theme .panel-default>.panel-heading{background:#2a2a2a;border-color:#333;color:#ddd}
+    body.dark-theme .table-striped>tbody>tr:nth-of-type(odd){background:#252525}
+    body.dark-theme .table>tbody>tr>td,body.dark-theme .table>thead>tr>th{border-color:#333;color:#ddd}
+    body.dark-theme .stat-card{background:#222;border-color:#333}
+    body.dark-theme .stat-card .val{color:#ddd}
+    body.dark-theme .help-panel{background:#222;border-color:#333}
+    body.dark-theme .help-panel b{color:#eee}
+    body.dark-theme #graph-svg{background:radial-gradient(circle at 50% 40%,#222 0%,#1a1a1a 70%)}
+    body.dark-theme #log-box{background:#222;border-color:#333;color:#ddd}
+    body.dark-theme .keyrow{background:#222;border-color:#333}
+    body.dark-theme .mod-grid{background:#1f1f1f;border-color:#333}
+    body.dark-theme .mod-grid label{background:#272727;border-color:#333;color:#ddd}
+  </style>
 </head>
 <body>
 
-<nav class="navbar">
-  <a class="brand" href="#/scans">
-    <span class="brand-logo">H</span>
-    <span>Huntsman <b>·</b> Search Engine</span>
-    <small>OSINT / GEOINT</small>
-  </a>
-  <div class="nav-links">
-    <a class="nav-link" data-nav="newscan" href="#/newscan">New Scan</a>
-    <a class="nav-link" data-nav="scans" href="#/scans">Scans</a>
-    <a class="nav-link" data-nav="settings" href="#/settings">Settings</a>
-  </div>
-  <div class="nav-spacer"></div>
-  <div class="nav-status">
-    <div class="dot" id="hdot"></div>
-    <span id="hstat">…</span>
-    <span class="ver" id="hver">v?</span>
+<nav class="navbar navbar-default navbar-fixed-top">
+  <div class="container-fluid">
+    <div class="navbar-header">
+      <button type="button" class="navbar-toggle collapsed" data-toggle="collapse"
+              data-target="#main-navbar-collapse" aria-expanded="false">
+        <span class="icon-bar"></span><span class="icon-bar"></span><span class="icon-bar"></span>
+      </button>
+      <a class="navbar-brand brand-logo" href="#/scans">
+        <span class="brand-logo-text">Huntsman <b>·</b> Search Engine <small>v<span id="ver">?</span></small></span>
+      </a>
+    </div>
+    <div class="collapse navbar-collapse" id="main-navbar-collapse">
+      <ul class="nav navbar-nav">
+        <li id="nav-newscan"><a href="#/newscan"><i class="glyphicon glyphicon-screenshot"></i>&nbsp;New Scan</a></li>
+        <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
+        <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a></li>
+      </ul>
+      <ul class="nav navbar-nav navbar-right">
+        <li><a href="#" id="theme-toggle"><i class="glyphicon glyphicon-adjust"></i>&nbsp;<span id="theme-label">Dark Mode</span></a></li>
+        <li><a href="#aboutmodal" data-toggle="modal" data-target="#aboutmodal"><i class="glyphicon glyphicon-info-sign"></i>&nbsp;About</a></li>
+      </ul>
+    </div>
   </div>
 </nav>
 
-<main id="view"></main>
-<div id="toast"></div>
+<!-- About modal -->
+<div id="aboutmodal" class="modal fade" role="dialog" aria-hidden="true">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+        <h3 class="modal-title">Huntsman Search Engine</h3>
+      </div>
+      <div class="modal-body">
+        <p>Huntsman Search Engine (HSE) is a pure-Rust OSINT / GEOINT prototype designed
+        to run on Termux on Android aarch64 (no root). Single binary, rustls-only, no
+        native dependencies, bundled SQLite, embedded SPA.</p>
+        <p>You are running version <b>v<span id="ver2">?</span></b>.</p>
+        <p>UI patterns and visual identity intentionally mirror
+        <a href="https://www.spiderfoot.net/" target="_blank">SpiderFoot</a> for operator
+        familiarity. Source code on
+        <a href="https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-" target="_blank">GitHub</a>.</p>
+        <p style="color:#888;font-size:11px">⚠️ API keys are sensitive. Set them via
+        <code>$HOME/.huntsman.env</code> (chmod 0600) or on the Settings page
+        (when <code>hse serve --allow-key-write</code> is enabled, loopback only).
+        Never paste keys into chat, screenshots, or shared documents.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" data-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="container-fluid" id="mainbody" style="padding-top:60px;padding-bottom:50px;max-width:1500px">
+  <div id="view"></div>
+</div>
+
+<!-- Vendor scripts loaded at bottom for faster first paint, matching
+     Spiderfoot's footer layout. -->
+<script src="/static/jquery.min.js"></script>
+<script src="/static/bootstrap.min.js"></script>
+<script src="/static/alertify.min.js"></script>
+<script src="/static/jquery.tablesorter.min.js"></script>
+<script src="/static/d3.min.js"></script>
 
 <script>
 "use strict";
-
-/* ═════════════════════════════════════════════════════════════════════
- * State + constants
- * ════════════════════════════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════════
+ * Huntsman Search Engine — SPA logic.
+ *
+ * Layout patterns and component vocabulary (panels, nav-tabs, tables,
+ * btn-danger "Run Scan Now", "By Use Case / By Required Data / By Module"
+ * wizard tabs) mirror SpiderFoot's templates so operators get the same
+ * mental model. The state machine, router, and API client are
+ * HSE-specific and talk to /api/v1/* (see src/api/routes.rs).
+ * ═══════════════════════════════════════════════════════════════════════ */
 
 const TARGET_KINDS = [
-  {v:'email',       label:'Email'},
+  {v:'email',       label:'E-mail Address'},
   {v:'username',    label:'Username'},
-  {v:'phone',       label:'Phone'},
-  {v:'full_name',   label:'Full name'},
-  {v:'ip_address',  label:'IP address'},
-  {v:'domain',      label:'Domain'},
-  {v:'asn',         label:'ASN'},
-  {v:'coordinates', label:'Coordinates (lat,lon)'},
-  {v:'address',     label:'Address'},
+  {v:'phone',       label:'Phone Number'},
+  {v:'full_name',   label:'Human Name'},
+  {v:'ip_address',  label:'IP Address'},
+  {v:'domain',      label:'Domain Name'},
+  {v:'asn',         label:'Network ASN'},
+  {v:'coordinates', label:'GPS Coordinates'},
+  {v:'address',     label:'Postal Address'},
 ];
 
-// Use-case presets. Each preset filters the live module list returned
-// by /api/v1/modules — so adding modules in registry() picks them up
-// automatically (when matched by predicate) without UI changes.
 const USE_CASES = {
   all: {
     label:'All',
-    desc:'Every module that accepts the target. Slower but the most thorough.',
-    pick:(_m)=>true,
-    options:()=>({}),
+    desc:'<b>Get anything and everything about the target.</b><br><br>All Huntsman modules will be enabled (slow) but every possible piece of information about the target will be obtained and analysed.',
+    pick:_m=>true,
+    options:()=>({})
   },
   footprint: {
     label:'Footprint',
-    desc:'Map the public surface — DNS, certs, history, infrastructure. Skip identity / credential lookups.',
-    pick:(m)=>['crtsh','dns_resolver','reverse_dns','wayback','bgpview','whois','ip_geo','phone_intl'].includes(m.name),
-    options:(picked)=>({ modules: picked }),
+    desc:"<b>Understand what information this target exposes to the Internet.</b><br><br>Gain an understanding about the target's network perimeter, associated identities and other information that is obtained through web crawling and infrastructure lookups.",
+    pick:m=>['crtsh','dns_resolver','reverse_dns','dns_brute','wayback','bgpview','whois','ip_geo','ip_rdap','phone_intl','webserver_banner'].includes(m.name),
+    options:picked=>({modules:picked})
   },
   investigate: {
     label:'Investigate',
-    desc:'Identity and breach focus — credential exposure, breach datasets, social presence. Uses paid sources if keys are set.',
-    pick:(m)=>['hudsonrock','xposed_or_not','alienvault_otx','gravatar','github_user','username_search','email_to_username','oathnet_pro'].includes(m.name),
-    options:(picked)=>({ modules: picked }),
+    desc:'<b>Best for when you suspect the target to be malicious but need more information.</b><br><br>Some basic footprinting will be performed in addition to querying of breach datasets, threat-intelligence feeds, identity sources, and credential exposure databases (paid sources used when keys are present).',
+    pick:m=>['hudsonrock','xposed_or_not','alienvault_otx','urlhaus','tor_exit_check','gravatar','github_user','username_search','email_to_username','oathnet_pro'].includes(m.name),
+    options:picked=>({modules:picked})
   },
   passive: {
     label:'Passive',
-    desc:'Local-only sensors and offline analysis. No outbound network traffic.',
-    pick:(m)=>!!m.passive,
-    options:()=>({ passive_only: true }),
-  },
+    desc:"<b>When you don't want the target to even suspect they are being investigated.</b><br><br>As much information will be gathered without touching the target or their affiliates, therefore only modules that do not touch the target will be enabled.",
+    pick:m=>!!m.passive,
+    options:()=>({passive_only:true})
+  }
 };
 
 const S = {
-  route:    {name:'scans', params:{}},
+  route:    {name:'scans', params:{}, query:{}},
   version:  '',
   health:   null,
-  modules:  null,        // [{name, priority, cost, passive, accepts}]
-  scans:    null,        // [Scan]
-  scansAt:  0,           // last fetch ts
-  scan:     null,        // current Scan
-  entities: null,        // [Entity]
-  correlations: null,    // [Correlation]
-  settings: null,        // {keys, write_enabled, env_path}
-  sse:      null,        // EventSource
-  events:   [],          // log entries for the current scan
-  wizard:   {            // wizard scratch state — survives form re-render
-    kind: 'email',
-    value: '',
-    name: '',
-    usecase: 'all',
-    modules: null,       // null = preset-driven; array = manual
-    options: {           // advanced knobs
-      exclude_modules: [],
-      throttle_ms: 0,
-      module_timeout_ms: null,
-      depth: 0,
-      min_expand_confidence: 0.75,
-      max_entities: null,
-      max_wall_time_secs: null,
-      max_concurrent: 0,
-      min_confidence: null,
-      free_only: false,
-    },
-    showAdv: false,
-  },
+  modules:  null,
+  scans:    null,
+  scan:     null,
+  entities: null,
+  correlations: null,
+  settings: null,
+  sse:      null,
+  events:   [],
+  graph:    null,
+  wizard: {
+    name:'', value:'', kind:'domain',
+    usecase:'all', modules:null,
+    activeTab:'usecase',
+    showAdv:false,
+    options:{ exclude_modules:[], throttle_ms:0, module_timeout_ms:null, depth:0,
+              min_expand_confidence:0.75, max_entities:null, max_wall_time_secs:null,
+              max_concurrent:0, min_confidence:null, free_only:false }
+  }
 };
 
-/* ═════════════════════════════════════════════════════════════════════
- * Helpers
- * ════════════════════════════════════════════════════════════════════ */
-
-const $ = (s, r=document)=>r.querySelector(s);
-const $$ = (s, r=document)=>Array.from(r.querySelectorAll(s));
-
-function esc(s){
-  if (s == null) return '';
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-function attr(s){ return esc(s); }
-
+/* ─── Helpers ─── */
+const $ = (s,r)=>(r||document).querySelector(s);
+const $$ = (s,r)=>Array.from((r||document).querySelectorAll(s));
+function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function attr(s){return esc(s);}
+function nowSec(){return Math.floor(Date.now()/1000);}
 function fmtDate(ts){
-  if (!ts) return '—';
-  const d = new Date(ts * 1000);
-  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
-  const h = String(d.getHours()).padStart(2,'0'), mi = String(d.getMinutes()).padStart(2,'0'), s = String(d.getSeconds()).padStart(2,'0');
-  return `${y}-${m}-${day} ${h}:${mi}:${s}`;
+  if(!ts) return '—';
+  const d=new Date(ts*1000);
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 function fmtDuration(secs){
-  if (secs == null || secs < 0) return '—';
-  if (secs < 60) return `${secs}s`;
-  const m = Math.floor(secs/60), s = secs%60;
-  if (m < 60) return `${m}m ${s}s`;
-  const h = Math.floor(m/60), mm = m%60;
+  if(secs==null||secs<0) return '—';
+  if(secs<60) return `${secs}s`;
+  const m=Math.floor(secs/60),s=secs%60;
+  if(m<60) return `${m}m ${s}s`;
+  const h=Math.floor(m/60),mm=m%60;
   return `${h}h ${mm}m`;
 }
-function nowSec(){ return Math.floor(Date.now()/1000); }
-function toast(msg, kind='ok', ms=2400){
-  const t = $('#toast');
-  t.className = `show ${kind}`;
-  t.textContent = msg;
-  clearTimeout(toast._h);
-  toast._h = setTimeout(()=>{ t.className=''; }, ms);
-}
-function setNav(name){
-  $$('.nav-link').forEach(a => a.classList.toggle('active', a.dataset.nav === name));
-}
-function statusPill(status){
-  const m = {complete:'p-ok', running:'p-run', failed:'p-err', pending:'p-pending'};
-  return `<span class="pill ${m[status] || 'p-pending'}">${esc(status || 'pending')}</span>`;
-}
-function costPill(c){
-  return `<span class="pill p-${c === 'free' ? 'free' : c === 'paid' ? 'paid' : 'keyed'}">${esc(c)}</span>`;
+function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
+function statusPill(s){const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
+function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
+function kindPill(k){return `<span class="kind-pill k-${attr(k)}">${esc(k)}</span>`;}
+function effC(e){const c=e.confidence??0;const corr=Math.max(1,e.corroboration??1);return Math.min(1,Math.max(0,c*(1+0.15*Math.log(corr))));}
+function classify(eff){return eff>=0.75?'VERIFIED':eff>=0.4?'PROBABLE':'CANDIDATE';}
+function toast(msg,kind){
+  if (typeof alertify === 'undefined') return;
+  const fn = kind==='err'?'error':kind==='warn'?'warning':'success';
+  alertify.notify(msg, fn, 3);
 }
 
-/* ═════════════════════════════════════════════════════════════════════
- * API client
- * ════════════════════════════════════════════════════════════════════ */
-
+/* ─── API client ─── */
 const API = {
-  async _json(path, opts={}){
-    const r = await fetch(path, {
-      headers: opts.body ? {'Content-Type':'application/json'} : {},
-      ...opts,
-    });
-    if (!r.ok) {
-      let detail = '';
-      try { const j = await r.json(); detail = j.error || JSON.stringify(j); }
-      catch { detail = await r.text(); }
-      throw new Error(`HTTP ${r.status}: ${detail}`);
+  async _req(path, opts){
+    opts = opts || {};
+    const init = {method: opts.method||'GET'};
+    if (opts.body){ init.headers = {'Content-Type':'application/json'}; init.body = JSON.stringify(opts.body); }
+    const r = await fetch(path, init);
+    if (opts.raw) return r;
+    if (!r.ok){
+      let err = `HTTP ${r.status}`;
+      try { const j = await r.json(); err = j.error || JSON.stringify(j); } catch {}
+      throw new Error(err);
     }
-    return r.json();
+    const ct = r.headers.get('content-type')||'';
+    return ct.includes('application/json') ? r.json() : r.text();
   },
-  health:    ()=> API._json('/api/v1/health'),
-  version:   ()=> API._json('/api/v1/version'),
-  modules:   ()=> API._json('/api/v1/modules'),
-  scans:     ()=> API._json('/api/v1/scans'),
-  scan:      id => API._json(`/api/v1/scans/${encodeURIComponent(id)}`),
-  entities:  id => API._json(`/api/v1/scans/${encodeURIComponent(id)}/entities`),
-  correlations: id => API._json(`/api/v1/scans/${encodeURIComponent(id)}/correlations`),
-  createScan: body => API._json('/api/v1/scans', {method:'POST', body: JSON.stringify(body)}),
-  keysGet:   ()=> API._json('/api/v1/settings/keys'),
-  keysPut:   body => API._json('/api/v1/settings/keys', {method:'PUT', body: JSON.stringify(body)}),
+  health:    ()=>API._req('/api/v1/health'),
+  modules:   ()=>API._req('/api/v1/modules'),
+  scans:     ()=>API._req('/api/v1/scans'),
+  scan:      id=>API._req('/api/v1/scans/'+encodeURIComponent(id)),
+  entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
+  correlations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/correlations'),
+  create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
+  rerun:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/rerun',{method:'POST'}),
+  remove:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id),{method:'DELETE'}),
+  csvUrl:    id=>'/api/v1/scans/'+encodeURIComponent(id)+'/entities.csv',
+  keysGet:   ()=>API._req('/api/v1/settings/keys'),
+  keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body})
 };
 
-/* ═════════════════════════════════════════════════════════════════════
- * Router  (hash-based)
- * ════════════════════════════════════════════════════════════════════ */
-
+/* ─── Router (hash-based, mirrors SpiderFoot's path semantics) ─── */
 function parseHash(){
-  // Forms supported:
-  //   #/scans
-  //   #/newscan
-  //   #/settings
-  //   #/scan/<id>                          (auto-redirects to /summary)
-  //   #/scan/<id>/summary|browse|graph|log|info[?query=…]
-  const raw = (location.hash || '#/scans').replace(/^#/, '');
-  // Strip query so sub-tab matching isn't polluted; tabs read query
-  // params themselves from `location.hash` when needed.
-  const [path] = raw.split('?');
-  const p = path.split('/').filter(Boolean);
-  if (p.length === 0)              return {name:'scans',     params:{}};
-  if (p[0] === 'scans')            return {name:'scans',     params:{}};
-  if (p[0] === 'newscan')          return {name:'newscan',   params:{}};
-  if (p[0] === 'settings')         return {name:'settings',  params:{}};
-  if (p[0] === 'scan' && p[1]) {
-    const sub = p[2] || 'summary';
-    return {name:'scan', params:{id:p[1], sub}};
-  }
-  return {name:'scans', params:{}};
+  const raw = (location.hash||'#/scans').replace(/^#/,'');
+  const [path, qs] = raw.split('?');
+  const segs = path.split('/').filter(Boolean);
+  const query = {};
+  (qs||'').split('&').filter(Boolean).forEach(p=>{
+    const [k,v] = p.split('='); query[decodeURIComponent(k)] = decodeURIComponent(v||'');
+  });
+  if (segs.length===0 || segs[0]==='scans') return {name:'scans', params:{}, query};
+  if (segs[0]==='newscan')                  return {name:'newscan', params:{}, query};
+  if (segs[0]==='opts'||segs[0]==='settings') return {name:'opts', params:{}, query};
+  if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
+  return {name:'scans', params:{}, query};
 }
-function navTo(hash){ location.hash = hash; }
-
+function nav(href){ location.hash = href; }
 window.addEventListener('hashchange', ()=>render());
 
-/* ═════════════════════════════════════════════════════════════════════
- * Top-level render dispatcher
- * ════════════════════════════════════════════════════════════════════ */
-
+/* ─── Top-level dispatcher ─── */
 async function render(){
   closeSse();
   S.route = parseHash();
-  const v = $('#view');
-  v.innerHTML = `<div class="empty"><span class="spin"></span><p style="margin-top:14px">Loading…</p></div>`;
+  $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
+  const navMap = {scans:'nav-scans', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans'};
+  const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
+  const v = $('#view');
+  v.innerHTML = '<div class="empty-state"><h3>Loading…</h3></div>';
   try {
-    if (S.route.name === 'scans')     return await renderScans(v);
-    if (S.route.name === 'newscan')   return await renderNewScan(v);
-    if (S.route.name === 'settings')  return await renderSettings(v);
-    if (S.route.name === 'scan')      return await renderScan(v);
-  } catch (e) {
-    console.error(e);
-    v.innerHTML = `<div class="empty"><h3>Error</h3><p>${esc(e.message)}</p>
-      <button class="btn btn-g" onclick="render()">Retry</button></div>`;
+    if (S.route.name==='scans')    return await renderScans(v);
+    if (S.route.name==='newscan')  return await renderNewScan(v);
+    if (S.route.name==='scaninfo') return await renderScanInfo(v);
+    if (S.route.name==='opts')     return await renderOpts(v);
+  } catch(e){
+    v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
+                   <button class="btn btn-default btn-sm" style="margin-left:12px" onclick="render()">Retry</button></div>`;
   }
 }
 
-/* ═════════════════════════════════════════════════════════════════════
- * Page: Scans (list / dashboard)
- * ════════════════════════════════════════════════════════════════════ */
-
+/* ═══════════ Page: SCANLIST (#/scans) ═══════════ */
 async function renderScans(v){
-  setNav('scans');
   const data = await API.scans();
   S.scans = data.scans || [];
-  S.scansAt = nowSec();
-
   const stats = scanStats(S.scans);
 
   v.innerHTML = `
-    <div class="page-head">
-      <h1>Scans</h1>
-      <span class="sub">${stats.total} scan${stats.total === 1 ? '' : 's'} on record</span>
-      <div class="spacer"></div>
-      <button class="btn btn-g btn-sm" onclick="render()">↻ Refresh</button>
-      <a class="btn btn-p" href="#/newscan">+ New Scan</a>
+    <h2>Scans &nbsp;<small class="text-muted">${stats.total} scan${stats.total===1?'':'s'} on record</small>
+        <div class="pull-right">
+          <button class="btn btn-default btn-sm" onclick="render()"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Refresh</button>
+          <a class="btn btn-danger btn-sm" href="#/newscan"><i class="glyphicon glyphicon-plus"></i>&nbsp;New Scan</a>
+        </div>
+    </h2>
+    <hr style="margin:8px 0 14px 0">
+
+    <div class="row">
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Total</div><div class="val">${stats.total}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Running</div><div class="val" style="color:${stats.running?'#31708f':'#888'}">${stats.running}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Complete</div><div class="val" style="color:${stats.complete?'#3c763d':'#888'}">${stats.complete}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Entities found</div><div class="val">${stats.entities}</div></div></div>
     </div>
 
-    <div class="stats">
-      <div class="stat"><div class="lab">Total</div><div class="val">${stats.total}</div></div>
-      <div class="stat"><div class="lab">Running</div><div class="val" style="color:${stats.running ? 'var(--info)' : 'var(--fg2)'}">${stats.running}</div></div>
-      <div class="stat"><div class="lab">Complete</div><div class="val" style="color:${stats.complete ? 'var(--ok)' : 'var(--fg2)'}">${stats.complete}</div></div>
-      <div class="stat"><div class="lab">Failed</div><div class="val" style="color:${stats.failed ? 'var(--err)' : 'var(--fg2)'}">${stats.failed}</div></div>
-      <div class="stat"><div class="lab">Entities found</div><div class="val">${stats.entities}</div></div>
-    </div>
-
-    <div class="card">
-      <div class="card-h">
+    <div class="panel panel-default" id="scanlist">
+      <div class="panel-heading">
         Recent scans
-        <div class="spacer"></div>
-        <input id="scan-search" type="search" placeholder="Filter…" style="background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);padding:5px 9px;color:var(--fg);font-family:inherit;font-size:11.5px;outline:none">
+        <input id="scan-filter" type="search" class="form-control input-sm pull-right"
+               style="width:240px;margin-top:-4px" placeholder="Filter scans…">
       </div>
-      <div class="card-b tight" id="scans-table">${renderScansTable(S.scans)}</div>
+      <div id="scans-table-host">${renderScansTable(S.scans)}</div>
     </div>
   `;
-
-  const search = $('#scan-search');
-  search.addEventListener('input', () => {
-    const q = search.value.trim().toLowerCase();
-    const filtered = q ? S.scans.filter(s =>
-      (s.target?.value || '').toLowerCase().includes(q)
-      || (s.target?.kind || '').toLowerCase().includes(q)
-      || (s.status || '').toLowerCase().includes(q)
-      || (s.id || '').toLowerCase().includes(q)
+  if (S.scans.length){ wireScansTable(); }
+  const f = $('#scan-filter');
+  if (f) f.addEventListener('input', ()=>{
+    const q = f.value.trim().toLowerCase();
+    const rows = q ? S.scans.filter(s =>
+      (s.target?.value||'').toLowerCase().includes(q)
+      || (s.target?.kind||'').includes(q)
+      || (s.status||'').includes(q)
+      || (s.id||'').includes(q)
     ) : S.scans;
-    $('#scans-table').innerHTML = renderScansTable(filtered);
+    $('#scans-table-host').innerHTML = renderScansTable(rows);
+    wireScansTable();
   });
 }
-
 function scanStats(scans){
-  let running=0, complete=0, failed=0, entities=0;
-  for (const s of scans) {
-    if (s.status === 'running' || s.status === 'pending') running++;
-    else if (s.status === 'complete') complete++;
-    else if (s.status === 'failed') failed++;
-    entities += s.entity_count || 0;
+  let running=0,complete=0,failed=0,entities=0;
+  for(const s of scans){
+    if (s.status==='running'||s.status==='pending') running++;
+    else if (s.status==='complete') complete++;
+    else if (s.status==='failed') failed++;
+    entities += s.entity_count||0;
   }
-  return {total: scans.length, running, complete, failed, entities};
+  return {total:scans.length,running,complete,failed,entities};
 }
-
 function renderScansTable(scans){
-  if (!scans.length) {
-    return `<div class="empty"><h3>No scans yet</h3>
-      <p>Submit a target to start the first scan. Results stream in real-time and persist for the life of the database.</p>
-      <a class="btn btn-p" href="#/newscan">+ Start a new scan</a></div>`;
+  if (!scans.length){
+    return `<div class="empty-state"><h3>No scans yet</h3>
+            <p>Submit a target to start the first scan. Results stream in real-time
+               and are persisted to the local database.</p>
+            <a class="btn btn-danger" href="#/newscan"><i class="glyphicon glyphicon-plus"></i>&nbsp;Run Scan Now</a></div>`;
   }
-  const rows = scans.map(s => {
-    const target = `${esc(s.target?.value || '—')}`;
-    const kind = s.target?.kind || '—';
+  const rows = scans.map(s=>{
+    const kind = s.target?.kind||'—';
     const dur = s.finished_at && s.started_at ? s.finished_at - s.started_at
-              : s.status === 'running' ? nowSec() - (s.started_at || nowSec()) : null;
-    return `
-      <tr class="clickable" onclick="navTo('#/scan/${attr(s.id)}/summary')">
-        <td><span class="kind k-${attr(kind)}">${esc(kind)}</span></td>
-        <td>${target}</td>
-        <td>${statusPill(s.status)}</td>
-        <td class="num">${s.entity_count || 0}</td>
-        <td class="mono">${esc(fmtDate(s.started_at))}</td>
-        <td class="mono">${esc(fmtDuration(dur))}</td>
-        <td class="mono" style="color:var(--fg3)">${esc((s.id || '').slice(0,12))}</td>
-      </tr>
-    `;
+              : s.status==='running' ? nowSec()-(s.started_at||nowSec()) : null;
+    return `<tr>
+      <td><a href="#/scaninfo?id=${attr(s.id)}" class="link">${esc(s.target?.value||s.id)}</a></td>
+      <td>${kindPill(kind)}</td>
+      <td>${esc(fmtDate(s.started_at))}</td>
+      <td>${esc(fmtDuration(dur))}</td>
+      <td>${statusPill(s.status)}</td>
+      <td class="text-right">${s.entity_count||0}</td>
+      <td>
+        <a href="#/scaninfo?id=${attr(s.id)}" class="btn btn-default btn-xs" title="Open"><i class="glyphicon glyphicon-eye-open"></i></a>
+        <button class="btn btn-default btn-xs" data-rerun="${attr(s.id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i></button>
+        <a class="btn btn-default btn-xs" href="${API.csvUrl(s.id)}" title="Export CSV"><i class="glyphicon glyphicon-download-alt"></i></a>
+        <button class="btn btn-danger btn-xs" data-delete="${attr(s.id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
+      </td>
+    </tr>`;
   }).join('');
-  return `<table class="tbl"><thead><tr>
-    <th>Kind</th><th>Target</th><th>Status</th><th class="num">Entities</th>
-    <th>Started</th><th>Duration</th><th>Scan ID</th>
-  </tr></thead><tbody>${rows}</tbody></table>`;
+  return `<table class="table table-striped table-condensed tablesorter" id="scans-table">
+    <thead><tr>
+      <th>Target</th><th>Type</th><th>Created</th><th>Duration</th>
+      <th>Status</th><th class="text-right">Entities</th>
+      <th class="sorter-false">Actions</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+function wireScansTable(){
+  if (window.jQuery && jQuery.fn.tablesorter) {
+    try { jQuery('#scans-table').tablesorter({sortList:[[2,1]]}); } catch {}
+  }
+  $$('button[data-rerun]').forEach(b=>b.addEventListener('click', e=>{
+    e.stopPropagation();
+    const id = b.dataset.rerun;
+    alertify.confirm('Re-run scan', 'Start a new scan with the same target and options?', async ()=>{
+      try { const r = await API.rerun(id); toast('Scan queued'); nav(`#/scaninfo?id=${r.scan_id}&tab=log`); }
+      catch(e){ toast(e.message,'err'); }
+    }, ()=>{});
+  }));
+  $$('button[data-delete]').forEach(b=>b.addEventListener('click', e=>{
+    e.stopPropagation();
+    const id = b.dataset.delete;
+    alertify.confirm('Delete scan', 'This deletes the scan, its correlations, and any entities not shared with another scan. Continue?', async ()=>{
+      try { await API.remove(id); toast('Scan deleted'); render(); }
+      catch(e){ toast(e.message,'err'); }
+    }, ()=>{});
+  }));
 }
 
-/* ═════════════════════════════════════════════════════════════════════
- * Page: New Scan (wizard)
- * ════════════════════════════════════════════════════════════════════ */
-
+/* ═══════════ Page: NEWSCAN (#/newscan) ═══════════ */
 async function renderNewScan(v){
-  setNav('newscan');
-  if (!S.modules) {
-    const m = await API.modules();
-    S.modules = m.modules || [];
-  }
+  if (!S.modules){ const m = await API.modules(); S.modules = m.modules || []; }
   const W = S.wizard;
+
   v.innerHTML = `
-    <div class="page-head">
-      <h1>New Scan</h1>
-      <span class="sub">Choose a target and a scan profile.</span>
-    </div>
+    <h2>New Scan</h2>
+    <hr style="margin:8px 0 14px 0">
 
-    <div class="card">
-      <div class="card-h">1. Target</div>
-      <div class="card-b">
-        <div class="row">
-          <div class="fld" style="flex:0 0 220px">
-            <label>Kind</label>
-            <select id="w-kind">${TARGET_KINDS.map(k =>
-              `<option value="${attr(k.v)}"${W.kind === k.v ? ' selected':''}>${esc(k.label)}</option>`).join('')}</select>
+    <form id="scan-form" class="form" onsubmit="event.preventDefault();submitWizard();">
+      <div class="row">
+        <div class="col-sm-4" style="padding-bottom:10px">
+          <label for="scanname">Scan Name</label>
+          <div class="input-group" style="padding-bottom:10px">
+            <input class="form-control" type="text" id="scanname" value="${attr(W.name)}" placeholder="The name of this scan.">
           </div>
-          <div class="fld" style="flex:1">
-            <label>Value</label>
-            <input type="text" id="w-value" class="mono" placeholder="${esc(placeholderFor(W.kind))}"
-              value="${attr(W.value)}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-            <div class="err-hint" id="w-value-err">Required.</div>
+          <label for="scantarget">Scan Target</label>
+          <div class="input-group" style="padding-bottom:10px">
+            <input class="form-control" type="text" id="scantarget" value="${attr(W.value)}" placeholder="The target of your scan." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
           </div>
+          <label for="scankind">Target Type</label>
+          <select id="scankind" class="form-control">
+            ${TARGET_KINDS.map(k=>`<option value="${attr(k.v)}"${W.kind===k.v?' selected':''}>${esc(k.label)}</option>`).join('')}
+          </select>
         </div>
-        <div class="fld">
-          <label>Scan name (optional)</label>
-          <input type="text" id="w-name" placeholder="leave blank to use the target value" value="${attr(W.name)}">
-          <div class="hint">Stored alongside the target; helps you find the scan later.</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-h">2. Scan profile</div>
-      <div class="card-b">
-        <div class="usecase-grid" id="w-uc">
-          ${Object.entries(USE_CASES).map(([k, uc])=>`
-            <div class="uc-card${W.usecase === k ? ' sel':''}" data-uc="${attr(k)}">
-              <div class="uc-h">${esc(uc.label)}</div>
-              <div class="uc-d">${esc(uc.desc)}</div>
+        <div class="col-sm-8" style="padding-bottom:10px">
+          <div class="help-panel">
+            <i class="glyphicon glyphicon-question-sign"></i>&nbsp;&nbsp;
+            Your scan target may be one of the following. Pick the matching Target Type on the left:
+            <div class="row" style="margin-top:8px">
+              <div class="col-sm-6">
+                <b>Domain Name</b>: e.g. <i>example.com</i><br>
+                <b>IPv4 Address</b>: e.g. <i>1.2.3.4</i><br>
+                <b>IPv6 Address</b>: e.g. <i>2606:4700:4700::1111</i><br>
+                <b>Hostname / Subdomain</b>: e.g. <i>abc.example.com</i><br>
+                <b>Network ASN</b>: e.g. <i>AS13335</i> or <i>13335</i>
+              </div>
+              <div class="col-sm-6">
+                <b>E-mail Address</b>: e.g. <i>bob@example.com</i><br>
+                <b>Phone Number</b>: e.g. <i>+12345678901</i> (E.164)<br>
+                <b>Human Name</b>: e.g. <i>"Jane Doe"</i><br>
+                <b>Username</b>: e.g. <i>jsmith2000</i><br>
+                <b>GPS Coordinates</b>: e.g. <i>-33.8688,151.2093</i>
+              </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <ul class="nav nav-tabs">
+          <li id="usetab" class="${W.activeTab==='usecase'?'active':''}"><a href="#" data-tab="usecase">By Use Case</a></li>
+          <li id="moduletab" class="${W.activeTab==='module'?'active':''}"><a href="#" data-tab="module">By Module</a></li>
+          <div class="btn-group-sm pull-right" id="selectors" style="display:${W.activeTab==='module'?'block':'none'};padding:6px">
+            <button id="btn-select-all" type="button" class="btn btn-info btn-sm">Select All</button>&nbsp;
+            <button id="btn-deselect-all" type="button" class="btn btn-info btn-sm">De-Select All</button>&nbsp;
+            <button id="btn-reset-preset" type="button" class="btn btn-default btn-sm">Use Preset</button>
+          </div>
+        </ul>
+
+        <table class="table table-striped table-condensed" id="usetable" style="display:${W.activeTab==='usecase'?'table':'none'}">
+          ${Object.entries(USE_CASES).map(([k,uc])=>`
+            <tr>
+              <td style="width:50px;vertical-align:middle">
+                <input type="radio" name="usecase" value="${attr(k)}" id="usecase_${attr(k)}" ${W.usecase===k?'checked':''}>
+              </td>
+              <td style="width:140px;vertical-align:middle"><label for="usecase_${attr(k)}" style="margin:0;font-weight:600">${esc(uc.label)}</label></td>
+              <td>${uc.desc}</td>
+            </tr>
           `).join('')}
-        </div>
-        <hr class="div">
-        <div id="w-modlist"></div>
-      </div>
-    </div>
+        </table>
 
-    <div class="card">
-      <div class="card-h">
-        3. Advanced options
-        <div class="spacer"></div>
-        <button class="btn btn-ghost btn-xs" id="w-adv-toggle">${W.showAdv ? '▾ Hide' : '▸ Show'}</button>
+        <div id="moduletable-host" style="display:${W.activeTab==='module'?'block':'none'}"></div>
       </div>
-      <div class="card-b" id="w-adv" style="${W.showAdv ? '' : 'display:none'}">
+
+      <p style="margin-top:14px;margin-bottom:6px">
+        <a href="#" id="adv-toggle" style="font-size:12px;color:#059CD7">${W.showAdv?'▾':'▸'} Advanced options</a>
+      </p>
+      <div id="adv-box" style="display:${W.showAdv?'block':'none'};background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;padding:10px;margin-bottom:14px">
         <div class="row">
-          <div class="fld">
+          <div class="col-sm-3">
             <label>Expansion depth</label>
-            <input type="number" id="w-depth" min="0" max="5" value="${W.options.depth}">
-            <div class="hint">0 = single round. ≥1 enables autonomous expansion (entities → new targets).</div>
+            <input type="number" class="form-control input-sm" id="w-depth" min="0" max="5" value="${W.options.depth}">
+            <span class="help-block">0 = single round. ≥1 enables autonomous expansion.</span>
           </div>
-          <div class="fld">
-            <label>Min expand C<sub>eff</sub></label>
-            <input type="number" id="w-mxc" min="0" max="1" step="0.05" value="${W.options.min_expand_confidence}">
-            <div class="hint">Only expand entities at or above this effective confidence.</div>
+          <div class="col-sm-3">
+            <label>Min expand C_eff</label>
+            <input type="number" class="form-control input-sm" id="w-mxc" min="0" max="1" step="0.05" value="${W.options.min_expand_confidence}">
+            <span class="help-block">Only expand entities ≥ this effective confidence.</span>
           </div>
-        </div>
-        <div class="row">
-          <div class="fld">
-            <label>Throttle (ms)</label>
-            <input type="number" id="w-throttle" min="0" value="${W.options.throttle_ms}">
-            <div class="hint">Delay between dispatches.</div>
-          </div>
-          <div class="fld">
-            <label>Module timeout (ms)</label>
-            <input type="number" id="w-timeout" min="100" value="${W.options.module_timeout_ms ?? ''}" placeholder="3000">
-            <div class="hint">Override the per-module hard cap.</div>
-          </div>
-          <div class="fld">
+          <div class="col-sm-3">
             <label>Concurrent modules</label>
-            <input type="number" id="w-concurrent" min="0" value="${W.options.max_concurrent}">
-            <div class="hint">0 = sequential. N>0 = up to N in flight.</div>
+            <input type="number" class="form-control input-sm" id="w-concurrent" min="0" value="${W.options.max_concurrent}">
+            <span class="help-block">0 = sequential. N&gt;0 = up to N in flight.</span>
+          </div>
+          <div class="col-sm-3">
+            <label>Module timeout (ms)</label>
+            <input type="number" class="form-control input-sm" id="w-timeout" min="100" placeholder="module default" value="${W.options.module_timeout_ms??''}">
           </div>
         </div>
-        <div class="row">
-          <div class="fld">
+        <div class="row" style="margin-top:8px">
+          <div class="col-sm-3">
+            <label>Throttle (ms)</label>
+            <input type="number" class="form-control input-sm" id="w-throttle" min="0" value="${W.options.throttle_ms}">
+          </div>
+          <div class="col-sm-3">
             <label>Max entities</label>
-            <input type="number" id="w-maxent" min="0" value="${W.options.max_entities ?? ''}" placeholder="unlimited">
+            <input type="number" class="form-control input-sm" id="w-maxent" min="0" placeholder="unlimited" value="${W.options.max_entities??''}">
           </div>
-          <div class="fld">
+          <div class="col-sm-3">
             <label>Max wall time (sec)</label>
-            <input type="number" id="w-maxwt" min="0" value="${W.options.max_wall_time_secs ?? ''}" placeholder="unlimited">
+            <input type="number" class="form-control input-sm" id="w-maxwt" min="0" placeholder="unlimited" value="${W.options.max_wall_time_secs??''}">
           </div>
-          <div class="fld">
+          <div class="col-sm-3">
             <label>Min confidence</label>
-            <input type="number" id="w-minc" min="0" max="1" step="0.05" value="${W.options.min_confidence ?? ''}" placeholder="no filter">
+            <input type="number" class="form-control input-sm" id="w-minc" min="0" max="1" step="0.05" placeholder="no filter" value="${W.options.min_confidence??''}">
           </div>
         </div>
-        <div class="row">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--fg2)">
-            <input type="checkbox" id="w-free" ${W.options.free_only ? 'checked':''}>
-            <span>Free-only (skip key-gated / paid modules)</span>
-          </label>
-        </div>
+        <label style="margin-top:10px;font-weight:normal">
+          <input type="checkbox" id="w-free" ${W.options.free_only?'checked':''}> Free-only (skip key-gated and paid modules)
+        </label>
       </div>
-    </div>
 
-    <div class="btn-grp">
-      <button class="btn btn-p" id="w-submit">▶ Launch scan</button>
-      <a class="btn btn-ghost" href="#/scans">Cancel</a>
-    </div>
+      <div class="control-group">
+        <button id="btn-run-scan" type="submit" class="btn btn-danger"><i class="glyphicon glyphicon-play"></i>&nbsp;Run Scan Now</button>
+        <a href="#/scans" class="btn btn-default">Cancel</a>
+      </div>
+    </form>
   `;
 
-  renderWizardModList();
+  renderWizardModuleTable();
 
-  $('#w-kind').addEventListener('change', e => {
-    W.kind = e.target.value;
-    $('#w-value').placeholder = placeholderFor(W.kind);
-    renderWizardModList();
-  });
-  $('#w-value').addEventListener('input', e => { W.value = e.target.value; });
-  $('#w-name').addEventListener('input', e => { W.name = e.target.value; });
-
-  $$('.uc-card').forEach(c => c.addEventListener('click', () => {
-    W.usecase = c.dataset.uc;
-    W.modules = null; // re-derive from preset
-    $$('.uc-card').forEach(x => x.classList.toggle('sel', x.dataset.uc === W.usecase));
-    renderWizardModList();
+  // Bind handlers.
+  $('#scanname').addEventListener('input', e=>{ W.name = e.target.value; });
+  $('#scantarget').addEventListener('input', e=>{ W.value = e.target.value; });
+  $('#scankind').addEventListener('change', e=>{ W.kind = e.target.value; renderWizardModuleTable(); });
+  $$('input[name=usecase]').forEach(r=>r.addEventListener('change', e=>{
+    W.usecase = e.target.value; W.modules = null; renderWizardModuleTable();
   }));
-
-  $('#w-adv-toggle').addEventListener('click', () => {
+  $$('.nav-tabs a[data-tab]').forEach(a=>a.addEventListener('click', e=>{
+    e.preventDefault();
+    W.activeTab = a.dataset.tab;
+    $('#usetab').classList.toggle('active', W.activeTab==='usecase');
+    $('#moduletab').classList.toggle('active', W.activeTab==='module');
+    $('#usetable').style.display = W.activeTab==='usecase' ? 'table' : 'none';
+    $('#moduletable-host').style.display = W.activeTab==='module' ? 'block' : 'none';
+    $('#selectors').style.display = W.activeTab==='module' ? 'block' : 'none';
+  }));
+  $('#adv-toggle').addEventListener('click', e=>{
+    e.preventDefault();
     W.showAdv = !W.showAdv;
-    $('#w-adv').style.display = W.showAdv ? '' : 'none';
-    $('#w-adv-toggle').textContent = W.showAdv ? '▾ Hide' : '▸ Show';
+    $('#adv-box').style.display = W.showAdv?'block':'none';
+    $('#adv-toggle').innerHTML = (W.showAdv?'▾':'▸')+' Advanced options';
   });
-
-  ['depth','mxc','throttle','timeout','concurrent','maxent','maxwt','minc'].forEach(id => {
-    const el = $(`#w-${id}`); if (!el) return;
-    el.addEventListener('input', e => {
-      const v = e.target.value === '' ? null : Number(e.target.value);
-      const map = {depth:'depth', mxc:'min_expand_confidence', throttle:'throttle_ms', timeout:'module_timeout_ms',
-                   concurrent:'max_concurrent', maxent:'max_entities', maxwt:'max_wall_time_secs', minc:'min_confidence'};
+  ['depth','mxc','throttle','timeout','concurrent','maxent','maxwt','minc'].forEach(id=>{
+    const el = $('#w-'+id); if (!el) return;
+    el.addEventListener('input', e=>{
+      const v = e.target.value===''?null:Number(e.target.value);
+      const map = {depth:'depth',mxc:'min_expand_confidence',throttle:'throttle_ms',timeout:'module_timeout_ms',
+                   concurrent:'max_concurrent',maxent:'max_entities',maxwt:'max_wall_time_secs',minc:'min_confidence'};
       W.options[map[id]] = v;
     });
   });
-  $('#w-free').addEventListener('change', e => { W.options.free_only = e.target.checked; });
-
-  $('#w-submit').addEventListener('click', submitWizard);
+  $('#w-free').addEventListener('change', e=>{ W.options.free_only = e.target.checked; });
+  $('#btn-select-all').addEventListener('click', e=>{
+    e.preventDefault();
+    const accepting = S.modules.filter(m=>!m.accepts || m.accepts.includes(W.kind));
+    W.modules = accepting.map(m=>m.name); renderWizardModuleTable();
+  });
+  $('#btn-deselect-all').addEventListener('click', e=>{
+    e.preventDefault();
+    W.modules = []; renderWizardModuleTable();
+  });
+  $('#btn-reset-preset').addEventListener('click', e=>{
+    e.preventDefault();
+    W.modules = null; renderWizardModuleTable();
+  });
 }
-
-function placeholderFor(kind){
-  return ({
-    email:'someone@example.com',
-    username:'jdoe',
-    phone:'+61400000000',
-    full_name:'Jane Doe',
-    ip_address:'1.1.1.1',
-    domain:'example.com',
-    asn:'AS13335',
-    coordinates:'-33.8688,151.2093',
-    address:'1 Loop St',
-  })[kind] || '';
-}
-
-function renderWizardModList(){
+function renderWizardModuleTable(){
   const W = S.wizard;
-  const wrap = $('#w-modlist');
-  if (!wrap) return;
+  const host = $('#moduletable-host');
+  if (!host) return;
   const uc = USE_CASES[W.usecase];
-
-  // Filter modules to those that accept the chosen target kind, then
-  // apply the use-case predicate (or 'all' = no filter).
-  const accepting = S.modules.filter(m => !m.accepts || m.accepts.includes(W.kind));
-  const ucMatches = accepting.filter(m => uc.pick(m));
-
-  // Resolve the effective active set:
-  //   * If user has manually edited (W.modules != null), use that.
-  //   * Else use the use-case match list, unless 'all'/'passive' (no preset list).
+  const accepting = S.modules.filter(m=>!m.accepts || m.accepts.includes(W.kind));
+  const ucMatches = accepting.filter(m=>uc.pick(m));
   let active;
-  if (W.modules !== null) {
-    active = new Set(W.modules);
-  } else if (W.usecase === 'all' || W.usecase === 'passive') {
-    active = new Set(accepting.map(m => m.name));
-  } else {
-    active = new Set(ucMatches.map(m => m.name));
-  }
+  if (W.modules!==null) active = new Set(W.modules);
+  else if (W.usecase==='all'||W.usecase==='passive') active = new Set(accepting.map(m=>m.name));
+  else active = new Set(ucMatches.map(m=>m.name));
 
-  wrap.innerHTML = `
-    <div class="filterbar">
-      <span class="cap">Modules</span>
-      <span class="ct">${active.size} of ${accepting.length} selected${W.usecase === 'passive' ? ' · passive-only flag will further restrict' : ''}</span>
-      <div class="sp"></div>
-      <button class="btn btn-ghost btn-xs" id="m-all">Select all</button>
-      <button class="btn btn-ghost btn-xs" id="m-none">Clear</button>
-      <button class="btn btn-ghost btn-xs" id="m-reset">Use preset</button>
+  host.innerHTML = `
+    <div style="padding:6px 0;color:#666;font-size:12px">
+      <b>${active.size}</b> of <b>${accepting.length}</b> module${accepting.length===1?'':'s'} selected
+      ${W.usecase==='passive' ? ' · <span class="text-warning">passive_only flag will further restrict at runtime</span>':''}
     </div>
-    <div class="mod-grid" id="m-grid">
-      ${accepting.map(m => {
+    <div class="mod-grid">
+      ${accepting.map(m=>{
         const checked = active.has(m.name);
         const cost = m.cost || 'free';
-        return `
-          <label class="mod-row">
-            <input type="checkbox" data-mod="${attr(m.name)}"${checked ? ' checked':''}>
-            <span class="mn">${esc(m.name)}</span>
-            ${m.passive ? '<span class="pill p-pending" title="local-only sensor">passive</span>' : ''}
-            ${costPill(cost)}
-          </label>
-        `;
+        return `<label>
+          <input type="checkbox" data-mod="${attr(m.name)}" ${checked?'checked':''}>
+          <span class="mn">${esc(m.name)}</span>
+          ${m.passive ? '<span class="cost-pill" style="background:#eee;color:#666" title="passive (no outbound)">passive</span>':''}
+          ${costPill(cost)}
+        </label>`;
       }).join('')}
-      ${accepting.length === 0 ? `<div class="empty"><p>No modules accept the <code>${esc(W.kind)}</code> target kind.</p></div>` : ''}
+      ${accepting.length===0 ? `<div class="empty-state"><p>No modules accept the <code>${esc(W.kind)}</code> target kind.</p></div>` : ''}
     </div>
   `;
-  $$('#m-grid input[type=checkbox]').forEach(cb => {
-    cb.addEventListener('change', () => {
-      const set = new Set(W.modules || Array.from(active));
-      if (cb.checked) set.add(cb.dataset.mod); else set.delete(cb.dataset.mod);
-      W.modules = Array.from(set);
-      renderWizardModList();
-    });
-  });
-  $('#m-all').addEventListener('click', () => { W.modules = accepting.map(m => m.name); renderWizardModList(); });
-  $('#m-none').addEventListener('click', () => { W.modules = []; renderWizardModList(); });
-  $('#m-reset').addEventListener('click', () => { W.modules = null; renderWizardModList(); });
+  $$('.mod-grid input[type=checkbox]').forEach(cb=>cb.addEventListener('change', ()=>{
+    const set = new Set(W.modules || Array.from(active));
+    if (cb.checked) set.add(cb.dataset.mod); else set.delete(cb.dataset.mod);
+    W.modules = Array.from(set);
+    renderWizardModuleTable();
+  }));
 }
-
 async function submitWizard(){
   const W = S.wizard;
-  if (!W.value.trim()) {
-    $('.fld:has(#w-value)')?.classList.add('error');
-    $('#w-value').focus();
-    toast('Target value is required', 'err');
-    return;
-  }
-
-  // Build ScanOptions.
-  const uc = USE_CASES[W.usecase];
-  const base = uc.options(W.modules);
+  const target = (W.value||'').trim();
+  if (!target){ alertify.error('Target value is required'); $('#scantarget').focus(); return; }
+  const base = USE_CASES[W.usecase].options(W.modules);
   const opts = {
     ...base,
     exclude_modules: W.options.exclude_modules,
-    throttle_ms: Number(W.options.throttle_ms) || 0,
-    max_concurrent: Number(W.options.max_concurrent) || 0,
-    depth: Number(W.options.depth) || 0,
-    min_expand_confidence: Number(W.options.min_expand_confidence) || 0.75,
-    free_only: !!W.options.free_only,
+    throttle_ms: Number(W.options.throttle_ms)||0,
+    max_concurrent: Number(W.options.max_concurrent)||0,
+    depth: Number(W.options.depth)||0,
+    min_expand_confidence: Number(W.options.min_expand_confidence)||0.75,
+    free_only: !!W.options.free_only
   };
-  // null-able knobs:
-  if (W.options.module_timeout_ms != null && W.options.module_timeout_ms !== '')
-    opts.module_timeout_ms = Number(W.options.module_timeout_ms);
-  if (W.options.max_entities != null && W.options.max_entities !== '')
-    opts.max_entities = Number(W.options.max_entities);
-  if (W.options.max_wall_time_secs != null && W.options.max_wall_time_secs !== '')
-    opts.max_wall_time_secs = Number(W.options.max_wall_time_secs);
-  if (W.options.min_confidence != null && W.options.min_confidence !== '')
-    opts.min_confidence = Number(W.options.min_confidence);
+  if (W.options.module_timeout_ms!=null && W.options.module_timeout_ms!=='') opts.module_timeout_ms = Number(W.options.module_timeout_ms);
+  if (W.options.max_entities!=null && W.options.max_entities!=='') opts.max_entities = Number(W.options.max_entities);
+  if (W.options.max_wall_time_secs!=null && W.options.max_wall_time_secs!=='') opts.max_wall_time_secs = Number(W.options.max_wall_time_secs);
+  if (W.options.min_confidence!=null && W.options.min_confidence!=='') opts.min_confidence = Number(W.options.min_confidence);
+  if (W.modules!==null) opts.modules = W.modules.length?W.modules:null;
 
-  // If user manually edited the module list, override the preset choice.
-  if (W.modules !== null) opts.modules = W.modules.length ? W.modules : null;
-
-  const body = { kind: W.kind, value: W.value.trim(), options: opts };
-
-  const btn = $('#w-submit');
-  btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Queuing…';
+  const btn = $('#btn-run-scan');
+  btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Queuing…';
   try {
-    const r = await API.createScan(body);
-    toast('Scan queued', 'ok');
-    // Reset value so the wizard remembers the form for next time but
-    // doesn't auto-submit the same target.
+    const r = await API.create({kind: W.kind, value: target, options: opts});
+    toast('Scan queued');
     W.value = ''; W.name = '';
-    navTo(`#/scan/${r.scan_id}/summary`);
-  } catch (e) {
-    btn.disabled = false; btn.textContent = '▶ Launch scan';
-    toast(e.message, 'err', 4000);
+    nav(`#/scaninfo?id=${r.scan_id}&tab=log`);
+  } catch(e){
+    btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-play"></i>&nbsp;Run Scan Now';
+    alertify.error(e.message);
   }
 }
 
-/* ═════════════════════════════════════════════════════════════════════
- * Page: Scan detail (with sub-tabs)
- * ════════════════════════════════════════════════════════════════════ */
-
-async function renderScan(v){
-  setNav('scans');
-  const {id, sub} = S.route.params;
-
-  // Refresh scan + entities + correlations in parallel; live SSE stream
-  // is opened separately and survives sub-tab switches via render-cache.
+/* ═══════════ Page: SCANINFO (#/scaninfo?id=X[&tab=Y]) ═══════════ */
+async function renderScanInfo(v){
+  const {id, tab} = S.route.params;
   const [scan, ents, corrs] = await Promise.all([
-    API.scan(id),
-    API.entities(id),
-    API.correlations(id),
+    API.scan(id), API.entities(id), API.correlations(id)
   ]);
   S.scan = scan;
-  S.entities = ents.entities || [];
-  S.correlations = corrs.correlations || [];
+  S.entities = ents.entities||[];
+  S.correlations = corrs.correlations||[];
 
-  // Pre-render header + tab strip; the chosen sub-tab fills #scan-body.
+  const dur = scan.finished_at && scan.started_at ? scan.finished_at - scan.started_at
+            : scan.status==='running' ? nowSec() - (scan.started_at||nowSec()) : null;
+
   v.innerHTML = `
-    <div class="crumbs">
-      <a href="#/scans">Scans</a>
-      <span class="sep">›</span>
-      <span>${esc(scan.target?.value || id)}</span>
+    <div class="crumbs"><a href="#/scans">Scans</a> &raquo; ${esc(scan.target?.value||id)}</div>
+    <h2>${esc(scan.target?.value||id)}
+        <small class="text-muted" style="margin-left:6px">${kindPill(scan.target?.kind)} ${statusPill(scan.status)}</small>
+        <div class="pull-right">
+          <button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button>
+          <button class="btn btn-default btn-sm" data-rerun="${attr(id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i>&nbsp;Rescan</button>
+          <a class="btn btn-default btn-sm" href="${API.csvUrl(id)}" title="Export entities as CSV"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;CSV</a>
+          <button class="btn btn-danger btn-sm" data-delete="${attr(id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
+        </div>
+    </h2>
+    <hr style="margin:8px 0 14px 0">
+
+    <div class="row">
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Entities</div><div class="val">${scan.entity_count || S.entities.length}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Correlations</div><div class="val" style="color:${S.correlations.length?'#9b1f9b':'#888'}">${S.correlations.length}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Started</div><div class="val dim">${esc(fmtDate(scan.started_at))}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Duration</div><div class="val dim">${esc(fmtDuration(dur))}</div></div></div>
     </div>
 
-    <div class="page-head">
-      <h1 style="display:flex;align-items:center;gap:10px">
-        <span class="kind k-${attr(scan.target?.kind)}" style="font-size:13px;padding:3px 9px">${esc(scan.target?.kind)}</span>
-        <span class="mono">${esc(scan.target?.value)}</span>
-      </h1>
-      <div class="spacer"></div>
-      ${statusPill(scan.status)}
-      <button class="btn btn-g btn-sm" onclick="render()">↻ Refresh</button>
-    </div>
-
-    <div class="stats">
-      <div class="stat"><div class="lab">Entities</div><div class="val">${scan.entity_count || S.entities.length}</div></div>
-      <div class="stat"><div class="lab">Correlations</div><div class="val" style="color:${S.correlations.length ? 'var(--crit)' : 'var(--fg2)'}">${S.correlations.length}</div></div>
-      <div class="stat"><div class="lab">Started</div><div class="val dim">${esc(fmtDate(scan.started_at))}</div></div>
-      <div class="stat"><div class="lab">Duration</div><div class="val dim">${esc(fmtDuration(
-        scan.finished_at && scan.started_at ? scan.finished_at - scan.started_at :
-        (scan.status === 'running' ? nowSec() - (scan.started_at || nowSec()) : null)))}</div></div>
-      <div class="stat"><div class="lab">Scan ID</div><div class="val dim mono" style="font-size:12px">${esc(id.slice(0, 16))}</div></div>
-    </div>
-
-    <div class="subtabs">
-      ${subTab('summary', 'Summary', null, sub)}
-      ${subTab('browse',  'Browse',  S.entities.length, sub)}
-      ${subTab('graph',   'Graph',   S.entities.length, sub)}
-      ${subTab('log',     'Scan Log', null, sub)}
-      ${subTab('info',    'Info',    null, sub)}
-    </div>
-    <div id="scan-body"></div>
+    <ul class="nav nav-tabs">
+      ${subTab('status',  'Status',       null,                tab)}
+      ${subTab('browse',  'Browse',       S.entities.length,   tab)}
+      ${subTab('graph',   'Graph',        null,                tab)}
+      ${subTab('log',     'Scan Log',     null,                tab)}
+      ${subTab('corr',    'Correlations', S.correlations.length, tab)}
+      ${subTab('info',    'Scan Settings',null,                tab)}
+    </ul>
+    <div id="scan-body" style="padding-top:14px"></div>
   `;
-  $$('.subtab').forEach(a => a.addEventListener('click', e => {
-    e.preventDefault();
-    navTo(`#/scan/${id}/${a.dataset.sub}`);
+  $$('button[data-rerun]').forEach(b=>b.addEventListener('click',()=>{
+    alertify.confirm('Re-run scan','Start a new scan with the same target and options?', async()=>{
+      try{ const r = await API.rerun(b.dataset.rerun); toast('Scan queued'); nav(`#/scaninfo?id=${r.scan_id}&tab=log`); }
+      catch(e){ alertify.error(e.message); }
+    }, ()=>{});
+  }));
+  $$('button[data-delete]').forEach(b=>b.addEventListener('click',()=>{
+    alertify.confirm('Delete scan','This deletes the scan, its correlations, and orphan entities. Continue?', async()=>{
+      try{ await API.remove(b.dataset.delete); toast('Scan deleted'); nav('#/scans'); }
+      catch(e){ alertify.error(e.message); }
+    }, ()=>{});
+  }));
+  $$('.nav-tabs a[data-sub]').forEach(a=>a.addEventListener('click', e=>{
+    e.preventDefault(); nav(`#/scaninfo?id=${id}&tab=${a.dataset.sub}`);
   }));
 
   const body = $('#scan-body');
-  if (sub === 'summary')      renderSummary(body);
-  else if (sub === 'browse')  renderBrowse(body);
-  else if (sub === 'graph')   renderGraph(body);
-  else if (sub === 'log')     renderLog(body, scan);
-  else if (sub === 'info')    renderInfo(body, scan);
-  else                        renderSummary(body);
+  if (tab==='status')      renderStatus(body, scan);
+  else if (tab==='browse') renderBrowse(body);
+  else if (tab==='graph')  renderGraph(body);
+  else if (tab==='log')    renderLog(body, scan);
+  else if (tab==='corr')   renderCorrelations(body);
+  else if (tab==='info')   renderInfo(body, scan);
+  else                     renderStatus(body, scan);
 }
-
 function subTab(name, label, count, active){
-  return `<a class="subtab${active === name ? ' active':''}" data-sub="${attr(name)}" href="#/scan/${attr(S.route.params.id)}/${attr(name)}">
-    ${esc(label)}${count != null ? `<span class="ct">${count}</span>` : ''}
-  </a>`;
+  const sid = S.route.params.id;
+  return `<li class="${active===name?'active':''}"><a href="#" data-sub="${attr(name)}">
+    ${esc(label)}${count!=null?` <span class="badge">${count}</span>`:''}
+  </a></li>`;
 }
 
-/* ───── Summary sub-tab ───── */
-
-function renderSummary(host){
+/* ── Status tab ── */
+function renderStatus(host, scan){
   const byKind = new Map();
-  for (const e of S.entities) {
-    byKind.set(e.kind, (byKind.get(e.kind) || 0) + 1);
-  }
-  const kindRows = Array.from(byKind.entries()).sort((a,b)=>b[1]-a[1]).map(([k, n]) =>
-    `<tr class="clickable" onclick="navTo('#/scan/${attr(S.route.params.id)}/browse?k=${attr(k)}')">
-      <td><span class="kind k-${attr(k)}">${esc(k)}</span></td>
-      <td class="num">${n}</td>
-      <td class="num muted">${((n / Math.max(1, S.entities.length)) * 100).toFixed(0)}%</td>
-    </tr>`).join('');
+  for (const e of S.entities) byKind.set(e.kind, (byKind.get(e.kind)||0) + 1);
+  const kindRows = Array.from(byKind.entries()).sort((a,b)=>b[1]-a[1]).map(([k,n])=>
+    `<tr><td>${kindPill(k)}</td><td class="text-right">${n}</td>
+         <td class="text-right text-muted">${((n/Math.max(1,S.entities.length))*100).toFixed(0)}%</td></tr>`).join('');
 
-  // Module attribution (count of evidence sources per module).
-  const byModule = new Map();
-  for (const e of S.entities) {
-    for (const ev of (e.evidence || [])) {
-      byModule.set(ev.source, (byModule.get(ev.source) || 0) + 1);
-    }
-  }
-  const modRows = Array.from(byModule.entries()).sort((a,b)=>b[1]-a[1]).slice(0, 20).map(([m, n]) =>
-    `<tr><td class="mono">${esc(m)}</td><td class="num">${n}</td></tr>`).join('');
+  const byMod = new Map();
+  for (const e of S.entities) for (const ev of (e.evidence||[])) byMod.set(ev.source, (byMod.get(ev.source)||0)+1);
+  const modRows = Array.from(byMod.entries()).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([m,n])=>
+    `<tr><td><code>${esc(m)}</code></td><td class="text-right">${n}</td></tr>`).join('');
 
-  // Classification distribution.
-  let v=0, p=0, c=0;
-  for (const e of S.entities) {
+  let verified=0, probable=0, candidate=0;
+  for (const e of S.entities){
     const eff = effC(e);
-    if (eff >= 0.75) v++; else if (eff >= 0.40) p++; else c++;
+    if (eff>=0.75) verified++; else if (eff>=0.40) probable++; else candidate++;
   }
 
   host.innerHTML = `
     <div class="row">
-      <div class="card">
-        <div class="card-h">Entities by kind</div>
-        <div class="card-b tight">${
-          kindRows ? `<table class="tbl"><thead><tr><th>Kind</th><th class="num">Count</th><th class="num">Share</th></tr></thead><tbody>${kindRows}</tbody></table>`
-                   : `<div class="empty"><p>No entities yet.</p></div>`
-        }</div>
+      <div class="col-sm-6">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>Entities by type</b></div>
+          ${kindRows
+            ? `<table class="table table-striped table-condensed" style="margin-bottom:0">
+                 <thead><tr><th>Type</th><th class="text-right">Count</th><th class="text-right">Share</th></tr></thead>
+                 <tbody>${kindRows}</tbody></table>`
+            : '<div class="empty-state"><p>No entities yet.</p></div>'}
+        </div>
       </div>
-      <div class="card">
-        <div class="card-h">Classification</div>
-        <div class="card-b">
-          <div class="stats" style="grid-template-columns:repeat(3,1fr);margin:0">
-            <div class="stat"><div class="lab c-VERIFIED">Verified</div><div class="val" style="color:var(--ok)">${v}</div></div>
-            <div class="stat"><div class="lab c-PROBABLE">Probable</div><div class="val" style="color:var(--warn)">${p}</div></div>
-            <div class="stat"><div class="lab c-CANDIDATE">Candidate</div><div class="val" style="color:var(--fg3)">${c}</div></div>
-          </div>
-          <div class="hint" style="margin-top:10px;font-size:11px;color:var(--fg3)">
-            Tiers derived from <code>C_eff</code> — never stored, always re-computed from confidence × corroboration boost.
+      <div class="col-sm-6">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>Classification</b></div>
+          <div class="panel-body">
+            <div class="row text-center">
+              <div class="col-xs-4"><div class="stat-card"><div class="lab c-VERIFIED">Verified</div><div class="val" style="color:#3c763d">${verified}</div></div></div>
+              <div class="col-xs-4"><div class="stat-card"><div class="lab c-PROBABLE">Probable</div><div class="val" style="color:#8a6d3b">${probable}</div></div></div>
+              <div class="col-xs-4"><div class="stat-card"><div class="lab c-CANDIDATE">Candidate</div><div class="val" style="color:#a94442">${candidate}</div></div></div>
+            </div>
+            <p class="help-block">Tiers derived from <code>C_eff = clamp(C × (1 + 0.15·ln(corroboration)), 0, 1)</code>.</p>
           </div>
         </div>
       </div>
     </div>
     <div class="row">
-      <div class="card">
-        <div class="card-h">Top contributing modules</div>
-        <div class="card-b tight">${
-          modRows ? `<table class="tbl"><thead><tr><th>Module</th><th class="num">Evidence rows</th></tr></thead><tbody>${modRows}</tbody></table>`
-                  : `<div class="empty"><p>No evidence yet.</p></div>`
-        }</div>
+      <div class="col-sm-6">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>Top contributing modules</b></div>
+          ${modRows
+            ? `<table class="table table-striped table-condensed" style="margin-bottom:0">
+                 <thead><tr><th>Module</th><th class="text-right">Evidence rows</th></tr></thead>
+                 <tbody>${modRows}</tbody></table>`
+            : '<div class="empty-state"><p>No evidence yet.</p></div>'}
+        </div>
       </div>
-      <div class="card">
-        <div class="card-h">Correlations</div>
-        <div class="card-b">${
-          S.correlations.length === 0
-            ? `<div class="empty"><p>No correlation rules have fired for this scan.</p></div>`
-            : S.correlations.map(corrCard).join('')
-        }</div>
+      <div class="col-sm-6">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>Correlation summary</b></div>
+          <div class="panel-body">
+            ${S.correlations.length
+              ? `Click <a href="#/scaninfo?id=${attr(S.route.params.id)}&tab=corr">Correlations</a> for the full list. Severity breakdown:
+                 <div style="margin-top:8px">
+                   ${['critical','high','medium','low'].map(sev=>{
+                     const n = S.correlations.filter(c=>(c.severity||'').toLowerCase()===sev).length;
+                     return `<span class="status-pill cv-${sev}" style="background:#f7f7f7;border:1px solid #ddd;color:#444;margin-right:4px">${esc(sev)}: ${n}</span>`;
+                   }).join('')}
+                 </div>`
+              : '<div class="empty-state"><p>No correlation rules have fired for this scan.</p></div>'}
+          </div>
+        </div>
       </div>
     </div>
   `;
 }
 
-function effC(e){
-  const c = e.confidence ?? 0;
-  const corr = Math.max(1, e.corroboration ?? 1);
-  return Math.min(1, Math.max(0, c * (1 + 0.15 * Math.log(corr))));
-}
-function classify(eff){
-  if (eff >= 0.75) return 'VERIFIED';
-  if (eff >= 0.40) return 'PROBABLE';
-  return 'CANDIDATE';
-}
-
-function corrCard(c){
-  const sev = (c.severity || 'low').toLowerCase();
-  return `
-    <div class="corr cv-${attr(sev)}">
-      <div class="corr-h">
-        <span class="pill p-${sev === 'critical' ? 'crit' : sev === 'high' ? 'err' : sev === 'medium' ? 'warn' : 'pending'}">${esc(sev)}</span>
-        <span>${esc(c.rule_id || '')}</span>
-      </div>
-      <div class="corr-name">${esc(c.rule_name || c.rule_id || '—')}</div>
-      <div class="corr-d">${esc(c.description || c.summary || '')}</div>
-    </div>
-  `;
-}
-
-/* ───── Browse sub-tab (entity table) ───── */
-
+/* ── Browse tab ── */
 function renderBrowse(host){
-  const q0 = new URLSearchParams((location.hash.split('?')[1] || '')).get('k') || '';
-  const kinds = Array.from(new Set(S.entities.map(e => e.kind))).sort();
+  const kinds = Array.from(new Set(S.entities.map(e=>e.kind))).sort();
+  const qKind = S.route.query.k || '';
   host.innerHTML = `
-    <div class="filterbar">
-      <input type="search" id="b-q" placeholder="Filter value, evidence, tags…">
-      <select id="b-kind">
-        <option value="">All kinds (${S.entities.length})</option>
-        ${kinds.map(k => `<option value="${attr(k)}"${k === q0 ? ' selected':''}>${esc(k)} (${S.entities.filter(e => e.kind === k).length})</option>`).join('')}
-      </select>
-      <select id="b-cls">
-        <option value="">All tiers</option>
-        <option value="VERIFIED">Verified only</option>
-        <option value="PROBABLE">Probable+</option>
-        <option value="CANDIDATE">Candidate only</option>
-      </select>
-      <div class="sp"></div>
-      <span class="ct" id="b-ct"></span>
+    <div class="row" style="margin-bottom:12px">
+      <div class="col-sm-4">
+        <input type="search" id="b-q" class="form-control input-sm" placeholder="Filter value, evidence, tags…">
+      </div>
+      <div class="col-sm-3">
+        <select id="b-kind" class="form-control input-sm">
+          <option value="">All types (${S.entities.length})</option>
+          ${kinds.map(k=>`<option value="${attr(k)}"${k===qKind?' selected':''}>${esc(k)} (${S.entities.filter(e=>e.kind===k).length})</option>`).join('')}
+        </select>
+      </div>
+      <div class="col-sm-3">
+        <select id="b-cls" class="form-control input-sm">
+          <option value="">All tiers</option>
+          <option value="VERIFIED">Verified only</option>
+          <option value="PROBABLE">Probable+</option>
+          <option value="CANDIDATE">Candidate only</option>
+        </select>
+      </div>
+      <div class="col-sm-2 text-right text-muted" style="padding-top:6px;font-size:11px" id="b-ct"></div>
     </div>
-    <div class="card">
-      <div class="card-b tight" id="b-table"></div>
-    </div>
+    <div id="b-table-host"></div>
   `;
-  let sort = {col: 'c_eff', dir: 'desc'};
   function refresh(){
     const q = $('#b-q').value.trim().toLowerCase();
-    const ks = $('#b-kind').value;
-    const cs = $('#b-cls').value;
+    const ks = $('#b-kind').value, cs = $('#b-cls').value;
     let rows = S.entities.slice();
-    if (ks) rows = rows.filter(e => e.kind === ks);
-    if (cs) rows = rows.filter(e => classify(effC(e)) === cs || (cs === 'PROBABLE' && effC(e) >= 0.40));
-    if (q) rows = rows.filter(e =>
-      (e.value || '').toLowerCase().includes(q)
-      || (e.tags || []).some(t => t.toLowerCase().includes(q))
-      || (e.evidence || []).some(ev => (ev.summary || '').toLowerCase().includes(q) || (ev.source || '').toLowerCase().includes(q))
-    );
-    rows.sort(sortBy(sort.col, sort.dir));
+    if (ks) rows = rows.filter(e=>e.kind===ks);
+    if (cs) rows = rows.filter(e=>{const t=classify(effC(e)); return t===cs || (cs==='PROBABLE' && effC(e)>=0.40);});
+    if (q)  rows = rows.filter(e =>
+      (e.value||'').toLowerCase().includes(q)
+      || (e.tags||[]).some(t=>t.toLowerCase().includes(q))
+      || (e.evidence||[]).some(ev=>(ev.summary||'').toLowerCase().includes(q) || (ev.source||'').toLowerCase().includes(q)));
     $('#b-ct').textContent = `${rows.length} of ${S.entities.length}`;
-    $('#b-table').innerHTML = renderBrowseTable(rows, sort);
-    $$('#b-table th.sortable').forEach(th => th.addEventListener('click', () => {
-      const c = th.dataset.col;
-      if (sort.col === c) sort.dir = sort.dir === 'asc' ? 'desc' : 'asc';
-      else { sort.col = c; sort.dir = 'desc'; }
-      refresh();
-    }));
-  }
-  function sortBy(col, dir){
-    const sgn = dir === 'asc' ? 1 : -1;
-    return (a, b) => {
-      let va, vb;
-      if (col === 'c_eff') { va = effC(a); vb = effC(b); }
-      else if (col === 'corr') { va = a.corroboration||0; vb = b.corroboration||0; }
-      else if (col === 'observed') { va = a.observed_at||0; vb = b.observed_at||0; }
-      else { va = String(a[col]||''); vb = String(b[col]||''); }
-      if (va < vb) return -1*sgn;
-      if (va > vb) return 1*sgn;
-      return 0;
-    };
+    $('#b-table-host').innerHTML = renderBrowseTable(rows);
+    if (window.jQuery && jQuery.fn.tablesorter && rows.length){
+      try { jQuery('#browse-table').tablesorter({sortList:[[2,1]]}); } catch {}
+    }
   }
   $('#b-q').addEventListener('input', refresh);
   $('#b-kind').addEventListener('change', refresh);
   $('#b-cls').addEventListener('change', refresh);
   refresh();
 }
-
-function renderBrowseTable(rows, sort){
-  if (rows.length === 0) {
-    return `<div class="empty"><h3>No entities match</h3><p>Adjust the filter, or check the Scan Log if the scan is still running.</p></div>`;
+function renderBrowseTable(rows){
+  if (!rows.length){
+    return '<div class="empty-state"><h3>No entities match</h3><p>Adjust the filter, or check the Scan Log if the scan is still running.</p></div>';
   }
-  const head = `<thead><tr>
-    <th>Kind</th>
-    <th class="sortable${sort.col==='value' ? ' sort-'+sort.dir : ''}" data-col="value">Value</th>
-    <th class="num sortable${sort.col==='c_eff' ? ' sort-'+sort.dir : ''}" data-col="c_eff">C<sub>eff</sub></th>
-    <th class="num sortable${sort.col==='corr' ? ' sort-'+sort.dir : ''}" data-col="corr">Corr.</th>
-    <th>Tier</th>
-    <th>Tags</th>
-    <th>Sources</th>
-    <th class="sortable${sort.col==='observed' ? ' sort-'+sort.dir : ''}" data-col="observed">Observed</th>
-  </tr></thead>`;
-  const body = rows.map(e => {
-    const eff = effC(e); const tier = classify(eff);
-    const sources = Array.from(new Set((e.evidence || []).map(ev => ev.source))).sort();
+  const body = rows.map(e=>{
+    const eff = effC(e), tier = classify(eff);
+    const sources = Array.from(new Set((e.evidence||[]).map(ev=>ev.source))).sort();
     return `<tr>
-      <td><span class="kind k-${attr(e.kind)}">${esc(e.kind)}</span></td>
-      <td class="mono">${esc(e.raw_value || e.value)}</td>
-      <td class="num mono">${eff.toFixed(3)}</td>
-      <td class="num mono">${e.corroboration || 1}</td>
-      <td><span class="cls c-${attr(tier)}">${esc(tier)}</span></td>
-      <td>${(e.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('')}</td>
-      <td class="mono" style="font-size:11px">${sources.map(s => `<span class="tag">${esc(s)}</span>`).join('')}</td>
-      <td class="mono">${esc(fmtDate(e.observed_at))}</td>
+      <td>${kindPill(e.kind)}</td>
+      <td style="word-break:break-word"><code>${esc(e.raw_value||e.value)}</code></td>
+      <td class="text-right"><code>${eff.toFixed(3)}</code></td>
+      <td class="text-right">${e.corroboration||1}</td>
+      <td><span class="cls c-${attr(tier)}">${tier}</span></td>
+      <td>${(e.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</td>
+      <td>${sources.map(s=>`<span class="src-pill">${esc(s)}</span>`).join('')}</td>
+      <td><span class="text-muted" style="font-family:monospace;font-size:11px">${esc(fmtDate(e.observed_at))}</span></td>
     </tr>`;
   }).join('');
-  return `<table class="tbl">${head}<tbody>${body}</tbody></table>`;
+  return `<table class="table table-striped table-condensed tablesorter" id="browse-table">
+    <thead><tr>
+      <th>Type</th><th>Value</th><th class="text-right">C_eff</th>
+      <th class="text-right">Corr</th><th>Tier</th>
+      <th class="sorter-false">Tags</th><th class="sorter-false">Sources</th><th>Observed</th>
+    </tr></thead><tbody>${body}</tbody></table>`;
 }
 
-/* ───── Graph sub-tab (force-directed) ───── */
-
-function renderGraph(host){
-  if (S.entities.length === 0) {
-    host.innerHTML = `<div class="empty"><h3>No entities to graph</h3><p>The Graph view becomes available once the scan produces entities.</p></div>`;
+/* ── Correlations tab ── */
+function renderCorrelations(host){
+  if (!S.correlations.length){
+    host.innerHTML = '<div class="empty-state"><h3>No correlations fired</h3><p>Correlation rules evaluate post-scan against the entities produced. They surface multi-source breach clusters, infrastructure consensus, and other high-signal aggregations.</p></div>';
     return;
   }
-  // Build node/edge model.
-  //  * Seed-target node anchored at center
-  //  * One node per entity, coloured by kind
-  //  * Edge from seed to each entity (corroboration as weight)
-  //  * Additional edges between entities that co-occur in a correlation
-  const target = S.scan.target;
-  const seedId = `__seed__`;
-  const nodes = [{
-    id: seedId, kind: target.kind, label: target.value, isSeed:true, r: 10, fx:null, fy:null,
-  }];
-  for (const e of S.entities) {
-    nodes.push({id: e.uid, kind: e.kind, label: e.value, raw: e.raw_value || e.value, r: 6 + Math.min(8, Math.log(1 + (e.corroboration||1))*3)});
-  }
-  const edges = [];
-  // seed → each entity
-  for (const e of S.entities) edges.push({s: seedId, t: e.uid, w: 1});
-  // entities ↔ entities by shared correlation
-  for (const c of S.correlations) {
-    const uids = (c.entity_uids || c.evidence_uids || c.entities || []);
-    for (let i=0;i<uids.length;i++)
-      for (let j=i+1;j<uids.length;j++)
-        edges.push({s: uids[i], t: uids[j], w: 2, corr: true});
-  }
+  host.innerHTML = S.correlations.map(c=>{
+    const sev = (c.severity||'low').toLowerCase();
+    return `<div class="corr-card cv-${attr(sev)}">
+      <div class="corr-h"><b>${esc(sev.toUpperCase())}</b> · ${esc(c.rule_id||'')}</div>
+      <div class="corr-name">${esc(c.rule_name||c.rule_id||'—')}</div>
+      <div class="corr-d">${esc(c.description||c.summary||'')}</div>
+    </div>`;
+  }).join('');
+}
 
+/* ── Graph tab (D3 v3 force layout — matches Spiderfoot's stack) ── */
+function renderGraph(host){
+  if (!S.entities.length){
+    host.innerHTML = '<div class="empty-state"><h3>No entities to graph</h3><p>The Graph view becomes available once the scan produces entities.</p></div>';
+    return;
+  }
   host.innerHTML = `
-    <div class="graph-wrap">
-      <svg id="g-svg" preserveAspectRatio="xMidYMid meet" viewBox="0 0 1000 560">
-        <g id="g-edges"></g>
-        <g id="g-nodes"></g>
-      </svg>
+    <div style="position:relative">
+      <svg id="graph-svg" preserveAspectRatio="xMidYMid meet"></svg>
       <div class="graph-legend">
-        <div class="lr"><span class="sw" style="background:var(--acc2);border:2px solid var(--fg)"></span>seed target</div>
-        <div class="lr"><span class="sw" style="background:#a5c4ff"></span>email</div>
-        <div class="lr"><span class="sw" style="background:var(--ok)"></span>domain</div>
-        <div class="lr"><span class="sw" style="background:var(--teal)"></span>username</div>
-        <div class="lr"><span class="sw" style="background:var(--warn)"></span>phone</div>
-        <div class="lr"><span class="sw" style="background:#7eb3ff"></span>ip / asn</div>
-        <div class="lr" style="margin-top:3px;color:var(--fg3);font-size:10.5px">drag nodes · scroll = zoom</div>
+        <div class="lr"><span class="sw" style="background:#059CD7;border:2px solid #333"></span>seed target</div>
+        <div class="lr"><span class="sw" style="background:#31708f"></span>email / ip</div>
+        <div class="lr"><span class="sw" style="background:#3c763d"></span>domain</div>
+        <div class="lr"><span class="sw" style="background:#2c7c40"></span>username</div>
+        <div class="lr"><span class="sw" style="background:#8a6d3b"></span>phone</div>
+        <div class="lr"><span class="sw" style="background:#9b1f9b"></span>credential</div>
       </div>
       <div class="graph-ctl">
-        <button class="btn btn-g btn-xs" id="g-relayout">Re-layout</button>
-        <button class="btn btn-g btn-xs" id="g-fit">Fit</button>
+        <button class="btn btn-default btn-xs" id="g-relayout"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Re-layout</button>
       </div>
     </div>
   `;
-  const fg = new ForceGraph(nodes, edges, 1000, 560);
-  fg.runIters(280);
-  fg.mount($('#g-svg'));
-  $('#g-relayout').addEventListener('click', () => { fg.shuffle(); fg.runIters(280); fg.draw(); });
-  $('#g-fit').addEventListener('click', () => fg.fit());
+  buildD3Graph();
+  $('#g-relayout').addEventListener('click', buildD3Graph);
 }
-
-/* ───── Force-directed graph engine ───── */
 
 const NODE_COLOR = {
-  email:'#a5c4ff', domain:'#3fbf7f', username:'#34d4c4', phone:'#f0b62b',
-  ip_address:'#7eb3ff', asn:'#93c5fd', person:'#86efac', credential:'#d946ef',
-  password:'#d946ef', address:'#fb7185', coordinates:'#fb923c', organisation:'#c4a5ff',
-  abn_acn:'#fcd34d', url:'#7dd3fc', mac_address:'#9aa6bf', device_id:'#9aa6bf',
+  email:'#31708f', domain:'#3c763d', username:'#2c7c40', phone:'#8a6d3b',
+  ip_address:'#31708f', asn:'#5a4d8a', person:'#3c763d', credential:'#9b1f9b',
+  password:'#9b1f9b', address:'#a94442', coordinates:'#8a4b1f', organisation:'#5a4d8a',
+  abn_acn:'#8a6d3b', url:'#31708f', mac_address:'#666', device_id:'#666', other:'#888'
 };
 
-class ForceGraph {
-  constructor(nodes, edges, w, h){
-    this.W = w; this.H = h;
-    this.nodes = nodes.map(n => ({...n,
-      x: w/2 + (Math.random()-0.5)*200,
-      y: h/2 + (Math.random()-0.5)*200,
-      vx: 0, vy: 0,
-    }));
-    // Pin the seed node at center for stable layouts.
-    const seed = this.nodes.find(n => n.isSeed);
-    if (seed) { seed.x = w/2; seed.y = h/2; seed.fx = w/2; seed.fy = h/2; }
+function buildD3Graph(){
+  if (typeof d3==='undefined') return;
+  const svg = d3.select('#graph-svg');
+  const rect = svg.node().getBoundingClientRect();
+  const W = rect.width, H = rect.height || 560;
+  svg.selectAll('*').remove();
+  svg.attr('viewBox', `0 0 ${W} ${H}`);
 
-    this.byId = Object.fromEntries(this.nodes.map(n => [n.id, n]));
-    this.edges = edges.filter(e => this.byId[e.s] && this.byId[e.t]);
-    this.zoom = 1; this.tx = 0; this.ty = 0;
+  // Build nodes/edges.
+  const seedId = '__seed__';
+  const nodes = [{id:seedId, kind:S.scan.target.kind, label:S.scan.target.value, isSeed:true, r:12}];
+  for (const e of S.entities){
+    nodes.push({id:e.uid, kind:e.kind, label:e.value, r: 5 + Math.min(8, Math.log(1+(e.corroboration||1))*3)});
   }
-  shuffle(){
-    for (const n of this.nodes) {
-      if (n.fx != null) continue;
-      n.x = this.W/2 + (Math.random()-0.5)*200;
-      n.y = this.H/2 + (Math.random()-0.5)*200;
-      n.vx = 0; n.vy = 0;
-    }
+  const links = [];
+  for (const e of S.entities) links.push({source:seedId, target:e.uid, corr:false});
+  for (const c of S.correlations){
+    const uids = c.entity_uids || c.evidence_uids || c.entities || [];
+    for (let i=0;i<uids.length;i++) for (let j=i+1;j<uids.length;j++)
+      links.push({source:uids[i], target:uids[j], corr:true});
   }
-  step(){
-    const REPULSE = 1400, IDEAL = 90, K_SPRING = 0.05, K_GRAV = 0.012, FRICTION = 0.84;
-    const ns = this.nodes;
-    // Repulsion (O(n²) — fine for the ~hundreds-of-nodes prototype scale).
-    for (let i=0; i<ns.length; i++) {
-      const a = ns[i]; if (a.fx != null) continue;
-      for (let j=i+1; j<ns.length; j++) {
-        const b = ns[j];
-        let dx = a.x - b.x, dy = a.y - b.y;
-        let d2 = dx*dx + dy*dy;
-        if (d2 < 0.01) { dx = (Math.random()-0.5); dy = (Math.random()-0.5); d2 = 0.01; }
-        const f = REPULSE / d2;
-        const d = Math.sqrt(d2);
-        const fx = (dx/d)*f, fy = (dy/d)*f;
-        a.vx += fx; a.vy += fy;
-        if (b.fx == null) { b.vx -= fx; b.vy -= fy; }
-      }
-    }
-    // Spring attraction.
-    for (const e of this.edges) {
-      const a = this.byId[e.s], b = this.byId[e.t];
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const d = Math.sqrt(dx*dx + dy*dy) || 0.01;
-      const f = (d - IDEAL) * K_SPRING * (e.corr ? 1.2 : 1);
-      const fx = (dx/d)*f, fy = (dy/d)*f;
-      if (a.fx == null) { a.vx += fx; a.vy += fy; }
-      if (b.fx == null) { b.vx -= fx; b.vy -= fy; }
-    }
-    // Center gravity + friction + integrate.
-    for (const n of ns) {
-      if (n.fx != null) { n.x = n.fx; n.y = n.fy; continue; }
-      n.vx += (this.W/2 - n.x) * K_GRAV;
-      n.vy += (this.H/2 - n.y) * K_GRAV;
-      n.vx *= FRICTION; n.vy *= FRICTION;
-      n.x += n.vx; n.y += n.vy;
-    }
-  }
-  runIters(n){ for (let i=0;i<n;i++) this.step(); }
-  fit(){
-    // Compute bbox of node positions, scale viewport via SVG transform.
-    let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
-    for (const n of this.nodes) {
-      minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
-      minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
-    }
-    const m = 30;
-    const w = (maxX - minX) + m*2, h = (maxY - minY) + m*2;
-    const sx = this.W / w, sy = this.H / h;
-    this.zoom = Math.min(sx, sy, 2);
-    this.tx = -minX + m;
-    this.ty = -minY + m;
-    this.draw();
-  }
-  mount(svg){
-    this.svg = svg;
-    this.edgesG = svg.querySelector('#g-edges');
-    this.nodesG = svg.querySelector('#g-nodes');
-    this.draw();
 
-    // Drag — uses pointer events for touch + mouse.
-    let dragging = null;
-    svg.addEventListener('pointerdown', e => {
-      const t = e.target.closest('[data-nid]');
-      if (!t) return;
-      const id = t.dataset.nid;
-      const n = this.byId[id];
-      if (!n || n.isSeed) return;
-      dragging = n;
-      n.fx = n.x; n.fy = n.y;
-      svg.setPointerCapture(e.pointerId);
-    });
-    svg.addEventListener('pointermove', e => {
-      if (!dragging) return;
-      const r = svg.getBoundingClientRect();
-      const x = (e.clientX - r.left) / r.width  * this.W;
-      const y = (e.clientY - r.top)  / r.height * this.H;
-      const wx = (x - this.tx) / this.zoom;
-      const wy = (y - this.ty) / this.zoom;
-      dragging.fx = wx; dragging.fy = wy;
-      dragging.x = wx; dragging.y = wy;
-      this.runIters(3);
-    });
-    svg.addEventListener('pointerup', e => {
-      if (!dragging) return;
-      dragging.fx = null; dragging.fy = null;
-      dragging = null;
-      svg.releasePointerCapture(e.pointerId);
-    });
-    // Wheel zoom.
-    svg.addEventListener('wheel', e => {
-      e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      this.zoom = Math.max(0.3, Math.min(4, this.zoom * factor));
-      this.draw();
-    }, {passive:false});
-  }
-  draw(){
-    if (!this.svg) return;
-    const tx = this.tx, ty = this.ty, z = this.zoom;
-    const X = n => n.x * z + tx;
-    const Y = n => n.y * z + ty;
+  // Drop links to unknown nodes.
+  const ids = new Set(nodes.map(n=>n.id));
+  const validLinks = links.filter(l=>ids.has(l.source) && ids.has(l.target));
 
-    this.edgesG.innerHTML = this.edges.map(e => {
-      const a = this.byId[e.s], b = this.byId[e.t];
-      return `<line x1="${X(a).toFixed(1)}" y1="${Y(a).toFixed(1)}" x2="${X(b).toFixed(1)}" y2="${Y(b).toFixed(1)}"
-        stroke="${e.corr ? '#d946ef' : '#37456a'}" stroke-opacity="${e.corr ? 0.6 : 0.35}" stroke-width="${e.corr ? 1.4 : 0.8}"/>`;
-    }).join('');
+  const force = d3.layout.force()
+    .nodes(nodes)
+    .links(validLinks)
+    .charge(-260)
+    .linkDistance(90)
+    .size([W, H])
+    .start();
+  // Pin seed at centre.
+  const seedNode = nodes.find(n=>n.isSeed);
+  if (seedNode){ seedNode.fixed = true; seedNode.x = W/2; seedNode.y = H/2; }
 
-    this.nodesG.innerHTML = this.nodes.map(n => {
-      const col = n.isSeed ? '#7eb3ff' : (NODE_COLOR[n.kind] || '#9aa6bf');
-      const stroke = n.isSeed ? '#fff' : 'rgba(11,18,32,.85)';
-      const sw = n.isSeed ? 2 : 1.5;
-      const text = (n.label || '').length > 24 ? (n.label.slice(0,22) + '…') : n.label;
-      return `<g data-nid="${attr(n.id)}" style="cursor:grab">
-        <circle cx="${X(n).toFixed(1)}" cy="${Y(n).toFixed(1)}" r="${(n.r*z).toFixed(1)}"
-                fill="${col}" stroke="${stroke}" stroke-width="${sw}"/>
-        <text x="${(X(n)+n.r*z+4).toFixed(1)}" y="${(Y(n)+3).toFixed(1)}"
-              font-family="var(--mono)" font-size="${(10*Math.max(0.7,z)).toFixed(1)}"
-              fill="${n.isSeed ? '#fff' : 'rgba(231,236,243,.85)'}">${esc(text)}</text>
-      </g>`;
-    }).join('');
-  }
+  const link = svg.append('g').selectAll('line')
+    .data(validLinks).enter().append('line')
+    .style('stroke', d=>d.corr?'#9b1f9b':'#bbb')
+    .style('stroke-opacity', d=>d.corr?0.7:0.35)
+    .style('stroke-width', d=>d.corr?1.6:1);
+
+  const drag = force.drag().on('dragstart', function(){ d3.select(this).style('cursor','grabbing'); });
+
+  const nodeG = svg.append('g').selectAll('g').data(nodes).enter().append('g').call(drag);
+  nodeG.append('circle')
+    .attr('r', d=>d.r)
+    .style('fill', d=>d.isSeed?'#059CD7':(NODE_COLOR[d.kind]||'#888'))
+    .style('stroke', d=>d.isSeed?'#222':'#fff')
+    .style('stroke-width', d=>d.isSeed?2:1.5)
+    .style('cursor','grab');
+  nodeG.append('title').text(d=>`${d.kind}: ${d.label}`);
+  nodeG.append('text')
+    .attr('dx', d=>d.r + 4)
+    .attr('dy', 4)
+    .style('font-size','11px')
+    .style('fill','#444')
+    .text(d=>{const l = d.label||''; return l.length>28?l.slice(0,26)+'…':l;});
+
+  force.on('tick', ()=>{
+    link.attr('x1', d=>d.source.x).attr('y1', d=>d.source.y)
+        .attr('x2', d=>d.target.x).attr('y2', d=>d.target.y);
+    nodeG.attr('transform', d=>`translate(${d.x},${d.y})`);
+  });
+  // Stop after a few seconds — saves CPU on Termux when the graph
+  // is rendered but idle.
+  setTimeout(()=>force.stop(), 6000);
 }
 
-/* ───── Scan Log sub-tab ───── */
-
+/* ── Scan Log (SSE) ── */
 function renderLog(host, scan){
-  const running = scan.status === 'running' || scan.status === 'pending';
+  const running = scan.status==='running' || scan.status==='pending';
   host.innerHTML = `
-    <div class="card">
-      <div class="card-h">
-        Event log
-        <div class="spacer"></div>
-        ${running
-          ? '<span class="pill p-run"><span class="spin" style="width:9px;height:9px;border-width:2px"></span> live</span>'
-          : '<span class="pill p-pending">not streaming</span>'}
-        <button class="btn btn-ghost btn-xs" id="log-clear">Clear</button>
+    <div class="panel panel-default">
+      <div class="panel-heading">
+        <b>Event log</b>
+        <div class="pull-right">
+          ${running ? '<span class="label label-info"><i class="glyphicon glyphicon-record"></i>&nbsp;live</span>'
+                    : '<span class="label label-default">not streaming</span>'}
+          &nbsp;<button class="btn btn-default btn-xs" id="log-clear">Clear</button>
+        </div>
       </div>
-      <div class="card-b tight">
-        <div class="log" id="log-box">${
-          running
-            ? `<div class="log-row lv-info"><span class="ts">${esc(fmtClock())}</span><span class="typ">subscribed</span><span class="msg">waiting for events…</span></div>`
-            : `<div class="empty"><p>Scan completed at ${esc(fmtDate(scan.finished_at))}. Live event history is not retained after the broadcast channel closes — open a running scan to see this view populate in real-time.</p></div>`
-        }</div>
+      <div class="panel-body" style="padding:0">
+        <div id="log-box">${running
+          ? `<div class="log-row lv-info"><span class="ts">${esc(fmtClock())}</span><span class="typ">subscribed</span><span class="msg">waiting for events…</span></div>`
+          : `<div class="empty-state"><p>Scan completed at <code>${esc(fmtDate(scan.finished_at))}</code>. Live event history is not retained after the broadcast channel closes — open a running scan to see this view populate in real-time.</p></div>`}
+        </div>
       </div>
     </div>
   `;
-  $('#log-clear').addEventListener('click', () => { $('#log-box').innerHTML = ''; });
-  if (running) openSse(scan.id, ev => appendLog(ev));
-}
-
-function fmtClock(){
-  const d = new Date();
-  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2,'0')).join(':');
+  $('#log-clear').addEventListener('click', ()=>{ $('#log-box').innerHTML=''; });
+  if (running) openSse(scan.id, ev=>appendLog(ev));
 }
 function appendLog(ev){
   const box = $('#log-box'); if (!box) return;
@@ -1410,219 +1122,191 @@ function appendLog(ev){
 }
 function mapEvent(ev){
   const t = ev.type;
-  if (t === 'module_start')   return {typ:'module', lv:'info',  msg:`▶ ${esc(ev.module)}`};
-  if (t === 'module_done')    return {typ:'module', lv:'ok',    msg:`✓ ${esc(ev.module)} <span class="muted">(${ev.found} found)</span>`};
-  if (t === 'module_error')   return {typ:'module', lv:'err',   msg:`✗ ${esc(ev.module)} <span class="muted">${esc(ev.error)}</span>`};
-  if (t === 'module_skipped') return {typ:'module', lv:'skip',  msg:`◌ ${esc(ev.module)} <span class="muted">${esc(ev.reason)}</span>`};
-  if (t === 'entity_found')   return {typ:'entity', lv:'found', msg:`<span class="kind k-${attr(ev.entity?.kind)}">${esc(ev.entity?.kind)}</span> ${esc(ev.entity?.value)}`};
-  if (t === 'scan_start')     return {typ:'scan',   lv:'info',  msg:`scan started · ${esc(ev.target_kind)}=${esc(ev.target_value)}`};
-  if (t === 'scan_complete')  return {typ:'scan',   lv:'ok',    msg:`scan complete · ${ev.entity_count} entities`};
-  if (t === 'expansion_tick') return {typ:'expand', lv:'info',  msg:`depth ${ev.depth} · queued ${ev.queued} · visited ${ev.visited}`};
-  if (t === 'expansion_stop') return {typ:'expand', lv:'warn',  msg:`expansion stopped · ${esc(ev.reason)}`};
-  if (t === 'correlation_found') return {typ:'corr', lv:'corr', msg:`${esc(ev.correlation?.rule_name || ev.correlation?.rule_id || '?')}`};
-  if (t === 'correlations_done') return {typ:'corr', lv:'info', msg:`correlations done · ${ev.count}`};
-  return {typ: esc(t || '?'), lv:'info', msg: esc(JSON.stringify(ev).slice(0, 220))};
+  if (t==='module_start')   return {typ:'module', lv:'info',  msg:`▶ ${esc(ev.module)}`};
+  if (t==='module_done')    return {typ:'module', lv:'ok',    msg:`✓ ${esc(ev.module)} <span class="text-muted">(${ev.found} found)</span>`};
+  if (t==='module_error')   return {typ:'module', lv:'err',   msg:`✗ ${esc(ev.module)} <span class="text-muted">${esc(ev.error)}</span>`};
+  if (t==='module_skipped') return {typ:'module', lv:'skip',  msg:`◌ ${esc(ev.module)} <span class="text-muted">${esc(ev.reason)}</span>`};
+  if (t==='entity_found')   return {typ:'entity', lv:'found', msg:`${kindPill(ev.entity?.kind)} ${esc(ev.entity?.value)}`};
+  if (t==='scan_start')     return {typ:'scan',   lv:'info',  msg:`scan started · ${esc(ev.target_kind)}=${esc(ev.target_value)}`};
+  if (t==='scan_complete')  return {typ:'scan',   lv:'ok',    msg:`scan complete · ${ev.entity_count} entities`};
+  if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`depth ${ev.depth} · queued ${ev.queued} · visited ${ev.visited}`};
+  if (t==='expansion_stop') return {typ:'expand', lv:'warn',  msg:`expansion stopped · ${esc(ev.reason)}`};
+  if (t==='correlation_found') return {typ:'corr', lv:'corr', msg:`${esc(ev.correlation?.rule_name||ev.correlation?.rule_id||'?')}`};
+  if (t==='correlations_done') return {typ:'corr', lv:'info', msg:`correlations done · ${ev.count}`};
+  return {typ: esc(t||'?'), lv:'info', msg: esc(JSON.stringify(ev).slice(0,220))};
 }
-
 function openSse(scanId, onEv){
   closeSse();
-  const es = new EventSource(`/api/v1/scans/${encodeURIComponent(scanId)}/events`);
-  es.onmessage = e => {
-    try { onEv(JSON.parse(e.data)); } catch {}
-  };
-  es.onerror = () => { /* browser will reconnect automatically */ };
+  const es = new EventSource('/api/v1/scans/'+encodeURIComponent(scanId)+'/events');
+  es.onmessage = e => { try { onEv(JSON.parse(e.data)); } catch {} };
   S.sse = es;
 }
-function closeSse(){ if (S.sse) { S.sse.close(); S.sse = null; } }
+function closeSse(){ if (S.sse){ S.sse.close(); S.sse = null; } }
 
-/* ───── Info sub-tab ───── */
-
+/* ── Info / Scan Settings tab ── */
 function renderInfo(host, scan){
   const opts = scan.options || {};
+  const fmtList = xs => !xs || !xs.length ? '<span class="text-muted">all (default)</span>' : xs.map(x=>`<code>${esc(x)}</code>`).join(' ');
   const rows = [
     ['Scan ID', `<code>${esc(scan.id)}</code>`],
-    ['Target kind', `<span class="kind k-${attr(scan.target?.kind)}">${esc(scan.target?.kind)}</span>`],
+    ['Target type', kindPill(scan.target?.kind)],
     ['Target value', `<code>${esc(scan.target?.value)}</code>`],
     ['Status', statusPill(scan.status)],
     ['Started', esc(fmtDate(scan.started_at))],
     ['Finished', esc(fmtDate(scan.finished_at))],
-    ['Entities recorded', String(scan.entity_count || 0)],
-    ['Error', scan.error ? `<span class="muted-2" style="color:var(--err)">${esc(scan.error)}</span>` : '<span class="muted">none</span>'],
-    ['Modules (allow)', formatList(opts.modules)],
-    ['Modules (exclude)', formatList(opts.exclude_modules)],
-    ['Free-only', String(opts.free_only ?? false)],
-    ['Passive-only', String(opts.passive_only ?? false)],
-    ['Throttle (ms)', String(opts.throttle_ms ?? 0)],
-    ['Module timeout (ms)', opts.module_timeout_ms != null ? String(opts.module_timeout_ms) : '<span class="muted">module default</span>'],
-    ['Max concurrent', String(opts.max_concurrent ?? 0)],
-    ['Min confidence', opts.min_confidence != null ? opts.min_confidence.toFixed(2) : '<span class="muted">no filter</span>'],
-    ['Depth', String(opts.depth ?? 0)],
-    ['Min expand C_eff', String(opts.min_expand_confidence ?? 0.75)],
-    ['Max entities', opts.max_entities != null ? String(opts.max_entities) : '<span class="muted">unlimited</span>'],
-    ['Max wall time (s)', opts.max_wall_time_secs != null ? String(opts.max_wall_time_secs) : '<span class="muted">unlimited</span>'],
+    ['Entities recorded', String(scan.entity_count||0)],
+    ['Error', scan.error ? `<span class="scan-error">${esc(scan.error)}</span>` : '<span class="text-muted">none</span>'],
+    ['Modules (allow)', fmtList(opts.modules)],
+    ['Modules (exclude)', fmtList(opts.exclude_modules)],
+    ['Free-only', String(opts.free_only??false)],
+    ['Passive-only', String(opts.passive_only??false)],
+    ['Throttle (ms)', String(opts.throttle_ms??0)],
+    ['Module timeout (ms)', opts.module_timeout_ms!=null?String(opts.module_timeout_ms):'<span class="text-muted">module default</span>'],
+    ['Max concurrent', String(opts.max_concurrent??0)],
+    ['Min confidence', opts.min_confidence!=null?opts.min_confidence.toFixed(2):'<span class="text-muted">no filter</span>'],
+    ['Depth', String(opts.depth??0)],
+    ['Min expand C_eff', String(opts.min_expand_confidence??0.75)],
+    ['Max entities', opts.max_entities!=null?String(opts.max_entities):'<span class="text-muted">unlimited</span>'],
+    ['Max wall time (s)', opts.max_wall_time_secs!=null?String(opts.max_wall_time_secs):'<span class="text-muted">unlimited</span>'],
   ];
   host.innerHTML = `
-    <div class="card">
-      <div class="card-h">Scan parameters</div>
-      <div class="card-b tight">
-        <table class="tbl"><tbody>${rows.map(([k,v]) => `<tr><td style="width:200px;color:var(--fg2)">${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody></table>
-      </div>
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Scan settings</b></div>
+      <table class="table table-striped table-condensed" style="margin-bottom:0">
+        <tbody>${rows.map(([k,v])=>`<tr><td style="width:220px;color:#666">${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody>
+      </table>
     </div>
   `;
 }
-function formatList(xs){
-  if (!xs || !xs.length) return '<span class="muted">all (default)</span>';
-  return xs.map(x => `<code>${esc(x)}</code>`).join(' ');
-}
 
-/* ═════════════════════════════════════════════════════════════════════
- * Page: Settings (API keys)
- * ════════════════════════════════════════════════════════════════════ */
-
-async function renderSettings(v){
-  setNav('settings');
+/* ═══════════ Page: OPTS / Settings (#/opts) ═══════════ */
+async function renderOpts(v){
   const data = await API.keysGet();
   S.settings = data;
 
   v.innerHTML = `
-    <div class="page-head">
-      <h1>Settings</h1>
-      <span class="sub">API keys live in <code>${esc(data.env_path)}</code></span>
-    </div>
+    <h2>Settings</h2>
+    <hr style="margin:8px 0 14px 0">
 
-    <div class="card">
-      <div class="card-h">
-        Module API keys
-        <div class="spacer"></div>
-        ${data.write_enabled
-          ? '<span class="pill p-warn">write enabled (loopback only)</span>'
-          : '<span class="pill p-pending">read-only</span>'}
+    <div class="panel panel-default">
+      <div class="panel-heading">
+        <b>Module API keys</b>
+        <div class="pull-right">
+          ${data.write_enabled
+            ? '<span class="label label-warning">write enabled (loopback only)</span>'
+            : '<span class="label label-default">read-only</span>'}
+        </div>
       </div>
-      <div class="card-b">
-        <div class="hint" style="margin-bottom:12px;color:var(--fg2);font-size:12px">
+      <div class="panel-body">
+        <p class="text-muted" style="font-size:12px">
           ${data.write_enabled
             ? `Edits write to <code>${esc(data.env_path)}</code> at <code>mode 0600</code>. Comments and non-<code>HUNTSMAN_*</code> lines are preserved.`
             : `Write access is disabled. Restart with <code>hse serve --allow-key-write</code> to edit keys from this page. Even then, writes require the request to come from a loopback peer.`}
-        </div>
-        <div class="keygrid" id="keygrid">
-          ${data.keys.map(k => keyRow(k, data.write_enabled)).join('')}
+        </p>
+        <div id="keygrid">
+          ${data.keys.map(k=>keyRow(k, data.write_enabled)).join('')}
         </div>
         ${data.write_enabled ? `
-          <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
-            <button class="btn btn-p" id="k-save" disabled>Save changes</button>
-            <span class="muted-2" id="k-pending"></span>
+          <div style="margin-top:14px">
+            <button class="btn btn-primary" id="k-save" disabled>Save changes</button>
+            <span class="text-muted" id="k-pending" style="margin-left:10px"></span>
           </div>` : ''}
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-h">Server</div>
-      <div class="card-b">
-        <table class="tbl"><tbody>
-          <tr><td style="width:180px;color:var(--fg2)">Version</td><td><code>${esc(S.version || '?')}</code></td></tr>
-          <tr><td style="color:var(--fg2)">Health</td><td>${S.health ? '<span class="pill p-ok">ok</span>' : '<span class="pill p-err">unreachable</span>'}</td></tr>
-          <tr><td style="color:var(--fg2)">Env file path</td><td><code>${esc(data.env_path)}</code></td></tr>
-          <tr><td style="color:var(--fg2)">Known keys</td><td>${data.count}</td></tr>
-        </tbody></table>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-h">About</div>
-      <div class="card-b">
-        <p style="font-size:12.5px;color:var(--fg2);line-height:1.6">
-          Huntsman Search Engine — a pure-Rust OSINT/GEOINT prototype for Termux on Android (aarch64). Single-binary, rustls-only, no native deps,
-          bundled SQLite, embedded SPA. Scan engine drives both the CLI (<code>hse scan</code>) and this web UI.
-        </p>
-        <p style="font-size:12px;color:var(--fg3);margin-top:8px">
-          ⚠️ API keys are sensitive. Even with <code>--allow-key-write</code>, only edit them on devices you control. Never paste keys into chat,
-          screenshots, or shared documents — rotate any key that has been exposed.
-        </p>
-      </div>
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Server</b></div>
+      <table class="table table-striped table-condensed" style="margin-bottom:0">
+        <tbody>
+          <tr><td style="width:220px;color:#666">Version</td><td><code>${esc(S.version||'?')}</code></td></tr>
+          <tr><td style="color:#666">Health</td><td>${S.health ? '<span class="label label-success">ok</span>' : '<span class="label label-danger">unreachable</span>'}</td></tr>
+          <tr><td style="color:#666">Env file path</td><td><code>${esc(data.env_path)}</code></td></tr>
+          <tr><td style="color:#666">Known keys</td><td>${data.count}</td></tr>
+        </tbody>
+      </table>
     </div>
   `;
 
   if (data.write_enabled) wireKeyEditor();
 }
-
 function keyRow(k, writeEnabled){
-  return `
-    <div class="keyrow" data-key="${attr(k.name)}">
-      <div>
-        <div class="kn">${esc(k.name)}</div>
-        <div class="kd">${k.set ? 'set · click "Update" to overwrite' : 'not set'}</div>
-      </div>
-      <div class="kstatus">
-        ${k.set ? '<span class="pill p-ok">set</span>' : '<span class="pill p-dim">unset</span>'}
-        ${writeEnabled ? `
-          <input type="password" placeholder="${k.set ? 'enter new value' : 'paste key'}" autocomplete="off" data-input>
-          <button class="btn btn-g btn-sm" data-action="update">${k.set ? 'Update' : 'Set'}</button>
-          ${k.set ? '<button class="btn btn-danger btn-sm" data-action="delete">Delete</button>' : ''}
-        ` : ''}
-      </div>
+  return `<div class="keyrow" data-key="${attr(k.name)}">
+    <div>
+      <div class="kn">${esc(k.name)}</div>
+      <div class="kd">${k.set ? '<span class="status-pill s-complete">set</span>' : '<span class="status-pill s-pending">unset</span>'}</div>
     </div>
-  `;
+    ${writeEnabled ? `
+      <input type="password" class="form-control input-sm" placeholder="${k.set?'enter new value':'paste key'}" autocomplete="off" data-input>
+      <div class="kactions">
+        <button class="btn btn-default btn-sm" data-action="update">${k.set?'Update':'Set'}</button>
+        ${k.set ? '<button class="btn btn-danger btn-sm" data-action="delete">Delete</button>' : ''}
+      </div>
+    ` : ''}
+  </div>`;
 }
-
 function wireKeyEditor(){
-  const pending = { updates: {}, deletes: new Set() };
-  const refresh = () => {
+  const pending = {updates:{}, deletes:new Set()};
+  const refresh = ()=>{
     const n = Object.keys(pending.updates).length + pending.deletes.size;
-    $('#k-save').disabled = n === 0;
-    $('#k-pending').textContent = n === 0 ? '' : `${n} pending change${n === 1 ? '' : 's'}`;
+    $('#k-save').disabled = n===0;
+    $('#k-pending').textContent = n===0?'':`${n} pending change${n===1?'':'s'}`;
   };
-  $$('.keyrow').forEach(row => {
+  $$('.keyrow').forEach(row=>{
     const name = row.dataset.key;
-    row.querySelectorAll('button').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const action = btn.dataset.action;
-        if (action === 'update') {
+    row.querySelectorAll('button').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        if (btn.dataset.action==='update'){
           const inp = row.querySelector('input[data-input]');
-          const v = (inp.value || '').trim();
-          if (!v) { inp.focus(); toast('value required', 'warn'); return; }
+          const v = (inp.value||'').trim();
+          if (!v){ inp.focus(); alertify.warning('value required'); return; }
           pending.updates[name] = v;
           pending.deletes.delete(name);
           inp.value = '';
-          toast(`${name} queued`, 'ok', 1200);
+          toast(`${name} queued`);
           refresh();
-        }
-        if (action === 'delete') {
-          // confirm() shows plain text — no HTML escaping needed.
-          if (!confirm(`Delete ${name} from ${S.settings.env_path}?`)) return;
-          pending.deletes.add(name);
-          delete pending.updates[name];
-          refresh();
+        } else if (btn.dataset.action==='delete'){
+          alertify.confirm('Delete key', `Delete ${name} from ${S.settings.env_path}?`, ()=>{
+            pending.deletes.add(name);
+            delete pending.updates[name];
+            refresh();
+          }, ()=>{});
         }
       });
     });
   });
-  $('#k-save').addEventListener('click', async () => {
-    const body = { updates: pending.updates, deletes: Array.from(pending.deletes) };
-    try {
-      await API.keysPut(body);
-      toast('Saved', 'ok');
-      // Re-fetch to reflect new state.
-      render();
-    } catch (e) {
-      toast(e.message, 'err', 5000);
-    }
+  $('#k-save').addEventListener('click', async()=>{
+    try { await API.keysPut({updates:pending.updates, deletes:Array.from(pending.deletes)});
+          toast('Saved'); render(); }
+    catch(e){ alertify.error(e.message); }
   });
 }
 
-/* ═════════════════════════════════════════════════════════════════════
- * Bootstrap
- * ════════════════════════════════════════════════════════════════════ */
+/* ═══════════ Theme toggler (Spiderfoot-compatible localStorage key) ═══════════ */
+function applyTheme(){
+  const dark = localStorage.getItem('theme') === 'dark-theme';
+  document.body.classList.toggle('dark-theme', dark);
+  $('#theme-label').textContent = dark ? 'Light Mode' : 'Dark Mode';
+}
+document.addEventListener('DOMContentLoaded', ()=>{
+  $('#theme-toggle').addEventListener('click', e=>{
+    e.preventDefault();
+    const dark = !document.body.classList.contains('dark-theme');
+    localStorage.setItem('theme', dark ? 'dark-theme' : 'light-theme');
+    applyTheme();
+  });
+});
 
+/* ═══════════ Bootstrap ═══════════ */
 (async function init(){
+  applyTheme();
+  if (typeof alertify !== 'undefined') alertify.set('notifier','position','top-right');
   try {
     const h = await API.health();
     S.health = h; S.version = h.version || '?';
-    $('#hdot').classList.add('ok');
-    $('#hstat').textContent = 'online';
-    $('#hver').textContent = `v${S.version}`;
+    $('#ver').textContent = S.version;
+    $('#ver2').textContent = S.version;
   } catch {
-    $('#hdot').classList.add('err');
-    $('#hstat').textContent = 'unreachable';
+    $('#ver').textContent = 'offline';
   }
   await render();
 })();

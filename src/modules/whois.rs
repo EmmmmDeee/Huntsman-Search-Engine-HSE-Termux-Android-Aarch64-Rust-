@@ -89,19 +89,26 @@ impl Module for Whois {
         .filter(|e| e.contains('@'));
         let registrant_org = field(
             &response,
-            &["Registrant Organization:", "Registrant Organisation:", "org:"],
+            &[
+                "Registrant Organization:",
+                "Registrant Organisation:",
+                "org:",
+            ],
         );
         let registrant_country = field(&response, &["Registrant Country:", "country:"]);
         let registrant_state = field(
             &response,
             &["Registrant State/Province:", "Registrant State:"],
         );
-        let admin_email =
-            field(&response, &["Admin Email:"]).filter(|e| e.contains('@'));
+        let admin_email = field(&response, &["Admin Email:"]).filter(|e| e.contains('@'));
         let tech_email = field(&response, &["Tech Email:"]).filter(|e| e.contains('@'));
         let abuse_email = field(
             &response,
-            &["Registrar Abuse Contact Email:", "abuse-mailbox:", "OrgAbuseEmail:"],
+            &[
+                "Registrar Abuse Contact Email:",
+                "abuse-mailbox:",
+                "OrgAbuseEmail:",
+            ],
         )
         .filter(|e| e.contains('@'));
         let nameservers = all_fields(&response, &["Name Server:", "nserver:"]);
@@ -225,9 +232,12 @@ impl Module for Whois {
                 let mut e = Entity::new(EntityKind::Email, addr, 0.78, &_ctx.scan_id);
                 e.tag(format!("whois-{role}"));
                 e.add_evidence(
-                    Evidence::new("whois", format!("WHOIS {role} contact for {}", target.value))
-                        .with_attr("role", role)
-                        .with_attr("parent_target", target.value.as_str()),
+                    Evidence::new(
+                        "whois",
+                        format!("WHOIS {role} contact for {}", target.value),
+                    )
+                    .with_attr("role", role)
+                    .with_attr("parent_target", target.value.as_str()),
                 );
                 result.push(e);
             }

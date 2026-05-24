@@ -32,6 +32,11 @@ pub struct AppState {
     pub engine: Arc<ScanEngine>,
     pub bus: EventBus,
     pub live: LiveScanner,
+    /// Shared `reqwest::Client` — internally `Arc`-y so cloning per scan
+    /// is cheap. Owning it on `AppState` lets the connection pool, DNS
+    /// cache, and TLS session cache survive across scans (a noticeable
+    /// win on Termux where TLS handshake cost dominates short scans).
+    pub http: reqwest::Client,
     /// Set by `hse serve --allow-key-write`. When false, `PUT /api/v1/settings/keys`
     /// always returns 403 regardless of where the request came from. When true,
     /// the handler still requires the request to originate from a loopback peer.
