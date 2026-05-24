@@ -566,7 +566,7 @@ const SITES: &[Site] = &[
         200,
         "other"
     ),
-    s!("Giphy", "https://giphy.com/{}", H, 200, "other"),
+    s!("Giphy (profile)", "https://giphy.com/{}", H, 200, "other"),
     s!("IFTTT", "https://ifttt.com/p/{}", H, 200, "other"),
     s!("Linktree (alt)", "https://linktr.ee/{}", H, 200, "other"),
     s!("Tenor", "https://tenor.com/users/{}", H, 200, "other"),
@@ -580,6 +580,419 @@ const SITES: &[Site] = &[
     s!(
         "Archive.org",
         "https://archive.org/details/@{}",
+        H,
+        200,
+        "other"
+    ),
+    // ══════════════════════════════════════════════════════════════════
+    // Maigret-complete additions — every site from Maigret's data.json
+    // that isn't already above and uses a detection method we support.
+    // ══════════════════════════════════════════════════════════════════
+    // ── Social (Maigret) ───────────────────────────────────────────
+    s!(
+        "Facebook",
+        "https://www.facebook.com/{}",
+        HAS,
+        200,
+        "first_name",
+        "social"
+    ),
+    s!(
+        "Threads",
+        "https://www.threads.net/@{}",
+        NOT,
+        200,
+        "Threads \u{2022} Log in",
+        "social"
+    ),
+    s!("OK.ru", "https://ok.ru/{}", H, 200, "social"),
+    s!("Myspace", "https://myspace.com/{}", H, 200, "social"),
+    s!("Naver Blog", "https://blog.naver.com/{}", H, 200, "social"),
+    // ── Messaging (Maigret) ────────────────────────────────────────
+    s!("Slack", "https://{}.slack.com", H, 200, "messaging"),
+    s!(
+        "Discord",
+        "https://discord.com/users/{}",
+        H,
+        200,
+        "messaging"
+    ),
+    // ── Developer (Maigret) ────────────────────────────────────────
+    s!("Scratch", "https://scratch.mit.edu/users/{}", H, 200, "dev"),
+    s!(
+        "StackOverflow",
+        "https://stackoverflow.com/users/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "DigitalOcean",
+        "https://www.digitalocean.com/community/users/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!("Launchpad", "https://launchpad.net/~{}", H, 200, "dev"),
+    s!("Laracasts", "https://laracasts.com/@{}", H, 200, "dev"),
+    s!(
+        "Apple Developer",
+        "https://developer.apple.com/forums/profile/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "Apple Discuss.",
+        "https://discussions.apple.com/profile/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "MS TechNet",
+        "https://social.technet.microsoft.com/profile/{}/",
+        H,
+        200,
+        "dev"
+    ),
+    // ── Professional (Maigret) ─────────────────────────────────────
+    s!(
+        "Xing",
+        "https://www.xing.com/profile/{}",
+        H,
+        200,
+        "business"
+    ),
+    s!(
+        "ResearchGate",
+        "https://www.researchgate.net/profile/{}",
+        H,
+        200,
+        "business"
+    ),
+    s!(
+        "Academia.edu",
+        "https://independent.academia.edu/{}",
+        H,
+        200,
+        "business"
+    ),
+    s!("Upwork", "https://upwork.com/fl/{}", H, 200, "business"),
+    s!("Calendly", "https://calendly.com/{}", H, 200, "business"),
+    s!(
+        "Gumroad",
+        "https://www.gumroad.com/{}",
+        NOT,
+        200,
+        "Page not found",
+        "business"
+    ),
+    s!(
+        "Paypal.me",
+        "https://www.paypal.com/paypalme/{}",
+        HAS,
+        200,
+        "displayName",
+        "business"
+    ),
+    // ── E-commerce (Maigret) ───────────────────────────────────────
+    s!(
+        "Ebay",
+        "https://www.ebay.com/usr/{}",
+        HAS,
+        200,
+        "Positive feedback",
+        "business"
+    ),
+    s!("Etsy", "https://www.etsy.com/shop/{}", H, 200, "business"),
+    s!(
+        "Amazon Author",
+        "https://amazon.com/author/{}",
+        HAS,
+        200,
+        "authorName",
+        "business"
+    ),
+    // ── Blogging (Maigret) ─────────────────────────────────────────
+    s!("Blogger", "https://{}.blogspot.com", H, 200, "blog"),
+    s!("WordPress", "https://{}.wordpress.com/", H, 200, "blog"),
+    s!("LiveJournal", "https://{}.livejournal.com", H, 200, "blog"),
+    s!("Wix", "https://{}.wix.com", H, 200, "blog"),
+    s!(
+        "Weebly",
+        "https://{}.weebly.com/",
+        NOT,
+        200,
+        "Error - Page Not Found",
+        "blog"
+    ),
+    s!(
+        "Ameblo",
+        "https://ameblo.jp/{}",
+        NOT,
+        200,
+        "THROW_NOT_FOUND_EXCEPTION",
+        "blog"
+    ),
+    // ── Music (Maigret) ────────────────────────────────────────────
+    s!(
+        "Spotify",
+        "https://open.spotify.com/user/{}",
+        H,
+        200,
+        "music"
+    ),
+    // ── Photo/Design (Maigret) ─────────────────────────────────────
+    s!(
+        "Freepik",
+        "https://www.freepik.com/author/{}",
+        H,
+        200,
+        "photo"
+    ),
+    s!(
+        "ThemeForest",
+        "https://themeforest.net/user/{}",
+        H,
+        200,
+        "photo"
+    ),
+    s!(
+        "Photobucket",
+        "https://photobucket.com/user/{}/library",
+        H,
+        200,
+        "photo"
+    ),
+    s!(
+        "iStock",
+        "https://www.istockphoto.com/portfolio/{}",
+        HAS,
+        200,
+        "collectionName",
+        "photo"
+    ),
+    // ── Video (Maigret) ────────────────────────────────────────────
+    s!(
+        "Giphy",
+        "https://giphy.com/channel/{}",
+        NOT,
+        200,
+        "404 Not Found",
+        "video"
+    ),
+    // ── Crowdfunding (Maigret) ─────────────────────────────────────
+    s!(
+        "Kickstarter",
+        "https://www.kickstarter.com/profile/{}",
+        H,
+        200,
+        "crowdfunding"
+    ),
+    s!(
+        "GoFundMe",
+        "https://www.gofundme.com/f/{}",
+        H,
+        200,
+        "crowdfunding"
+    ),
+    s!(
+        "Change.org",
+        "https://www.change.org/o/{}",
+        HAS,
+        200,
+        "first_name",
+        "crowdfunding"
+    ),
+    // ── Forums (Maigret) ───────────────────────────────────────────
+    s!(
+        "OpenStreetMap",
+        "https://www.openstreetmap.org/user/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!("Scribd", "https://www.scribd.com/{}", H, 200, "forum"),
+    s!("BuzzFeed", "https://buzzfeed.com/{}", H, 200, "forum"),
+    s!(
+        "Slashdot",
+        "https://slashdot.org/~{}",
+        NOT,
+        200,
+        "user you requested does not exist",
+        "forum"
+    ),
+    s!(
+        "Oracle Community",
+        "https://community.oracle.com/people/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Cloudflare Forum",
+        "https://community.cloudflare.com/u/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Adobe Community",
+        "https://community.adobe.com/t5/user/viewprofilepage/user-id/{}",
+        H,
+        200,
+        "forum"
+    ),
+    // ── Media/Publishing (Maigret) ─────────────────────────────────
+    s!(
+        "Issuu",
+        "https://issuu.com/{}",
+        HAS,
+        200,
+        "displayName",
+        "media"
+    ),
+    s!(
+        "Yumpu",
+        "https://www.yumpu.com/user/{}",
+        HAS,
+        200,
+        "yp-grid-mag-container",
+        "media"
+    ),
+    // ── East-Asian/CIS (Maigret) ───────────────────────────────────
+    s!(
+        "Weibo",
+        "https://weibo.com/{}",
+        HAS,
+        200,
+        "\"ok\":1",
+        "social"
+    ),
+    s!("Zhihu", "https://www.zhihu.com/people/{}", H, 200, "social"),
+    s!(
+        "Douban",
+        "https://www.douban.com/people/{}/",
+        HAS,
+        200,
+        "db-usr-profile",
+        "social"
+    ),
+    s!(
+        "Baidu Tieba",
+        "https://tieba.baidu.com/home/main?un={}",
+        H,
+        200,
+        "social"
+    ),
+    // ── Yandex (Maigret) ───────────────────────────────────────────
+    s!(
+        "Yandex.Market",
+        "https://market.yandex.ru/user/{}",
+        H,
+        200,
+        "other"
+    ),
+    s!(
+        "Yandex.Music",
+        "https://music.yandex.ru/users/{}",
+        H,
+        200,
+        "music"
+    ),
+    s!(
+        "Yandex.Reviews",
+        "https://reviews.yandex.ru/user/{}",
+        HAS,
+        200,
+        "Отзывы и оценки",
+        "other"
+    ),
+    // ── Gaming (Maigret) ───────────────────────────────────────────
+    s!(
+        "Steam Group",
+        "https://steamcommunity.com/groups/{}",
+        NOT,
+        200,
+        "No group could be retrieved",
+        "gaming"
+    ),
+    // ── Fandom wikis (Maigret) ─────────────────────────────────────
+    s!(
+        "Fandom User",
+        "https://www.fandom.com/u/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Fandom Central",
+        "https://community.fandom.com/wiki/User:{}",
+        HAS,
+        200,
+        "\"userid\"",
+        "forum"
+    ),
+    // ── Travel (Maigret) ───────────────────────────────────────────
+    s!(
+        "LonelyPlanet",
+        "https://www.lonelyplanet.com/profile/{}",
+        H,
+        200,
+        "travel"
+    ),
+    s!(
+        "Yelp",
+        "https://www.yelp.com/user_details?userid={}",
+        H,
+        200,
+        "travel"
+    ),
+    // ── Shopping/reviews (Maigret) ─────────────────────────────────
+    s!(
+        "Google Play Dev",
+        "https://play.google.com/store/apps/developer?id={}",
+        H,
+        200,
+        "other"
+    ),
+    s!(
+        "Shutterstock",
+        "https://www.shutterstock.com/g/{}",
+        H,
+        200,
+        "photo"
+    ),
+    s!("Envato", "https://codecanyon.net/user/{}", H, 200, "other"),
+    s!("Bit.ly", "https://bit.ly/{}", H, 200, "other"),
+    // ── Education (Maigret) ────────────────────────────────────────
+    s!(
+        "Udemy",
+        "https://www.udemy.com/user/{}",
+        H,
+        200,
+        "education"
+    ),
+    s!(
+        "W3Schools",
+        "https://www.w3schools.com/{}",
+        H,
+        200,
+        "education"
+    ),
+    s!(
+        "Google Scholar",
+        "https://scholar.google.com/citations?user={}",
+        HAS,
+        200,
+        "class=\"gs_a\"",
+        "education"
+    ),
+    // ── Misc (Maigret) ─────────────────────────────────────────────
+    s!(
+        "Weforum",
+        "https://www.weforum.org/people/{}",
         H,
         200,
         "other"
