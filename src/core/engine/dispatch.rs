@@ -131,6 +131,40 @@ pub(super) fn module_skip_reason(module: &dyn Module, opts: &ScanOptions) -> Opt
 }
 
 impl ScanEngine {
+    /// Emit a `ModuleSkipped` event. Shared helper for the 6+ sites in
+    /// the sequential and concurrent paths that need the same 4-line
+    /// event construct.
+    fn emit_skip(&self, scan_id: &str, module: &str, reason: String) {
+        let _ = self.bus.send(Event::new(
+            scan_id,
+            EventKind::ModuleSkipped {
+                module: module.into(),
+                reason,
+            },
+        ));
+    }
+
+    /// Check whether a module should be skipped (not accepting, or
+    /// filtered by the user's scan options). If skipped for an option
+    /// reason, a `ModuleSkipped` event is emitted so the log shows
+    /// why. Returns `true` when the caller should `continue`.
+    fn should_skip_module(
+        &self,
+        scan_id: &str,
+        module: &dyn Module,
+        target: &Target,
+        opts: &ScanOptions,
+    ) -> bool {
+        if !module.accepts(target) {
+            return true;
+        }
+        if let Some(reason) = module_skip_reason(module, opts) {
+            self.emit_skip(scan_id, module.name(), reason.into());
+            return true;
+        }
+        false
+    }
+
     /// Dispatch every accepting module against `target`. Picks the
     /// sequential or concurrent codepath based on `opts.max_concurrent`.
     ///
@@ -171,37 +205,13 @@ impl ScanEngine {
         for module in &self.modules {
             let name = module.name();
 
-            if !module.accepts(target) {
-                continue;
-            }
-            if let Some(reason) = module_skip_reason(&**module, opts) {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: reason.into(),
-                    },
-                ));
+            if self.should_skip_module(scan_id, &**module, target, opts) {
                 continue;
             }
 
-            // In-flight budget gate. If the running entity count already
-            // crossed `max_entities` (or wall-time crossed
-            // `max_wall_time_secs`) before this module runs, stop
-            // dispatching further modules against this target. Modules
-            // that already completed keep their results; we emit a
-            // single `ModuleSkipped` event tagged with the budget reason
-            // and `break` rather than `continue` so the bus isn't flooded
-            // with one skip per remaining module (the gate is global —
-            // the second through N-th would all carry the same reason).
+            // In-flight budget gate — one ModuleSkipped + break.
             if let Some(stop) = budget_check(opts, started, entity_map.len()) {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: stop.label(),
-                    },
-                ));
+                self.emit_skip(scan_id, name, stop.label());
                 break;
             }
 
@@ -261,13 +271,7 @@ impl ScanEngine {
         // spawn anything new. This matches the sequential path's
         // behaviour of never running modules past the gate.
         if let Some(stop) = budget_check(opts, started, entity_map.len()) {
-            let _ = self.bus.send(Event::new(
-                scan_id,
-                EventKind::ModuleSkipped {
-                    module: "<dispatcher>".into(),
-                    reason: stop.label(),
-                },
-            ));
+            self.emit_skip(scan_id, "<dispatcher>", stop.label());
             return Ok(());
         }
 
@@ -275,19 +279,7 @@ impl ScanEngine {
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
 
         for module in &self.modules {
-            let name = module.name();
-
-            if !module.accepts(target) {
-                continue;
-            }
-            if let Some(reason) = module_skip_reason(&**module, opts) {
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: reason.into(),
-                    },
-                ));
+            if self.should_skip_module(scan_id, &**module, target, opts) {
                 continue;
             }
 
@@ -370,38 +362,15 @@ impl ScanEngine {
                 Err(e) => warn!(error = %e, "concurrent module task panicked"),
             }
             if let Some(stop) = budget_check(opts, started, entity_map.len()) {
-                // Dispatcher-level sentinel event: one per budget
-                // trigger, named `<dispatcher>` so it can't be
-                // confused with an actual module skip and carries
-                // the budget reason (max_entities=N reached, etc.).
-                let _ = self.bus.send(Event::new(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: "<dispatcher>".into(),
-                        reason: stop.label(),
-                    },
-                ));
-                // Drain remaining spawned tasks and close each one's
-                // lifecycle with a `ModuleSkipped` carrying the
-                // module's own name — preserving the
-                // start→{done,error,skip} invariant SSE consumers and
-                // the persisted event log rely on. Entities from these
-                // tasks are deliberately dropped (the work happened
-                // but the budget cap forbids merging them).
+                self.emit_skip(scan_id, "<dispatcher>", stop.label());
+                // Drain remaining spawned tasks, closing each one's
+                // lifecycle with ModuleSkipped so every ModuleStart
+                // has a matching end. Entities are deliberately not
+                // merged — the budget cap forbids them.
                 while let Some(drained) = set.join_next().await {
                     match drained {
-                        Ok(o) => {
-                            let _ = self.bus.send(Event::new(
-                                scan_id,
-                                EventKind::ModuleSkipped {
-                                    module: o.name.into(),
-                                    reason: "dispatch over budget".into(),
-                                },
-                            ));
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "drained module task panicked")
-                        }
+                        Ok(o) => self.emit_skip(scan_id, o.name, "dispatch over budget".into()),
+                        Err(e) => warn!(error = %e, "drained module task panicked"),
                     }
                 }
                 break;
