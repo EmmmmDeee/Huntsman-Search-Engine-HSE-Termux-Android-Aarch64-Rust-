@@ -340,14 +340,20 @@ fn rule_au_005_anonymous_network(entities: &[Entity], scan_id: &str, ts: u64) ->
         .collect()
 }
 
-/// `AU-006` — Proxy / VPN fronting: IpAddress tagged `proxy` or `vpn`
-/// (without also being a Tor exit — that's already AU-005). Source set:
-/// `criminal_ip` + `ipqs`.
+/// `AU-006` — Proxy / VPN fronting: IpAddress tagged `proxy` or `vpn`,
+/// excluding any IP that's also classified as an anonymous-network
+/// exit (Tor / anonymous-network / anonymous-vpn — those fire AU-005).
+/// Source set: `criminal_ip` + `ipqs`.
 fn rule_au_006_proxy_vpn(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    // Same vocabulary as AU-005's ANON_TAGS — keep them in sync so the
+    // exclusion stays complete if the anon set grows.
+    const ANON_TAGS: &[&str] = &["tor-exit", "tor", "anonymous-network", "anonymous-vpn"];
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::IpAddress)
-        .filter(|e| (e.has_tag("proxy") || e.has_tag("vpn")) && !e.has_tag("tor-exit"))
+        .filter(|e| {
+            (e.has_tag("proxy") || e.has_tag("vpn")) && !ANON_TAGS.iter().any(|t| e.has_tag(t))
+        })
         .map(|e| {
             let mut hits: Vec<&str> = Vec::new();
             if e.has_tag("proxy") {
@@ -460,8 +466,12 @@ fn rule_au_009_stealer_log(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<C
 }
 
 /// `AU-011` — Cross-platform username footprint: a Username entity
-/// confirmed on three or more services. Counts distinct `platform:*`
-/// tags emitted by `username_search`.
+/// confirmed on three or more services.
+///
+/// `username_search` records the platform list in its summary
+/// Username entity's evidence (attrs `platforms_count` + `platforms`),
+/// not as `platform:*` tags on the Username — those tags live on the
+/// per-platform Url entities. We read the attrs to match real data.
 fn rule_au_011_cross_platform_username(
     entities: &[Entity],
     scan_id: &str,
@@ -471,23 +481,32 @@ fn rule_au_011_cross_platform_username(
         .iter()
         .filter(|e| e.kind == EntityKind::Username)
         .filter_map(|e| {
-            let platforms: HashSet<&str> = e
-                .tags
-                .iter()
-                .filter_map(|t| t.strip_prefix("platform:"))
-                .collect();
-            if platforms.len() >= 3 {
-                let mut names: Vec<&str> = platforms.into_iter().collect();
-                names.sort_unstable();
+            // Inspect every evidence row attached to this Username for a
+            // platforms_count + platforms pair. Take the maximum count
+            // across rows so an entity merged from multiple scans still
+            // fires correctly.
+            let mut max_count: u64 = 0;
+            let mut best_list: Option<&str> = None;
+            for ev in &e.evidence {
+                let count = ev
+                    .attributes
+                    .get("platforms_count")
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                if count > max_count {
+                    max_count = count;
+                    best_list = ev.attributes.get("platforms").map(String::as_str);
+                }
+            }
+            if max_count >= 3 {
+                let detail = best_list.map(|s| format!(": {s}")).unwrap_or_default();
                 Some(Correlation {
                     rule_id: "AU-011".into(),
                     rule_name: "Cross-platform username footprint".into(),
                     severity: Severity::Medium,
                     description: format!(
-                        "Username '{}' present on {} platforms: {}",
-                        e.value,
-                        names.len(),
-                        names.join(", ")
+                        "Username '{}' present on {max_count} platforms{detail}",
+                        e.value
                     ),
                     entity_uids: vec![e.uid.clone()],
                     scan_id: scan_id.into(),
@@ -500,35 +519,45 @@ fn rule_au_011_cross_platform_username(
         .collect()
 }
 
-/// `AU-012` — Identity-linked domain: a Domain tagged `personal-site`
-/// (set by `github_user` when a user lists a personal site in their
-/// profile) occurs together with the originating Username entity.
+/// `AU-012` — Identity-linked site: a Url or Domain tagged
+/// `personal-site` co-occurs with a Username in the same scan. The tag
+/// is emitted by `github_user` on the blog field of a profile, which
+/// is an `EntityKind::Url`; we also accept `EntityKind::Domain` so any
+/// future module that publishes a domain-level personal-site tag
+/// composes correctly.
+///
+/// "Linked" here means co-occurrence in the same scan, not a verified
+/// ownership relationship — the description reflects that.
 fn rule_au_012_identity_linked_domain(
     entities: &[Entity],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let usernames: Vec<&Entity> = entities
+    let username_uids: Vec<String> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Username)
+        .map(|u| u.uid.clone())
         .collect();
-    if usernames.is_empty() {
+    if username_uids.is_empty() {
         return Vec::new();
     }
     entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Domain && e.has_tag("personal-site"))
+        .filter(|e| {
+            matches!(e.kind, EntityKind::Url | EntityKind::Domain) && e.has_tag("personal-site")
+        })
         .map(|d| {
-            let mut uids = vec![d.uid.clone()];
-            uids.extend(usernames.iter().map(|u| u.uid.clone()));
+            let mut uids = Vec::with_capacity(1 + username_uids.len());
+            uids.push(d.uid.clone());
+            uids.extend(username_uids.iter().cloned());
             Correlation {
                 rule_id: "AU-012".into(),
-                rule_name: "Identity-linked domain".into(),
+                rule_name: "Identity-linked site".into(),
                 severity: Severity::Medium,
                 description: format!(
-                    "Personal site '{}' linked from {} username profile(s)",
+                    "Personal site '{}' co-occurs with {} username(s) in scan",
                     d.value,
-                    usernames.len()
+                    username_uids.len()
                 ),
                 entity_uids: uids,
                 scan_id: scan_id.into(),
@@ -570,18 +599,20 @@ fn rule_au_013_local_network_discovery(
 }
 
 /// `AU-014` — Geolocation cluster: a Coordinates entity is corroborated
-/// by two or more distinct geo-tagged sources (`wifi-observed`, plus
-/// any `geoint`-tagged evidence). Useful when WiGLE + cell-survey +
-/// GPS agree on a location.
+/// by two or more distinct geo sources. The Coordinates-producing
+/// modules currently are `gps_fix` (tags `geoint`), `wigle` (tags
+/// `wifi-observed`) and `ip_geo` (tags `geoint`). `cell_survey` tags
+/// `cell-tower` on `DeviceId` entities (cell-tower IDs), not on
+/// Coordinates, so it isn't part of this rule's vocabulary.
 fn rule_au_014_geo_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
-    const GEO_TAGS: &[&str] = &["geoint", "wifi-observed", "cell-tower"];
+    const GEO_TAGS: &[&str] = &["geoint", "wifi-observed"];
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Coordinates)
         .filter_map(|e| {
             let hits: Vec<&str> = GEO_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
             // Also count distinct evidence sources — the canonical
-            // multi-source cluster looks like (wigle + cell_survey + gps_fix)
+            // multi-source cluster looks like (wigle + gps_fix + ip_geo)
             // all writing to the same Coordinates value.
             let sources: HashSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
             if hits.len() >= 2 || sources.len() >= 2 {
@@ -803,6 +834,23 @@ mod tests {
     }
 
     #[test]
+    fn au006_excludes_all_anon_tags_not_just_tor_exit() {
+        // Regression: a previous version only excluded `tor-exit`, so an
+        // IP tagged `tor` / `anonymous-network` / `anonymous-vpn` would
+        // double-fire AU-005 + AU-006. Now AU-006 silences all four.
+        let tor_short = tagged(EntityKind::IpAddress, "4.4.4.4", &["tor", "vpn"]);
+        let anon_net = tagged(
+            EntityKind::IpAddress,
+            "5.5.5.5",
+            &["anonymous-network", "vpn"],
+        );
+        let anon_vpn = tagged(EntityKind::IpAddress, "6.6.6.6", &["anonymous-vpn", "vpn"]);
+        assert!(rule_au_006_proxy_vpn(&[tor_short], "s", 0).is_empty());
+        assert!(rule_au_006_proxy_vpn(&[anon_net], "s", 0).is_empty());
+        assert!(rule_au_006_proxy_vpn(&[anon_vpn], "s", 0).is_empty());
+    }
+
+    #[test]
     fn au007_fires_on_high_risk() {
         let e = tagged(EntityKind::IpAddress, "4.4.4.4", &["high-risk", "scanner"]);
         let r = rule_au_007_high_risk_reputation(&[e], "s", 0);
@@ -826,43 +874,70 @@ mod tests {
         assert_eq!(r[0].severity, Severity::High);
     }
 
+    /// Build a `username_search`-shaped summary entity: Username with
+    /// the `platforms_count` + `platforms` attrs on an evidence row.
+    /// Mirrors the real entity emitted at src/modules/username_search.rs:360.
+    fn username_summary(value: &str, count: u64, platforms: &str) -> Entity {
+        let mut e = Entity::new(EntityKind::Username, value, 0.95, "scan-test");
+        e.tag("multi-platform");
+        e.add_evidence(
+            Evidence::new("username_search", "summary")
+                .with_attr("platforms_count", count.to_string())
+                .with_attr("platforms", platforms),
+        );
+        e
+    }
+
     #[test]
     fn au011_fires_on_three_platforms() {
-        let e = tagged(
-            EntityKind::Username,
-            "alice",
-            &["platform:github", "platform:reddit", "platform:twitter"],
-        );
+        let e = username_summary("alice", 3, "github, reddit, twitter");
         let r = rule_au_011_cross_platform_username(&[e], "s", 0);
         assert_eq!(r.len(), 1);
+        assert!(r[0].description.contains("3 platforms"));
+        assert!(r[0].description.contains("github"));
     }
 
     #[test]
     fn au011_no_fire_on_two_platforms() {
-        let e = tagged(
-            EntityKind::Username,
-            "alice",
-            &["platform:github", "platform:reddit"],
-        );
+        let e = username_summary("alice", 2, "github, reddit");
         assert!(rule_au_011_cross_platform_username(&[e], "s", 0).is_empty());
     }
 
     #[test]
-    fn au012_fires_when_username_and_personal_site_present() {
+    fn au012_fires_when_username_and_personal_site_url_present() {
+        // `github_user` emits `personal-site` on a Url entity (the blog
+        // field of a profile), not a Domain — this fixture matches that.
+        let entities = vec![
+            tagged(EntityKind::Username, "alice", &[]),
+            tagged(
+                EntityKind::Url,
+                "https://alice.example/",
+                &["personal-site"],
+            ),
+        ];
+        let r = rule_au_012_identity_linked_domain(&entities, "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].entity_uids.len(), 2);
+        assert!(r[0].description.contains("co-occurs"));
+    }
+
+    #[test]
+    fn au012_also_fires_on_personal_site_domain() {
+        // Forward-compatibility: any future module that tags a Domain
+        // (not a Url) with `personal-site` should still fire AU-012.
         let entities = vec![
             tagged(EntityKind::Username, "alice", &[]),
             tagged(EntityKind::Domain, "alice.example", &["personal-site"]),
         ];
         let r = rule_au_012_identity_linked_domain(&entities, "s", 0);
         assert_eq!(r.len(), 1);
-        assert_eq!(r[0].entity_uids.len(), 2);
     }
 
     #[test]
     fn au012_no_fire_without_username() {
         let entities = vec![tagged(
-            EntityKind::Domain,
-            "alice.example",
+            EntityKind::Url,
+            "https://alice.example/",
             &["personal-site"],
         )];
         assert!(rule_au_012_identity_linked_domain(&entities, "s", 0).is_empty());
@@ -886,9 +961,13 @@ mod tests {
 
     #[test]
     fn au014_fires_on_two_geo_sources() {
+        // Use sources that actually produce Coordinates entities:
+        // `gps_fix` (geoint) + `wigle` (wifi-observed) + `ip_geo` (geoint).
+        // (cell_survey emits DeviceId, not Coordinates, so it isn't a
+        // valid source for this rule.)
         let mut e = Entity::new(EntityKind::Coordinates, "0,0", 0.9, "s");
         e.add_evidence(Evidence::new("wigle", "test"));
-        e.add_evidence(Evidence::new("cell_survey", "test"));
+        e.add_evidence(Evidence::new("gps_fix", "test"));
         let r = rule_au_014_geo_cluster(&[e], "s", 0);
         assert_eq!(r.len(), 1);
     }
