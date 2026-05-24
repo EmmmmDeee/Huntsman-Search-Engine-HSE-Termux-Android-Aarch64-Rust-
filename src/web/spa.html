@@ -1089,10 +1089,27 @@ function buildD3Graph(){
 
 /* ── Scan Log (history + live SSE) ──
    v0.10+ — engine persists every event to SQLite, so completed scans
-   now show the full timeline. Live scans load history first, then
-   subscribe for continuation. The two paths are deduped by event
-   id range: history fills everything up to "now", live picks up
-   from the next event the engine emits. */
+   now show the full timeline. For live scans we must take care with
+   the SSE-vs-history ordering:
+
+   Engine semantics: persist FIRST, then broadcast. So every event on
+   the bus is already persisted; an event in history may not yet have
+   been broadcast.
+
+   Two ordering choices and their failure modes:
+   - Fetch history first, then subscribe SSE → events broadcast in
+     the gap between fetch-return and SSE-subscribe are MISSED. Bad.
+   - Subscribe SSE first, then fetch history → events broadcast in
+     the gap appear in BOTH (in SSE buffer, and in the history rows
+     persisted just before broadcast). Need dedup, but no loss.
+
+   We go with subscribe-first and a count-based content-fingerprint
+   dedup. Limitation: if a new event happens to have IDENTICAL kind
+   JSON to an already-rendered history row AND arrives via SSE after
+   the history fetch returned, it gets falsely deduped. Mitigating
+   factor: this is rare in practice (events for the same module emit
+   per-target, and targets vary across rounds) and a proper fix needs
+   a monotonic per-event id on the engine side. */
 async function renderLog(host, scan){
   const running = scan.status==='running' || scan.status==='pending';
   host.innerHTML = `
@@ -1111,10 +1128,24 @@ async function renderLog(host, scan){
   `;
   $('#log-clear').addEventListener('click', ()=>{ $('#log-box').innerHTML=''; });
 
-  // 1) Pull the persistent history first. The endpoint returns the
-  //    full event stream for this scan, in emission order. Surface
-  //    fetch failures explicitly so a completed scan with events on
-  //    disk doesn't silently render "No events recorded".
+  // 1) Subscribe to SSE FIRST so events broadcast during the
+  //    history fetch are captured in the `buffered` array rather
+  //    than lost. Switch to direct-render once history is rendered.
+  const buffered = [];
+  let bufferingMode = true;
+  const status = $('#log-status');
+  if (running){
+    status.className = 'label label-info';
+    status.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;live';
+    openSse(scan.id, ev=>{
+      if (bufferingMode) buffered.push(ev);
+      else appendLog(ev);
+    });
+  }
+
+  // 2) Pull the persistent history. Surface fetch failures explicitly
+  //    so a completed scan with events on disk doesn't silently
+  //    render "No events recorded".
   let history = [];
   let historyError = null;
   try {
@@ -1129,7 +1160,12 @@ async function renderLog(host, scan){
     historyError = e && e.message ? e.message : String(e);
   }
 
+  // 3) Render history and build a per-fingerprint count map. Each
+  //    history row contributes one "expected duplicate" credit so the
+  //    next SSE-buffered event with the same fingerprint is treated
+  //    as the broadcast copy of an already-rendered history row.
   const box = $('#log-box');
+  const histCounts = new Map();
   if (historyError){
     box.innerHTML = `<div class="alert alert-danger" style="margin:8px">Failed to load event history: ${esc(historyError)}</div>`;
   } else if (history.length === 0 && !running){
@@ -1137,26 +1173,35 @@ async function renderLog(host, scan){
   } else {
     box.innerHTML = '';
     for (const ev of history){
+      const kind = ev.kind || ev;
+      const fp = JSON.stringify(kind);
+      histCounts.set(fp, (histCounts.get(fp) || 0) + 1);
       // The persisted row has { scan_id, ts, kind }. mapEvent reads
       // ev.type plus ev.* — the EventKind variant is flattened with
       // `#[serde(tag="type")]`, so passing ev.kind through works.
-      appendLog(ev.kind || ev, ev.ts);
+      appendLog(kind, ev.ts);
     }
   }
 
-  // 2) Live continuation. The SSE stream emits the live broadcast
-  //    bus, which the engine sends to AFTER persisting — so events
-  //    arriving on SSE are guaranteed to also be in the history
-  //    on the next reload. Mid-stream we may briefly double-paint
-  //    an event if history was fetched between persist and broadcast;
-  //    operators see "harmless duplicate of an in-flight row" rather
-  //    than a missed event, which is the safer failure mode.
-  const status = $('#log-status');
-  if (running){
-    status.className = 'label label-info';
-    status.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;live';
-    openSse(scan.id, ev=>appendLog(ev));
-  } else {
+  // 4) Drain buffered SSE events. Each one with a fingerprint that
+  //    still has unspent history credits is the broadcast twin of
+  //    an already-rendered row — skip it. Events with no credits
+  //    (either fingerprint never seen in history, or all history
+  //    twins already accounted for) get rendered.
+  const consumed = new Map();
+  for (const ev of buffered){
+    const fp = JSON.stringify(ev);
+    const histCount = histCounts.get(fp) || 0;
+    const consumedCount = consumed.get(fp) || 0;
+    if (consumedCount < histCount){
+      consumed.set(fp, consumedCount + 1);
+    } else {
+      appendLog(ev);
+    }
+  }
+  bufferingMode = false;
+
+  if (!running){
     status.className = 'label label-default';
     status.textContent = history.length ? `${history.length} events` : 'not streaming';
   }
