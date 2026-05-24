@@ -17,11 +17,11 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
+use crate::util::http::fetch_json;
 
 pub struct Wayback;
 
@@ -59,25 +59,7 @@ impl Module for Wayback {
             urlencode(&domain)
         );
 
-        let resp = ctx
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::module("wayback", e.to_string()))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(Error::module(
-                "wayback",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
-        }
-
-        let rows: Vec<Row> = resp
-            .json()
-            .await
-            .map_err(|e| Error::module("wayback", e.to_string()))?;
+        let rows: Vec<Row> = fetch_json(&ctx.http, "wayback", &url).await?;
 
         // First row is the column header; ignore it.
         let data: Vec<&Row> = rows.iter().skip(1).collect();

@@ -12,11 +12,11 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
+use crate::util::http::fetch_json_or_404;
 
 pub struct AlienVaultOtx;
 
@@ -69,32 +69,11 @@ impl Module for AlienVaultOtx {
             urlencode(&target.value)
         );
 
-        let resp = ctx
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::module("alienvault_otx", e.to_string()))?;
-
-        let status = resp.status();
-        // 404 = target not in OTX — treat as no findings (per OTX API).
-        if status.as_u16() == 404 {
+        // 404 = target not in OTX (no findings); 429 / 5xx surface as
+        // module_error via fetch_json_or_404's standard error path.
+        let Some(data): Option<OtxResp> = fetch_json_or_404(&ctx.http, "alienvault_otx", &url).await? else {
             return Ok(ModuleResult::new());
-        }
-        // Any other non-2xx (429 rate limit, 5xx outage) is an operational
-        // failure — surface it as a module_error event rather than silently
-        // returning empty.
-        if !status.is_success() {
-            return Err(Error::module(
-                "alienvault_otx",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
-        }
-
-        let data: OtxResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module("alienvault_otx", e.to_string()))?;
+        };
 
         let pulse_info = match data.pulse_info {
             Some(p) => p,

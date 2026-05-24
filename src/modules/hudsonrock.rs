@@ -12,11 +12,11 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
+use crate::util::http::fetch_json_or_404;
 
 pub struct HudsonRock;
 
@@ -63,28 +63,9 @@ impl Module for HudsonRock {
             _ => return Ok(ModuleResult::new()),
         };
 
-        let resp = ctx
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::module("hudsonrock", e.to_string()))?;
-
-        let status = resp.status();
-        if status.as_u16() == 404 {
+        let Some(data): Option<CavalierResp> = fetch_json_or_404(&ctx.http, "hudsonrock", &url).await? else {
             return Ok(ModuleResult::new());
-        }
-        if !status.is_success() {
-            return Err(Error::module(
-                "hudsonrock",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
-        }
-
-        let data: CavalierResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module("hudsonrock", e.to_string()))?;
+        };
 
         if data.stealers.is_empty() {
             return Ok(ModuleResult::new());

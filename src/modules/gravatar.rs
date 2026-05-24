@@ -80,6 +80,10 @@ impl Module for Gravatar {
 
         let url = format!("https://www.gravatar.com/{hash}.json");
 
+        // Intentionally manual rather than using `util::http::fetch_json_or_404`:
+        // Gravatar's placeholder profiles return 200 + non-JSON body, and
+        // the helper would surface that as a `module_error`. The
+        // silent-treat-as-empty behaviour below is the documented contract.
         let resp = ctx
             .http
             .get(&url)
@@ -101,8 +105,7 @@ impl Module for Gravatar {
 
         let data: ProfileResp = match resp.json().await {
             Ok(d) => d,
-            // Some hashes return a 200 with non-JSON when the profile is
-            // a placeholder. Treat as no findings rather than module-error.
+            // Placeholder profile → no findings (not a module error).
             Err(_) => return Ok(ModuleResult::new()),
         };
 

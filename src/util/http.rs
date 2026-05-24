@@ -3,7 +3,10 @@
 
 use std::time::Duration;
 
+use serde::de::DeserializeOwned;
+
 use crate::MODULE_TIMEOUT_MS;
+use crate::core::error::{Error, Result};
 
 /// Build a fresh reqwest client. Cheap to call per scan.
 ///
@@ -51,4 +54,74 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
         }
         Err(_) => "<unreadable>".to_string(),
     }
+}
+
+/// GET `url` and deserialise the JSON body as `T`. Errors on any
+/// non-2xx, including 404.
+///
+/// Use from modules whose upstream never returns 404-as-"no result"
+/// — e.g. `ip-api.com` always returns 200 with a `status` field;
+/// `crt.sh` always returns 200 with a (possibly empty) JSON array.
+/// For modules where 404 means "not found, no findings" (HudsonRock,
+/// Gravatar, AlienVault OTX, XposedOrNot, BGPView), use
+/// [`fetch_json_or_404`] instead.
+///
+/// The `module` parameter is the stable module name string — embedded
+/// in every error so the operator sees which module failed without
+/// reading SSE event metadata.
+pub async fn fetch_json<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    module: &'static str,
+    url: &str,
+) -> Result<T> {
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| Error::module(module, e.to_string()))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(Error::module(
+            module,
+            format!("HTTP {status}: {}", error_snippet(resp).await),
+        ));
+    }
+    resp.json::<T>()
+        .await
+        .map_err(|e| Error::module(module, e.to_string()))
+}
+
+/// Like [`fetch_json`] but maps `404 Not Found` to `Ok(None)` — the
+/// idiomatic "upstream says we don't know about this target" signal.
+/// Every other non-2xx still becomes an `Error::module(...)` so 429
+/// rate-limits and 5xx outages stay visible.
+///
+/// Use from modules whose upstream uses 404 as a positive "clean" /
+/// "not in our dataset" signal (HudsonRock, Gravatar, AlienVault OTX,
+/// XposedOrNot, BGPView).
+pub async fn fetch_json_or_404<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    module: &'static str,
+    url: &str,
+) -> Result<Option<T>> {
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| Error::module(module, e.to_string()))?;
+    let status = resp.status();
+    if status.as_u16() == 404 {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        return Err(Error::module(
+            module,
+            format!("HTTP {status}: {}", error_snippet(resp).await),
+        ));
+    }
+    let data = resp
+        .json::<T>()
+        .await
+        .map_err(|e| Error::module(module, e.to_string()))?;
+    Ok(Some(data))
 }

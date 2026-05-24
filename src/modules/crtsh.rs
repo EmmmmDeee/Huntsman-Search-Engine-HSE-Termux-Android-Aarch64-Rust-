@@ -9,11 +9,11 @@ use std::collections::HashSet;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
+use crate::util::http::fetch_json;
 
 pub struct Crtsh;
 
@@ -40,26 +40,7 @@ impl Module for Crtsh {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let url = format!("https://crt.sh/?q=%.{}&output=json", target.value);
-
-        let resp = ctx
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::module("crtsh", e.to_string()))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(Error::module(
-                "crtsh",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
-        }
-
-        let entries: Vec<CrtEntry> = resp
-            .json()
-            .await
-            .map_err(|e| Error::module("crtsh", e.to_string()))?;
+        let entries: Vec<CrtEntry> = fetch_json(&ctx.http, "crtsh", &url).await?;
 
         let mut seen: HashSet<String> = HashSet::new();
         let mut result = ModuleResult::new();
