@@ -102,28 +102,32 @@ impl ScanEngine {
 
         // Rounds 1..=depth — autonomous expansion.
         // Budget check after the seed: if a chatty module already blew
-        // past `max_entities`, skip expansion entirely and emit an
-        // ExpansionStop event so SSE consumers see the reason.
-        // (Per-module caps inside dispatch_target are a separate concern;
-        // this check at least bounds expansion fan-out.)
-        if let Some(stop) = budget_check(&opts, started, entity_map.len()) {
-            let _ = self.bus.send(Event::new(
-                &scan.id,
-                EventKind::ExpansionStop {
-                    reason: stop.label(),
-                },
-            ));
-        } else if opts.depth > 0 {
-            let _ = self
-                .run_expansion(
+        // past `max_entities` (or wall-time), skip expansion entirely
+        // and emit an ExpansionStop event so SSE consumers see the
+        // reason. Gated on `depth > 0` so a depth-0 scan that happens
+        // to be over-budget doesn't emit a spurious ExpansionStop —
+        // there was no expansion plan to begin with, and the event is
+        // documented as a round-boundary signal.
+        if opts.depth > 0 {
+            if let Some(stop) = budget_check(&opts, started, entity_map.len()) {
+                let _ = self.bus.send(Event::new(
                     &scan.id,
-                    &ctx,
-                    &opts,
-                    started,
-                    &mut entity_map,
-                    &mut visited,
-                )
-                .await;
+                    EventKind::ExpansionStop {
+                        reason: stop.label(),
+                    },
+                ));
+            } else {
+                let _ = self
+                    .run_expansion(
+                        &scan.id,
+                        &ctx,
+                        &opts,
+                        started,
+                        &mut entity_map,
+                        &mut visited,
+                    )
+                    .await;
+            }
         }
 
         // Persist & complete. If either step fails, mark the scan Failed
