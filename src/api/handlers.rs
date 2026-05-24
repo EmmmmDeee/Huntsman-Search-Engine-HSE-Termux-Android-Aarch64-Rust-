@@ -62,6 +62,30 @@ pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "version": crate::VERSION }))
 }
 
+/// `GET /api/v1/stats` — aggregate dashboard statistics. Counts scans
+/// by status, total entities across all scans, and module count. The
+/// SPA's home page consumes this for the stat-card row.
+pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    let scans = s.store.list_scans(10_000).unwrap_or_default();
+    let mut by_status: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut total_entities = 0u64;
+    for scan in &scans {
+        let key = format!("{:?}", scan.status).to_lowercase();
+        *by_status.entry(key).or_insert(0) += 1;
+        total_entities += scan.entity_count as u64;
+    }
+    let modules = s.engine.modules().len();
+    let live_sessions = s.live.list().len();
+    Json(json!({
+        "scans_total": scans.len(),
+        "scans_by_status": by_status,
+        "entities_total": total_entities,
+        "modules": modules,
+        "live_sessions": live_sessions,
+        "version": crate::VERSION,
+    }))
+}
+
 pub async fn version() -> Json<Value> {
     Json(json!({ "version": crate::VERSION }))
 }
@@ -338,6 +362,49 @@ pub async fn scan_entities_csv(
     headers.insert(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    if let Ok(v) = axum::http::HeaderValue::from_str(&disposition) {
+        headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
+    }
+    resp
+}
+
+/// `GET /api/v1/scans/{id}/report.json` — full scan report as a single
+/// JSON download. Includes the scan metadata, all entities, and all
+/// correlations in one file — suitable for archival, diffing between
+/// scans, and integration with downstream tools that consume JSON.
+pub async fn scan_report_json(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let scan = match s.store.get_scan(&id) {
+        Ok(Some(scan)) => scan,
+        Ok(None) => return not_found(),
+        Err(e) => return internal_error(&e),
+    };
+    let entities = s.store.entities_for_scan(&id).unwrap_or_default();
+    let correlations = s.store.correlations_for_scan(&id).unwrap_or_default();
+
+    let report = json!({
+        "scan": scan,
+        "entities": entities,
+        "entity_count": entities.len(),
+        "correlations": correlations,
+        "correlation_count": correlations.len(),
+        "exported_at": crate::core::entity::unix_now(),
+    });
+
+    let filename = format!(
+        "hse-report-{}.json",
+        id.chars().take(12).collect::<String>()
+    );
+    let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into());
+    let disposition = format!("attachment; filename=\"{filename}\"");
+    let mut resp = (StatusCode::OK, body).into_response();
+    let headers = resp.headers_mut();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json; charset=utf-8"),
     );
     if let Ok(v) = axum::http::HeaderValue::from_str(&disposition) {
         headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
