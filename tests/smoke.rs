@@ -10,7 +10,7 @@ use huntsman_search_engine::{
         entity::{Entity, EntityKind},
         error::Result,
         module::{Module, ModuleContext, ModuleResult},
-        scan::{Scan, ScanOptions, Target, TargetKind},
+        scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
     },
     storage::store::Store,
     util::{http::build_client, uid::scan_id},
@@ -247,6 +247,62 @@ async fn expansion_respects_max_entities_budget() {
         result.entity_count <= 1,
         "max_entities=1 should cap at 1 (got {})",
         result.entity_count
+    );
+}
+
+#[tokio::test]
+async fn cancellation_pre_run_aborts_immediately() {
+    // Pre-set the cancel flag before engine.run starts. The first
+    // per-module gate (issue #23) catches it; no modules get
+    // dispatched and the scan terminates `Aborted` rather than
+    // `Complete`.
+    let (engine, _store, sid, target, ctx) = setup(
+        vec![Arc::new(SyntheticModule)],
+        "cancel-pre",
+        TargetKind::Email,
+        "alice@example.com",
+    );
+    ctx.cancel.cancel();
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(ScanOptions::default());
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    assert!(
+        matches!(result.status, ScanStatus::Aborted),
+        "pre-cancelled scan must terminate Aborted, got {:?}",
+        result.status
+    );
+    // No modules ran → no entities.
+    assert_eq!(result.entity_count, 0);
+}
+
+#[tokio::test]
+async fn cancellation_during_expansion_aborts_scan() {
+    // SyntheticModule emits exactly one entity (echo of the seed).
+    // With depth=3 the engine would attempt expansion rounds 1, 2, 3
+    // — but the round-entry gate (issue #23) catches the cancel flag
+    // and exits with ExpansionStop("cancelled by operator").
+    //
+    // We pre-set the cancel BEFORE engine.run so the test is
+    // deterministic (no race against module completion time). The
+    // round-0 dispatch still completes its sequential per-module loop
+    // checks the cancel and skips the module — leaving the scan
+    // Aborted with zero entities.
+    let (engine, _store, sid, target, ctx) = setup(
+        vec![Arc::new(SyntheticModule)],
+        "cancel-exp",
+        TargetKind::Email,
+        "bob@example.com",
+    );
+    ctx.cancel.cancel();
+    let opts = ScanOptions {
+        depth: 3,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    assert!(
+        matches!(result.status, ScanStatus::Aborted),
+        "cancelled scan must terminate Aborted, got {:?}",
+        result.status
     );
 }
 
@@ -541,6 +597,7 @@ fn setup(
         bus,
         http: build_client(),
         keys: Default::default(),
+        cancel: Default::default(),
     };
     (engine, store, sid, target, ctx)
 }

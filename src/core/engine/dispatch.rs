@@ -161,6 +161,12 @@ impl ScanEngine {
         entity_map: &mut HashMap<String, Entity>,
     ) -> Result<()> {
         for module in &self.modules {
+            // Cancellation gate at the top of the per-module loop — the
+            // cheapest spot to exit because we haven't fired off the
+            // next module's I/O yet (issue #23).
+            if ctx.cancel.is_cancelled() {
+                return Ok(());
+            }
             let name = module.name();
 
             if !module.accepts(target) {
@@ -230,6 +236,13 @@ impl ScanEngine {
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
 
         for module in &self.modules {
+            // Cancellation gate before spawning each module. Tasks
+            // already in flight are left to complete naturally — their
+            // results still flow through finalise_module_result so
+            // partial work isn't lost (issue #23).
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
             let name = module.name();
 
             if !module.accepts(target) {

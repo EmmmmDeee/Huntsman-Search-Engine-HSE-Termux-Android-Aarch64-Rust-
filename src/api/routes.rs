@@ -138,6 +138,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(handlers::scan_get).delete(handlers::scan_delete),
         )
         .route("/scans/{id}/rerun", post(handlers::scan_rerun))
+        .route("/scans/{id}/cancel", post(handlers::scan_cancel))
         .route("/scans/{id}/entities", get(handlers::scan_entities))
         .route("/scans/{id}/entities.csv", get(handlers::scan_entities_csv))
         .route(

@@ -94,6 +94,12 @@ pub struct ModuleContext {
     pub bus: EventBus,
     pub http: reqwest::Client,
     pub keys: HashMap<String, String>,
+    /// Engine-wide cancellation flag for this scan (issue #23). The
+    /// engine checks `cancel.is_cancelled()` between modules; modules
+    /// running long-running internal loops MAY poll it themselves to
+    /// abort mid-process for faster cancel latency. Default-constructed
+    /// handles never fire.
+    pub cancel: crate::core::cancel::CancelHandle,
 }
 
 impl ModuleContext {

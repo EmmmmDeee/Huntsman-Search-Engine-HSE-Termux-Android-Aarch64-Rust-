@@ -105,6 +105,7 @@ mod tests {
             bus,
             http: crate::util::http::build_client(),
             keys: HashMap::default(),
+            cancel: crate::core::cancel::CancelHandle::new(),
         }
     }
 

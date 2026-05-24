@@ -359,6 +359,7 @@ async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
         live,
         http,
         allow_key_write,
+        cancellations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
     });
 
     let app = router(state, &bind);
@@ -461,6 +462,10 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
         bus,
         http: build_client(),
         keys: keys::load(),
+        // CLI scans don't have an external cancel surface; the user
+        // hits Ctrl-C which kills the process outright. A
+        // default-constructed handle never fires.
+        cancel: crate::core::cancel::CancelHandle::new(),
     };
 
     let scan = engine.run(scan, target, ctx).await?;

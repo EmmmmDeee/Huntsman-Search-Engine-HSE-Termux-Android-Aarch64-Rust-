@@ -273,6 +273,11 @@ async fn session_loop(
             bus: inner.bus.clone(),
             http: build_client(),
             keys: keys::load(),
+            // Live sessions have their own stop mechanism (DELETE
+            // /api/v1/live/{id}); each per-iteration scan finishes
+            // before the next iteration starts, so individual
+            // scan-level cancellation isn't wired here.
+            cancel: crate::core::cancel::CancelHandle::new(),
         };
 
         if let Err(e) = inner.engine.run(scan, target.clone(), ctx).await {
