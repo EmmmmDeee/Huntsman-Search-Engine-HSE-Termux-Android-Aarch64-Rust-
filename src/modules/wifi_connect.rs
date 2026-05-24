@@ -41,7 +41,7 @@ impl Module for WifiConnect {
     }
 
     fn description(&self) -> &'static str {
-        "Termux currently-connected WiFi — BSSID, SSID, signal strength of the AP this device is associated with. Passive."
+        "Termux currently-connected WiFi (passive) — BSSID, SSID, signal strength of the AP this device is associated with."
     }
     fn is_passive(&self) -> bool {
         true

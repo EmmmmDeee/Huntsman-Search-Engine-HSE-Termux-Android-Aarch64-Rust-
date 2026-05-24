@@ -61,7 +61,7 @@ impl Module for Shodan {
     }
 
     fn description(&self) -> &'static str {
-        "Shodan host record for an IP: open ports, known CVEs, hostnames, ASN/ISP, OS. Paid."
+        "Shodan host record for an IP (paid): open ports, known CVEs, hostnames, ASN/ISP, OS."
     }
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid

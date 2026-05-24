@@ -49,7 +49,7 @@ impl Module for CellSurvey {
     }
 
     fn description(&self) -> &'static str {
-        "Termux cellular tower survey — serving cell + neighbour cells (CID, LAC/TAC, MCC, MNC, signal). Passive."
+        "Termux cellular tower survey (passive) — serving cell + neighbour cells (CID, LAC/TAC, MCC, MNC, signal)."
     }
     fn is_passive(&self) -> bool {
         true

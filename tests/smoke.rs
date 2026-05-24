@@ -134,11 +134,13 @@ fn all_registered_modules_have_descriptions() {
         "these modules have no description() override: {missing:?}"
     );
     // Sanity: at least one description mentions a recognisable
-    // keyword. Catches accidental " " or "TODO" fillers.
+    // keyword. Catches accidental " " or "TODO" fillers. Case-insensitive
+    // so harmless copy edits ("Breach" vs "breach", "Dns" vs "DNS")
+    // don't break the corpus check.
     let descriptions: Vec<&str> = modules.iter().map(|m| m.description()).collect();
-    let joined = descriptions.join(" ");
+    let joined = descriptions.join(" ").to_lowercase();
     assert!(
-        joined.contains("DNS") || joined.contains("breach") || joined.contains("subdomain"),
+        joined.contains("dns") || joined.contains("breach") || joined.contains("subdomain"),
         "no description mentions any OSINT-domain keyword — descriptions look stubbed"
     );
 }

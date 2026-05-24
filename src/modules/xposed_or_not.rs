@@ -118,7 +118,7 @@ impl Module for XposedOrNot {
     }
 
     fn description(&self) -> &'static str {
-        "XposedOrNot breach search for an email — distinct breach databases the address appears in. Free."
+        "XposedOrNot breach search for an email (free) — distinct breach databases the address appears in."
     }
 
     fn accepts(&self, t: &Target) -> bool {

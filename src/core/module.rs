@@ -27,7 +27,12 @@ pub enum ModuleCost {
 
 /// Public information about a module — exposed via `hse modules` and
 /// `GET /api/v1/modules`.
+///
+/// Marked `#[non_exhaustive]` so future per-module metadata (e.g. tags,
+/// example targets) can be added without forcing a major-version bump
+/// on downstream consumers that exhaustively destructure this struct.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct ModuleInfo {
     pub name: &'static str,
     pub priority: u8,
@@ -35,8 +40,9 @@ pub struct ModuleInfo {
     pub passive: bool,
     /// One-sentence operator-facing summary of what the module does.
     /// Drives the wizard's per-row tooltip (`title="..."`). May be empty
-    /// for modules added without a description, but
-    /// `tests::module::all_modules_have_descriptions` blocks that in CI.
+    /// for modules added without a description, but the
+    /// `all_registered_modules_have_descriptions` regression test in
+    /// `tests/smoke.rs` blocks that in CI.
     pub description: &'static str,
 }
 
@@ -84,9 +90,10 @@ pub trait Module: Send + Sync {
     /// One-sentence summary of what this module does, in operator
     /// language. Shown as the wizard's hover tooltip on the module-
     /// picker grid (issue #28). Default empty for backward compat —
-    /// the test `tests::module::all_modules_have_descriptions` asserts
-    /// every registered module overrides this with a non-empty string
-    /// so new modules can't silently slip through review without one.
+    /// the `all_registered_modules_have_descriptions` regression test
+    /// in `tests/smoke.rs` asserts every registered module overrides
+    /// this with a non-empty string so new modules can't silently slip
+    /// through review without one.
     fn description(&self) -> &'static str {
         ""
     }

@@ -263,7 +263,7 @@ impl Module for UsernameSearch {
     }
 
     fn description(&self) -> &'static str {
-        "Username presence probe across 29 well-known public profile sites (Github, Reddit, Mastodon, …)."
+        "Username presence probe across 30 well-known public profile sites (GitHub, Reddit, Mastodon, …)."
     }
 
     fn is_passive(&self) -> bool {
