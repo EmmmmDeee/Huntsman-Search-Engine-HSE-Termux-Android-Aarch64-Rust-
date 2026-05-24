@@ -26,11 +26,86 @@ use crate::core::{
     scan::{ScanOptions, Target},
 };
 
+/// The output of one `module.process()` call after the engine wraps it
+/// in `tokio::time::timeout` — either `Elapsed` (outer timeout fired),
+/// `Err` (module returned an error), or `Ok(ModuleResult)` (success).
+type TimeoutResult =
+    std::result::Result<Result<crate::core::module::ModuleResult>, tokio::time::error::Elapsed>;
+
 /// What a spawned per-module task returns to the consumer loop.
 struct DispatchOutcome {
     name: &'static str,
-    result:
-        std::result::Result<Result<crate::core::module::ModuleResult>, tokio::time::error::Elapsed>,
+    result: TimeoutResult,
+}
+
+impl super::ScanEngine {
+    /// Translate one module's `process()` result into engine events
+    /// (`ModuleError` / `EntityFound` / `ModuleDone`) and merge any
+    /// emitted entities into the per-scan `entity_map`. Shared by
+    /// `dispatch_target_sequential` and `dispatch_target_concurrent`
+    /// so the event payload shape is identical between the two paths.
+    pub(super) fn finalise_module_result(
+        &self,
+        scan_id: &str,
+        name: &'static str,
+        min_confidence: Option<f64>,
+        entity_map: &mut HashMap<String, Entity>,
+        result: TimeoutResult,
+    ) {
+        match result {
+            Err(_) => {
+                warn!(module = name, "timeout");
+                let _ = self.bus.send(Event::new(
+                    scan_id,
+                    EventKind::ModuleError {
+                        module: name.into(),
+                        error: "timeout".into(),
+                    },
+                ));
+            }
+            Ok(Err(e)) => {
+                warn!(module = name, error = %e, "module error");
+                let _ = self.bus.send(Event::new(
+                    scan_id,
+                    EventKind::ModuleError {
+                        module: name.into(),
+                        error: e.to_string(),
+                    },
+                ));
+            }
+            Ok(Ok(mut mr)) => {
+                let mut found = 0usize;
+                for entity in mr.entities.drain(..) {
+                    if let Some(min) = min_confidence
+                        && entity.confidence < min
+                    {
+                        continue;
+                    }
+                    let _ = self.bus.send(Event::new(
+                        scan_id,
+                        EventKind::EntityFound {
+                            entity: entity.clone(),
+                        },
+                    ));
+                    let uid = entity.uid.clone();
+                    if let Some(existing) = entity_map.get_mut(&uid) {
+                        existing.merge(entity);
+                    } else {
+                        entity_map.insert(uid, entity);
+                    }
+                    found += 1;
+                }
+                let _ = self.bus.send(Event::new(
+                    scan_id,
+                    EventKind::ModuleDone {
+                        module: name.into(),
+                        found,
+                    },
+                ));
+                info!(module = name, found, "done");
+            }
+        }
+    }
 }
 
 /// Returns `Some(reason)` if `module` should be skipped under `opts`.
@@ -120,61 +195,7 @@ impl ScanEngine {
             )
             .await;
 
-            match result {
-                Err(_) => {
-                    warn!(module = name, "timeout");
-                    let _ = self.bus.send(Event::new(
-                        scan_id,
-                        EventKind::ModuleError {
-                            module: name.into(),
-                            error: "timeout".into(),
-                        },
-                    ));
-                }
-                Ok(Err(e)) => {
-                    warn!(module = name, error = %e, "module error");
-                    let _ = self.bus.send(Event::new(
-                        scan_id,
-                        EventKind::ModuleError {
-                            module: name.into(),
-                            error: e.to_string(),
-                        },
-                    ));
-                }
-                Ok(Ok(mut mr)) => {
-                    let mut found = 0usize;
-                    for entity in mr.entities.drain(..) {
-                        if let Some(min) = opts.min_confidence
-                            && entity.confidence < min
-                        {
-                            continue;
-                        }
-
-                        let _ = self.bus.send(Event::new(
-                            scan_id,
-                            EventKind::EntityFound {
-                                entity: entity.clone(),
-                            },
-                        ));
-
-                        let uid = entity.uid.clone();
-                        if let Some(existing) = entity_map.get_mut(&uid) {
-                            existing.merge(entity);
-                        } else {
-                            entity_map.insert(uid, entity);
-                        }
-                        found += 1;
-                    }
-                    let _ = self.bus.send(Event::new(
-                        scan_id,
-                        EventKind::ModuleDone {
-                            module: name.into(),
-                            found,
-                        },
-                    ));
-                    info!(module = name, found, "done");
-                }
-            }
+            self.finalise_module_result(scan_id, name, opts.min_confidence, entity_map, result);
 
             if opts.throttle_ms > 0 {
                 sleep(Duration::from_millis(opts.throttle_ms)).await;
@@ -279,60 +300,13 @@ impl ScanEngine {
                     continue;
                 }
             };
-            let name = outcome.name;
-            match outcome.result {
-                Err(_) => {
-                    warn!(module = name, "timeout");
-                    let _ = self.bus.send(Event::new(
-                        scan_id,
-                        EventKind::ModuleError {
-                            module: name.into(),
-                            error: "timeout".into(),
-                        },
-                    ));
-                }
-                Ok(Err(e)) => {
-                    warn!(module = name, error = %e, "module error");
-                    let _ = self.bus.send(Event::new(
-                        scan_id,
-                        EventKind::ModuleError {
-                            module: name.into(),
-                            error: e.to_string(),
-                        },
-                    ));
-                }
-                Ok(Ok(mut mr)) => {
-                    let mut found = 0usize;
-                    for entity in mr.entities.drain(..) {
-                        if let Some(min) = opts.min_confidence
-                            && entity.confidence < min
-                        {
-                            continue;
-                        }
-                        let _ = self.bus.send(Event::new(
-                            scan_id,
-                            EventKind::EntityFound {
-                                entity: entity.clone(),
-                            },
-                        ));
-                        let uid = entity.uid.clone();
-                        if let Some(existing) = entity_map.get_mut(&uid) {
-                            existing.merge(entity);
-                        } else {
-                            entity_map.insert(uid, entity);
-                        }
-                        found += 1;
-                    }
-                    let _ = self.bus.send(Event::new(
-                        scan_id,
-                        EventKind::ModuleDone {
-                            module: name.into(),
-                            found,
-                        },
-                    ));
-                    info!(module = name, found, "done (concurrent)");
-                }
-            }
+            self.finalise_module_result(
+                scan_id,
+                outcome.name,
+                opts.min_confidence,
+                entity_map,
+                outcome.result,
+            );
         }
         Ok(())
     }
