@@ -1,6 +1,6 @@
-//! Router definition and SPA static fallback.
+//! Router definition, JSON 404 for `/api` typos, and SPA static fallback.
 //!
-//! Endpoint surface (v0.3):
+//! Endpoint surface:
 //!
 //! | Method | Path                              | Handler                  |
 //! |--------|-----------------------------------|--------------------------|
@@ -10,7 +10,10 @@
 //! | POST   | `/api/v1/scans`                   | `scan_create`            |
 //! | GET    | `/api/v1/scans`                   | `scan_list`              |
 //! | GET    | `/api/v1/scans/:id`               | `scan_get`               |
+//! | DELETE | `/api/v1/scans/:id`               | `scan_delete`            |
+//! | POST   | `/api/v1/scans/:id/rerun`         | `scan_rerun`             |
 //! | GET    | `/api/v1/scans/:id/entities`      | `scan_entities`          |
+//! | GET    | `/api/v1/scans/:id/entities.csv`  | `scan_entities_csv`      |
 //! | GET    | `/api/v1/scans/:id/correlations`  | `scan_correlations` (v0.4+) |
 //! | GET    | `/api/v1/scans/:id/events`        | `scan_events_sse` (SSE)  |
 //! | POST   | `/api/v1/live`                    | `live_create` (v0.5+)    |
@@ -18,17 +21,22 @@
 //! | GET    | `/api/v1/live/:id`                | `live_get`               |
 //! | DELETE | `/api/v1/live/:id`                | `live_stop`              |
 //! | GET    | `/api/v1/live/:id/events`         | `live_events_sse` (SSE)  |
+//! | GET    | `/api/v1/settings/keys`           | `settings_keys_get` (v0.10+) |
+//! | PUT    | `/api/v1/settings/keys`           | `settings_keys_put`      |
+//! | *      | `/api/*` (unmatched)              | `api_not_found` (JSON 404) |
+//! | GET    | `/static/:file`                   | `vendor_handler`         |
 //! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
 
 use std::sync::Arc;
 
 use axum::{
-    Router,
-    extract::Path,
+    Json, Router,
+    extract::{OriginalUri, Path},
     http::{HeaderValue, Method, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
+use serde_json::json;
 use tower_http::cors::CorsLayer;
 
 use super::{AppState, handlers};
@@ -110,50 +118,57 @@ const VENDOR_FILES: &[(&str, &str, &[u8])] = &[
 pub fn router(state: Arc<AppState>, bind: &str) -> Router {
     let cors = build_cors_layer(bind);
 
-    Router::new()
+    // /api/v1 — explicit, versioned API surface. Inner fallback emits a
+    // JSON 404 for any unmatched path under this prefix so API consumers'
+    // typos surface cleanly instead of being served the SPA HTML.
+    let api_v1 = Router::new()
         // ── health / version ──
-        .route("/api/v1/health", get(handlers::health))
-        .route("/api/v1/version", get(handlers::version))
+        .route("/health", get(handlers::health))
+        .route("/version", get(handlers::version))
         // ── modules ──
-        .route("/api/v1/modules", get(handlers::modules_list))
+        .route("/modules", get(handlers::modules_list))
         // ── scans ──
         .route(
-            "/api/v1/scans",
+            "/scans",
             post(handlers::scan_create).get(handlers::scan_list),
         )
         .route(
-            "/api/v1/scans/{id}",
+            "/scans/{id}",
             get(handlers::scan_get).delete(handlers::scan_delete),
         )
-        .route("/api/v1/scans/{id}/rerun", post(handlers::scan_rerun))
-        .route("/api/v1/scans/{id}/entities", get(handlers::scan_entities))
-        .route(
-            "/api/v1/scans/{id}/entities.csv",
-            get(handlers::scan_entities_csv),
-        )
-        .route(
-            "/api/v1/scans/{id}/correlations",
-            get(handlers::scan_correlations),
-        )
-        .route("/api/v1/scans/{id}/events", get(handlers::scan_events_sse))
+        .route("/scans/{id}/rerun", post(handlers::scan_rerun))
+        .route("/scans/{id}/entities", get(handlers::scan_entities))
+        .route("/scans/{id}/entities.csv", get(handlers::scan_entities_csv))
+        .route("/scans/{id}/correlations", get(handlers::scan_correlations))
+        .route("/scans/{id}/events", get(handlers::scan_events_sse))
         // ── live (v0.5+) ──
         .route(
-            "/api/v1/live",
+            "/live",
             post(handlers::live_create).get(handlers::live_list),
         )
         .route(
-            "/api/v1/live/{id}",
+            "/live/{id}",
             get(handlers::live_get).delete(handlers::live_stop),
         )
-        .route("/api/v1/live/{id}/events", get(handlers::live_events_sse))
+        .route("/live/{id}/events", get(handlers::live_events_sse))
         // ── settings (v0.10+) ──
         .route(
-            "/api/v1/settings/keys",
+            "/settings/keys",
             get(handlers::settings_keys_get).put(handlers::settings_keys_put),
         )
+        .fallback(api_not_found);
+
+    // /api — outer layer catches `/api/v2/...` / `/api/typo` /
+    // anything under /api but outside /v1, again returning JSON 404
+    // rather than SPA HTML.
+    let api = Router::new().nest("/v1", api_v1).fallback(api_not_found);
+
+    Router::new()
+        .nest("/api", api)
         // ── static vendor bundle (Bootstrap 3, jQuery, D3, tablesorter, alertify) ──
         .route("/static/{file}", get(vendor_handler))
-        // ── SPA fallback (catch-all) ──
+        // ── SPA fallback — `/`, `/scan/...`, anything outside `/api` and
+        //    `/static`; serves the embedded SPA for client-side routing.
         .fallback(spa_handler)
         .with_state(state)
         .layer(cors)
@@ -161,6 +176,25 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
 
 async fn spa_handler() -> Html<&'static str> {
     Html(SPA_HTML)
+}
+
+/// JSON 404 for any unmatched route under `/api`. Without this the SPA
+/// fallback would catch API typos and silently return 67 KB of HTML
+/// with HTTP 200 — a real defense-in-depth concern for any consumer
+/// that doesn't sanity-check `Content-Type` before parsing.
+///
+/// Uses `OriginalUri` rather than `Uri` so the JSON `path` shows the
+/// caller-typed path (e.g. `/api/v1/typo`) instead of the
+/// nest-stripped tail (`/typo`).
+async fn api_not_found(method: Method, OriginalUri(uri): OriginalUri) -> impl IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error":  "endpoint not found",
+            "method": method.as_str(),
+            "path":   uri.path(),
+        })),
+    )
 }
 
 /// Serve one of the embedded vendor files (Bootstrap, jQuery, etc.).
