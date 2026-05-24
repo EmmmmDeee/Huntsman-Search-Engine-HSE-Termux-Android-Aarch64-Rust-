@@ -1,11 +1,18 @@
 //! Shared HTTP client builder. Rustls-only — no native TLS, no openssl,
-//! no native deps at all. Default timeout matches `MODULE_TIMEOUT_MS`.
-
-use std::time::Duration;
+//! no native deps at all.
+//!
+//! No client-level timeout is set: the engine wraps every
+//! `Module::process()` call in `tokio::time::timeout(max_timeout_ms)`
+//! (see `src/core/engine/dispatch.rs`), so each module's declared
+//! budget is the actual ceiling. A client-level cap of
+//! `MODULE_TIMEOUT_MS = 3 s` previously short-circuited every module
+//! that declared a larger budget (whois 8 s, wigle 12 s, gps_fix
+//! 15 s+, etc.) — `oathnet_pro.rs:258` even has a test asserting
+//! `max_timeout_ms() > MODULE_TIMEOUT_MS` precisely because the author
+//! expected the override to take effect.
 
 use serde::de::DeserializeOwned;
 
-use crate::MODULE_TIMEOUT_MS;
 use crate::core::error::{Error, Result};
 
 /// Build a fresh reqwest client. Cheap to call per scan.
@@ -16,16 +23,9 @@ use crate::core::error::{Error, Result};
 /// on Termux). The `+https://` contact link is the format recommended
 /// by RFC 7231 §5.5.3 and accepted by most rate-limiters.
 ///
-/// # Panics
-///
-/// Panics (via `.expect()`) if the reqwest builder fails. This is
-/// intentional: the builder uses only hard-coded, known-good settings
-/// (timeouts, pool sizes, a static user-agent) so failure indicates a
-/// broken build environment, not a runtime condition worth recovering
-/// from. The panic fires at startup before any scan work begins.
+/// No client-level timeout — see module docstring.
 pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(Duration::from_millis(MODULE_TIMEOUT_MS))
         .connect_timeout(Duration::from_secs(5))
         .pool_max_idle_per_host(5)
         .pool_idle_timeout(Duration::from_secs(90))
