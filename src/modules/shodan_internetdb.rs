@@ -20,7 +20,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
+use crate::util::http::{error_snippet, urlencode};
 
 #[derive(Deserialize)]
 struct InternetDbResp {
@@ -66,10 +66,13 @@ impl Module for ShodanInternetDb {
             return Ok(ModuleResult::new());
         }
 
+        // ctx.http carries a 3 s default timeout (MODULE_TIMEOUT_MS);
+        // override per-request to match the module's declared budget.
         let resp = ctx
             .http
-            .get(format!("https://internetdb.shodan.io/{ip}"))
+            .get(format!("https://internetdb.shodan.io/{}", urlencode(ip)))
             .header("Accept", "application/json")
+            .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
             .send()
             .await
             .map_err(|e| Error::module("shodan_internetdb", e.to_string()))?;
@@ -111,9 +114,16 @@ impl Module for ShodanInternetDb {
         if !body.vulns.is_empty() {
             entity.tag("vulnerable");
         }
-        let ports_csv = body
-            .ports
+        // Sort + dedupe + cap so the evidence row is deterministic and
+        // bounded for high-port-count hosts (the `port_count` attr
+        // below preserves the total).
+        const MAX_PORTS: usize = 20;
+        let mut ports_sorted: Vec<u16> = body.ports.clone();
+        ports_sorted.sort_unstable();
+        ports_sorted.dedup();
+        let ports_csv = ports_sorted
             .iter()
+            .take(MAX_PORTS)
             .map(|p| p.to_string())
             .collect::<Vec<_>>()
             .join(",");

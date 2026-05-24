@@ -94,10 +94,13 @@ impl Module for ThreatFox {
             "exact_match": true,
         });
 
+        // ctx.http carries a 3 s default timeout (MODULE_TIMEOUT_MS);
+        // override per-request to match this module's declared 12 s.
         let resp = ctx
             .http
             .post("https://threatfox-api.abuse.ch/api/v1/")
             .header("Auth-Key", key)
+            .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
             .json(&body)
             .send()
             .await
@@ -162,17 +165,16 @@ impl Module for ThreatFox {
             if let Some(c) = ioc.confidence_level {
                 max_confidence = max_confidence.max(c);
             }
-            if let Some(f) = ioc.first_seen.as_deref() {
-                first_seen = match &first_seen {
-                    Some(existing) if existing.as_str() <= f => Some(existing.clone()),
-                    _ => Some(f.to_string()),
-                };
+            // Only allocate when we actually replace the running min/max.
+            if let Some(f) = ioc.first_seen.as_deref()
+                && first_seen.as_deref().is_none_or(|e| f < e)
+            {
+                first_seen = Some(f.to_string());
             }
-            if let Some(l) = ioc.last_seen.as_deref() {
-                last_seen = match &last_seen {
-                    Some(existing) if existing.as_str() >= l => Some(existing.clone()),
-                    _ => Some(l.to_string()),
-                };
+            if let Some(l) = ioc.last_seen.as_deref()
+                && last_seen.as_deref().is_none_or(|e| l > e)
+            {
+                last_seen = Some(l.to_string());
             }
         }
 

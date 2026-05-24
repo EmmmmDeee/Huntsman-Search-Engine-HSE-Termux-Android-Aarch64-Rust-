@@ -20,7 +20,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
+use crate::util::http::{error_snippet, urlencode};
 
 #[derive(Deserialize)]
 struct RdapResp {
@@ -113,11 +113,19 @@ impl Module for RdapDomain {
             return Ok(ModuleResult::new());
         }
 
-        let url = format!("https://rdap.org/domain/{domain}");
+        // urlencode the path segment defensively: TargetKind::Domain
+        // values are already DNS-label-shape per validation, but
+        // encoding makes us robust to upstream changes and consistent
+        // with the rest of the module set.
+        let url = format!("https://rdap.org/domain/{}", urlencode(domain));
+        // ctx.http carries a 3 s default timeout (MODULE_TIMEOUT_MS),
+        // shorter than this module's declared 15 s budget; an explicit
+        // per-request timeout matches the budget we publish.
         let resp = ctx
             .http
             .get(&url)
             .header("Accept", "application/rdap+json")
+            .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
             .send()
             .await
             .map_err(|e| Error::module("rdap_domain", e.to_string()))?;
@@ -166,7 +174,10 @@ impl Module for RdapDomain {
             }
         }
         for (action, dates) in events_by_action {
-            ev = ev.with_attr(format!("event_{action}"), dates.join(","));
+            // Slugify the action so attr keys stay whitespace-free
+            // (RDAP eventAction values like "last changed" and
+            // "registrar expiration" contain spaces).
+            ev = ev.with_attr(format!("event_{}", slugify(action)), dates.join(","));
         }
         if !body.entities.is_empty() {
             let roles: std::collections::BTreeSet<&str> = body
@@ -211,8 +222,11 @@ impl Module for RdapDomain {
         const MAX_NS: usize = 16;
         for n in body.nameservers.into_iter().take(MAX_NS) {
             let Some(name) = n.name else { continue };
-            let name = name.trim().trim_end_matches('.').to_ascii_lowercase();
-            if name.is_empty() {
+            // Entity::new normalises EntityKind::Domain (trim, lowercase,
+            // strip trailing dot) per src/core/entity.rs — no need to
+            // pre-normalise here. We only guard the empty/whitespace
+            // case which normalise() preserves as empty.
+            if name.trim().is_empty() {
                 continue;
             }
             let mut ns = Entity::new(EntityKind::Domain, &name, 0.80, &ctx.scan_id);
