@@ -125,3 +125,15 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
         .map_err(|e| Error::module(module, e.to_string()))?;
     Ok(Some(data))
 }
+
+/// Percent-encode a single URL path or query-string component using the
+/// `application/x-www-form-urlencoded` serialiser. Equivalent to:
+///
+/// ```ignore
+/// url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+/// ```
+///
+/// but extracted because five modules had this verbatim helper repeated.
+pub fn urlencode(s: &str) -> String {
+    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}

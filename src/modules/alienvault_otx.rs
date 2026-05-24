@@ -16,7 +16,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::fetch_json_or_404;
+use crate::util::http::{fetch_json_or_404, urlencode};
 
 pub struct AlienVaultOtx;
 
@@ -155,10 +155,6 @@ impl Module for AlienVaultOtx {
         result.push(entity);
         Ok(result)
     }
-}
-
-fn urlencode(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
 #[cfg(test)]

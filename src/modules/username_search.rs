@@ -24,6 +24,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::urlencode;
 
 pub struct UsernameSearch;
 
@@ -252,10 +253,6 @@ trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
 }
 
 impl<F> WithSite for F where F: std::future::Future<Output = ProbeResult> + Send + 'static {}
-
-fn urlencode(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
-}
 
 #[cfg(test)]
 mod tests {
