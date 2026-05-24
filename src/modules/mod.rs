@@ -63,7 +63,9 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(oathnet_pro::OathnetPro),
         // Threat intel — abuse.ch URLhaus host check (free, no key).
         Arc::new(urlhaus::UrlHaus),
-        // Threat intel — abuse.ch ThreatFox IOC search (free, no key).
+        // Threat intel — abuse.ch ThreatFox IOC search. Key-gated via
+        // HUNTSMAN_THREATFOX_KEY (free to register; required on every
+        // request per https://threatfox.abuse.ch/api).
         Arc::new(threatfox::ThreatFox),
         // Shodan InternetDB — free, anonymous port/CVE/hostname lookup.
         Arc::new(shodan_internetdb::ShodanInternetDb),

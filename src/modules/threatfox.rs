@@ -1,13 +1,19 @@
-//! abuse.ch ThreatFox — IOC reputation. Free, no key.
+//! abuse.ch ThreatFox — IOC reputation. Key-gated.
 //!
 //! Endpoint: `POST https://threatfox-api.abuse.ch/api/v1/`
-//! Body:     `{"query":"search_ioc","search_term":"<value>"}`
+//! Auth:     HTTP header `Auth-Key: <HUNTSMAN_THREATFOX_KEY>`.
+//! Body:     `{"query":"search_ioc","search_term":"<value>","exact_match":true}`
 //!
 //! ThreatFox is abuse.ch's IOC sharing platform — every result here is
-//! a hand-curated indicator submitted by malware analysts. The "free,
-//! anonymous" path is rate-limited; we surface aggregate counts and
-//! threat family names but never ingest the underlying sample hashes
-//! or C2 URLs (which can still be live).
+//! hand-curated by malware analysts. As of 2024 abuse.ch requires a
+//! free Auth-Key on every request (see https://threatfox.abuse.ch/api).
+//! Without the key every request would 4xx; we treat the module as
+//! KeyGated and silently no-op when the env var is absent, matching
+//! the project's other key-gated modules.
+//!
+//! Per project invariants we surface aggregate counts, threat families
+//! and IOC types but never ingest the underlying malware sample hashes,
+//! credentials, or live C2 URLs.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -16,10 +22,12 @@ use serde_json::json;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::error_snippet;
+
+const KEY_ENV: &str = "HUNTSMAN_THREATFOX_KEY";
 
 #[derive(Deserialize)]
 struct Resp {
@@ -57,6 +65,10 @@ impl Module for ThreatFox {
         109
     }
 
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::KeyGated
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
     }
@@ -66,19 +78,26 @@ impl Module for ThreatFox {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let key = ctx.key(KEY_ENV)?;
         let term = target.value.trim();
         if term.is_empty() {
             return Ok(ModuleResult::new());
         }
 
+        // `exact_match: true` — without it the API does a wildcard
+        // match that returns IOCs containing the search_term as a
+        // substring (e.g. searching for `1.2.3.4` would also return
+        // `1.2.3.40` records).
         let body = json!({
             "query": "search_ioc",
             "search_term": term,
+            "exact_match": true,
         });
 
         let resp = ctx
             .http
             .post("https://threatfox-api.abuse.ch/api/v1/")
+            .header("Auth-Key", key)
             .json(&body)
             .send()
             .await
@@ -205,5 +224,12 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x.com")));
         assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
+    }
+
+    #[test]
+    fn cost_is_key_gated() {
+        // ThreatFox requires an Auth-Key header on every request
+        // (https://threatfox.abuse.ch/api).
+        assert!(matches!(ThreatFox.cost(), ModuleCost::KeyGated));
     }
 }
