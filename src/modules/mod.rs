@@ -8,6 +8,7 @@
 pub mod alienvault_otx;
 pub mod arp_scan;
 pub mod bgpview;
+pub mod caa_records;
 pub mod cell_survey;
 pub mod criminal_ip;
 pub mod crtsh;
@@ -28,9 +29,12 @@ pub mod net_interfaces;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod phone_intl;
+pub mod rdap_domain;
 pub mod reverse_dns;
 pub mod securitytrails;
 pub mod shodan;
+pub mod shodan_internetdb;
+pub mod threatfox;
 pub mod tor_exit_check;
 pub mod urlhaus;
 pub mod username_search;
@@ -59,6 +63,10 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(oathnet_pro::OathnetPro),
         // Threat intel — abuse.ch URLhaus host check (free, no key).
         Arc::new(urlhaus::UrlHaus),
+        // Threat intel — abuse.ch ThreatFox IOC search (free, no key).
+        Arc::new(threatfox::ThreatFox),
+        // Shodan InternetDB — free, anonymous port/CVE/hostname lookup.
+        Arc::new(shodan_internetdb::ShodanInternetDb),
         // Paid / key-gated integrations (v0.11+). Each silently no-ops
         // when its key is missing — engine emits ModuleError once and
         // moves on so the rest of the scan still proceeds.
@@ -74,11 +82,15 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(crtsh::Crtsh),
         Arc::new(dns_resolver::DnsResolver),
         Arc::new(reverse_dns::ReverseDns),
+        // DNS CAA — certificate-authority authorization policy.
+        Arc::new(caa_records::CaaRecords),
         // Subdomain enumeration via a bounded common-name dictionary.
         Arc::new(dns_brute::DnsBrute),
         Arc::new(whois::Whois),
         // RDAP registry view of an IP (complements whois + bgpview).
         Arc::new(ip_rdap::IpRdap),
+        // RDAP registry view of a Domain (structured complement to whois).
+        Arc::new(rdap_domain::RdapDomain),
         Arc::new(ip_geo::IpGeo),
         // Tor exit-relay membership check (free, single fetch cached).
         Arc::new(tor_exit_check::TorExitCheck),

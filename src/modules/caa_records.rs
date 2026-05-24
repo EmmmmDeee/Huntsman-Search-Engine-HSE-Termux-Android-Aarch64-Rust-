@@ -1,0 +1,120 @@
+//! DNS CAA records. Free, no key.
+//!
+//! Endpoint: shared Cloudflare resolver.
+//!
+//! Certification Authority Authorization (RFC 8659) advertises which
+//! Certificate Authorities are allowed to issue certificates for a
+//! domain. Operationally useful for two reasons:
+//!
+//!   1. Missing CAA = any public CA can issue → weaker policy posture.
+//!   2. Present CAA pins issuers — useful for spotting unexpected
+//!      issuers in `crtsh` results.
+//!
+//! Emits one Evidence row on the originating Domain summarising the
+//! tag/value pairs (`issue`, `issuewild`, `iodef`).
+
+use async_trait::async_trait;
+
+use crate::core::{
+    entity::{Entity, EntityKind, Evidence},
+    error::Result,
+    module::{Module, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::dns::shared_resolver;
+use hickory_resolver::proto::rr::{RData, RecordType};
+
+pub struct CaaRecords;
+
+#[async_trait]
+impl Module for CaaRecords {
+    fn name(&self) -> &'static str {
+        "caa_records"
+    }
+
+    fn priority(&self) -> u8 {
+        // Same band as dns_resolver — cheap DNS lookup.
+        29
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Domain)
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let domain = target.value.trim();
+        if domain.is_empty() {
+            return Ok(ModuleResult::new());
+        }
+        let resolver = shared_resolver();
+
+        let lookup = match resolver.lookup(domain, RecordType::CAA).await {
+            Ok(l) => l,
+            // NXDOMAIN / no CAA / network error → no findings. The vast
+            // majority of domains don't publish CAA; that's not an error.
+            Err(_) => return Ok(ModuleResult::new()),
+        };
+
+        let mut issuers: Vec<String> = Vec::new();
+        let mut wildcards: Vec<String> = Vec::new();
+        let mut iodefs: Vec<String> = Vec::new();
+
+        for record in lookup.answers() {
+            // hickory 0.26 exposes CAA via the generic RData::CAA variant.
+            let RData::CAA(caa) = &record.data else {
+                continue;
+            };
+            // CAA `value` is the literal bytes after the tag — for `issue`
+            // and `issuewild` it's an ASCII issuer-domain (possibly with
+            // semicolon-delimited parameters), for `iodef` it's a URL.
+            let value = String::from_utf8_lossy(&caa.value).into_owned();
+            match caa.tag.as_str() {
+                "issue" => issuers.push(value),
+                "issuewild" => wildcards.push(value),
+                "iodef" => iodefs.push(value),
+                _ => {}
+            }
+        }
+
+        if issuers.is_empty() && wildcards.is_empty() && iodefs.is_empty() {
+            return Ok(ModuleResult::new());
+        }
+
+        let mut entity = Entity::new(EntityKind::Domain, domain, 0.85, &ctx.scan_id);
+        entity.tag("caa");
+        let mut ev = Evidence::new(
+            "caa_records",
+            format!(
+                "CAA policy published: {} issuer(s), {} wildcard issuer(s)",
+                issuers.len(),
+                wildcards.len()
+            ),
+        );
+        if !issuers.is_empty() {
+            ev = ev.with_attr("issue", issuers.join(","));
+        }
+        if !wildcards.is_empty() {
+            ev = ev.with_attr("issuewild", wildcards.join(","));
+        }
+        if !iodefs.is_empty() {
+            ev = ev.with_attr("iodef", iodefs.join(","));
+        }
+        entity.add_evidence(ev);
+
+        let mut result = ModuleResult::new();
+        result.push(entity);
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_domain() {
+        let m = CaaRecords;
+        assert!(m.accepts(&Target::new(TargetKind::Domain, "x.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+    }
+}
