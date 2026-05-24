@@ -1,9 +1,11 @@
-//! CLI: scan / modules / doctor / serve / live.
+//! CLI: scan / modules / doctor / serve / live / provision / set-key.
 //!
 //! Surfaces every `ScanOptions` field as a flag so each scan is fully
 //! customisable before launch. `serve` boots the HTTP server + SPA;
 //! `live` re-runs the same scan on a fixed interval (v0.5+). See
 //! `docs/USAGE.md` for the full reference.
+
+mod provision;
 
 use std::sync::Arc;
 
@@ -98,6 +100,29 @@ pub enum Command {
     Modules,
     /// Verify environment: DB path, key file, Termux detection, module counts.
     Doctor,
+    /// Provision the local environment: write/merge `$HOME/.huntsman.env`
+    /// from the canonical template and run a diagnostic smoke test.
+    ///
+    /// Replaces the post-install phases of the Termux bootstrap script:
+    /// pre-build phases (toolchain / git clone / `cargo build`) still
+    /// live in `install.sh` because they must run before this binary
+    /// exists. After install, prefer `hse provision`.
+    ///
+    /// Idempotent: existing real key values are preserved across runs;
+    /// the file is backed up to `<path>.env.bak.<epoch>` before any
+    /// change.
+    Provision {
+        /// Merge the env file but skip the diagnostic smoke test.
+        #[arg(long, conflicts_with = "verify_only")]
+        env_only: bool,
+        /// Run the diagnostic smoke test but don't touch the env file.
+        #[arg(long, conflicts_with = "env_only")]
+        verify_only: bool,
+        /// Show the merged env content without writing to disk.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Write a single `HUNTSMAN_*` key to `$HOME/.huntsman.env`.
     ///
     /// The file is created with mode 0600 if missing; existing entries
@@ -201,6 +226,11 @@ pub async fn run() -> Result<()> {
         }
         Command::Modules => cmd_modules(),
         Command::Doctor => cmd_doctor(),
+        Command::Provision {
+            env_only,
+            verify_only,
+            dry_run,
+        } => cmd_provision(env_only, verify_only, dry_run).await,
         Command::SetKey { name, value } => cmd_set_key(name, value),
         Command::Serve {
             bind,
@@ -488,6 +518,20 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+async fn cmd_provision(env_only: bool, verify_only: bool, dry_run: bool) -> Result<()> {
+    println!("HSE v{} — provision", crate::VERSION);
+    if !verify_only {
+        provision::cmd_provision_env(dry_run)?;
+    }
+    if !env_only && !dry_run {
+        provision::cmd_provision_verify().await?;
+    } else if !env_only && dry_run {
+        println!("==> Phase: verify (skipped under --dry-run)");
+    }
+    println!("\nDone.");
     Ok(())
 }
 
