@@ -648,20 +648,28 @@ fn rule_au_014_geo_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<C
 /// curated-IOC feed that opts into the tag). Severity High because
 /// these feeds are hand-curated.
 fn rule_au_015_threat_intel_hit(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    // Module names whose evidence rows are authoritative for the
+    // `threat-intel` tag. Restricted to known TI sources to avoid
+    // misattributing the tag to non-TI evidence merged onto the same
+    // entity — e.g. a Domain enriched by both `alienvault_otx` (TI)
+    // and `whois` (registry data, not TI) must not be described as
+    // "present in alienvault_otx + whois".
+    //
+    // Adding a new TI module = appending one entry here. The fallback
+    // below preserves a sensible description for any future TI module
+    // that hasn't been wired into this list yet.
+    const TI_SOURCES: &[&str] = &["alienvault_otx", "threatfox"];
+
     entities
         .iter()
         .filter(|e| e.has_tag("threat-intel"))
         .map(|e| {
-            // Source attribution from evidence: every threat-intel
-            // module sets its evidence.source, so this is the
-            // authoritative feed name. We use whatever evidence the
-            // entity carries — no hard-coded whitelist — so a future
-            // TI module that emits the `threat-intel` tag gets correct
-            // attribution without a correlator code edit. The fallback
-            // below covers the unusual case where an entity is tagged
-            // `threat-intel` without any backing evidence at all.
-            let sources: std::collections::BTreeSet<&str> =
-                e.evidence.iter().map(|ev| ev.source.as_str()).collect();
+            let sources: std::collections::BTreeSet<&str> = e
+                .evidence
+                .iter()
+                .map(|ev| ev.source.as_str())
+                .filter(|s| TI_SOURCES.contains(s))
+                .collect();
             let attribution = if sources.is_empty() {
                 "a curated threat-intel feed".to_string()
             } else {
@@ -1003,6 +1011,33 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert!(r[0].description.contains("threatfox"));
         assert!(!r[0].description.contains("OTX"));
+    }
+
+    #[test]
+    fn au015_attribution_excludes_non_ti_evidence() {
+        // An entity tagged `threat-intel` can carry evidence rows from
+        // non-TI modules (e.g. a Domain enriched by both `alienvault_otx`
+        // AND `whois` during expansion). The attribution must NOT include
+        // the non-TI source name; the AU-015 whitelist gates exactly
+        // which modules are authoritative for the threat-intel claim.
+        let mut e = Entity::new(EntityKind::Domain, "bad.example", 0.9, "s");
+        e.tag("threat-intel");
+        e.add_evidence(Evidence::new("alienvault_otx", "ti-hit"));
+        e.add_evidence(Evidence::new("whois", "registry-data"));
+        e.add_evidence(Evidence::new("dns_resolver", "a-record"));
+        let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].description.contains("alienvault_otx"));
+        assert!(
+            !r[0].description.contains("whois"),
+            "non-TI evidence source must not appear in TI attribution: {}",
+            r[0].description
+        );
+        assert!(
+            !r[0].description.contains("dns_resolver"),
+            "non-TI evidence source must not appear in TI attribution: {}",
+            r[0].description
+        );
     }
 
     #[test]
