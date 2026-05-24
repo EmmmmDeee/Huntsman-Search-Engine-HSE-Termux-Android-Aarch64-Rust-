@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -126,7 +126,12 @@ impl Module for IpQs {
             TargetKind::IpAddress => EntityKind::IpAddress,
             TargetKind::Email => EntityKind::Email,
             TargetKind::Phone => EntityKind::Phone,
-            _ => unreachable!(),
+            other => {
+                return Err(Error::module(
+                    "ipqs",
+                    format!("unexpected target kind: {other:?}"),
+                ));
+            }
         };
         let mut entity = Entity::new(kind, value, 0.85, &ctx.scan_id);
         entity.tag("ipqs");

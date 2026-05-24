@@ -117,7 +117,12 @@ impl Module for DeHashed {
             TargetKind::Phone => EntityKind::Phone,
             TargetKind::IpAddress => EntityKind::IpAddress,
             TargetKind::Domain => EntityKind::Domain,
-            _ => unreachable!(),
+            other => {
+                return Err(Error::module(
+                    "dehashed",
+                    format!("unexpected target kind: {other:?}"),
+                ));
+            }
         };
         let mut entity = Entity::new(kind, value, 0.88, &ctx.scan_id);
         entity.tag("breach");

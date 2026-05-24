@@ -170,7 +170,12 @@ impl Module for IntelX {
             TargetKind::Phone => EntityKind::Phone,
             TargetKind::Domain => EntityKind::Domain,
             TargetKind::IpAddress => EntityKind::IpAddress,
-            _ => unreachable!(),
+            other => {
+                return Err(Error::module(
+                    "intelx",
+                    format!("unexpected target kind: {other:?}"),
+                ));
+            }
         };
         let mut entity = Entity::new(kind, value, 0.86, &ctx.scan_id);
         entity.tag("intelx");

@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -76,7 +76,12 @@ impl Module for HudsonRock {
         let kind = match target.kind {
             TargetKind::Email => EntityKind::Email,
             TargetKind::Domain => EntityKind::Domain,
-            _ => unreachable!(),
+            other => {
+                return Err(Error::module(
+                    "hudsonrock",
+                    format!("unexpected target kind: {other:?}"),
+                ));
+            }
         };
 
         let mut entity = Entity::new(kind, &target.value, 0.78, &ctx.scan_id);
