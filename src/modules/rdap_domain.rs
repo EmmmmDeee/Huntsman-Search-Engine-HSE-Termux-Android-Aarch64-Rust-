@@ -64,6 +64,26 @@ struct SecureDns {
     delegation_signed: Option<bool>,
 }
 
+/// Replace each run of ASCII whitespace with a single `-` so RDAP's
+/// human-readable status phrases ("client transfer prohibited") fit
+/// the project's whitespace-free tag convention.
+fn slugify(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_dash = false;
+    for ch in s.chars() {
+        if ch.is_ascii_whitespace() {
+            if !prev_dash {
+                out.push('-');
+                prev_dash = true;
+            }
+        } else {
+            out.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        }
+    }
+    out
+}
+
 pub struct RdapDomain;
 
 #[async_trait]
@@ -73,9 +93,10 @@ impl Module for RdapDomain {
     }
 
     fn priority(&self) -> u8 {
-        // Slightly below whois — same registry layer, prefer whois as the
-        // primary record holder when both run.
-        49
+        // One step below whois (32) so whois — the canonical record
+        // holder — runs first; rdap fills structured gaps after.
+        // (Engine sorts highest-priority-first.)
+        31
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -128,13 +149,24 @@ impl Module for RdapDomain {
         if !body.status.is_empty() {
             ev = ev.with_attr("status", body.status.join(","));
             for s in &body.status {
-                entity.tag(format!("status:{s}"));
+                // RDAP status values are human phrases ("client transfer
+                // prohibited"); slugify so tags match the codebase's
+                // whitespace-free convention.
+                entity.tag(format!("status:{}", slugify(s)));
             }
         }
+        // RDAP commonly carries multiple events with the same action
+        // (e.g. two `transfer` events from successive registrar moves).
+        // Group dates by action so each appears in evidence.
+        let mut events_by_action: std::collections::BTreeMap<&str, Vec<&str>> =
+            std::collections::BTreeMap::new();
         for e in &body.events {
             if let (Some(action), Some(date)) = (e.action.as_deref(), e.date.as_deref()) {
-                ev = ev.with_attr(format!("event_{action}"), date);
+                events_by_action.entry(action).or_default().push(date);
             }
+        }
+        for (action, dates) in events_by_action {
+            ev = ev.with_attr(format!("event_{action}"), dates.join(","));
         }
         if !body.entities.is_empty() {
             let roles: std::collections::BTreeSet<&str> = body
@@ -173,7 +205,11 @@ impl Module for RdapDomain {
         result.push(entity);
 
         // One Domain entity per nameserver — complements whois `whois-ns`.
-        for n in body.nameservers {
+        // Cap at the first 16; heavyweight TLDs / anycast registries can
+        // list many NS plus glue records and we don't want one module
+        // call to fan out into hundreds of entities.
+        const MAX_NS: usize = 16;
+        for n in body.nameservers.into_iter().take(MAX_NS) {
             let Some(name) = n.name else { continue };
             let name = name.trim().trim_end_matches('.').to_ascii_lowercase();
             if name.is_empty() {
@@ -202,5 +238,24 @@ mod tests {
         let m = RdapDomain;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x.com")));
         assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+    }
+
+    #[test]
+    fn priority_runs_after_whois() {
+        // Whois (priority 32) is the canonical record holder; rdap fills
+        // structured gaps after. Engine sorts highest-first.
+        assert!(RdapDomain.priority() < 32);
+    }
+
+    #[test]
+    fn slugify_collapses_whitespace_and_lowercases() {
+        assert_eq!(
+            slugify("client transfer prohibited"),
+            "client-transfer-prohibited"
+        );
+        assert_eq!(slugify("Active"), "active");
+        assert_eq!(slugify("a  b   c"), "a-b-c");
+        assert_eq!(slugify("no-spaces"), "no-spaces");
+        assert_eq!(slugify(""), "");
     }
 }

@@ -67,8 +67,11 @@ impl Module for CaaRecords {
             // CAA `value` is the literal bytes after the tag — for `issue`
             // and `issuewild` it's an ASCII issuer-domain (possibly with
             // semicolon-delimited parameters), for `iodef` it's a URL.
+            //
+            // RFC 8659 §4.1.1 specifies tags are case-insensitive, so
+            // normalise before matching.
             let value = String::from_utf8_lossy(&caa.value).into_owned();
-            match caa.tag.as_str() {
+            match caa.tag.to_ascii_lowercase().as_str() {
                 "issue" => issuers.push(value),
                 "issuewild" => wildcards.push(value),
                 "iodef" => iodefs.push(value),

@@ -91,7 +91,15 @@ impl Module for ShodanInternetDb {
             .await
             .map_err(|e| Error::module("shodan_internetdb", e.to_string()))?;
 
-        if body.ports.is_empty() && body.vulns.is_empty() && body.hostnames.is_empty() {
+        // CPE-only and tag-only hits are still useful (passive software
+        // fingerprint, `compromised`/`honeypot` classifier output) — only
+        // bail when every populated field is empty.
+        if body.ports.is_empty()
+            && body.vulns.is_empty()
+            && body.hostnames.is_empty()
+            && body.cpes.is_empty()
+            && body.tags.is_empty()
+        {
             return Ok(ModuleResult::new());
         }
 
@@ -134,8 +142,12 @@ impl Module for ShodanInternetDb {
         }
         if !body.tags.is_empty() {
             ev = ev.with_attr("tags", body.tags.join(","));
+            // Upstream-controlled vocabulary — namespace so Shodan strings
+            // like `tor`/`proxy`/`vpn`/`compromised` can't impersonate the
+            // first-party correlator tags emitted by tor_exit_check /
+            // criminal_ip / ipqs / urlhaus.
             for t in &body.tags {
-                entity.tag(t.clone());
+                entity.tag(format!("shodan:{t}"));
             }
         }
         if let Some(canonical_ip) = body.ip.as_deref() {
@@ -145,9 +157,23 @@ impl Module for ShodanInternetDb {
         result.push(entity);
 
         // Emit one Domain entity per observed PTR / SAN hostname.
-        for host in &body.hostnames {
+        // Cap at the first 16 to bound the entity fan-out for CDN-fronted
+        // IPs which can return hundreds of PTRs.
+        const MAX_HOSTS: usize = 16;
+        for host in body.hostnames.iter().take(MAX_HOSTS) {
             let host = host.trim().trim_end_matches('.');
             if host.is_empty() {
+                continue;
+            }
+            // InternetDB occasionally returns IP literals when the PTR
+            // points back to itself; reject so we don't seed an IP into
+            // the Domain namespace.
+            if host.parse::<std::net::IpAddr>().is_ok() {
+                continue;
+            }
+            // Domain shape sanity — must contain at least one dot and
+            // no whitespace (defensive against malformed upstream data).
+            if !host.contains('.') || host.contains(char::is_whitespace) {
                 continue;
             }
             let mut d = Entity::new(EntityKind::Domain, host, 0.80, &ctx.scan_id);

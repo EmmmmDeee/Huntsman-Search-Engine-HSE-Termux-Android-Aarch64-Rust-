@@ -101,7 +101,19 @@ impl ScanEngine {
             .await?;
 
         // Rounds 1..=depth — autonomous expansion.
-        if opts.depth > 0 {
+        // Budget check after the seed: if a chatty module already blew
+        // past `max_entities`, skip expansion entirely and emit an
+        // ExpansionStop event so SSE consumers see the reason.
+        // (Per-module caps inside dispatch_target are a separate concern;
+        // this check at least bounds expansion fan-out.)
+        if let Some(stop) = budget_check(&opts, started, entity_map.len()) {
+            let _ = self.bus.send(Event::new(
+                &scan.id,
+                EventKind::ExpansionStop {
+                    reason: stop.label(),
+                },
+            ));
+        } else if opts.depth > 0 {
             let _ = self
                 .run_expansion(
                     &scan.id,

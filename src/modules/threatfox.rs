@@ -95,8 +95,19 @@ impl Module for ThreatFox {
             .await
             .map_err(|e| Error::module("threatfox", e.to_string()))?;
 
-        // "no_result" is the common case for clean indicators.
-        if parsed.query_status != "ok" || parsed.data.is_empty() {
+        // abuse.ch's anonymous tier returns HTTP 200 + `query_status:
+        // "rate_limited"` (or `illegal_search_term` etc.) instead of a
+        // non-success HTTP code. Surface these as module errors so the
+        // operator can distinguish them from genuine clean indicators
+        // (which return `query_status: "no_result"`).
+        match parsed.query_status.as_str() {
+            "ok" => {}
+            "no_result" => return Ok(ModuleResult::new()),
+            other => {
+                return Err(Error::module("threatfox", format!("query_status={other}")));
+            }
+        }
+        if parsed.data.is_empty() {
             return Ok(ModuleResult::new());
         }
 
