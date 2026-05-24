@@ -98,6 +98,20 @@ pub enum Command {
     Modules,
     /// Verify environment: DB path, key file, Termux detection, module counts.
     Doctor,
+    /// Write a single `HUNTSMAN_*` key to `$HOME/.huntsman.env`.
+    ///
+    /// The file is created with mode 0600 if missing; existing entries
+    /// for the same name are replaced in place. Other `HUNTSMAN_*`
+    /// lines, comments, and unrelated entries are preserved verbatim.
+    /// Same validation as the Settings HTTP endpoint — key names must
+    /// start with `HUNTSMAN_` and values may not contain control
+    /// characters or double-quotes.
+    SetKey {
+        /// Variable name, e.g. `HUNTSMAN_SHODAN_KEY`. Must start with `HUNTSMAN_`.
+        name: String,
+        /// Raw value to store. Quote in the shell to avoid mis-parsing.
+        value: String,
+    },
     /// Start the HTTP server + SPA (browse to http://127.0.0.1:8080 from Chrome).
     Serve {
         /// Bind address. Localhost-only by default — change at your own risk.
@@ -187,6 +201,7 @@ pub async fn run() -> Result<()> {
         }
         Command::Modules => cmd_modules(),
         Command::Doctor => cmd_doctor(),
+        Command::SetKey { name, value } => cmd_set_key(name, value),
         Command::Serve {
             bind,
             allow_key_write,
@@ -473,6 +488,15 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn cmd_set_key(name: String, value: String) -> Result<()> {
+    use std::collections::BTreeMap;
+    let mut updates = BTreeMap::new();
+    updates.insert(name.clone(), value);
+    keys::write_keys(&updates, &[]).map_err(|e| Error::Other(e.to_string()))?;
+    println!("✓ {name} set in {}", keys::env_path());
     Ok(())
 }
 

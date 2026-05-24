@@ -9,7 +9,9 @@ pub mod alienvault_otx;
 pub mod arp_scan;
 pub mod bgpview;
 pub mod cell_survey;
+pub mod criminal_ip;
 pub mod crtsh;
+pub mod dehashed;
 pub mod dns_brute;
 pub mod dns_resolver;
 pub mod email_to_username;
@@ -17,12 +19,18 @@ pub mod github_user;
 pub mod gps_fix;
 pub mod gravatar;
 pub mod hudsonrock;
+pub mod intelx;
 pub mod ip_geo;
 pub mod ip_rdap;
+pub mod ipqs;
+pub mod leakix;
 pub mod net_interfaces;
+pub mod numverify;
 pub mod oathnet_pro;
 pub mod phone_intl;
 pub mod reverse_dns;
+pub mod securitytrails;
+pub mod shodan;
 pub mod tor_exit_check;
 pub mod urlhaus;
 pub mod username_search;
@@ -31,6 +39,7 @@ pub mod webserver_banner;
 pub mod whois;
 pub mod wifi_connect;
 pub mod wifi_scan;
+pub mod wigle;
 pub mod xposed_or_not;
 
 use std::sync::Arc;
@@ -50,6 +59,18 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(oathnet_pro::OathnetPro),
         // Threat intel — abuse.ch URLhaus host check (free, no key).
         Arc::new(urlhaus::UrlHaus),
+        // Paid / key-gated integrations (v0.11+). Each silently no-ops
+        // when its key is missing — engine emits ModuleError once and
+        // moves on so the rest of the scan still proceeds.
+        Arc::new(shodan::Shodan),
+        Arc::new(dehashed::DeHashed),
+        Arc::new(intelx::IntelX),
+        Arc::new(securitytrails::SecurityTrails),
+        Arc::new(leakix::LeakIx),
+        Arc::new(criminal_ip::CriminalIp),
+        Arc::new(ipqs::IpQs),
+        Arc::new(numverify::Numverify),
+        Arc::new(wigle::Wigle),
         Arc::new(crtsh::Crtsh),
         Arc::new(dns_resolver::DnsResolver),
         Arc::new(reverse_dns::ReverseDns),

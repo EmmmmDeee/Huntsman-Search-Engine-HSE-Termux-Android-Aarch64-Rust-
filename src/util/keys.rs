@@ -15,12 +15,23 @@ use crate::core::error::{Error, Result};
 /// the Settings UI so users see a populated grid before they've configured
 /// anything. Matches the template comments in `install.sh`.
 pub const KNOWN_KEYS: &[&str] = &[
+    // Identity / breach
     "HUNTSMAN_OATHNET_KEY",
     "HUNTSMAN_HIBP_KEY",
+    "HUNTSMAN_DEHASHED_USER",
     "HUNTSMAN_DEHASHED_KEY",
     "HUNTSMAN_HUNTER_KEY",
+    "HUNTSMAN_INTELX_KEY",
+    // Infrastructure / threat intel
     "HUNTSMAN_SHODAN_KEY",
+    "HUNTSMAN_SECTRAILS_KEY",
+    "HUNTSMAN_LEAKIX_KEY",
+    "HUNTSMAN_CRIMINALIP_KEY",
+    "HUNTSMAN_IPQS_KEY",
     "HUNTSMAN_VIRUSTOTAL_KEY",
+    // Validation / enrichment
+    "HUNTSMAN_NUMVERIFY_KEY",
+    "HUNTSMAN_WIGLE_USER",
     "HUNTSMAN_WIGLE_TOKEN",
     "HUNTSMAN_ABR_GUID",
 ];
