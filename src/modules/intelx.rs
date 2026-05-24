@@ -126,10 +126,7 @@ impl Module for IntelX {
             (Some(id), Some(0)) | (Some(id), None) if !id.is_empty() => id,
             (_, Some(1)) => return Ok(ModuleResult::new()), // invalid term
             (_, Some(2)) => {
-                return Err(Error::module(
-                    "intelx",
-                    "max concurrent searches reached",
-                ));
+                return Err(Error::module("intelx", "max concurrent searches reached"));
             }
             _ => return Ok(ModuleResult::new()),
         };
@@ -200,10 +197,7 @@ impl Module for IntelX {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let latest = last_records
-            .iter()
-            .filter_map(|r| r.date.as_deref())
-            .max();
+        let latest = last_records.iter().filter_map(|r| r.date.as_deref()).max();
 
         let mut ev = Evidence::new(
             "intelx",

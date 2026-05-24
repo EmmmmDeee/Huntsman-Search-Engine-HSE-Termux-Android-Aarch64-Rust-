@@ -115,8 +115,7 @@ impl Module for IpQs {
             urlencode(key),
             urlencode(value),
         );
-        let Some(body): Option<Common> = fetch_json_or_404(&ctx.http, "ipqs", &url).await?
-        else {
+        let Some(body): Option<Common> = fetch_json_or_404(&ctx.http, "ipqs", &url).await? else {
             return Ok(ModuleResult::new());
         };
         if body.success == Some(false) {

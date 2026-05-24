@@ -74,7 +74,9 @@ impl Module for ReverseDns {
 
         let mut result = ModuleResult::new();
         for record in lookup.answers() {
-            let RData::PTR(ptr) = &record.data else { continue };
+            let RData::PTR(ptr) = &record.data else {
+                continue;
+            };
             let host = ptr.0.to_ascii();
             let host = host.trim_end_matches('.').to_string();
             if host.is_empty() {

@@ -79,9 +79,7 @@ impl Module for SecurityTrails {
             .await
             .map_err(|e| Error::module("securitytrails", e.to_string()))?;
 
-        let total = body
-            .subdomain_count
-            .unwrap_or(body.subdomains.len() as u64);
+        let total = body.subdomain_count.unwrap_or(body.subdomains.len() as u64);
         let mut result = ModuleResult::new();
         for sub in body.subdomains {
             if sub.is_empty() {

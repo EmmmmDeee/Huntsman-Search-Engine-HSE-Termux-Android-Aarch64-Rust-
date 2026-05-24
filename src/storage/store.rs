@@ -465,7 +465,12 @@ mod tests {
         assert_eq!(keeper[0].value, "example.com");
 
         // The orphan is gone.
-        assert!(store.scan_ids_for_entity(&only_doomed.uid).unwrap().is_empty());
+        assert!(
+            store
+                .scan_ids_for_entity(&only_doomed.uid)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(store.observation_count(&only_doomed.uid).unwrap(), 0);
 
         // The scan record itself is gone.

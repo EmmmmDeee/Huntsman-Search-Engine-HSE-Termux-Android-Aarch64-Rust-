@@ -401,7 +401,11 @@ mod tests {
     #[test]
     fn validate_email() {
         assert!(Target::new(TargetKind::Email, "a@b.com").validate().is_ok());
-        assert!(Target::new(TargetKind::Email, "noatsign").validate().is_err());
+        assert!(
+            Target::new(TargetKind::Email, "noatsign")
+                .validate()
+                .is_err()
+        );
         assert!(Target::new(TargetKind::Email, "@b.com").validate().is_err());
         assert!(Target::new(TargetKind::Email, "a@b").validate().is_err()); // no dot
     }
@@ -413,7 +417,11 @@ mod tests {
                 .validate()
                 .is_ok()
         );
-        assert!(Target::new(TargetKind::Domain, "single").validate().is_err()); // no dot
+        assert!(
+            Target::new(TargetKind::Domain, "single")
+                .validate()
+                .is_err()
+        ); // no dot
         assert!(
             Target::new(TargetKind::Domain, "bad domain.com")
                 .validate()
@@ -428,11 +436,7 @@ mod tests {
                 .validate()
                 .is_ok()
         );
-        assert!(
-            Target::new(TargetKind::IpAddress, "::1")
-                .validate()
-                .is_ok()
-        );
+        assert!(Target::new(TargetKind::IpAddress, "::1").validate().is_ok());
         assert!(
             Target::new(TargetKind::IpAddress, "999.999.999.999")
                 .validate()

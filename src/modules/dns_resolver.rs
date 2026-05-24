@@ -97,7 +97,9 @@ impl Module for DnsResolver {
         // MX records
         if let Ok(lookup) = mxs {
             for record in lookup.answers() {
-                let RData::MX(mx) = &record.data else { continue };
+                let RData::MX(mx) = &record.data else {
+                    continue;
+                };
                 let host = mx.exchange.to_ascii();
                 let host = host.trim_end_matches('.').to_string();
                 if !host.is_empty() {
@@ -117,7 +119,9 @@ impl Module for DnsResolver {
         // NS records — authoritative nameservers
         if let Ok(lookup) = nss {
             for record in lookup.answers() {
-                let RData::NS(ns) = &record.data else { continue };
+                let RData::NS(ns) = &record.data else {
+                    continue;
+                };
                 let host = ns.0.to_ascii();
                 let host = host.trim_end_matches('.').to_string();
                 if !host.is_empty() {

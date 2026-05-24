@@ -126,15 +126,17 @@ impl Module for Shodan {
                 );
         }
         if !body.vulns.is_empty() {
-            ev = ev.with_attr("vuln_count", body.vulns.len().to_string()).with_attr(
-                "top_vulns",
-                body.vulns
-                    .iter()
-                    .take(10)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
+            ev = ev
+                .with_attr("vuln_count", body.vulns.len().to_string())
+                .with_attr(
+                    "top_vulns",
+                    body.vulns
+                        .iter()
+                        .take(10)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
         }
         entity.add_evidence(ev);
         result.push(entity);

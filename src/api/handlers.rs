@@ -241,10 +241,7 @@ pub async fn scan_rerun(
         Err(e) => return internal_error(&e),
     };
 
-    let sid = scan_id(
-        original.target.kind.canonical_str(),
-        &original.target.value,
-    );
+    let sid = scan_id(original.target.kind.canonical_str(), &original.target.value);
     let new_scan =
         Scan::new(sid.clone(), original.target.clone()).with_options(original.options.clone());
 

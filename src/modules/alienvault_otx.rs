@@ -71,7 +71,9 @@ impl Module for AlienVaultOtx {
 
         // 404 = target not in OTX (no findings); 429 / 5xx surface as
         // module_error via fetch_json_or_404's standard error path.
-        let Some(data): Option<OtxResp> = fetch_json_or_404(&ctx.http, "alienvault_otx", &url).await? else {
+        let Some(data): Option<OtxResp> =
+            fetch_json_or_404(&ctx.http, "alienvault_otx", &url).await?
+        else {
             return Ok(ModuleResult::new());
         };
 
@@ -117,7 +119,11 @@ impl Module for AlienVaultOtx {
             .pulses
             .iter()
             .find_map(|p| p.tlp.as_deref().filter(|s| !s.is_empty()));
-        let earliest_created = pulse_info.pulses.iter().filter_map(|p| p.created.as_deref()).min();
+        let earliest_created = pulse_info
+            .pulses
+            .iter()
+            .filter_map(|p| p.created.as_deref())
+            .min();
 
         // Tag the entity with high-level threat hints so the SPA can
         // colour-code rows. These are bucketed from the raw pulse tags.

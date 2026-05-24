@@ -289,7 +289,11 @@ impl Module for PhoneIntl {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         // Strip every char except digits (drop +, spaces, dashes, parens).
-        let digits: String = target.value.chars().filter(|c| c.is_ascii_digit()).collect();
+        let digits: String = target
+            .value
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect();
         if digits.len() < 7 || digits.len() > 15 {
             // E.164 mandates 7–15 digits total (incl. country code).
             return Ok(ModuleResult::new());
