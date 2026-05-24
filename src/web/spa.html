@@ -1167,8 +1167,21 @@ async function renderLog(host, scan){
   const box = $('#log-box');
   const histCounts = new Map();
   if (historyError){
+    // History fetch failed: we can't compute dedup credits, so we
+    // also can't sensibly drain the buffered SSE events without
+    // potentially double-painting (or missing) rows. Surface the
+    // error alone — the operator's next refresh has another shot
+    // at history, and `openSse` callback below will start adding
+    // fresh rows the moment we switch out of buffering mode.
     box.innerHTML = `<div class="alert alert-danger" style="margin:8px">Failed to load event history: ${esc(historyError)}</div>`;
-  } else if (history.length === 0 && !running){
+    bufferingMode = false;
+    if (!running){
+      status.className = 'label label-warning';
+      status.textContent = 'history error';
+    }
+    return;
+  }
+  if (history.length === 0 && !running){
     box.innerHTML = `<div class="empty-state"><p>No events recorded for this scan.</p></div>`;
   } else {
     box.innerHTML = '';
