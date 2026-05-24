@@ -18,11 +18,11 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
+use crate::util::http::fetch_json_or_404;
 
 pub struct XposedOrNot;
 
@@ -64,32 +64,11 @@ impl Module for XposedOrNot {
             urlencode(&target.value)
         );
 
-        let resp = ctx
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::module("xposed_or_not", e.to_string()))?;
-
-        let status = resp.status();
-        // 404 = clean (per XposedOrNot semantics). Other non-2xx → error,
-        // so 429 / 5xx surface as a `module_error` event rather than
-        // silently masquerading as a clean result.
-        if status.as_u16() == 404 {
+        // 404 = clean (per XposedOrNot semantics); other non-2xx →
+        // surfaced as `module_error` so 429 / 5xx stay visible.
+        let Some(data): Option<XonResp> = fetch_json_or_404(&ctx.http, "xposed_or_not", &url).await? else {
             return Ok(ModuleResult::new());
-        }
-        if !status.is_success() {
-            return Err(Error::module(
-                "xposed_or_not",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
-        }
-
-        let data: XonResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module("xposed_or_not", e.to_string()))?;
-
+        };
         Ok(build_result(&data, target, &ctx.scan_id))
     }
 }

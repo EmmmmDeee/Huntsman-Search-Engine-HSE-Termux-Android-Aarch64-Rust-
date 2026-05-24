@@ -8,11 +8,11 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
+use crate::util::http::fetch_json;
 
 pub struct IpGeo;
 
@@ -51,29 +51,11 @@ impl Module for IpGeo {
             target.value
         );
 
-        let resp = ctx
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::module("ip_geo", e.to_string()))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            // ip-api.com free tier rate-limits at 45 req/min and returns
-            // HTTP 429 with a JSON body when exceeded. Surface as a real
-            // module_error so the user can see the limit was hit; previous
-            // silent-empty behaviour made rate-limit conditions invisible.
-            return Err(Error::module(
-                "ip_geo",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
-        }
-
-        let data: IpApiResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module("ip_geo", e.to_string()))?;
+        // ip-api.com free tier rate-limits at 45 req/min and returns
+        // HTTP 429 with a JSON body when exceeded. `fetch_json` surfaces
+        // the body as a `module_error`, keeping rate-limit conditions
+        // visible (previous silent-empty behaviour hid them).
+        let data: IpApiResp = fetch_json(&ctx.http, "ip_geo", &url).await?;
 
         if data.status != "success" {
             return Ok(ModuleResult::new());

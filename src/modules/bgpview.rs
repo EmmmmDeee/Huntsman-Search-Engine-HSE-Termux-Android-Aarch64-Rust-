@@ -14,11 +14,11 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
+use crate::util::http::fetch_json_or_404;
 
 pub struct BgpView;
 
@@ -103,26 +103,9 @@ async fn lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
     };
 
     let url = format!("https://api.bgpview.io/asn/{asn}");
-    let resp = ctx
-        .http
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| Error::module("bgpview", e.to_string()))?;
-    let status = resp.status();
-    if status.as_u16() == 404 {
+    let Some(body): Option<AsnResp> = fetch_json_or_404(&ctx.http, "bgpview", &url).await? else {
         return Ok(ModuleResult::new());
-    }
-    if !status.is_success() {
-        return Err(Error::module(
-            "bgpview",
-            format!("HTTP {status}: {}", error_snippet(resp).await),
-        ));
-    }
-    let body: AsnResp = resp
-        .json()
-        .await
-        .map_err(|e| Error::module("bgpview", e.to_string()))?;
+    };
 
     if body.status != "ok" {
         return Ok(ModuleResult::new());
@@ -207,26 +190,9 @@ async fn lookup_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult>
         return Ok(ModuleResult::new());
     }
     let url = format!("https://api.bgpview.io/ip/{ip}");
-    let resp = ctx
-        .http
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| Error::module("bgpview", e.to_string()))?;
-    let status = resp.status();
-    if status.as_u16() == 404 {
+    let Some(body): Option<IpResp> = fetch_json_or_404(&ctx.http, "bgpview", &url).await? else {
         return Ok(ModuleResult::new());
-    }
-    if !status.is_success() {
-        return Err(Error::module(
-            "bgpview",
-            format!("HTTP {status}: {}", error_snippet(resp).await),
-        ));
-    }
-    let body: IpResp = resp
-        .json()
-        .await
-        .map_err(|e| Error::module("bgpview", e.to_string()))?;
+    };
     if body.status != "ok" {
         return Ok(ModuleResult::new());
     }
