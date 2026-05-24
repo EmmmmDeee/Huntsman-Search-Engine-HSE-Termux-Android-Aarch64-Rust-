@@ -189,9 +189,11 @@ impl ScanEngine {
             // crossed `max_entities` (or wall-time crossed
             // `max_wall_time_secs`) before this module runs, stop
             // dispatching further modules against this target. Modules
-            // that already completed keep their results; remaining ones
-            // emit a `ModuleSkipped` event with the budget reason so
-            // operators see why the dispatcher short-circuited.
+            // that already completed keep their results; we emit a
+            // single `ModuleSkipped` event tagged with the budget reason
+            // and `break` rather than `continue` so the bus isn't flooded
+            // with one skip per remaining module (the gate is global —
+            // the second through N-th would all carry the same reason).
             if let Some(stop) = budget_check(opts, started, entity_map.len()) {
                 let _ = self.bus.send(Event::new(
                     scan_id,
@@ -200,7 +202,7 @@ impl ScanEngine {
                         reason: stop.label(),
                     },
                 ));
-                continue;
+                break;
             }
 
             let _ = self.bus.send(Event::new(
@@ -253,6 +255,22 @@ impl ScanEngine {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
 
+        // Early gate: if we're already over budget on entry (because a
+        // prior target's dispatch in this round filled the cap, or a
+        // long-running module pushed past `max_wall_time_secs`), don't
+        // spawn anything new. This matches the sequential path's
+        // behaviour of never running modules past the gate.
+        if let Some(stop) = budget_check(opts, started, entity_map.len()) {
+            let _ = self.bus.send(Event::new(
+                scan_id,
+                EventKind::ModuleSkipped {
+                    module: "<dispatcher>".into(),
+                    reason: stop.label(),
+                },
+            ));
+            return Ok(());
+        }
+
         let sem = Arc::new(Semaphore::new(opts.max_concurrent));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
 
@@ -282,8 +300,8 @@ impl ScanEngine {
             };
 
             let module_arc: Arc<dyn Module> = Arc::clone(module);
-            let target = target.clone();
-            let ctx = ctx.clone();
+            let target_cloned = target.clone();
+            let ctx_cloned = ctx.clone();
             let bus = self.bus.clone();
             let scan_id_owned = scan_id.to_string();
             let throttle_ms = opts.throttle_ms;
@@ -305,7 +323,7 @@ impl ScanEngine {
 
                 let result = timeout(
                     Duration::from_millis(module_timeout_ms),
-                    module_arc.process(&target, &ctx),
+                    module_arc.process(&target_cloned, &ctx_cloned),
                 )
                 .await;
 
@@ -320,34 +338,48 @@ impl ScanEngine {
         // Consume results as tasks finish. entity_map is single-owner
         // in this loop, so no Mutex needed.
         //
-        // Each iteration also gates on `budget_check` against the
-        // growing entity_map; once `max_entities` (or
-        // `max_wall_time_secs`) is reached we break, and the JoinSet's
-        // Drop cancels every still-running task.
+        // Order matters: ALWAYS finalise the just-joined outcome BEFORE
+        // checking the budget. Otherwise a module that already ran to
+        // completion would have its entities silently dropped and its
+        // `ModuleStart` left dangling without a matching `ModuleDone`/
+        // `ModuleError`. After finalising, the freshly-incremented
+        // `entity_map.len()` drives the budget gate; when the gate
+        // fires we use `ModuleSkipped` (consistent with the sequential
+        // dispatcher) — `ExpansionStop` is reserved for `run_expansion`'s
+        // round-boundary signal in `engine/mod.rs` and would be
+        // misleading if emitted during a single target's dispatch.
+        //
+        // JoinSet::Drop cancels any tasks still in flight when we
+        // `break` out — reqwest honours Drop and aborts the in-flight
+        // request, so no resources leak.
         while let Some(joined) = set.join_next().await {
+            let outcome_name = match joined {
+                Ok(o) => {
+                    let n = o.name;
+                    self.finalise_module_result(
+                        scan_id,
+                        o.name,
+                        opts.min_confidence,
+                        entity_map,
+                        o.result,
+                    );
+                    n
+                }
+                Err(e) => {
+                    warn!(error = %e, "concurrent module task panicked");
+                    "<panicked>"
+                }
+            };
             if let Some(stop) = budget_check(opts, started, entity_map.len()) {
                 let _ = self.bus.send(Event::new(
                     scan_id,
-                    EventKind::ExpansionStop {
+                    EventKind::ModuleSkipped {
+                        module: outcome_name.into(),
                         reason: stop.label(),
                     },
                 ));
                 break;
             }
-            let outcome = match joined {
-                Ok(o) => o,
-                Err(e) => {
-                    warn!(error = %e, "concurrent module task panicked");
-                    continue;
-                }
-            };
-            self.finalise_module_result(
-                scan_id,
-                outcome.name,
-                opts.min_confidence,
-                entity_map,
-                outcome.result,
-            );
         }
         Ok(())
     }
