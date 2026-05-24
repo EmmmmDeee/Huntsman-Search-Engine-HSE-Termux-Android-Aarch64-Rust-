@@ -1,19 +1,33 @@
 //! Shared HTTP client builder. Rustls-only — no native TLS, no openssl,
 //! no native deps at all.
 //!
-//! No client-level timeout is set: the engine wraps every
-//! `Module::process()` call in `tokio::time::timeout(max_timeout_ms)`
-//! (see `src/core/engine/dispatch.rs`), so each module's declared
-//! budget is the actual ceiling. A client-level cap of
+//! No client-level total timeout is set: the engine wraps every
+//! `Module::process()` call in `tokio::time::timeout(...)` (see
+//! `src/core/engine/dispatch.rs`), capped at whichever of the user
+//! override (`ScanOptions::module_timeout_ms`) or each module's
+//! `max_timeout_ms()` is larger. A blanket client-level cap of
 //! `MODULE_TIMEOUT_MS = 3 s` previously short-circuited every module
-//! that declared a larger budget (whois 8 s, wigle 12 s, gps_fix
-//! 15 s+, etc.) — `oathnet_pro.rs:258` even has a test asserting
-//! `max_timeout_ms() > MODULE_TIMEOUT_MS` precisely because the author
-//! expected the override to take effect.
+//! that declared a larger budget (whois 8 s, wigle 12 s, and other
+//! multi-stage network modules) — at least one module has an explicit
+//! unit test asserting `max_timeout_ms() > MODULE_TIMEOUT_MS`,
+//! proving that the override was expected to apply.
+//!
+//! A short `connect_timeout` is still set so that attempts to reach
+//! firewalled or otherwise-unresponsive hosts fail fast and free up
+//! the engine's concurrency slot, instead of consuming the module's
+//! full budget waiting on the OS-level TCP connect.
+
+use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 
 use crate::core::error::{Error, Result};
+
+/// Fail-fast TCP connect budget. Independent of each module's total
+/// `max_timeout_ms()`. Five seconds is generous on slow mobile links
+/// while still preventing a wedged peer from holding a concurrency
+/// slot for the module's entire (often double-digit) total budget.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Build a fresh reqwest client. Cheap to call per scan.
 ///
@@ -23,10 +37,11 @@ use crate::core::error::{Error, Result};
 /// on Termux). The `+https://` contact link is the format recommended
 /// by RFC 7231 §5.5.3 and accepted by most rate-limiters.
 ///
-/// No client-level timeout — see module docstring.
+/// No client-level total timeout — see module docstring. A short
+/// `connect_timeout` is set so unreachable hosts fail fast.
 pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
+        .connect_timeout(CONNECT_TIMEOUT)
         .pool_max_idle_per_host(5)
         .pool_idle_timeout(Duration::from_secs(90))
         .tcp_keepalive(Duration::from_secs(15))
