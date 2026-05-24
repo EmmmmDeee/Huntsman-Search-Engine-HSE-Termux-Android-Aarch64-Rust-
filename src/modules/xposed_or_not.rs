@@ -22,7 +22,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::fetch_json_or_404;
+use crate::util::http::{fetch_json_or_404, urlencode};
 
 pub struct XposedOrNot;
 
@@ -101,10 +101,6 @@ fn build_result(data: &XonResp, target: &Target, scan_id: &str) -> ModuleResult 
     let mut result = ModuleResult::new();
     result.push(entity);
     result
-}
-
-fn urlencode(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
 #[cfg(test)]

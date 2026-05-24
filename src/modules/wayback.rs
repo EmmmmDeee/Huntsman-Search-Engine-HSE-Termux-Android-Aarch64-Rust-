@@ -21,7 +21,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::fetch_json;
+use crate::util::http::{fetch_json, urlencode};
 
 pub struct Wayback;
 
@@ -116,10 +116,6 @@ fn iso_from_cdx(ts: &str) -> String {
         &ts[10..12],
         &ts[12..14],
     )
-}
-
-fn urlencode(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
 #[cfg(test)]
