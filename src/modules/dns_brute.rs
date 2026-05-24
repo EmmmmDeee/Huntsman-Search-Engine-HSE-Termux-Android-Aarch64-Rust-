@@ -9,14 +9,9 @@
 //! enumeration). The dictionary is intentionally small — anything
 //! larger belongs behind a dedicated module with a wordlist file.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use hickory_resolver::{
-    TokioResolver,
-    config::{CLOUDFLARE, ResolverConfig},
-    net::runtime::TokioRuntimeProvider,
-};
 use tokio::sync::Semaphore;
 
 use crate::core::{
@@ -25,18 +20,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-
-fn shared_resolver() -> &'static TokioResolver {
-    static R: OnceLock<TokioResolver> = OnceLock::new();
-    R.get_or_init(|| {
-        TokioResolver::builder_with_config(
-            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
-            TokioRuntimeProvider::default(),
-        )
-        .build()
-        .expect("hardcoded Cloudflare resolver config must build")
-    })
-}
+use crate::util::dns::shared_resolver;
 
 /// Curated set — covers ~99% of the public-facing subdomains operators
 /// actually want to discover. Ordered roughly by frequency so cancellation

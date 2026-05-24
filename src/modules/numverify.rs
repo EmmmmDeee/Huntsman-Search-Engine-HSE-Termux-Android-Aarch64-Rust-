@@ -1,9 +1,13 @@
 //! Numverify phone validation. Key-gated, 100 free lookups/month.
 //!
-//! Endpoint: `GET http://apilayer.net/api/validate?access_key={KEY}&number={E164}`
-//! Returns: validity flag + country/carrier/line-type. The free plan
-//! is HTTP-only (the docs note this); we honour that to avoid a TLS
-//! handshake the upstream will reject for free-tier callers.
+//! Endpoint: `GET https://apilayer.net/api/validate?access_key={KEY}&number={E164}`
+//! Returns: validity flag + country/carrier/line-type.
+//!
+//! Transport: we try HTTPS first to protect the key + queried number
+//! in transit. The free plan historically required HTTP; if HTTPS
+//! errors out, we fall back to HTTP and tag the resulting entity with
+//! `transport:http` so the operator can see the request went over
+//! cleartext. Paid plans accept HTTPS and the fallback never fires.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -75,13 +79,27 @@ impl Module for Numverify {
         // Numverify accepts both formats; strip leading '+' since their
         // examples use E.164 without it.
         let q = phone.trim_start_matches('+');
-        let url = format!(
-            "http://apilayer.net/api/validate?access_key={}&number={}",
+        let qs = format!(
+            "/api/validate?access_key={}&number={}",
             urlencode(key),
             urlencode(q),
         );
-        let Some(body): Option<Resp> = fetch_json_or_404(&ctx.http, "numverify", &url).await?
-        else {
+        // HTTPS first. If the call fails outright (free-tier rejection,
+        // TLS refusal), fall back to HTTP and remember the transport
+        // we ended up using.
+        let https = format!("https://apilayer.net{qs}");
+        let (body_opt, transport): (Option<Resp>, &'static str) =
+            match fetch_json_or_404(&ctx.http, "numverify", &https).await {
+                Ok(b) => (b, "https"),
+                Err(_) => {
+                    let http = format!("http://apilayer.net{qs}");
+                    (
+                        fetch_json_or_404(&ctx.http, "numverify", &http).await?,
+                        "http",
+                    )
+                }
+            };
+        let Some(body) = body_opt else {
             return Ok(ModuleResult::new());
         };
         if body.valid != Some(true) {
@@ -90,6 +108,7 @@ impl Module for Numverify {
         let mut entity = Entity::new(EntityKind::Phone, &target.value, 0.92, &ctx.scan_id);
         entity.tag("numverify");
         entity.tag("validated");
+        entity.tag(format!("transport:{transport}"));
         if let Some(c) = body.country_code.as_deref() {
             entity.tag(format!("country:{}", c.to_uppercase()));
         }
@@ -101,7 +120,8 @@ impl Module for Numverify {
         let mut ev = Evidence::new(
             "numverify",
             format!("Numverify confirmed valid phone {}", target.value),
-        );
+        )
+        .with_attr("transport", transport);
         if let Some(v) = body.number.as_deref() {
             ev = ev.with_attr("normalised", v);
         }

@@ -8,14 +8,8 @@
 
 use async_trait::async_trait;
 use std::net::IpAddr;
-use std::sync::OnceLock;
 
-use hickory_resolver::{
-    TokioResolver,
-    config::{CLOUDFLARE, ResolverConfig},
-    net::runtime::TokioRuntimeProvider,
-    proto::rr::RData,
-};
+use hickory_resolver::proto::rr::RData;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -23,22 +17,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-
-/// Shared resolver — see `dns_resolver::shared_resolver`. Each DNS
-/// module keeps its own OnceLock so neither module pulls the other in
-/// at link time; runtime initialisation is independent but the
-/// underlying hickory resolver is internally cached the same way.
-fn shared_resolver() -> &'static TokioResolver {
-    static RESOLVER: OnceLock<TokioResolver> = OnceLock::new();
-    RESOLVER.get_or_init(|| {
-        TokioResolver::builder_with_config(
-            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
-            TokioRuntimeProvider::default(),
-        )
-        .build()
-        .expect("hardcoded Cloudflare resolver config must build")
-    })
-}
+use crate::util::dns::shared_resolver;
 
 pub struct ReverseDns;
 

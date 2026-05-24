@@ -170,18 +170,24 @@ async fn spa_handler() -> Html<&'static str> {
 async fn vendor_handler(Path(file): Path<String>) -> Response {
     for (name, ct, bytes) in VENDOR_FILES {
         if *name == file {
+            // ETag is the crate version (which uniquely identifies the
+            // embedded bytes — the bundle ships in-binary). We deliberately
+            // do NOT use `Cache-Control: immutable` because the URL
+            // (`/static/bootstrap.min.css`) is stable across upgrades;
+            // pairing immutable with a stable URL leaves the browser stuck
+            // on old bytes after a binary upgrade. Without `immutable`,
+            // browsers will revalidate via the ETag and pick up the new
+            // bytes the moment the binary changes.
+            let etag = HeaderValue::from_static(concat!("\"", env!("CARGO_PKG_VERSION"), "\""));
             return (
                 StatusCode::OK,
                 [
                     (header::CONTENT_TYPE, HeaderValue::from_static(ct)),
-                    // Aggressively cache the vendor bundle — these are
-                    // versioned by content (the binary hash). When the
-                    // binary updates, the embedded bytes change, and the
-                    // browser will re-fetch on the next reload.
                     (
                         header::CACHE_CONTROL,
-                        HeaderValue::from_static("public, max-age=31536000, immutable"),
+                        HeaderValue::from_static("public, max-age=3600, must-revalidate"),
                     ),
+                    (header::ETAG, etag),
                 ],
                 *bytes,
             )

@@ -16,15 +16,8 @@
 //! Uses `hickory-resolver` 0.26 — see `RUSTSEC-2026-0119` for the
 //! O(n²) name-compression fix that motivated the 0.24 → 0.26 bump.
 
-use std::sync::OnceLock;
-
 use async_trait::async_trait;
-use hickory_resolver::{
-    TokioResolver,
-    config::{CLOUDFLARE, ResolverConfig},
-    net::runtime::TokioRuntimeProvider,
-    proto::rr::RData,
-};
+use hickory_resolver::proto::rr::RData;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -32,23 +25,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-
-/// Process-wide DNS resolver. Building the resolver allocates a thread
-/// pool, a connection pool, and a TLS session cache; doing it once and
-/// reusing across scans materially reduces per-scan latency on Termux.
-/// `TokioResolver` is internally `Arc`-y so concurrent scans share the
-/// same caches safely.
-fn shared_resolver() -> &'static TokioResolver {
-    static RESOLVER: OnceLock<TokioResolver> = OnceLock::new();
-    RESOLVER.get_or_init(|| {
-        TokioResolver::builder_with_config(
-            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
-            TokioRuntimeProvider::default(),
-        )
-        .build()
-        .expect("hardcoded Cloudflare resolver config must build")
-    })
-}
+use crate::util::dns::shared_resolver;
 
 pub struct DnsResolver;
 

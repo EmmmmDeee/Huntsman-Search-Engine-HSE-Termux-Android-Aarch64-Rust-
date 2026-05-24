@@ -285,21 +285,29 @@ pub async fn scan_entities_csv(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     use std::collections::BTreeSet;
+    use std::fmt::Write as _;
     let entities = match s.store.entities_for_scan(&id) {
         Ok(es) => es,
         Err(e) => return internal_error(&e),
     };
 
-    let mut body = String::with_capacity(2048);
+    // Estimate ~128 B/row — most rows fit in this on the prototype
+    // scale; allocating up-front avoids the geometric reallocation
+    // schedule for the typical 10s-of-hundreds-of-entities scan.
+    let mut body = String::with_capacity(192 + entities.len() * 128);
     body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,tags\n");
-    for e in entities {
+    for e in &entities {
         let eff = e.c_effective();
         let tier = e.classify().to_string();
         let sources: BTreeSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
         let sources = sources.into_iter().collect::<Vec<_>>().join("|");
         let tags = e.tags.join("|");
-        body.push_str(&format!(
-            "{},{},{},{:.3},{:.3},{},{},{},{},{}\n",
+        // `write!` into the buffer directly — avoids the per-row
+        // `format!` String allocation the previous `push_str(&format!())`
+        // form imposed.
+        let _ = writeln!(
+            body,
+            "{},{},{},{:.3},{:.3},{},{},{},{},{}",
             csv_escape(&e.kind.to_string()),
             csv_escape(&e.value),
             csv_escape(&e.raw_value),
@@ -310,7 +318,7 @@ pub async fn scan_entities_csv(
             e.observed_at,
             csv_escape(&sources),
             csv_escape(&tags),
-        ));
+        );
     }
 
     let filename = format!("hse-scan-{}.csv", id.chars().take(12).collect::<String>());

@@ -269,17 +269,28 @@ impl Store {
     /// entity_observations, and any entity rows that are no longer
     /// observed by any other scan after the cascade.
     ///
-    /// Returns `false` if no scan with that id existed.
+    /// Returns `false` (and performs no writes) when no scan with that
+    /// id exists — the orphan-purge step runs only after a real scan
+    /// row has been deleted, so calling `delete_scan` with a stale id
+    /// can never affect unrelated entities.
     pub fn delete_scan(&self, scan_id: &str) -> Result<bool> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
-        // Correlations first — they reference scan_id directly.
+        // Existence-first: if there's no scan with this id, return
+        // early without touching correlations / observations / entities.
+        // Without this guard, a delete on a nonexistent id would still
+        // run the global orphan-purge below, which is a footgun.
+        let n = tx.execute("DELETE FROM scans WHERE id = ?1", params![scan_id])?;
+        if n == 0 {
+            // Rolling back is moot (we wrote nothing) but explicit is
+            // clearer than dropping the unused transaction.
+            let _ = tx.rollback();
+            return Ok(false);
+        }
         tx.execute(
             "DELETE FROM correlations WHERE scan_id = ?1",
             params![scan_id],
         )?;
-        // Observations — junction rows for this scan. The cascade we do
-        // *after* the observation delete drops any orphaned entity rows.
         tx.execute(
             "DELETE FROM entity_observations WHERE scan_id = ?1",
             params![scan_id],
@@ -289,9 +300,8 @@ impl Store {
              WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
             [],
         )?;
-        let n = tx.execute("DELETE FROM scans WHERE id = ?1", params![scan_id])?;
         tx.commit()?;
-        Ok(n > 0)
+        Ok(true)
     }
 
     pub fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>> {
@@ -479,6 +489,46 @@ mod tests {
 
         // Deleting again returns false (no-op).
         assert!(!store.delete_scan("scan-doomed").unwrap());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn delete_scan_with_unknown_id_does_not_purge_orphans() {
+        // Regression: a delete on a non-existent scan id must NOT run
+        // the orphan-entity purge — that purge is global and would
+        // delete entities that legitimately have no observations yet
+        // (e.g. mid-insert during a concurrent scan).
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "real-scan");
+
+        // Manually plant an entity row WITHOUT a matching observation,
+        // simulating an "orphan" — the kind a buggy delete could clobber.
+        let conn = parking_lot::Mutex::new(rusqlite::Connection::open(&path).unwrap());
+        {
+            let c = conn.lock();
+            c.execute(
+                "INSERT INTO entities(uid, scan_id, kind, value, confidence, corroboration, observed_at, data_json)
+                 VALUES('orphan-uid', 'real-scan', 'domain', 'orphan.example.com', 0.5, 1, 1, '{}')",
+                [],
+            ).unwrap();
+        }
+
+        // Delete a scan that doesn't exist.
+        assert!(!store.delete_scan("nonexistent-scan-id").unwrap());
+
+        // The orphan row must still be present.
+        let count: i64 = {
+            let c = conn.lock();
+            c.query_row(
+                "SELECT COUNT(*) FROM entities WHERE uid='orphan-uid'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(count, 1, "delete_scan must not purge on unknown id");
 
         let _ = std::fs::remove_file(&path);
     }

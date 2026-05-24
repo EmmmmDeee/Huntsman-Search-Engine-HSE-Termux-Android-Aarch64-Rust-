@@ -1,10 +1,10 @@
 //! Tor exit-relay check. Free, no key.
 //!
 //! Pulls `https://check.torproject.org/exit-addresses` (text format —
-//! `ExitAddress <ip> <timestamp>` lines) once per process and caches
-//! the resulting set. The list refreshes ~hourly upstream; we accept
-//! process-lifetime staleness since most scans don't need second-level
-//! freshness and the alternative (per-scan fetch) would be wasteful.
+//! `ExitAddress <ip> <timestamp>` lines) and caches the resulting set
+//! **only on success**. A transient network failure on the first call
+//! leaves the cache uninitialised so the next scan can retry — versus
+//! the previous behaviour which permanently latched an empty set.
 //!
 //! A hit emits the input IP as a high-confidence entity tagged
 //! `tor-exit` and `anonymous-network`. Useful for attribution analysis
@@ -12,6 +12,7 @@
 //! about differently than residential / hosting-provider traffic.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -24,31 +25,50 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
-static EXIT_SET: OnceCell<HashSet<String>> = OnceCell::const_new();
+/// Successful fetches are memoised here. Stored as `Arc<HashSet<…>>` so
+/// readers get a cheap clone-of-pointer rather than the whole set.
+static EXIT_SET: OnceCell<Arc<HashSet<String>>> = OnceCell::const_new();
 
-async fn exit_set(http: &reqwest::Client) -> &'static HashSet<String> {
-    EXIT_SET
-        .get_or_init(|| async {
-            let mut set = HashSet::new();
-            let url = "https://check.torproject.org/exit-addresses";
-            // Cap the fetch at 8 s — if torproject.org is slow we'd
-            // rather skip the check than block the whole scan.
-            let fut = http.get(url).send();
-            if let Ok(Ok(resp)) = tokio::time::timeout(Duration::from_secs(8), fut).await
-                && resp.status().is_success()
-                && let Ok(text) = resp.text().await
-            {
-                for line in text.lines() {
-                    if let Some(rest) = line.strip_prefix("ExitAddress ")
-                        && let Some(ip) = rest.split_whitespace().next()
-                    {
-                        set.insert(ip.to_string());
-                    }
-                }
-            }
-            set
-        })
-        .await
+/// Fetch + parse, with a single timeout covering BOTH the request and
+/// body download — the previous shape only timed out `send()`, leaving
+/// a stalled `text().await` to block until the engine's outer cap.
+async fn fetch_exit_set(http: &reqwest::Client) -> Option<HashSet<String>> {
+    let url = "https://check.torproject.org/exit-addresses";
+    let body_res = tokio::time::timeout(Duration::from_secs(8), async {
+        let resp = http.get(url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        resp.text().await.ok()
+    })
+    .await
+    .ok()
+    .flatten()?;
+
+    let mut set = HashSet::new();
+    for line in body_res.lines() {
+        if let Some(rest) = line.strip_prefix("ExitAddress ")
+            && let Some(ip) = rest.split_whitespace().next()
+        {
+            set.insert(ip.to_string());
+        }
+    }
+    if set.is_empty() { None } else { Some(set) }
+}
+
+/// Returns `Some` on cache hit or successful fresh fetch; `None` when
+/// the upstream is unreachable AND we have no cached copy. Subsequent
+/// calls will re-attempt the fetch.
+async fn exit_set(http: &reqwest::Client) -> Option<Arc<HashSet<String>>> {
+    if let Some(s) = EXIT_SET.get() {
+        return Some(Arc::clone(s));
+    }
+    let fetched = fetch_exit_set(http).await?;
+    let arc = Arc::new(fetched);
+    // Race tolerant: if another task populated EXIT_SET while we were
+    // fetching, `set()` fails silently and we return that value instead.
+    let _ = EXIT_SET.set(Arc::clone(&arc));
+    Some(EXIT_SET.get().map_or(arc, Arc::clone))
 }
 
 pub struct TorExitCheck;
@@ -77,12 +97,12 @@ impl Module for TorExitCheck {
         if ip.is_empty() {
             return Ok(ModuleResult::new());
         }
-        let set = exit_set(&ctx.http).await;
-        if set.is_empty() {
-            // We couldn't fetch the list — quietly skip rather than
-            // emit a noisy ModuleError; the rest of the scan still works.
+        let Some(set) = exit_set(&ctx.http).await else {
+            // Couldn't fetch the list AND no prior success — quietly
+            // skip; the rest of the scan continues unaffected, and the
+            // next scan will retry the fetch.
             return Ok(ModuleResult::new());
-        }
+        };
         if !set.contains(ip) {
             return Ok(ModuleResult::new());
         }
