@@ -12,16 +12,21 @@
 //! is roughly the slowest single lookup rather than the sum. Missing
 //! record types are silently skipped (most domains don't publish all
 //! six).
+//!
+//! Uses `hickory-resolver` 0.26 — see `RUSTSEC-2026-0119` for the
+//! O(n²) name-compression fix that motivated the 0.24 → 0.26 bump.
 
 use async_trait::async_trait;
 use hickory_resolver::{
-    TokioAsyncResolver,
-    config::{ResolverConfig, ResolverOpts},
+    TokioResolver,
+    config::{CLOUDFLARE, ResolverConfig},
+    net::runtime::TokioRuntimeProvider,
+    proto::rr::RData,
 };
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -43,8 +48,12 @@ impl Module for DnsResolver {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let resolver =
-            TokioAsyncResolver::tokio(ResolverConfig::cloudflare(), ResolverOpts::default());
+        let resolver = TokioResolver::builder_with_config(
+            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
+            TokioRuntimeProvider::default(),
+        )
+        .build()
+        .map_err(|e| Error::module("dns_resolver", format!("resolver build: {e}")))?;
 
         let domain = target.value.as_str();
         let mut result = ModuleResult::new();
@@ -74,8 +83,9 @@ impl Module for DnsResolver {
 
         // MX records
         if let Ok(lookup) = mxs {
-            for mx in lookup.iter() {
-                let host = mx.exchange().to_ascii();
+            for record in lookup.answers() {
+                let RData::MX(mx) = &record.data else { continue };
+                let host = mx.exchange.to_ascii();
                 let host = host.trim_end_matches('.').to_string();
                 if !host.is_empty() {
                     let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
@@ -83,7 +93,7 @@ impl Module for DnsResolver {
                     e.add_evidence(
                         Evidence::new("dns_resolver", format!("MX record for {domain}"))
                             .with_attr("record_type", "MX")
-                            .with_attr("priority", mx.preference().to_string())
+                            .with_attr("priority", mx.preference.to_string())
                             .with_attr("parent_domain", domain),
                     );
                     result.push(e);
@@ -93,8 +103,9 @@ impl Module for DnsResolver {
 
         // NS records — authoritative nameservers
         if let Ok(lookup) = nss {
-            for ns in lookup.iter() {
-                let host = ns.to_ascii();
+            for record in lookup.answers() {
+                let RData::NS(ns) = &record.data else { continue };
+                let host = ns.0.to_ascii();
                 let host = host.trim_end_matches('.').to_string();
                 if !host.is_empty() {
                     let mut e = Entity::new(EntityKind::Domain, &host, 0.88, &ctx.scan_id);
@@ -113,11 +124,16 @@ impl Module for DnsResolver {
         // the admin email (encoded as a hostname with `.` instead of `@`
         // in the local-part separator per RFC 1035 §3.3.13).
         if let Ok(lookup) = soa
-            && let Some(record) = lookup.iter().next()
+            && let Some(record) = lookup.answers().iter().find_map(|r| match &r.data {
+                RData::SOA(soa) => Some(soa),
+                _ => None,
+            })
         {
-            let mname = record.mname().to_ascii();
+            // SOA fields are public in hickory-proto 0.26 — direct access
+            // rather than getters.
+            let mname = record.mname.to_ascii();
             let mname = mname.trim_end_matches('.');
-            let rname_raw = record.rname().to_ascii();
+            let rname_raw = record.rname.to_ascii();
             let admin_email = soa_rname_to_email(rname_raw.trim_end_matches('.'));
 
             let mut e = Entity::new(EntityKind::Domain, domain, 0.92, &ctx.scan_id);
@@ -125,11 +141,11 @@ impl Module for DnsResolver {
             let mut ev = Evidence::new("dns_resolver", format!("SOA record for {domain}"))
                 .with_attr("record_type", "SOA")
                 .with_attr("primary_ns", mname)
-                .with_attr("serial", record.serial().to_string())
-                .with_attr("refresh_secs", record.refresh().to_string())
-                .with_attr("retry_secs", record.retry().to_string())
-                .with_attr("expire_secs", record.expire().to_string())
-                .with_attr("minimum_ttl_secs", record.minimum().to_string());
+                .with_attr("serial", record.serial.to_string())
+                .with_attr("refresh_secs", record.refresh.to_string())
+                .with_attr("retry_secs", record.retry.to_string())
+                .with_attr("expire_secs", record.expire.to_string())
+                .with_attr("minimum_ttl_secs", record.minimum.to_string());
             if !admin_email.is_empty() {
                 ev = ev.with_attr("admin_email", &admin_email);
             }
@@ -152,7 +168,14 @@ impl Module for DnsResolver {
 
         // TXT records → enrich parent
         if let Ok(lookup) = txts {
-            let txts: Vec<String> = lookup.iter().map(ToString::to_string).collect();
+            let txts: Vec<String> = lookup
+                .answers()
+                .iter()
+                .filter_map(|r| match &r.data {
+                    RData::TXT(txt) => Some(txt.to_string()),
+                    _ => None,
+                })
+                .collect();
             if !txts.is_empty() {
                 let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
                 // Common TXT-record signals worth surfacing as tags so

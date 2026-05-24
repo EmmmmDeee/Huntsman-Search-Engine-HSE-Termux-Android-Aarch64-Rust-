@@ -77,6 +77,11 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(handlers::live_get).delete(handlers::live_stop),
         )
         .route("/api/v1/live/{id}/events", get(handlers::live_events_sse))
+        // ── settings (v0.10+) ──
+        .route(
+            "/api/v1/settings/keys",
+            get(handlers::settings_keys_get).put(handlers::settings_keys_put),
+        )
         // ── SPA fallback (catch-all) ──
         .fallback(spa_handler)
         .with_state(state)
@@ -116,7 +121,13 @@ fn build_cors_layer(bind: &str) -> CorsLayer {
     // is served same-origin from this binary so it never needs cross-
     // origin in normal use.
     let base = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
 
     let mut allowed: Vec<HeaderValue> = Vec::new();

@@ -103,6 +103,11 @@ pub enum Command {
         /// Bind address. Localhost-only by default — change at your own risk.
         #[arg(short, long, default_value = crate::DEFAULT_BIND, env = "HSE_BIND")]
         bind: String,
+        /// Enable `PUT /api/v1/settings/keys` so the Settings page can write
+        /// `~/.huntsman.env`. Even with this flag the endpoint additionally
+        /// requires the request to originate from a loopback peer.
+        #[arg(long)]
+        allow_key_write: bool,
     },
     /// Run a target continuously, re-scanning on an interval. Streams events
     /// to stdout as compact JSON until Ctrl-C or `--iterations` is exhausted.
@@ -182,7 +187,10 @@ pub async fn run() -> Result<()> {
         }
         Command::Modules => cmd_modules(),
         Command::Doctor => cmd_doctor(),
-        Command::Serve { bind } => cmd_serve(bind).await,
+        Command::Serve {
+            bind,
+            allow_key_write,
+        } => cmd_serve(bind, allow_key_write).await,
         Command::Live {
             kind,
             value,
@@ -286,7 +294,9 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_serve(bind: String) -> Result<()> {
+async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
+    use std::net::SocketAddr;
+
     use crate::api::{AppState, routes::router};
     use crate::core::live::LiveScanner;
 
@@ -297,6 +307,7 @@ async fn cmd_serve(bind: String) -> Result<()> {
         engine,
         bus,
         live,
+        allow_key_write,
     });
 
     let app = router(state, &bind);
@@ -306,12 +317,21 @@ async fn cmd_serve(bind: String) -> Result<()> {
 
     tracing::info!("hse v{} — listening on http://{}", crate::VERSION, bind);
     tracing::info!("  open in Chrome / Firefox on this device");
+    if allow_key_write {
+        tracing::warn!("--allow-key-write: PUT /api/v1/settings/keys enabled (loopback only)");
+    }
     tracing::info!("  Ctrl-C to stop");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|e| Error::Other(format!("serve: {e}")))?;
+    // `into_make_service_with_connect_info::<SocketAddr>()` lets handlers
+    // extract the peer address via `ConnectInfo<SocketAddr>` — required
+    // for the loopback gate on `settings_keys_put`.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .map_err(|e| Error::Other(format!("serve: {e}")))?;
 
     tracing::info!("server stopped");
     Ok(())

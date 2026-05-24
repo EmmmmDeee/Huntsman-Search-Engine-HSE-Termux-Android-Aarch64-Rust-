@@ -32,4 +32,8 @@ pub struct AppState {
     pub engine: Arc<ScanEngine>,
     pub bus: EventBus,
     pub live: LiveScanner,
+    /// Set by `hse serve --allow-key-write`. When false, `PUT /api/v1/settings/keys`
+    /// always returns 403 regardless of where the request came from. When true,
+    /// the handler still requires the request to originate from a loopback peer.
+    pub allow_key_write: bool,
 }
