@@ -195,6 +195,28 @@ pub async fn scan_entities(
     }
 }
 
+/// `GET /api/v1/scans/{id}/events.history` — replay every event the
+/// engine recorded for this scan, in emission order. Pairs with the
+/// existing `/events` SSE endpoint: the SPA loads the history first
+/// (so completed scans show a full timeline), then subscribes to the
+/// SSE stream for live continuation.
+pub async fn scan_events_history(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.events_for_scan(&id) {
+        Ok(events) => {
+            let n = events.len();
+            (
+                StatusCode::OK,
+                Json(json!({ "events": events, "count": n })),
+            )
+                .into_response()
+        }
+        Err(e) => internal_error(&e),
+    }
+}
+
 pub async fn scan_correlations(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

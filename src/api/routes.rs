@@ -141,6 +141,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/scans/{id}/entities.csv", get(handlers::scan_entities_csv))
         .route("/scans/{id}/correlations", get(handlers::scan_correlations))
         .route("/scans/{id}/events", get(handlers::scan_events_sse))
+        .route(
+            "/scans/{id}/events.history",
+            get(handlers::scan_events_history),
+        )
         // ── live (v0.5+) ──
         .route(
             "/live",

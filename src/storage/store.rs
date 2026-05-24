@@ -8,7 +8,9 @@
 use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
-use crate::core::{correlator::Correlation, entity::Entity, error::Result, scan::Scan};
+use crate::core::{
+    correlator::Correlation, entity::Entity, error::Result, event::Event, scan::Scan,
+};
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -67,12 +69,27 @@ impl Store {
                 PRIMARY KEY (entity_uid, scan_id)
             );
 
+            -- v0.10+ — persistent event log. Every event the engine
+            -- broadcasts is also written here, so the Scan Log tab can
+            -- replay the full timeline for completed scans (issue #24).
+            -- `id` is auto-increment so the natural ORDER BY id matches
+            -- emission order. data_json holds the serde-serialised
+            -- EventKind variant so future kinds don't need a schema bump.
+            CREATE TABLE IF NOT EXISTS events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id     TEXT NOT NULL,
+                ts          INTEGER NOT NULL,
+                event_type  TEXT NOT NULL,
+                data_json   TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_corr_scan     ON correlations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
+            CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
             ",
         )?;
 
@@ -327,6 +344,48 @@ impl Store {
             .filter_map(|s| serde_json::from_str(&s).ok())
             .collect())
     }
+
+    // ── Event log (v0.10+) ───────────────────────────────────────────────
+
+    /// Append an event row. Called from `ScanEngine::emit` alongside the
+    /// broadcast send so a completed scan's timeline survives the bus
+    /// closing. Errors are deliberately swallowed by the caller — a
+    /// missing event row should never abort a scan.
+    pub fn upsert_event(&self, event: &Event) -> Result<()> {
+        // event_type is the serde-serialised tag name (e.g. "module_done").
+        // Round-trip through serde_json::Value to get the discriminant
+        // without re-implementing the tag mapping.
+        let json = serde_json::to_string(event)?;
+        let event_type = serde_json::to_value(&event.kind)
+            .ok()
+            .and_then(|v| v.get("type").cloned())
+            .and_then(|t| t.as_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO events(scan_id, ts, event_type, data_json)
+             VALUES(?1, ?2, ?3, ?4)",
+            params![event.scan_id, event.ts as i64, event_type, json],
+        )?;
+        Ok(())
+    }
+
+    /// Return every event recorded for `scan_id` in emission order.
+    /// `Vec` rather than streaming because the GUI fetches the whole
+    /// log in one HTTP call.
+    pub fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt =
+                conn.prepare("SELECT data_json FROM events WHERE scan_id = ?1 ORDER BY id ASC")?;
+            let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
+            rows.filter_map(std::result::Result::ok).collect()
+        };
+        Ok(raw
+            .into_iter()
+            .filter_map(|s| serde_json::from_str(&s).ok())
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -530,6 +589,73 @@ mod tests {
         };
         assert_eq!(count, 1, "delete_scan must not purge on unknown id");
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn event_log_round_trips_in_emission_order() {
+        use crate::core::event::{Event, EventKind};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "scan-evt");
+
+        // Emit three events; the auto-increment id should preserve order.
+        for (i, kind) in [
+            EventKind::ScanStart {
+                target_kind: "domain".into(),
+                target_value: "example.com".into(),
+            },
+            EventKind::ModuleStart {
+                module: "dns_resolver".into(),
+            },
+            EventKind::ModuleDone {
+                module: "dns_resolver".into(),
+                found: 3,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut ev = Event::new("scan-evt", kind);
+            // Give events distinct ts in case the test machine moves
+            // through epoch-second boundaries fast.
+            ev.ts = 1000 + i as u64;
+            store.upsert_event(&ev).unwrap();
+        }
+
+        // Plant an event for a DIFFERENT scan so we can assert the
+        // WHERE filter works.
+        let other = Event::new("scan-other", EventKind::ModuleStart { module: "x".into() });
+        store.upsert_event(&other).unwrap();
+
+        let evs = store.events_for_scan("scan-evt").unwrap();
+        assert_eq!(evs.len(), 3, "expected three events for scan-evt only");
+
+        // Order: ScanStart, ModuleStart, ModuleDone.
+        let kinds: Vec<&'static str> = evs
+            .iter()
+            .map(|e| match &e.kind {
+                EventKind::ScanStart { .. } => "scan_start",
+                EventKind::ModuleStart { .. } => "module_start",
+                EventKind::ModuleDone { .. } => "module_done",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["scan_start", "module_start", "module_done"]);
+
+        // Other-scan's event is isolated.
+        let other_evs = store.events_for_scan("scan-other").unwrap();
+        assert_eq!(other_evs.len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn events_for_scan_returns_empty_for_unknown_id() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        let evs = store.events_for_scan("never-existed").unwrap();
+        assert!(evs.is_empty());
         let _ = std::fs::remove_file(&path);
     }
 }

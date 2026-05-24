@@ -1087,36 +1087,77 @@ function buildD3Graph(){
   setTimeout(()=>force.stop(), 6000);
 }
 
-/* ── Scan Log (SSE) ── */
-function renderLog(host, scan){
+/* ── Scan Log (history + live SSE) ──
+   v0.10+ — engine persists every event to SQLite, so completed scans
+   now show the full timeline. Live scans load history first, then
+   subscribe for continuation. The two paths are deduped by event
+   id range: history fills everything up to "now", live picks up
+   from the next event the engine emits. */
+async function renderLog(host, scan){
   const running = scan.status==='running' || scan.status==='pending';
   host.innerHTML = `
     <div class="panel panel-default">
       <div class="panel-heading">
         <b>Event log</b>
         <div class="pull-right">
-          ${running ? '<span class="label label-info"><i class="glyphicon glyphicon-record"></i>&nbsp;live</span>'
-                    : '<span class="label label-default">not streaming</span>'}
+          <span id="log-status" class="label label-default">loading…</span>
           &nbsp;<button class="btn btn-default btn-xs" id="log-clear">Clear</button>
         </div>
       </div>
       <div class="panel-body" style="padding:0">
-        <div id="log-box">${running
-          ? `<div class="log-row lv-info"><span class="ts">${esc(fmtClock())}</span><span class="typ">subscribed</span><span class="msg">waiting for events…</span></div>`
-          : `<div class="empty-state"><p>Scan completed at <code>${esc(fmtDate(scan.finished_at))}</code>. Live event history is not retained after the broadcast channel closes — open a running scan to see this view populate in real-time.</p></div>`}
-        </div>
+        <div id="log-box"><div class="empty-state"><p>Fetching event history…</p></div></div>
       </div>
     </div>
   `;
   $('#log-clear').addEventListener('click', ()=>{ $('#log-box').innerHTML=''; });
-  if (running) openSse(scan.id, ev=>appendLog(ev));
+
+  // 1) Pull the persistent history first. The endpoint returns the
+  //    full event stream for this scan, in emission order.
+  let history = [];
+  try {
+    const r = await fetch('/api/v1/scans/'+encodeURIComponent(scan.id)+'/events.history');
+    if (r.ok){ const j = await r.json(); history = j.events || []; }
+  } catch {}
+
+  const box = $('#log-box');
+  if (history.length === 0 && !running){
+    box.innerHTML = `<div class="empty-state"><p>No events recorded for this scan.</p></div>`;
+  } else {
+    box.innerHTML = '';
+    for (const ev of history){
+      // The persisted row has { scan_id, ts, kind }. mapEvent reads
+      // ev.type plus ev.* — the EventKind variant is flattened with
+      // `#[serde(tag="type")]`, so passing ev.kind through works.
+      appendLog(ev.kind || ev, ev.ts);
+    }
+  }
+
+  // 2) Live continuation. The SSE stream emits the live broadcast
+  //    bus, which the engine sends to AFTER persisting — so events
+  //    arriving on SSE are guaranteed to also be in the history
+  //    on the next reload. Mid-stream we may briefly double-paint
+  //    an event if history was fetched between persist and broadcast;
+  //    operators see "harmless duplicate of an in-flight row" rather
+  //    than a missed event, which is the safer failure mode.
+  const status = $('#log-status');
+  if (running){
+    status.className = 'label label-info';
+    status.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;live';
+    openSse(scan.id, ev=>appendLog(ev));
+  } else {
+    status.className = 'label label-default';
+    status.textContent = history.length ? `${history.length} events` : 'not streaming';
+  }
 }
-function appendLog(ev){
+function appendLog(ev, ts){
   const box = $('#log-box'); if (!box) return;
   const m = mapEvent(ev);
   const row = document.createElement('div');
   row.className = `log-row lv-${m.lv}`;
-  row.innerHTML = `<span class="ts">${esc(fmtClock())}</span><span class="typ">${esc(m.typ)}</span><span class="msg">${m.msg}</span>`;
+  // Use the event's recorded ts if we have it (history rows); fall
+  // back to wall-clock for live rows.
+  const t = ts ? (new Date(ts*1000)).toTimeString().slice(0,8) : fmtClock();
+  row.innerHTML = `<span class="ts">${esc(t)}</span><span class="typ">${esc(m.typ)}</span><span class="msg">${m.msg}</span>`;
   box.appendChild(row);
   box.scrollTop = box.scrollHeight;
 }
