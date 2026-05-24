@@ -32,7 +32,7 @@ tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 parking_lot        = "0.12"
 url                = "2"
-hickory-resolver   = { version = "0.24", default-features = false, features = ["tokio-runtime"] }
+hickory-resolver   = { version = "0.26", default-features = false, features = ["tokio"] }
 dotenvy            = "0.15"
 # v0.3 — HTTP server, SPA, SSE
 axum               = { version = "0.8",  default-features = false, features = ["http1", "json", "tokio"] }
