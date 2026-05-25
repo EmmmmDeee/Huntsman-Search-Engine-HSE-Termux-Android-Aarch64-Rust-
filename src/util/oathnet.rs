@@ -37,9 +37,16 @@ struct ErrorDetail {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct SearchData {
     #[serde(default)]
     items: Vec<Value>,
+    #[serde(default)]
+    total: Option<u64>,
+    #[serde(default, alias = "total_pages")]
+    pages: Option<u64>,
+    #[serde(default, alias = "current_page")]
+    page: Option<u64>,
 }
 
 pub async fn search(
@@ -74,6 +81,81 @@ pub async fn search(
     let sd: SearchData =
         serde_json::from_value(data).map_err(|e| Error::module("oathnet", e.to_string()))?;
     Ok(sd.items)
+}
+
+pub async fn search_all_pages(
+    key: &str,
+    path: &str,
+    field: &str,
+    value: &str,
+    page_size: u32,
+    max_pages: u32,
+) -> Result<Vec<Value>> {
+    let encoded = crate::util::http::urlencode(value);
+    let mut all_items: Vec<Value> = Vec::new();
+    let mut page = 1u32;
+
+    loop {
+        if page > max_pages {
+            break;
+        }
+
+        let url = format!(
+            "{}{}?{}%5B%5D={}&page_size={}&page={}",
+            base_url(),
+            path,
+            field,
+            encoded,
+            page_size,
+            page
+        );
+        let body = curl_get(&url, key).await?;
+        let env: Envelope =
+            serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
+
+        if !env.success {
+            if env.errors.as_ref().and_then(|e| e.status_code) == Some(404) {
+                break;
+            }
+            if page == 1 {
+                return Err(Error::module("oathnet", "API returned success=false"));
+            }
+            break;
+        }
+
+        let data = match env.data {
+            Some(d) => d,
+            None => break,
+        };
+        let sd: SearchData =
+            serde_json::from_value(data).map_err(|e| Error::module("oathnet", e.to_string()))?;
+
+        let page_count = sd.items.len();
+        all_items.extend(sd.items);
+
+        // Stop if this page returned fewer items than requested (last page)
+        if (page_count as u32) < page_size {
+            break;
+        }
+
+        // Stop if we've reached the total reported by the API
+        if let Some(total) = sd.total {
+            if all_items.len() as u64 >= total {
+                break;
+            }
+        }
+
+        // Stop if we've reached the total page count
+        if let Some(total_pages) = sd.pages {
+            if page as u64 >= total_pages {
+                break;
+            }
+        }
+
+        page += 1;
+    }
+
+    Ok(all_items)
 }
 
 pub async fn regex_search(
@@ -142,6 +224,131 @@ pub async fn field_regex_search(
     Ok(sd.items)
 }
 
+pub async fn regex_search_all_pages(
+    key: &str,
+    path: &str,
+    pattern: &str,
+    page_size: u32,
+    max_pages: u32,
+) -> Result<Vec<Value>> {
+    let encoded = crate::util::http::urlencode(pattern);
+    let mut all_items: Vec<Value> = Vec::new();
+    let mut page = 1u32;
+
+    loop {
+        if page > max_pages {
+            break;
+        }
+
+        let url = format!(
+            "{}{}?q%5B%5D={}&page_size={}&search_type=regex&page={}",
+            base_url(),
+            path,
+            encoded,
+            page_size,
+            page
+        );
+        let body = curl_get(&url, key).await?;
+        let env: Envelope =
+            serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
+
+        if !env.success {
+            if env.errors.as_ref().and_then(|e| e.status_code) == Some(404) {
+                break;
+            }
+            if page == 1 {
+                return Err(Error::module("oathnet", "regex search failed"));
+            }
+            break;
+        }
+
+        let data = match env.data {
+            Some(d) => d,
+            None => break,
+        };
+        let sd: SearchData =
+            serde_json::from_value(data).map_err(|e| Error::module("oathnet", e.to_string()))?;
+
+        let page_count = sd.items.len();
+        all_items.extend(sd.items);
+
+        if (page_count as u32) < page_size {
+            break;
+        }
+        if let Some(total) = sd.total {
+            if all_items.len() as u64 >= total {
+                break;
+            }
+        }
+
+        page += 1;
+    }
+
+    Ok(all_items)
+}
+
+pub async fn field_regex_search_all(
+    key: &str,
+    path: &str,
+    field: &str,
+    pattern: &str,
+    page_size: u32,
+    max_pages: u32,
+) -> Result<Vec<Value>> {
+    let encoded = crate::util::http::urlencode(pattern);
+    let mut all_items: Vec<Value> = Vec::new();
+    let mut page = 1u32;
+
+    loop {
+        if page > max_pages {
+            break;
+        }
+
+        let url = format!(
+            "{}{}?{}%5B%5D={}&page_size={}&search_type=regex&page={}",
+            base_url(),
+            path,
+            field,
+            encoded,
+            page_size,
+            page
+        );
+        let body = curl_get(&url, key).await?;
+        let env: Envelope =
+            serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
+
+        if !env.success {
+            if page == 1 && env.errors.as_ref().and_then(|e| e.status_code) != Some(404) {
+                return Err(Error::module("oathnet", "field regex search failed"));
+            }
+            break;
+        }
+
+        let data = match env.data {
+            Some(d) => d,
+            None => break,
+        };
+        let sd: SearchData =
+            serde_json::from_value(data).map_err(|e| Error::module("oathnet", e.to_string()))?;
+
+        let page_count = sd.items.len();
+        all_items.extend(sd.items);
+
+        if (page_count as u32) < page_size {
+            break;
+        }
+        if let Some(total) = sd.total {
+            if all_items.len() as u64 >= total {
+                break;
+            }
+        }
+
+        page += 1;
+    }
+
+    Ok(all_items)
+}
+
 pub async fn osint(key: &str, path: &str, param: &str, value: &str) -> Result<Value> {
     let encoded = crate::util::http::urlencode(value);
     let url = format!("{}{}?{}={}", base_url(), path, param, encoded);
@@ -198,6 +405,48 @@ pub async fn search_cached(
     let items = search(key, path, field, value, page_size).await?;
 
     // Store the response
+    let response_json = serde_json::to_string(&items).unwrap_or_default();
+    let _ = store.cache_api_response(
+        "oathnet_pro",
+        path,
+        field,
+        value,
+        &response_json,
+        items.len(),
+        scan_id,
+        cache_hours,
+    );
+
+    Ok(items)
+}
+
+pub async fn search_all_cached(
+    key: &str,
+    path: &str,
+    field: &str,
+    value: &str,
+    page_size: u32,
+    max_pages: u32,
+    store: &crate::storage::store::Store,
+    scan_id: &str,
+    cache_hours: u32,
+) -> Result<Vec<Value>> {
+    if cache_hours > 0 {
+        if let Some(cached) = store
+            .cached_response("oathnet_pro", path, field, value, cache_hours)
+            .ok()
+            .flatten()
+        {
+            if let Ok(items) = serde_json::from_str::<Vec<Value>>(&cached) {
+                if !items.is_empty() {
+                    return Ok(items);
+                }
+            }
+        }
+    }
+
+    let items = search_all_pages(key, path, field, value, page_size, max_pages).await?;
+
     let response_json = serde_json::to_string(&items).unwrap_or_default();
     let _ = store.cache_api_response(
         "oathnet_pro",
@@ -367,7 +616,7 @@ pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, Stri
 
     let mut creds = Vec::new();
     for service in &services {
-        if let Ok(items) = search(key, paths::STEALER, "q", service, 3).await {
+        if let Ok(items) = search_all_pages(key, paths::STEALER, "q", service, 50, 3).await {
             for item in &items {
                 let url = val_str(item, "url").unwrap_or_default();
                 let user = val_str(item, "username").unwrap_or_default();

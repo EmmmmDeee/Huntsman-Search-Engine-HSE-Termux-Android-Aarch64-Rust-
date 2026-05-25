@@ -47,7 +47,7 @@ impl Module for OathnetPro {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        45_000
+        120_000 // 2 minutes for multi-page batch downloads
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -93,7 +93,7 @@ impl Module for OathnetPro {
         };
 
         // Phase 1: breach search
-        let items = oathnet::search_cached(key, paths::BREACH, field, &target.value, 50, &ctx.store, &ctx.scan_id, 24).await?;
+        let items = oathnet::search_all_cached(key, paths::BREACH, field, &target.value, 100, 10, &ctx.store, &ctx.scan_id, 24).await?;
 
         if !items.is_empty() {
             let total = items.len();
@@ -166,7 +166,7 @@ impl Module for OathnetPro {
         // Phase 2: stealer logs
         if !ctx.cancel.is_cancelled()
             && let Ok(stealer_items) =
-                oathnet::search_cached(key, paths::STEALER, field, &target.value, 50, &ctx.store, &ctx.scan_id, 24).await
+                oathnet::search_all_cached(key, paths::STEALER, field, &target.value, 100, 20, &ctx.store, &ctx.scan_id, 24).await
         {
             if !stealer_items.is_empty() {
                 let stl_count = stealer_items.len();
@@ -218,7 +218,7 @@ impl Module for OathnetPro {
         let mut victim_hits = Vec::new();
         if target.kind == TargetKind::Domain && !ctx.cancel.is_cancelled() {
             if let Ok(victims) =
-                oathnet::search_cached(key, paths::VICTIMS, "domain", &target.value, 20, &ctx.store, &ctx.scan_id, 24).await
+                oathnet::search_all_cached(key, paths::VICTIMS, "domain", &target.value, 50, 10, &ctx.store, &ctx.scan_id, 24).await
             {
                 victim_hits = victims.clone();
                 extract_victims(&victims, &target.value, &ctx.scan_id, &mut seen, &mut result);
@@ -233,11 +233,12 @@ impl Module for OathnetPro {
                     break;
                 }
                 let employee_email = format!("{prefix}@{}", target.value);
-                if let Ok(emp_items) = oathnet::search_cached(
+                if let Ok(emp_items) = oathnet::search_all_cached(
                     key,
                     paths::STEALER,
                     "email",
                     &employee_email,
+                    50,
                     5,
                     &ctx.store,
                     &ctx.scan_id,
@@ -363,7 +364,7 @@ impl Module for OathnetPro {
                     break;
                 }
                 if let Ok(hits) =
-                    oathnet::search_cached(key, paths::STEALER, "domain", svc_domain, 3, &ctx.store, &ctx.scan_id, 12).await
+                    oathnet::search_all_cached(key, paths::STEALER, "domain", svc_domain, 50, 3, &ctx.store, &ctx.scan_id, 12).await
                 {
                     let relevant: Vec<&Value> = hits
                         .iter()
@@ -789,9 +790,9 @@ impl OathnetPro {
 
         // Search both breach and stealer databases with the regex
         let breach_items =
-            oathnet::regex_search(key, paths::BREACH, &target.value, 50).await?;
+            oathnet::regex_search_all_pages(key, paths::BREACH, &target.value, 100, 10).await?;
         let stealer_items = if !ctx.cancel.is_cancelled() {
-            oathnet::regex_search(key, paths::STEALER, &target.value, 50)
+            oathnet::regex_search_all_pages(key, paths::STEALER, &target.value, 100, 20)
                 .await
                 .unwrap_or_default()
         } else {
@@ -876,18 +877,19 @@ impl OathnetPro {
                 break;
             }
 
-            let items = oathnet::field_regex_search(
+            let items = oathnet::field_regex_search_all(
                 key,
                 paths::BREACH,
                 cat.field,
                 pattern,
-                50,
+                100,
+                10,
             )
             .await
             .unwrap_or_default();
 
             let stealer_items = if !ctx.cancel.is_cancelled() {
-                oathnet::field_regex_search(key, paths::STEALER, cat.field, pattern, 50)
+                oathnet::field_regex_search_all(key, paths::STEALER, cat.field, pattern, 100, 20)
                     .await
                     .unwrap_or_default()
             } else {
