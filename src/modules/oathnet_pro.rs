@@ -722,7 +722,7 @@ fn extract_api_keys_from_item(
 
                 // Emit as Credential entity tagged for api_key_probe expansion
                 let mut entity = Entity::new(
-                    EntityKind::Credential,
+                    EntityKind::ApiKey,
                     key_val,
                     0.80,
                     scan_id,
@@ -759,7 +759,7 @@ fn extract_api_keys_from_item(
     {
             let dedup = format!("@apikey:{service}:{}", &key_val[..key_val.len().min(16)]);
             if seen.insert(dedup) {
-                let mut entity = Entity::new(EntityKind::Credential, key_val, 0.75, scan_id);
+                let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.75, scan_id);
                 entity.tag("api-key");
                 entity.tag(format!("service:{service}"));
                 entity.tag("oathnet-pro");

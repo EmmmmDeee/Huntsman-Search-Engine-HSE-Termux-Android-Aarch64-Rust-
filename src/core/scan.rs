@@ -42,8 +42,9 @@ impl TargetKind {
             EntityKind::Url => Some(Self::Url),
             EntityKind::Organisation => Some(Self::Organisation),
             EntityKind::AbnAcn => Some(Self::AbnAcn),
-            EntityKind::Credential => Some(Self::ApiKey),
-            EntityKind::MacAddress
+            EntityKind::ApiKey => Some(Self::ApiKey),
+            EntityKind::Credential
+            | EntityKind::MacAddress
             | EntityKind::DeviceId
             | EntityKind::Password
             | EntityKind::Other(_) => None,
@@ -65,7 +66,7 @@ impl TargetKind {
             Self::Address => EntityKind::Address,
             Self::Organisation => EntityKind::Organisation,
             Self::AbnAcn => EntityKind::AbnAcn,
-            Self::ApiKey => EntityKind::Credential,
+            Self::ApiKey => EntityKind::ApiKey,
         }
     }
 
@@ -419,12 +420,13 @@ mod tests {
     fn unscannable_entity_kinds_return_none() {
         assert!(TargetKind::from_entity_kind(&EntityKind::MacAddress).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::Password).is_none());
+        assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
     }
 
     #[test]
-    fn credential_expands_to_api_key() {
+    fn api_key_entity_expands() {
         assert_eq!(
-            TargetKind::from_entity_kind(&EntityKind::Credential),
+            TargetKind::from_entity_kind(&EntityKind::ApiKey),
             Some(TargetKind::ApiKey)
         );
     }

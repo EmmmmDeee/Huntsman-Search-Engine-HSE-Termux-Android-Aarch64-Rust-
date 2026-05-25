@@ -504,6 +504,7 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
     let mut loaded_keys = keys::load();
     let kpool = crate::util::key_pool::global_pool();
     crate::util::key_pool::merge_pool_into_env(&kpool, &mut loaded_keys);
+    let _ = crate::util::key_pool::save_pool(&kpool);
 
     let ctx = ModuleContext {
         scan_id: sid.clone(),

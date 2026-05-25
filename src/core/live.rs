@@ -233,10 +233,9 @@ async fn session_loop(
     let max_iter = live.iterations;
     let http = build_client();
     let mut loaded_keys = keys::load();
-    crate::util::key_pool::merge_pool_into_env(
-        &crate::util::key_pool::global_pool(),
-        &mut loaded_keys,
-    );
+    let kpool = crate::util::key_pool::global_pool();
+    crate::util::key_pool::merge_pool_into_env(&kpool, &mut loaded_keys);
+    let _ = crate::util::key_pool::save_pool(&kpool);
 
     let _ = inner.bus.send(Event::new(
         &live_id,

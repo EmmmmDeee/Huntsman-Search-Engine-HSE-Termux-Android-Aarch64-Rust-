@@ -66,10 +66,9 @@ fn spawn_scan(state: &Arc<AppState>, scan: Scan, target: Target) {
         cancel.clone(),
     );
     let mut loaded_keys = keys::load();
-    crate::util::key_pool::merge_pool_into_env(
-        &crate::util::key_pool::global_pool(),
-        &mut loaded_keys,
-    );
+    let kpool = crate::util::key_pool::global_pool();
+    crate::util::key_pool::merge_pool_into_env(&kpool, &mut loaded_keys);
+    let _ = crate::util::key_pool::save_pool(&kpool);
     let ctx = ModuleContext {
         scan_id: sid.clone(),
         bus: state.bus.clone(),

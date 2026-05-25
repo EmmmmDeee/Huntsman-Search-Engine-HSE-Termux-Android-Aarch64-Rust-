@@ -39,6 +39,7 @@ pub enum EntityKind {
 
     // Document / credential
     Credential,
+    ApiKey,
     Password, // never stored in evidence output
 
     // Network / infrastructure
@@ -71,6 +72,7 @@ impl fmt::Display for EntityKind {
             Self::Phone => f.write_str("phone"),
             Self::Username => f.write_str("username"),
             Self::Credential => f.write_str("credential"),
+            Self::ApiKey => f.write_str("api_key"),
             Self::Password => f.write_str("password"),
             Self::IpAddress => f.write_str("ip_address"),
             Self::Domain => f.write_str("domain"),

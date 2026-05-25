@@ -515,7 +515,7 @@ impl Module for ApiKeyProbe {
             pool.add(probe.service, entry);
 
             let mut entity = Entity::new(
-                EntityKind::Credential,
+                EntityKind::ApiKey,
                 format!("{}:{}", probe.service, &key[..key.len().min(12)]),
                 0.95,
                 &ctx.scan_id,
