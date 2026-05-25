@@ -105,6 +105,7 @@ pub enum KeyPlacement {
     QueryParam(&'static str),
     Header(&'static str),
     BasicAuth,
+    BearerAuth,
 }
 
 pub fn service_defs() -> Vec<ServiceDef> {
@@ -217,7 +218,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             name: "passivetotal",
             env_var: "HUNTSMAN_PASSIVETOTAL_KEY",
             category: "infrastructure",
-            test_url: "https://api.riskiq.net/pt/v2/account/quota",
+            test_url: "https://api.passivetotal.org/v2/account/quota",
             key_header: KeyPlacement::BasicAuth,
             rate_limit_reset_secs: 60,
         },
@@ -225,8 +226,8 @@ pub fn service_defs() -> Vec<ServiceDef> {
             name: "onyphe",
             env_var: "HUNTSMAN_ONYPHE_KEY",
             category: "infrastructure",
-            test_url: "https://www.onyphe.io/api/v2/user",
-            key_header: KeyPlacement::Header("Authorization"),
+            test_url: "https://www.onyphe.io/api/v2/simple/whois/best/8.8.8.8",
+            key_header: KeyPlacement::BearerAuth,
             rate_limit_reset_secs: 60,
         },
         ServiceDef {
@@ -513,16 +514,15 @@ async fn validate_against_endpoint(sdef: ServiceDef, key: &str) -> bool {
             cmd.args(["--", &url]);
         }
         KeyPlacement::Header(header) => {
-            let hval = if header == "Authorization" {
-                format!("Basic {key}")
-            } else {
-                key.to_string()
-            };
-            let h = format!("{header}: {hval}");
+            let h = format!("{header}: {key}");
             cmd.args(["-H", &h, "--", sdef.test_url]);
         }
         KeyPlacement::BasicAuth => {
             cmd.args(["-u", key, "--", sdef.test_url]);
+        }
+        KeyPlacement::BearerAuth => {
+            let h = format!("Authorization: bearer {key}");
+            cmd.args(["-H", &h, "--", sdef.test_url]);
         }
     }
 

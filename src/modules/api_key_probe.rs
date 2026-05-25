@@ -206,7 +206,7 @@ fn probes() -> Vec<Probe> {
             env_var: "HUNTSMAN_WIGLE_TOKEN",
             url_builder: |_key| {
                 ("https://api.wigle.net/api/v2/profile/user".into(),
-                 vec![("Authorization", String::new())])
+                 vec![("Authorization", "Basic".to_string())])
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -343,7 +343,7 @@ fn probes() -> Vec<Probe> {
             category: "infrastructure",
             env_var: "HUNTSMAN_PASSIVETOTAL_KEY",
             url_builder: |_key| {
-                ("https://api.riskiq.net/pt/v2/account/quota".into(),
+                ("https://api.passivetotal.org/v2/account/quota".into(),
                  vec![("_basic_auth", String::new())])
             },
             parse_info: |v| {
@@ -359,8 +359,8 @@ fn probes() -> Vec<Probe> {
             category: "infrastructure",
             env_var: "HUNTSMAN_ONYPHE_KEY",
             url_builder: |_key| {
-                ("https://www.onyphe.io/api/v2/user".into(),
-                 vec![("Authorization", String::new())])
+                ("https://www.onyphe.io/api/v2/simple/whois/best/8.8.8.8".into(),
+                 vec![("Authorization", "bearer".to_string())])
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -591,22 +591,19 @@ async fn probe_endpoint(
     let mut cmd = tokio::process::Command::new("curl");
     cmd.args(["-s", "--max-time", &secs]);
 
-    let mut used_basic_auth = false;
-    for (name, _placeholder) in headers {
+    for (name, prefix) in headers {
         if *name == "_basic_auth" {
             cmd.args(["-u", key]);
-            used_basic_auth = true;
             continue;
         }
-        let val = if *name == "Authorization" {
-            format!("Basic {key}")
+        let val = if !prefix.is_empty() {
+            format!("{prefix} {key}")
         } else {
             key.to_string()
         };
         let h = format!("{name}: {val}");
         cmd.args(["-H", &h]);
     }
-    let _ = used_basic_auth;
 
     cmd.args(["-H", "Accept: application/json"]);
     cmd.args(["--", url]);
