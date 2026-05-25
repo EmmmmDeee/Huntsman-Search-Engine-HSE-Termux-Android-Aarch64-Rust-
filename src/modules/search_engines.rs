@@ -496,25 +496,37 @@ fn extract_path_username(url: &str) -> Option<String> {
 
 // ─── Fetch + parse ──────────────────────────────────────────────────────────
 
+/// Outcome of a single fetch attempt. Distinguishes "engine responded
+/// but was blocked" (worth retrying with alt UA) from "engine is
+/// unreachable" (retrying wastes the timeout budget).
+enum FetchOutcome {
+    Body(String),
+    Blocked,
+    Unreachable,
+}
+
 /// Attempt to fetch search results, retrying once with an alternate
-/// User-Agent if the primary attempt is blocked or empty.
+/// User-Agent only when the engine responded but was blocked — never
+/// when the engine is completely unreachable (saves ~10s per dead engine).
 async fn fetch_and_parse(
     url: &str,
     engine: &EngineSpec,
     query: &str,
     post_body: Option<&str>,
 ) -> Option<Vec<SearchResult>> {
-    // Primary attempt with engine-preferred UA
-    if let Some(body) = try_fetch(url, engine.ua, post_body).await {
-        let results = parse_results(&body, engine.name, query);
-        if !results.is_empty() {
-            return Some(results);
+    match try_fetch(url, engine.ua, post_body).await {
+        FetchOutcome::Body(body) => {
+            let results = parse_results(&body, engine.name, query);
+            if !results.is_empty() {
+                return Some(results);
+            }
         }
+        FetchOutcome::Unreachable => return None,
+        FetchOutcome::Blocked => {}
     }
 
-    // Retry with alternate UA (different browser fingerprint class)
     if engine.ua != engine.ua_alt
-        && let Some(body) = try_fetch(url, engine.ua_alt, post_body).await
+        && let FetchOutcome::Body(body) = try_fetch(url, engine.ua_alt, post_body).await
     {
         let results = parse_results(&body, engine.name, query);
         if !results.is_empty() {
@@ -525,20 +537,23 @@ async fn fetch_and_parse(
     None
 }
 
-/// Single fetch attempt: call curl, check for blocking, return body.
-async fn try_fetch(url: &str, ua: &str, post_body: Option<&str>) -> Option<String> {
+async fn try_fetch(url: &str, ua: &str, post_body: Option<&str>) -> FetchOutcome {
     let body = if let Some(data) = post_body {
-        crate::util::curl::fetch_post_with_ua(url, data, 10_000, ua).await?
+        crate::util::curl::fetch_post_with_ua(url, data, 8_000, ua).await
     } else {
-        crate::util::curl::fetch_with_ua(url, 10_000, ua).await?
+        crate::util::curl::fetch_with_ua(url, 8_000, ua).await
+    };
+    let body = match body {
+        Some(b) => b,
+        None => return FetchOutcome::Unreachable,
     };
     if body.len() < 500 {
-        return None;
+        return FetchOutcome::Unreachable;
     }
     if is_captcha_page(&body) {
-        return None;
+        return FetchOutcome::Blocked;
     }
-    Some(body)
+    FetchOutcome::Body(body)
 }
 
 /// Detect CAPTCHA/interstitial pages that contain no real results.
@@ -1272,6 +1287,18 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
     }
 
     let terms = target_terms(target);
+
+    // Pre-scan: count how many independent engines confirmed each URL.
+    // Multi-engine corroboration boosts entity confidence because
+    // different engines have different indexes — an independent match
+    // is strong evidence of relevance.
+    let mut url_engine_count: std::collections::HashMap<String, HashSet<&str>> =
+        std::collections::HashMap::new();
+    for r in results {
+        let key = canonicalize_url(&r.url);
+        url_engine_count.entry(key).or_default().insert(r.engine);
+    }
+
     let mut seen_domains: HashSet<String> = HashSet::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
     let mut seen_phones: HashSet<String> = HashSet::new();
@@ -1317,8 +1344,14 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             .as_ref()
             .is_some_and(|td| host != *td && host.ends_with(&format!(".{td}")));
 
+        let n_engines = url_engine_count
+            .get(&canonicalize_url(&r.url))
+            .map(|s| s.len() as u32)
+            .unwrap_or(1);
+
         if is_subdomain && seen_domains.insert(host.clone()) {
             let mut e = Entity::new(EntityKind::Domain, &host, 0.70, scan_id);
+            e.corroboration = n_engines;
             e.tag(tags::SUBDOMAIN);
             e.tag("search-discovered");
             e.add_evidence(build_search_evidence(r));
@@ -1328,6 +1361,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             && seen_domains.insert(domain.clone())
         {
             let mut e = Entity::new(EntityKind::Domain, &domain, 0.45, scan_id);
+            e.corroboration = n_engines;
             e.tag(tags::EXTERNAL);
             e.tag("search-discovered");
             e.add_evidence(build_search_evidence(r));
@@ -1581,7 +1615,52 @@ fn build_search_evidence(r: &SearchResult) -> Evidence {
     if !snippet_clean.is_empty() {
         ev = ev.with_attr("snippet", snippet_clean.trim());
     }
+
+    let kp = extract_key_phrase(&snippet_clean, &r.query);
+    if !kp.is_empty() {
+        ev = ev.with_attr("key_phrase", &kp);
+    }
     ev
+}
+
+/// Extract the most relevant sentence fragment from a snippet by
+/// finding the clause that overlaps most with the query terms.
+fn extract_key_phrase(snippet: &str, query: &str) -> String {
+    if snippet.len() < 10 {
+        return String::new();
+    }
+    let query_words: HashSet<String> = query
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .map(String::from)
+        .collect();
+    if query_words.is_empty() {
+        return String::new();
+    }
+
+    let mut best = "";
+    let mut best_score = 0usize;
+    for clause in snippet.split(['.', '!', '?', '|']) {
+        let clause = clause.trim();
+        if clause.len() < 8 || clause.len() > 200 {
+            continue;
+        }
+        let score = clause
+            .to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| query_words.contains(*w))
+            .count();
+        if score > best_score {
+            best_score = score;
+            best = clause;
+        }
+    }
+    if best_score >= 1 {
+        best.to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// Extract "City, State" patterns from text for geolocation.
