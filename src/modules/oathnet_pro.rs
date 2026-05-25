@@ -125,15 +125,13 @@ impl Module for OathnetPro {
             }
         }
 
-        // ── Victims search (additional stealer intelligence) ────────
+        // ── Victims search (compromised device intelligence) ────────
         if !ctx.cancel.is_cancelled()
             && let Ok(victim_items) =
                 oathnet::search(key, paths::VICTIMS, field, &target.value, 20).await
         {
             for item in &victim_items {
-                extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
-                store_api_credential(item);
-                extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
+                extract_victim_entities(item, &ctx.scan_id, &mut seen, &mut result);
             }
         }
 
@@ -459,10 +457,10 @@ fn extract_stealer_entities(
 ) {
     let mut ev = Evidence::new("oathnet_pro", "Stealer log entry".to_string())
         .with_attr("source", "stealer");
-    if let Some(url) = val_str(item, "url_str") {
+    if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
         ev = ev.with_attr("url", &url);
     }
-    if let Some(lid) = val_str(item, "log_id") {
+    if let Some(lid) = val_str(item, "log_id").or_else(|| val_str(item, "log")) {
         ev = ev.with_attr("log_id", &lid);
     }
     if let Some(pw) = val_str(item, "password") {
@@ -507,7 +505,7 @@ fn extract_stealer_entities(
     }
 
     if let Some(uname) = val_str(item, "username")
-        && let Some(url_str) = val_str(item, "url_str")
+        && let Some(url_str) = val_str(item, "url").or_else(|| val_str(item, "url_str"))
     {
         let cred_val = format!("{uname}@{url_str}");
         if seen.insert(format!("@cred:{}", cred_val.to_lowercase())) {
@@ -592,6 +590,48 @@ fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResu
         e.tag("geolocation");
         e.add_evidence(ev);
         result.push(e);
+    }
+}
+
+fn extract_victim_entities(
+    item: &Value,
+    scan_id: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    if let Some(emails) = item.get("device_emails").and_then(|v| v.as_array()) {
+        for email_val in emails.iter().take(20) {
+            if let Some(email) = email_val.as_str() {
+                let lower = email.to_lowercase();
+                if lower.contains('@') && lower.len() > 5 && seen.insert(lower) {
+                    let mut e = Entity::new(EntityKind::Email, email, 0.50, scan_id);
+                    e.tag("oathnet-pro");
+                    e.tag("victim-device");
+                    e.add_evidence(Evidence::new(
+                        "oathnet_pro",
+                        "Email found on compromised device",
+                    ));
+                    result.push(e);
+                }
+            }
+        }
+    }
+    if let Some(ips) = item.get("device_ips").and_then(|v| v.as_array()) {
+        for ip_val in ips.iter().take(5) {
+            if let Some(ip) = ip_val.as_str()
+                && ip.len() >= 7
+                && seen.insert(ip.to_string())
+            {
+                let mut e = Entity::new(EntityKind::IpAddress, ip, 0.50, scan_id);
+                e.tag("oathnet-pro");
+                e.tag("victim-device");
+                e.add_evidence(Evidence::new(
+                    "oathnet_pro",
+                    "IP from compromised device",
+                ));
+                result.push(e);
+            }
+        }
     }
 }
 
