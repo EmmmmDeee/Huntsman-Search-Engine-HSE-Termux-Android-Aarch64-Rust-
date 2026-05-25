@@ -158,8 +158,8 @@ impl Store {
         // long parse doesn't block concurrent writers.
         let raw: Vec<String> = {
             let conn = self.conn.lock();
-            let mut stmt =
-                conn.prepare_cached("SELECT data_json FROM scans ORDER BY started_at DESC LIMIT ?1")?;
+            let mut stmt = conn
+                .prepare_cached("SELECT data_json FROM scans ORDER BY started_at DESC LIMIT ?1")?;
             let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
             rows.filter_map(std::result::Result::ok).collect()
         };
@@ -327,8 +327,7 @@ impl Store {
     pub fn get_entity(&self, uid: &str) -> Result<Option<Entity>> {
         let json: Option<String> = {
             let conn = self.conn.lock();
-            let mut stmt =
-                conn.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
+            let mut stmt = conn.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
             let mut rows = stmt.query(params![uid])?;
             rows.next()?.map(|r| r.get(0)).transpose()?
         };
@@ -507,8 +506,9 @@ impl Store {
     pub fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
-            let mut stmt =
-                conn.prepare_cached("SELECT data_json FROM events WHERE scan_id = ?1 ORDER BY id ASC")?;
+            let mut stmt = conn.prepare_cached(
+                "SELECT data_json FROM events WHERE scan_id = ?1 ORDER BY id ASC",
+            )?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
             rows.filter_map(std::result::Result::ok).collect()
         };

@@ -104,15 +104,18 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     }
     let modules = s.engine.modules().len();
     let live_sessions = s.live.list().len();
-    (StatusCode::OK, Json(json!({
-        "scans_total": scans.len(),
-        "scans_by_status": by_status,
-        "entities_total": total_entities,
-        "modules": modules,
-        "live_sessions": live_sessions,
-        "version": crate::VERSION,
-    })))
-    .into_response()
+    (
+        StatusCode::OK,
+        Json(json!({
+            "scans_total": scans.len(),
+            "scans_by_status": by_status,
+            "entities_total": total_entities,
+            "modules": modules,
+            "live_sessions": live_sessions,
+            "version": crate::VERSION,
+        })),
+    )
+        .into_response()
 }
 
 pub async fn version() -> Json<Value> {
@@ -274,7 +277,9 @@ pub async fn scan_entities_filter(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let kind = params.get("kind").map(String::as_str);
-    let min_conf = params.get("min_confidence").and_then(|v| v.parse::<f64>().ok());
+    let min_conf = params
+        .get("min_confidence")
+        .and_then(|v| v.parse::<f64>().ok());
     let q = params.get("q").map(String::as_str);
     match s.store.entities_filtered(&id, kind, min_conf, q) {
         Ok(entities) => ok_list("entities", entities),
@@ -336,7 +341,7 @@ pub async fn search_entities(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "missing or empty 'q' parameter"})),
             )
-                .into_response()
+                .into_response();
         }
     };
     let limit = params

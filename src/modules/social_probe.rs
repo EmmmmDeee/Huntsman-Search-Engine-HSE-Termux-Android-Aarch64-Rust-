@@ -29,39 +29,159 @@ struct Platform {
 }
 
 const USERNAME_PLATFORMS: &[Platform] = &[
-    Platform { name: "facebook",    url_pattern: "https://www.facebook.com/{}",           exists_codes: &[200, 302] },
-    Platform { name: "twitter",     url_pattern: "https://twitter.com/{}",                exists_codes: &[200, 301, 302] },
-    Platform { name: "instagram",   url_pattern: "https://www.instagram.com/{}/",         exists_codes: &[200] },
-    Platform { name: "tiktok",      url_pattern: "https://www.tiktok.com/@{}",            exists_codes: &[200] },
-    Platform { name: "github",      url_pattern: "https://github.com/{}",                 exists_codes: &[200] },
-    Platform { name: "gitlab",      url_pattern: "https://gitlab.com/{}",                 exists_codes: &[200] },
-    Platform { name: "reddit",      url_pattern: "https://www.reddit.com/user/{}/about.json", exists_codes: &[200] },
-    Platform { name: "pinterest",   url_pattern: "https://www.pinterest.com/{}/",         exists_codes: &[200] },
-    Platform { name: "steam",       url_pattern: "https://steamcommunity.com/id/{}",      exists_codes: &[200] },
-    Platform { name: "medium",      url_pattern: "https://medium.com/@{}",                exists_codes: &[200] },
-    Platform { name: "devto",       url_pattern: "https://dev.to/{}",                     exists_codes: &[200] },
-    Platform { name: "keybase",     url_pattern: "https://keybase.io/{}",                 exists_codes: &[200] },
-    Platform { name: "hackernews",  url_pattern: "https://news.ycombinator.com/user?id={}", exists_codes: &[200] },
-    Platform { name: "twitch",      url_pattern: "https://www.twitch.tv/{}",              exists_codes: &[200] },
-    Platform { name: "vimeo",       url_pattern: "https://vimeo.com/{}",                  exists_codes: &[200] },
-    Platform { name: "soundcloud",  url_pattern: "https://soundcloud.com/{}",             exists_codes: &[200] },
-    Platform { name: "spotify",     url_pattern: "https://open.spotify.com/user/{}",      exists_codes: &[200] },
-    Platform { name: "flickr",      url_pattern: "https://www.flickr.com/people/{}",      exists_codes: &[200] },
-    Platform { name: "bitbucket",   url_pattern: "https://bitbucket.org/{}/",             exists_codes: &[200] },
-    Platform { name: "stackoverflow", url_pattern: "https://stackoverflow.com/users/{}",  exists_codes: &[200] },
-    Platform { name: "myspace",     url_pattern: "https://myspace.com/{}",                exists_codes: &[200] },
-    Platform { name: "linktree",    url_pattern: "https://linktr.ee/{}",                  exists_codes: &[200] },
-    Platform { name: "about.me",    url_pattern: "https://about.me/{}",                   exists_codes: &[200] },
-    Platform { name: "behance",     url_pattern: "https://www.behance.net/{}",            exists_codes: &[200] },
-    Platform { name: "dribbble",    url_pattern: "https://dribbble.com/{}",               exists_codes: &[200] },
-    Platform { name: "mastodon",    url_pattern: "https://mastodon.social/@{}",           exists_codes: &[200] },
-    Platform { name: "bluesky",     url_pattern: "https://bsky.app/profile/{}.bsky.social", exists_codes: &[200] },
-    Platform { name: "threads",     url_pattern: "https://www.threads.net/@{}",           exists_codes: &[200] },
+    Platform {
+        name: "facebook",
+        url_pattern: "https://www.facebook.com/{}",
+        exists_codes: &[200, 302],
+    },
+    Platform {
+        name: "twitter",
+        url_pattern: "https://twitter.com/{}",
+        exists_codes: &[200, 301, 302],
+    },
+    Platform {
+        name: "instagram",
+        url_pattern: "https://www.instagram.com/{}/",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "tiktok",
+        url_pattern: "https://www.tiktok.com/@{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "github",
+        url_pattern: "https://github.com/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "gitlab",
+        url_pattern: "https://gitlab.com/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "reddit",
+        url_pattern: "https://www.reddit.com/user/{}/about.json",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "pinterest",
+        url_pattern: "https://www.pinterest.com/{}/",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "steam",
+        url_pattern: "https://steamcommunity.com/id/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "medium",
+        url_pattern: "https://medium.com/@{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "devto",
+        url_pattern: "https://dev.to/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "keybase",
+        url_pattern: "https://keybase.io/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "hackernews",
+        url_pattern: "https://news.ycombinator.com/user?id={}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "twitch",
+        url_pattern: "https://www.twitch.tv/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "vimeo",
+        url_pattern: "https://vimeo.com/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "soundcloud",
+        url_pattern: "https://soundcloud.com/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "spotify",
+        url_pattern: "https://open.spotify.com/user/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "flickr",
+        url_pattern: "https://www.flickr.com/people/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "bitbucket",
+        url_pattern: "https://bitbucket.org/{}/",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "stackoverflow",
+        url_pattern: "https://stackoverflow.com/users/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "myspace",
+        url_pattern: "https://myspace.com/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "linktree",
+        url_pattern: "https://linktr.ee/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "about.me",
+        url_pattern: "https://about.me/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "behance",
+        url_pattern: "https://www.behance.net/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "dribbble",
+        url_pattern: "https://dribbble.com/{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "mastodon",
+        url_pattern: "https://mastodon.social/@{}",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "bluesky",
+        url_pattern: "https://bsky.app/profile/{}.bsky.social",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "threads",
+        url_pattern: "https://www.threads.net/@{}",
+        exists_codes: &[200],
+    },
 ];
 
 const NAME_PLATFORMS: &[Platform] = &[
-    Platform { name: "facebook-public", url_pattern: "https://www.facebook.com/public/{}/", exists_codes: &[200] },
-    Platform { name: "peekyou",    url_pattern: "https://www.peekyou.com/{}",             exists_codes: &[200] },
+    Platform {
+        name: "facebook-public",
+        url_pattern: "https://www.facebook.com/public/{}/",
+        exists_codes: &[200],
+    },
+    Platform {
+        name: "peekyou",
+        url_pattern: "https://www.peekyou.com/{}",
+        exists_codes: &[200],
+    },
 ];
 
 #[async_trait]
@@ -126,24 +246,33 @@ impl Module for SocialProbe {
                 entity.tag("social-profile");
                 entity.tag(format!("platform:{}", platform.name));
                 entity.add_evidence(
-                    Evidence::new("social_probe", format!("Profile found on {}", platform.name))
-                        .with_attr("platform", platform.name)
-                        .with_attr("http_status", code.to_string())
-                        .with_attr("profile_url", &url),
+                    Evidence::new(
+                        "social_probe",
+                        format!("Profile found on {}", platform.name),
+                    )
+                    .with_attr("platform", platform.name)
+                    .with_attr("http_status", code.to_string())
+                    .with_attr("profile_url", &url),
                 );
                 result.push(entity);
 
                 // Also extract the domain for infrastructure expansion
-                if let Some(host) = url::Url::parse(&url).ok().and_then(|u| u.host_str().map(|h| h.to_lowercase()))
-                    && host.contains('.') {
-                        let mut dom = Entity::new(EntityKind::Domain, &host, 0.40, &ctx.scan_id);
-                        dom.tag("social-platform");
-                        dom.add_evidence(
-                            Evidence::new("social_probe", format!("Platform domain from {} profile", platform.name))
-                                .with_attr("platform", platform.name),
-                        );
-                        result.push(dom);
-                    }
+                if let Some(host) = url::Url::parse(&url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+                    && host.contains('.')
+                {
+                    let mut dom = Entity::new(EntityKind::Domain, &host, 0.40, &ctx.scan_id);
+                    dom.tag("social-platform");
+                    dom.add_evidence(
+                        Evidence::new(
+                            "social_probe",
+                            format!("Platform domain from {} profile", platform.name),
+                        )
+                        .with_attr("platform", platform.name),
+                    );
+                    result.push(dom);
+                }
             }
 
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -158,10 +287,16 @@ impl Module for SocialProbe {
             }
             found_platforms.sort_unstable();
             summary.add_evidence(
-                Evidence::new("social_probe", format!("Probed {} platforms, found {} profiles", checked_count, found_count))
-                    .with_attr("checked", checked_count.to_string())
-                    .with_attr("found", found_count.to_string())
-                    .with_attr("platforms", found_platforms.join(", ")),
+                Evidence::new(
+                    "social_probe",
+                    format!(
+                        "Probed {} platforms, found {} profiles",
+                        checked_count, found_count
+                    ),
+                )
+                .with_attr("checked", checked_count.to_string())
+                .with_attr("found", found_count.to_string())
+                .with_attr("platforms", found_platforms.join(", ")),
             );
             result.push(summary);
         }
@@ -186,12 +321,10 @@ async fn probe_url(url: &str) -> u16 {
         .await;
 
     match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse()
-                .unwrap_or(0)
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0),
         _ => 0,
     }
 }

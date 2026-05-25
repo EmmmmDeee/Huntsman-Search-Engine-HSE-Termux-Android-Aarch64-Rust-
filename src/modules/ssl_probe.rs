@@ -53,7 +53,8 @@ impl Module for SslProbe {
         }
 
         let url = format!("https://{domain}/");
-        let resp = ctx.http
+        let resp = ctx
+            .http
             .head(&url)
             .send()
             .await
@@ -68,18 +69,20 @@ impl Module for SslProbe {
 
         let tls_info = resp.extensions().get::<reqwest::tls::TlsInfo>();
         if let Some(info) = tls_info
-            && let Some(der) = info.peer_certificate() {
-                parse_certificate(der, domain, &ctx.scan_id, &mut entity, &mut ev, &mut result);
-            }
+            && let Some(der) = info.peer_certificate()
+        {
+            parse_certificate(der, domain, &ctx.scan_id, &mut entity, &mut ev, &mut result);
+        }
 
         let status = resp.status();
         ev = ev.with_attr("http_status", status.as_u16().to_string());
 
         if let Some(hsts) = resp.headers().get("strict-transport-security")
-            && let Ok(v) = hsts.to_str() {
-                ev = ev.with_attr("hsts", v);
-                entity.tag("hsts");
-            }
+            && let Ok(v) = hsts.to_str()
+        {
+            ev = ev.with_attr("hsts", v);
+            entity.tag("hsts");
+        }
 
         entity.add_evidence(ev);
         result.push(entity);
@@ -100,7 +103,8 @@ fn parse_certificate(
     if !sans.is_empty() {
         let san_count = sans.len();
         let san_display: Vec<&str> = sans.iter().take(30).map(String::as_str).collect();
-        ev.attributes.insert("san_count".into(), san_count.to_string());
+        ev.attributes
+            .insert("san_count".into(), san_count.to_string());
         ev.attributes.insert("sans".into(), san_display.join(", "));
 
         let target_lower = target_domain.to_lowercase();
@@ -115,8 +119,11 @@ fn parse_certificate(
                 sub.tag(tags::SUBDOMAIN);
                 sub.tag("tls-san");
                 sub.add_evidence(
-                    Evidence::new("ssl_probe", format!("TLS SAN on {target_domain} certificate"))
-                        .with_attr("parent_domain", target_domain),
+                    Evidence::new(
+                        "ssl_probe",
+                        format!("TLS SAN on {target_domain} certificate"),
+                    )
+                    .with_attr("parent_domain", target_domain),
                 );
                 result.push(sub);
             }
@@ -191,15 +198,16 @@ fn extract_field_from_der(der: &[u8], oid: &[u8], first: bool) -> Option<String>
                     if tag == 0x0C || tag == 0x13 || tag == 0x16 {
                         let len = der.get(pos + 1).copied().unwrap_or(0) as usize;
                         if pos + 2 + len <= der.len()
-                            && let Ok(s) = std::str::from_utf8(&der[pos + 2..pos + 2 + len]) {
-                                let s = s.trim().to_string();
-                                if !s.is_empty() {
-                                    if first {
-                                        return Some(s);
-                                    }
-                                    last_match = Some(s);
+                            && let Ok(s) = std::str::from_utf8(&der[pos + 2..pos + 2 + len])
+                        {
+                            let s = s.trim().to_string();
+                            if !s.is_empty() {
+                                if first {
+                                    return Some(s);
                                 }
+                                last_match = Some(s);
                             }
+                        }
                         break;
                     }
                     pos += 1;

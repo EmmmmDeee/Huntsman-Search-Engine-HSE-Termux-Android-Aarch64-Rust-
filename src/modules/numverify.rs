@@ -72,7 +72,12 @@ impl Module for Numverify {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = ctx.key(KEY_ENV)?;
         let mut phone = String::with_capacity(target.value.len());
-        phone.extend(target.value.chars().filter(|c| c.is_ascii_digit() || *c == '+'));
+        phone.extend(
+            target
+                .value
+                .chars()
+                .filter(|c| c.is_ascii_digit() || *c == '+'),
+        );
         if phone.is_empty() {
             return Ok(ModuleResult::new());
         }

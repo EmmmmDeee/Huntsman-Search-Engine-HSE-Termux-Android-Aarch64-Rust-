@@ -66,8 +66,11 @@ impl Module for EmailToDomain {
         entity.tag("derived");
         entity.tag("email-domain");
         entity.add_evidence(
-            Evidence::new("email_to_domain", format!("Domain extracted from {}", target.value))
-                .with_attr("source_email", &target.value),
+            Evidence::new(
+                "email_to_domain",
+                format!("Domain extracted from {}", target.value),
+            )
+            .with_attr("source_email", &target.value),
         );
 
         let mut result = ModuleResult::new();
@@ -78,11 +81,26 @@ impl Module for EmailToDomain {
 
 fn is_freemail(domain: &str) -> bool {
     const FREE: &[&str] = &[
-        "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com",
-        "icloud.com", "mail.com", "protonmail.com", "proton.me",
-        "zoho.com", "yandex.com", "gmx.com", "gmx.net", "live.com",
-        "msn.com", "me.com", "mac.com", "fastmail.com",
-        "tutanota.com", "tuta.io",
+        "gmail.com",
+        "yahoo.com",
+        "hotmail.com",
+        "outlook.com",
+        "aol.com",
+        "icloud.com",
+        "mail.com",
+        "protonmail.com",
+        "proton.me",
+        "zoho.com",
+        "yandex.com",
+        "gmx.com",
+        "gmx.net",
+        "live.com",
+        "msn.com",
+        "me.com",
+        "mac.com",
+        "fastmail.com",
+        "tutanota.com",
+        "tuta.io",
     ];
     FREE.contains(&domain)
 }

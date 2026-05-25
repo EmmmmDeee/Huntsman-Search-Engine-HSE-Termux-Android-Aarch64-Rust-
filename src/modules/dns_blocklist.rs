@@ -99,10 +99,13 @@ impl Module for DnsBlocklist {
 
         if listed_on.is_empty() {
             entity.add_evidence(
-                Evidence::new("dns_blocklist", format!("{ip} clean on {checked} blocklists"))
-                    .with_attr("listed_count", "0")
-                    .with_attr("checked_count", checked.to_string())
-                    .with_attr("status", "clean"),
+                Evidence::new(
+                    "dns_blocklist",
+                    format!("{ip} clean on {checked} blocklists"),
+                )
+                .with_attr("listed_count", "0")
+                .with_attr("checked_count", checked.to_string())
+                .with_attr("status", "clean"),
             );
         } else {
             entity.tag("blocklisted");
@@ -113,7 +116,11 @@ impl Module for DnsBlocklist {
             entity.add_evidence(
                 Evidence::new(
                     "dns_blocklist",
-                    format!("{ip} listed on {} of {} blocklists", listed_on.len(), checked),
+                    format!(
+                        "{ip} listed on {} of {} blocklists",
+                        listed_on.len(),
+                        checked
+                    ),
                 )
                 .with_attr("listed_count", listed_on.len().to_string())
                 .with_attr("checked_count", checked.to_string())
@@ -132,7 +139,10 @@ fn reverse_ip(ip: &str) -> Option<String> {
     match parsed {
         std::net::IpAddr::V4(v4) => {
             let octets = v4.octets();
-            Some(format!("{}.{}.{}.{}", octets[3], octets[2], octets[1], octets[0]))
+            Some(format!(
+                "{}.{}.{}.{}",
+                octets[3], octets[2], octets[1], octets[0]
+            ))
         }
         std::net::IpAddr::V6(_) => None,
     }

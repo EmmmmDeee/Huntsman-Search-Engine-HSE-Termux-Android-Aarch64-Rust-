@@ -82,10 +82,25 @@ struct PastesSummary {
 
 /// High-profile breach names that warrant individual tagging.
 const NOTABLE_BREACHES: &[&str] = &[
-    "linkedin", "adobe", "dropbox", "myspace", "twitter", "facebook",
-    "yahoo", "lastfm", "tumblr", "myfitnesspal", "canva", "zynga",
-    "dubsmash", "haveibeenpwned", "verifications.io", "collection",
-    "exactis", "apollo", "evite",
+    "linkedin",
+    "adobe",
+    "dropbox",
+    "myspace",
+    "twitter",
+    "facebook",
+    "yahoo",
+    "lastfm",
+    "tumblr",
+    "myfitnesspal",
+    "canva",
+    "zynga",
+    "dubsmash",
+    "haveibeenpwned",
+    "verifications.io",
+    "collection",
+    "exactis",
+    "apollo",
+    "evite",
 ];
 
 #[async_trait]
@@ -125,7 +140,12 @@ impl Module for XposedOrNot {
 
         let analytics = fetch_analytics(&ctx.http, &target.value).await;
 
-        Ok(build_result(inner, analytics.as_ref(), target, &ctx.scan_id))
+        Ok(build_result(
+            inner,
+            analytics.as_ref(),
+            target,
+            &ctx.scan_id,
+        ))
     }
 }
 
@@ -173,10 +193,11 @@ fn build_result(
 
     if let Some(a) = analytics {
         if let Some(pastes) = a.pastes_summary.as_ref().and_then(|p| p.cnt)
-            && pastes > 0 {
-                ev = ev.with_attr("paste_count", pastes.to_string());
-                entity.tag(tags::PASTE_EXPOSED);
-            }
+            && pastes > 0
+        {
+            ev = ev.with_attr("paste_count", pastes.to_string());
+            entity.tag(tags::PASTE_EXPOSED);
+        }
         if let Some(details) = a
             .exposed_breaches
             .as_ref()
@@ -193,13 +214,11 @@ fn build_result(
                 let joined_types: Vec<&str> = data_types.into_iter().collect();
                 ev = ev.with_attr("exposed_data_types", joined_types.join(", "));
             }
-            let has_password_risk = details
-                .iter()
-                .any(|d| {
-                    d.password_risk
-                        .as_deref()
-                        .is_some_and(|r| !r.eq_ignore_ascii_case("none") && !r.is_empty())
-                });
+            let has_password_risk = details.iter().any(|d| {
+                d.password_risk
+                    .as_deref()
+                    .is_some_and(|r| !r.eq_ignore_ascii_case("none") && !r.is_empty())
+            });
             if has_password_risk {
                 entity.tag(tags::PASSWORD_AT_RISK);
                 ev = ev.with_attr("password_risk", "true");
@@ -215,7 +234,9 @@ fn build_result(
                 };
 
                 // Build summary like "LinkedIn (2012, 117M records): Emails;Passwords"
-                let year = d.xposed_date.as_deref()
+                let year = d
+                    .xposed_date
+                    .as_deref()
                     .and_then(|s| s.get(..4))
                     .filter(|y| y.chars().all(|c| c.is_ascii_digit()));
 
@@ -310,11 +331,7 @@ mod tests {
 
     #[test]
     fn populated_response_yields_breach_tagged_email() {
-        let breaches = vec![
-            "MyFitnessPal".into(),
-            "Quizlet".into(),
-            "LinkedIn".into(),
-        ];
+        let breaches = vec!["MyFitnessPal".into(), "Quizlet".into(), "LinkedIn".into()];
         let target = Target::new(TargetKind::Email, "pwned@example.com");
         let r = build_result(&breaches, None, &target, "scan-1");
 

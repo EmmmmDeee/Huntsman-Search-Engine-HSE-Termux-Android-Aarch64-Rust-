@@ -149,7 +149,10 @@ mod tests {
         // Verify third AP (5 GHz band)
         let ap2 = &r.entities[2];
         assert_eq!(ap2.value, "de:ad:be:ef:ca:fe");
-        assert_eq!(ap2.evidence[0].attributes.get("frequency_mhz").unwrap(), "2462");
+        assert_eq!(
+            ap2.evidence[0].attributes.get("frequency_mhz").unwrap(),
+            "2462"
+        );
     }
 
     #[test]

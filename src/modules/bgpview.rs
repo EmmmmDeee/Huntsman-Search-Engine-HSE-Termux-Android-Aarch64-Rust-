@@ -193,8 +193,7 @@ async fn lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
         let mut u = Entity::new(EntityKind::Url, w, 0.75, &ctx.scan_id);
         u.tag("asn-website");
         u.add_evidence(
-            Evidence::new("bgpview", format!("Website of {asn_label}"))
-                .with_attr("asn", &asn_str),
+            Evidence::new("bgpview", format!("Website of {asn_label}")).with_attr("asn", &asn_str),
         );
         result.push(u);
     }

@@ -59,16 +59,14 @@ fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
 
     for line in content.lines().skip(1) {
         let mut cols = line.split_whitespace();
-        let (Some(ip), Some(hw_type), Some(flags), Some(mac), Some(_mask), Some(dev)) =
-            (
-                cols.next(),
-                cols.next(),
-                cols.next(),
-                cols.next(),
-                cols.next(),
-                cols.next(),
-            )
-        else {
+        let (Some(ip), Some(hw_type), Some(flags), Some(mac), Some(_mask), Some(dev)) = (
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+        ) else {
             continue;
         };
         if mac == "00:00:00:00:00:00" {
@@ -204,7 +202,10 @@ IP address       HW type     Flags       HW address            Mask     Device
         assert!(ip.has_tag("local-arp"));
         assert_eq!(ip.evidence.len(), 1);
         assert_eq!(ip.evidence[0].source, "arp_scan");
-        assert_eq!(ip.evidence[0].attributes.get("mac").unwrap(), "aa:bb:cc:dd:ee:ff");
+        assert_eq!(
+            ip.evidence[0].attributes.get("mac").unwrap(),
+            "aa:bb:cc:dd:ee:ff"
+        );
         assert_eq!(ip.evidence[0].attributes.get("interface").unwrap(), "wlan0");
 
         // Second entity: MAC address
@@ -213,12 +214,16 @@ IP address       HW type     Flags       HW address            Mask     Device
         assert_eq!(mac.value, "aa:bb:cc:dd:ee:ff");
         assert!(mac.has_tag("local-arp"));
         assert_eq!(mac.evidence[0].attributes.get("ip").unwrap(), "192.168.1.1");
-        assert_eq!(mac.evidence[0].attributes.get("interface").unwrap(), "wlan0");
+        assert_eq!(
+            mac.evidence[0].attributes.get("interface").unwrap(),
+            "wlan0"
+        );
     }
 
     #[test]
     fn parser_header_only_yields_empty() {
-        let sample = "IP address       HW type     Flags       HW address            Mask     Device\n";
+        let sample =
+            "IP address       HW type     Flags       HW address            Mask     Device\n";
         let r = parse_arp(sample, "test-scan");
         assert_eq!(r.entities.len(), 0);
     }

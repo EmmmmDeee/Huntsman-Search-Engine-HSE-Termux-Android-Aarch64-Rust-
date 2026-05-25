@@ -69,7 +69,10 @@ impl Module for Crtsh {
                             .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))
                             .with_attr("not_before", entry.not_before.as_deref().unwrap_or("-"))
                             .with_attr("not_after", entry.not_after.as_deref().unwrap_or("-"))
-                            .with_attr("serial_number", entry.serial_number.as_deref().unwrap_or("-"))
+                            .with_attr(
+                                "serial_number",
+                                entry.serial_number.as_deref().unwrap_or("-"),
+                            )
                             .with_attr("parent_domain", &target.value),
                     );
                     result.push(e);

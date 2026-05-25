@@ -48,13 +48,10 @@ const BODY_CAP: usize = 65_536;
 const INTER_REQUEST_MS: u64 = 200;
 
 const BINARY_EXTENSIONS: &[&str] = &[
-    "png", "gif", "jpg", "jpeg", "tiff", "tif", "webp", "svg", "ico",
-    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv",
-    "zip", "gz", "tar", "bz2", "rar", "7z", "iso",
-    "mp3", "mp4", "avi", "mov", "flv", "mpg", "mpeg", "mkv", "wmv",
-    "exe", "bin", "dmg", "msi", "deb", "rpm",
-    "woff", "woff2", "ttf", "eot", "otf",
-    "css", "map",
+    "png", "gif", "jpg", "jpeg", "tiff", "tif", "webp", "svg", "ico", "pdf", "doc", "docx", "xls",
+    "xlsx", "ppt", "pptx", "csv", "zip", "gz", "tar", "bz2", "rar", "7z", "iso", "mp3", "mp4",
+    "avi", "mov", "flv", "mpg", "mpeg", "mkv", "wmv", "exe", "bin", "dmg", "msi", "deb", "rpm",
+    "woff", "woff2", "ttf", "eot", "otf", "css", "map",
 ];
 
 const NOTABLE_PAGES_CAP: usize = 20;
@@ -167,7 +164,10 @@ impl Module for WebCrawler {
                 .get("content-type")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
-            if !ct.contains("text/html") && !ct.contains("text/plain") && !ct.contains("application/xhtml") {
+            if !ct.contains("text/html")
+                && !ct.contains("text/plain")
+                && !ct.contains("application/xhtml")
+            {
                 continue;
             }
 
@@ -189,7 +189,9 @@ impl Module for WebCrawler {
             let mut per_page_types: HashSet<&'static str> = HashSet::new();
             detect_page_types(&body, &mut per_page_types);
             if state.notable_pages.len() < NOTABLE_PAGES_CAP
-                && per_page_types.iter().any(|pt| NOTABLE_PAGE_TYPES.contains(pt))
+                && per_page_types
+                    .iter()
+                    .any(|pt| NOTABLE_PAGE_TYPES.contains(pt))
             {
                 state.notable_pages.push(url.clone());
             }
@@ -199,13 +201,7 @@ impl Module for WebCrawler {
             extract_phones(&body, &mut state.phones);
 
             if depth < MAX_DEPTH {
-                extract_links(
-                    &body,
-                    &url,
-                    &base_host,
-                    &domain,
-                    &mut state,
-                );
+                extract_links(&body, &url, &base_host, &domain, &mut state);
             }
 
             if state.pages_fetched < MAX_PAGES {
@@ -235,8 +231,14 @@ async fn resolve_seed(http: &reqwest::Client, domain: &str) -> Result<String> {
 }
 
 async fn fetch_robots(http: &reqwest::Client, seed: &Url, rules: &mut Vec<String>) {
-    let robots_url = format!("{}://{}/robots.txt", seed.scheme(), seed.host_str().unwrap_or(""));
-    let Ok(resp) = http.get(&robots_url).send().await else { return };
+    let robots_url = format!(
+        "{}://{}/robots.txt",
+        seed.scheme(),
+        seed.host_str().unwrap_or("")
+    );
+    let Ok(resp) = http.get(&robots_url).send().await else {
+        return;
+    };
     if !resp.status().is_success() {
         return;
     }
@@ -251,11 +253,13 @@ async fn fetch_robots(http: &reqwest::Client, seed: &Url, rules: &mut Vec<String
         if lower.starts_with("user-agent:") {
             let agent = lower.strip_prefix("user-agent:").unwrap_or("").trim();
             in_wildcard_agent = agent == "*" || agent.contains("huntsman");
-        } else if in_wildcard_agent && lower.starts_with("disallow:")
+        } else if in_wildcard_agent
+            && lower.starts_with("disallow:")
             && let Some(path) = trimmed.split_once(':').map(|(_, p)| p.trim())
-                && !path.is_empty() {
-                    rules.push(path.to_string());
-                }
+            && !path.is_empty()
+        {
+            rules.push(path.to_string());
+        }
     }
 }
 
@@ -379,7 +383,11 @@ impl<'a> Iterator for LinkIter<'a> {
 fn extract_registrable_domain(host: &str) -> Option<String> {
     let parts: Vec<&str> = host.split('.').collect();
     if parts.len() >= 2 {
-        Some(format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]))
+        Some(format!(
+            "{}.{}",
+            parts[parts.len() - 2],
+            parts[parts.len() - 1]
+        ))
     } else {
         None
     }
@@ -446,7 +454,13 @@ fn extract_phones(body: &str, phones: &mut HashSet<String>) {
             let start = i;
             i += 1;
             let mut digits = 0u32;
-            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'-' || bytes[i] == b' ' || bytes[i] == b'(' || bytes[i] == b')') {
+            while i < bytes.len()
+                && (bytes[i].is_ascii_digit()
+                    || bytes[i] == b'-'
+                    || bytes[i] == b' '
+                    || bytes[i] == b'('
+                    || bytes[i] == b')')
+            {
                 if bytes[i].is_ascii_digit() {
                     digits += 1;
                 }
@@ -454,7 +468,10 @@ fn extract_phones(body: &str, phones: &mut HashSet<String>) {
             }
             if (7..=15).contains(&digits) {
                 let raw = &body[start..i];
-                let cleaned: String = raw.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect();
+                let cleaned: String = raw
+                    .chars()
+                    .filter(|c| c.is_ascii_digit() || *c == '+')
+                    .collect();
                 phones.insert(cleaned);
             }
         } else {
@@ -567,12 +584,7 @@ fn audit_security_headers(
     }
 }
 
-fn build_entities(
-    domain: &str,
-    _base_host: &str,
-    scan_id: &str,
-    state: &mut CrawlState,
-) {
+fn build_entities(domain: &str, _base_host: &str, scan_id: &str, state: &mut CrawlState) {
     // Main domain entity with crawl summary
     let mut entity = Entity::new(EntityKind::Domain, domain, 0.90, scan_id);
     entity.tag(tags::WEB);
@@ -647,8 +659,11 @@ fn build_entities(
         e.tag(tags::WEB);
         e.tag(tags::SUBDOMAIN);
         e.add_evidence(
-            Evidence::new("web_crawler", format!("Subdomain discovered by crawling {domain}"))
-                .with_attr("parent_domain", domain),
+            Evidence::new(
+                "web_crawler",
+                format!("Subdomain discovered by crawling {domain}"),
+            )
+            .with_attr("parent_domain", domain),
         );
         state.result.push(e);
     }
@@ -658,8 +673,11 @@ fn build_entities(
         let mut e = Entity::new(EntityKind::Domain, ext.as_str(), 0.50, scan_id);
         e.tag(tags::EXTERNAL);
         e.add_evidence(
-            Evidence::new("web_crawler", format!("External domain linked from {domain}"))
-                .with_attr("source_domain", domain),
+            Evidence::new(
+                "web_crawler",
+                format!("External domain linked from {domain}"),
+            )
+            .with_attr("source_domain", domain),
         );
         state.result.push(e);
     }
@@ -753,14 +771,20 @@ mod tests {
     #[test]
     fn framework_detection_wordpress() {
         let mut found = HashSet::new();
-        detect_frameworks("<link rel='stylesheet' href='/wp-content/themes/foo/style.css'>", &mut found);
+        detect_frameworks(
+            "<link rel='stylesheet' href='/wp-content/themes/foo/style.css'>",
+            &mut found,
+        );
         assert!(found.contains("WordPress"));
     }
 
     #[test]
     fn framework_detection_react_and_nextjs() {
         let mut found = HashSet::new();
-        detect_frameworks(r#"<div id="__next"><script src="/_next/static/chunks/main.js"></script></div>"#, &mut found);
+        detect_frameworks(
+            r#"<div id="__next"><script src="/_next/static/chunks/main.js"></script></div>"#,
+            &mut found,
+        );
         assert!(found.contains("Next.js"));
     }
 
@@ -777,7 +801,8 @@ mod tests {
     #[test]
     fn page_type_detection() {
         let mut types = HashSet::new();
-        let body = r#"<form method="POST"><input type="password" name="pw"><input type="file"></form>"#;
+        let body =
+            r#"<form method="POST"><input type="password" name="pw"><input type="file"></form>"#;
         detect_page_types(body, &mut types);
         assert!(types.contains("has_forms"));
         assert!(types.contains("login_form"));
@@ -794,16 +819,23 @@ mod tests {
     #[test]
     fn security_header_audit() {
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("strict-transport-security", "max-age=31536000".parse().unwrap());
+        headers.insert(
+            "strict-transport-security",
+            "max-age=31536000".parse().unwrap(),
+        );
         headers.insert("x-frame-options", "DENY".parse().unwrap());
 
         let mut results = Vec::new();
         audit_security_headers(&headers, &mut results);
 
-        let hsts = results.iter().find(|(n, _)| *n == "Strict-Transport-Security");
+        let hsts = results
+            .iter()
+            .find(|(n, _)| *n == "Strict-Transport-Security");
         assert_eq!(hsts, Some(&("Strict-Transport-Security", true)));
 
-        let csp = results.iter().find(|(n, _)| *n == "Content-Security-Policy");
+        let csp = results
+            .iter()
+            .find(|(n, _)| *n == "Content-Security-Policy");
         assert_eq!(csp, Some(&("Content-Security-Policy", false)));
     }
 
@@ -826,8 +858,14 @@ mod tests {
 
     #[test]
     fn registrable_domain_extraction() {
-        assert_eq!(extract_registrable_domain("www.example.com"), Some("example.com".into()));
-        assert_eq!(extract_registrable_domain("cdn.assets.example.org"), Some("example.org".into()));
+        assert_eq!(
+            extract_registrable_domain("www.example.com"),
+            Some("example.com".into())
+        );
+        assert_eq!(
+            extract_registrable_domain("cdn.assets.example.org"),
+            Some("example.org".into())
+        );
         assert_eq!(extract_registrable_domain("localhost"), None);
     }
 }

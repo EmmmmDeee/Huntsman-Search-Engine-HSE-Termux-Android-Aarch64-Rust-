@@ -123,7 +123,10 @@ impl Module for LeakIx {
 
         // Aggregate event-type counts so the evidence row stays compact
         // even when leakix returns dozens of services.
-        let types: Vec<String> = body.services.iter().chain(body.leaks.iter())
+        let types: Vec<String> = body
+            .services
+            .iter()
+            .chain(body.leaks.iter())
             .filter_map(|e| e.event_type.clone())
             .collect();
         let top = crate::util::freq::top_n(types.iter().map(String::as_str), 8);

@@ -64,12 +64,8 @@ impl Module for DnsResolver {
         if let Ok(lookup) = ips {
             for record in lookup.as_lookup().answers() {
                 let (ip_str, record_type, ip_version) = match &record.data {
-                    RData::A(a) => {
-                        (a.0.to_string(), "A", "4")
-                    }
-                    RData::AAAA(aaaa) => {
-                        (aaaa.0.to_string(), "AAAA", "6")
-                    }
+                    RData::A(a) => (a.0.to_string(), "A", "4"),
+                    RData::AAAA(aaaa) => (aaaa.0.to_string(), "AAAA", "6"),
                     _ => continue,
                 };
                 let mut e = Entity::new(EntityKind::IpAddress, &ip_str, 0.95, &ctx.scan_id);
@@ -134,9 +130,10 @@ impl Module for DnsResolver {
         // the admin email (encoded as a hostname with `.` instead of `@`
         // in the local-part separator per RFC 1035 §3.3.13).
         if let Ok(lookup) = soa
-            && let Some(dns_record) = lookup.answers().iter().find(|r| {
-                matches!(&r.data, RData::SOA(_))
-            })
+            && let Some(dns_record) = lookup
+                .answers()
+                .iter()
+                .find(|r| matches!(&r.data, RData::SOA(_)))
         {
             let RData::SOA(ref soa_data) = dns_record.data else {
                 unreachable!();

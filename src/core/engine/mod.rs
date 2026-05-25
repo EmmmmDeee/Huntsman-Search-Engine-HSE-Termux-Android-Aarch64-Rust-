@@ -140,7 +140,14 @@ impl ScanEngine {
 
         if opts.depth > 0 {
             let _ = self
-                .run_expansion(&scan.id, &ctx, &opts, started, &mut entity_map, &mut visited)
+                .run_expansion(
+                    &scan.id,
+                    &ctx,
+                    &opts,
+                    started,
+                    &mut entity_map,
+                    &mut visited,
+                )
                 .await;
         }
 
@@ -170,7 +177,10 @@ impl ScanEngine {
             let _ = self.store.upsert_scan(scan);
             self.emit(
                 &scan.id,
-                EventKind::ScanComplete { scan_id: scan.id.clone(), entity_count: 0 },
+                EventKind::ScanComplete {
+                    scan_id: scan.id.clone(),
+                    entity_count: 0,
+                },
             );
             return Ok(scan.clone());
         }
@@ -188,7 +198,10 @@ impl ScanEngine {
 
         self.emit(
             &scan.id,
-            EventKind::ScanComplete { scan_id: scan.id.clone(), entity_count },
+            EventKind::ScanComplete {
+                scan_id: scan.id.clone(),
+                entity_count,
+            },
         );
 
         Ok(scan.clone())
@@ -200,10 +213,17 @@ impl ScanEngine {
                 for c in &firings {
                     self.emit(
                         scan_id,
-                        EventKind::CorrelationFound { correlation: c.clone() },
+                        EventKind::CorrelationFound {
+                            correlation: c.clone(),
+                        },
                     );
                 }
-                self.emit(scan_id, EventKind::CorrelationsDone { count: firings.len() });
+                self.emit(
+                    scan_id,
+                    EventKind::CorrelationsDone {
+                        count: firings.len(),
+                    },
+                );
             }
             Err(e) => warn!(scan_id, error = %e, "correlator failed"),
         }

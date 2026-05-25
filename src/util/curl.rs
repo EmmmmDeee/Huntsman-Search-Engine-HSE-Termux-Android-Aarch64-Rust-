@@ -43,10 +43,7 @@ pub async fn fetch(url: &str, timeout_ms: u64) -> Option<String> {
 }
 
 /// Fetch JSON from a URL via curl, deserialise as T.
-pub async fn fetch_json<T: serde::de::DeserializeOwned>(
-    url: &str,
-    timeout_ms: u64,
-) -> Option<T> {
+pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u64) -> Option<T> {
     let body = fetch(url, timeout_ms).await?;
     serde_json::from_str(&body).ok()
 }

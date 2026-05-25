@@ -176,7 +176,11 @@ fn compute_confidence(stealers: &[Stealer]) -> f64 {
             .is_some_and(|ts| ts >= cutoff)
     });
 
-    if has_recent { FRESH_CONFIDENCE } else { BASE_CONFIDENCE }
+    if has_recent {
+        FRESH_CONFIDENCE
+    } else {
+        BASE_CONFIDENCE
+    }
 }
 
 fn parse_iso_epoch(s: &str) -> Option<u64> {

@@ -137,7 +137,9 @@ impl Module for Wigle {
         entity.tag("wifi-observed");
 
         // Aggregate encryption types.
-        let enc_types: Vec<String> = body.results.iter()
+        let enc_types: Vec<String> = body
+            .results
+            .iter()
             .filter_map(|n| n.encryption.clone())
             .collect();
         let top_encryption = crate::util::freq::top_n(enc_types.iter().map(String::as_str), 5);

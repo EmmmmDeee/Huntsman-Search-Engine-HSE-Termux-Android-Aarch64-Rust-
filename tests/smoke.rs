@@ -738,11 +738,7 @@ async fn live_session_runs_two_iterations_and_completes() {
         session.status
     );
     assert_eq!(session.iteration, 2);
-    assert_eq!(
-        session.scan_ids.len(),
-        2,
-        "should have spawned 2 scans"
-    );
+    assert_eq!(session.scan_ids.len(), 2, "should have spawned 2 scans");
 }
 
 #[tokio::test]

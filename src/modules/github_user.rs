@@ -113,9 +113,10 @@ impl Module for GithubUser {
             .with_attr("github_id", user.id.to_string())
             .with_attr(
                 "profile_url",
-                user.html_url
-                    .as_deref()
-                    .map_or_else(|| format!("https://github.com/{}", user.login), String::from),
+                user.html_url.as_deref().map_or_else(
+                    || format!("https://github.com/{}", user.login),
+                    String::from,
+                ),
             );
         if let Some(n) = user.name.as_deref() {
             ev = ev.with_attr("name", n);
@@ -155,10 +156,11 @@ impl Module for GithubUser {
             ev = ev.with_attr("following", n.to_string());
         }
         if let Some(ref tw) = user.twitter_username
-            && !tw.is_empty() {
-                ev = ev.with_attr("twitter", tw);
-                u_entity.tag(format!("twitter:{tw}"));
-            }
+            && !tw.is_empty()
+        {
+            ev = ev.with_attr("twitter", tw);
+            u_entity.tag(format!("twitter:{tw}"));
+        }
         u_entity.add_evidence(ev);
         result.push(u_entity);
 
@@ -216,20 +218,24 @@ impl Module for GithubUser {
                 result.push(u);
 
                 if let Ok(parsed) = url::Url::parse(blog)
-                    && let Some(host) = parsed.host_str() {
-                        let domain = host.to_lowercase();
-                        if domain.contains('.') && domain != "github.com" && domain != "github.io" {
-                            let mut d = Entity::new(EntityKind::Domain, &domain, 0.72, &ctx.scan_id);
-                            d.tag("derived");
-                            d.tag("personal-site");
-                            d.add_evidence(
-                                Evidence::new("github_user", format!("Blog domain from @{}", user.login))
-                                    .with_attr("blog_url", blog)
-                                    .with_attr("github_login", &user.login),
-                            );
-                            result.push(d);
-                        }
+                    && let Some(host) = parsed.host_str()
+                {
+                    let domain = host.to_lowercase();
+                    if domain.contains('.') && domain != "github.com" && domain != "github.io" {
+                        let mut d = Entity::new(EntityKind::Domain, &domain, 0.72, &ctx.scan_id);
+                        d.tag("derived");
+                        d.tag("personal-site");
+                        d.add_evidence(
+                            Evidence::new(
+                                "github_user",
+                                format!("Blog domain from @{}", user.login),
+                            )
+                            .with_attr("blog_url", blog)
+                            .with_attr("github_login", &user.login),
+                        );
+                        result.push(d);
                     }
+                }
             }
         }
 

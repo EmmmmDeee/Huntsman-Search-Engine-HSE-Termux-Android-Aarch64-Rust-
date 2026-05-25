@@ -116,45 +116,57 @@ struct EngineSpec {
 const ENGINES: &[EngineSpec] = &[
     EngineSpec {
         name: "bing",
-        build_url: |q| format!(
-            "https://www.bing.com/search?q={}&count=20",
-            crate::util::http::urlencode(q)
-        ),
+        build_url: |q| {
+            format!(
+                "https://www.bing.com/search?q={}&count=20",
+                crate::util::http::urlencode(q)
+            )
+        },
     },
     EngineSpec {
         name: "yahoo",
-        build_url: |q| format!(
-            "https://search.yahoo.com/search?p={}&n=20",
-            crate::util::http::urlencode(q)
-        ),
+        build_url: |q| {
+            format!(
+                "https://search.yahoo.com/search?p={}&n=20",
+                crate::util::http::urlencode(q)
+            )
+        },
     },
     EngineSpec {
         name: "aol",
-        build_url: |q| format!(
-            "https://search.aol.com/aol/search?q={}",
-            crate::util::http::urlencode(q)
-        ),
+        build_url: |q| {
+            format!(
+                "https://search.aol.com/aol/search?q={}",
+                crate::util::http::urlencode(q)
+            )
+        },
     },
     EngineSpec {
         name: "duckduckgo",
-        build_url: |q| format!(
-            "https://html.duckduckgo.com/html/?q={}",
-            crate::util::http::urlencode(q)
-        ),
+        build_url: |q| {
+            format!(
+                "https://html.duckduckgo.com/html/?q={}",
+                crate::util::http::urlencode(q)
+            )
+        },
     },
     EngineSpec {
         name: "brave",
-        build_url: |q| format!(
-            "https://search.brave.com/search?q={}",
-            crate::util::http::urlencode(q)
-        ),
+        build_url: |q| {
+            format!(
+                "https://search.brave.com/search?q={}",
+                crate::util::http::urlencode(q)
+            )
+        },
     },
     EngineSpec {
         name: "mojeek",
-        build_url: |q| format!(
-            "https://www.mojeek.com/search?q={}",
-            crate::util::http::urlencode(q)
-        ),
+        build_url: |q| {
+            format!(
+                "https://www.mojeek.com/search?q={}",
+                crate::util::http::urlencode(q)
+            )
+        },
     },
 ];
 
@@ -175,12 +187,13 @@ fn build_queries(target: &Target) -> Vec<String> {
         TargetKind::Email => {
             let domain = v.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
             let local = v.split('@').next().unwrap_or("");
-            let mut q = vec![
-                format!("\"{v}\""),
-                format!("\"{local}\""),
-            ];
-            if !domain.is_empty() && !["gmail.com","yahoo.com","hotmail.com","outlook.com"].contains(&domain) {
-                q.push(format!("\"{v}\" site:linkedin.com OR site:github.com OR site:facebook.com"));
+            let mut q = vec![format!("\"{v}\""), format!("\"{local}\"")];
+            if !domain.is_empty()
+                && !["gmail.com", "yahoo.com", "hotmail.com", "outlook.com"].contains(&domain)
+            {
+                q.push(format!(
+                    "\"{v}\" site:linkedin.com OR site:github.com OR site:facebook.com"
+                ));
             }
             if local.len() >= 3 {
                 q.push(format!("\"{local}\" site:linkedin.com OR site:twitter.com OR site:facebook.com OR site:myspace.com"));
@@ -200,15 +213,15 @@ fn build_queries(target: &Target) -> Vec<String> {
             ];
             if parts.len() >= 2 {
                 let first = parts[0];
-                let last = parts[parts.len()-1];
-                q.push(format!("{first} {last} site:instagram.com OR site:github.com OR site:reddit.com"));
+                let last = parts[parts.len() - 1];
+                q.push(format!(
+                    "{first} {last} site:instagram.com OR site:github.com OR site:reddit.com"
+                ));
                 q.push(format!("\"{v}\" email OR contact OR profile"));
             }
             q
-        },
-        TargetKind::Phone => vec![
-            format!("\"{v}\""),
-        ],
+        }
+        TargetKind::Phone => vec![format!("\"{v}\"")],
         _ => Vec::new(),
     }
 }
@@ -233,23 +246,43 @@ fn parse_results(html: &str, engine: &'static str, query: &str) -> Vec<SearchRes
 
     // Primary: extract from href= attributes (works for Yahoo/DDG/Brave)
     for href in HrefIter::new(html) {
-        if results.len() >= MAX_RESULTS_PER_ENGINE { break; }
+        if results.len() >= MAX_RESULTS_PER_ENGINE {
+            break;
+        }
         let url = match resolve_href(href) {
             Some(u) if !u.is_empty() => u,
             _ => continue,
         };
-        add_result(&url, html, href, engine, query, &mut seen_urls, &mut results);
+        add_result(
+            &url,
+            html,
+            href,
+            engine,
+            query,
+            &mut seen_urls,
+            &mut results,
+        );
     }
 
     // Secondary: extract from <cite> tags (Bing puts display URLs here)
     for cite_url in CiteIter::new(html) {
-        if results.len() >= MAX_RESULTS_PER_ENGINE { break; }
+        if results.len() >= MAX_RESULTS_PER_ENGINE {
+            break;
+        }
         let url = if cite_url.starts_with("http") {
             cite_url.to_string()
         } else {
             format!("https://{cite_url}")
         };
-        add_result(&url, html, cite_url, engine, query, &mut seen_urls, &mut results);
+        add_result(
+            &url,
+            html,
+            cite_url,
+            engine,
+            query,
+            &mut seen_urls,
+            &mut results,
+        );
     }
 
     results
@@ -265,10 +298,16 @@ fn add_result(
     results: &mut Vec<SearchResult>,
 ) {
     let host = extract_host(url);
-    if host.is_empty() || is_engine_domain(&host) { return; }
-    if is_tracking_url(url) { return; }
+    if host.is_empty() || is_engine_domain(&host) {
+        return;
+    }
+    if is_tracking_url(url) {
+        return;
+    }
     let canonical = canonicalize_url(url);
-    if !seen.insert(canonical.clone()) { return; }
+    if !seen.insert(canonical.clone()) {
+        return;
+    }
     let title = extract_surrounding_text(html, anchor, 200);
     let snippet = extract_snippet_near(html, anchor, 400);
     results.push(SearchResult {
@@ -286,7 +325,9 @@ struct CiteIter<'a> {
 }
 
 impl<'a> CiteIter<'a> {
-    fn new(html: &'a str) -> Self { Self { remaining: html } }
+    fn new(html: &'a str) -> Self {
+        Self { remaining: html }
+    }
 }
 
 impl<'a> Iterator for CiteIter<'a> {
@@ -319,7 +360,8 @@ fn resolve_href(href: &str) -> Option<String> {
 
     // Yahoo wraps URLs: /RU=https%3a%2f%2fexample.com/RK=.../RS=...
     if href.contains("/RU=") {
-        return href.split("/RU=")
+        return href
+            .split("/RU=")
             .nth(1)
             .and_then(|rest| rest.split("/R").next())
             .and_then(|encoded| {
@@ -327,7 +369,11 @@ fn resolve_href(href: &str) -> Option<String> {
                     .next()
                     .map(|(k, _)| k.into_owned())
                     .unwrap_or_else(|| encoded.to_string());
-                if decoded.starts_with("http") { Some(decoded) } else { None }
+                if decoded.starts_with("http") {
+                    Some(decoded)
+                } else {
+                    None
+                }
             });
     }
 
@@ -409,15 +455,27 @@ fn extract_host(url: &str) -> String {
 }
 
 const ENGINE_DOMAINS: &[&str] = &[
-    "duckduckgo.com", "startpage.com", "mojeek.com",
-    "brave.com", "yahoo.com", "bing.com", "google.com",
-    "yandex.com", "yimg.com", "search.yahoo.com",
-    "r.search.yahoo.com", "cc.bingj.com",
-    "aol.com", "search.aol.com", "oath.com",
+    "duckduckgo.com",
+    "startpage.com",
+    "mojeek.com",
+    "brave.com",
+    "yahoo.com",
+    "bing.com",
+    "google.com",
+    "yandex.com",
+    "yimg.com",
+    "search.yahoo.com",
+    "r.search.yahoo.com",
+    "cc.bingj.com",
+    "aol.com",
+    "search.aol.com",
+    "oath.com",
 ];
 
 fn is_engine_domain(host: &str) -> bool {
-    ENGINE_DOMAINS.iter().any(|d| host == *d || host.ends_with(&format!(".{d}")))
+    ENGINE_DOMAINS
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }
 
 fn is_tracking_url(url: &str) -> bool {
@@ -438,14 +496,22 @@ fn canonicalize_url(url: &str) -> String {
 }
 
 fn floor_char_boundary(s: &str, mut i: usize) -> usize {
-    if i >= s.len() { return s.len(); }
-    while i > 0 && !s.is_char_boundary(i) { i -= 1; }
+    if i >= s.len() {
+        return s.len();
+    }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
     i
 }
 
 fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
-    if i >= s.len() { return s.len(); }
-    while i < s.len() && !s.is_char_boundary(i) { i += 1; }
+    if i >= s.len() {
+        return s.len();
+    }
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
     i
 }
 
@@ -496,11 +562,7 @@ fn strip_tags(html: &str, max_len: usize) -> String {
 
 // ─── Entity building ────────────────────────────────────────────────────────
 
-fn build_entities(
-    target: &Target,
-    scan_id: &str,
-    results: &[SearchResult],
-) -> ModuleResult {
+fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> ModuleResult {
     let mut result = ModuleResult::new();
     if results.is_empty() {
         return result;
@@ -555,10 +617,13 @@ fn build_entities(
             let mut e = Entity::new(EntityKind::Domain, &host, 0.70, scan_id);
             e.tag(tags::SUBDOMAIN);
             e.tag("search-discovered");
-            let mut ev = Evidence::new("search_engines", format!("Subdomain via {} search", r.engine))
-                .with_attr("source_url", &r.url)
-                .with_attr("engine", r.engine)
-                .with_attr("query", &r.query);
+            let mut ev = Evidence::new(
+                "search_engines",
+                format!("Subdomain via {} search", r.engine),
+            )
+            .with_attr("source_url", &r.url)
+            .with_attr("engine", r.engine)
+            .with_attr("query", &r.query);
             if !r.title.is_empty() {
                 ev = ev.with_attr("page_title", &r.title);
             }
@@ -574,10 +639,13 @@ fn build_entities(
             let mut e = Entity::new(EntityKind::Domain, &domain, 0.45, scan_id);
             e.tag(tags::EXTERNAL);
             e.tag("search-discovered");
-            let mut ev = Evidence::new("search_engines", format!("Linked domain via {} search", r.engine))
-                .with_attr("source_url", &r.url)
-                .with_attr("engine", r.engine)
-                .with_attr("query", &r.query);
+            let mut ev = Evidence::new(
+                "search_engines",
+                format!("Linked domain via {} search", r.engine),
+            )
+            .with_attr("source_url", &r.url)
+            .with_attr("engine", r.engine)
+            .with_attr("query", &r.query);
             if !r.title.is_empty() {
                 ev = ev.with_attr("page_title", &r.title);
             }
@@ -657,8 +725,10 @@ fn extract_emails_from_text(text: &str) -> Vec<String> {
         let domain = &text[i + 1..domain_end];
         if domain.contains('.') && domain.len() > 3 && (domain_end - local_start) <= 254 {
             let email = text[local_start..domain_end].to_lowercase();
-            if !email.ends_with(".png") && !email.ends_with(".jpg")
-                && !email.ends_with(".gif") && !email.ends_with(".css")
+            if !email.ends_with(".png")
+                && !email.ends_with(".jpg")
+                && !email.ends_with(".gif")
+                && !email.ends_with(".css")
             {
                 emails.push(email);
             }
@@ -744,7 +814,10 @@ mod tests {
         let q = build_queries(&t);
         assert!(q.len() >= 2);
         assert!(q[0].contains("\"user@acme.com\""));
-        assert!(q.iter().any(|qr| qr.contains("pastebin.com") || qr.contains("github.com")));
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("pastebin.com") || qr.contains("github.com"))
+        );
     }
 
     #[test]
@@ -764,8 +837,14 @@ mod tests {
         assert_eq!(q.len(), 4);
         assert!(q[0].contains("\"Jane Doe\""));
         assert!(q[1].contains("linkedin.com") || q[1].contains("facebook.com"));
-        assert!(q.iter().any(|qr| qr.contains("instagram.com") || qr.contains("github.com")));
-        assert!(q.iter().any(|qr| qr.contains("email") || qr.contains("contact") || qr.contains("profile")));
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("instagram.com") || qr.contains("github.com"))
+        );
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("email") || qr.contains("contact") || qr.contains("profile"))
+        );
     }
 
     #[test]
@@ -779,18 +858,27 @@ mod tests {
     fn resolve_href_decodes_yahoo_ru() {
         let href = "https://r.search.yahoo.com/_ylt=Awr/RV=2/RE=123/RO=10/RU=https%3a%2f%2fsoundcloud.com%2fjerome-despal/RK=2/RS=abc123-";
         let resolved = resolve_href(href);
-        assert_eq!(resolved.as_deref(), Some("https://soundcloud.com/jerome-despal"));
+        assert_eq!(
+            resolved.as_deref(),
+            Some("https://soundcloud.com/jerome-despal")
+        );
     }
 
     #[test]
     fn resolve_href_handles_protocol_relative() {
         let href = "//cdn.example.com/file.js";
-        assert_eq!(resolve_href(href).as_deref(), Some("https://cdn.example.com/file.js"));
+        assert_eq!(
+            resolve_href(href).as_deref(),
+            Some("https://cdn.example.com/file.js")
+        );
     }
 
     #[test]
     fn resolve_href_passes_absolute_urls() {
-        assert_eq!(resolve_href("https://example.com").as_deref(), Some("https://example.com"));
+        assert_eq!(
+            resolve_href("https://example.com").as_deref(),
+            Some("https://example.com")
+        );
     }
 
     #[test]
@@ -820,8 +908,14 @@ mod tests {
 
     #[test]
     fn canonicalize_strips_query_fragment_slash() {
-        assert_eq!(canonicalize_url("https://example.com/page?ref=1#top"), "https://example.com/page");
-        assert_eq!(canonicalize_url("https://example.com/page/"), "https://example.com/page");
+        assert_eq!(
+            canonicalize_url("https://example.com/page?ref=1#top"),
+            "https://example.com/page"
+        );
+        assert_eq!(
+            canonicalize_url("https://example.com/page/"),
+            "https://example.com/page"
+        );
     }
 
     #[test]

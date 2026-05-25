@@ -133,7 +133,13 @@ impl<'a> EntityIndex<'a> {
                 _ => {}
             }
         }
-        Self { emails, usernames, phones, infra, all: entities }
+        Self {
+            emails,
+            usernames,
+            phones,
+            infra,
+            all: entities,
+        }
     }
 }
 
@@ -286,9 +292,9 @@ fn rule_au_004_stealer_recency(entities: &[Entity], scan_id: &str, ts: u64) -> V
             .filter(|d| *d != "-")
             .collect();
 
-        let any_recent = recent_dates.iter().any(|d| {
-            parse_date_approx(d).is_some_and(|epoch| epoch >= cutoff)
-        });
+        let any_recent = recent_dates
+            .iter()
+            .any(|d| parse_date_approx(d).is_some_and(|epoch| epoch >= cutoff));
 
         if any_recent {
             out.push(Correlation {
@@ -313,7 +319,11 @@ fn rule_au_004_stealer_recency(entities: &[Entity], scan_id: &str, ts: u64) -> V
 /// identity is compromised on multiple endpoints — either the user
 /// reuses credentials across devices, or a campaign has swept multiple
 /// machines in the same organisation.
-fn rule_au_005_multi_device_stealer(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+fn rule_au_005_multi_device_stealer(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     let mut out = Vec::new();
     for e in entities.iter().filter(|e| e.has_tag(tags::STEALER_LOG)) {
         let hosts: HashSet<&str> = e
@@ -366,11 +376,17 @@ fn parse_date_approx(s: &str) -> Option<u64> {
 /// module. This cross-module correlation signals that the organisation
 /// behind the breached email also has weak web security posture —
 /// a compounding risk factor.
-fn rule_au_006_breach_weak_infra(idx: &EntityIndex<'_>, scan_id: &str, ts: u64) -> Vec<Correlation> {
+fn rule_au_006_breach_weak_infra(
+    idx: &EntityIndex<'_>,
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     let weak_domains: HashSet<&str> = idx
         .infra
         .iter()
-        .filter(|e| matches!(e.kind, EntityKind::Domain) && e.has_tag(tags::MISSING_SECURITY_HEADERS))
+        .filter(|e| {
+            matches!(e.kind, EntityKind::Domain) && e.has_tag(tags::MISSING_SECURITY_HEADERS)
+        })
         .map(|e| e.value.as_str())
         .collect();
     if weak_domains.is_empty() {
@@ -408,11 +424,18 @@ fn rule_au_006_breach_weak_infra(idx: &EntityIndex<'_>, scan_id: &str, ts: u64) 
 fn rule_au_007_shared_hosting(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     let mut ip_domains: std::collections::HashMap<&str, HashSet<&str>> =
         std::collections::HashMap::new();
-    for e in infra.iter().filter(|e| matches!(e.kind, EntityKind::IpAddress)) {
+    for e in infra
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::IpAddress))
+    {
         let domains: HashSet<&str> = e
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("domain").or(ev.attributes.get("parent_domain")))
+            .filter_map(|ev| {
+                ev.attributes
+                    .get("domain")
+                    .or(ev.attributes.get("parent_domain"))
+            })
             .map(String::as_str)
             .collect();
         if domains.len() >= 2 {
@@ -449,7 +472,10 @@ fn rule_au_007_shared_hosting(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec<
 /// malware/botnet blocklists.
 fn rule_au_008_blocklisted_infra(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     let mut out = Vec::new();
-    for e in infra.iter().filter(|e| matches!(e.kind, EntityKind::IpAddress) && e.has_tag("blocklisted")) {
+    for e in infra
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::IpAddress) && e.has_tag("blocklisted"))
+    {
         let lists = e
             .evidence
             .iter()
@@ -461,10 +487,7 @@ fn rule_au_008_blocklisted_infra(infra: &[&Entity], scan_id: &str, ts: u64) -> V
             rule_id: "AU-008".into(),
             rule_name: "Blocklisted infrastructure".into(),
             severity: Severity::High,
-            description: format!(
-                "IP {} appears on DNS blocklists: {}",
-                e.value, lists
-            ),
+            description: format!("IP {} appears on DNS blocklists: {}", e.value, lists),
             entity_uids: vec![e.uid.clone()],
             scan_id: scan_id.into(),
             ts,
@@ -477,7 +500,11 @@ fn rule_au_008_blocklisted_infra(infra: &[&Entity], scan_id: &str, ts: u64) -> V
 /// evidence from ≥3 distinct module sources. This indicates the same
 /// username is confirmed on multiple platforms (e.g., github_user,
 /// username_search, search_engines) — strong identity signal.
-fn rule_au_009_cross_platform_identity(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+fn rule_au_009_cross_platform_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     entities
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::Username))
@@ -515,8 +542,7 @@ fn rule_au_009_cross_platform_identity(entities: &[Entity], scan_id: &str, ts: u
 /// pattern that the v0.3+ expansion engine produces.
 fn rule_au_010_infra_consensus(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     let mut out = Vec::new();
-    for e in infra
-    {
+    for e in infra {
         let sources: HashSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
         if sources.len() >= 3 {
             let mut names: Vec<&str> = sources.into_iter().collect();
@@ -546,7 +572,11 @@ fn rule_au_010_infra_consensus(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec
 /// When ≥3 entities from different modules agree on a country, it's
 /// a strong signal about the target's geographic nexus. Combines
 /// signals from ip_geo, whois, ip_rdap, reverse_geocode.
-fn rule_au_011_geolocation_convergence(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+fn rule_au_011_geolocation_convergence(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     let mut country_sources: std::collections::HashMap<String, HashSet<&str>> =
         std::collections::HashMap::new();
     let mut country_uids: std::collections::HashMap<String, Vec<String>> =
@@ -555,10 +585,14 @@ fn rule_au_011_geolocation_convergence(entities: &[Entity], scan_id: &str, ts: u
     for e in entities {
         for tag in &e.tags {
             if let Some(cc) = tag.strip_prefix("country:") {
-                let sources: HashSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
+                let sources: HashSet<&str> =
+                    e.evidence.iter().map(|ev| ev.source.as_str()).collect();
                 let entry = country_sources.entry(cc.to_string()).or_default();
                 entry.extend(sources);
-                country_uids.entry(cc.to_string()).or_default().push(e.uid.clone());
+                country_uids
+                    .entry(cc.to_string())
+                    .or_default()
+                    .push(e.uid.clone());
             }
         }
     }
@@ -736,12 +770,8 @@ mod tests {
         let now = unix_now();
         let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
         e.tag(tags::STEALER_LOG);
-        e.add_evidence(
-            Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"),
-        );
-        e.add_evidence(
-            Evidence::new("hudsonrock", "test").with_attr("computer_name", "LAPTOP-B"),
-        );
+        e.add_evidence(Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"));
+        e.add_evidence(Evidence::new("hudsonrock", "test").with_attr("computer_name", "LAPTOP-B"));
         let r = rule_au_005_multi_device_stealer(&[e], "s", now);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].rule_id, "AU-005");
@@ -753,12 +783,8 @@ mod tests {
         let now = unix_now();
         let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
         e.tag(tags::STEALER_LOG);
-        e.add_evidence(
-            Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"),
-        );
-        e.add_evidence(
-            Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"),
-        );
+        e.add_evidence(Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"));
+        e.add_evidence(Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"));
         assert!(rule_au_005_multi_device_stealer(&[e], "s", now).is_empty());
     }
 

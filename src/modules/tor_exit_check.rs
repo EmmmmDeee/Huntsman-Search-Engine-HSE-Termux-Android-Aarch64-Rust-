@@ -46,7 +46,10 @@ async fn fetch_exit_set(http: &reqwest::Client) -> Option<HashSet<String>> {
     .flatten()?;
 
     // Typical exit list has ~1000-2000 entries; pre-count to avoid rehashing.
-    let estimated = body_res.lines().filter(|l| l.starts_with("ExitAddress ")).count();
+    let estimated = body_res
+        .lines()
+        .filter(|l| l.starts_with("ExitAddress "))
+        .count();
     let mut set = HashSet::with_capacity(estimated);
     for line in body_res.lines() {
         if let Some(rest) = line.strip_prefix("ExitAddress ")

@@ -123,7 +123,9 @@ impl Module for DeHashed {
 
         // Top databases by frequency (capped at 5).
         let top = crate::util::freq::top_n(
-            entries.iter().filter_map(|e| e.database_name.as_deref().or(e.obtained_from.as_deref())),
+            entries
+                .iter()
+                .filter_map(|e| e.database_name.as_deref().or(e.obtained_from.as_deref())),
             5,
         );
 

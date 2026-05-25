@@ -76,7 +76,8 @@ impl Module for ReverseGeocode {
             "https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
         );
 
-        let resp = ctx.http
+        let resp = ctx
+            .http
             .get(&url)
             .header("Accept", "application/json")
             .send()
@@ -112,7 +113,9 @@ impl Module for ReverseGeocode {
         .with_attr("source", "OpenStreetMap Nominatim");
 
         if let Some(addr) = &data.address {
-            let city = addr.city.as_deref()
+            let city = addr
+                .city
+                .as_deref()
                 .or(addr.town.as_deref())
                 .or(addr.village.as_deref())
                 .or(addr.municipality.as_deref());

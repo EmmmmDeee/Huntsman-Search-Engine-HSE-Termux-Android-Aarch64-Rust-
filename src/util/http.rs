@@ -99,12 +99,13 @@ pub async fn fetch_json<T: DeserializeOwned>(
                 .await
                 .map_err(|e| Error::module(module, e.to_string()))
         }
-        Err(_) => {
-            match super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await {
-                Some(data) => Ok(data),
-                None => Err(Error::module(module, format!("request failed for {url} (reqwest + curl)"))),
-            }
-        }
+        Err(_) => match super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await {
+            Some(data) => Ok(data),
+            None => Err(Error::module(
+                module,
+                format!("request failed for {url} (reqwest + curl)"),
+            )),
+        },
     }
 }
 
@@ -133,13 +134,13 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
                     format!("HTTP {status}: {}", error_snippet(resp).await),
                 ));
             }
-            let data = resp.json::<T>().await
+            let data = resp
+                .json::<T>()
+                .await
                 .map_err(|e| Error::module(module, e.to_string()))?;
             Ok(Some(data))
         }
-        Err(_) => {
-            Ok(super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await)
-        }
+        Err(_) => Ok(super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await),
     }
 }
 
