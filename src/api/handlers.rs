@@ -644,14 +644,116 @@ pub async fn api_cache_list(
 }
 
 pub async fn api_cache_stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    match s.store.cache_stats() {
-        Ok((total, modules)) => Json(serde_json::json!({
-            "total_entries": total,
-            "distinct_modules": modules,
-        }))
-        .into_response(),
+    let (total, modules) = match s.store.cache_stats() {
+        Ok(v) => v,
+        Err(e) => return internal_error(&e),
+    };
+    let bytes = s.store.cache_storage_bytes().unwrap_or(0);
+    let policies = s.store.all_retention_policies().unwrap_or_default();
+    let policy_map: serde_json::Map<String, serde_json::Value> = policies
+        .into_iter()
+        .map(|(k, v)| (k, serde_json::Value::String(v)))
+        .collect();
+    Json(serde_json::json!({
+        "total_entries": total,
+        "distinct_modules": modules,
+        "storage_bytes": bytes,
+        "storage_human": format_bytes(bytes),
+        "retention_policies": policy_map,
+    }))
+    .into_response()
+}
+
+fn format_bytes(b: u64) -> String {
+    if b < 1024 {
+        format!("{b} B")
+    } else if b < 1024 * 1024 {
+        format!("{:.1} KB", b as f64 / 1024.0)
+    } else if b < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", b as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", b as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+pub async fn cache_search(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let query = match params.get("q") {
+        Some(q) if !q.trim().is_empty() => q.trim(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing or empty 'q' parameter"})),
+            )
+                .into_response();
+        }
+    };
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(20)
+        .min(100);
+    match s.store.search_cache(query, limit) {
+        Ok(results) => {
+            let items: Vec<serde_json::Value> = results
+                .iter()
+                .map(|(module, endpoint, query_val, response, ts)| {
+                    json!({
+                        "module": module,
+                        "endpoint": endpoint,
+                        "query_value": query_val,
+                        "response_preview": &response[..response.len().min(500)],
+                        "response_length": response.len(),
+                        "fetched_at": ts,
+                    })
+                })
+                .collect();
+            let n = items.len();
+            Json(json!({"results": items, "count": n})).into_response()
+        }
         Err(e) => internal_error(&e),
     }
+}
+
+pub async fn retention_get(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    match s.store.all_retention_policies() {
+        Ok(policies) => {
+            let map: serde_json::Map<String, serde_json::Value> = policies
+                .into_iter()
+                .map(|(k, v)| (k, serde_json::Value::String(v)))
+                .collect();
+            Json(json!({"policies": map})).into_response()
+        }
+        Err(e) => internal_error(&e),
+    }
+}
+
+pub async fn retention_put(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let valid_keys = [
+        "cache_ttl_hours",
+        "cache_max_entries",
+        "entity_retention_days",
+        "auto_purge_enabled",
+    ];
+    for (key, value) in &body {
+        if !valid_keys.contains(&key.as_str()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("unknown policy key: {key}")})),
+            )
+                .into_response();
+        }
+        if let Err(e) = s.store.set_retention_policy(key, value) {
+            return internal_error(&e);
+        }
+    }
+    info!(count = body.len(), "retention policies updated");
+    Json(json!({"status": "ok", "updated": body.len()})).into_response()
 }
 
 pub async fn keys_ledger(

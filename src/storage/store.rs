@@ -101,6 +101,22 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_cache_module ON api_cache(module);
             CREATE INDEX IF NOT EXISTS idx_cache_scan ON api_cache(scan_id);
             CREATE INDEX IF NOT EXISTS idx_cache_time ON api_cache(fetched_at DESC);
+
+            CREATE TABLE IF NOT EXISTS retention_policy (
+                key         TEXT PRIMARY KEY,
+                value       TEXT NOT NULL,
+                updated_at  INTEGER NOT NULL
+            );
+
+            -- Default policies: permanent retention, no auto-purge.
+            INSERT OR IGNORE INTO retention_policy(key, value, updated_at)
+                VALUES('cache_ttl_hours', '0', 0);
+            INSERT OR IGNORE INTO retention_policy(key, value, updated_at)
+                VALUES('cache_max_entries', '0', 0);
+            INSERT OR IGNORE INTO retention_policy(key, value, updated_at)
+                VALUES('entity_retention_days', '0', 0);
+            INSERT OR IGNORE INTO retention_policy(key, value, updated_at)
+                VALUES('auto_purge_enabled', 'false', 0);
             ",
         )?;
 
@@ -430,7 +446,9 @@ impl Store {
             params![scan_id],
         )?;
         tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
-        tx.execute("DELETE FROM api_cache WHERE scan_id = ?1", params![scan_id])?;
+        // api_cache is NOT cascade-deleted — cached API responses are
+        // permanent intelligence archives that survive scan deletion.
+        // Only explicit policy-driven purge removes cache entries.
         tx.execute(
             "DELETE FROM entities
              WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
@@ -607,6 +625,91 @@ impl Store {
                 r.get(0)
             })?;
         Ok((total as usize, modules as usize))
+    }
+
+    pub fn cache_storage_bytes(&self) -> Result<u64> {
+        let conn = self.conn.lock();
+        let bytes: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(LENGTH(response)), 0) FROM api_cache",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(bytes.max(0) as u64)
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn search_cache(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String, String, String, i64)>> {
+        let escaped = query.replace('%', "\\%").replace('_', "\\_");
+        let pattern = format!("%{escaped}%");
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT module, endpoint, query_value, response, fetched_at \
+             FROM api_cache WHERE response LIKE ?1 ESCAPE '\\' \
+             ORDER BY fetched_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![pattern, limit as i64], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })?;
+        Ok(rows.flatten().collect())
+    }
+
+    pub fn get_retention_policy(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached("SELECT value FROM retention_policy WHERE key = ?1")?;
+        let mut rows = stmt.query(params![key])?;
+        Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
+    }
+
+    pub fn set_retention_policy(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO retention_policy(key, value, updated_at)
+             VALUES(?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![key, value, crate::core::entity::unix_now() as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn all_retention_policies(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare_cached("SELECT key, value FROM retention_policy ORDER BY key")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        Ok(rows.flatten().collect())
+    }
+
+    pub fn purge_expired_cache(&self) -> Result<usize> {
+        let auto_purge = self
+            .get_retention_policy("auto_purge_enabled")?
+            .unwrap_or_default();
+        if auto_purge != "true" {
+            return Ok(0);
+        }
+        let ttl_hours: u64 = self
+            .get_retention_policy("cache_ttl_hours")?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if ttl_hours == 0 {
+            return Ok(0);
+        }
+        let cutoff = crate::core::entity::unix_now() as i64 - (ttl_hours as i64 * 3600);
+        let conn = self.conn.lock();
+        let n = conn.execute(
+            "DELETE FROM api_cache WHERE fetched_at < ?1 AND ttl_hours > 0",
+            params![cutoff],
+        )?;
+        Ok(n)
     }
 }
 

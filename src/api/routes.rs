@@ -116,6 +116,11 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/search", get(handlers::search_entities))
         .route("/cache", get(handlers::api_cache_list))
         .route("/cache/stats", get(handlers::api_cache_stats))
+        .route("/cache/search", get(handlers::cache_search))
+        .route(
+            "/retention",
+            get(handlers::retention_get).put(handlers::retention_put),
+        )
         .route("/keys/ledger", get(handlers::keys_ledger))
         .route(
             "/settings/keys",
