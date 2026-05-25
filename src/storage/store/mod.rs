@@ -288,10 +288,7 @@ impl crate::core::port::StoragePort for Store {
         Store::upsert_correlation(self, c)
     }
 
-    fn correlations_for_scan(
-        &self,
-        scan_id: &str,
-    ) -> Result<Vec<Correlation>> {
+    fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>> {
         Store::correlations_for_scan(self, scan_id)
     }
 
@@ -299,10 +296,7 @@ impl crate::core::port::StoragePort for Store {
         Store::insert_event(self, event)
     }
 
-    fn events_for_scan(
-        &self,
-        scan_id: &str,
-    ) -> Result<Vec<crate::core::event::Event>> {
+    fn events_for_scan(&self, scan_id: &str) -> Result<Vec<crate::core::event::Event>> {
         Store::events_for_scan(self, scan_id)
     }
 }

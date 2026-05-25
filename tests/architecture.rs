@@ -79,6 +79,46 @@ fn modules_do_not_import_engine_or_storage() {
     );
 }
 
+/// `api/` must not import `storage/` directly. Handlers access storage
+/// exclusively through `StoragePort` on `AppState`.
+#[test]
+fn api_does_not_import_storage_directly() {
+    use std::fs;
+    use std::path::Path;
+
+    let api_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api");
+    let mut violations = Vec::new();
+
+    fn check_dir(dir: &Path, violations: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                check_dir(&path, violations);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let content = fs::read_to_string(&path).unwrap();
+                for (i, line) in content.lines().enumerate() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("//") {
+                        continue;
+                    }
+                    if trimmed.contains("crate::storage") || trimmed.contains("storage::store") {
+                        violations.push(format!("{}:{}: {}", path.display(), i + 1, trimmed));
+                    }
+                }
+            }
+        }
+    }
+
+    check_dir(&api_dir, &mut violations);
+    assert!(
+        violations.is_empty(),
+        "api/ must not import storage/ directly — use StoragePort instead.\n\
+         Violations:\n{}",
+        violations.join("\n")
+    );
+}
+
 /// StoragePort is object-safe and can be used as `Arc<dyn StoragePort>`.
 #[test]
 fn storage_port_is_object_safe() {
