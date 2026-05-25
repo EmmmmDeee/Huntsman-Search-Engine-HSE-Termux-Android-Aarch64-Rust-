@@ -69,7 +69,7 @@ impl StopReason {
 /// Cheaply-cloneable event emitter. Persist-first, then broadcast.
 /// Spawned tasks clone this instead of cloning store + bus separately.
 #[derive(Clone)]
-pub(crate) struct EventEmitter {
+pub(super) struct EventEmitter {
     store: Arc<dyn StoragePort>,
     bus: EventBus,
 }
@@ -79,7 +79,7 @@ impl EventEmitter {
         Self { store, bus }
     }
 
-    pub(crate) fn emit(&self, scan_id: &str, kind: EventKind) {
+    pub(super) fn emit(&self, scan_id: &str, kind: EventKind) {
         let event = Event::new(scan_id, kind);
         if let Err(e) = self.store.insert_event(&event) {
             warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
