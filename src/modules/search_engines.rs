@@ -420,8 +420,8 @@ struct OathItem {
     salt: Option<String>,
     #[serde(default)]
     date_birth: Option<String>,
-    #[serde(default)]
-    age: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_age")]
+    age: Option<String>,
     #[serde(default)]
     gender: Option<String>,
     #[serde(default)]
@@ -432,6 +432,18 @@ struct OathItem {
     followers: Option<String>,
     #[serde(default)]
     language: Option<String>,
+}
+
+fn deserialize_age<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    use serde::Deserialize;
+    let v: Option<serde_json::Value> = Option::deserialize(d)?;
+    Ok(v.map(|val| match val {
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => s,
+        other => other.to_string(),
+    }))
 }
 
 async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
@@ -620,7 +632,7 @@ fn apply_breach_evidence(
                     ev = ev.with_attr("date_of_birth", dob);
                 }
                 if let Some(age) = &item.age {
-                    ev = ev.with_attr("age", age.to_string().trim_matches('"'));
+                    ev = ev.with_attr("age", age);
                 }
                 if let Some(ca) = &item.created_at {
                     ev = ev.with_attr("account_created", ca);
@@ -668,7 +680,7 @@ fn apply_breach_evidence(
                 ev = ev.with_attr("date_of_birth", dob);
             }
             if let Some(age) = &item.age {
-                ev = ev.with_attr("age", age.to_string().trim_matches('"'));
+                ev = ev.with_attr("age", age);
             }
             if let Some(ca) = &item.created_at {
                 ev = ev.with_attr("account_created", ca);
