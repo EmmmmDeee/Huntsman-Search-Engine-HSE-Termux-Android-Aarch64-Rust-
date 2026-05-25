@@ -5,5 +5,6 @@ pub mod dns;
 pub mod freq;
 pub mod http;
 pub mod keys;
+pub mod oathnet;
 pub mod termux;
 pub mod uid;

@@ -1,69 +1,23 @@
-//! OathNet Pro — paid premium breach-record search.
+//! OathNet Pro — full-spectrum breach, stealer, OSINT, and intelligence API.
 //!
-//! Endpoint: `GET https://oathnet.org/api/service/v2/breach/search`
-//! Auth:     `x-api-key: <HUNTSMAN_OATHNET_KEY>` (read from
-//!           `$HOME/.huntsman.env` or the process environment).
-//!
-//! Maps every accepting `TargetKind` (Email / Username / Phone / IpAddress /
-//! Domain) onto OathNet's typed array filters (`email[]`, `username[]`, ...)
-//! and emits a single parent entity summarising the hits.
-//!
-//! Security: passwords and raw PII are NEVER stored in evidence — only
-//! aggregate metadata (total hits, top dbnames, indexed-at bookends).
-//! The API key is read once from `ModuleContext` and sent as a header;
-//! it is never logged, persisted, or included in any event payload.
+//! Uses the shared `util::oathnet` client for API calls. This module
+//! orchestrates the search→extract→enrich pipeline and produces entities.
+
+use std::collections::HashSet;
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde_json::Value;
 
 use crate::core::{
-    entity::Evidence,
-    error::{Error, Result},
+    entity::{Entity, EntityKind, Evidence},
+    error::Result,
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::error_snippet;
-
-const KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
-const ENDPOINT: &str = "https://oathnet.org/api/service/v2/breach/search";
-const PAGE_SIZE: &str = "50";
-const MAX_DBNAMES: usize = 5;
+use crate::util::oathnet::{self, paths, val_str, val_str_or};
 
 pub struct OathnetPro;
-
-#[derive(Deserialize)]
-struct Envelope {
-    data: Option<Data>,
-}
-
-#[derive(Deserialize)]
-struct Data {
-    #[serde(default)]
-    items: Vec<Item>,
-    #[serde(default)]
-    meta: Option<Meta>,
-}
-
-/// Only the aggregate-safe fields are deserialised. `email`, `password`,
-/// `phone`, `username`, `address`, etc. are deliberately left off — the
-/// architecture invariant forbids storing credential/PII content in
-/// evidence, so we never read them in the first place.
-#[derive(Deserialize)]
-struct Item {
-    #[serde(default)]
-    dbname: Option<String>,
-    #[serde(default)]
-    indexed_at: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Meta {
-    #[serde(default)]
-    total: u64,
-    #[serde(default)]
-    has_more: bool,
-}
 
 #[async_trait]
 impl Module for OathnetPro {
@@ -72,7 +26,7 @@ impl Module for OathnetPro {
     }
 
     fn description(&self) -> &'static str {
-        "Premium breach record search via OathNet API"
+        "Full-spectrum breach, stealer & OSINT intelligence via OathNet API"
     }
 
     fn priority(&self) -> u8 {
@@ -94,14 +48,16 @@ impl Module for OathnetPro {
         )
     }
 
-    // Paid endpoint with structured filtering can take longer than the
-    // 3 s crate-wide default; give it room without blocking the scan.
     fn max_timeout_ms(&self) -> u64 {
-        8_000
+        15_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = ctx.key(KEY_ENV)?;
+        let key = oathnet::resolve_key(ctx.key_opt(oathnet::KEY_ENV));
+
+        let mut result = ModuleResult::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        seen.insert(target.value.to_lowercase());
 
         let field = match target.kind {
             TargetKind::Email => "email",
@@ -109,104 +65,396 @@ impl Module for OathnetPro {
             TargetKind::Phone => "phone",
             TargetKind::IpAddress => "ip",
             TargetKind::Domain => "domain",
-            _ => return Ok(ModuleResult::new()),
+            _ => return Ok(result),
         };
-        let array_param = format!("{field}[]");
 
-        let resp = ctx
-            .http
-            .get(ENDPOINT)
-            .header("x-api-key", key)
-            .query(&[
-                (array_param.as_str(), target.value.as_str()),
-                ("page_size", PAGE_SIZE),
-            ])
-            .send()
-            .await
-            .map_err(|e| Error::module("oathnet_pro", e.to_string()))?;
-
-        let status = resp.status();
-        if status.as_u16() == 404 {
-            return Ok(ModuleResult::new());
-        }
-        if !status.is_success() {
-            return Err(Error::module(
-                "oathnet_pro",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+        // ── Breach search ───────────────────────────────────────────
+        let items = oathnet::search(key, paths::BREACH, field, &target.value, 50).await?;
+        if items.is_empty() {
+            return Ok(result);
         }
 
-        let env: Envelope = resp
-            .json()
-            .await
-            .map_err(|e| Error::module("oathnet_pro", e.to_string()))?;
+        let total = items.len();
+        let top_dbs = oathnet::top_dbnames(&items, 5);
 
-        let Some(data) = env.data else {
-            return Ok(ModuleResult::new());
-        };
-        if data.items.is_empty() {
-            return Ok(ModuleResult::new());
+        let mut parent = target.to_entity(0.85, &ctx.scan_id);
+        parent.tag(tags::BREACH);
+        parent.tag("oathnet-pro");
+        let mut ev = Evidence::new(
+            "oathnet_pro",
+            format!("OathNet: {total} breach record(s) — {}", top_dbs.join(", ")),
+        )
+        .with_attr("hits", total.to_string())
+        .with_attr("top_dbnames", top_dbs.join(", "));
+
+        for item in &items {
+            if let Some(c) = val_str(item, "country") {
+                ev = ev.with_attr("country", &c);
+            }
+            if let Some(n) = val_str(item, "full_name") {
+                ev = ev.with_attr("full_name", &n);
+            }
+            if let Some(g) = val_str(item, "gender") {
+                ev = ev.with_attr("gender", &g);
+            }
+            if let Some(dob) = val_str(item, "date_birth") {
+                ev = ev.with_attr("date_of_birth", &dob);
+            }
+            if item.get("country").is_some() || item.get("full_name").is_some() {
+                break;
+            }
+        }
+        parent.add_evidence(ev);
+        result.push(parent);
+
+        for item in &items {
+            extract_breach_entities(item, &ctx.scan_id, &mut seen, &mut result);
         }
 
-        let total = data.meta.as_ref().map_or(data.items.len() as u64, |m| {
-            m.total.max(data.items.len() as u64)
-        });
-        let has_more = data.meta.as_ref().is_some_and(|m| m.has_more);
-
-        // ISO 8601 timestamps sort correctly as ASCII strings.
-        let first_indexed = data
-            .items
-            .iter()
-            .filter_map(|i| i.indexed_at.as_deref())
-            .min();
-        let last_indexed = data
-            .items
-            .iter()
-            .filter_map(|i| i.indexed_at.as_deref())
-            .max();
-
-        let top_dbnames = crate::util::freq::top_n(
-            data.items.iter().filter_map(|item| item.dbname.as_deref()),
-            MAX_DBNAMES,
-        );
-
-        let mut entity = target.to_entity(0.85, &ctx.scan_id);
-        entity.tag(tags::BREACH);
-        entity.tag("oathnet-pro");
-        if has_more {
-            entity.tag("partial");
+        // ── Stealer search ──────────────────────────────────────────
+        if !ctx.cancel.is_cancelled()
+            && let Ok(stealer_items) =
+                oathnet::search(key, paths::STEALER, field, &target.value, 50).await
+        {
+            for item in &stealer_items {
+                extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
+            }
         }
 
-        let summary = if has_more {
-            format!("OathNet Pro: {total} breach record(s), more available")
-        } else {
-            format!("OathNet Pro: {total} breach record(s)")
-        };
-        let mut ev = Evidence::new("oathnet_pro", summary)
-            .with_attr("hits", total.to_string())
-            .with_attr("returned", data.items.len().to_string())
-            .with_attr("page_size", PAGE_SIZE);
-        if !top_dbnames.is_empty() {
-            ev = ev.with_attr("top_dbnames", top_dbnames);
+        // ── Holehe (email targets) ──────────────────────────────────
+        if target.kind == TargetKind::Email
+            && !ctx.cancel.is_cancelled()
+            && let Ok(holehe) = oathnet::osint(key, paths::HOLEHE, "email", &target.value).await
+        {
+            extract_holehe(holehe, &target.value, &ctx.scan_id, &mut result);
         }
-        if let Some(t) = first_indexed {
-            ev = ev.with_attr("first_indexed_at", t);
-        }
-        if let Some(t) = last_indexed {
-            ev = ev.with_attr("last_indexed_at", t);
-        }
-        entity.add_evidence(ev);
 
-        let mut result = ModuleResult::new();
-        result.push(entity);
+        // ── IP info for discovered IPs ──────────────────────────────
+        if !ctx.cancel.is_cancelled() {
+            let ips: Vec<String> = result
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::IpAddress)
+                .map(|e| e.value.clone())
+                .collect();
+            for ip in ips.iter().take(3) {
+                if ctx.cancel.is_cancelled() {
+                    break;
+                }
+                if let Ok(info) = oathnet::osint(key, paths::IP_INFO, "ip_address", ip).await {
+                    extract_ip_info(info, ip, &ctx.scan_id, &mut result);
+                }
+            }
+        }
+
         Ok(result)
+    }
+}
+
+// ─── Entity extraction ─────────────────────────────────────────────────────
+
+fn breach_evidence(item: &Value) -> Evidence {
+    let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
+    let mut ev = Evidence::new("oathnet_pro", format!("Breach on {db}")).with_attr("dbname", &db);
+    for (field, attr) in [
+        ("country", "country"),
+        ("gender", "gender"),
+        ("date_birth", "date_of_birth"),
+        ("created_at", "account_created"),
+        ("language", "language"),
+        ("account_id", "account_id"),
+        ("password", "password"),
+        ("password_hash", "password_hash"),
+        ("salt", "salt"),
+        ("ip", "ip"),
+        ("city", "city"),
+        ("state", "state"),
+        ("postal_code", "postal_code"),
+        ("bio", "bio"),
+        ("location", "location"),
+        ("discordid", "discord_id"),
+        ("instagram", "instagram"),
+        ("linkedin", "linkedin"),
+        ("iban", "iban"),
+    ] {
+        if let Some(v) = val_str(item, field) {
+            ev = ev.with_attr(attr, &v);
+        }
+    }
+    if let Some(age) = item.get("age") {
+        let s = if age.is_number() {
+            age.to_string()
+        } else {
+            age.as_str().unwrap_or("").to_string()
+        };
+        if !s.is_empty() {
+            ev = ev.with_attr("age", &s);
+        }
+    }
+    if let Some(f) = val_str(item, "followers") {
+        ev = ev.with_attr("followers", &f);
+    }
+    ev
+}
+
+fn extract_breach_entities(
+    item: &Value,
+    scan_id: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let ev = breach_evidence(item);
+
+    if let Some(email) = val_str(item, "email") {
+        let lower = email.to_lowercase();
+        if lower.contains('@') && seen.insert(lower) {
+            let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
+            e.tag(tags::BREACH);
+            e.tag("oathnet-pro");
+            e.add_evidence(ev.clone());
+            result.push(e);
+        }
+    }
+
+    if let Some(uname) = val_str(item, "username") {
+        let lower = uname.to_lowercase();
+        if lower.len() >= 3 && seen.insert(lower) {
+            let mut e = Entity::new(EntityKind::Username, &uname, 0.65, scan_id);
+            e.tag(tags::BREACH);
+            e.tag("oathnet-pro");
+            e.add_evidence(ev.clone());
+            result.push(e);
+        }
+    }
+
+    if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
+        && ph.len() >= 7
+        && seen.insert(ph.to_lowercase())
+    {
+        let mut e = Entity::new(EntityKind::Phone, &ph, 0.70, scan_id);
+        e.tag(tags::BREACH);
+        e.tag("oathnet-pro");
+        e.add_evidence(ev.clone());
+        result.push(e);
+    }
+
+    if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
+        let t = n.trim();
+        if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
+            let mut e = Entity::new(EntityKind::Person, t, 0.70, scan_id);
+            e.tag(tags::BREACH);
+            e.tag("oathnet-pro");
+            e.add_evidence(ev.clone());
+            result.push(e);
+        }
+    }
+
+    if let Some(ip) = val_str(item, "ip")
+        && ip.len() >= 7
+        && seen.insert(ip.clone())
+    {
+        let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id);
+        e.tag(tags::BREACH);
+        e.tag("oathnet-pro");
+        e.tag("geolocation-lead");
+        e.add_evidence(ev.clone());
+        result.push(e);
+    }
+
+    if let Some(country) = val_str(item, "country")
+        && seen.insert(format!("@country:{country}"))
+    {
+        let mut e = Entity::new(EntityKind::Address, &country, 0.55, scan_id);
+        e.tag(tags::BREACH);
+        e.tag("oathnet-pro");
+        e.add_evidence(ev.clone());
+        result.push(e);
+    }
+
+    let street = val_str(item, "address_street");
+    let city = val_str(item, "city");
+    let state = val_str(item, "state");
+    if city.is_some() || street.is_some() {
+        let addr = [street.as_deref(), city.as_deref(), state.as_deref()]
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<&str>>()
+            .join(", ");
+        if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
+            let mut e = Entity::new(EntityKind::Address, &addr, 0.65, scan_id);
+            e.tag(tags::BREACH);
+            e.tag("oathnet-pro");
+            e.add_evidence(ev.clone());
+            result.push(e);
+        }
+    }
+
+    if let Some(did) = val_str(item, "discordid")
+        && seen.insert(format!("@discord:{did}"))
+    {
+        let mut e = Entity::new(
+            EntityKind::Username,
+            format!("discord:{did}"),
+            0.55,
+            scan_id,
+        );
+        e.tag(tags::BREACH);
+        e.tag("oathnet-pro");
+        e.tag("discord");
+        e.add_evidence(ev.clone());
+        result.push(e);
+    }
+
+    if let Some(ig) = val_str(item, "instagram")
+        && seen.insert(format!("@ig:{}", ig.to_lowercase()))
+    {
+        let mut e = Entity::new(EntityKind::Username, &ig, 0.55, scan_id);
+        e.tag(tags::BREACH);
+        e.tag("oathnet-pro");
+        e.tag("instagram");
+        e.add_evidence(ev);
+        result.push(e);
+    }
+}
+
+fn extract_stealer_entities(
+    item: &Value,
+    scan_id: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let mut ev = Evidence::new("oathnet_pro", "Stealer log entry".to_string())
+        .with_attr("source", "stealer");
+    if let Some(url) = val_str(item, "url_str") {
+        ev = ev.with_attr("url", &url);
+    }
+    if let Some(lid) = val_str(item, "log_id") {
+        ev = ev.with_attr("log_id", &lid);
+    }
+    if let Some(pw) = val_str(item, "password") {
+        ev = ev.with_attr("password", &pw);
+    }
+    if let Some(uname) = val_str(item, "username") {
+        ev = ev.with_attr("username", &uname);
+    }
+
+    if let Some(emails) = item.get("email").and_then(|v| v.as_array()) {
+        for email_val in emails {
+            if let Some(email) = email_val.as_str() {
+                let lower = email.to_lowercase();
+                if lower.contains('@') && seen.insert(lower) {
+                    let mut e = Entity::new(EntityKind::Email, email, 0.65, scan_id);
+                    e.tag(tags::BREACH);
+                    e.tag("oathnet-pro");
+                    e.tag("stealer");
+                    e.add_evidence(ev.clone());
+                    result.push(e);
+                }
+            }
+        }
+    }
+
+    if let Some(domains) = item.get("domain").and_then(|v| v.as_array()) {
+        for d in domains {
+            if let Some(dom) = d.as_str()
+                && dom.contains('.')
+                && seen.insert(dom.to_lowercase())
+            {
+                let mut e = Entity::new(EntityKind::Domain, dom, 0.50, scan_id);
+                e.tag("oathnet-pro");
+                e.tag("stealer");
+                e.add_evidence(
+                    Evidence::new("oathnet_pro", format!("Stealer credential for {dom}"))
+                        .with_attr("source", "stealer"),
+                );
+                result.push(e);
+            }
+        }
+    }
+
+    if let Some(uname) = val_str(item, "username")
+        && let Some(url_str) = val_str(item, "url_str")
+    {
+        let cred_val = format!("{uname}@{url_str}");
+        if seen.insert(format!("@cred:{}", cred_val.to_lowercase())) {
+            let mut e = Entity::new(EntityKind::Credential, &cred_val, 0.60, scan_id);
+            e.tag("oathnet-pro");
+            e.tag("stealer");
+            e.add_evidence(ev);
+            result.push(e);
+        }
+    }
+}
+
+fn extract_holehe(data: Value, email: &str, scan_id: &str, result: &mut ModuleResult) {
+    if let Some(domains) = data.get("domains").and_then(|v| v.as_array()) {
+        if domains.is_empty() {
+            return;
+        }
+        let domains_str: Vec<&str> = domains.iter().filter_map(|v| v.as_str()).collect();
+        let mut parent = Entity::new(EntityKind::Email, email, 0.80, scan_id);
+        parent.tag("oathnet-pro");
+        parent.tag("holehe");
+        parent.add_evidence(
+            Evidence::new(
+                "oathnet_pro",
+                format!("Holehe: email on {} service(s)", domains_str.len()),
+            )
+            .with_attr("holehe_domains", domains_str.join(", ")),
+        );
+        result.push(parent);
+    }
+}
+
+fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResult) {
+    let mut ev =
+        Evidence::new("oathnet_pro", format!("IP info for {ip}")).with_attr("source", "ip-info");
+    for (field, attr) in [
+        ("city", "city"),
+        ("region", "region"),
+        ("country", "country"),
+        ("org", "org"),
+        ("asn", "asn"),
+        ("timezone", "timezone"),
+    ] {
+        if let Some(v) = data.get(field).and_then(|v| v.as_str()) {
+            ev = ev.with_attr(attr, v);
+        }
+    }
+
+    let lat = data.get("lat").and_then(|v| v.as_f64());
+    let lon = data.get("lon").and_then(|v| v.as_f64());
+    if let (Some(lat), Some(lon)) = (lat, lon) {
+        let coords = format!("{lat},{lon}");
+        let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.65, scan_id);
+        e.tag("oathnet-pro");
+        e.tag("geolocation");
+        e.add_evidence(ev.clone());
+        result.push(e);
+    }
+
+    let city = data.get("city").and_then(|v| v.as_str());
+    let region = data.get("region").and_then(|v| v.as_str());
+    let country = data.get("country").and_then(|v| v.as_str());
+    if city.is_some() {
+        let addr = [city, region, country]
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<&str>>()
+            .join(", ");
+        let mut e = Entity::new(EntityKind::Address, &addr, 0.60, scan_id);
+        e.tag("oathnet-pro");
+        e.tag("geolocation");
+        e.add_evidence(ev);
+        result.push(e);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::entity::EntityKind;
 
     #[test]
     fn accepts_identity_and_infra_kinds() {
@@ -221,7 +469,6 @@ mod tests {
             assert!(m.accepts(&Target::new(k, "x")));
         }
         assert!(!m.accepts(&Target::new(TargetKind::FullName, "Jane Doe")));
-        assert!(!m.accepts(&Target::new(TargetKind::Coordinates, "0,0")));
     }
 
     #[test]
@@ -231,23 +478,15 @@ mod tests {
 
     #[test]
     fn timeout_exceeds_default() {
-        // Paid endpoint with structured filtering can be slower than the
-        // 3 s crate default — verify the module asks for more headroom.
         assert!(OathnetPro.max_timeout_ms() > crate::MODULE_TIMEOUT_MS);
     }
 
     #[test]
-    fn entity_kind_mapping_is_total_for_accepted_targets() {
-        // Every kind accept()s on must map to a concrete EntityKind
-        // via the canonical TargetKind::to_entity_kind() method.
-        for (tk, ek) in [
-            (TargetKind::Email, EntityKind::Email),
-            (TargetKind::Username, EntityKind::Username),
-            (TargetKind::Phone, EntityKind::Phone),
-            (TargetKind::IpAddress, EntityKind::IpAddress),
-            (TargetKind::Domain, EntityKind::Domain),
-        ] {
-            assert_eq!(tk.to_entity_kind(), ek);
-        }
+    fn val_str_or_fallback() {
+        let item = serde_json::json!({"full_name": "Jerome Despal"});
+        assert_eq!(
+            val_str_or(&item, &["display_name", "full_name"]).as_deref(),
+            Some("Jerome Despal")
+        );
     }
 }

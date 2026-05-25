@@ -99,9 +99,11 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // SSL/TLS certificate probe — extracts SANs, issuer, validity.
         // SAN discovery reveals subdomains not visible via DNS/CT. Free.
         Arc::new(ssl_probe::SslProbe),
-        // Multi-engine search scraping (DuckDuckGo, Brave, Startpage,
-        // Mojeek, Yahoo) — discovers subdomains, linked domains, emails
-        // from search result URLs and snippets. Zero API keys.
+        // Multi-engine search scraping (13 engines: Yahoo, Bing, AOL,
+        // DuckDuckGo, Google, Brave, Mojeek, Startpage, Yandex, Ecosia,
+        // Qwant, Dogpile, Swisscows) — discovers subdomains, linked
+        // domains, emails from search result URLs and snippets. Zero
+        // API keys.
         Arc::new(search_engines::SearchEngines),
         // Web stack fingerprint via HEAD on the domain's homepage.
         Arc::new(webserver_banner::WebserverBanner),
