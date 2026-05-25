@@ -14,6 +14,7 @@ pub enum TargetKind {
     Asn,
     Coordinates,
     Address,
+    ApiKey,
 }
 
 impl TargetKind {
@@ -28,12 +29,13 @@ impl TargetKind {
             EntityKind::Asn => Some(Self::Asn),
             EntityKind::Coordinates => Some(Self::Coordinates),
             EntityKind::Address => Some(Self::Address),
+            EntityKind::ApiKey => Some(Self::ApiKey),
+            EntityKind::Credential => Some(Self::ApiKey), // Credentials expand as API key searches
             EntityKind::Organisation
             | EntityKind::AbnAcn
             | EntityKind::MacAddress
             | EntityKind::DeviceId
             | EntityKind::Url
-            | EntityKind::Credential
             | EntityKind::Password
             | EntityKind::Other(_) => None,
         }
@@ -50,6 +52,7 @@ impl TargetKind {
             Self::Asn => EntityKind::Asn,
             Self::Coordinates => EntityKind::Coordinates,
             Self::Address => EntityKind::Address,
+            Self::ApiKey => EntityKind::ApiKey,
         }
     }
 
@@ -64,6 +67,7 @@ impl TargetKind {
             Self::Asn => "asn",
             Self::Coordinates => "coordinates",
             Self::Address => "address",
+            Self::ApiKey => "api_key",
         }
     }
 }
@@ -98,8 +102,9 @@ impl Target {
         if v.is_empty() {
             return Err("value is empty");
         }
-        if v.len() > 1024 {
-            return Err("value too long (>1024 chars)");
+        let general_max = if matches!(self.kind, TargetKind::ApiKey) { 2048 } else { 1024 };
+        if v.len() > general_max {
+            return Err("value too long");
         }
         if v.contains(['\n', '\r', '\0']) {
             return Err("value contains control characters");
@@ -158,6 +163,14 @@ impl Target {
                 }
                 if !(-180.0..=180.0).contains(&lon) {
                     return Err("longitude must be in [-180, 180]");
+                }
+            }
+            TargetKind::ApiKey => {
+                if v.len() < 8 {
+                    return Err("API key too short (min 8 chars)");
+                }
+                if v.len() > 2048 {
+                    return Err("API key too long (max 2048 chars)");
                 }
             }
             TargetKind::Username | TargetKind::FullName | TargetKind::Address => {}
@@ -338,6 +351,7 @@ mod tests {
             TargetKind::Asn,
             TargetKind::Coordinates,
             TargetKind::Address,
+            TargetKind::ApiKey,
         ] {
             let ek = tk.to_entity_kind();
             assert_eq!(TargetKind::from_entity_kind(&ek), Some(tk));
@@ -348,7 +362,6 @@ mod tests {
     fn unscannable_entity_kinds_return_none() {
         assert!(TargetKind::from_entity_kind(&EntityKind::Organisation).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::MacAddress).is_none());
-        assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::Password).is_none());
     }
 

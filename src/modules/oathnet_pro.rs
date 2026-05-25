@@ -41,6 +41,7 @@ impl Module for OathnetPro {
                 | TargetKind::IpAddress
                 | TargetKind::Domain
                 | TargetKind::FullName
+                | TargetKind::ApiKey
         )
     }
 
@@ -62,6 +63,7 @@ impl Module for OathnetPro {
             TargetKind::IpAddress => "ip",
             TargetKind::Domain => "domain",
             TargetKind::FullName => "full_name",
+            TargetKind::ApiKey => "q",
             _ => return Ok(result),
         };
 
@@ -298,6 +300,97 @@ impl Module for OathnetPro {
             }
         }
 
+        // Phase 8: credential exposure detection — check if the target
+        // organisation's OSINT service API keys appear in stealer dumps.
+        // Reports THAT keys are compromised (for rotation) without storing
+        // actual key values.
+        if target.kind == TargetKind::Domain && !ctx.cancel.is_cancelled() {
+            let svc_domains = [
+                ("shodan.io", "shodan"),
+                ("virustotal.com", "virustotal"),
+                ("securitytrails.com", "securitytrails"),
+                ("dehashed.com", "dehashed"),
+                ("intelx.io", "intelx"),
+                ("leakix.net", "leakix"),
+                ("ipqualityscore.com", "ipqs"),
+                ("haveibeenpwned.com", "hibp"),
+            ];
+            for (svc_domain, svc_tag) in &svc_domains {
+                if ctx.cancel.is_cancelled() {
+                    break;
+                }
+                if let Ok(hits) =
+                    oathnet::search(key, paths::STEALER, "domain", svc_domain, 3).await
+                {
+                    let relevant: Vec<&Value> = hits
+                        .iter()
+                        .filter(|item| {
+                            val_str(item, "email")
+                                .or_else(|| {
+                                    item.get("email")
+                                        .and_then(|v| v.as_array())
+                                        .and_then(|a| a.first())
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string())
+                                })
+                                .map_or(false, |e| {
+                                    e.to_lowercase()
+                                        .ends_with(&format!("@{}", target.value.to_lowercase()))
+                                })
+                        })
+                        .collect();
+                    if !relevant.is_empty()
+                        && seen.insert(format!("@svc-cred:{svc_tag}"))
+                    {
+                        let mut e = Entity::new(
+                            EntityKind::ApiKey,
+                            format!("{svc_tag}:credential@{}", target.value),
+                            0.70,
+                            &ctx.scan_id,
+                        );
+                        e.tag("oathnet-pro");
+                        e.tag(tags::STEALER_LOG);
+                        e.tag(tags::API_KEY_EXPOSED);
+                        e.tag(tags::SERVICE_CREDENTIAL);
+                        e.tag(format!("service:{svc_tag}"));
+                        e.add_evidence(
+                            Evidence::new(
+                                "oathnet_pro",
+                                format!(
+                                    "Compromised {svc_tag} credential detected for {}",
+                                    target.value
+                                ),
+                            )
+                            .with_attr("service", *svc_tag)
+                            .with_attr("source", "stealer")
+                            .with_attr("hits", relevant.len().to_string()),
+                        );
+                        result.push(e);
+                    }
+                }
+            }
+        }
+
+        // Synergy: tag victim domain with breach if employee credentials found
+        if target.kind == TargetKind::Domain {
+            let domain_lower = target.value.to_lowercase();
+            let has_employee_creds = result.entities.iter().any(|e| {
+                e.kind == EntityKind::Email
+                    && e.has_tag("employee-credential")
+                    && e.value.to_lowercase().ends_with(&format!("@{domain_lower}"))
+            });
+            if has_employee_creds {
+                for e in &mut result.entities {
+                    if e.kind == EntityKind::Domain
+                        && e.value.to_lowercase() == domain_lower
+                    {
+                        e.tag(tags::BREACH);
+                        break;
+                    }
+                }
+            }
+        }
+
         Ok(result)
     }
 }
@@ -312,9 +405,6 @@ fn breach_evidence(item: &Value) -> Evidence {
         ("created_at", "account_created"),
         ("language", "language"),
         ("account_id", "account_id"),
-        ("password", "password"),
-        ("password_hash", "password_hash"),
-        ("salt", "salt"),
         ("ip", "ip"),
         ("city", "city"),
         ("state", "state"),
@@ -334,6 +424,15 @@ fn breach_evidence(item: &Value) -> Evidence {
         ("education", "education"),
     ] {
         ev = ev.with_opt_attr(attr, val_str(item, field));
+    }
+    if val_str(item, "password").is_some() {
+        ev = ev.with_attr("password_exposed", "true");
+    }
+    if val_str(item, "password_hash").is_some() {
+        ev = ev.with_attr("hash_exposed", "true");
+    }
+    if val_str(item, "salt").is_some() {
+        ev = ev.with_attr("salt_present", "true");
     }
     if let Some(age) = item.get("age") {
         let s = if age.is_number() {
@@ -524,7 +623,7 @@ fn extract_stealer_entities(
         .with_attr("source", "stealer")
         .with_opt_attr("url", val_str(item, "url_str"))
         .with_opt_attr("log_id", val_str(item, "log_id"))
-        .with_opt_attr("password", val_str(item, "password"))
+        .with_attr("password_exposed", if val_str(item, "password").is_some() { "true" } else { "false" })
         .with_opt_attr("username", val_str(item, "username"));
 
     if let Some(emails) = item.get("email").and_then(|v| v.as_array()) {
@@ -1081,6 +1180,7 @@ mod tests {
             TargetKind::IpAddress,
             TargetKind::Domain,
             TargetKind::FullName,
+            TargetKind::ApiKey,
         ] {
             assert!(m.accepts(&Target::new(k, "x")), "should accept {k:?}");
         }
@@ -1120,8 +1220,8 @@ mod tests {
         assert!(ev.attributes.contains_key("twitter"));
         assert!(ev.attributes.contains_key("linkedin"));
         assert!(ev.attributes.contains_key("facebook"));
-        assert!(ev.attributes.contains_key("password"));
-        assert!(ev.attributes.contains_key("password_hash"));
+        assert!(ev.attributes.contains_key("password_exposed"));
+        assert!(ev.attributes.contains_key("hash_exposed"));
     }
 
     #[test]

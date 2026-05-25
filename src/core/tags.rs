@@ -19,3 +19,6 @@ pub const STEALER_FAMILY: &str = "stealer-family";
 pub const VICTIM_MACHINE: &str = "victim-machine";
 pub const CREDENTIAL_EXPOSED: &str = "credential-exposed";
 pub const THREAT_INTEL: &str = "threat-intel";
+pub const API_KEY_EXPOSED: &str = "api-key-exposed";
+pub const SERVICE_CREDENTIAL: &str = "service-credential";
+pub const INFOSTEALER_VICTIM: &str = "infostealer-victim";

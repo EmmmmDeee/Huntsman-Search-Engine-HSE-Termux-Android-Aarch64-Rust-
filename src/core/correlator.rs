@@ -118,6 +118,7 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     out.extend(rule_au_016_credential_cluster(entities, scan_id, now));
     out.extend(rule_au_017_ransomware_and_breach(entities, scan_id, now));
     out.extend(rule_au_018_stealer_family_spread(entities, scan_id, now));
+    out.extend(rule_au_019_api_key_exposure(entities, scan_id, now));
     out
 }
 
@@ -408,7 +409,7 @@ fn rule_au_008_exposed_service(entities: &[Entity], scan_id: &str, ts: u64) -> V
 fn rule_au_009_stealer_log(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     entities
         .iter()
-        .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Username | EntityKind::Phone | EntityKind::Domain) && e.has_tag("stealer-log"))
+        .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Username | EntityKind::Phone | EntityKind::Domain | EntityKind::ApiKey) && e.has_tag("stealer-log"))
         .map(|e| Correlation {
             rule_id: "AU-009".into(),
             rule_name: "Stealer-log compromise".into(),
@@ -677,6 +678,41 @@ fn rule_au_018_stealer_family_spread(entities: &[Entity], scan_id: &str, ts: u64
             )
         })
         .collect()
+}
+
+fn rule_au_019_api_key_exposure(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let keys: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::ApiKey && e.has_tag("api-key-exposed"))
+        .collect();
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let services: Vec<String> = keys
+        .iter()
+        .flat_map(|e| e.tags.iter())
+        .filter(|t| t.starts_with("service:"))
+        .map(|t| t.strip_prefix("service:").unwrap_or(t).to_string())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let svc_str = if services.is_empty() {
+        "unknown services".to_string()
+    } else {
+        services.join(", ")
+    };
+    vec![Correlation::new(
+        "AU-019",
+        "API key exposure",
+        Severity::Critical,
+        format!(
+            "{} API key(s) found exposed in stealer/breach data for: {svc_str}",
+            keys.len()
+        ),
+        keys.iter().map(|e| e.uid.clone()).collect(),
+        scan_id,
+        ts,
+    )]
 }
 
 #[cfg(test)]
@@ -1097,5 +1133,33 @@ mod tests {
                 "expected {expected} in firings, got {ids:?}"
             );
         }
+    }
+
+    #[test]
+    fn au009_fires_on_api_key_with_stealer_log() {
+        let e = tagged(EntityKind::ApiKey, "sk_live_abc123", &["stealer-log"]);
+        let r = rule_au_009_stealer_log(&[e], "s", 0);
+        assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn au019_fires_on_exposed_api_keys() {
+        let mut e1 = Entity::new(EntityKind::ApiKey, "key1", 0.8, "s");
+        e1.tag("api-key-exposed");
+        e1.tag("service:shodan");
+        let mut e2 = Entity::new(EntityKind::ApiKey, "key2", 0.8, "s");
+        e2.tag("api-key-exposed");
+        e2.tag("service:virustotal");
+        let r = rule_au_019_api_key_exposure(&[e1, e2], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].severity, Severity::Critical);
+        assert!(r[0].description.contains("shodan"));
+        assert!(r[0].description.contains("virustotal"));
+    }
+
+    #[test]
+    fn au019_no_fire_without_tag() {
+        let e = Entity::new(EntityKind::ApiKey, "key1", 0.8, "s");
+        assert!(rule_au_019_api_key_exposure(&[e], "s", 0).is_empty());
     }
 }

@@ -40,6 +40,7 @@ pub enum EntityKind {
     // Document / credential
     Credential,
     Password, // never stored in evidence output
+    ApiKey,
 
     // Network / infrastructure
     IpAddress,
@@ -72,6 +73,7 @@ impl fmt::Display for EntityKind {
             Self::Username => f.write_str("username"),
             Self::Credential => f.write_str("credential"),
             Self::Password => f.write_str("password"),
+            Self::ApiKey => f.write_str("api_key"),
             Self::IpAddress => f.write_str("ip_address"),
             Self::Domain => f.write_str("domain"),
             Self::Url => f.write_str("url"),
@@ -402,6 +404,10 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
                 }
             }
             out
+        }
+        EntityKind::Credential => {
+            let trimmed = value.trim();
+            trimmed.to_lowercase()
         }
         _ => value.trim().to_string(),
     }
