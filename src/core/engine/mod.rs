@@ -59,6 +59,26 @@ impl StopReason {
     }
 }
 
+/// Persist an event to `store` and broadcast it on `bus`. Free function so
+/// spawned tasks (which capture cloned `store` + `bus` rather than `&self`)
+/// can call the same code path as `ScanEngine::emit`.
+///
+/// Persist FIRST so a slow broadcast subscriber can't lose us a log entry,
+/// then broadcast for any live SSE subscribers. Both writes are
+/// best-effort — store-write errors don't abort the scan, broadcast
+/// errors just mean nobody is currently subscribed.
+pub(crate) fn emit_event(store: &Store, bus: &EventBus, scan_id: &str, kind: EventKind) {
+    let event = Event::new(scan_id, kind);
+    // Persist-first so live SSE subscribers can't have an event that
+    // history-fetch never sees. The DB write is best-effort: surface
+    // failures via tracing so an empty Scan Log tab is at least
+    // diagnosable, but don't abort the scan if SQLite is wedged.
+    if let Err(e) = store.insert_event(&event) {
+        warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
+    }
+    let _ = bus.send(event);
+}
+
 impl ScanEngine {
     pub fn new(mut modules: Vec<Arc<dyn Module>>, store: Arc<Store>, bus: EventBus) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
@@ -67,6 +87,13 @@ impl ScanEngine {
             store,
             bus,
         }
+    }
+
+    /// Persist + broadcast one event for `scan_id`. The canonical
+    /// emit path for engine-side events; see `emit_event` for the free
+    /// function used inside spawned dispatch tasks.
+    fn emit(&self, scan_id: &str, kind: EventKind) {
+        emit_event(&self.store, &self.bus, scan_id, kind);
     }
 
     pub fn modules(&self) -> &[Arc<dyn Module>] {
@@ -82,13 +109,13 @@ impl ScanEngine {
         scan.status = ScanStatus::Running;
         self.store.upsert_scan(&scan)?;
 
-        let _ = self.bus.send(Event::new(
+        self.emit(
             &scan.id,
             EventKind::ScanStart {
                 target_kind: target.kind.canonical_str().to_string(),
                 target_value: target.value.clone(),
             },
-        ));
+        );
 
         let opts = scan.options.clone();
         let started = Instant::now();
@@ -131,13 +158,13 @@ impl ScanEngine {
             scan.finished_at = Some(crate::core::entity::unix_now());
             // Best-effort upsert; if even this fails there's nothing more to do.
             let _ = self.store.upsert_scan(&scan);
-            let _ = self.bus.send(Event::new(
+            self.emit(
                 &scan.id,
                 EventKind::ScanComplete {
                     scan_id: scan.id.clone(),
                     entity_count: 0,
                 },
-            ));
+            );
             return Ok(scan);
         }
 
@@ -153,30 +180,30 @@ impl ScanEngine {
         match crate::core::correlator::Correlator::new(Arc::clone(&self.store)).run(&scan.id) {
             Ok(firings) => {
                 for c in &firings {
-                    let _ = self.bus.send(Event::new(
+                    self.emit(
                         &scan.id,
                         EventKind::CorrelationFound {
                             correlation: c.clone(),
                         },
-                    ));
+                    );
                 }
-                let _ = self.bus.send(Event::new(
+                self.emit(
                     &scan.id,
                     EventKind::CorrelationsDone {
                         count: firings.len(),
                     },
-                ));
+                );
             }
             Err(e) => warn!(scan_id = %scan.id, error = %e, "correlator failed"),
         }
 
-        let _ = self.bus.send(Event::new(
+        self.emit(
             &scan.id,
             EventKind::ScanComplete {
                 scan_id: scan.id.clone(),
                 entity_count,
             },
-        ));
+        );
 
         Ok(scan)
     }
@@ -214,32 +241,32 @@ impl ScanEngine {
 
             if next.is_empty() {
                 let stop = StopReason::NoMoreCandidates;
-                let _ = self.bus.send(Event::new(
+                self.emit(
                     scan_id,
                     EventKind::ExpansionStop {
                         reason: stop.label(),
                     },
-                ));
+                );
                 return stop;
             }
 
-            let _ = self.bus.send(Event::new(
+            self.emit(
                 scan_id,
                 EventKind::ExpansionTick {
                     depth,
                     queued: next.len(),
                     visited: visited.len(),
                 },
-            ));
+            );
 
             for nt in &next {
                 if let Some(stop) = budget_check(opts, started, entity_map.len()) {
-                    let _ = self.bus.send(Event::new(
+                    self.emit(
                         scan_id,
                         EventKind::ExpansionStop {
                             reason: stop.label(),
                         },
-                    ));
+                    );
                     return stop;
                 }
                 if let Err(e) = self

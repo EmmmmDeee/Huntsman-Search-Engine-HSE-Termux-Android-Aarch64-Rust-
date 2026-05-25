@@ -21,7 +21,7 @@ use super::ScanEngine;
 use crate::core::{
     entity::Entity,
     error::Result,
-    event::{Event, EventKind},
+    event::EventKind,
     module::{Module, ModuleContext, ModuleCost},
     scan::{ScanOptions, Target},
 };
@@ -55,23 +55,23 @@ impl super::ScanEngine {
         match result {
             Err(_) => {
                 warn!(module = name, "timeout");
-                let _ = self.bus.send(Event::new(
+                self.emit(
                     scan_id,
                     EventKind::ModuleError {
                         module: name.into(),
                         error: "timeout".into(),
                     },
-                ));
+                );
             }
             Ok(Err(e)) => {
                 warn!(module = name, error = %e, "module error");
-                let _ = self.bus.send(Event::new(
+                self.emit(
                     scan_id,
                     EventKind::ModuleError {
                         module: name.into(),
                         error: e.to_string(),
                     },
-                ));
+                );
             }
             Ok(Ok(mut mr)) => {
                 let mut found = 0usize;
@@ -81,12 +81,12 @@ impl super::ScanEngine {
                     {
                         continue;
                     }
-                    let _ = self.bus.send(Event::new(
+                    self.emit(
                         scan_id,
                         EventKind::EntityFound {
                             entity: entity.clone(),
                         },
-                    ));
+                    );
                     let uid = entity.uid.clone();
                     if let Some(existing) = entity_map.get_mut(&uid) {
                         existing.merge(entity);
@@ -95,13 +95,13 @@ impl super::ScanEngine {
                     }
                     found += 1;
                 }
-                let _ = self.bus.send(Event::new(
+                self.emit(
                     scan_id,
                     EventKind::ModuleDone {
                         module: name.into(),
                         found,
                     },
-                ));
+                );
                 info!(module = name, found, "done");
             }
         }
@@ -167,22 +167,22 @@ impl ScanEngine {
                 continue;
             }
             if let Some(reason) = module_skip_reason(&**module, opts) {
-                let _ = self.bus.send(Event::new(
+                self.emit(
                     scan_id,
                     EventKind::ModuleSkipped {
                         module: name.into(),
                         reason: reason.into(),
                     },
-                ));
+                );
                 continue;
             }
 
-            let _ = self.bus.send(Event::new(
+            self.emit(
                 scan_id,
                 EventKind::ModuleStart {
                     module: name.into(),
                 },
-            ));
+            );
 
             // Per-module timeout: user override > module's declared max.
             // gps_fix needs 15+ s, whois can chain 2× 4 s referrals, etc.
@@ -236,13 +236,13 @@ impl ScanEngine {
                 continue;
             }
             if let Some(reason) = module_skip_reason(&**module, opts) {
-                let _ = self.bus.send(Event::new(
+                self.emit(
                     scan_id,
                     EventKind::ModuleSkipped {
                         module: name.into(),
                         reason: reason.into(),
                     },
-                ));
+                );
                 continue;
             }
 
@@ -258,6 +258,10 @@ impl ScanEngine {
             let target = target.clone();
             let ctx = ctx.clone();
             let bus = self.bus.clone();
+            // Clone the store for the spawned task so it can persist
+            // events through the free-function `emit_event` (no `&self`
+            // available inside the move closure).
+            let store = Arc::clone(&self.store);
             let scan_id_owned = scan_id.to_string();
             let throttle_ms = opts.throttle_ms;
             // Per-module timeout: user override > module's declared max.
@@ -269,12 +273,14 @@ impl ScanEngine {
                 let _permit = permit;
                 let name = module_arc.name();
 
-                let _ = bus.send(Event::new(
+                super::emit_event(
+                    &store,
+                    &bus,
                     &scan_id_owned,
                     EventKind::ModuleStart {
                         module: name.into(),
                     },
-                ));
+                );
 
                 let result = timeout(
                     Duration::from_millis(module_timeout_ms),

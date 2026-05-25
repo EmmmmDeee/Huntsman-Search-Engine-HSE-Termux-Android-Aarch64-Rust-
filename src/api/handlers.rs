@@ -16,7 +16,7 @@ use axum::{
     },
 };
 use futures::Stream;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio_stream::{StreamExt as _, wrappers::BroadcastStream};
 use tracing::info;
@@ -44,10 +44,46 @@ fn not_found() -> axum::response::Response {
     (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
 }
 
+/// `(200, { key: [...], "count": N })` — used by every list endpoint.
+fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response::Response {
+    let n = items.len();
+    let mut map = serde_json::Map::new();
+    map.insert(
+        key.to_string(),
+        serde_json::to_value(items).unwrap_or(Value::Null),
+    );
+    map.insert("count".to_string(), Value::Number(n.into()));
+    (StatusCode::OK, Json(Value::Object(map))).into_response()
+}
+
 // ─── Health / Version ────────────────────────────────────────────────────────
 
 pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "version": crate::VERSION }))
+}
+
+/// `GET /api/v1/stats` — aggregate dashboard statistics. Counts scans
+/// by status, total entities across all scans, and module count. The
+/// SPA's home page consumes this for the stat-card row.
+pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    let scans = s.store.list_scans(10_000).unwrap_or_default();
+    let mut by_status: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut total_entities = 0u64;
+    for scan in &scans {
+        let key = format!("{:?}", scan.status).to_lowercase();
+        *by_status.entry(key).or_insert(0) += 1;
+        total_entities += scan.entity_count as u64;
+    }
+    let modules = s.engine.modules().len();
+    let live_sessions = s.live.list().len();
+    Json(json!({
+        "scans_total": scans.len(),
+        "scans_by_status": by_status,
+        "entities_total": total_entities,
+        "modules": modules,
+        "live_sessions": live_sessions,
+        "version": crate::VERSION,
+    }))
 }
 
 pub async fn version() -> Json<Value> {
@@ -158,10 +194,7 @@ pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     // 200 most recent scans is plenty for the prototype's History tab —
     // older results stay in the DB and reachable via GET /api/v1/scans/{id}.
     match s.store.list_scans(200) {
-        Ok(scans) => {
-            let n = scans.len();
-            (StatusCode::OK, Json(json!({ "scans": scans, "count": n }))).into_response()
-        }
+        Ok(scans) => ok_list("scans", scans),
         Err(e) => internal_error(&e),
     }
 }
@@ -183,14 +216,22 @@ pub async fn scan_entities(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match s.store.entities_for_scan(&id) {
-        Ok(entities) => {
-            let n = entities.len();
-            (
-                StatusCode::OK,
-                Json(json!({ "entities": entities, "count": n })),
-            )
-                .into_response()
-        }
+        Ok(entities) => ok_list("entities", entities),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `GET /api/v1/scans/{id}/events.history` — replay every event the
+/// engine recorded for this scan, in emission order. Pairs with the
+/// existing `/events` SSE endpoint: the SPA loads the history first
+/// (so completed scans show a full timeline), then subscribes to the
+/// SSE stream for live continuation.
+pub async fn scan_events_history(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.events_for_scan(&id) {
+        Ok(events) => ok_list("events", events),
         Err(e) => internal_error(&e),
     }
 }
@@ -200,14 +241,7 @@ pub async fn scan_correlations(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match s.store.correlations_for_scan(&id) {
-        Ok(corr) => {
-            let n = corr.len();
-            (
-                StatusCode::OK,
-                Json(json!({ "correlations": corr, "count": n })),
-            )
-                .into_response()
-        }
+        Ok(corr) => ok_list("correlations", corr),
         Err(e) => internal_error(&e),
     }
 }
@@ -335,6 +369,49 @@ pub async fn scan_entities_csv(
     resp
 }
 
+/// `GET /api/v1/scans/{id}/report.json` — full scan report as a single
+/// JSON download. Includes the scan metadata, all entities, and all
+/// correlations in one file — suitable for archival, diffing between
+/// scans, and integration with downstream tools that consume JSON.
+pub async fn scan_report_json(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let scan = match s.store.get_scan(&id) {
+        Ok(Some(scan)) => scan,
+        Ok(None) => return not_found(),
+        Err(e) => return internal_error(&e),
+    };
+    let entities = s.store.entities_for_scan(&id).unwrap_or_default();
+    let correlations = s.store.correlations_for_scan(&id).unwrap_or_default();
+
+    let report = json!({
+        "scan": scan,
+        "entities": entities,
+        "entity_count": entities.len(),
+        "correlations": correlations,
+        "correlation_count": correlations.len(),
+        "exported_at": crate::core::entity::unix_now(),
+    });
+
+    let filename = format!(
+        "hse-report-{}.json",
+        id.chars().take(12).collect::<String>()
+    );
+    let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into());
+    let disposition = format!("attachment; filename=\"{filename}\"");
+    let mut resp = (StatusCode::OK, body).into_response();
+    let headers = resp.headers_mut();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    if let Ok(v) = axum::http::HeaderValue::from_str(&disposition) {
+        headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
+    }
+    resp
+}
+
 fn csv_escape(s: &str) -> String {
     if s.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
@@ -359,13 +436,7 @@ pub async fn live_create(
 }
 
 pub async fn live_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    let sessions = s.live.list();
-    let n = sessions.len();
-    (
-        StatusCode::OK,
-        Json(json!({ "sessions": sessions, "count": n })),
-    )
-        .into_response()
+    ok_list("sessions", s.live.list())
 }
 
 pub async fn live_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {

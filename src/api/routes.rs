@@ -127,6 +127,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/version", get(handlers::version))
         // ── modules ──
         .route("/modules", get(handlers::modules_list))
+        .route("/stats", get(handlers::stats))
         // ── scans ──
         .route(
             "/scans",
@@ -139,8 +140,16 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/scans/{id}/rerun", post(handlers::scan_rerun))
         .route("/scans/{id}/entities", get(handlers::scan_entities))
         .route("/scans/{id}/entities.csv", get(handlers::scan_entities_csv))
+        .route(
+            "/scans/{id}/report.json",
+            get(handlers::scan_report_json),
+        )
         .route("/scans/{id}/correlations", get(handlers::scan_correlations))
         .route("/scans/{id}/events", get(handlers::scan_events_sse))
+        .route(
+            "/scans/{id}/events.history",
+            get(handlers::scan_events_history),
+        )
         // ── live (v0.5+) ──
         .route(
             "/live",

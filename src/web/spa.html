@@ -341,6 +341,7 @@ const API = {
   rerun:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/rerun',{method:'POST'}),
   remove:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id),{method:'DELETE'}),
   csvUrl:    id=>'/api/v1/scans/'+encodeURIComponent(id)+'/entities.csv',
+  reportUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
   keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body})
 };
@@ -764,6 +765,7 @@ async function renderScanInfo(v){
           <button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button>
           <button class="btn btn-default btn-sm" data-rerun="${attr(id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i>&nbsp;Rescan</button>
           <a class="btn btn-default btn-sm" href="${API.csvUrl(id)}" title="Export entities as CSV"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;CSV</a>
+          <a class="btn btn-default btn-sm" href="${API.reportUrl(id)}" title="Export full report as JSON"><i class="glyphicon glyphicon-save"></i>&nbsp;JSON</a>
           <button class="btn btn-danger btn-sm" data-delete="${attr(id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
         </div>
     </h2>
@@ -1087,36 +1089,147 @@ function buildD3Graph(){
   setTimeout(()=>force.stop(), 6000);
 }
 
-/* ── Scan Log (SSE) ── */
-function renderLog(host, scan){
+/* ── Scan Log (history + live SSE) ──
+   v0.10+ — engine persists every event to SQLite, so completed scans
+   now show the full timeline. For live scans we must take care with
+   the SSE-vs-history ordering:
+
+   Engine semantics: persist FIRST, then broadcast. So every event on
+   the bus is already persisted; an event in history may not yet have
+   been broadcast.
+
+   Two ordering choices and their failure modes:
+   - Fetch history first, then subscribe SSE → events broadcast in
+     the gap between fetch-return and SSE-subscribe are MISSED. Bad.
+   - Subscribe SSE first, then fetch history → events broadcast in
+     the gap appear in BOTH (in SSE buffer, and in the history rows
+     persisted just before broadcast). Need dedup, but no loss.
+
+   We go with subscribe-first and a count-based content-fingerprint
+   dedup. Limitation: if a new event happens to have IDENTICAL kind
+   JSON to an already-rendered history row AND arrives via SSE after
+   the history fetch returned, it gets falsely deduped. Mitigating
+   factor: this is rare in practice (events for the same module emit
+   per-target, and targets vary across rounds) and a proper fix needs
+   a monotonic per-event id on the engine side. */
+async function renderLog(host, scan){
   const running = scan.status==='running' || scan.status==='pending';
   host.innerHTML = `
     <div class="panel panel-default">
       <div class="panel-heading">
         <b>Event log</b>
         <div class="pull-right">
-          ${running ? '<span class="label label-info"><i class="glyphicon glyphicon-record"></i>&nbsp;live</span>'
-                    : '<span class="label label-default">not streaming</span>'}
+          <span id="log-status" class="label label-default">loading…</span>
           &nbsp;<button class="btn btn-default btn-xs" id="log-clear">Clear</button>
         </div>
       </div>
       <div class="panel-body" style="padding:0">
-        <div id="log-box">${running
-          ? `<div class="log-row lv-info"><span class="ts">${esc(fmtClock())}</span><span class="typ">subscribed</span><span class="msg">waiting for events…</span></div>`
-          : `<div class="empty-state"><p>Scan completed at <code>${esc(fmtDate(scan.finished_at))}</code>. Live event history is not retained after the broadcast channel closes — open a running scan to see this view populate in real-time.</p></div>`}
-        </div>
+        <div id="log-box"><div class="empty-state"><p>Fetching event history…</p></div></div>
       </div>
     </div>
   `;
   $('#log-clear').addEventListener('click', ()=>{ $('#log-box').innerHTML=''; });
-  if (running) openSse(scan.id, ev=>appendLog(ev));
+
+  // 1) Subscribe to SSE FIRST so events broadcast during the
+  //    history fetch are captured in the `buffered` array rather
+  //    than lost. Switch to direct-render once history is rendered.
+  const buffered = [];
+  let bufferingMode = true;
+  const status = $('#log-status');
+  if (running){
+    status.className = 'label label-info';
+    status.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;live';
+    openSse(scan.id, ev=>{
+      if (bufferingMode) buffered.push(ev);
+      else appendLog(ev);
+    });
+  }
+
+  // 2) Pull the persistent history. Surface fetch failures explicitly
+  //    so a completed scan with events on disk doesn't silently
+  //    render "No events recorded".
+  let history = [];
+  let historyError = null;
+  try {
+    const r = await fetch('/api/v1/scans/'+encodeURIComponent(scan.id)+'/events.history');
+    if (r.ok){
+      const j = await r.json();
+      history = j.events || [];
+    } else {
+      historyError = `HTTP ${r.status}`;
+    }
+  } catch (e) {
+    historyError = e && e.message ? e.message : String(e);
+  }
+
+  // 3) Render history and build a per-fingerprint count map. Each
+  //    history row contributes one "expected duplicate" credit so the
+  //    next SSE-buffered event with the same fingerprint is treated
+  //    as the broadcast copy of an already-rendered history row.
+  const box = $('#log-box');
+  const histCounts = new Map();
+  if (historyError){
+    // History fetch failed: we can't compute dedup credits, so we
+    // also can't sensibly drain the buffered SSE events without
+    // potentially double-painting (or missing) rows. Surface the
+    // error alone — the operator's next refresh has another shot
+    // at history, and `openSse` callback below will start adding
+    // fresh rows the moment we switch out of buffering mode.
+    box.innerHTML = `<div class="alert alert-danger" style="margin:8px">Failed to load event history: ${esc(historyError)}</div>`;
+    bufferingMode = false;
+    if (!running){
+      status.className = 'label label-warning';
+      status.textContent = 'history error';
+    }
+    return;
+  }
+  if (history.length === 0 && !running){
+    box.innerHTML = `<div class="empty-state"><p>No events recorded for this scan.</p></div>`;
+  } else {
+    box.innerHTML = '';
+    for (const ev of history){
+      const kind = ev.kind || ev;
+      const fp = JSON.stringify(kind);
+      histCounts.set(fp, (histCounts.get(fp) || 0) + 1);
+      // The persisted row has { scan_id, ts, kind }. mapEvent reads
+      // ev.type plus ev.* — the EventKind variant is flattened with
+      // `#[serde(tag="type")]`, so passing ev.kind through works.
+      appendLog(kind, ev.ts);
+    }
+  }
+
+  // 4) Drain buffered SSE events. Each one with a fingerprint that
+  //    still has unspent history credits is the broadcast twin of
+  //    an already-rendered row — skip it. Events with no credits
+  //    (either fingerprint never seen in history, or all history
+  //    twins already accounted for) get rendered.
+  const consumed = new Map();
+  for (const ev of buffered){
+    const fp = JSON.stringify(ev);
+    const histCount = histCounts.get(fp) || 0;
+    const consumedCount = consumed.get(fp) || 0;
+    if (consumedCount < histCount){
+      consumed.set(fp, consumedCount + 1);
+    } else {
+      appendLog(ev);
+    }
+  }
+  bufferingMode = false;
+
+  if (!running){
+    status.className = 'label label-default';
+    status.textContent = history.length ? `${history.length} events` : 'not streaming';
+  }
 }
-function appendLog(ev){
+function appendLog(ev, ts){
   const box = $('#log-box'); if (!box) return;
   const m = mapEvent(ev);
   const row = document.createElement('div');
   row.className = `log-row lv-${m.lv}`;
-  row.innerHTML = `<span class="ts">${esc(fmtClock())}</span><span class="typ">${esc(m.typ)}</span><span class="msg">${m.msg}</span>`;
+  // Use the event's recorded ts if we have it (history rows); fall
+  // back to wall-clock for live rows.
+  const t = ts ? (new Date(ts*1000)).toTimeString().slice(0,8) : fmtClock();
+  row.innerHTML = `<span class="ts">${esc(t)}</span><span class="typ">${esc(m.typ)}</span><span class="msg">${m.msg}</span>`;
   box.appendChild(row);
   box.scrollTop = box.scrollHeight;
 }
