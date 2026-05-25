@@ -1805,11 +1805,6 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             }
         }
 
-        // Emit Url entities only for pages whose URL path contains a
-        // target-derived term. People-search homepages (spokeo.com/,
-        // whitepages.com/people-search) are excluded unless the path
-        // also contains a target term — only specific profile pages
-        // like peekyou.com/jerome_despal pass.
         if url_matches_target(&r.url, &terms)
             && seen_domains.insert(format!("@url:{}", canonicalize_url(&r.url)))
         {
@@ -1819,7 +1814,6 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             result.push(e);
         }
 
-        // Extract usernames and person names from social profile URLs
         if let Some(username) = extract_path_username(&r.url) {
             let social_hosts = [
                 "facebook.com",
@@ -1858,8 +1852,6 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                 }
             }
 
-            // People-search sites encode real names in paths:
-            // peekyou.com/jerome_despal → "Jerome Despal"
             let people_hosts = [
                 "peekyou.com",
                 "spokeo.com",
@@ -1889,9 +1881,6 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
         }
     }
 
-    // Extract family members: people sharing the target's last name
-    // found in search results (e.g., "Jeanette Despal" when target is
-    // "Jerome Despal"). These are high-value geolocation leads.
     let family = extract_family_names(results, target);
     for (name, source_url) in &family {
         let key = format!("@person:{}", name.to_lowercase());
@@ -1910,11 +1899,6 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
         }
     }
 
-    // Sort entities in a structured order suitable for both human
-    // review and LLM consumption: parent entity first (it has the
-    // highest confidence), then by kind priority (identity entities
-    // first, infrastructure last), then by descending confidence,
-    // then alphabetically by value within each tier.
     result.entities.sort_by(|a, b| {
         fn kind_rank(k: &EntityKind) -> u8 {
             match k {
@@ -1952,9 +1936,6 @@ fn extract_registrable(host: &str) -> String {
     }
 }
 
-/// Build a clean, structured evidence entry from a search result.
-/// Every evidence entry includes the full navigable URL so the user
-/// can click through to verify the finding.
 fn build_search_evidence(r: &SearchResult) -> Evidence {
     let title_clean: String = r.title.chars().take(200).collect();
     let snippet_clean: String = r.snippet.chars().take(800).collect();
@@ -1983,8 +1964,6 @@ fn build_search_evidence(r: &SearchResult) -> Evidence {
     ev
 }
 
-/// Extract the most relevant sentence fragment from a snippet by
-/// finding the clause that overlaps most with the query terms.
 fn extract_key_phrase(snippet: &str, query: &str) -> String {
     if snippet.len() < 10 {
         return String::new();
@@ -2023,10 +2002,6 @@ fn extract_key_phrase(snippet: &str, query: &str) -> String {
     }
 }
 
-/// Extract "City, State" patterns from text for geolocation.
-/// Only matches when a comma-separated city name precedes a known
-/// state/territory name, and the city portion starts with an uppercase
-/// letter (filters out random sentence fragments).
 fn extract_addresses_from_text(text: &str) -> Vec<String> {
     const STATES: &[&str] = &[
         "Queensland",
@@ -2191,10 +2166,6 @@ fn extract_addresses_from_text(text: &str) -> Vec<String> {
     addrs
 }
 
-/// Extract Australian Business Numbers (11 digits) and Australian
-/// Company Numbers (9 digits) from text. ABNs are formatted as
-/// "XX XXX XXX XXX" or "XXXXXXXXXXX"; ACNs as "XXX XXX XXX".
-/// Returns (value, kind_label) pairs.
 fn extract_abn_acn_from_text(text: &str) -> Vec<(String, &'static str)> {
     let mut results = Vec::new();
     let bytes = text.as_bytes();
