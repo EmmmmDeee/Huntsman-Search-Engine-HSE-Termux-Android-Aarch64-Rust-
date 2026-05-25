@@ -147,6 +147,29 @@ impl Module for GithubUser {
         u_entity.add_evidence(ev);
         result.push(u_entity);
 
+        // Location → Address entity for the people→geo recursion chain:
+        //   Username → github_user → Address → nominatim → Coordinates → wigle
+        if let Some(loc) = user.location.as_deref()
+            && !loc.trim().is_empty()
+            && loc.trim().len() >= 3
+        {
+            let mut addr = Entity::new(EntityKind::Address, loc.trim(), 0.76, &ctx.scan_id);
+            addr.tag("profile-location");
+            addr.tag("github");
+            addr.add_evidence(
+                Evidence::new(
+                    "github_user",
+                    format!(
+                        "Location from GitHub profile @{}: {}",
+                        user.login,
+                        loc.trim()
+                    ),
+                )
+                .with_attr("github_login", &user.login),
+            );
+            result.push(addr);
+        }
+
         // Real name → Person entity, when present.
         if let Some(name) = user.name.as_deref()
             && !name.trim().is_empty()

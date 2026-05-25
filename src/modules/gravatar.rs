@@ -148,6 +148,57 @@ impl Module for Gravatar {
 
         let mut result = ModuleResult::new();
         result.push(entity);
+
+        // Emit Address entity from the profile location string so the
+        // expansion engine chains it into nominatim → Coordinates →
+        // wigle/nominatim(reverse). This is the key link in the
+        // recursive people→geo chain:
+        //   Email → gravatar → Address → nominatim → Coordinates → wigle
+        if let Some(loc) = entry.location.as_deref()
+            && !loc.trim().is_empty()
+            && loc.trim().len() >= 3
+        {
+            let mut addr = Entity::new(EntityKind::Address, loc.trim(), 0.76, &ctx.scan_id);
+            addr.tag("profile-location");
+            addr.tag("gravatar");
+            addr.add_evidence(
+                Evidence::new("gravatar", format!("Location from Gravatar profile: {loc}"))
+                    .with_attr("source_email", &normalised)
+                    .with_attr("profile_url", format!("https://www.gravatar.com/{hash}")),
+            );
+            result.push(addr);
+        }
+
+        // Emit Person entity from display_name / formatted name for
+        // the FullName→name_to_email expansion chain.
+        if let Some(name) = entry.display_name.as_deref()
+            && !name.trim().is_empty()
+            && name.contains(' ')
+        {
+            let mut person = Entity::new(EntityKind::Person, name.trim(), 0.70, &ctx.scan_id);
+            person.tag("gravatar");
+            person.add_evidence(
+                Evidence::new("gravatar", format!("Display name from Gravatar: {name}"))
+                    .with_attr("source_email", &normalised),
+            );
+            result.push(person);
+        }
+
+        // Emit Username from preferred_username for the
+        // Username→username_search expansion chain.
+        if let Some(uname) = entry.preferred_username.as_deref()
+            && !uname.trim().is_empty()
+            && uname.len() >= 3
+        {
+            let mut u = Entity::new(EntityKind::Username, uname.trim(), 0.80, &ctx.scan_id);
+            u.tag("gravatar");
+            u.add_evidence(
+                Evidence::new("gravatar", format!("Username from Gravatar: {uname}"))
+                    .with_attr("source_email", &normalised),
+            );
+            result.push(u);
+        }
+
         Ok(result)
     }
 }
