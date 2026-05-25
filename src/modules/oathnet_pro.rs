@@ -773,6 +773,22 @@ const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     ("api.openai.com", "openai"),
     ("anthropic.com", "anthropic"),
     ("api.anthropic.com", "anthropic"),
+    ("passivetotal.org", "passivetotal"),
+    ("riskiq.net", "passivetotal"),
+    ("onyphe.io", "onyphe"),
+    ("zoomeye.org", "zoomeye"),
+    ("api.zoomeye.org", "zoomeye"),
+    ("fofa.info", "fofa"),
+    ("en.fofa.info", "fofa"),
+    ("netlas.io", "netlas"),
+    ("app.netlas.io", "netlas"),
+    ("pulsedive.com", "pulsedive"),
+    ("builtwith.com", "builtwith"),
+    ("emailrep.io", "emailrep"),
+    ("whoisxmlapi.com", "whoisxml"),
+    ("breachdirectory.org", "breachdirectory"),
+    ("c99.nl", "c99"),
+    ("api.c99.nl", "c99"),
 ];
 
 const HARVEST_TARGETS: &[(&str, &str)] = &[
@@ -797,6 +813,18 @@ const HARVEST_TARGETS: &[(&str, &str)] = &[
     ("serpapi.com", "serpapi"),
     ("openai.com", "openai"),
     ("anthropic.com", "anthropic"),
+    ("passivetotal.org", "passivetotal"),
+    ("riskiq.net", "passivetotal"),
+    ("onyphe.io", "onyphe"),
+    ("zoomeye.org", "zoomeye"),
+    ("fofa.info", "fofa"),
+    ("netlas.io", "netlas"),
+    ("pulsedive.com", "pulsedive"),
+    ("builtwith.com", "builtwith"),
+    ("emailrep.io", "emailrep"),
+    ("whoisxmlapi.com", "whoisxml"),
+    ("breachdirectory.org", "breachdirectory"),
+    ("c99.nl", "c99"),
 ];
 
 async fn harvest_api_credentials_from_stealer(key: &str) {

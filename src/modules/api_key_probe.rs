@@ -338,6 +338,104 @@ fn probes() -> Vec<Probe> {
                 out
             },
         },
+        Probe {
+            service: "passivetotal",
+            category: "infrastructure",
+            env_var: "HUNTSMAN_PASSIVETOTAL_KEY",
+            url_builder: |_key| {
+                ("https://api.riskiq.net/pt/v2/account/quota".into(),
+                 vec![("_basic_auth", String::new())])
+            },
+            parse_info: |v| {
+                let mut out = Vec::new();
+                if let Some(u) = v.get("user").and_then(|u| u.get("owner")).and_then(|v| v.as_str()) {
+                    out.push(("owner".into(), u.to_string()));
+                }
+                out
+            },
+        },
+        Probe {
+            service: "onyphe",
+            category: "infrastructure",
+            env_var: "HUNTSMAN_ONYPHE_KEY",
+            url_builder: |_key| {
+                ("https://www.onyphe.io/api/v2/user".into(),
+                 vec![("Authorization", String::new())])
+            },
+            parse_info: |v| {
+                let mut out = Vec::new();
+                if v.get("count").is_some() {
+                    out.push(("status".into(), "authenticated".into()));
+                }
+                out
+            },
+        },
+        Probe {
+            service: "zoomeye",
+            category: "infrastructure",
+            env_var: "HUNTSMAN_ZOOMEYE_KEY",
+            url_builder: |_key| {
+                ("https://api.zoomeye.org/resources-info".into(),
+                 vec![("API-KEY", String::new())])
+            },
+            parse_info: |v| {
+                let mut out = Vec::new();
+                if let Some(p) = v.get("plan").and_then(|v| v.as_str()) {
+                    out.push(("plan".into(), p.to_string()));
+                }
+                if let Some(c) = v.get("resources").and_then(|r| r.get("search")).and_then(|v| v.as_u64()) {
+                    out.push(("search_credits".into(), c.to_string()));
+                }
+                out
+            },
+        },
+        Probe {
+            service: "netlas",
+            category: "infrastructure",
+            env_var: "HUNTSMAN_NETLAS_KEY",
+            url_builder: |_key| {
+                ("https://app.netlas.io/api/users/current/".into(),
+                 vec![("X-API-Key", String::new())])
+            },
+            parse_info: |v| {
+                let mut out = Vec::new();
+                if v.get("email").is_some() {
+                    out.push(("status".into(), "authenticated".into()));
+                }
+                out
+            },
+        },
+        Probe {
+            service: "pulsedive",
+            category: "threat_intel",
+            env_var: "HUNTSMAN_PULSEDIVE_KEY",
+            url_builder: |key| {
+                (format!("https://pulsedive.com/api/info.php?indicator=pulsedive.com&key={key}"), vec![])
+            },
+            parse_info: |v| {
+                let mut out = Vec::new();
+                if v.get("indicator").is_some() {
+                    out.push(("status".into(), "authenticated".into()));
+                }
+                out
+            },
+        },
+        Probe {
+            service: "emailrep",
+            category: "identity",
+            env_var: "HUNTSMAN_EMAILREP_KEY",
+            url_builder: |_key| {
+                ("https://emailrep.io/test@example.com".into(),
+                 vec![("Key", String::new())])
+            },
+            parse_info: |v| {
+                let mut out = Vec::new();
+                if v.get("reputation").is_some() {
+                    out.push(("status".into(), "authenticated".into()));
+                }
+                out
+            },
+        },
     ]
 }
 
@@ -579,7 +677,7 @@ mod tests {
     #[test]
     fn probe_count_matches_services() {
         let p = probes();
-        assert!(p.len() >= 17);
+        assert!(p.len() >= 23);
         for probe in &p {
             assert!(!probe.service.is_empty());
             assert!(!probe.env_var.is_empty());

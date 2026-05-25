@@ -129,7 +129,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             name: "securitytrails",
             env_var: "HUNTSMAN_SECTRAILS_KEY",
             category: "infrastructure",
-            test_url: "https://api.securitytrails.com/v1/ping",
+            test_url: "https://api.securitytrails.com/v1/account/usage",
             key_header: KeyPlacement::Header("APIKEY"),
             rate_limit_reset_secs: 60,
         },
@@ -211,6 +211,94 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "threat_intel",
             test_url: "https://threatfox-api.abuse.ch/api/v1/",
             key_header: KeyPlacement::Header("API-KEY"),
+            rate_limit_reset_secs: 60,
+        },
+        ServiceDef {
+            name: "passivetotal",
+            env_var: "HUNTSMAN_PASSIVETOTAL_KEY",
+            category: "infrastructure",
+            test_url: "https://api.riskiq.net/pt/v2/account/quota",
+            key_header: KeyPlacement::BasicAuth,
+            rate_limit_reset_secs: 60,
+        },
+        ServiceDef {
+            name: "onyphe",
+            env_var: "HUNTSMAN_ONYPHE_KEY",
+            category: "infrastructure",
+            test_url: "https://www.onyphe.io/api/v2/user",
+            key_header: KeyPlacement::Header("Authorization"),
+            rate_limit_reset_secs: 60,
+        },
+        ServiceDef {
+            name: "zoomeye",
+            env_var: "HUNTSMAN_ZOOMEYE_KEY",
+            category: "infrastructure",
+            test_url: "https://api.zoomeye.org/resources-info",
+            key_header: KeyPlacement::Header("API-KEY"),
+            rate_limit_reset_secs: 60,
+        },
+        ServiceDef {
+            name: "fofa",
+            env_var: "HUNTSMAN_FOFA_KEY",
+            category: "infrastructure",
+            test_url: "https://fofa.info/api/v1/info/my",
+            key_header: KeyPlacement::QueryParam("key"),
+            rate_limit_reset_secs: 60,
+        },
+        ServiceDef {
+            name: "netlas",
+            env_var: "HUNTSMAN_NETLAS_KEY",
+            category: "infrastructure",
+            test_url: "https://app.netlas.io/api/users/current/",
+            key_header: KeyPlacement::Header("X-API-Key"),
+            rate_limit_reset_secs: 60,
+        },
+        ServiceDef {
+            name: "pulsedive",
+            env_var: "HUNTSMAN_PULSEDIVE_KEY",
+            category: "threat_intel",
+            test_url: "https://pulsedive.com/api/info.php?indicator=pulsedive.com&key=",
+            key_header: KeyPlacement::QueryParam("key"),
+            rate_limit_reset_secs: 30,
+        },
+        ServiceDef {
+            name: "builtwith",
+            env_var: "HUNTSMAN_BUILTWITH_KEY",
+            category: "infrastructure",
+            test_url: "https://api.builtwith.com/usagev2/api.json?KEY=",
+            key_header: KeyPlacement::QueryParam("KEY"),
+            rate_limit_reset_secs: 60,
+        },
+        ServiceDef {
+            name: "emailrep",
+            env_var: "HUNTSMAN_EMAILREP_KEY",
+            category: "identity",
+            test_url: "https://emailrep.io/test@example.com",
+            key_header: KeyPlacement::Header("Key"),
+            rate_limit_reset_secs: 60,
+        },
+        ServiceDef {
+            name: "whoisxml",
+            env_var: "HUNTSMAN_WHOISXML_KEY",
+            category: "infrastructure",
+            test_url: "https://www.whoisxmlapi.com/whoisserver/WhoisService?domainName=example.com&outputFormat=JSON&apiKey=",
+            key_header: KeyPlacement::QueryParam("apiKey"),
+            rate_limit_reset_secs: 60,
+        },
+        ServiceDef {
+            name: "breachdirectory",
+            env_var: "HUNTSMAN_BREACHDIR_KEY",
+            category: "breach",
+            test_url: "https://breachdirectory.p.rapidapi.com/?func=auto&term=test@example.com",
+            key_header: KeyPlacement::Header("X-RapidAPI-Key"),
+            rate_limit_reset_secs: 60,
+        },
+        ServiceDef {
+            name: "c99",
+            env_var: "HUNTSMAN_C99_KEY",
+            category: "infrastructure",
+            test_url: "https://api.c99.nl/",
+            key_header: KeyPlacement::QueryParam("key"),
             rate_limit_reset_secs: 60,
         },
     ]
@@ -572,7 +660,7 @@ mod tests {
     #[test]
     fn all_services_defined() {
         let defs = service_defs();
-        assert!(defs.len() >= 13);
+        assert!(defs.len() >= 24);
         for d in &defs {
             assert!(d.env_var.starts_with("HUNTSMAN_"));
             assert!(!d.test_url.is_empty());
