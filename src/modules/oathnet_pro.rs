@@ -49,7 +49,7 @@ impl Module for OathnetPro {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        15_000
+        30_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -141,7 +141,7 @@ impl Module for OathnetPro {
                 if ctx.cancel.is_cancelled() {
                     break;
                 }
-                if let Ok(info) = oathnet::osint(key, paths::IP_INFO, "ip_address", ip).await {
+                if let Ok(info) = oathnet::osint(key, paths::IP_INFO, "ip", ip).await {
                     extract_ip_info(info, ip, &ctx.scan_id, &mut result);
                 }
             }
@@ -449,11 +449,18 @@ fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResu
         Evidence::new("oathnet_pro", format!("IP info for {ip}")).with_attr("source", "ip-info");
     for (field, attr) in [
         ("city", "city"),
-        ("region", "region"),
+        ("regionName", "region"),
+        ("region", "region_code"),
         ("country", "country"),
+        ("countryCode", "country_code"),
+        ("zip", "postal_code"),
+        ("isp", "isp"),
         ("org", "org"),
-        ("asn", "asn"),
+        ("as", "asn"),
         ("timezone", "timezone"),
+        ("reverse", "reverse_dns"),
+        ("district", "district"),
+        ("continent", "continent"),
     ] {
         if let Some(v) = data.get(field).and_then(|v| v.as_str()) {
             ev = ev.with_attr(attr, v);
@@ -472,7 +479,10 @@ fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResu
     }
 
     let city = data.get("city").and_then(|v| v.as_str());
-    let region = data.get("region").and_then(|v| v.as_str());
+    let region = data
+        .get("regionName")
+        .or_else(|| data.get("region"))
+        .and_then(|v| v.as_str());
     let country = data.get("country").and_then(|v| v.as_str());
     if city.is_some() {
         let addr = [city, region, country]
