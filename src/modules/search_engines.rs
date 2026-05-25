@@ -418,7 +418,6 @@ fn apply_breach_evidence(
     for item in items {
         let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
 
-        // Only emit Person/Phone/IP from rows matching the lookup target.
         let row_matches = {
             let mut matches = false;
             for field in ["email", "username", "phone_number", "full_name"] {
@@ -459,7 +458,6 @@ fn apply_breach_evidence(
                 new_ents.push(e);
             }
         }
-        // Preserve non-target rows as CANDIDATE (0.25) instead of discarding
         let conf = |base: f64| -> f64 { if row_matches { base } else { 0.25 } };
         if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
             && ph.len() >= 7
@@ -468,9 +466,7 @@ fn apply_breach_evidence(
             let mut e = Entity::new(EntityKind::Phone, &ph, conf(0.70), scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
-            if !row_matches {
-                e.tag("candidate");
-            }
+            e.tag_if(!row_matches, "candidate");
             e.add_evidence(
                 Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
                     .with_attr("dbname", &db),
@@ -502,9 +498,7 @@ fn apply_breach_evidence(
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
             e.tag("geolocation-lead");
-            if !row_matches {
-                e.tag("candidate");
-            }
+            e.tag_if(!row_matches, "candidate");
             e.add_evidence(
                 Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
                     .with_attr("dbname", &db),
@@ -517,9 +511,7 @@ fn apply_breach_evidence(
             let mut e = Entity::new(EntityKind::Address, &country, conf(0.55), scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
-            if !row_matches {
-                e.tag("candidate");
-            }
+            e.tag_if(!row_matches, "candidate");
             e.add_evidence(
                 Evidence::new("search_engines:oathnet", format!("Country from {db}"))
                     .with_attr("dbname", &db),
@@ -2233,8 +2225,6 @@ fn is_valid_abn(s: &str) -> bool {
     sum.is_multiple_of(89)
 }
 
-/// Extract organisation names from text. Looks for patterns like
-/// "Pty Ltd", "Inc", "LLC", "Corporation" near the target context.
 fn extract_organisations_from_text(text: &str, terms: &[String]) -> Vec<String> {
     let suffixes = [
         " Pty Ltd",
@@ -2279,8 +2269,6 @@ fn extract_organisations_from_text(text: &str, terms: &[String]) -> Vec<String> 
     orgs
 }
 
-/// Semantic similarity between two strings using character bigram
-/// overlap (Dice coefficient). Returns 0.0–1.0.
 fn bigram_similarity(a: &str, b: &str) -> f64 {
     fn bigrams(s: &str) -> Vec<(char, char)> {
         let chars: Vec<char> = s.to_lowercase().chars().collect();
