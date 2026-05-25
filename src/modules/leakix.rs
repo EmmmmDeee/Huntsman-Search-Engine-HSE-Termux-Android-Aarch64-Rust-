@@ -123,21 +123,10 @@ impl Module for LeakIx {
 
         // Aggregate event-type counts so the evidence row stays compact
         // even when leakix returns dozens of services.
-        let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
-        for e in body.services.iter().chain(body.leaks.iter()) {
-            if let Some(t) = e.event_type.as_deref() {
-                *counts.entry(t.to_string()).or_insert(0) += 1;
-            }
-        }
-        let mut ranked: Vec<(String, u32)> = Vec::with_capacity(counts.len());
-        ranked.extend(counts);
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let top = ranked
-            .iter()
-            .take(8)
-            .map(|(t, n)| format!("{t}×{n}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let types: Vec<String> = body.services.iter().chain(body.leaks.iter())
+            .filter_map(|e| e.event_type.clone())
+            .collect();
+        let top = crate::util::freq::top_n(types.iter().map(String::as_str), 8);
 
         // Open ports across services.
         let mut ports: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();

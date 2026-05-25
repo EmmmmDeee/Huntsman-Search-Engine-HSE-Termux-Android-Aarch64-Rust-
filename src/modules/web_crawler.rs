@@ -232,13 +232,11 @@ async fn fetch_robots(http: &reqwest::Client, seed: &Url, rules: &mut Vec<String
         if lower.starts_with("user-agent:") {
             let agent = lower.strip_prefix("user-agent:").unwrap_or("").trim();
             in_wildcard_agent = agent == "*" || agent.contains("huntsman");
-        } else if in_wildcard_agent && lower.starts_with("disallow:") {
-            if let Some(path) = trimmed.split_once(':').map(|(_, p)| p.trim()) {
-                if !path.is_empty() {
+        } else if in_wildcard_agent && lower.starts_with("disallow:")
+            && let Some(path) = trimmed.split_once(':').map(|(_, p)| p.trim())
+                && !path.is_empty() {
                     rules.push(path.to_string());
                 }
-            }
-        }
     }
 }
 
@@ -435,7 +433,7 @@ fn extract_phones(body: &str, phones: &mut HashSet<String>) {
                 }
                 i += 1;
             }
-            if digits >= 7 && digits <= 15 {
+            if (7..=15).contains(&digits) {
                 let raw = &body[start..i];
                 let cleaned: String = raw.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect();
                 phones.insert(cleaned);

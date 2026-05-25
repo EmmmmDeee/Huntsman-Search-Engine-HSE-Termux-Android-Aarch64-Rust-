@@ -99,14 +99,7 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         std::collections::BTreeMap::new();
     let mut total_entities = 0u64;
     for scan in &scans {
-        let key = match scan.status {
-            crate::core::scan::ScanStatus::Pending => "pending",
-            crate::core::scan::ScanStatus::Running => "running",
-            crate::core::scan::ScanStatus::Complete => "complete",
-            crate::core::scan::ScanStatus::Failed => "failed",
-            crate::core::scan::ScanStatus::Aborted => "aborted",
-        };
-        *by_status.entry(key).or_insert(0) += 1;
+        *by_status.entry(scan.status.as_str()).or_insert(0) += 1;
         total_entities += scan.entity_count as u64;
     }
     let modules = s.engine.modules().len();

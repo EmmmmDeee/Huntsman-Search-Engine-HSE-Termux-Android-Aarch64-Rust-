@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::{Entity, Evidence},
     error::Result,
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -122,12 +122,7 @@ impl Module for IpQs {
             return Ok(ModuleResult::new());
         }
 
-        let kind = match target.kind {
-            TargetKind::IpAddress => EntityKind::IpAddress,
-            TargetKind::Email => EntityKind::Email,
-            TargetKind::Phone => EntityKind::Phone,
-            _ => unreachable!(),
-        };
+        let kind = target.kind.to_entity_kind();
         let mut entity = Entity::new(kind, value, 0.85, &ctx.scan_id);
         entity.tag("ipqs");
 

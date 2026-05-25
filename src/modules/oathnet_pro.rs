@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::{Entity, Evidence},
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -160,23 +160,12 @@ impl Module for OathnetPro {
             .filter_map(|i| i.indexed_at.as_deref())
             .max();
 
-        let mut dbname_counts: std::collections::BTreeMap<&str, u32> =
-            std::collections::BTreeMap::new();
-        for item in &data.items {
-            if let Some(db) = item.dbname.as_deref() {
-                *dbname_counts.entry(db).or_insert(0) += 1;
-            }
-        }
-        let mut ranked: Vec<(&str, u32)> = dbname_counts.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        ranked.truncate(MAX_DBNAMES);
-        let top_dbnames = ranked
-            .iter()
-            .map(|(db, n)| format!("{db}×{n}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let top_dbnames = crate::util::freq::top_n(
+            data.items.iter().filter_map(|item| item.dbname.as_deref()),
+            MAX_DBNAMES,
+        );
 
-        let kind = entity_kind_for(target.kind);
+        let kind = target.kind.to_entity_kind();
         let mut entity = Entity::new(kind, &target.value, 0.85, &ctx.scan_id);
         entity.tag("breach");
         entity.tag("oathnet-pro");
@@ -210,23 +199,10 @@ impl Module for OathnetPro {
     }
 }
 
-fn entity_kind_for(t: TargetKind) -> EntityKind {
-    match t {
-        TargetKind::Email => EntityKind::Email,
-        TargetKind::Username => EntityKind::Username,
-        TargetKind::Phone => EntityKind::Phone,
-        TargetKind::IpAddress => EntityKind::IpAddress,
-        TargetKind::Domain => EntityKind::Domain,
-        // accepts() gates the call sites, so other kinds are unreachable
-        // in practice; map to Other rather than panic for defensiveness
-        // at the trait boundary.
-        _ => EntityKind::Other("unknown".to_string()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::entity::EntityKind;
 
     #[test]
     fn accepts_identity_and_infra_kinds() {
@@ -258,8 +234,8 @@ mod tests {
 
     #[test]
     fn entity_kind_mapping_is_total_for_accepted_targets() {
-        // Every kind accept()s on must map to a concrete EntityKind,
-        // not the Other("unknown") fallback.
+        // Every kind accept()s on must map to a concrete EntityKind
+        // via the canonical TargetKind::to_entity_kind() method.
         for (tk, ek) in [
             (TargetKind::Email, EntityKind::Email),
             (TargetKind::Username, EntityKind::Username),
@@ -267,7 +243,7 @@ mod tests {
             (TargetKind::IpAddress, EntityKind::IpAddress),
             (TargetKind::Domain, EntityKind::Domain),
         ] {
-            assert_eq!(entity_kind_for(tk), ek);
+            assert_eq!(tk.to_entity_kind(), ek);
         }
     }
 }

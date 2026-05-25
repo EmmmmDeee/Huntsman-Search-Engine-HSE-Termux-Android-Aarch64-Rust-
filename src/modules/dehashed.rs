@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::{Entity, Evidence},
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -111,33 +111,16 @@ impl Module for DeHashed {
             return Ok(ModuleResult::new());
         }
 
-        let kind = match target.kind {
-            TargetKind::Email => EntityKind::Email,
-            TargetKind::Username => EntityKind::Username,
-            TargetKind::Phone => EntityKind::Phone,
-            TargetKind::IpAddress => EntityKind::IpAddress,
-            TargetKind::Domain => EntityKind::Domain,
-            _ => unreachable!(),
-        };
+        let kind = target.kind.to_entity_kind();
         let mut entity = Entity::new(kind, value, 0.88, &ctx.scan_id);
         entity.tag("breach");
         entity.tag("dehashed");
 
         // Top databases by frequency (capped at 5).
-        let mut counts: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
-        for e in &entries {
-            if let Some(db) = e.database_name.as_deref().or(e.obtained_from.as_deref()) {
-                *counts.entry(db).or_insert(0) += 1;
-            }
-        }
-        let mut ranked: Vec<(&str, u32)> = counts.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let top = ranked
-            .iter()
-            .take(5)
-            .map(|(db, n)| format!("{db}×{n}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let top = crate::util::freq::top_n(
+            entries.iter().filter_map(|e| e.database_name.as_deref().or(e.obtained_from.as_deref())),
+            5,
+        );
 
         let mut ev = Evidence::new(
             "dehashed",

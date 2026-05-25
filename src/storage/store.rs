@@ -130,7 +130,7 @@ impl Store {
                 scan.id,
                 scan.target.kind.canonical_str(),
                 scan.target.value,
-                format!("{:?}", scan.status).to_lowercase(),
+                scan.status.as_str(),
                 scan.started_at as i64,
                 scan.finished_at.map(|t| t as i64),
                 scan.entity_count as i64,

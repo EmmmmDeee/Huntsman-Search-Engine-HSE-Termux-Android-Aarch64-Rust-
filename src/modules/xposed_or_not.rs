@@ -165,12 +165,11 @@ fn build_result(
         .with_attr("breaches", joined);
 
     if let Some(a) = analytics {
-        if let Some(pastes) = a.pastes_summary.as_ref().and_then(|p| p.cnt) {
-            if pastes > 0 {
+        if let Some(pastes) = a.pastes_summary.as_ref().and_then(|p| p.cnt)
+            && pastes > 0 {
                 ev = ev.with_attr("paste_count", pastes.to_string());
                 entity.tag("paste-exposed");
             }
-        }
         if let Some(details) = a
             .exposed_breaches
             .as_ref()

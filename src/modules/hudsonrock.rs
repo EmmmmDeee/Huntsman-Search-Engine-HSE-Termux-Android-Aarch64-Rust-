@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::{Entity, Evidence},
     error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -96,12 +96,7 @@ impl Module for HudsonRock {
             return Ok(ModuleResult::new());
         }
 
-        let kind = match target.kind {
-            TargetKind::Email => EntityKind::Email,
-            TargetKind::Username => EntityKind::Username,
-            TargetKind::Domain => EntityKind::Domain,
-            _ => unreachable!(),
-        };
+        let kind = target.kind.to_entity_kind();
 
         let confidence = compute_confidence(&data.stealers);
         let mut entity = Entity::new(kind, &target.value, confidence, &ctx.scan_id);
@@ -187,7 +182,7 @@ fn parse_iso_epoch(s: &str) -> Option<u64> {
     let year: u64 = parts.next()?.parse().ok()?;
     let month: u64 = parts.next()?.parse().ok()?;
     let day: u64 = parts.next()?.parse().ok()?;
-    if year < 2000 || month < 1 || month > 12 || day < 1 || day > 31 {
+    if year < 2000 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
     let days_approx = (year - 1970) * 365 + (month - 1) * 30 + day;

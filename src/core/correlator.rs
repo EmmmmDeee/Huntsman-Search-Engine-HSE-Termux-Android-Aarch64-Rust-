@@ -347,7 +347,7 @@ fn parse_date_approx(s: &str) -> Option<u64> {
     let year: u64 = parts.next()?.parse().ok()?;
     let month: u64 = parts.next()?.parse().ok()?;
     let day: u64 = parts.next()?.parse().ok()?;
-    if year < 2000 || month < 1 || month > 12 || day < 1 || day > 31 {
+    if year < 2000 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
     let days_approx = (year - 1970) * 365 + (month - 1) * 30 + day;

@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::{Entity, Evidence},
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -164,14 +164,7 @@ impl Module for IntelX {
             return Ok(ModuleResult::new());
         }
 
-        let kind = match target.kind {
-            TargetKind::Email => EntityKind::Email,
-            TargetKind::Username => EntityKind::Username,
-            TargetKind::Phone => EntityKind::Phone,
-            TargetKind::Domain => EntityKind::Domain,
-            TargetKind::IpAddress => EntityKind::IpAddress,
-            _ => unreachable!(),
-        };
+        let kind = target.kind.to_entity_kind();
         let mut entity = Entity::new(kind, value, 0.86, &ctx.scan_id);
         entity.tag("intelx");
         entity.tag("indicator");
@@ -189,7 +182,7 @@ impl Module for IntelX {
             }
         }
         let mut top_buckets: Vec<(&str, u32)> = bucket_counts.into_iter().collect();
-        top_buckets.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        top_buckets.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
         let top = top_buckets
             .iter()
             .take(5)
