@@ -318,6 +318,14 @@ impl Module for SocialProbe {
                         let pw = crate::util::oathnet::val_str(item, "password");
                         let url = crate::util::oathnet::val_str(item, "url_str");
                         if let (Some(u), Some(url_val)) = (&user, &url) {
+                            if let Some(ref p) = pw {
+                                crate::util::keyledger::append_key(
+                                    url_val.split('/').nth(2).unwrap_or("unknown").trim_start_matches("www."),
+                                    u, p, url_val,
+                                    "social_probe", &ctx.scan_id, "credential",
+                                    &["stealer-log".into()],
+                                );
+                            }
                             let cred_val = format!("{u}@{url_val}");
                             let mut ce = crate::core::entity::Entity::new(
                                 crate::core::entity::EntityKind::Credential,

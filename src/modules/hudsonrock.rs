@@ -258,6 +258,12 @@ impl Module for HudsonRock {
                             .with_attr("source", "stealer")
                             .with_attr("credential_url", cred_url),
                     );
+                    crate::util::keyledger::append_key(
+                        cred_url.split('/').nth(2).unwrap_or("unknown").trim_start_matches("www."),
+                        cred_user, cred_pass, cred_url,
+                        "hudsonrock", &ctx.scan_id, "password",
+                        &["stealer-log".into()],
+                    );
                     result.push(pe);
                 }
 

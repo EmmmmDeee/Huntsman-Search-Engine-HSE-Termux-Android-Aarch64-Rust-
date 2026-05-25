@@ -1110,6 +1110,9 @@ fn extract_breach_entities(
         result.push(e);
     }
 
+    let db_name = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
+    let acct_user = val_str(item, "username").or_else(|| val_str(item, "email")).unwrap_or_default();
+
     if let Some(pw) = val_str(item, "password")
         && pw.len() >= 4
         && seen.insert(format!("@pw:{}", pw.to_lowercase()))
@@ -1119,6 +1122,11 @@ fn extract_breach_entities(
         e.tag("oathnet-pro");
         e.tag(tags::PASSWORD_AT_RISK);
         e.add_evidence(ev.clone());
+        crate::util::keyledger::append_key(
+            &db_name, &acct_user, &pw, "",
+            "oathnet_pro", scan_id, "password",
+            &[tags::BREACH.into(), format!("db:{db_name}")],
+        );
         result.push(e);
     }
 
@@ -1138,6 +1146,11 @@ fn extract_breach_entities(
             else { "unknown" };
         e.tag(format!("hash:{algo}"));
         e.add_evidence(ev.clone());
+        crate::util::keyledger::append_key(
+            &db_name, &acct_user, &hash, "",
+            "oathnet_pro", scan_id, "password_hash",
+            &[tags::BREACH.into(), format!("hash:{algo}"), format!("db:{db_name}")],
+        );
         result.push(e);
     }
 
@@ -1260,7 +1273,6 @@ fn extract_stealer_entities(
         result.push(e);
     }
 
-    // Password/hash entities from stealer data — searchable pivoting artifacts
     if let Some(pw) = val_str(item, "password")
         && pw.len() >= 4
         && seen.insert(format!("@stealer-pw:{}", pw.to_lowercase()))
@@ -1270,6 +1282,14 @@ fn extract_stealer_entities(
         e.tag(tags::STEALER_LOG);
         e.tag(tags::PASSWORD_AT_RISK);
         e.add_evidence(ev.clone());
+        let stl_url = val_str(item, "url_str").unwrap_or_default();
+        let stl_svc = stl_url.split('/').nth(2).unwrap_or("unknown").trim_start_matches("www.");
+        let stl_user = val_str(item, "username").unwrap_or_default();
+        crate::util::keyledger::append_key(
+            stl_svc, &stl_user, &pw, &stl_url,
+            "oathnet_pro", scan_id, "password",
+            &[tags::STEALER_LOG.into(), format!("service:{stl_svc}")],
+        );
         result.push(e);
     }
 
