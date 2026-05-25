@@ -84,7 +84,6 @@ impl Module for BgpView {
         25
     }
 
-
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Asn | TargetKind::IpAddress)
     }

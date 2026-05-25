@@ -56,7 +56,6 @@ impl Module for AlienVaultOtx {
         78
     }
 
-
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress | TargetKind::Domain)
     }

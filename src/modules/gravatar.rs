@@ -77,7 +77,6 @@ impl Module for Gravatar {
         85
     }
 
-
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email)
     }

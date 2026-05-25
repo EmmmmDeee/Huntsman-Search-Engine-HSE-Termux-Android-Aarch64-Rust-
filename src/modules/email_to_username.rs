@@ -26,7 +26,6 @@ impl Module for EmailToUsername {
         95
     }
 
-
     fn is_passive(&self) -> bool {
         true
     }

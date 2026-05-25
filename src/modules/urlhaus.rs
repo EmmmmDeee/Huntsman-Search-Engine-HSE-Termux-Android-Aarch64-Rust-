@@ -74,7 +74,6 @@ impl Module for UrlHaus {
         110
     }
 
-
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
     }
