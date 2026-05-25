@@ -431,6 +431,26 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
             apply_breach_evidence(result, uname, &hits, &scan_id);
         }
     }
+
+    // Store any API credentials found in breach/stealer results
+    for email in &emails {
+        if ctx.cancel.is_cancelled() {
+            break;
+        }
+        if let Ok(items) = crate::util::oathnet::search(
+            key,
+            crate::util::oathnet::paths::STEALER,
+            "email",
+            email,
+            10,
+        )
+        .await
+        {
+            for item in &items {
+                crate::modules::oathnet_pro::store_api_credential_from_item(item);
+            }
+        }
+    }
 }
 
 fn apply_breach_evidence(
