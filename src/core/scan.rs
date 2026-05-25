@@ -31,12 +31,12 @@ impl TargetKind {
             EntityKind::Address => Some(Self::Address),
             EntityKind::ApiKey => Some(Self::ApiKey),
             EntityKind::Credential => Some(Self::ApiKey), // Credentials expand as API key searches
+            EntityKind::Password => Some(Self::ApiKey),
             EntityKind::Organisation
             | EntityKind::AbnAcn
             | EntityKind::MacAddress
             | EntityKind::DeviceId
             | EntityKind::Url
-            | EntityKind::Password
             | EntityKind::Other(_) => None,
         }
     }
@@ -362,7 +362,6 @@ mod tests {
     fn unscannable_entity_kinds_return_none() {
         assert!(TargetKind::from_entity_kind(&EntityKind::Organisation).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::MacAddress).is_none());
-        assert!(TargetKind::from_entity_kind(&EntityKind::Password).is_none());
     }
 
     #[test]

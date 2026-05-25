@@ -193,6 +193,79 @@ impl Module for HudsonRock {
             }
         }
 
+        // Extract individual credentials as Credential + Password entities
+        let mut seen_creds: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for stealer in &data.stealers {
+            for cred in &stealer.credentials {
+                let cred_url = cred.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                let cred_user = cred.get("username").and_then(|v| v.as_str()).unwrap_or("");
+                let cred_pass = cred.get("password").and_then(|v| v.as_str()).unwrap_or("");
+
+                if !cred_user.is_empty() && !cred_url.is_empty() {
+                    let cred_val = format!("{cred_user}@{cred_url}");
+                    if seen_creds.insert(cred_val.to_lowercase()) {
+                        let mut ce = crate::core::entity::Entity::new(
+                            crate::core::entity::EntityKind::Credential,
+                            &cred_val,
+                            0.60,
+                            &ctx.scan_id,
+                        );
+                        ce.tag(tags::STEALER_LOG);
+                        ce.tag("credential-exposed");
+                        ce.add_evidence(
+                            Evidence::new("hudsonrock", format!("Stolen credential for {cred_url}"))
+                                .with_attr("source", "stealer")
+                                .with_attr("username", cred_user)
+                                .with_attr("password", cred_pass)
+                                .with_attr("url", cred_url)
+                                .with_opt_attr("stealer_family", stealer.stealer_family.as_deref()),
+                        );
+                        result.push(ce);
+                    }
+                }
+
+                // Create Password entity for cross-correlation pivoting
+                if cred_pass.len() >= 4 && seen_creds.insert(format!("@pw:{}", cred_pass.to_lowercase())) {
+                    let mut pe = crate::core::entity::Entity::new(
+                        crate::core::entity::EntityKind::Password,
+                        cred_pass,
+                        0.55,
+                        &ctx.scan_id,
+                    );
+                    pe.tag(tags::STEALER_LOG);
+                    pe.tag(tags::PASSWORD_AT_RISK);
+                    pe.add_evidence(
+                        Evidence::new("hudsonrock", "Password from stealer log")
+                            .with_attr("source", "stealer")
+                            .with_attr("credential_url", cred_url),
+                    );
+                    result.push(pe);
+                }
+
+                // Create Email entities from credential usernames that look like emails
+                if cred_user.contains('@') && cred_user.len() >= 5
+                    && seen_creds.insert(format!("@cred-email:{}", cred_user.to_lowercase()))
+                {
+                    let mut email_ent = crate::core::entity::Entity::new(
+                        crate::core::entity::EntityKind::Email,
+                        cred_user,
+                        0.60,
+                        &ctx.scan_id,
+                    );
+                    email_ent.tag(tags::STEALER_LOG);
+                    email_ent.tag(tags::BREACH);
+                    email_ent.tag(tags::PASSWORD_AT_RISK);
+                    email_ent.add_evidence(
+                        Evidence::new("hudsonrock", format!("Email credential stolen from {cred_url}"))
+                            .with_attr("source", "stealer")
+                            .with_attr("password", cred_pass)
+                            .with_attr("url", cred_url),
+                    );
+                    result.push(email_ent);
+                }
+            }
+        }
+
         // OathNet stealer cross-reference for deeper breach intel
         let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
         if !ctx.cancel.is_cancelled() {

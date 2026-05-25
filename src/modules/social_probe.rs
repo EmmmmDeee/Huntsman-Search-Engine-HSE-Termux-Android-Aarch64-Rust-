@@ -311,6 +311,35 @@ impl Module for SocialProbe {
                             break;
                         }
                     }
+
+                    // Create Credential entities from stealer data for pivot chain
+                    for item in items.iter().take(5) {
+                        let user = crate::util::oathnet::val_str(item, "username");
+                        let pw = crate::util::oathnet::val_str(item, "password");
+                        let url = crate::util::oathnet::val_str(item, "url_str");
+                        if let (Some(u), Some(url_val)) = (&user, &url) {
+                            let cred_val = format!("{u}@{url_val}");
+                            let mut ce = crate::core::entity::Entity::new(
+                                crate::core::entity::EntityKind::Credential,
+                                &cred_val,
+                                0.55,
+                                &ctx.scan_id,
+                            );
+                            ce.tag(crate::core::tags::STEALER_LOG);
+                            ce.tag("credential-exposed");
+                            ce.add_evidence(
+                                crate::core::entity::Evidence::new(
+                                    "social_probe:oathnet",
+                                    format!("Stolen credential for {}", target.value),
+                                )
+                                .with_attr("source", "stealer")
+                                .with_opt_attr("username", user.clone())
+                                .with_opt_attr("password", pw)
+                                .with_opt_attr("url", url),
+                            );
+                            result.push(ce);
+                        }
+                    }
                 }
             }
         }

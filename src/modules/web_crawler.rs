@@ -240,6 +240,35 @@ impl Module for WebCrawler {
                             }
                         }
                     }
+
+                    // Extract stolen credentials as Credential entities
+                    for item in stealer_items.iter().take(10) {
+                        let user = crate::util::oathnet::val_str(item, "username");
+                        let pw = crate::util::oathnet::val_str(item, "password");
+                        let url = crate::util::oathnet::val_str(item, "url_str");
+                        if let (Some(u), Some(url_val)) = (&user, &url) {
+                            let cred_val = format!("{u}@{url_val}");
+                            let mut ce = Entity::new(
+                                EntityKind::Credential,
+                                &cred_val,
+                                0.55,
+                                &ctx.scan_id,
+                            );
+                            ce.tag(tags::STEALER_LOG);
+                            ce.tag("credential-exposed");
+                            ce.add_evidence(
+                                Evidence::new(
+                                    "web_crawler:oathnet",
+                                    format!("Stolen credential for {}", target.value),
+                                )
+                                .with_attr("source", "stealer")
+                                .with_opt_attr("username", user.clone())
+                                .with_opt_attr("password", pw)
+                                .with_opt_attr("url", url),
+                            );
+                            state.result.push(ce);
+                        }
+                    }
                 }
             }
         }

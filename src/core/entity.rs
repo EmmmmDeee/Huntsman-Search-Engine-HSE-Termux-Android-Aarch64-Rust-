@@ -39,7 +39,7 @@ pub enum EntityKind {
 
     // Document / credential
     Credential,
-    Password, // never stored in evidence output
+    Password,
     ApiKey,
 
     // Network / infrastructure
@@ -128,9 +128,9 @@ impl fmt::Display for Classification {
 pub struct Evidence {
     /// Module that produced this evidence.
     pub source: String,
-    /// Human-readable summary. Passwords MUST NOT appear here.
+    /// Human-readable summary.
     pub summary: String,
-    /// Raw key/value pairs from the module (no passwords).
+    /// Raw key/value pairs from the module.
     #[serde(default)]
     pub attributes: HashMap<String, String>,
     /// Unix timestamp (seconds) when evidence was recorded.
@@ -265,7 +265,7 @@ impl Entity {
 
     // ── Evidence ────────────────────────────────────────────────────────────
 
-    /// Append evidence. Passwords must be stripped before calling.
+    /// Append evidence.
     pub fn add_evidence(&mut self, ev: Evidence) {
         self.evidence.push(ev);
     }
@@ -405,7 +405,7 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             }
             out
         }
-        EntityKind::Credential => {
+        EntityKind::Credential | EntityKind::Password => {
             let trimmed = value.trim();
             trimmed.to_lowercase()
         }

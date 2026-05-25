@@ -371,6 +371,52 @@ impl Module for OathnetPro {
             }
         }
 
+        // Phase 8b: OSINT service credential exposure scan
+        if !ctx.cancel.is_cancelled() {
+            let harvested = oathnet::harvest_credentials(key).await;
+            for (service, username, password, url) in &harvested {
+                if ctx.cancel.is_cancelled() {
+                    break;
+                }
+                let key_value = format!("{username}@{service}");
+                if seen.insert(format!("@harvested:{}", key_value.to_lowercase())) {
+                    let mut e = Entity::new(EntityKind::ApiKey, &key_value, 0.75, &ctx.scan_id);
+                    e.tag("oathnet-pro");
+                    e.tag(tags::STEALER_LOG);
+                    e.tag(tags::API_KEY_EXPOSED);
+                    e.tag(tags::SERVICE_CREDENTIAL);
+                    e.tag(format!("service:{service}"));
+                    e.add_evidence(
+                        Evidence::new(
+                            "oathnet_pro",
+                            format!("Compromised {service} credential from stealer logs"),
+                        )
+                        .with_attr("service", service)
+                        .with_attr("credential_username", username)
+                        .with_attr("credential_password", password)
+                        .with_attr("credential_url", url)
+                        .with_attr("source", "stealer-harvest"),
+                    );
+                    result.push(e);
+
+                    // Also create a Password entity for the credential password
+                    if password.len() >= 4 && seen.insert(format!("@harvest-pw:{}", password.to_lowercase())) {
+                        let mut pw_ent = Entity::new(EntityKind::Password, password, 0.65, &ctx.scan_id);
+                        pw_ent.tag("oathnet-pro");
+                        pw_ent.tag(tags::STEALER_LOG);
+                        pw_ent.tag(tags::PASSWORD_AT_RISK);
+                        pw_ent.tag(format!("service:{service}"));
+                        pw_ent.add_evidence(
+                            Evidence::new("oathnet_pro", format!("Stolen password for {service}"))
+                                .with_attr("service", service)
+                                .with_attr("source", "stealer-harvest"),
+                        );
+                        result.push(pw_ent);
+                    }
+                }
+            }
+        }
+
         // Synergy: tag victim domain with breach if employee credentials found
         if target.kind == TargetKind::Domain {
             let domain_lower = target.value.to_lowercase();
@@ -422,17 +468,11 @@ fn breach_evidence(item: &Value) -> Evidence {
         ("occupation", "occupation"),
         ("employer", "employer"),
         ("education", "education"),
+        ("password", "password"),
+        ("password_hash", "password_hash"),
+        ("salt", "salt"),
     ] {
         ev = ev.with_opt_attr(attr, val_str(item, field));
-    }
-    if val_str(item, "password").is_some() {
-        ev = ev.with_attr("password_exposed", "true");
-    }
-    if val_str(item, "password_hash").is_some() {
-        ev = ev.with_attr("hash_exposed", "true");
-    }
-    if val_str(item, "salt").is_some() {
-        ev = ev.with_attr("salt_present", "true");
     }
     if let Some(age) = item.get("age") {
         let s = if age.is_number() {
@@ -538,6 +578,37 @@ fn extract_breach_entities(
         result.push(e);
     }
 
+    if let Some(pw) = val_str(item, "password")
+        && pw.len() >= 4
+        && seen.insert(format!("@pw:{}", pw.to_lowercase()))
+    {
+        let mut e = Entity::new(EntityKind::Password, &pw, conf(0.65), scan_id);
+        e.tag(tags::BREACH);
+        e.tag("oathnet-pro");
+        e.tag(tags::PASSWORD_AT_RISK);
+        e.add_evidence(ev.clone());
+        result.push(e);
+    }
+
+    if let Some(hash) = val_str(item, "password_hash")
+        && hash.len() >= 16
+        && seen.insert(format!("@hash:{}", hash.to_lowercase()))
+    {
+        let mut e = Entity::new(EntityKind::Password, &hash, conf(0.60), scan_id);
+        e.tag(tags::BREACH);
+        e.tag("oathnet-pro");
+        e.tag("hash");
+        let algo = if hash.len() == 32 { "md5" }
+            else if hash.len() == 40 { "sha1" }
+            else if hash.len() == 64 { "sha256" }
+            else if hash.starts_with("$2") { "bcrypt" }
+            else if hash.starts_with("$argon2") { "argon2" }
+            else { "unknown" };
+        e.tag(format!("hash:{algo}"));
+        e.add_evidence(ev.clone());
+        result.push(e);
+    }
+
     if let Some(country) = val_str(item, "country")
         && seen.insert(format!("@country:{country}"))
     {
@@ -623,7 +694,7 @@ fn extract_stealer_entities(
         .with_attr("source", "stealer")
         .with_opt_attr("url", val_str(item, "url_str"))
         .with_opt_attr("log_id", val_str(item, "log_id"))
-        .with_attr("password_exposed", if val_str(item, "password").is_some() { "true" } else { "false" })
+        .with_opt_attr("password", val_str(item, "password"))
         .with_opt_attr("username", val_str(item, "username"));
 
     if let Some(emails) = item.get("email").and_then(|v| v.as_array()) {
@@ -652,6 +723,19 @@ fn extract_stealer_entities(
         e.tag("oathnet-pro");
         e.tag(tags::STEALER_LOG);
         e.tag("credential-exposed");
+        e.add_evidence(ev.clone());
+        result.push(e);
+    }
+
+    // Password/hash entities from stealer data — searchable pivoting artifacts
+    if let Some(pw) = val_str(item, "password")
+        && pw.len() >= 4
+        && seen.insert(format!("@stealer-pw:{}", pw.to_lowercase()))
+    {
+        let mut e = Entity::new(EntityKind::Password, &pw, 0.55, scan_id);
+        e.tag("oathnet-pro");
+        e.tag(tags::STEALER_LOG);
+        e.tag(tags::PASSWORD_AT_RISK);
         e.add_evidence(ev.clone());
         result.push(e);
     }
@@ -1220,8 +1304,8 @@ mod tests {
         assert!(ev.attributes.contains_key("twitter"));
         assert!(ev.attributes.contains_key("linkedin"));
         assert!(ev.attributes.contains_key("facebook"));
-        assert!(ev.attributes.contains_key("password_exposed"));
-        assert!(ev.attributes.contains_key("hash_exposed"));
+        assert!(ev.attributes.contains_key("password"));
+        assert!(ev.attributes.contains_key("password_hash"));
     }
 
     #[test]
