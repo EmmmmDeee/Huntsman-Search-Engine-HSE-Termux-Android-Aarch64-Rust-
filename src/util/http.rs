@@ -86,21 +86,26 @@ pub async fn fetch_json<T: DeserializeOwned>(
     module: &'static str,
     url: &str,
 ) -> Result<T> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| Error::module(module, e.to_string()))?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(Error::module(
-            module,
-            format!("HTTP {status}: {}", error_snippet(resp).await),
-        ));
+    match client.get(url).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if !status.is_success() {
+                return Err(Error::module(
+                    module,
+                    format!("HTTP {status}: {}", error_snippet(resp).await),
+                ));
+            }
+            resp.json::<T>()
+                .await
+                .map_err(|e| Error::module(module, e.to_string()))
+        }
+        Err(_) => {
+            match super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await {
+                Some(data) => Ok(data),
+                None => Err(Error::module(module, format!("request failed for {url} (reqwest + curl)"))),
+            }
+        }
     }
-    resp.json::<T>()
-        .await
-        .map_err(|e| Error::module(module, e.to_string()))
 }
 
 /// Like [`fetch_json`] but maps `404 Not Found` to `Ok(None)` — the
@@ -116,26 +121,26 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
     module: &'static str,
     url: &str,
 ) -> Result<Option<T>> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| Error::module(module, e.to_string()))?;
-    let status = resp.status();
-    if status.as_u16() == 404 {
-        return Ok(None);
+    match client.get(url).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.as_u16() == 404 {
+                return Ok(None);
+            }
+            if !status.is_success() {
+                return Err(Error::module(
+                    module,
+                    format!("HTTP {status}: {}", error_snippet(resp).await),
+                ));
+            }
+            let data = resp.json::<T>().await
+                .map_err(|e| Error::module(module, e.to_string()))?;
+            Ok(Some(data))
+        }
+        Err(_) => {
+            Ok(super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await)
+        }
     }
-    if !status.is_success() {
-        return Err(Error::module(
-            module,
-            format!("HTTP {status}: {}", error_snippet(resp).await),
-        ));
-    }
-    let data = resp
-        .json::<T>()
-        .await
-        .map_err(|e| Error::module(module, e.to_string()))?;
-    Ok(Some(data))
 }
 
 /// Percent-encode a single URL path or query-string component using the

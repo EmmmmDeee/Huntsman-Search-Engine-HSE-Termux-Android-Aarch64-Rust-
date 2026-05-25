@@ -95,7 +95,7 @@ impl Module for SearchEngines {
                     break;
                 }
                 let url = (engine.build_url)(query);
-                if let Some(mut results) = fetch_and_parse(&ctx.http, &url, engine.name, query).await {
+                if let Some(mut results) = fetch_and_parse(&url, engine.name, query).await {
                     all_results.append(&mut results);
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS)).await;
@@ -115,23 +115,23 @@ struct EngineSpec {
 
 const ENGINES: &[EngineSpec] = &[
     EngineSpec {
+        name: "bing",
+        build_url: |q| format!(
+            "https://www.bing.com/search?q={}",
+            crate::util::http::urlencode(q)
+        ),
+    },
+    EngineSpec {
+        name: "yahoo",
+        build_url: |q| format!(
+            "https://search.yahoo.com/search?p={}",
+            crate::util::http::urlencode(q)
+        ),
+    },
+    EngineSpec {
         name: "duckduckgo",
         build_url: |q| format!(
             "https://html.duckduckgo.com/html/?q={}",
-            crate::util::http::urlencode(q)
-        ),
-    },
-    EngineSpec {
-        name: "startpage",
-        build_url: |q| format!(
-            "https://www.startpage.com/sp/search?query={}",
-            crate::util::http::urlencode(q)
-        ),
-    },
-    EngineSpec {
-        name: "mojeek",
-        build_url: |q| format!(
-            "https://www.mojeek.com/search?q={}",
             crate::util::http::urlencode(q)
         ),
     },
@@ -143,9 +143,9 @@ const ENGINES: &[EngineSpec] = &[
         ),
     },
     EngineSpec {
-        name: "yahoo",
+        name: "mojeek",
         build_url: |q| format!(
-            "https://search.yahoo.com/search?p={}",
+            "https://www.mojeek.com/search?q={}",
             crate::util::http::urlencode(q)
         ),
     },
@@ -196,28 +196,12 @@ fn build_queries(target: &Target) -> Vec<String> {
 
 // ─── Fetch + parse ──────────────────────────────────────────────────────────
 
-const BROWSER_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36";
-
 async fn fetch_and_parse(
-    _http: &reqwest::Client,
     url: &str,
     engine: &'static str,
     query: &str,
 ) -> Option<Vec<SearchResult>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .user_agent(BROWSER_UA)
-        .build()
-        .ok()?;
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let body = resp.text().await.ok()?;
+    let body = crate::util::curl::fetch(url, 10_000).await?;
     if body.len() < 500 {
         return None;
     }
@@ -392,22 +376,35 @@ fn canonicalize_url(url: &str) -> String {
     base.trim_end_matches('/').to_string()
 }
 
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() { return s.len(); }
+    while i > 0 && !s.is_char_boundary(i) { i -= 1; }
+    i
+}
+
+fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() { return s.len(); }
+    while i < s.len() && !s.is_char_boundary(i) { i += 1; }
+    i
+}
+
 fn extract_surrounding_text(html: &str, anchor: &str, max_len: usize) -> String {
     let pos = match html.find(anchor) {
         Some(p) => p,
         None => return String::new(),
     };
-    let start = pos.saturating_sub(300);
-    let end = (pos + anchor.len() + 300).min(html.len());
+    let start = floor_char_boundary(html, pos.saturating_sub(300));
+    let end = ceil_char_boundary(html, (pos + anchor.len() + 300).min(html.len()));
     strip_tags(&html[start..end], max_len)
 }
 
 fn extract_snippet_near(html: &str, anchor: &str, max_len: usize) -> String {
-    let pos = match html.find(anchor) {
+    let raw = match html.find(anchor) {
         Some(p) => p + anchor.len(),
         None => return String::new(),
     };
-    let end = (pos + 800).min(html.len());
+    let pos = ceil_char_boundary(html, raw);
+    let end = ceil_char_boundary(html, (pos + 800).min(html.len()));
     strip_tags(&html[pos..end], max_len)
 }
 
