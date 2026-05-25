@@ -17,6 +17,8 @@ pub enum TargetKind {
     Asn,
     Coordinates,
     Address,
+    Organisation,
+    AbnAcn,
 }
 
 impl TargetKind {
@@ -37,9 +39,9 @@ impl TargetKind {
             EntityKind::Coordinates => Some(Self::Coordinates),
             EntityKind::Address => Some(Self::Address),
             EntityKind::Url => Some(Self::Url),
-            EntityKind::Organisation
-            | EntityKind::AbnAcn
-            | EntityKind::MacAddress
+            EntityKind::Organisation => Some(Self::Organisation),
+            EntityKind::AbnAcn => Some(Self::AbnAcn),
+            EntityKind::MacAddress
             | EntityKind::DeviceId
             | EntityKind::Credential
             | EntityKind::Password
@@ -60,6 +62,8 @@ impl TargetKind {
             Self::Asn => EntityKind::Asn,
             Self::Coordinates => EntityKind::Coordinates,
             Self::Address => EntityKind::Address,
+            Self::Organisation => EntityKind::Organisation,
+            Self::AbnAcn => EntityKind::AbnAcn,
         }
     }
 
@@ -86,6 +90,8 @@ impl TargetKind {
             Self::Asn => "asn",
             Self::Coordinates => "coordinates",
             Self::Address => "address",
+            Self::Organisation => "organisation",
+            Self::AbnAcn => "abn_acn",
         }
     }
 }
@@ -197,7 +203,11 @@ impl Target {
                 }
             }
             // Free-form text kinds: only the universal checks above apply.
-            TargetKind::Username | TargetKind::FullName | TargetKind::Address => {}
+            TargetKind::Username
+            | TargetKind::FullName
+            | TargetKind::Address
+            | TargetKind::Organisation
+            | TargetKind::AbnAcn => {}
         }
         Ok(())
     }
@@ -388,6 +398,8 @@ mod tests {
             TargetKind::Asn,
             TargetKind::Coordinates,
             TargetKind::Address,
+            TargetKind::Organisation,
+            TargetKind::AbnAcn,
         ] {
             let ek = tk.to_entity_kind();
             assert_eq!(TargetKind::from_entity_kind(&ek), Some(tk));
@@ -396,7 +408,6 @@ mod tests {
 
     #[test]
     fn unscannable_entity_kinds_return_none() {
-        assert!(TargetKind::from_entity_kind(&EntityKind::Organisation).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::MacAddress).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::Password).is_none());

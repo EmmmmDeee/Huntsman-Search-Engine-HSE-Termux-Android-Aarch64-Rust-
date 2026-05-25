@@ -129,7 +129,7 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
     // Probe each module against a dummy of every TargetKind to surface
     // which kinds it accepts. The wizard uses this to skip impossible
     // module/target combinations without round-tripping back to the API.
-    const ALL_KINDS: [TargetKind; 10] = [
+    const ALL_KINDS: [TargetKind; 12] = [
         TargetKind::Email,
         TargetKind::Username,
         TargetKind::Phone,
@@ -140,6 +140,8 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
         TargetKind::Asn,
         TargetKind::Coordinates,
         TargetKind::Address,
+        TargetKind::Organisation,
+        TargetKind::AbnAcn,
     ];
 
     let mods: Vec<Value> = s
