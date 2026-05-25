@@ -903,9 +903,12 @@ fn is_navigation_path(s: &str) -> bool {
     const EXACT: &[&str] = &[
         "about",
         "api",
+        "browse",
         "business",
+        "careers",
         "company",
         "contact",
+        "create",
         "events",
         "explore",
         "features",
@@ -913,24 +916,36 @@ fn is_navigation_path(s: &str) -> bool {
         "groups",
         "help",
         "home",
+        "jobs",
         "legal",
+        "live",
         "marketplace",
+        "media",
         "messenger",
         "myspace",
+        "news",
+        "notifications",
+        "people",
         "photos",
+        "popular",
         "posts",
         "privacy",
         "reel",
         "reels",
         "settings",
+        "shorts",
         "status",
         "stories",
+        "support",
         "tag",
         "tags",
         "terms",
+        "topics",
         "tpm",
         "trends",
+        "video",
         "videos",
+        "watch",
         "web",
         "wiki",
     ];
@@ -962,6 +977,24 @@ fn is_navigation_path(s: &str) -> bool {
         || s.starts_with("upload")
         || s.starts_with("discover")
         || CONTAINS.iter().any(|n| s.contains(n))
+}
+
+fn url_matches_target(url: &str, target: &Target) -> bool {
+    let path = url::Url::parse(url)
+        .ok()
+        .map(|u| u.path().to_lowercase())
+        .unwrap_or_default();
+    if path.len() < 4 {
+        return false;
+    }
+    let seed = match target.kind {
+        TargetKind::Email => target.value.split('@').next().unwrap_or(""),
+        _ => &target.value,
+    };
+    seed.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 4)
+        .any(|word| path.contains(word))
 }
 
 fn canonicalize_url(url: &str) -> String {
@@ -1193,6 +1226,32 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                 );
                 result.push(e);
             }
+        }
+
+        // Emit Url entities for high-value pages: people-search profiles
+        // and pages whose URL path contains target-related terms.
+        let is_people_search = [
+            "peekyou.com",
+            "spokeo.com",
+            "nuwber.com",
+            "whitepages.com",
+            "fastpeoplesearch.com",
+            "thatsthem.com",
+            "idcrawl.com",
+        ]
+        .iter()
+        .any(|ps| host.ends_with(ps));
+        let url_has_target = url_matches_target(&r.url, target);
+        if (url_has_target || is_people_search)
+            && seen_domains.insert(format!("@url:{}", canonicalize_url(&r.url)))
+        {
+            let mut e = Entity::new(EntityKind::Url, &r.url, 0.50, scan_id);
+            e.tag("search-discovered");
+            if is_people_search {
+                e.tag("people-search");
+            }
+            e.add_evidence(build_search_evidence(r));
+            result.push(e);
         }
 
         // Extract usernames and person names from social profile URLs
