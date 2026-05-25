@@ -356,6 +356,7 @@ fn build_queries(target: &Target) -> Vec<String> {
             format!("site:{v} filetype:pdf OR filetype:doc OR filetype:xls"),
             format!("\"{v}\" \"@{v}\""),
             format!("site:{v} inurl:login OR inurl:admin OR inurl:signin"),
+            format!("\"{v}\" ABN OR ACN OR \"Pty Ltd\" OR \"business number\""),
         ],
         TargetKind::Email => {
             let domain = v.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
@@ -413,6 +414,7 @@ fn build_queries(target: &Target) -> Vec<String> {
                      OR site:nuwber.com OR site:pipl.com"
                 ));
                 q.push(format!("\"{v}\" address OR location OR city OR suburb"));
+                q.push(format!("\"{v}\" ABN OR ACN OR \"Pty Ltd\" OR director"));
             }
             q
         }
@@ -993,6 +995,7 @@ fn is_navigation_path(s: &str) -> bool {
         "marketplace",
         "media",
         "messenger",
+        "music",
         "myspace",
         "news",
         "notifications",
@@ -1148,6 +1151,20 @@ fn score_username(
         .trim_start_matches("mobile.");
     if ql.contains(&format!("site:{host_base}")) {
         score += 1;
+    }
+
+    // Signal 5: semantic similarity — the username is structurally
+    // similar to a target term even without exact substring match.
+    // "jaydes" ↔ "jdespal" have partial bigram overlap. Threshold
+    // 0.25 catches abbreviations and character-transposed aliases.
+    if score == 0 {
+        let seed = match terms.first() {
+            Some(s) => s.as_str(),
+            None => "",
+        };
+        if bigram_similarity(username, seed) >= 0.25 {
+            score += 1;
+        }
     }
 
     let confidence = if score >= 3 { 0.55 } else { 0.30 };
@@ -1364,6 +1381,43 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             }
         }
 
+        // Extract ABN/ACN numbers from snippet text
+        for (num, kind_label) in extract_abn_acn_from_text(&combined_text) {
+            if seen_domains.insert(format!("@abn:{num}")) {
+                let mut e = Entity::new(EntityKind::AbnAcn, &num, 0.65, scan_id);
+                e.tag("search-discovered");
+                e.tag(kind_label);
+                e.add_evidence(
+                    Evidence::new(
+                        "search_engines",
+                        format!(
+                            "[{}] {} {} found on {} — {}",
+                            r.engine,
+                            kind_label,
+                            num,
+                            extract_host(&r.url),
+                            r.url
+                        ),
+                    )
+                    .with_attr("url", &r.url)
+                    .with_attr("engine", r.engine)
+                    .with_attr("number_type", kind_label),
+                );
+                result.push(e);
+            }
+        }
+
+        // Extract organisation names from snippet text
+        for org in extract_organisations_from_text(&combined_text, &terms) {
+            let org_key = org.to_lowercase();
+            if seen_domains.insert(format!("@org:{org_key}")) {
+                let mut e = Entity::new(EntityKind::Organisation, &org, 0.45, scan_id);
+                e.tag("search-discovered");
+                e.add_evidence(build_search_evidence(r));
+                result.push(e);
+            }
+        }
+
         // Extract addresses from snippet text (geolocation pivot)
         for addr in extract_addresses_from_text(&combined_text) {
             if seen_domains.insert(format!("@addr:{}", addr.to_lowercase())) {
@@ -1474,10 +1528,12 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                 EntityKind::Email => 1,
                 EntityKind::Username => 2,
                 EntityKind::Phone => 3,
-                EntityKind::Address => 4,
-                EntityKind::Url => 5,
-                EntityKind::Domain => 6,
-                _ => 7,
+                EntityKind::Organisation => 4,
+                EntityKind::AbnAcn => 5,
+                EntityKind::Address => 6,
+                EntityKind::Url => 7,
+                EntityKind::Domain => 8,
+                _ => 9,
             }
         }
         kind_rank(&a.kind)
@@ -1654,6 +1710,139 @@ fn extract_addresses_from_text(text: &str) -> Vec<String> {
     addrs
 }
 
+/// Extract Australian Business Numbers (11 digits) and Australian
+/// Company Numbers (9 digits) from text. ABNs are formatted as
+/// "XX XXX XXX XXX" or "XXXXXXXXXXX"; ACNs as "XXX XXX XXX".
+/// Returns (value, kind_label) pairs.
+fn extract_abn_acn_from_text(text: &str) -> Vec<(String, &'static str)> {
+    let mut results = Vec::new();
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut digits = Vec::new();
+        while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b' ') {
+            if bytes[i].is_ascii_digit() {
+                digits.push(bytes[i]);
+            }
+            i += 1;
+        }
+        if digits.len() == 11 {
+            let num: String = digits.iter().map(|&b| b as char).collect();
+            if is_valid_abn(&num) {
+                let before = text[..start].to_lowercase();
+                if before.ends_with("abn")
+                    || before.ends_with("abn ")
+                    || before.ends_with("abn: ")
+                    || before.ends_with("business number ")
+                {
+                    results.push((num, "ABN"));
+                }
+            }
+        } else if digits.len() == 9 {
+            let num: String = digits.iter().map(|&b| b as char).collect();
+            let before = text[..start].to_lowercase();
+            if before.ends_with("acn")
+                || before.ends_with("acn ")
+                || before.ends_with("acn: ")
+                || before.ends_with("company number ")
+            {
+                results.push((num, "ACN"));
+            }
+        }
+    }
+    results
+}
+
+fn is_valid_abn(s: &str) -> bool {
+    if s.len() != 11 {
+        return false;
+    }
+    let weights = [10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19];
+    let digits: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
+    if digits.len() != 11 {
+        return false;
+    }
+    let mut sum = 0u32;
+    for (i, &w) in weights.iter().enumerate() {
+        let d = if i == 0 {
+            digits[i].wrapping_sub(1)
+        } else {
+            digits[i]
+        };
+        sum += d * w;
+    }
+    sum.is_multiple_of(89)
+}
+
+/// Extract organisation names from text. Looks for patterns like
+/// "Pty Ltd", "Inc", "LLC", "Corporation" near the target context.
+fn extract_organisations_from_text(text: &str, terms: &[String]) -> Vec<String> {
+    let suffixes = [
+        " Pty Ltd",
+        " Pty. Ltd.",
+        " Pty Limited",
+        " Inc.",
+        " Inc",
+        " LLC",
+        " Ltd",
+        " Ltd.",
+        " Limited",
+        " Corporation",
+        " Corp.",
+        " Corp",
+        " Co.",
+    ];
+    let mut orgs = Vec::new();
+    let lower = text.to_lowercase();
+    for suffix in &suffixes {
+        let sl = suffix.to_lowercase();
+        let mut from = 0;
+        while let Some(pos) = lower[from..].find(&sl) {
+            let abs = from + pos;
+            from = abs + sl.len();
+            // Walk backwards to find the start of the org name
+            let before = &text[..abs];
+            let name_start = before
+                .rfind([',', '.', ';', '(', '\n'])
+                .map(|i| i + 1)
+                .unwrap_or(abs.saturating_sub(60));
+            let org = text[name_start..abs + suffix.len()].trim();
+            if org.len() >= 5
+                && org.starts_with(|c: char| c.is_ascii_uppercase())
+                && terms
+                    .iter()
+                    .any(|t| org.to_lowercase().contains(t.as_str()))
+            {
+                orgs.push(org.to_string());
+            }
+        }
+    }
+    orgs
+}
+
+/// Semantic similarity between two strings using character bigram
+/// overlap (Dice coefficient). Returns 0.0–1.0.
+fn bigram_similarity(a: &str, b: &str) -> f64 {
+    fn bigrams(s: &str) -> Vec<(char, char)> {
+        let chars: Vec<char> = s.to_lowercase().chars().collect();
+        chars.windows(2).map(|w| (w[0], w[1])).collect()
+    }
+    let ba = bigrams(a);
+    let bb = bigrams(b);
+    if ba.is_empty() || bb.is_empty() {
+        return 0.0;
+    }
+    let matches = ba.iter().filter(|bg| bb.contains(bg)).count();
+    (2 * matches) as f64 / (ba.len() + bb.len()) as f64
+}
+
 fn extract_emails_from_text(text: &str) -> Vec<String> {
     let mut emails = Vec::new();
     let bytes = text.as_bytes();
@@ -1755,10 +1944,10 @@ mod tests {
     }
 
     #[test]
-    fn build_queries_domain_produces_four_dorks() {
+    fn build_queries_domain_produces_five_dorks() {
         let t = Target::new(TargetKind::Domain, "acme.com");
         let q = build_queries(&t);
-        assert_eq!(q.len(), 4);
+        assert_eq!(q.len(), 5);
         assert!(q[0].contains("site:acme.com"));
         assert!(q[1].contains("filetype:pdf"));
         assert!(q[2].contains("@acme.com"));
@@ -1790,7 +1979,7 @@ mod tests {
     fn build_queries_fullname_covers_professional() {
         let t = Target::new(TargetKind::FullName, "Jane Doe");
         let q = build_queries(&t);
-        assert_eq!(q.len(), 6);
+        assert_eq!(q.len(), 7);
         assert!(q[0].contains("\"Jane Doe\""));
         assert!(q[1].contains("linkedin.com") || q[1].contains("facebook.com"));
         assert!(
@@ -2212,6 +2401,64 @@ mod tests {
         let terms2 = target_terms(&t2);
         assert!(terms2.contains(&"jerome".to_string()));
         assert!(terms2.contains(&"despal".to_string()));
+    }
+
+    #[test]
+    fn abn_extraction() {
+        let text = "Registered ABN 53 004 085 616 for the company";
+        let results = extract_abn_acn_from_text(text);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "53004085616");
+        assert_eq!(results[0].1, "ABN");
+    }
+
+    #[test]
+    fn abn_validation_checksum() {
+        assert!(is_valid_abn("53004085616")); // real ABN: Qantas
+        assert!(!is_valid_abn("12345678901"));
+    }
+
+    #[test]
+    fn organisation_extraction() {
+        let terms = vec!["despal".into()];
+        let text = "Director of Despal Holdings Pty Ltd since 2019";
+        let orgs = extract_organisations_from_text(text, &terms);
+        assert!(!orgs.is_empty());
+        assert!(orgs[0].contains("Pty Ltd"));
+    }
+
+    #[test]
+    fn bigram_similarity_identical() {
+        assert!((bigram_similarity("hello", "hello") - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn bigram_similarity_partial() {
+        let sim = bigram_similarity("jdespal", "jaydes");
+        assert!(sim > 0.0, "partial overlap expected, got {sim}");
+    }
+
+    #[test]
+    fn bigram_similarity_unrelated() {
+        let sim = bigram_similarity("jdespal", "elephant");
+        assert!(sim < 0.2, "unrelated strings, got {sim}");
+    }
+
+    #[test]
+    fn domain_queries_include_abn() {
+        let t = Target::new(TargetKind::Domain, "acme.com");
+        let q = build_queries(&t);
+        assert!(q.iter().any(|qr| qr.contains("ABN")));
+    }
+
+    #[test]
+    fn fullname_queries_include_abn() {
+        let t = Target::new(TargetKind::FullName, "Jane Doe");
+        let q = build_queries(&t);
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("ABN") || qr.contains("director"))
+        );
     }
 
     #[test]
