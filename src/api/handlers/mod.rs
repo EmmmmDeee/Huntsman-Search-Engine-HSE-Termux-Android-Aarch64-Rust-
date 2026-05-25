@@ -170,8 +170,20 @@ pub async fn entity_get(
 ) -> impl IntoResponse {
     match s.store.get_entity(&uid) {
         Ok(Some(entity)) => {
-            let scan_ids = s.store.scan_ids_for_entity(&uid).unwrap_or_default();
-            let obs_count = s.store.observation_count(&uid).unwrap_or(0);
+            let scan_ids = match s.store.scan_ids_for_entity(&uid) {
+                Ok(ids) => ids,
+                Err(e) => {
+                    tracing::warn!(entity_uid = %uid, error = %e, "scan_ids_for_entity failed");
+                    return internal_error(&e);
+                }
+            };
+            let obs_count = match s.store.observation_count(&uid) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!(entity_uid = %uid, error = %e, "observation_count failed");
+                    return internal_error(&e);
+                }
+            };
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
