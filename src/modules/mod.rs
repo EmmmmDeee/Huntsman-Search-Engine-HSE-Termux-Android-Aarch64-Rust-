@@ -28,6 +28,7 @@ pub mod ip_geo;
 pub mod ip_rdap;
 pub mod ipqs;
 pub mod leakix;
+pub mod name_to_username;
 pub mod net_interfaces;
 pub mod numverify;
 pub mod oathnet_pro;
@@ -127,6 +128,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(web_crawler::WebCrawler),
         Arc::new(email_to_domain::EmailToDomain),
         Arc::new(email_to_username::EmailToUsername),
+        Arc::new(name_to_username::NameToUsername),
         // Direct social profile probing — HEAD/GET 20+ platforms to
         // confirm profile existence. Uses curl for TLS compatibility.
         Arc::new(social_probe::SocialProbe),
