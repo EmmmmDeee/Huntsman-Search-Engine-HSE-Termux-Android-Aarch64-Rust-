@@ -89,7 +89,7 @@ impl Module for SearchEngines {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        60_000
+        120_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -112,12 +112,17 @@ impl Module for SearchEngines {
                 }
                 let url = (engine.build_url)(query);
                 let post_body = engine.build_post.map(|f| f(query));
+                let before = all_results.len();
                 if let Some(mut results) =
                     fetch_and_parse(&url, engine, query, post_body.as_deref()).await
                 {
                     all_results.append(&mut results);
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS)).await;
+                // Only delay when the fetch actually returned data
+                // (blocked engines fail fast and need no cooldown)
+                if all_results.len() > before {
+                    tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS)).await;
+                }
             }
         }
 
@@ -214,13 +219,8 @@ const ENGINES: &[EngineSpec] = &[
     },
     EngineSpec {
         name: "duckduckgo",
-        build_url: |q| {
-            format!(
-                "https://html.duckduckgo.com/html/?q={}",
-                crate::util::http::urlencode(q)
-            )
-        },
-        build_post: None,
+        build_url: |_q| "https://html.duckduckgo.com/html/".to_string(),
+        build_post: Some(|q| format!("q={}&b=&kl=us-en&df=", crate::util::http::urlencode(q))),
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
     },
@@ -369,6 +369,10 @@ fn build_queries(target: &Target) -> Vec<String> {
                     "\"{local}\" site:peekyou.com OR site:nuwber.com \
                      OR site:spokeo.com OR site:pipl.com"
                 ));
+                q.push(format!(
+                    "{local} site:soundcloud.com OR site:instagram.com \
+                     OR site:youtube.com OR site:tiktok.com"
+                ));
             }
             q
         }
@@ -443,13 +447,7 @@ fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<Str
             let lower = username.to_lowercase();
             if lower.len() >= 3
                 && lower != target_lower
-                && !lower.contains("login")
-                && !lower.contains("signup")
-                && !lower.contains("search")
-                && !lower.contains("public")
-                && !lower.contains("upload")
-                && !lower.contains("discover")
-                && !lower.contains("signin")
+                && !is_navigation_path(&lower)
                 && seen.insert(lower.clone())
             {
                 pivots.push(format!("\"{username}\""));
@@ -900,6 +898,49 @@ fn is_tracking_url(url: &str) -> bool {
         || lower.contains("feedback.yahoo.com")
 }
 
+fn is_navigation_path(s: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "login",
+        "signup",
+        "signin",
+        "search",
+        "public",
+        "upload",
+        "discover",
+        "settings",
+        "explore",
+        "stories",
+        "company",
+        "marketplace",
+        "home",
+        "about",
+        "help",
+        "contact",
+        "terms",
+        "privacy",
+        "posts",
+        "api",
+        "web",
+        "tpm",
+        "feed",
+        "status",
+        "trends",
+        "legal",
+        "groups",
+        "events",
+        "messenger",
+        "getstarted",
+        "instagram",
+        "facebook",
+        "twitter",
+        "youtube",
+        "tiktok",
+        "ecosia",
+    ];
+    const CONTAINS: &[&str] = &["official", "dogpile", "swisscows", "qwant"];
+    EXACT.contains(&s) || CONTAINS.iter().any(|n| s.contains(n))
+}
+
 fn canonicalize_url(url: &str) -> String {
     let base = url.split('?').next().unwrap_or(url);
     let base = base.split('#').next().unwrap_or(base);
@@ -1108,7 +1149,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             }
         }
 
-        // Extract usernames from social profile URLs
+        // Extract usernames and person names from social profile URLs
         if let Some(username) = extract_path_username(&r.url) {
             let social_hosts = [
                 "facebook.com",
@@ -1126,14 +1167,12 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                 "linktr.ee",
             ];
             let lower_user = username.to_lowercase();
-            if social_hosts
+            let is_social = social_hosts
                 .iter()
-                .any(|s| host == *s || host.ends_with(&format!(".{s}")))
+                .any(|s| host == *s || host.ends_with(&format!(".{s}")));
+            if is_social
                 && lower_user.len() >= 3
-                && !lower_user.contains("login")
-                && !lower_user.contains("signup")
-                && !lower_user.contains("search")
-                && !lower_user.contains("public")
+                && !is_navigation_path(&lower_user)
                 && seen_domains.insert(format!("@username:{lower_user}"))
             {
                 let mut e = Entity::new(EntityKind::Username, &lower_user, 0.55, scan_id);
@@ -1141,6 +1180,26 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                 e.tag("social-profile");
                 e.add_evidence(build_search_evidence(r));
                 result.push(e);
+            }
+
+            // People-search sites encode real names in paths:
+            // peekyou.com/jerome_despal → "Jerome Despal"
+            let people_hosts = ["peekyou.com", "spokeo.com", "nuwber.com"];
+            if people_hosts
+                .iter()
+                .any(|s| host == *s || host.ends_with(&format!(".{s}")))
+                && lower_user.contains('_')
+                && lower_user.len() >= 5
+            {
+                let name = username.replace(['_', '-'], " ");
+                let name_key = name.to_lowercase();
+                if seen_domains.insert(format!("@person:{name_key}")) {
+                    let mut e = Entity::new(EntityKind::Person, &name, 0.50, scan_id);
+                    e.tag("search-discovered");
+                    e.tag("people-search");
+                    e.add_evidence(build_search_evidence(r));
+                    result.push(e);
+                }
             }
         }
     }
