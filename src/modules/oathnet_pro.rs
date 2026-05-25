@@ -871,68 +871,180 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
     let pool = crate::util::key_pool::global_pool();
     let mut stored = 0u32;
 
+    // Phase 1: Service-domain-targeted queries
     for (domain, service) in HARVEST_TARGETS {
-        if pool.active_count(service) >= 3 {
+        if pool.active_count(service) >= 5 {
             continue;
         }
-        let items = match oathnet::search(key, paths::STEALER, "q", domain, 5).await {
+        let items = match oathnet::search(key, paths::STEALER, "q", domain, 10).await {
+            Ok(items) => items,
+            Err(_) => continue,
+        };
+        stored += process_stealer_items_for_keys(&items, domain, service, &pool);
+    }
+
+    // Phase 2: API-key-specific keyword queries — catches keys stored
+    // in stealer logs where the URL/context mentions API key terms
+    const API_KEY_QUERIES: &[&str] = &[
+        "api_key", "apikey", "api-key", "api.key",
+        "access_key", "secret_key", "auth_token",
+        "developer.shodan", "api.shodan",
+        "api.virustotal", "virustotal.com/gui/my-apikey",
+        "intelx.io/accounts", "2.intelx.io",
+        "api.securitytrails", "securitytrails.com/app",
+        "api.hunter.io", "hunter.io/api_keys",
+        "api.binaryedge", "app.binaryedge",
+        "api.censys.io", "search.censys.io",
+        "api.greynoise.io", "viz.greynoise.io",
+        "fullhunt.io/api", "api-docs.fullhunt.io",
+        "urlscan.io/user", "urlscan.io/about-api",
+        "api.abuseipdb.com",
+        "api.criminalip.io",
+        "api.passivetotal.org", "community.riskiq.com",
+        "onyphe.io/api",
+        "api.zoomeye.org",
+        "app.netlas.io/api",
+        "api.openai.com", "platform.openai.com/api-keys",
+        "console.anthropic.com",
+    ];
+
+    for query in API_KEY_QUERIES {
+        if pool.total_keys() > 500 {
+            break;
+        }
+        let items = match oathnet::search(key, paths::STEALER, "q", query, 5).await {
             Ok(items) => items,
             Err(_) => continue,
         };
         for item in &items {
-            let url = val_str(item, "url").unwrap_or_default();
-            let user = val_str(item, "username").unwrap_or_default();
             let pw = val_str(item, "password").unwrap_or_default();
-            if user.is_empty() || pw.is_empty() {
+            let user = val_str(item, "username").unwrap_or_default();
+            let url = val_str(item, "url").unwrap_or_default();
+            if pw.is_empty() {
                 continue;
             }
 
-            let url_lower = url.to_lowercase();
-            let domains_field: Vec<String> = item
-                .get("domain")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(|s| s.to_lowercase())
-                        .collect()
-                })
-                .unwrap_or_default();
+            // Check if password looks like an API key (length + entropy)
+            let is_api_key_like = pw.len() >= 20
+                || identify_api_key(&pw).is_some()
+                || (pw.len() >= 16 && pw.chars().filter(|c| c.is_alphanumeric()).count() > pw.len() * 3 / 4);
 
-            let url_matches = url_lower.contains(domain)
-                || domains_field.iter().any(|d| d.contains(domain));
-
-            // Store credentials from URL-matching results with service tag
-            if url_matches {
-                let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
-                entry.notes = Some(format!(
-                    "OathNet stealer [{}]: user={} url={}",
-                    service,
-                    &user[..user.len().min(30)],
-                    &url[..url.len().min(60)]
-                ));
-                if pool.add(service, entry) {
-                    stored += 1;
-                }
+            if !is_api_key_like {
+                continue;
             }
 
-            // Always store the login pair for the queried service
-            let mut login_entry = crate::util::key_pool::KeyEntry::new(
-                format!("{user}:{pw}"),
-            );
-            login_entry.notes = Some(format!(
-                "OathNet stealer login [{}]: url={}",
+            let service = identify_service_from_url(&url);
+            let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
+            entry.notes = Some(format!(
+                "OathNet API key query [{}]: user={} url={}",
                 service,
-                &url[..url.len().min(60)]
+                &user[..user.len().min(25)],
+                &url[..url.len().min(50)]
             ));
-            pool.add(&format!("{service}_login"), login_entry);
-            stored += 1;
+            if pool.add(service, entry) {
+                stored += 1;
+            }
+        }
+    }
+
+    // Phase 3: Breach data — search for API key patterns in password fields
+    const BREACH_KEY_QUERIES: &[&str] = &[
+        "shodan.io", "virustotal.com", "intelx.io",
+        "securitytrails.com", "api_key", "apikey",
+    ];
+    for query in BREACH_KEY_QUERIES {
+        if pool.total_keys() > 500 {
+            break;
+        }
+        let items = match oathnet::search(key, paths::BREACH, "q", query, 10).await {
+            Ok(items) => items,
+            Err(_) => continue,
+        };
+        for item in &items {
+            for field in ["password", "password_hash"] {
+                if let Some(val) = val_str(item, field)
+                    && let Some((svc, key_val)) = identify_api_key(&val)
+                {
+                    let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+                    entry.notes = Some(format!("OathNet breach [{svc}]: field={field}"));
+                    if pool.add(svc, entry) {
+                        stored += 1;
+                    }
+                }
+            }
         }
     }
 
     if stored > 0 {
         let _ = crate::util::key_pool::save_pool(&pool);
     }
+}
+
+fn process_stealer_items_for_keys(
+    items: &[Value],
+    domain: &str,
+    service: &str,
+    pool: &crate::util::key_pool::KeyPool,
+) -> u32 {
+    let mut stored = 0u32;
+    for item in items {
+        let url = val_str(item, "url").unwrap_or_default();
+        let user = val_str(item, "username").unwrap_or_default();
+        let pw = val_str(item, "password").unwrap_or_default();
+        if user.is_empty() || pw.is_empty() {
+            continue;
+        }
+
+        let url_lower = url.to_lowercase();
+        let domains_field: Vec<String> = item
+            .get("domain")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let url_matches = url_lower.contains(domain)
+            || domains_field.iter().any(|d| d.contains(domain));
+
+        if url_matches {
+            let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
+            entry.notes = Some(format!(
+                "OathNet stealer [{}]: user={} url={}",
+                service,
+                &user[..user.len().min(30)],
+                &url[..url.len().min(60)]
+            ));
+            if pool.add(service, entry) {
+                stored += 1;
+            }
+        }
+
+        let mut login_entry = crate::util::key_pool::KeyEntry::new(
+            format!("{user}:{pw}"),
+        );
+        login_entry.notes = Some(format!(
+            "OathNet stealer login [{}]: url={}",
+            service,
+            &url[..url.len().min(60)]
+        ));
+        pool.add(&format!("{service}_login"), login_entry);
+        stored += 1;
+    }
+    stored
+}
+
+fn identify_service_from_url(url: &str) -> &'static str {
+    let lower = url.to_lowercase();
+    for (domain, service) in API_SERVICE_DOMAINS {
+        if lower.contains(domain) {
+            return service;
+        }
+    }
+    "unknown"
 }
 
 pub fn store_api_credential_from_item(item: &Value) {
