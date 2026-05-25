@@ -58,3 +58,46 @@ pub fn default_db_path() -> String {
         },
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_is_non_empty() {
+        assert!(!VERSION.is_empty());
+    }
+
+    #[test]
+    fn architecture_constants_are_correct() {
+        assert_eq!(DEFAULT_BIND, "127.0.0.1:8080");
+        assert_eq!(MODULE_TIMEOUT_MS, 3000);
+        assert_eq!(WORKER_THREADS, 2);
+        assert_eq!(LIVE_DEFAULT_INTERVAL_SECS, 30);
+        assert_eq!(LIVE_MAX_DEPTH, 5);
+        assert_eq!(LIVE_DEFAULT_THROTTLE_MS, 100);
+        assert_eq!(LIVE_DEFAULT_CONCURRENT, 4);
+    }
+
+    #[test]
+    fn is_termux_returns_false_in_ci() {
+        if std::env::var_os("TERMUX_VERSION").is_none() {
+            assert!(!is_termux());
+        }
+    }
+
+    #[test]
+    fn default_db_path_is_non_empty() {
+        let p = default_db_path();
+        assert!(!p.is_empty());
+        assert!(p.ends_with("huntsman.db"));
+    }
+
+    #[test]
+    fn default_db_path_uses_home_when_set() {
+        if std::env::var("HOME").is_ok() {
+            let p = default_db_path();
+            assert!(p.contains(".huntsman"));
+        }
+    }
+}

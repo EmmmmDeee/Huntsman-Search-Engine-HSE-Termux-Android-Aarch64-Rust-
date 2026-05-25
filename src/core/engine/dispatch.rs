@@ -348,3 +348,154 @@ impl ScanEngine {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::module::ModuleCost;
+    use crate::core::scan::{ScanOptions, Target, TargetKind};
+
+    struct StubModule {
+        name: &'static str,
+        cost: ModuleCost,
+        passive: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for StubModule {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, _: &Target) -> bool {
+            true
+        }
+        fn cost(&self) -> ModuleCost {
+            self.cost
+        }
+        fn is_passive(&self) -> bool {
+            self.passive
+        }
+        async fn process(
+            &self,
+            _: &Target,
+            _: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            Ok(crate::core::module::ModuleResult::new())
+        }
+    }
+
+    fn free_active() -> StubModule {
+        StubModule {
+            name: "test_free",
+            cost: ModuleCost::Free,
+            passive: false,
+        }
+    }
+
+    fn keygated() -> StubModule {
+        StubModule {
+            name: "test_keygated",
+            cost: ModuleCost::KeyGated,
+            passive: false,
+        }
+    }
+
+    fn paid_passive() -> StubModule {
+        StubModule {
+            name: "test_paid",
+            cost: ModuleCost::Paid,
+            passive: true,
+        }
+    }
+
+    #[test]
+    fn skip_reason_none_for_default_opts() {
+        let m = free_active();
+        let opts = ScanOptions::default();
+        assert!(module_skip_reason(&m, &opts).is_none());
+    }
+
+    #[test]
+    fn skip_reason_not_in_allowlist() {
+        let m = free_active();
+        let opts = ScanOptions {
+            modules: Some(vec!["other_module".into()]),
+            ..Default::default()
+        };
+        assert_eq!(module_skip_reason(&m, &opts), Some("not in allowlist"));
+    }
+
+    #[test]
+    fn skip_reason_in_allowlist_passes() {
+        let m = free_active();
+        let opts = ScanOptions {
+            modules: Some(vec!["test_free".into()]),
+            ..Default::default()
+        };
+        assert!(module_skip_reason(&m, &opts).is_none());
+    }
+
+    #[test]
+    fn skip_reason_excluded() {
+        let m = free_active();
+        let opts = ScanOptions {
+            exclude_modules: vec!["test_free".into()],
+            ..Default::default()
+        };
+        assert_eq!(module_skip_reason(&m, &opts), Some("excluded"));
+    }
+
+    #[test]
+    fn skip_reason_free_only_skips_keygated() {
+        let m = keygated();
+        let opts = ScanOptions {
+            free_only: true,
+            ..Default::default()
+        };
+        assert_eq!(module_skip_reason(&m, &opts), Some("requires key/payment"));
+    }
+
+    #[test]
+    fn skip_reason_free_only_passes_free() {
+        let m = free_active();
+        let opts = ScanOptions {
+            free_only: true,
+            ..Default::default()
+        };
+        assert!(module_skip_reason(&m, &opts).is_none());
+    }
+
+    #[test]
+    fn skip_reason_passive_only_skips_active() {
+        let m = free_active();
+        let opts = ScanOptions {
+            passive_only: true,
+            ..Default::default()
+        };
+        assert_eq!(module_skip_reason(&m, &opts), Some("not passive"));
+    }
+
+    #[test]
+    fn skip_reason_passive_only_passes_passive() {
+        let m = paid_passive();
+        let opts = ScanOptions {
+            passive_only: true,
+            ..Default::default()
+        };
+        assert!(module_skip_reason(&m, &opts).is_none());
+    }
+
+    #[test]
+    fn skip_reason_allowlist_takes_priority_over_exclude() {
+        let m = free_active();
+        let opts = ScanOptions {
+            modules: Some(vec!["test_free".into()]),
+            exclude_modules: vec!["test_free".into()],
+            ..Default::default()
+        };
+        assert_eq!(module_skip_reason(&m, &opts), Some("excluded"));
+    }
+}
