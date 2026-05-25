@@ -153,23 +153,21 @@ impl Module for OathnetPro {
             .items
             .iter()
             .filter_map(|i| i.indexed_at.as_deref())
-            .min()
-            .map(str::to_string);
+            .min();
         let last_indexed = data
             .items
             .iter()
             .filter_map(|i| i.indexed_at.as_deref())
-            .max()
-            .map(str::to_string);
+            .max();
 
-        let mut dbname_counts: std::collections::BTreeMap<String, u32> =
+        let mut dbname_counts: std::collections::BTreeMap<&str, u32> =
             std::collections::BTreeMap::new();
         for item in &data.items {
-            if let Some(db) = item.dbname.as_ref() {
-                *dbname_counts.entry(db.clone()).or_insert(0) += 1;
+            if let Some(db) = item.dbname.as_deref() {
+                *dbname_counts.entry(db).or_insert(0) += 1;
             }
         }
-        let mut ranked: Vec<(String, u32)> = dbname_counts.into_iter().collect();
+        let mut ranked: Vec<(&str, u32)> = dbname_counts.into_iter().collect();
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         ranked.truncate(MAX_DBNAMES);
         let top_dbnames = ranked

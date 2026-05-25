@@ -92,10 +92,17 @@ pub async fn health() -> Json<Value> {
 /// SPA's home page consumes this for the stat-card row.
 pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let scans = s.store.list_scans(10_000).unwrap_or_default();
-    let mut by_status: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut by_status: std::collections::BTreeMap<&'static str, u64> =
+        std::collections::BTreeMap::new();
     let mut total_entities = 0u64;
     for scan in &scans {
-        let key = format!("{:?}", scan.status).to_lowercase();
+        let key = match scan.status {
+            crate::core::scan::ScanStatus::Pending => "pending",
+            crate::core::scan::ScanStatus::Running => "running",
+            crate::core::scan::ScanStatus::Complete => "complete",
+            crate::core::scan::ScanStatus::Failed => "failed",
+            crate::core::scan::ScanStatus::Aborted => "aborted",
+        };
         *by_status.entry(key).or_insert(0) += 1;
         total_entities += scan.entity_count as u64;
     }

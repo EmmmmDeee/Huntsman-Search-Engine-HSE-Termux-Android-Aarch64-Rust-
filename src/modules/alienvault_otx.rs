@@ -99,11 +99,14 @@ impl Module for AlienVaultOtx {
             .filter_map(|p| p.name.as_deref())
             .take(5)
             .collect();
-        let mut all_tags: Vec<&str> = pulse_info
-            .pulses
-            .iter()
-            .flat_map(|p| p.tags.iter().map(String::as_str))
-            .collect();
+        let tag_count_estimate: usize = pulse_info.pulses.iter().map(|p| p.tags.len()).sum();
+        let mut all_tags: Vec<&str> = Vec::with_capacity(tag_count_estimate);
+        all_tags.extend(
+            pulse_info
+                .pulses
+                .iter()
+                .flat_map(|p| p.tags.iter().map(String::as_str)),
+        );
         all_tags.sort_unstable();
         all_tags.dedup();
         // Hard cap to keep the evidence row compact for the SPA.

@@ -111,7 +111,7 @@ impl Module for Shodan {
             ev = ev.with_attr("last_update", t);
         }
         if !body.ports.is_empty() {
-            let mut ports = body.ports.clone();
+            let mut ports = body.ports;
             ports.sort_unstable();
             ev = ev
                 .with_attr("port_count", ports.len().to_string())
@@ -133,7 +133,7 @@ impl Module for Shodan {
                     body.vulns
                         .iter()
                         .take(10)
-                        .cloned()
+                        .map(String::as_str)
                         .collect::<Vec<_>>()
                         .join(","),
                 );

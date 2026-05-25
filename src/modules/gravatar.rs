@@ -131,17 +131,18 @@ impl Module for Gravatar {
             ev = ev.with_attr("location", loc);
         }
         if !entry.urls.is_empty() {
-            let joined: Vec<String> = entry
-                .urls
-                .iter()
-                .filter_map(|u| {
-                    let v = u.value.as_deref()?;
-                    let t = u.title.as_deref().unwrap_or("link");
-                    Some(format!("{t}: {v}"))
-                })
-                .collect();
-            if !joined.is_empty() {
-                ev = ev.with_attr("urls", joined.join(" | "));
+            let mut urls_iter = entry.urls.iter().filter_map(|u| {
+                let v = u.value.as_deref()?;
+                let t = u.title.as_deref().unwrap_or("link");
+                Some(format!("{t}: {v}"))
+            });
+            if let Some(first) = urls_iter.next() {
+                let mut joined = first;
+                for item in urls_iter {
+                    joined.push_str(" | ");
+                    joined.push_str(&item);
+                }
+                ev = ev.with_attr("urls", joined);
             }
         }
         entity.add_evidence(ev);

@@ -124,13 +124,13 @@ impl Module for DeHashed {
         entity.tag("dehashed");
 
         // Top databases by frequency (capped at 5).
-        let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+        let mut counts: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
         for e in &entries {
             if let Some(db) = e.database_name.as_deref().or(e.obtained_from.as_deref()) {
-                *counts.entry(db.to_string()).or_insert(0) += 1;
+                *counts.entry(db).or_insert(0) += 1;
             }
         }
-        let mut ranked: Vec<(String, u32)> = counts.into_iter().collect();
+        let mut ranked: Vec<(&str, u32)> = counts.into_iter().collect();
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let top = ranked
             .iter()

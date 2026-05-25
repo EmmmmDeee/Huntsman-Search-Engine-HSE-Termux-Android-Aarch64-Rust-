@@ -132,10 +132,13 @@ impl Module for DnsBrute {
         for sub in SUBDOMAINS {
             // Skip if the sub-label happens to already be part of the
             // input domain (defensive — avoids generating `www.www.x.com`).
-            if parent.starts_with(&format!("{sub}.")) {
+            if parent.starts_with(sub) && parent.as_bytes().get(sub.len()) == Some(&b'.') {
                 continue;
             }
-            let host = format!("{sub}.{parent}");
+            let mut host = String::with_capacity(sub.len() + 1 + parent.len());
+            host.push_str(sub);
+            host.push('.');
+            host.push_str(&parent);
             let sem = Arc::clone(&sem);
             set.spawn(async move {
                 let _permit = sem.acquire_owned().await.ok()?;

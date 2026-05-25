@@ -40,7 +40,7 @@ pub mod util;
 
 /// True if we appear to be running inside Termux on Android.
 pub fn is_termux() -> bool {
-    std::env::var("TERMUX_VERSION").is_ok()
+    std::env::var_os("TERMUX_VERSION").is_some()
         || std::path::Path::new("/data/data/com.termux").exists()
 }
 

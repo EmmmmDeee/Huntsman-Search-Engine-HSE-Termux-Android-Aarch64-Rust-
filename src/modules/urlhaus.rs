@@ -155,17 +155,18 @@ impl Module for UrlHaus {
 
             // Distinct threat families seen (e.g. "malware_download",
             // "phishing"). Capped at the first 8 to keep the row tidy.
-            let mut threats: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut threats: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
             for u in urls {
                 if let Some(t) = u.threat.as_deref() {
-                    threats.insert(t.to_string());
+                    threats.insert(t);
                     if threats.len() >= 8 {
                         break;
                     }
                 }
             }
             if !threats.is_empty() {
-                ev = ev.with_attr("threats", threats.into_iter().collect::<Vec<_>>().join(","));
+                let threat_vec: Vec<&str> = threats.into_iter().collect();
+                ev = ev.with_attr("threats", threat_vec.join(","));
             }
         }
         entity.add_evidence(ev);

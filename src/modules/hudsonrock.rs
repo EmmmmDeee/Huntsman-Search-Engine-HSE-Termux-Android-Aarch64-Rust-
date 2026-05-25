@@ -84,12 +84,13 @@ impl Module for HudsonRock {
         entity.tag("stealer-log");
 
         for stealer in &data.stealers {
+            let cred_count = stealer.credentials.len();
+            let cred_count_str = cred_count.to_string();
             entity.add_evidence(
                 Evidence::new(
                     "hudsonrock",
                     format!(
-                        "Stealer log: {} credentials on compromised machine",
-                        stealer.credentials.len()
+                        "Stealer log: {cred_count} credentials on compromised machine",
                     ),
                 )
                 .with_attr(
@@ -108,7 +109,7 @@ impl Module for HudsonRock {
                     "malware_path",
                     stealer.malware_path.as_deref().unwrap_or("-"),
                 )
-                .with_attr("credential_count", stealer.credentials.len().to_string()),
+                .with_attr("credential_count", cred_count_str),
                 // credential content intentionally NEVER stored
             );
         }

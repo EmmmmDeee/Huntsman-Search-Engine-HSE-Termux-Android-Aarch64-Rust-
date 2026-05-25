@@ -141,7 +141,8 @@ impl Module for Wigle {
                 *enc_counts.entry(e.to_string()).or_insert(0) += 1;
             }
         }
-        let mut ranked: Vec<(String, u32)> = enc_counts.into_iter().collect();
+        let mut ranked: Vec<(String, u32)> = Vec::with_capacity(enc_counts.len());
+        ranked.extend(enc_counts);
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let top_encryption = ranked
             .iter()

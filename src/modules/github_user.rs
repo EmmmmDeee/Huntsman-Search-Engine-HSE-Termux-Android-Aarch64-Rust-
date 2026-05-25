@@ -108,8 +108,8 @@ impl Module for GithubUser {
             .with_attr(
                 "profile_url",
                 user.html_url
-                    .clone()
-                    .unwrap_or_else(|| format!("https://github.com/{}", user.login)),
+                    .as_deref()
+                    .map_or_else(|| format!("https://github.com/{}", user.login), String::from),
             );
         if let Some(n) = user.name.as_deref() {
             ev = ev.with_attr("name", n);

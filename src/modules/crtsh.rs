@@ -42,7 +42,7 @@ impl Module for Crtsh {
         let url = format!("https://crt.sh/?q=%.{}&output=json", target.value);
         let entries: Vec<CrtEntry> = fetch_json(&ctx.http, "crtsh", &url).await?;
 
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut seen: HashSet<String> = HashSet::with_capacity(entries.len());
         let mut result = ModuleResult::new();
         let parent = target.value.to_lowercase();
 

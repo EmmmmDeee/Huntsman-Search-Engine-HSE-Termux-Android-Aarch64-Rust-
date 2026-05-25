@@ -77,7 +77,7 @@ fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
     let confidence = if provider == "gps" { 0.90 } else { 0.65 };
     let coords = format!("{:.7},{:.7}", fix.latitude, fix.longitude);
 
-    let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, scan_id);
+    let mut e = Entity::new(EntityKind::Coordinates, coords, confidence, scan_id);
     e.tag("geoint");
     e.tag(format!("provider:{provider}"));
     e.add_evidence(
@@ -91,7 +91,9 @@ fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
             .with_attr("provider", provider),
     );
 
-    let mut result = ModuleResult::new();
+    let mut result = ModuleResult {
+        entities: Vec::with_capacity(1),
+    };
     result.push(e);
     result
 }

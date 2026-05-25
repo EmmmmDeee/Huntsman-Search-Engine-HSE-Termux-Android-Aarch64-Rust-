@@ -57,15 +57,17 @@ fn parse_aps(stdout: &[u8], scan_id: &str) -> ModuleResult {
         Err(_) => return ModuleResult::new(),
     };
 
-    let mut result = ModuleResult::new();
-    for ap in &aps {
+    let mut result = ModuleResult {
+        entities: Vec::with_capacity(aps.len()),
+    };
+    for ap in aps {
         let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
         let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, 0.95, scan_id);
         e.tag("wifi-ap");
         e.add_evidence(
             Evidence::new("wifi_scan", format!("Wi-Fi AP: {ssid}"))
                 .with_attr("ssid", ssid)
-                .with_attr("bssid", &ap.bssid)
+                .with_attr("bssid", ap.bssid)
                 .with_attr("frequency_mhz", ap.frequency.unwrap_or(0).to_string())
                 .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
                 .with_attr("timestamp", ap.timestamp.unwrap_or(0).to_string()),

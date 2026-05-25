@@ -80,8 +80,9 @@ impl Module for SecurityTrails {
             .map_err(|e| Error::module("securitytrails", e.to_string()))?;
 
         let total = body.subdomain_count.unwrap_or(body.subdomains.len() as u64);
-        let mut result = ModuleResult::new();
-        for sub in body.subdomains {
+        let total_str = total.to_string();
+        let mut result = ModuleResult::with_capacity(body.subdomains.len());
+        for sub in &body.subdomains {
             if sub.is_empty() {
                 continue;
             }
@@ -95,7 +96,7 @@ impl Module for SecurityTrails {
                     format!("Subdomain of {domain} per SecurityTrails"),
                 )
                 .with_attr("parent_domain", &domain)
-                .with_attr("total_subdomains", total.to_string()),
+                .with_attr("total_subdomains", &total_str),
             );
             result.push(e);
         }

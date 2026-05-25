@@ -135,7 +135,7 @@ impl Module for IntelX {
         let result_url = format!(
             "https://2.intelx.io/intelligent/search/result?id={search_id}&limit=50&statistics=0"
         );
-        let mut last_records: Vec<Record> = Vec::new();
+        let mut last_records: Vec<Record> = Vec::with_capacity(50);
         for _ in 0..5 {
             tokio::time::sleep(Duration::from_millis(1_500)).await;
             let resp = ctx
@@ -176,19 +176,19 @@ impl Module for IntelX {
         entity.tag("intelx");
         entity.tag("indicator");
 
-        let mut bucket_counts: std::collections::BTreeMap<String, u32> =
+        let mut bucket_counts: std::collections::BTreeMap<&str, u32> =
             std::collections::BTreeMap::new();
         let mut media_counts: std::collections::BTreeMap<i32, u32> =
             std::collections::BTreeMap::new();
         for r in &last_records {
             if let Some(b) = r.bucket.as_deref() {
-                *bucket_counts.entry(b.to_string()).or_insert(0) += 1;
+                *bucket_counts.entry(b).or_insert(0) += 1;
             }
             if let Some(m) = r.media {
                 *media_counts.entry(m).or_insert(0) += 1;
             }
         }
-        let mut top_buckets: Vec<(String, u32)> = bucket_counts.into_iter().collect();
+        let mut top_buckets: Vec<(&str, u32)> = bucket_counts.into_iter().collect();
         top_buckets.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let top = top_buckets
             .iter()

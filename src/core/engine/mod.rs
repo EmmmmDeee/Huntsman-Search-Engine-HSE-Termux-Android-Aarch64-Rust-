@@ -125,7 +125,7 @@ impl ScanEngine {
 
         let opts = scan.options.clone();
         let started = Instant::now();
-        let mut entity_map: HashMap<String, Entity> = HashMap::new();
+        let mut entity_map: HashMap<String, Entity> = HashMap::with_capacity(64);
         let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
 
         // Round 0 — seed.

@@ -330,13 +330,13 @@ impl Module for UsernameSearch {
             .then_with_site(site.name)
         });
 
-        let results: Vec<(String, ProbeResult)> = join_all(probes).await;
+        let results: Vec<(&'static str, ProbeResult)> = join_all(probes).await;
 
         let mut module_result = ModuleResult::new();
-        let mut found_names: Vec<&str> = Vec::new();
+        let mut found_names: Vec<&str> = Vec::with_capacity(results.len());
         for (site_name, outcome) in &results {
             if let ProbeResult::Found(url) = outcome {
-                found_names.push(site_name.as_str());
+                found_names.push(site_name);
                 let mut e = Entity::new(EntityKind::Url, url.as_str(), 0.92, &ctx.scan_id);
                 e.tag("social-profile");
                 e.tag(format!("platform:{site_name}"));
@@ -345,7 +345,7 @@ impl Module for UsernameSearch {
                         "username_search",
                         format!("@{username} has a profile on {site_name}"),
                     )
-                    .with_attr("platform", site_name.as_str())
+                    .with_attr("platform", *site_name)
                     .with_attr("username", username)
                     .with_attr("url", url),
                 );
@@ -391,13 +391,13 @@ trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
     fn then_with_site(
         self,
         site: &'static str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = (String, ProbeResult)> + Send>>
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = (&'static str, ProbeResult)> + Send>>
     where
         Self: Send + 'static,
     {
         Box::pin(async move {
             let out = self.await;
-            (site.to_string(), out)
+            (site, out)
         })
     }
 }

@@ -56,12 +56,12 @@ impl Module for ReverseDns {
             let RData::PTR(ptr) = &record.data else {
                 continue;
             };
-            let host = ptr.0.to_ascii();
-            let host = host.trim_end_matches('.').to_string();
+            let host_raw = ptr.0.to_ascii();
+            let host = host_raw.trim_end_matches('.');
             if host.is_empty() {
                 continue;
             }
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Domain, host, 0.85, &ctx.scan_id);
             e.tag("ptr");
             e.add_evidence(
                 Evidence::new("reverse_dns", format!("PTR record for {ip}"))

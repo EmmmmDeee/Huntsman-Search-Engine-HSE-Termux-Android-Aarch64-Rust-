@@ -174,24 +174,21 @@ impl Module for DnsResolver {
                 let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
                 // Common TXT-record signals worth surfacing as tags so
                 // the SPA can highlight them.
-                let lower: Vec<String> = txts.iter().map(|s| s.to_lowercase()).collect();
-                if lower.iter().any(|t| t.starts_with("v=spf1")) {
-                    dom.tag("spf");
-                }
-                if lower.iter().any(|t| t.starts_with("v=dkim1")) {
-                    dom.tag("dkim");
-                }
-                if lower.iter().any(|t| t.starts_with("v=dmarc1")) {
-                    dom.tag("dmarc");
-                }
-                if lower
-                    .iter()
-                    .any(|t| t.starts_with("google-site-verification"))
-                {
-                    dom.tag("google-verified");
-                }
-                if lower.iter().any(|t| t.starts_with("ms=")) {
-                    dom.tag("ms-verified");
+                for t in &txts {
+                    let b = t.as_bytes();
+                    if b.len() >= 6 && b[..6].eq_ignore_ascii_case(b"v=spf1") {
+                        dom.tag("spf");
+                    } else if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"v=dkim1") {
+                        dom.tag("dkim");
+                    } else if b.len() >= 8 && b[..8].eq_ignore_ascii_case(b"v=dmarc1") {
+                        dom.tag("dmarc");
+                    } else if b.len() >= 24
+                        && b[..24].eq_ignore_ascii_case(b"google-site-verification")
+                    {
+                        dom.tag("google-verified");
+                    } else if b.len() >= 3 && b[..3].eq_ignore_ascii_case(b"ms=") {
+                        dom.tag("ms-verified");
+                    }
                 }
                 dom.add_evidence(
                     Evidence::new("dns_resolver", format!("{} TXT records", txts.len()))

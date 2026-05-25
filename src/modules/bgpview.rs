@@ -115,11 +115,13 @@ async fn lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
     };
 
     let mut result = ModuleResult::new();
-    let mut entity = Entity::new(EntityKind::Asn, format!("AS{asn}"), 0.92, &ctx.scan_id);
+    let asn_label = format!("AS{asn}");
+    let asn_str = asn.to_string();
+    let mut entity = Entity::new(EntityKind::Asn, &asn_label, 0.92, &ctx.scan_id);
     entity.tag("registered");
 
-    let mut ev = Evidence::new("bgpview", format!("ASN AS{asn} registry record"))
-        .with_attr("asn_number", asn.to_string());
+    let mut ev = Evidence::new("bgpview", format!("ASN {asn_label} registry record"))
+        .with_attr("asn_number", &asn_str);
     if let Some(n) = data.name.as_deref() {
         ev = ev.with_attr("handle", n);
     }
@@ -159,9 +161,9 @@ async fn lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
         let mut e = Entity::new(EntityKind::Email, &email, 0.78, &ctx.scan_id);
         e.tag("asn-contact");
         e.add_evidence(
-            Evidence::new("bgpview", format!("Contact for AS{asn}"))
+            Evidence::new("bgpview", format!("Contact for {asn_label}"))
                 .with_attr("source", "bgpview")
-                .with_attr("asn", asn.to_string()),
+                .with_attr("asn", &asn_str),
         );
         result.push(e);
     }
@@ -175,8 +177,8 @@ async fn lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
         let mut u = Entity::new(EntityKind::Url, w, 0.75, &ctx.scan_id);
         u.tag("asn-website");
         u.add_evidence(
-            Evidence::new("bgpview", format!("Website of AS{asn}"))
-                .with_attr("asn", asn.to_string()),
+            Evidence::new("bgpview", format!("Website of {asn_label}"))
+                .with_attr("asn", &asn_str),
         );
         result.push(u);
     }
@@ -207,10 +209,11 @@ async fn lookup_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult>
         && let Some(asn_ref) = prefix.asn
         && let Some(asn_num) = asn_ref.asn
     {
+        let asn_num_str = asn_num.to_string();
         let mut e = Entity::new(EntityKind::Asn, format!("AS{asn_num}"), 0.88, &ctx.scan_id);
         e.tag("announcing");
         let mut ev = Evidence::new("bgpview", format!("ASN announcing {ip}"))
-            .with_attr("asn_number", asn_num.to_string());
+            .with_attr("asn_number", &asn_num_str);
         if let Some(p) = prefix.prefix.as_deref() {
             ev = ev.with_attr("prefix", p);
         }

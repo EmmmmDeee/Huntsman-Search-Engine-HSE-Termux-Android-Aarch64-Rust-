@@ -47,16 +47,27 @@ impl Module for ArpScan {
 /// columns: IP, HW type, Flags, MAC, Mask, Device. Rows with the placeholder
 /// MAC `00:00:00:00:00:00` are incomplete (no resolution yet) and skipped.
 fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
-    let mut result = ModuleResult::new();
+    // Pre-allocate: each valid row yields 2 entities (IP + MAC).
+    // Subtract 1 for the header line.
+    let line_count = content.lines().count().saturating_sub(1);
+    let mut result = ModuleResult {
+        entities: Vec::with_capacity(line_count.saturating_mul(2)),
+    };
 
     for line in content.lines().skip(1) {
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        if cols.len() < 6 {
+        let mut cols = line.split_whitespace();
+        let (Some(ip), Some(_hw), Some(_flags), Some(mac), Some(_mask), Some(dev)) =
+            (
+                cols.next(),
+                cols.next(),
+                cols.next(),
+                cols.next(),
+                cols.next(),
+                cols.next(),
+            )
+        else {
             continue;
-        }
-        let ip = cols[0];
-        let mac = cols[3];
-        let dev = cols[5];
+        };
         if mac == "00:00:00:00:00:00" {
             continue;
         }

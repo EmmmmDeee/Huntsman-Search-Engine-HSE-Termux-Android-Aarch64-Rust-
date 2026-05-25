@@ -5,6 +5,8 @@
 //! strength, radio type (LTE/GSM/UMTS/NR), and ASU level are recorded
 //! as evidence. Off-device → no-op via the termux_cmd helper.
 
+use std::borrow::Cow;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -63,7 +65,9 @@ fn parse_cells(stdout: &[u8], scan_id: &str) -> ModuleResult {
         Err(_) => return ModuleResult::new(),
     };
 
-    let mut result = ModuleResult::new();
+    let mut result = ModuleResult {
+        entities: Vec::with_capacity(cells.len()),
+    };
     for cell in &cells {
         let mcc = json_to_str(&cell.mcc);
         let mnc = json_to_str(&cell.mnc);
@@ -82,8 +86,8 @@ fn parse_cells(stdout: &[u8], scan_id: &str) -> ModuleResult {
         e.add_evidence(
             Evidence::new("cell_survey", format!("Cell tower {ctype} {tower_id}"))
                 .with_attr("type", ctype)
-                .with_attr("mcc", &mcc)
-                .with_attr("mnc", &mnc)
+                .with_attr("mcc", mcc.as_ref())
+                .with_attr("mnc", mnc.as_ref())
                 .with_attr("lac_tac", lac.to_string())
                 .with_attr("cid", cid.to_string())
                 .with_attr("pci", cell.pci.unwrap_or(0).to_string())
@@ -99,11 +103,11 @@ fn parse_cells(stdout: &[u8], scan_id: &str) -> ModuleResult {
 
 /// `mcc`/`mnc` come as `"505"` on some Android versions and `505` on others.
 /// Normalise to string; missing → empty.
-fn json_to_str(v: &Option<serde_json::Value>) -> String {
+fn json_to_str(v: &Option<serde_json::Value>) -> Cow<'_, str> {
     match v {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
-        _ => String::new(),
+        Some(serde_json::Value::String(s)) => Cow::Borrowed(s.as_str()),
+        Some(serde_json::Value::Number(n)) => Cow::Owned(n.to_string()),
+        _ => Cow::Borrowed(""),
     }
 }
 

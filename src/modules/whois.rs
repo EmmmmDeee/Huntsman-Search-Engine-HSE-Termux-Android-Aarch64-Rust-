@@ -269,8 +269,11 @@ async fn query(server: &str, q: &str) -> std::io::Result<String> {
         TcpStream::connect(server),
     )
     .await??;
-    stream.write_all(format!("{q}\r\n").as_bytes()).await?;
-    let mut buf = String::new();
+    let mut query_line = String::with_capacity(q.len() + 2);
+    query_line.push_str(q);
+    query_line.push_str("\r\n");
+    stream.write_all(query_line.as_bytes()).await?;
+    let mut buf = String::with_capacity(4096);
     // Cap the read at 64 KiB so a malicious or misconfigured whois server
     // can't OOM the engine by streaming forever. Real WHOIS responses are
     // ≪ 64 KiB (typically 2–8 KiB).

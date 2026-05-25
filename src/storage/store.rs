@@ -29,6 +29,8 @@ impl Store {
             PRAGMA synchronous=NORMAL;
             PRAGMA temp_store=MEMORY;
             PRAGMA foreign_keys=ON;
+            PRAGMA cache_size=-2000;
+            PRAGMA mmap_size=67108864;
 
             CREATE TABLE IF NOT EXISTS scans (
                 id           TEXT PRIMARY KEY,
@@ -142,7 +144,7 @@ impl Store {
     pub fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
         let json: Option<String> = {
             let conn = self.conn.lock();
-            let mut stmt = conn.prepare("SELECT data_json FROM scans WHERE id = ?1")?;
+            let mut stmt = conn.prepare_cached("SELECT data_json FROM scans WHERE id = ?1")?;
             let mut rows = stmt.query(params![id])?;
             rows.next()?.map(|r| r.get(0)).transpose()?
         };
@@ -157,7 +159,7 @@ impl Store {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
             let mut stmt =
-                conn.prepare("SELECT data_json FROM scans ORDER BY started_at DESC LIMIT ?1")?;
+                conn.prepare_cached("SELECT data_json FROM scans ORDER BY started_at DESC LIMIT ?1")?;
             let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
             rows.filter_map(std::result::Result::ok).collect()
         };
@@ -220,7 +222,7 @@ impl Store {
     pub fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT e.data_json
                  FROM entities e
                  JOIN entity_observations o ON o.entity_uid = e.uid
@@ -239,7 +241,7 @@ impl Store {
     /// Every `scan_id` that observed this entity (newest first).
     pub fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT scan_id FROM entity_observations
              WHERE entity_uid = ?1
              ORDER BY observed_at DESC",
@@ -253,7 +255,7 @@ impl Store {
     pub fn observation_count(&self, entity_uid: &str) -> Result<usize> {
         let conn = self.conn.lock();
         let mut stmt =
-            conn.prepare("SELECT COUNT(*) FROM entity_observations WHERE entity_uid = ?1")?;
+            conn.prepare_cached("SELECT COUNT(*) FROM entity_observations WHERE entity_uid = ?1")?;
         let n: i64 = stmt.query_row(params![entity_uid], |r| r.get(0))?;
         Ok(n.max(0) as usize)
     }
@@ -336,7 +338,7 @@ impl Store {
         // because SQLite text comparison alone won't order them correctly.
         let raw: Vec<String> = {
             let conn = self.conn.lock();
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT data_json FROM correlations WHERE scan_id = ?1
                  ORDER BY CASE severity
                      WHEN 'critical' THEN 0
@@ -408,7 +410,7 @@ impl Store {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
             let mut stmt =
-                conn.prepare("SELECT data_json FROM events WHERE scan_id = ?1 ORDER BY id ASC")?;
+                conn.prepare_cached("SELECT data_json FROM events WHERE scan_id = ?1 ORDER BY id ASC")?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
             rows.filter_map(std::result::Result::ok).collect()
         };

@@ -129,7 +129,8 @@ impl Module for LeakIx {
                 *counts.entry(t.to_string()).or_insert(0) += 1;
             }
         }
-        let mut ranked: Vec<(String, u32)> = counts.into_iter().collect();
+        let mut ranked: Vec<(String, u32)> = Vec::with_capacity(counts.len());
+        ranked.extend(counts);
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let top = ranked
             .iter()

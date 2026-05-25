@@ -109,13 +109,41 @@ impl Correlator {
 // Adding a rule = append one function call to `evaluate_rules` returning
 // `Vec<Correlation>`. Each rule is pure and side-effect-free.
 
+struct EntityIndex<'a> {
+    emails: Vec<&'a Entity>,
+    usernames: Vec<&'a Entity>,
+    phones: Vec<&'a Entity>,
+    infra: Vec<&'a Entity>,
+    all: &'a [Entity],
+}
+
+impl<'a> EntityIndex<'a> {
+    fn build(entities: &'a [Entity]) -> Self {
+        let mut emails = Vec::new();
+        let mut usernames = Vec::new();
+        let mut phones = Vec::new();
+        let mut infra = Vec::new();
+        for e in entities {
+            match &e.kind {
+                EntityKind::Email => emails.push(e),
+                EntityKind::Username => usernames.push(e),
+                EntityKind::Phone => phones.push(e),
+                EntityKind::Domain | EntityKind::IpAddress => infra.push(e),
+                _ => {}
+            }
+        }
+        Self { emails, usernames, phones, infra, all: entities }
+    }
+}
+
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     let now = unix_now();
+    let idx = EntityIndex::build(entities);
     let mut out = Vec::new();
-    out.extend(rule_au_001_multi_breach(entities, scan_id, now));
-    out.extend(rule_au_002_identity_cluster(entities, scan_id, now));
-    out.extend(rule_au_003_high_corroboration(entities, scan_id, now));
-    out.extend(rule_au_010_infra_consensus(entities, scan_id, now));
+    out.extend(rule_au_001_multi_breach(&idx.emails, scan_id, now));
+    out.extend(rule_au_002_identity_cluster(&idx, scan_id, now));
+    out.extend(rule_au_003_high_corroboration(idx.all, scan_id, now));
+    out.extend(rule_au_010_infra_consensus(&idx.infra, scan_id, now));
     out
 }
 
@@ -128,7 +156,7 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 /// Threshold stays at 2 (lowered from the spec's 3) to keep the rule
 /// alive on free-only configurations; it can be restored to 3 once paid
 /// breach modules (`hibp`, `dehashed`, `oathnet_pro`) land.
-fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+fn rule_au_001_multi_breach(emails: &[&Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     const BREACH_SOURCES: &[&str] = &[
         "hudsonrock",
         "xposed_or_not",
@@ -138,7 +166,7 @@ fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<
         "oathnet_pro",
     ];
     let mut out = Vec::new();
-    for e in entities.iter().filter(|e| e.kind == EntityKind::Email) {
+    for e in emails {
         let sources: HashSet<&str> = e
             .evidence
             .iter()
@@ -169,19 +197,10 @@ fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<
 
 /// `AU-002` — identity cluster: at least one Email, Username, **and** Phone
 /// were collected in the same scan, suggesting a coherent identity surface.
-fn rule_au_002_identity_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
-    let emails: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Email)
-        .collect();
-    let usernames: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Username)
-        .collect();
-    let phones: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Phone)
-        .collect();
+fn rule_au_002_identity_cluster(idx: &EntityIndex<'_>, scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let emails = &idx.emails;
+    let usernames = &idx.usernames;
+    let phones = &idx.phones;
 
     if emails.is_empty() || usernames.is_empty() || phones.is_empty() {
         return Vec::new();
@@ -239,11 +258,9 @@ fn rule_au_003_high_corroboration(entities: &[Entity], scan_id: &str, ts: u64) -
 /// `corroboration` field (which only increments on merge). Catches the
 /// "same entity discovered independently by infrastructure modules"
 /// pattern that the v0.3+ expansion engine produces.
-fn rule_au_010_infra_consensus(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+fn rule_au_010_infra_consensus(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     let mut out = Vec::new();
-    for e in entities
-        .iter()
-        .filter(|e| matches!(e.kind, EntityKind::Domain | EntityKind::IpAddress))
+    for e in infra
     {
         let sources: HashSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
         if sources.len() >= 3 {
@@ -295,7 +312,7 @@ mod tests {
     #[test]
     fn au001_fires_at_two_breach_sources() {
         let e = email("x@y.com", &["hudsonrock", "breach_directory"]);
-        let r = rule_au_001_multi_breach(&[e], "s1", 0);
+        let r = rule_au_001_multi_breach(&[&e], "s1", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].rule_id, "AU-001");
         assert_eq!(r[0].severity, Severity::Critical);
@@ -304,13 +321,13 @@ mod tests {
     #[test]
     fn au001_no_fire_at_one_source() {
         let e = email("x@y.com", &["hudsonrock"]);
-        assert!(rule_au_001_multi_breach(&[e], "s1", 0).is_empty());
+        assert!(rule_au_001_multi_breach(&[&e], "s1", 0).is_empty());
     }
 
     #[test]
     fn au001_ignores_non_breach_sources() {
         let e = email("x@y.com", &["crtsh", "dns_resolver"]);
-        assert!(rule_au_001_multi_breach(&[e], "s1", 0).is_empty());
+        assert!(rule_au_001_multi_breach(&[&e], "s1", 0).is_empty());
     }
 
     #[test]
@@ -320,7 +337,8 @@ mod tests {
             Entity::new(EntityKind::Username, "xuser", 0.8, "s"),
             Entity::new(EntityKind::Phone, "+61400000000", 0.8, "s"),
         ];
-        let r = rule_au_002_identity_cluster(&entities, "s", 0);
+        let idx = EntityIndex::build(&entities);
+        let r = rule_au_002_identity_cluster(&idx, "s", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].rule_id, "AU-002");
         assert_eq!(r[0].entity_uids.len(), 3);
@@ -333,7 +351,8 @@ mod tests {
             Entity::new(EntityKind::Username, "xuser", 0.8, "s"),
             // no Phone
         ];
-        assert!(rule_au_002_identity_cluster(&entities, "s", 0).is_empty());
+        let idx = EntityIndex::build(&entities);
+        assert!(rule_au_002_identity_cluster(&idx, "s", 0).is_empty());
     }
 
     #[test]
@@ -355,7 +374,7 @@ mod tests {
     #[test]
     fn au010_fires_at_three_sources_on_domain() {
         let e = domain("x.com", &["crtsh", "dns_resolver", "hudsonrock"]);
-        let r = rule_au_010_infra_consensus(&[e], "s", 0);
+        let r = rule_au_010_infra_consensus(&[&e], "s", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].rule_id, "AU-010");
     }
@@ -363,13 +382,15 @@ mod tests {
     #[test]
     fn au010_no_fire_at_two_sources() {
         let e = domain("x.com", &["crtsh", "dns_resolver"]);
-        assert!(rule_au_010_infra_consensus(&[e], "s", 0).is_empty());
+        assert!(rule_au_010_infra_consensus(&[&e], "s", 0).is_empty());
     }
 
     #[test]
     fn au010_ignores_non_infrastructure_kinds() {
-        let e = email("x@y.com", &["a", "b", "c"]);
-        assert!(rule_au_010_infra_consensus(&[e], "s", 0).is_empty());
+        let entities = vec![email("x@y.com", &["a", "b", "c"])];
+        let idx = EntityIndex::build(&entities);
+        assert!(idx.infra.is_empty());
+        assert!(rule_au_010_infra_consensus(&idx.infra, "s", 0).is_empty());
     }
 
     #[test]

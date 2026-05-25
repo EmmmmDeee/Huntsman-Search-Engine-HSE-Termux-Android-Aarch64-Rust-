@@ -87,11 +87,13 @@ impl super::ScanEngine {
                             entity: entity.clone(),
                         },
                     );
-                    let uid = entity.uid.clone();
-                    if let Some(existing) = entity_map.get_mut(&uid) {
-                        existing.merge(entity);
-                    } else {
-                        entity_map.insert(uid, entity);
+                    match entity_map.entry(entity.uid.clone()) {
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            e.get_mut().merge(entity);
+                        }
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(entity);
+                        }
                     }
                     found += 1;
                 }

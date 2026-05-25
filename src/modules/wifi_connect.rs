@@ -60,13 +60,13 @@ fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
     let ssid = info.ssid.as_deref().unwrap_or("<hidden>");
 
-    if let Some(bssid) = &info.bssid
+    if let Some(ref bssid) = info.bssid
         && !bssid.is_empty()
         && bssid != "00:00:00:00:00:00"
         && bssid != "02:00:00:00:00:00"
     // "MAC restricted" placeholder
     {
-        let mut e = Entity::new(EntityKind::MacAddress, bssid, 0.95, scan_id);
+        let mut e = Entity::new(EntityKind::MacAddress, bssid.as_str(), 0.95, scan_id);
         e.tag("wifi-connected");
         e.add_evidence(
             Evidence::new("wifi_connect", format!("Connected to: {ssid}"))
@@ -85,11 +85,11 @@ fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
         result.push(e);
     }
 
-    if let Some(ip) = info.ip.as_deref()
+    if let Some(ref ip) = info.ip
         && !ip.is_empty()
         && ip != "0.0.0.0"
     {
-        let mut e = Entity::new(EntityKind::IpAddress, ip, 0.90, scan_id);
+        let mut e = Entity::new(EntityKind::IpAddress, ip.as_str(), 0.90, scan_id);
         e.tag("local-wifi");
         e.add_evidence(
             Evidence::new("wifi_connect", format!("Local IP on {ssid}")).with_attr("ssid", ssid),

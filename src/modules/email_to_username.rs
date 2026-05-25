@@ -39,18 +39,17 @@ impl Module for EmailToUsername {
             return Ok(ModuleResult::new());
         }
 
-        let mut candidates: HashSet<String> = HashSet::new();
-        candidates.insert(local.clone());
+        let mut candidates: HashSet<String> = HashSet::with_capacity(8);
 
         // Strip +tag suffix → also feeds the splitter below.
-        let detagged = local.find('+').map_or_else(
-            || local.clone(),
-            |pos| {
-                let s = local[..pos].to_string();
-                candidates.insert(s.clone());
-                s
-            },
-        );
+        let detagged = if let Some(pos) = local.find('+') {
+            let s = local[..pos].to_string();
+            candidates.insert(s.clone());
+            s
+        } else {
+            local.clone()
+        };
+        candidates.insert(local);
 
         // Strip trailing digits (john42 → john)
         let stripped = detagged.trim_end_matches(|c: char| c.is_ascii_digit());

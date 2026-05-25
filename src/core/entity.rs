@@ -65,12 +65,24 @@ pub enum EntityKind {
 
 impl fmt::Display for EntityKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Self::Other(s) = self {
-            write!(f, "other:{s}")
-        } else {
-            // serialise via serde_json then strip quotes
-            let raw = serde_json::to_string(self).unwrap_or_default();
-            write!(f, "{}", raw.trim_matches('"'))
+        match self {
+            Self::Person => f.write_str("person"),
+            Self::Email => f.write_str("email"),
+            Self::Phone => f.write_str("phone"),
+            Self::Username => f.write_str("username"),
+            Self::Credential => f.write_str("credential"),
+            Self::Password => f.write_str("password"),
+            Self::IpAddress => f.write_str("ip_address"),
+            Self::Domain => f.write_str("domain"),
+            Self::Url => f.write_str("url"),
+            Self::Asn => f.write_str("asn"),
+            Self::Address => f.write_str("address"),
+            Self::Coordinates => f.write_str("coordinates"),
+            Self::Organisation => f.write_str("organisation"),
+            Self::AbnAcn => f.write_str("abn_acn"),
+            Self::MacAddress => f.write_str("mac_address"),
+            Self::DeviceId => f.write_str("device_id"),
+            Self::Other(s) => write!(f, "other:{s}"),
         }
     }
 }
@@ -341,13 +353,18 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
 /// - Everything else → trim
 pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
-        EntityKind::Email | EntityKind::Domain | EntityKind::Username => value
-            .trim()
-            .to_lowercase()
-            .trim_end_matches('.')
-            .to_string(),
+        EntityKind::Email | EntityKind::Domain | EntityKind::Username => {
+            let trimmed = value.trim();
+            let mut s = String::with_capacity(trimmed.len());
+            for c in trimmed.chars() {
+                s.extend(c.to_lowercase());
+            }
+            let len = s.trim_end_matches('.').len();
+            s.truncate(len);
+            s
+        }
         EntityKind::Phone => {
-            let mut out = String::new();
+            let mut out = String::with_capacity(value.len());
             let mut chars = value.chars().peekable();
             if chars.peek() == Some(&'+') {
                 out.push('+');

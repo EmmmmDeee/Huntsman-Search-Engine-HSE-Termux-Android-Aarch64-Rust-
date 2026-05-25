@@ -61,19 +61,19 @@ impl Module for Wayback {
 
         let rows: Vec<Row> = fetch_json(&ctx.http, "wayback", &url).await?;
 
-        // First row is the column header; ignore it.
-        let data: Vec<&Row> = rows.iter().skip(1).collect();
-        if data.is_empty() {
+        // First row is the column header; skip it. Avoid collecting into
+        // an intermediate Vec — we only need the count and bookend timestamps.
+        if rows.len() <= 1 {
             // Domain not archived — not necessarily suspicious (private
             // sites are routinely excluded), just no findings.
             return Ok(ModuleResult::new());
         }
 
-        let count = data.len();
-        // CDX rows come timestamp-sorted ascending. First row = earliest
-        // snapshot, last row = most recent.
-        let first_ts = data.first().and_then(|r| r.0.first()).cloned();
-        let last_ts = data.last().and_then(|r| r.0.first()).cloned();
+        let count = rows.len() - 1; // exclude header row
+        // CDX rows come timestamp-sorted ascending. Second row = earliest
+        // snapshot (first is header), last row = most recent.
+        let first_ts = rows.get(1).and_then(|r| r.0.first());
+        let last_ts = rows.last().and_then(|r| r.0.first());
 
         let mut entity = Entity::new(EntityKind::Domain, &domain, 0.80, &ctx.scan_id);
         entity.tag("archived");
@@ -83,14 +83,14 @@ impl Module for Wayback {
         )
         .with_attr("snapshot_count", count.to_string())
         .with_attr("cdx_query_limit", "1000");
-        if let Some(t) = first_ts.as_deref() {
+        if let Some(t) = first_ts {
             ev = ev
-                .with_attr("first_seen", t)
+                .with_attr("first_seen", t.as_str())
                 .with_attr("first_seen_iso", iso_from_cdx(t));
         }
-        if let Some(t) = last_ts.as_deref() {
+        if let Some(t) = last_ts {
             ev = ev
-                .with_attr("last_seen", t)
+                .with_attr("last_seen", t.as_str())
                 .with_attr("last_seen_iso", iso_from_cdx(t));
         }
         entity.add_evidence(ev);

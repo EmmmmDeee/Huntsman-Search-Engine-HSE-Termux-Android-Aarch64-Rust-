@@ -128,6 +128,12 @@ impl ModuleResult {
         Self::default()
     }
 
+    pub fn with_capacity(cap: usize) -> Self {
+        Self {
+            entities: Vec::with_capacity(cap),
+        }
+    }
+
     pub fn push(&mut self, entity: Entity) {
         self.entities.push(entity);
     }

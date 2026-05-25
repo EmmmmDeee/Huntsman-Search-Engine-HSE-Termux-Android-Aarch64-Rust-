@@ -18,6 +18,10 @@ use crate::core::error::{Error, Result};
 pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_millis(MODULE_TIMEOUT_MS))
+        .connect_timeout(Duration::from_secs(5))
+        .pool_max_idle_per_host(5)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .tcp_keepalive(Duration::from_secs(15))
         .user_agent(concat!(
             "huntsman-search-engine/",
             env!("CARGO_PKG_VERSION"),

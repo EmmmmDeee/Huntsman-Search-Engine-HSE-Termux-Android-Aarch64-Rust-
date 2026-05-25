@@ -78,26 +78,23 @@ impl Module for XposedOrNot {
 /// Pure transformation of the API response into a `ModuleResult`. Extracted
 /// so the parser can be unit-tested without a live HTTP call.
 fn build_result(data: &XonResp, target: &Target, scan_id: &str) -> ModuleResult {
-    let breaches: Vec<&str> = data
-        .breaches
-        .as_ref()
-        .and_then(|outer| outer.first())
-        .map(|inner| inner.iter().map(String::as_str).collect())
-        .unwrap_or_default();
+    let inner = match data.breaches.as_ref().and_then(|outer| outer.first()) {
+        Some(v) if !v.is_empty() => v,
+        _ => return ModuleResult::new(),
+    };
 
-    if breaches.is_empty() {
-        return ModuleResult::new();
-    }
+    let count = inner.len();
+    let joined = inner.join(", ");
 
     let mut entity = Entity::new(EntityKind::Email, &target.value, 0.85, scan_id);
     entity.tag("breach");
     entity.add_evidence(
         Evidence::new(
             "xposed_or_not",
-            format!("Found in {} breach(es)", breaches.len()),
+            format!("Found in {count} breach(es)"),
         )
-        .with_attr("count", breaches.len().to_string())
-        .with_attr("breaches", breaches.join(", ")),
+        .with_attr("count", count.to_string())
+        .with_attr("breaches", joined),
     );
 
     let mut result = ModuleResult::new();
