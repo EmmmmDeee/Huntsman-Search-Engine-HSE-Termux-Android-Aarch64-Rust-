@@ -132,6 +132,42 @@ pub mod paths {
     pub const STEAM: &str = "/service/steam";
     pub const XBOX: &str = "/service/xbox";
     pub const ROBLOX: &str = "/service/roblox-userinfo";
+    pub const VICTIMS: &str = "/service/v2/victims/search";
+}
+
+/// Harvest API service credentials from OathNet stealer data.
+/// Searches for credentials associated with OSINT service domains
+/// and returns them as (service, username, password, url) tuples.
+pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, String)> {
+    let services = [
+        "shodan.io",
+        "virustotal.com",
+        "hunter.io",
+        "securitytrails.com",
+        "dehashed.com",
+        "intelx.io",
+        "numverify.com",
+        "wigle.net",
+        "ipqualityscore.com",
+        "leakix.net",
+        "haveibeenpwned.com",
+    ];
+
+    let mut creds = Vec::new();
+    for service in &services {
+        if let Ok(items) = search(key, paths::STEALER, "q", service, 3).await {
+            for item in &items {
+                let url = val_str(item, "url").unwrap_or_default();
+                let user = val_str(item, "username").unwrap_or_default();
+                let pw = val_str(item, "password").unwrap_or_default();
+                if !user.is_empty() && !pw.is_empty() {
+                    creds.push((service.to_string(), user, pw, url));
+                    break;
+                }
+            }
+        }
+    }
+    creds
 }
 
 async fn curl_get(url: &str, key: &str) -> Result<String> {
