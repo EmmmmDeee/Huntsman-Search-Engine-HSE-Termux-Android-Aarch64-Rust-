@@ -76,8 +76,17 @@ impl Module for EmailToUsername {
         }
 
         let mut result = ModuleResult::new();
-        for candidate in candidates {
-            let mut entity = Entity::new(EntityKind::Username, &candidate, 0.45, &ctx.scan_id);
+        for candidate in &candidates {
+            // The full de-tagged local part (e.g., "john.doe" from
+            // "john.doe+work@gmail.com") is the highest-confidence
+            // derivation — real usernames usually ARE the email local
+            // part. Set it at 0.78 so the expansion engine chains it
+            // into username_search/github_user by default. Speculative
+            // splits ("john", "doe") stay at 0.45 (below the 0.75
+            // expansion threshold) so they don't trigger unbounded
+            // expansion but are still available in the entity table.
+            let conf = if *candidate == detagged { 0.78 } else { 0.45 };
+            let mut entity = Entity::new(EntityKind::Username, candidate, conf, &ctx.scan_id);
             entity.tag("derived");
             entity.add_evidence(
                 Evidence::new(

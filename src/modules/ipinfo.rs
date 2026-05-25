@@ -174,7 +174,7 @@ impl Module for IpInfo {
         if let Some(loc) = body.loc.as_deref()
             && loc.contains(',')
         {
-            let mut coords = Entity::new(EntityKind::Coordinates, loc, 0.72, &ctx.scan_id);
+            let mut coords = Entity::new(EntityKind::Coordinates, loc, 0.76, &ctx.scan_id);
             coords.tag("geoint");
             coords.tag("ipinfo");
             coords.add_evidence(

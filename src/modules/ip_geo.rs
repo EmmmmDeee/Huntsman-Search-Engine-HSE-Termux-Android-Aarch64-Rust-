@@ -65,7 +65,7 @@ impl Module for IpGeo {
 
         if let (Some(lat), Some(lon)) = (data.lat, data.lon) {
             let coords = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.70, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.76, &ctx.scan_id);
             e.tag("geoint");
             e.add_evidence(
                 Evidence::new("ip_geo", format!("IP geolocation for {}", target.value))

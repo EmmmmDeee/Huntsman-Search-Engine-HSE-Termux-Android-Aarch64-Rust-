@@ -144,7 +144,7 @@ impl Module for Ip2Location {
             && (lat.abs() > 0.001 || lon.abs() > 0.001)
         {
             let coord_value = format!("{lat},{lon}");
-            let mut coords = Entity::new(EntityKind::Coordinates, &coord_value, 0.70, &ctx.scan_id);
+            let mut coords = Entity::new(EntityKind::Coordinates, &coord_value, 0.76, &ctx.scan_id);
             coords.tag("geoint");
             coords.tag("ip2location");
             coords.add_evidence(

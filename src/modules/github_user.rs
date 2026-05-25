@@ -199,6 +199,30 @@ impl Module for GithubUser {
                     .with_attr("github_login", &user.login),
                 );
                 result.push(u);
+                // Extract the hostname as a Domain entity so the expansion
+                // engine can chain dns_resolver/crtsh/whois/rdap on it.
+                // Without this, the Url entity is an expansion dead-end
+                // (EntityKind::Url → TargetKind = None).
+                if let Some(host) = blog
+                    .strip_prefix("https://")
+                    .or_else(|| blog.strip_prefix("http://"))
+                {
+                    let host = host.split('/').next().unwrap_or("");
+                    if host.contains('.') && !host.is_empty() {
+                        let mut d = Entity::new(EntityKind::Domain, host, 0.75, &ctx.scan_id);
+                        d.tag("personal-site");
+                        d.tag("blog-domain");
+                        d.add_evidence(
+                            Evidence::new(
+                                "github_user",
+                                format!("Blog domain from GitHub profile @{}", user.login),
+                            )
+                            .with_attr("github_login", &user.login)
+                            .with_attr("source_url", blog),
+                        );
+                        result.push(d);
+                    }
+                }
             }
         }
 
