@@ -103,13 +103,19 @@ pub enum Classification {
     Verified,
 }
 
+impl Classification {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Candidate => "CANDIDATE",
+            Self::Probable => "PROBABLE",
+            Self::Verified => "VERIFIED",
+        }
+    }
+}
+
 impl fmt::Display for Classification {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Candidate => write!(f, "CANDIDATE"),
-            Self::Probable => write!(f, "PROBABLE"),
-            Self::Verified => write!(f, "VERIFIED"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -383,7 +389,7 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
 
 /// Current Unix timestamp in seconds.
 #[inline]
-pub(crate) fn unix_now() -> u64 {
+pub fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

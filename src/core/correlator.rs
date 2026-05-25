@@ -19,6 +19,7 @@ use tracing::debug;
 use crate::core::{
     entity::{Entity, EntityKind, unix_now},
     error::Result,
+    tags,
 };
 use crate::storage::store::Store;
 
@@ -271,7 +272,7 @@ fn rule_au_004_stealer_recency(entities: &[Entity], scan_id: &str, ts: u64) -> V
     let cutoff = ts.saturating_sub(RECENCY_SECS);
 
     let mut out = Vec::new();
-    for e in entities.iter().filter(|e| e.has_tag("stealer-log")) {
+    for e in entities.iter().filter(|e| e.has_tag(tags::STEALER_LOG)) {
         let recent_dates: Vec<&str> = e
             .evidence
             .iter()
@@ -309,7 +310,7 @@ fn rule_au_004_stealer_recency(entities: &[Entity], scan_id: &str, ts: u64) -> V
 /// machines in the same organisation.
 fn rule_au_005_multi_device_stealer(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     let mut out = Vec::new();
-    for e in entities.iter().filter(|e| e.has_tag("stealer-log")) {
+    for e in entities.iter().filter(|e| e.has_tag(tags::STEALER_LOG)) {
         let hosts: HashSet<&str> = e
             .evidence
             .iter()
@@ -394,6 +395,7 @@ fn rule_au_010_infra_consensus(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec
 mod tests {
     use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::tags;
 
     fn email(value: &str, sources: &[&str]) -> Entity {
         let mut e = Entity::new(EntityKind::Email, value, 0.9, "scan-test");
@@ -507,7 +509,7 @@ mod tests {
     fn au004_fires_on_recent_stealer() {
         let now = unix_now();
         let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
-        e.tag("stealer-log");
+        e.tag(tags::STEALER_LOG);
         e.add_evidence(
             Evidence::new("hudsonrock", "test")
                 .with_attr("date_compromised", "2026-05-20T00:00:00Z"),
@@ -522,7 +524,7 @@ mod tests {
     fn au004_no_fire_on_old_stealer() {
         let now = unix_now();
         let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
-        e.tag("stealer-log");
+        e.tag(tags::STEALER_LOG);
         e.add_evidence(
             Evidence::new("hudsonrock", "test")
                 .with_attr("date_compromised", "2020-01-01T00:00:00Z"),
@@ -534,7 +536,7 @@ mod tests {
     fn au005_fires_on_multi_device() {
         let now = unix_now();
         let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
-        e.tag("stealer-log");
+        e.tag(tags::STEALER_LOG);
         e.add_evidence(
             Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"),
         );
@@ -551,7 +553,7 @@ mod tests {
     fn au005_no_fire_single_device() {
         let now = unix_now();
         let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
-        e.tag("stealer-log");
+        e.tag(tags::STEALER_LOG);
         e.add_evidence(
             Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"),
         );

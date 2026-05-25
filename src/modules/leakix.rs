@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -103,12 +103,7 @@ impl Module for LeakIx {
             return Ok(ModuleResult::new());
         }
 
-        let kind = if matches!(target.kind, TargetKind::IpAddress) {
-            EntityKind::IpAddress
-        } else {
-            EntityKind::Domain
-        };
-        let mut entity = Entity::new(kind, value, 0.88, &ctx.scan_id);
+        let mut entity = target.to_entity(0.88, &ctx.scan_id);
         entity.tag("leakix");
         if !body.leaks.is_empty() {
             entity.tag("leak");

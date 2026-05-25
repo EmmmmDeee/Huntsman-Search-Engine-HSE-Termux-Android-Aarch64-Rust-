@@ -17,10 +17,11 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, Evidence},
+    entity::Evidence,
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 use crate::util::http::error_snippet;
 
@@ -165,9 +166,8 @@ impl Module for OathnetPro {
             MAX_DBNAMES,
         );
 
-        let kind = target.kind.to_entity_kind();
-        let mut entity = Entity::new(kind, &target.value, 0.85, &ctx.scan_id);
-        entity.tag("breach");
+        let mut entity = target.to_entity(0.85, &ctx.scan_id);
+        entity.tag(tags::BREACH);
         entity.tag("oathnet-pro");
         if has_more {
             entity.tag("partial");

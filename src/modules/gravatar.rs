@@ -15,7 +15,7 @@ use serde::Deserialize;
 // `md-5` is the maintained successor crate; the import path is `md5`.
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -113,7 +113,7 @@ impl Module for Gravatar {
             return Ok(ModuleResult::new());
         };
 
-        let mut entity = Entity::new(EntityKind::Email, &normalised, 0.88, &ctx.scan_id);
+        let mut entity = target.to_entity(0.88, &ctx.scan_id);
         entity.tag("gravatar");
         let mut ev = Evidence::new("gravatar", format!("Gravatar profile for {normalised}"))
             .with_attr("md5", &hash)

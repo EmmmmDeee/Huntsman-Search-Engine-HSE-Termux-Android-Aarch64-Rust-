@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::core::{
-    entity::{Entity, Evidence},
+    entity::Evidence,
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -164,8 +164,7 @@ impl Module for IntelX {
             return Ok(ModuleResult::new());
         }
 
-        let kind = target.kind.to_entity_kind();
-        let mut entity = Entity::new(kind, value, 0.86, &ctx.scan_id);
+        let mut entity = target.to_entity(0.86, &ctx.scan_id);
         entity.tag("intelx");
         entity.tag("indicator");
 

@@ -62,7 +62,7 @@ impl Module for ReverseDns {
                 continue;
             }
             let mut e = Entity::new(EntityKind::Domain, host, 0.85, &ctx.scan_id);
-            e.tag("ptr");
+            e.tag(crate::core::tags::PTR);
             e.add_evidence(
                 Evidence::new("reverse_dns", format!("PTR record for {ip}"))
                     .with_attr("record_type", "PTR")

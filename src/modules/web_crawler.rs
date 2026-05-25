@@ -37,6 +37,7 @@ use crate::core::{
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 
 pub struct WebCrawler;
@@ -556,8 +557,8 @@ fn build_entities(
 ) {
     // Main domain entity with crawl summary
     let mut entity = Entity::new(EntityKind::Domain, domain, 0.90, scan_id);
-    entity.tag("web");
-    entity.tag("crawled");
+    entity.tag(tags::WEB);
+    entity.tag(tags::CRAWLED);
 
     for fw in &state.frameworks {
         entity.tag(format!("tech:{}", fw.to_lowercase().replace(' ', "-")));
@@ -574,7 +575,7 @@ fn build_entities(
         .map(|(name, _)| *name)
         .collect();
     if !missing_headers.is_empty() {
-        entity.tag("missing-security-headers");
+        entity.tag(tags::MISSING_SECURITY_HEADERS);
     }
 
     let mut ev = Evidence::new(
@@ -618,8 +619,8 @@ fn build_entities(
     // Subdomain entities — feed back into expansion
     for sub in &state.subdomains {
         let mut e = Entity::new(EntityKind::Domain, sub.as_str(), 0.82, scan_id);
-        e.tag("web");
-        e.tag("subdomain");
+        e.tag(tags::WEB);
+        e.tag(tags::SUBDOMAIN);
         e.add_evidence(
             Evidence::new("web_crawler", format!("Subdomain discovered by crawling {domain}"))
                 .with_attr("parent_domain", domain),
@@ -630,7 +631,7 @@ fn build_entities(
     // External domain entities
     for ext in &state.external_domains {
         let mut e = Entity::new(EntityKind::Domain, ext.as_str(), 0.50, scan_id);
-        e.tag("external");
+        e.tag(tags::EXTERNAL);
         e.add_evidence(
             Evidence::new("web_crawler", format!("External domain linked from {domain}"))
                 .with_attr("source_domain", domain),
@@ -641,7 +642,7 @@ fn build_entities(
     // Email entities
     for email in &state.emails {
         let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.75, scan_id);
-        e.tag("web-scraped");
+        e.tag(tags::WEB_SCRAPED);
         e.add_evidence(
             Evidence::new("web_crawler", format!("Email found on {domain}"))
                 .with_attr("source_domain", domain),
@@ -652,7 +653,7 @@ fn build_entities(
     // Phone entities
     for phone in &state.phones {
         let mut e = Entity::new(EntityKind::Phone, phone.as_str(), 0.65, scan_id);
-        e.tag("web-scraped");
+        e.tag(tags::WEB_SCRAPED);
         e.add_evidence(
             Evidence::new("web_crawler", format!("Phone found on {domain}"))
                 .with_attr("source_domain", domain),

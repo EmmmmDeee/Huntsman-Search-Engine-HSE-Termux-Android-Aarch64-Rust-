@@ -121,12 +121,7 @@ impl Module for Whois {
             return Ok(ModuleResult::new());
         }
 
-        let kind = match target.kind {
-            TargetKind::IpAddress => EntityKind::IpAddress,
-            _ => EntityKind::Domain,
-        };
-
-        let mut entity = Entity::new(kind, &target.value, 0.85, &_ctx.scan_id);
+        let mut entity = target.to_entity(0.85, &_ctx.scan_id);
 
         // Status flags become tags so the SPA can highlight them. These
         // are the most operationally interesting: lock states, hold flags,

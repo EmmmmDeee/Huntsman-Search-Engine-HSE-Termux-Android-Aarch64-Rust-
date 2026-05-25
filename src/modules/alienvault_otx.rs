@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -57,9 +57,9 @@ impl Module for AlienVaultOtx {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let (itype, kind) = match target.kind {
-            TargetKind::IpAddress => ("IPv4", EntityKind::IpAddress),
-            TargetKind::Domain => ("domain", EntityKind::Domain),
+        let itype = match target.kind {
+            TargetKind::IpAddress => "IPv4",
+            TargetKind::Domain => "domain",
             _ => return Ok(ModuleResult::new()),
         };
 
@@ -86,7 +86,7 @@ impl Module for AlienVaultOtx {
             return Ok(ModuleResult::new());
         }
 
-        let mut entity = Entity::new(kind, &target.value, 0.72, &ctx.scan_id);
+        let mut entity = target.to_entity(0.72, &ctx.scan_id);
         entity.tag("threat-intel");
 
         // Surface up to 5 pulse names + tag aggregate so the evidence is

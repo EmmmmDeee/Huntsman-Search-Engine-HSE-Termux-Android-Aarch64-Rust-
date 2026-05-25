@@ -13,10 +13,11 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, Evidence},
+    entity::Evidence,
     error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 use crate::util::http::{fetch_json_or_404, urlencode};
 
@@ -96,12 +97,10 @@ impl Module for HudsonRock {
             return Ok(ModuleResult::new());
         }
 
-        let kind = target.kind.to_entity_kind();
-
         let confidence = compute_confidence(&data.stealers);
-        let mut entity = Entity::new(kind, &target.value, confidence, &ctx.scan_id);
-        entity.tag("breach");
-        entity.tag("stealer-log");
+        let mut entity = target.to_entity(confidence, &ctx.scan_id);
+        entity.tag(tags::BREACH);
+        entity.tag(tags::STEALER_LOG);
 
         let mut seen_families: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         let mut seen_hosts: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
@@ -152,7 +151,7 @@ impl Module for HudsonRock {
             entity.tag(format!("stealer:{}", family.to_lowercase()));
         }
         if seen_hosts.len() >= 2 {
-            entity.tag("multi-device");
+            entity.tag(tags::MULTI_DEVICE);
         }
         entity.tag(format!("stealer-count:{}", data.stealers.len()));
 

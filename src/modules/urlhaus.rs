@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -113,13 +113,7 @@ impl Module for UrlHaus {
             return Ok(ModuleResult::new());
         }
 
-        let kind = if matches!(target.kind, TargetKind::Domain) {
-            EntityKind::Domain
-        } else {
-            EntityKind::IpAddress
-        };
-
-        let mut entity = Entity::new(kind, host, 0.90, &ctx.scan_id);
+        let mut entity = target.to_entity(0.90, &ctx.scan_id);
         entity.tag("malicious");
         entity.tag("urlhaus");
 

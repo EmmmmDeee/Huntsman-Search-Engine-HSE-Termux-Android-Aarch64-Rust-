@@ -13,10 +13,11 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, Evidence},
+    entity::Evidence,
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 use crate::util::http::{error_snippet, urlencode};
 
@@ -111,9 +112,8 @@ impl Module for DeHashed {
             return Ok(ModuleResult::new());
         }
 
-        let kind = target.kind.to_entity_kind();
-        let mut entity = Entity::new(kind, value, 0.88, &ctx.scan_id);
-        entity.tag("breach");
+        let mut entity = target.to_entity(0.88, &ctx.scan_id);
+        entity.tag(tags::BREACH);
         entity.tag("dehashed");
 
         // Top databases by frequency (capped at 5).

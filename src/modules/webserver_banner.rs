@@ -15,7 +15,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::{Entity, Evidence},
     error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -78,8 +78,8 @@ impl Module for WebserverBanner {
                 continue;
             }
 
-            let mut entity = Entity::new(EntityKind::Domain, domain, 0.85, &ctx.scan_id);
-            entity.tag("web");
+            let mut entity = target.to_entity(0.85, &ctx.scan_id);
+            entity.tag(crate::core::tags::WEB);
             apply_stack_tags(&mut entity, &captured);
 
             let mut ev = Evidence::new(
@@ -163,6 +163,7 @@ fn apply_stack_tags(e: &mut Entity, headers: &[(String, String)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::entity::EntityKind;
 
     #[test]
     fn accepts_only_domain() {

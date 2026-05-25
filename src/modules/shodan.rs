@@ -16,6 +16,7 @@ use crate::core::{
     error::Result,
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 use crate::util::http::{fetch_json_or_404, urlencode};
 
@@ -82,7 +83,7 @@ impl Module for Shodan {
         };
 
         let mut result = ModuleResult::new();
-        let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.90, &ctx.scan_id);
+        let mut entity = target.to_entity(0.90, &ctx.scan_id);
         entity.tag("shodan");
         if !body.vulns.is_empty() {
             entity.tag("vulnerable");
@@ -149,7 +150,7 @@ impl Module for Shodan {
             }
             let mut d = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
             d.tag("shodan");
-            d.tag("ptr");
+            d.tag(tags::PTR);
             d.add_evidence(
                 Evidence::new("shodan", format!("Hostname known for {ip}")).with_attr("ip", ip),
             );

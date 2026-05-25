@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::Result,
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -102,7 +102,7 @@ impl Module for Numverify {
         if body.valid != Some(true) {
             return Ok(ModuleResult::new());
         }
-        let mut entity = Entity::new(EntityKind::Phone, &target.value, 0.92, &ctx.scan_id);
+        let mut entity = target.to_entity(0.92, &ctx.scan_id);
         entity.tag("numverify");
         entity.tag("validated");
         entity.tag(format!("transport:{transport}"));

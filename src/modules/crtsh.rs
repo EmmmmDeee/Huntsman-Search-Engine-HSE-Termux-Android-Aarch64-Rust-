@@ -57,7 +57,7 @@ impl Module for Crtsh {
                 }
                 if seen.insert(name.clone()) {
                     let mut e = Entity::new(EntityKind::Domain, &name, 0.88, &ctx.scan_id);
-                    e.tag("ct-log");
+                    e.tag(crate::core::tags::CT_LOG);
                     e.add_evidence(
                         Evidence::new("crtsh", format!("Certificate transparency: {name}"))
                             .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))

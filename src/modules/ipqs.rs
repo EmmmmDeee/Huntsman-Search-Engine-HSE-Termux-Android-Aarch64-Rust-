@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, Evidence},
+    entity::Evidence,
     error::Result,
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -122,8 +122,7 @@ impl Module for IpQs {
             return Ok(ModuleResult::new());
         }
 
-        let kind = target.kind.to_entity_kind();
-        let mut entity = Entity::new(kind, value, 0.85, &ctx.scan_id);
+        let mut entity = target.to_entity(0.85, &ctx.scan_id);
         entity.tag("ipqs");
 
         let score = body.fraud_score.unwrap_or(0);

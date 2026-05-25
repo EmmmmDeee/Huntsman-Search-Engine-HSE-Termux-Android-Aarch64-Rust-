@@ -22,10 +22,11 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 use crate::util::http::{fetch_json_or_404, urlencode};
 
@@ -145,8 +146,8 @@ fn build_result(
     }
     let confidence = confidence_for_count(count);
 
-    let mut entity = Entity::new(EntityKind::Email, &target.value, confidence, scan_id);
-    entity.tag("breach");
+    let mut entity = target.to_entity(confidence, scan_id);
+    entity.tag(tags::BREACH);
 
     for name in breaches {
         let lower = name.to_lowercase();
@@ -156,7 +157,7 @@ fn build_result(
     }
 
     if count >= 5 {
-        entity.tag("high-exposure");
+        entity.tag(tags::HIGH_EXPOSURE);
     }
 
     let joined = breaches.join(", ");
@@ -168,7 +169,7 @@ fn build_result(
         if let Some(pastes) = a.pastes_summary.as_ref().and_then(|p| p.cnt)
             && pastes > 0 {
                 ev = ev.with_attr("paste_count", pastes.to_string());
-                entity.tag("paste-exposed");
+                entity.tag(tags::PASTE_EXPOSED);
             }
         if let Some(details) = a
             .exposed_breaches
@@ -194,7 +195,7 @@ fn build_result(
                         .is_some_and(|r| !r.eq_ignore_ascii_case("none") && !r.is_empty())
                 });
             if has_password_risk {
-                entity.tag("password-at-risk");
+                entity.tag(tags::PASSWORD_AT_RISK);
                 ev = ev.with_attr("password_risk", "true");
             }
         }
@@ -219,6 +220,7 @@ fn confidence_for_count(count: usize) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::entity::EntityKind;
 
     #[test]
     fn accepts_email_only() {
