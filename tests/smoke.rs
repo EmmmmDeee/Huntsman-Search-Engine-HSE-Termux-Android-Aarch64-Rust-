@@ -725,6 +725,7 @@ fn setup(
         http: build_client(),
         keys: Default::default(),
         cancel: Default::default(),
+        store: Arc::clone(&store),
     };
     (engine, store, sid, target, ctx)
 }
@@ -747,7 +748,7 @@ async fn live_session_runs_two_iterations_and_completes() {
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
     let engine = Arc::new(ScanEngine::new(modules, Arc::clone(&store), bus.clone()));
-    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone(), Arc::clone(&store));
 
     let target = Target::new(TargetKind::Email, "live@example.com");
     let live_id = scanner.start(
@@ -782,7 +783,7 @@ async fn live_session_stops_on_explicit_cancel() {
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
     let engine = Arc::new(ScanEngine::new(modules, Arc::clone(&store), bus.clone()));
-    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone(), Arc::clone(&store));
 
     let target = Target::new(TargetKind::Email, "cancel-live@example.com");
     let live_id = scanner.start(

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Serialize;
@@ -9,6 +10,7 @@ use crate::core::{
     event::EventBus,
     scan::Target,
 };
+use crate::storage::store::Store;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +72,7 @@ pub struct ModuleContext {
     pub http: reqwest::Client,
     pub keys: HashMap<String, String>,
     pub cancel: crate::core::cancel::CancelHandle,
+    pub store: Arc<Store>,
 }
 
 impl ModuleContext {
@@ -82,6 +85,14 @@ impl ModuleContext {
 
     pub fn key_opt(&self, name: &str) -> Option<&str> {
         self.keys.get(name).map(String::as_str)
+    }
+
+    pub fn find_existing(&self, kind: &str, value: &str) -> Option<Entity> {
+        self.store.find_entity(kind, value).ok().flatten()
+    }
+
+    pub fn existing_by_kind(&self, kind: &str, limit: usize) -> Vec<Entity> {
+        self.store.entities_by_kind(kind, limit).unwrap_or_default()
     }
 }
 

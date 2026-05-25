@@ -283,8 +283,8 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         iterations: cmd.iterations,
     };
 
-    let (_store, bus, engine) = build_runtime(1024)?;
-    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    let (store, bus, engine) = build_runtime(1024)?;
+    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone(), Arc::clone(&store));
 
     let live_id = scanner.start(target, scan_options, live_options);
     eprintln!("live session {live_id} — Ctrl-C to stop");
@@ -333,7 +333,7 @@ async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
     use crate::core::live::LiveScanner;
 
     let (store, bus, engine) = build_runtime(1024)?;
-    let live = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    let live = LiveScanner::new(Arc::clone(&engine), bus.clone(), Arc::clone(&store));
     let http = build_client();
     let state = Arc::new(AppState {
         store,
@@ -442,6 +442,7 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
         http: build_client(),
         keys: keys::load(),
         cancel: crate::core::cancel::CancelHandle::new(),
+        store: Arc::clone(&store),
     };
 
     let scan = engine.run(scan, target, ctx).await?;

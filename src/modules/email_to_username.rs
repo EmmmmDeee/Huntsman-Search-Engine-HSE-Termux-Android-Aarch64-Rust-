@@ -96,12 +96,16 @@ mod tests {
 
     fn ctx() -> ModuleContext {
         let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        let store = std::sync::Arc::new(
+            crate::storage::store::Store::open(":memory:").unwrap(),
+        );
         ModuleContext {
             scan_id: "t".into(),
             bus,
             http: crate::util::http::build_client(),
             keys: HashMap::default(),
             cancel: crate::core::cancel::CancelHandle::new(),
+            store,
         }
     }
 

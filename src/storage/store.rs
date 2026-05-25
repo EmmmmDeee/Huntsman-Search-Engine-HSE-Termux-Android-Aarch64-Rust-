@@ -295,6 +295,61 @@ impl Store {
             .map_err(Into::into)
     }
 
+    pub fn find_entity(&self, kind: &str, value: &str) -> Result<Option<Entity>> {
+        let raw: Option<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT data_json FROM entities WHERE kind = ?1 AND value = ?2 LIMIT 1",
+            )?;
+            let mut rows = stmt.query(params![kind, value])?;
+            rows.next()?.map(|r| r.get(0)).transpose()?
+        };
+        raw.map(|j| serde_json::from_str(&j))
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    pub fn entities_by_kind(&self, kind: &str, limit: usize) -> Result<Vec<Entity>> {
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT data_json FROM entities WHERE kind = ?1 \
+                 ORDER BY confidence DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![kind, limit as i64], |r| r.get::<_, String>(0))?;
+            rows.filter_map(std::result::Result::ok).collect()
+        };
+        Ok(raw
+            .into_iter()
+            .filter_map(|s| serde_json::from_str(&s).ok())
+            .collect())
+    }
+
+    pub fn search_entities_by_kind(
+        &self,
+        kind: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<Entity>> {
+        let escaped = query.replace('%', "\\%").replace('_', "\\_");
+        let pattern = format!("%{escaped}%");
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT data_json FROM entities WHERE kind = ?1 AND value LIKE ?2 ESCAPE '\\' \
+                 ORDER BY confidence DESC LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![kind, pattern, limit as i64], |r| {
+                r.get::<_, String>(0)
+            })?;
+            rows.filter_map(std::result::Result::ok).collect()
+        };
+        Ok(raw
+            .into_iter()
+            .filter_map(|s| serde_json::from_str(&s).ok())
+            .collect())
+    }
+
     pub fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<Entity>> {
         let escaped = query.replace('%', "\\%").replace('_', "\\_");
         let pattern = format!("%{escaped}%");
@@ -688,6 +743,43 @@ mod tests {
         // Other-scan's event is isolated.
         let other_evs = store.events_for_scan("scan-other").unwrap();
         assert_eq!(other_evs.len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn find_entity_by_kind_and_value() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "s1");
+
+        let e = Entity::new(EntityKind::ApiKey, "sk_live_abc123", 0.85, "s1");
+        store.upsert_entity(&e).unwrap();
+
+        let found = store.find_entity("api_key", "sk_live_abc123").unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().value, "sk_live_abc123");
+
+        let not_found = store.find_entity("api_key", "nonexistent").unwrap();
+        assert!(not_found.is_none());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn entities_by_kind_returns_sorted_by_confidence() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "s1");
+
+        store.upsert_entity(&Entity::new(EntityKind::ApiKey, "key_low", 0.3, "s1")).unwrap();
+        store.upsert_entity(&Entity::new(EntityKind::ApiKey, "key_high", 0.9, "s1")).unwrap();
+        store.upsert_entity(&Entity::new(EntityKind::Email, "not_a_key@x.com", 0.8, "s1")).unwrap();
+
+        let keys = store.entities_by_kind("api_key", 10).unwrap();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].value, "key_high");
+        assert_eq!(keys[1].value, "key_low");
 
         let _ = std::fs::remove_file(&path);
     }

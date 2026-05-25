@@ -62,6 +62,7 @@ fn spawn_scan(state: &Arc<AppState>, scan: Scan, target: Target) {
         http: state.http.clone(),
         keys: keys::load(),
         cancel,
+        store: Arc::clone(&state.store),
     };
     let engine = Arc::clone(&state.engine);
     tokio::spawn(async move {
@@ -327,6 +328,22 @@ pub async fn search_entities(
         .unwrap_or(50)
         .min(200);
     match s.store.search_entities(query, limit) {
+        Ok(entities) => ok_list("entities", entities),
+        Err(e) => internal_error(&e),
+    }
+}
+
+pub async fn entities_by_kind(
+    State(s): State<Arc<AppState>>,
+    Path(kind): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(100)
+        .min(500);
+    match s.store.entities_by_kind(&kind, limit) {
         Ok(entities) => ok_list("entities", entities),
         Err(e) => internal_error(&e),
     }

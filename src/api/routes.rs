@@ -111,6 +111,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(handlers::live_get).delete(handlers::live_stop),
         )
         .route("/live/{id}/events", get(handlers::live_events_sse))
+        .route("/entities/kind/{kind}", get(handlers::entities_by_kind))
         .route("/entities/{uid}", get(handlers::entity_get))
         .route("/search", get(handlers::search_entities))
         .route(

@@ -62,6 +62,25 @@ impl Module for OathnetPro {
         let mut seen: HashSet<String> = HashSet::new();
         seen.insert(target.value.to_lowercase());
 
+        // Load existing findings from store to avoid redundant API calls
+        let existing = ctx.existing_by_kind(&target.kind.to_entity_kind().to_string(), 100);
+        let target_lower = target.value.to_lowercase();
+        let already_scanned = existing.iter().any(|e| {
+            e.value.to_lowercase() == target_lower
+                && e.evidence.iter().any(|ev| ev.source == "oathnet_pro")
+        });
+
+        // Carry forward prior OathNet findings so nothing is wasted
+        if already_scanned {
+            for e in &existing {
+                if e.value.to_lowercase() == target_lower
+                    && e.evidence.iter().any(|ev| ev.source == "oathnet_pro")
+                {
+                    seen.insert(e.value.to_lowercase());
+                }
+            }
+        }
+
         let field = match target.kind {
             TargetKind::Email => "email",
             TargetKind::Username => "username",

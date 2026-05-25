@@ -295,6 +295,7 @@ async fn run_smoke(target: Target, options: ScanOptions) -> Result<SmokeResult> 
         http: build_client(),
         keys: keys::load(),
         cancel: crate::core::cancel::CancelHandle::new(),
+        store: Arc::clone(&store),
     };
 
     let mut rx = bus.subscribe();

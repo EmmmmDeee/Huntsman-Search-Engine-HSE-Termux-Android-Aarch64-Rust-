@@ -15,6 +15,7 @@ use crate::core::{
     module::ModuleContext,
     scan::{Scan, ScanOptions, Target},
 };
+use crate::storage::store::Store;
 use crate::util::{http::build_client, keys, uid::scan_id};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,16 +81,18 @@ struct LiveInner {
     cancels: RwLock<HashMap<String, CancelHandle>>,
     engine: Arc<ScanEngine>,
     bus: EventBus,
+    store: Arc<Store>,
 }
 
 impl LiveScanner {
-    pub fn new(engine: Arc<ScanEngine>, bus: EventBus) -> Self {
+    pub fn new(engine: Arc<ScanEngine>, bus: EventBus, store: Arc<Store>) -> Self {
         Self {
             inner: Arc::new(LiveInner {
                 sessions: RwLock::new(HashMap::new()),
                 cancels: RwLock::new(HashMap::new()),
                 engine,
                 bus,
+                store,
             }),
         }
     }
@@ -226,6 +229,7 @@ async fn session_loop(
             keys: loaded_keys.clone(),
             // Shared with the session so stop() aborts the in-flight iteration too.
             cancel: cancel.clone(),
+            store: Arc::clone(&inner.store),
         };
 
         if let Err(e) = inner.engine.run(scan, target.clone(), ctx).await {
