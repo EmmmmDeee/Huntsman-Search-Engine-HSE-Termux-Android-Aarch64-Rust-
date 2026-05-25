@@ -60,6 +60,7 @@ impl Module for LeakIx {
     fn priority(&self) -> u8 {
         102
     }
+
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }

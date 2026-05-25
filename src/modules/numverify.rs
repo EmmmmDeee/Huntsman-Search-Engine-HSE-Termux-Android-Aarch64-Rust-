@@ -59,6 +59,7 @@ impl Module for Numverify {
     fn priority(&self) -> u8 {
         90
     }
+
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }

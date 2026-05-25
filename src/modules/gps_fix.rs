@@ -39,6 +39,7 @@ impl Module for GpsFix {
     fn priority(&self) -> u8 {
         68
     }
+
     fn is_passive(&self) -> bool {
         true
     }

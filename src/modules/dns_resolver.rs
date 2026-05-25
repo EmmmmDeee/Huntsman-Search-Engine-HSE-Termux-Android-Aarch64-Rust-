@@ -43,6 +43,7 @@ impl Module for DnsResolver {
         30
     }
 
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)
     }

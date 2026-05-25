@@ -108,6 +108,7 @@ impl Module for CriminalIp {
     fn priority(&self) -> u8 {
         103
     }
+
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }

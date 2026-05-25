@@ -33,6 +33,7 @@ impl Module for OathnetPro {
         128
     }
 
+
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }

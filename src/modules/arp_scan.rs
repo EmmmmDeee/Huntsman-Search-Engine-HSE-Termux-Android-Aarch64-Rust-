@@ -30,6 +30,7 @@ impl Module for ArpScan {
     fn priority(&self) -> u8 {
         58
     }
+
     fn is_passive(&self) -> bool {
         true
     }

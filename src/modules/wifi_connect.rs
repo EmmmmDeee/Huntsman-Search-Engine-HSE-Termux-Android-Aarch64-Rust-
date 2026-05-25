@@ -39,6 +39,7 @@ impl Module for WifiConnect {
     fn priority(&self) -> u8 {
         70
     }
+
     fn is_passive(&self) -> bool {
         true
     }

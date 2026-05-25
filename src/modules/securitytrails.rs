@@ -42,6 +42,7 @@ impl Module for SecurityTrails {
     fn priority(&self) -> u8 {
         45
     }
+
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }

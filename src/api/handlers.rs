@@ -157,11 +157,11 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
                 .collect();
             json!({
                 "name":        m.name(),
-                "description": m.description(),
                 "priority":    m.priority(),
                 "cost":        cost,
                 "passive":     m.is_passive(),
                 "accepts":     accepts,
+                "description": m.description(),
             })
         })
         .collect();

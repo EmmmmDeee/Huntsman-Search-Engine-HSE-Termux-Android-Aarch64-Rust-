@@ -60,6 +60,7 @@ impl Module for Wigle {
     fn priority(&self) -> u8 {
         70
     }
+
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }

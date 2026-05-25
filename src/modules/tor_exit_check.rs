@@ -92,6 +92,7 @@ impl Module for TorExitCheck {
         32
     }
 
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)
     }

@@ -59,6 +59,7 @@ impl Module for Shodan {
     fn priority(&self) -> u8 {
         105
     }
+
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }

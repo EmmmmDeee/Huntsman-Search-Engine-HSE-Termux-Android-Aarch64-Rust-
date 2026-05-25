@@ -37,6 +37,7 @@ impl Module for ReverseDns {
         29
     }
 
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)
     }

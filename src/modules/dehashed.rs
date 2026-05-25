@@ -57,6 +57,7 @@ impl Module for DeHashed {
     fn priority(&self) -> u8 {
         118
     }
+
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }

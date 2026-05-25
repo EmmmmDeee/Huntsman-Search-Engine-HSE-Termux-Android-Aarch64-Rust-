@@ -26,6 +26,7 @@ impl Module for NetInterfaces {
     fn priority(&self) -> u8 {
         55
     }
+
     fn is_passive(&self) -> bool {
         true
     }

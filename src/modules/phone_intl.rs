@@ -282,6 +282,7 @@ impl Module for PhoneIntl {
         140
     }
 
+
     fn is_passive(&self) -> bool {
         // Pure local computation — no network.
         true

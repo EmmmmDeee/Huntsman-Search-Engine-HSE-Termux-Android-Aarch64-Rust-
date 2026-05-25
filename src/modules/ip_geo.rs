@@ -55,6 +55,7 @@ impl Module for IpGeo {
         28
     }
 
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)
     }

@@ -117,6 +117,7 @@ impl Module for XposedOrNot {
         128
     }
 
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email)
     }

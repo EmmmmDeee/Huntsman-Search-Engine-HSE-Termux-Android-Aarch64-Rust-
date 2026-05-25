@@ -71,6 +71,7 @@ impl Module for HudsonRock {
         130
     }
 
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

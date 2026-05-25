@@ -40,6 +40,7 @@ impl Module for Crtsh {
         35
     }
 
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)
     }

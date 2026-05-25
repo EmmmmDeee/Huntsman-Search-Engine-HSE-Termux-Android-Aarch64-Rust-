@@ -46,6 +46,7 @@ impl Module for Wayback {
         38
     }
 
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)
     }

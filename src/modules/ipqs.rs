@@ -88,6 +88,7 @@ impl Module for IpQs {
     fn priority(&self) -> u8 {
         100
     }
+
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }

@@ -47,6 +47,7 @@ impl Module for CellSurvey {
     fn priority(&self) -> u8 {
         62
     }
+
     fn is_passive(&self) -> bool {
         true
     }

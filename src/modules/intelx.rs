@@ -79,6 +79,7 @@ impl Module for IntelX {
     fn priority(&self) -> u8 {
         116
     }
+
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }

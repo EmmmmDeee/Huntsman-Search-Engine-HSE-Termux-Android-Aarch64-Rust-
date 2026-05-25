@@ -39,6 +39,7 @@ impl Module for WifiScan {
     fn priority(&self) -> u8 {
         65
     }
+
     fn is_passive(&self) -> bool {
         true
     }

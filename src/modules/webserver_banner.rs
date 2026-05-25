@@ -55,6 +55,7 @@ impl Module for WebserverBanner {
         36
     }
 
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)
     }

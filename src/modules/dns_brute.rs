@@ -113,6 +113,7 @@ impl Module for DnsBrute {
         22
     }
 
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)
     }
