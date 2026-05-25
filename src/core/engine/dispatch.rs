@@ -288,14 +288,9 @@ impl ScanEngine {
             let module_arc: Arc<dyn Module> = Arc::clone(module);
             let target = target.clone();
             let ctx = ctx.clone();
-            let bus = self.bus.clone();
-            // Clone the store for the spawned task so it can persist
-            // events through the free-function `emit_event` (no `&self`
-            // available inside the move closure).
-            let store = Arc::clone(&self.store);
+            let emitter = self.emitter.clone();
             let scan_id_owned = scan_id.to_string();
             let throttle_ms = opts.throttle_ms;
-            // Per-module timeout: user override > module's declared max.
             let module_timeout_ms = opts
                 .module_timeout_ms
                 .unwrap_or_else(|| module_arc.max_timeout_ms());
@@ -304,9 +299,7 @@ impl ScanEngine {
                 let _permit = permit;
                 let name = module_arc.name();
 
-                super::emit_event(
-                    &*store,
-                    &bus,
+                emitter.emit(
                     &scan_id_owned,
                     EventKind::ModuleStart {
                         module: name.into(),

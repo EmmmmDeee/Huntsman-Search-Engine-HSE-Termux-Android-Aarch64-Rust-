@@ -40,6 +40,7 @@ pub struct ScanEngine {
     modules: Vec<Arc<dyn Module>>,
     store: Arc<dyn StoragePort>,
     bus: EventBus,
+    emitter: EventEmitter,
 }
 
 /// Reason an expansion round stopped before depth was exhausted.
@@ -65,29 +66,27 @@ impl StopReason {
     }
 }
 
-/// Persist an event to `store` and broadcast it on `bus`. Free function so
-/// spawned tasks (which capture cloned `store` + `bus` rather than `&self`)
-/// can call the same code path as `ScanEngine::emit`.
-///
-/// Persist FIRST so a slow broadcast subscriber can't lose us a log entry,
-/// then broadcast for any live SSE subscribers. Both writes are
-/// best-effort — store-write errors don't abort the scan, broadcast
-/// errors just mean nobody is currently subscribed.
-pub(crate) fn emit_event(store: &dyn StoragePort, bus: &EventBus, scan_id: &str, kind: EventKind) {
-    let event = Event::new(scan_id, kind);
-    // Persist-first so live SSE subscribers can't have an event that
-    // history-fetch never sees. The DB write is best-effort: surface
-    // failures via tracing so an empty Scan Log tab is at least
-    // diagnosable, but don't abort the scan if SQLite is wedged.
-    if let Err(e) = store.insert_event(&event) {
-        warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
+/// Cheaply-cloneable event emitter. Persist-first, then broadcast.
+/// Spawned tasks clone this instead of cloning store + bus separately.
+#[derive(Clone)]
+pub(crate) struct EventEmitter {
+    store: Arc<dyn StoragePort>,
+    bus: EventBus,
+}
+
+impl EventEmitter {
+    fn new(store: Arc<dyn StoragePort>, bus: EventBus) -> Self {
+        Self { store, bus }
     }
-    // `send` returns Err when there are zero active subscribers. This is
-    // normal during early startup (before any SSE client connects), so
-    // log at trace level — just enough to diagnose "events never reach
-    // the UI" without spamming production logs.
-    if bus.send(event).is_err() {
-        tracing::trace!(scan_id, "broadcast dropped (no subscribers)");
+
+    pub(crate) fn emit(&self, scan_id: &str, kind: EventKind) {
+        let event = Event::new(scan_id, kind);
+        if let Err(e) = self.store.insert_event(&event) {
+            warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
+        }
+        if self.bus.send(event).is_err() {
+            tracing::trace!(scan_id, "broadcast dropped (no subscribers)");
+        }
     }
 }
 
@@ -98,18 +97,17 @@ impl ScanEngine {
         bus: EventBus,
     ) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
+        let emitter = EventEmitter::new(Arc::clone(&store), bus.clone());
         Self {
             modules,
             store,
             bus,
+            emitter,
         }
     }
 
-    /// Persist + broadcast one event for `scan_id`. The canonical
-    /// emit path for engine-side events; see `emit_event` for the free
-    /// function used inside spawned dispatch tasks.
     fn emit(&self, scan_id: &str, kind: EventKind) {
-        emit_event(&*self.store, &self.bus, scan_id, kind);
+        self.emitter.emit(scan_id, kind);
     }
 
     pub fn modules(&self) -> &[Arc<dyn Module>] {
