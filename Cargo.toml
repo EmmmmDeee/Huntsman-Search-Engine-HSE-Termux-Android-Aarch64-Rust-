@@ -35,7 +35,7 @@ url                = "2"
 hickory-resolver   = { version = "0.26", default-features = false, features = ["tokio"] }
 dotenvy            = "0.15"
 # v0.3 — HTTP server, SPA, SSE
-axum               = { version = "0.8",  default-features = false, features = ["http1", "json", "tokio"] }
+axum               = { version = "0.8",  default-features = false, features = ["http1", "json", "tokio", "original-uri"] }
 tower-http         = { version = "0.6",  features = ["cors"] }
 tokio-stream       = { version = "0.1",  features = ["sync"] }
 futures            = "0.3"
