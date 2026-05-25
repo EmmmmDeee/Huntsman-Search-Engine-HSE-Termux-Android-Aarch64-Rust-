@@ -19,6 +19,7 @@ pub enum TargetKind {
     Address,
     Organisation,
     AbnAcn,
+    ApiKey,
 }
 
 impl TargetKind {
@@ -64,6 +65,7 @@ impl TargetKind {
             Self::Address => EntityKind::Address,
             Self::Organisation => EntityKind::Organisation,
             Self::AbnAcn => EntityKind::AbnAcn,
+            Self::ApiKey => EntityKind::Credential,
         }
     }
 
@@ -92,6 +94,7 @@ impl TargetKind {
             Self::Address => "address",
             Self::Organisation => "organisation",
             Self::AbnAcn => "abn_acn",
+            Self::ApiKey => "api_key",
         }
     }
 }
@@ -203,6 +206,11 @@ impl Target {
                 }
             }
             // Free-form text kinds: only the universal checks above apply.
+            TargetKind::ApiKey => {
+                if v.len() < 8 {
+                    return Err("API key too short (min 8 chars)");
+                }
+            }
             TargetKind::Username
             | TargetKind::FullName
             | TargetKind::Address
@@ -400,6 +408,8 @@ mod tests {
             TargetKind::Address,
             TargetKind::Organisation,
             TargetKind::AbnAcn,
+            // ApiKey is intentionally not here — it maps to Credential
+            // but Credential doesn't auto-expand back to ApiKey.
         ] {
             let ek = tk.to_entity_kind();
             assert_eq!(TargetKind::from_entity_kind(&ek), Some(tk));

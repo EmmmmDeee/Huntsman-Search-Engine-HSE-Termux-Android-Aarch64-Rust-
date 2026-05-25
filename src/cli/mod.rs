@@ -801,6 +801,7 @@ fn cmd_modules() -> Result<()> {
         ("address", TargetKind::Address),
         ("org", TargetKind::Organisation),
         ("abn", TargetKind::AbnAcn),
+        ("apikey", TargetKind::ApiKey),
     ];
 
     for m in &mods {
@@ -882,8 +883,9 @@ pub fn parse_target_kind(s: &str) -> Result<TargetKind> {
         "address" => Ok(TargetKind::Address),
         "organisation" | "org" => Ok(TargetKind::Organisation),
         "abn" | "acn" | "abn_acn" => Ok(TargetKind::AbnAcn),
+        "apikey" | "api_key" | "key" => Ok(TargetKind::ApiKey),
         other => Err(Error::InvalidTarget(format!(
-            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, url, asn, coords, address, org, abn"
+            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, url, asn, coords, address, org, abn, apikey"
         ))),
     }
 }
