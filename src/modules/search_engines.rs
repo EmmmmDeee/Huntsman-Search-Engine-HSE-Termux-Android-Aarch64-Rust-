@@ -370,90 +370,11 @@ const ENGINES: &[EngineSpec] = &[
     },
 ];
 
-// ─── API enrichment: OathNet batch breach lookups ──────────────────────────
-
-const OATHNET_KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
-const OATHNET_ENDPOINT: &str = "https://oathnet.org/api/service/v2/breach/search";
-const OATHNET_HARDCODED_KEY: &str =
-    "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551409e4b47116f2";
-
-#[derive(serde::Deserialize)]
-struct OathEnvelope {
-    data: Option<OathData>,
-}
-
-#[derive(serde::Deserialize)]
-struct OathData {
-    #[serde(default)]
-    items: Vec<OathItem>,
-}
-
-#[derive(serde::Deserialize)]
-struct OathItem {
-    #[serde(default)]
-    dbname: Option<String>,
-    #[serde(default)]
-    email: Option<String>,
-    #[serde(default)]
-    username: Option<String>,
-    #[serde(default)]
-    phone: Option<String>,
-    #[serde(default)]
-    phone_number: Option<String>,
-    #[serde(default)]
-    phone_national: Option<String>,
-    #[serde(default)]
-    ip: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    full_name: Option<String>,
-    #[serde(default)]
-    display_name: Option<String>,
-    #[serde(default)]
-    country: Option<String>,
-    #[serde(default)]
-    password: Option<String>,
-    #[serde(default)]
-    password_hash: Option<String>,
-    #[serde(default)]
-    salt: Option<String>,
-    #[serde(default)]
-    date_birth: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_age")]
-    age: Option<String>,
-    #[serde(default)]
-    gender: Option<String>,
-    #[serde(default)]
-    created_at: Option<String>,
-    #[serde(default)]
-    account_id: Option<String>,
-    #[serde(default)]
-    followers: Option<String>,
-    #[serde(default)]
-    language: Option<String>,
-}
-
-fn deserialize_age<'de, D: serde::Deserializer<'de>>(
-    d: D,
-) -> std::result::Result<Option<String>, D::Error> {
-    use serde::Deserialize;
-    let v: Option<serde_json::Value> = Option::deserialize(d)?;
-    Ok(v.map(|val| match val {
-        serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::String(s) => s,
-        other => other.to_string(),
-    }))
-}
+// ─── API enrichment: OathNet via shared util::oathnet client ────────────────
 
 async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
-    let key = match ctx.key_opt(OATHNET_KEY_ENV) {
-        Some(k) if !k.is_empty() => k,
-        _ => OATHNET_HARDCODED_KEY,
-    };
+    let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
 
-    // Collect high-confidence emails and usernames (PROBABLE tier,
-    // confidence ≥ 0.50) worth spending API credits on.
     let mut emails: Vec<String> = Vec::new();
     let mut usernames: Vec<String> = Vec::new();
     for e in &result.entities {
@@ -481,7 +402,15 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
         if ctx.cancel.is_cancelled() {
             break;
         }
-        if let Some(hits) = oathnet_lookup(key, "email", email).await {
+        if let Ok(hits) = crate::util::oathnet::search(
+            key,
+            crate::util::oathnet::paths::BREACH,
+            "email",
+            email,
+            20,
+        )
+        .await
+        {
             apply_breach_evidence(result, email, &hits, &scan_id);
         }
     }
@@ -490,117 +419,46 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
         if ctx.cancel.is_cancelled() {
             break;
         }
-        if let Some(hits) = oathnet_lookup(key, "username", uname).await {
+        if let Ok(hits) = crate::util::oathnet::search(
+            key,
+            crate::util::oathnet::paths::BREACH,
+            "username",
+            uname,
+            20,
+        )
+        .await
+        {
             apply_breach_evidence(result, uname, &hits, &scan_id);
         }
     }
-
-    // Recursive enrichment: look up newly discovered emails and
-    // usernames that came from the first round of breach data.
-    // This catches cross-linked identities (e.g. breach reveals
-    // shinigami_jerome@hotmail.com → username jmdespal → look up
-    // jmdespal → finds the same IP, confirming the link).
-    if !ctx.cancel.is_cancelled() {
-        let mut new_emails: Vec<String> = Vec::new();
-        let mut new_usernames: Vec<String> = Vec::new();
-        for e in &result.entities {
-            if !e.tags.contains(&"oathnet-enriched".to_string()) {
-                continue;
-            }
-            let lower = e.value.to_lowercase();
-            match e.kind {
-                EntityKind::Email
-                    if !emails.iter().any(|x| x.to_lowercase() == lower)
-                        && new_emails.len() < 5 =>
-                {
-                    new_emails.push(e.value.clone());
-                }
-                EntityKind::Username
-                    if !usernames.iter().any(|x| x.to_lowercase() == lower)
-                        && new_usernames.len() < 3 =>
-                {
-                    new_usernames.push(e.value.clone());
-                }
-                _ => {}
-            }
-        }
-        for email in &new_emails {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            if let Some(hits) = oathnet_lookup(key, "email", email).await {
-                apply_breach_evidence(result, email, &hits, &scan_id);
-            }
-        }
-        for uname in &new_usernames {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            if let Some(hits) = oathnet_lookup(key, "username", uname).await {
-                apply_breach_evidence(result, uname, &hits, &scan_id);
-            }
-        }
-    }
-}
-
-async fn oathnet_lookup(key: &str, field: &str, value: &str) -> Option<Vec<OathItem>> {
-    let encoded = crate::util::http::urlencode(value);
-    let url = format!("{OATHNET_ENDPOINT}?{field}%5B%5D={encoded}&page_size=20");
-    let secs = 10u64.to_string();
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args([
-        "-s",
-        "--max-time",
-        &secs,
-        "-H",
-        &format!("x-api-key: {key}"),
-        "-H",
-        "Accept: application/json",
-        "--",
-        &url,
-    ]);
-    cmd.kill_on_drop(true);
-
-    let output = tokio::time::timeout(std::time::Duration::from_millis(12_000), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-    let body = String::from_utf8(output.stdout).ok()?;
-    let env: OathEnvelope = serde_json::from_str(&body).ok()?;
-    let data = env.data?;
-    if data.items.is_empty() {
-        return None;
-    }
-    Some(data.items)
 }
 
 fn apply_breach_evidence(
     result: &mut ModuleResult,
     lookup_value: &str,
-    items: &[OathItem],
+    items: &[serde_json::Value],
     scan_id: &str,
 ) {
+    use crate::util::oathnet::{top_dbnames, val_str, val_str_or};
+
     let total = items.len();
-    let top_dbs: Vec<&str> = items
-        .iter()
-        .filter_map(|i| i.dbname.as_deref())
-        .take(5)
-        .collect();
+    let top_dbs = top_dbnames(items, 5);
+    let dbs_str = top_dbs.join(", ");
     let summary = format!(
         "OathNet breach: {total} record(s) for {lookup_value} — {}",
-        if top_dbs.is_empty() {
-            "no dbnames".to_string()
+        if dbs_str.is_empty() {
+            "no dbnames"
         } else {
-            top_dbs.join(", ")
+            &dbs_str
         }
     );
 
-    // Tag the existing entity with full breach metadata
     let lookup_lower = lookup_value.to_lowercase();
+    let ev = Evidence::new("search_engines:oathnet", &summary)
+        .with_attr("breach_hits", total.to_string())
+        .with_attr("top_dbnames", top_dbs.join(", "))
+        .with_attr("lookup_value", lookup_value);
+
     for e in &mut result.entities {
         if e.value.to_lowercase() == lookup_lower {
             e.tag(tags::BREACH);
@@ -608,42 +466,7 @@ fn apply_breach_evidence(
             if e.confidence < 0.70 {
                 e.confidence = 0.70;
             }
-            let mut ev = Evidence::new("search_engines:oathnet", &summary)
-                .with_attr("breach_hits", total.to_string())
-                .with_attr("top_dbnames", top_dbs.join(", "))
-                .with_attr("lookup_value", lookup_value);
-            // Attach all available fields from the first rich item
-            for item in items {
-                if let Some(c) = &item.country {
-                    ev = ev.with_attr("country", c);
-                }
-                if let Some(g) = &item.gender {
-                    ev = ev.with_attr("gender", g);
-                }
-                if let Some(dob) = &item.date_birth {
-                    ev = ev.with_attr("date_of_birth", dob);
-                }
-                if let Some(age) = &item.age {
-                    ev = ev.with_attr("age", age);
-                }
-                if let Some(ca) = &item.created_at {
-                    ev = ev.with_attr("account_created", ca);
-                }
-                if let Some(fn_) = &item.full_name {
-                    ev = ev.with_attr("full_name", fn_);
-                }
-                if let Some(ph) = item
-                    .phone_number
-                    .as_deref()
-                    .or(item.phone_national.as_deref())
-                {
-                    ev = ev.with_attr("phone", ph);
-                }
-                if item.country.is_some() || item.full_name.is_some() {
-                    break;
-                }
-            }
-            e.add_evidence(ev);
+            e.add_evidence(ev.clone());
         }
     }
 
@@ -654,139 +477,90 @@ fn apply_breach_evidence(
         .collect();
     let mut new_ents: Vec<Entity> = Vec::new();
     for item in items {
-        let db = item.dbname.as_deref().unwrap_or("unknown");
-        let country = item.country.as_deref().unwrap_or("");
+        let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
 
-        // Build a rich evidence object with ALL available fields
-        let breach_ev = |summary: &str| -> Evidence {
-            let mut ev = Evidence::new("search_engines:oathnet", summary)
-                .with_attr("dbname", db)
-                .with_attr("lookup_value", lookup_value);
-            if !country.is_empty() {
-                ev = ev.with_attr("country", country);
-            }
-            if let Some(g) = &item.gender {
-                ev = ev.with_attr("gender", g);
-            }
-            if let Some(dob) = &item.date_birth {
-                ev = ev.with_attr("date_of_birth", dob);
-            }
-            if let Some(age) = &item.age {
-                ev = ev.with_attr("age", age);
-            }
-            if let Some(ca) = &item.created_at {
-                ev = ev.with_attr("account_created", ca);
-            }
-            if let Some(aid) = &item.account_id {
-                ev = ev.with_attr("account_id", aid);
-            }
-            if let Some(fol) = &item.followers {
-                ev = ev.with_attr("followers", fol);
-            }
-            if let Some(lang) = &item.language {
-                ev = ev.with_attr("language", lang);
-            }
-            if let Some(pw) = &item.password {
-                ev = ev.with_attr("password", pw);
-            }
-            if let Some(ph) = &item.password_hash {
-                ev = ev.with_attr("password_hash", ph);
-            }
-            if let Some(s) = &item.salt {
-                ev = ev.with_attr("salt", s);
-            }
-            ev
-        };
-
-        // Email
-        if let Some(email) = &item.email {
+        if let Some(email) = val_str(item, "email") {
             let lower = email.to_lowercase();
             if lower.contains('@') && lower.len() >= 5 && seen.insert(lower) {
-                let mut e = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
                 e.tag(tags::BREACH);
                 e.tag("oathnet-enriched");
-                e.add_evidence(breach_ev(&format!("Breach on {db} — {lookup_value}")));
+                e.add_evidence(
+                    Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
+                        .with_attr("dbname", &db),
+                );
                 new_ents.push(e);
             }
         }
-
-        // Username
-        if let Some(uname) = &item.username {
+        if let Some(uname) = val_str(item, "username") {
             let lower = uname.to_lowercase();
             if lower.len() >= 3 && !is_navigation_path(&lower) && seen.insert(lower) {
-                let mut e = Entity::new(EntityKind::Username, uname, 0.65, scan_id);
+                let mut e = Entity::new(EntityKind::Username, &uname, 0.65, scan_id);
                 e.tag(tags::BREACH);
                 e.tag("oathnet-enriched");
-                e.add_evidence(breach_ev(&format!(
-                    "Breach username on {db} — {lookup_value}"
-                )));
+                e.add_evidence(
+                    Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
+                        .with_attr("dbname", &db),
+                );
                 new_ents.push(e);
             }
         }
-
-        // Phone — check phone_number, phone_national, phone
-        let phone_val = item
-            .phone_number
-            .as_deref()
-            .or(item.phone_national.as_deref())
-            .or(item.phone.as_deref());
-        if let Some(phone) = phone_val
-            && phone.len() >= 7
-            && seen.insert(phone.to_lowercase())
+        if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
+            && ph.len() >= 7
+            && seen.insert(ph.to_lowercase())
         {
-            let mut e = Entity::new(EntityKind::Phone, phone, 0.70, scan_id);
+            let mut e = Entity::new(EntityKind::Phone, &ph, 0.70, scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
-            e.add_evidence(breach_ev(&format!("Breach phone on {db} — {lookup_value}")));
+            e.add_evidence(
+                Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
+                    .with_attr("dbname", &db),
+            );
             new_ents.push(e);
         }
-
-        // Full name — check full_name, display_name, name
-        let name_val = item
-            .full_name
-            .as_deref()
-            .or(item.display_name.as_deref())
-            .or(item.name.as_deref());
-        if let Some(name) = name_val {
-            let t = name.trim();
+        if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
+            let t = n.trim();
             if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
                 let mut e = Entity::new(EntityKind::Person, t, 0.70, scan_id);
                 e.tag(tags::BREACH);
                 e.tag("oathnet-enriched");
-                e.add_evidence(breach_ev(&format!("Breach name on {db} — {lookup_value}")));
+                e.add_evidence(
+                    Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
+                        .with_attr("dbname", &db),
+                );
                 new_ents.push(e);
             }
         }
-
-        // IP address — critical for geolocation
-        if let Some(ip) = &item.ip
+        if let Some(ip) = val_str(item, "ip")
             && ip.contains('.')
             && ip.len() >= 7
             && seen.insert(ip.clone())
         {
-            let mut e = Entity::new(EntityKind::IpAddress, ip, 0.60, scan_id);
+            let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
             e.tag("geolocation-lead");
-            e.add_evidence(breach_ev(&format!("Breach IP on {db} — {lookup_value}")));
+            e.add_evidence(
+                Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
+                    .with_attr("dbname", &db),
+            );
             new_ents.push(e);
         }
-
-        // Country → Address entity for geolocation
-        if !country.is_empty() && seen.insert(format!("@country:{country}")) {
-            let mut e = Entity::new(EntityKind::Address, country, 0.55, scan_id);
+        if let Some(country) = val_str(item, "country")
+            && seen.insert(format!("@country:{country}"))
+        {
+            let mut e = Entity::new(EntityKind::Address, &country, 0.55, scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
-            e.add_evidence(breach_ev(&format!(
-                "Country from {db} breach — {lookup_value}"
-            )));
+            e.add_evidence(
+                Evidence::new("search_engines:oathnet", format!("Country from {db}"))
+                    .with_attr("dbname", &db),
+            );
             new_ents.push(e);
         }
     }
     result.extend(new_ents);
 }
-
-// ─── Query generation ───────────────────────────────────────────────────────
 
 fn build_queries(target: &Target) -> Vec<String> {
     let v = target.value.trim();
