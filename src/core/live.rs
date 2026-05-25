@@ -34,7 +34,7 @@ use crate::core::{
     module::ModuleContext,
     scan::{Scan, ScanOptions, Target},
 };
-use crate::util::{http::build_client, keys, uid::scan_id};
+use crate::util::{keys, uid::scan_id};
 
 /// User-tunable knobs for a live session, on top of [`ScanOptions`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,24 +109,22 @@ pub struct LiveScanner {
 }
 
 struct LiveInner {
-    // Map keys are `live_id`. Entries are pruned when `session_loop`
-    // exits (either via natural iteration count or explicit stop) — see
-    // the cleanup at the bottom of `session_loop` below. This keeps the
-    // registry bounded in long-running `hse serve` processes.
     sessions: RwLock<HashMap<String, LiveSession>>,
     cancels: RwLock<HashMap<String, Arc<AtomicBool>>>,
     engine: Arc<ScanEngine>,
     bus: EventBus,
+    http: reqwest::Client,
 }
 
 impl LiveScanner {
-    pub fn new(engine: Arc<ScanEngine>, bus: EventBus) -> Self {
+    pub fn new(engine: Arc<ScanEngine>, bus: EventBus, http: reqwest::Client) -> Self {
         Self {
             inner: Arc::new(LiveInner {
                 sessions: RwLock::new(HashMap::new()),
                 cancels: RwLock::new(HashMap::new()),
                 engine,
                 bus,
+                http,
             }),
         }
     }
@@ -271,7 +269,7 @@ async fn session_loop(
         let ctx = ModuleContext {
             scan_id: sid.clone(),
             bus: inner.bus.clone(),
-            http: build_client(),
+            http: inner.http.clone(),
             keys: keys::load(),
         };
 

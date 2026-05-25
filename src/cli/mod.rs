@@ -293,7 +293,7 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     };
 
     let (_store, bus, engine) = build_runtime(1024)?;
-    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone(), build_client());
 
     let live_id = scanner.start(target, scan_options, live_options);
     eprintln!("live session {live_id} — Ctrl-C to stop");
@@ -346,12 +346,8 @@ async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
     use crate::core::live::LiveScanner;
 
     let (store, bus, engine) = build_runtime(1024)?;
-    let live = LiveScanner::new(Arc::clone(&engine), bus.clone());
-    // Build the HTTP client ONCE per server lifetime — its internal
-    // connection pool, DNS cache, and TLS session cache then survive
-    // across scans, which materially reduces wall-time on Termux where
-    // every TLS handshake is expensive over a cellular link.
     let http = build_client();
+    let live = LiveScanner::new(Arc::clone(&engine), bus.clone(), http.clone());
     let state = Arc::new(AppState {
         store,
         engine,
@@ -453,7 +449,7 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
     // Use the parsed TargetKind's canonical form, not the raw user input,
     // so `--kind ip` and `--kind ipaddress` produce the same scan_id.
     let sid = scan_id(target_kind.canonical_str(), &cmd.value);
-    let (store, bus, engine) = build_runtime(64)?;
+    let (store, bus, engine) = build_runtime(256)?;
 
     let scan = Scan::new(sid.clone(), target.clone()).with_options(options);
     let ctx = ModuleContext {

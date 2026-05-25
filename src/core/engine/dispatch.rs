@@ -160,12 +160,9 @@ impl ScanEngine {
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
     ) -> Result<()> {
-        for module in &self.modules {
+        for module in self.modules_for(target.kind) {
             let name = module.name();
 
-            if !module.accepts(target) {
-                continue;
-            }
             if let Some(reason) = module_skip_reason(&**module, opts) {
                 let _ = self.bus.send(Event::new(
                     scan_id,
@@ -229,12 +226,9 @@ impl ScanEngine {
         let sem = Arc::new(Semaphore::new(opts.max_concurrent));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
 
-        for module in &self.modules {
+        for module in self.modules_for(target.kind) {
             let name = module.name();
 
-            if !module.accepts(target) {
-                continue;
-            }
             if let Some(reason) = module_skip_reason(&**module, opts) {
                 let _ = self.bus.send(Event::new(
                     scan_id,

@@ -38,6 +38,7 @@ use crate::storage::store::Store;
 
 pub struct ScanEngine {
     modules: Vec<Arc<dyn Module>>,
+    by_kind: HashMap<TargetKind, Vec<Arc<dyn Module>>>,
     store: Arc<Store>,
     bus: EventBus,
 }
@@ -62,8 +63,32 @@ impl StopReason {
 impl ScanEngine {
     pub fn new(mut modules: Vec<Arc<dyn Module>>, store: Arc<Store>, bus: EventBus) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
+
+        let mut by_kind: HashMap<TargetKind, Vec<Arc<dyn Module>>> = HashMap::new();
+        let all_kinds = [
+            TargetKind::Email,
+            TargetKind::Username,
+            TargetKind::Phone,
+            TargetKind::FullName,
+            TargetKind::IpAddress,
+            TargetKind::Domain,
+            TargetKind::Asn,
+            TargetKind::Coordinates,
+            TargetKind::Address,
+        ];
+        for kind in all_kinds {
+            let probe = Target::new(kind, "probe");
+            let accepting: Vec<Arc<dyn Module>> = modules
+                .iter()
+                .filter(|m| m.accepts(&probe))
+                .cloned()
+                .collect();
+            by_kind.insert(kind, accepting);
+        }
+
         Self {
             modules,
+            by_kind,
             store,
             bus,
         }
@@ -71,6 +96,10 @@ impl ScanEngine {
 
     pub fn modules(&self) -> &[Arc<dyn Module>] {
         &self.modules
+    }
+
+    pub fn modules_for(&self, kind: TargetKind) -> &[Arc<dyn Module>] {
+        self.by_kind.get(&kind).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn bus(&self) -> &EventBus {
