@@ -168,25 +168,37 @@ fn build_queries(target: &Target) -> Vec<String> {
         TargetKind::Email => {
             let domain = v.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
             let local = v.split('@').next().unwrap_or("");
-            let mut q = vec![format!("\"{v}\"")];
-            if !domain.is_empty() {
-                q.push(format!("\"{v}\" site:pastebin.com OR site:github.com OR site:linkedin.com"));
+            let mut q = vec![
+                format!("\"{v}\""),
+                format!("{local} {domain}"),
+            ];
+            if !domain.is_empty() && domain != "gmail.com" && domain != "yahoo.com" {
+                q.push(format!("\"{v}\" site:linkedin.com OR site:github.com OR site:facebook.com"));
             }
             if local.len() >= 3 {
-                q.push(format!("\"{local}\" site:linkedin.com OR site:twitter.com"));
+                q.push(format!("\"{local}\" site:linkedin.com OR site:twitter.com OR site:facebook.com"));
             }
             q
         }
         TargetKind::Username => vec![
-            format!("\"{v}\" site:github.com OR site:linkedin.com"),
-            format!("\"{v}\" site:twitter.com OR site:reddit.com OR site:medium.com"),
-            format!("\"{v}\" profile OR account"),
+            format!("\"{v}\" site:github.com OR site:linkedin.com OR site:facebook.com"),
+            format!("\"{v}\" site:twitter.com OR site:reddit.com OR site:instagram.com"),
+            format!("\"{v}\" profile OR account OR about"),
         ],
-        TargetKind::FullName => vec![
-            format!("\"{v}\" site:linkedin.com OR site:twitter.com"),
-            format!("\"{v}\" resume OR cv OR portfolio"),
-            format!("\"{v}\""),
-        ],
+        TargetKind::FullName => {
+            let parts: Vec<&str> = v.split_whitespace().collect();
+            let mut q = vec![
+                format!("\"{v}\""),
+                format!("\"{v}\" site:linkedin.com OR site:facebook.com OR site:twitter.com"),
+            ];
+            if parts.len() >= 2 {
+                let first = parts[0];
+                let last = parts[parts.len()-1];
+                q.push(format!("{first} {last} site:instagram.com OR site:github.com OR site:reddit.com"));
+                q.push(format!("\"{v}\" email OR contact OR profile"));
+            }
+            q
+        },
         TargetKind::Phone => vec![
             format!("\"{v}\""),
         ],
@@ -212,42 +224,83 @@ fn parse_results(html: &str, engine: &'static str, query: &str) -> Vec<SearchRes
     let mut results = Vec::new();
     let mut seen_urls: HashSet<String> = HashSet::new();
 
+    // Primary: extract from href= attributes (works for Yahoo/DDG/Brave)
     for href in HrefIter::new(html) {
-        if results.len() >= MAX_RESULTS_PER_ENGINE {
-            break;
-        }
-
-        let url = resolve_href(href);
-        let url = match url.as_deref() {
-            Some(u) if !u.is_empty() => u.to_string(),
+        if results.len() >= MAX_RESULTS_PER_ENGINE { break; }
+        let url = match resolve_href(href) {
+            Some(u) if !u.is_empty() => u,
             _ => continue,
         };
-
-        let host = extract_host(&url);
-        if host.is_empty() || is_engine_domain(&host) {
-            continue;
-        }
-        if is_tracking_url(&url) {
-            continue;
-        }
-
-        let canonical = canonicalize_url(&url);
-        if !seen_urls.insert(canonical.clone()) {
-            continue;
-        }
-
-        let title = extract_surrounding_text(html, href, 200);
-        let snippet = extract_snippet_near(html, href, 400);
-
-        results.push(SearchResult {
-            url: canonical,
-            title,
-            snippet,
-            engine,
-            query: query.to_string(),
-        });
+        add_result(&url, html, href, engine, query, &mut seen_urls, &mut results);
     }
+
+    // Secondary: extract from <cite> tags (Bing puts display URLs here)
+    for cite_url in CiteIter::new(html) {
+        if results.len() >= MAX_RESULTS_PER_ENGINE { break; }
+        let url = if cite_url.starts_with("http") {
+            cite_url.to_string()
+        } else {
+            format!("https://{cite_url}")
+        };
+        add_result(&url, html, cite_url, engine, query, &mut seen_urls, &mut results);
+    }
+
     results
+}
+
+fn add_result(
+    url: &str,
+    html: &str,
+    anchor: &str,
+    engine: &'static str,
+    query: &str,
+    seen: &mut HashSet<String>,
+    results: &mut Vec<SearchResult>,
+) {
+    let host = extract_host(url);
+    if host.is_empty() || is_engine_domain(&host) { return; }
+    if is_tracking_url(url) { return; }
+    let canonical = canonicalize_url(url);
+    if !seen.insert(canonical.clone()) { return; }
+    let title = extract_surrounding_text(html, anchor, 200);
+    let snippet = extract_snippet_near(html, anchor, 400);
+    results.push(SearchResult {
+        url: canonical,
+        title,
+        snippet,
+        engine,
+        query: query.to_string(),
+    });
+}
+
+/// Extracts URLs from `<cite>` tags (Bing's result format).
+struct CiteIter<'a> {
+    remaining: &'a str,
+}
+
+impl<'a> CiteIter<'a> {
+    fn new(html: &'a str) -> Self { Self { remaining: html } }
+}
+
+impl<'a> Iterator for CiteIter<'a> {
+    type Item = &'a str;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let start = self.remaining.find("<cite")?;
+            self.remaining = &self.remaining[start..];
+            let gt = self.remaining.find('>')?;
+            self.remaining = &self.remaining[gt + 1..];
+            let end = self.remaining.find("</cite>")?;
+            let content = &self.remaining[..end];
+            self.remaining = &self.remaining[end + 7..];
+            // Bing cite format: "https://example.com › path › ..."
+            // Extract the domain part before the first " ›"
+            let clean = content.split(" ›").next().unwrap_or(content).trim();
+            if clean.contains('.') && clean.len() > 4 && !clean.contains('<') {
+                return Some(clean);
+            }
+        }
+    }
 }
 
 /// Resolve an href into a clean URL, decoding engine-specific redirects.
@@ -700,9 +753,11 @@ mod tests {
     fn build_queries_fullname_covers_professional() {
         let t = Target::new(TargetKind::FullName, "Jane Doe");
         let q = build_queries(&t);
-        assert_eq!(q.len(), 3);
-        assert!(q[0].contains("linkedin.com"));
-        assert!(q[1].contains("resume") || q[1].contains("cv"));
+        assert_eq!(q.len(), 4);
+        assert!(q[0].contains("\"Jane Doe\""));
+        assert!(q[1].contains("linkedin.com") || q[1].contains("facebook.com"));
+        assert!(q.iter().any(|qr| qr.contains("instagram.com") || qr.contains("github.com")));
+        assert!(q.iter().any(|qr| qr.contains("email") || qr.contains("contact") || qr.contains("profile")));
     }
 
     #[test]
