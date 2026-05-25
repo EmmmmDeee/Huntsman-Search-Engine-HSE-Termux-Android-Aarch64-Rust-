@@ -6,13 +6,15 @@ suitable for scripting.
 ## Subcommands
 
 ```
-hse scan      Run a single scan, print results
-hse live      Re-run a scan periodically (v0.5+)
-hse modules   List registered modules with cost / target / passive flags
-hse doctor    Verify environment (DB, keys, Termux, modules)
-hse serve     Start the HTTP server + SPA (browse to http://127.0.0.1:8080)
-hse --help    Top-level help
-hse --version Print version
+hse scan        Run a single scan, print results
+hse live        Re-run a scan periodically (v0.5+)
+hse modules     List registered modules with cost / target / passive flags
+hse doctor      Verify environment (DB, keys, Termux, modules)
+hse serve       Start the HTTP server + SPA (browse to http://127.0.0.1:8080)
+hse provision   Run the post-install pipeline (DB init, key file, Termux checks)
+hse set-key     Set an API key in $HOME/.huntsman.env
+hse --help      Top-level help
+hse --version   Print version
 ```
 
 ---
@@ -201,6 +203,7 @@ hse serve [--bind <HOST:PORT>]
 | Flag / env | Default | Notes |
 |------------|---------|-------|
 | `-b, --bind <HOST:PORT>` | `127.0.0.1:8080` | Localhost-only. Architecture invariant; change at your own risk. |
+| `--allow-key-write`      | off | Enables `PUT /api/v1/settings/keys` for the SPA key-management UI. Loopback-only even when enabled. |
 | env `HSE_BIND`           | (overrides flag) | |
 
 Graceful shutdown on `Ctrl-C` / `SIGTERM`.
@@ -209,22 +212,31 @@ Graceful shutdown on `Ctrl-C` / `SIGTERM`.
 
 All endpoints are under `/api/v1/`.
 
-| Method | Path                       | Notes |
-|--------|----------------------------|-------|
-| GET    | `/health`                  | `{ "status": "ok", "version": "0.3.0" }` |
-| GET    | `/version`                 | `{ "version": "0.3.0" }` |
-| GET    | `/modules`                 | `{ "count": N, "modules": [{ name, priority, cost, passive }, ...] }` |
-| POST   | `/scans`                   | Body: `ScanRequest` (`{ kind, value, options? }`). Returns `202 { scan_id, status }`. |
-| GET    | `/scans`                   | 200 most recent scans. |
-| GET    | `/scans/{id}`              | Single scan record. 404 if unknown. |
-| GET    | `/scans/{id}/entities`     | `{ count, entities: [Entity, ...] }`. |
-| GET    | `/scans/{id}/correlations` | `{ count, correlations: [Correlation, ...] }` (v0.4+). |
-| GET    | `/scans/{id}/events`       | **SSE** — `text/event-stream` of `EventKind` JSON payloads. |
-| POST   | `/live`                    | `LiveRequest` body. Returns `202 { live_id, status }` (v0.5+). |
-| GET    | `/live`                    | `{ count, sessions: [LiveSession, ...] }`. |
-| GET    | `/live/{id}`               | Single `LiveSession`. 404 if unknown. |
-| DELETE | `/live/{id}`               | Request graceful stop. |
-| GET    | `/live/{id}/events`        | **SSE** — live-level + owned-scan events. |
+| Method | Path                          | Notes |
+|--------|-------------------------------|-------|
+| GET    | `/health`                     | `{ "status": "ok", "version": "..." }` |
+| GET    | `/version`                    | `{ "version": "..." }` |
+| GET    | `/stats`                      | Dashboard aggregate stats (v0.10+). |
+| GET    | `/modules`                    | `{ "count": N, "modules": [{ name, priority, cost, passive, description, accepts }, ...] }` |
+| POST   | `/scans`                      | Body: `ScanRequest`. Returns `202 { scan_id, status }`. |
+| GET    | `/scans`                      | 200 most recent scans. |
+| GET    | `/scans/{id}`                 | Single scan record. 404 if unknown. |
+| DELETE | `/scans/{id}`                 | Cascade-delete scan + entities + correlations + events. |
+| POST   | `/scans/{id}/rerun`           | Clone scan with fresh id. |
+| POST   | `/scans/{id}/cancel`          | Abort in-flight scan (v0.10+). |
+| GET    | `/scans/{id}/entities`        | `{ count, entities }`. |
+| GET    | `/scans/{id}/entities.csv`    | CSV download. |
+| GET    | `/scans/{id}/report.json`     | Full JSON report download (v0.10+). |
+| GET    | `/scans/{id}/correlations`    | `{ count, correlations }` (v0.4+). |
+| GET    | `/scans/{id}/events`          | **SSE** — live event stream. |
+| GET    | `/scans/{id}/events.history`  | Historical event log (v0.10+). |
+| POST   | `/live`                       | `LiveRequest` body. Returns `202 { live_id }` (v0.5+). |
+| GET    | `/live`                       | `{ count, sessions }`. |
+| GET    | `/live/{id}`                  | Single `LiveSession`. 404 if unknown. |
+| DELETE | `/live/{id}`                  | Request graceful stop. |
+| GET    | `/live/{id}/events`           | **SSE** — live-level + owned-scan events. |
+| GET    | `/settings/keys`              | List configured API keys (names only, not values). |
+| PUT    | `/settings/keys`              | Set API keys (requires `--allow-key-write`). |
 
 ### SSE event types
 
@@ -309,12 +321,65 @@ hse live --kind domain --value example.com --interval 60 --iterations 5 --depth 
 
 ---
 
+## `hse provision` (v0.9+)
+
+Run the post-install pipeline. Idempotent — safe to re-run.
+
+```bash
+hse provision
+```
+
+Steps:
+1. Creates `$HOME/.huntsman/` directory if missing.
+2. Initializes SQLite database at `$HOME/.huntsman/huntsman.db`.
+3. Creates API key template at `$HOME/.huntsman.env` with commented-out
+   key placeholders for all key-gated modules.
+4. Checks Termux environment (termux-api package, storage permissions).
+5. Reports any issues found.
+
+---
+
+## `hse set-key` (v0.9+)
+
+Set an API key in the `$HOME/.huntsman.env` file:
+
+```bash
+hse set-key HUNTSMAN_SHODAN_KEY abc123def456
+hse set-key HUNTSMAN_HIBP_KEY your-hibp-key-here
+```
+
+Keys are stored one-per-line in `KEY=VALUE` format. The file is
+never logged or transmitted. Modules read keys at scan time via
+`ModuleContext::key()`.
+
+Available key names:
+- `HUNTSMAN_SHODAN_KEY` — Shodan premium API
+- `HUNTSMAN_HIBP_KEY` — Have I Been Pwned ($3.50/mo)
+- `HUNTSMAN_DEHASHED_USER` / `HUNTSMAN_DEHASHED_KEY` — DeHashed
+- `HUNTSMAN_INTELX_KEY` — Intelligence X
+- `HUNTSMAN_WIGLE_USER` / `HUNTSMAN_WIGLE_TOKEN` — WiGLE WiFi
+- `HUNTSMAN_IPQS_KEY` — IPQualityScore
+- `HUNTSMAN_OATHNET_KEY` — OathNet Pro
+- `HUNTSMAN_SECURITYTRAILS_KEY` — SecurityTrails
+- `HUNTSMAN_ABUSEIPDB_KEY` — AbuseIPDB
+- `HUNTSMAN_GREYNOISE_KEY` — GreyNoise (optional)
+- `HUNTSMAN_FULLHUNT_KEY` — FullHunt
+- `HUNTSMAN_THREATFOX_KEY` — ThreatFox
+- `HUNTSMAN_EMAILREP_KEY` — EmailRep.io (optional)
+- `HUNTSMAN_IPINFO_KEY` — ipinfo.io (optional)
+- `HUNTSMAN_IP2LOCATION_KEY` — ip2location.io (optional)
+- `HUNTSMAN_CRIMINAL_IP_KEY` — Criminal IP
+- `HUNTSMAN_LEAKIX_KEY` — LeakIX
+- `HUNTSMAN_NUMVERIFY_KEY` — Numverify
+
+---
+
 ## `hse doctor`
 
 Verifies the environment. Run after install and after any system change:
 
 ```
-HSE v0.2.0 — doctor
+HSE v0.10.0 — doctor
 
 Termux:    detected
 DB path:   /data/data/com.termux/files/home/.huntsman/huntsman.db
@@ -323,11 +388,14 @@ Keys path: /data/data/com.termux/files/home/.huntsman.env
 Storage:
   ok — database opens cleanly
 
-Modules (5 registered):
-  free       5
+Modules (50 registered):
+  free       33
+  key_gated  13
+  paid        4
 
-HUNTSMAN_* keys loaded: 0
-  (none set; all free modules still work)
+HUNTSMAN_* keys loaded: 2
+  HUNTSMAN_SHODAN_KEY: set
+  HUNTSMAN_WIGLE_TOKEN: set
 ```
 
 ---

@@ -84,26 +84,59 @@ paths share `module_skip_reason` so event payloads are identical
 between modes. 94 tests (84 lib + 10 integration; +3 cover the
 concurrency cap). 4.8 MB stripped binary.
 
-## In flight
+### v0.9.0 — 14 new modules + Spiderfoot vendor bundle (2026-05-23)
 
-Three free-module slots originally planned for v0.4/v0.5 are still
-deferred: `breach_directory`, `urlscan`, `asn_lookup`. Key-gated
-modules also deferred: `hibp`, `hunter`, `virustotal`, `dehashed`,
-`oathnet_pro`, `shodan`. They land alongside the hardening work below
-when there's a natural place to slot them.
+Shipped. Registry grows from 21 → 36 modules. `hse provision` and
+`hse set-key` CLI subcommands. Spiderfoot-faithful vendor CSS/JS
+bundle embedded for the SPA.
+
+### v0.10+ — PRs #30–#37 (2026-05-24 → 2026-05-25)
+
+Eight feature PRs implemented across multiple engineering cycles:
+
+- **PR #30** — Event persistence: `events` table, `events.history`
+  endpoint, SSE-before-history in SPA, cascade delete, `insert_event`
+  with exhaustive match, `/api/v1/stats` dashboard, `/report.json`
+  scan export. Closes #24.
+- **PR #31** — Scan cancellation: `CancelHandle`, RAII
+  `CancelRegistryGuard`, `ScanStatus::Aborted`, Abort button,
+  `spawn_scan` helper, live-session mid-iteration cancel,
+  `mid_flight_cancellation_aborts_running_scan` test. Closes #23.
+- **PR #32** — Module descriptions: `description()` trait, 50 module
+  tooltips, `#[non_exhaustive]` on `ModuleInfo`, 303-site Maigret +
+  Sherlock username_search expansion. Closes #27, #28.
+- **PR #33** — Correlation rules 4 → 15: 11 new AU rules, TI_SOURCES
+  whitelist, entity-kind guards, `Correlation::new()` constructor.
+  Closes #26.
+- **PR #34** — 14 new modules (36 → 50): `shodan_internetdb`,
+  `caa_records`, `threatfox`, `rdap_domain`, `emailrep`, `ipinfo`,
+  `ip2location`, `nominatim`, `abuseipdb`, `greynoise`,
+  `haveibeenpwned`, `fullhunt`, `name_to_email`, plus
+  `unreachable!()` → `Error::module()` hardening. Closes #25.
+- **PR #35** — HTTP timeout fix: drop client-level 3s timeout, add
+  5s `connect_timeout`.
+- **PR #36** — In-flight budget gate: sequential `continue` → `break`,
+  concurrent early gate + finalise-before-budget + JoinSet drain,
+  `emit_skip` + `should_skip_module` + `module_timeout_ms` helpers.
+- **PR #37** — JSON 404 for `/api/*` typos via nested axum router.
+
+Architecture improvements: module pre-indexing by `TargetKind`,
+shared HTTP client in `LiveScanner`, bus capacity 64 → 256,
+`Target::trimmed()` / `Entity::tag_country()` / `Evidence::opt_attr()`
+helpers cascaded across 25+ modules.
+
+**50 modules, 303 username sites, 15 correlation rules, all 9 target
+kinds covered, 183 unit + 12 smoke tests, 5.9 MB binary.**
 
 ## Planned
 
-- Batch query CLI (`hse batch --file targets.csv`) and matching
-  `/api/v1/batch` endpoints.
-- Debug harness: per-module health check that runs a synthetic target
-  through one module and reports timing + sample output.
-- Paid-key modules behind `cost() == Paid` so `--free-only` covers them.
+- Batch query CLI (`hse batch --file targets.csv`).
 - Adaptive throttling: per-source circuit breaker on 429 responses.
-- Three deferred free modules: `breach_directory`, `urlscan`, `asn_lookup`.
-- Global semaphore on `scan_create` HTTP task spawning so a flood of
-  POST /api/v1/scans can't OOM `hse serve` (PR #9 review item — held
-  open for a real-world measurement before picking a default cap).
+- Additional module batches: `pgp_keyserver`, `bitcoin_blockchain`,
+  `ethereum_address`, `dns_blacklist_zen`, `dns_blacklist_barracuda`.
+- Authentication middleware for non-localhost deployments.
+- Cron-style scan scheduling (beyond live-mode interval repeats).
+- Webhook / notification hooks on scan completion.
 
 ## After 1.0
 
