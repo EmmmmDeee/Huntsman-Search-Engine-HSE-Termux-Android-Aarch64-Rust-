@@ -522,4 +522,77 @@ mod tests {
                 .is_err()
         );
     }
+
+    // ── Target::to_entity ──────────────────────────────────────────────────
+
+    #[test]
+    fn to_entity_creates_matching_entity() {
+        let t = Target::new(TargetKind::Email, "x@y.com");
+        let e = t.to_entity(0.7, "scan-1");
+        assert_eq!(e.kind, EntityKind::Email);
+        assert_eq!(e.value, "x@y.com");
+        assert!((e.confidence - 0.7).abs() < 1e-9);
+        assert_eq!(e.scan_id, "scan-1");
+    }
+
+    #[test]
+    fn to_entity_normalises_value() {
+        let t = Target::new(TargetKind::Email, "ALICE@Example.COM");
+        let e = t.to_entity(0.5, "s");
+        assert_eq!(e.value, "alice@example.com");
+    }
+
+    // ── ScanStatus::as_str ─────────────────────────────────────────────────
+
+    #[test]
+    fn scan_status_as_str() {
+        assert_eq!(ScanStatus::Pending.as_str(), "pending");
+        assert_eq!(ScanStatus::Running.as_str(), "running");
+        assert_eq!(ScanStatus::Complete.as_str(), "complete");
+        assert_eq!(ScanStatus::Failed.as_str(), "failed");
+        assert_eq!(ScanStatus::Aborted.as_str(), "aborted");
+    }
+
+    #[test]
+    fn scan_status_serde_round_trip() {
+        for status in [
+            ScanStatus::Pending,
+            ScanStatus::Running,
+            ScanStatus::Complete,
+            ScanStatus::Failed,
+            ScanStatus::Aborted,
+        ] {
+            let json = serde_json::to_string(&status).unwrap();
+            let back: ScanStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, status);
+        }
+    }
+
+    // ── Scan serde ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn scan_new_defaults() {
+        let t = Target::new(TargetKind::Domain, "example.com");
+        let s = Scan::new("id-1", t);
+        assert_eq!(s.id, "id-1");
+        assert_eq!(s.status, ScanStatus::Pending);
+        assert_eq!(s.entity_count, 0);
+        assert!(s.finished_at.is_none());
+        assert!(s.error.is_none());
+    }
+
+    #[test]
+    fn scan_json_round_trip() {
+        let t = Target::new(TargetKind::Email, "x@y.com");
+        let s = Scan::new("scan-rt", t).with_options(ScanOptions {
+            depth: 2,
+            free_only: true,
+            ..Default::default()
+        });
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Scan = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "scan-rt");
+        assert_eq!(back.options.depth, 2);
+        assert!(back.options.free_only);
+    }
 }

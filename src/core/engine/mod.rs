@@ -352,3 +352,59 @@ fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> O
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visit_key_normalises_email() {
+        let t = Target::new(TargetKind::Email, "ALICE@Example.COM");
+        let (kind, val) = visit_key(&t);
+        assert_eq!(kind, TargetKind::Email);
+        assert_eq!(val, "alice@example.com");
+    }
+
+    #[test]
+    fn visit_key_normalises_domain_trailing_dot() {
+        let t = Target::new(TargetKind::Domain, "example.com.");
+        let (_, val) = visit_key(&t);
+        assert_eq!(val, "example.com");
+    }
+
+    #[test]
+    fn budget_check_none_when_no_limits() {
+        let opts = ScanOptions::default();
+        let started = Instant::now();
+        assert!(budget_check(&opts, started, 1000).is_none());
+    }
+
+    #[test]
+    fn budget_check_max_entities_triggers() {
+        let opts = ScanOptions {
+            max_entities: Some(5),
+            ..Default::default()
+        };
+        let started = Instant::now();
+        assert!(budget_check(&opts, started, 4).is_none());
+        assert!(budget_check(&opts, started, 5).is_some());
+    }
+
+    #[test]
+    fn budget_check_wall_time_triggers() {
+        let opts = ScanOptions {
+            max_wall_time_secs: Some(0),
+            ..Default::default()
+        };
+        let started = Instant::now() - Duration::from_secs(1);
+        assert!(budget_check(&opts, started, 0).is_some());
+    }
+
+    #[test]
+    fn stop_reason_labels_are_descriptive() {
+        assert!(StopReason::NoMoreCandidates.label().contains("candidate"));
+        assert!(StopReason::MaxEntities(10).label().contains("10"));
+        assert!(StopReason::MaxWallTime(60).label().contains("60"));
+        assert!(StopReason::Cancelled.label().contains("cancel"));
+    }
+}
