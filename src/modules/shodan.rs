@@ -105,6 +105,9 @@ impl Module for Shodan {
         if let Some(c) = body.country_name.as_deref() {
             ev = ev.with_attr("country", c);
         }
+        if let Some(c) = body.country_code.as_deref() {
+            ev = ev.with_attr("country_code", c);
+        }
         if let Some(o) = body.os.as_deref() {
             ev = ev.with_attr("os", o);
         }

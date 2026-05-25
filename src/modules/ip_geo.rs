@@ -20,14 +20,25 @@ pub struct IpGeo;
 struct IpApiResp {
     status: String,
     country: Option<String>,
+    #[serde(rename = "countryCode")]
+    country_code: Option<String>,
     #[serde(rename = "regionName")]
     region_name: Option<String>,
     city: Option<String>,
+    zip: Option<String>,
     lat: Option<f64>,
     lon: Option<f64>,
+    timezone: Option<String>,
+    isp: Option<String>,
     org: Option<String>,
     #[serde(rename = "as")]
     asn: Option<String>,
+    #[serde(default)]
+    mobile: Option<bool>,
+    #[serde(default)]
+    proxy: Option<bool>,
+    #[serde(default)]
+    hosting: Option<bool>,
 }
 
 #[async_trait]
@@ -47,7 +58,7 @@ impl Module for IpGeo {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         // ip-api.com free tier is HTTP only — HTTPS requires paid plan.
         let url = format!(
-            "http://ip-api.com/json/{}?fields=status,country,regionName,city,lat,lon,org,as",
+            "http://ip-api.com/json/{}?fields=status,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,mobile,proxy,hosting",
             target.value
         );
 
@@ -67,22 +78,64 @@ impl Module for IpGeo {
             let coords = format!("{lat:.6},{lon:.6}");
             let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.70, &ctx.scan_id);
             e.tag("geoint");
-            e.add_evidence(
-                Evidence::new("ip_geo", format!("IP geolocation for {}", target.value))
-                    .with_attr("country", data.country.as_deref().unwrap_or("-"))
-                    .with_attr("region", data.region_name.as_deref().unwrap_or("-"))
-                    .with_attr("city", data.city.as_deref().unwrap_or("-"))
-                    .with_attr("source", "ip-api.com"),
-            );
+            if let Some(cc) = data.country_code.as_deref() {
+                e.tag(format!("country:{}", cc.to_uppercase()));
+            }
+            if data.proxy == Some(true) {
+                e.tag("proxy");
+            }
+            if data.hosting == Some(true) {
+                e.tag("hosting");
+            }
+            if data.mobile == Some(true) {
+                e.tag("mobile");
+            }
+            let mut ev = Evidence::new("ip_geo", format!("IP geolocation for {}", target.value))
+                .with_attr("country", data.country.as_deref().unwrap_or("-"))
+                .with_attr("region", data.region_name.as_deref().unwrap_or("-"))
+                .with_attr("city", data.city.as_deref().unwrap_or("-"))
+                .with_attr("latitude", lat.to_string())
+                .with_attr("longitude", lon.to_string())
+                .with_attr("source", "ip-api.com");
+            if let Some(cc) = data.country_code.as_deref() {
+                ev = ev.with_attr("country_code", cc);
+            }
+            if let Some(z) = data.zip.as_deref() {
+                ev = ev.with_attr("zip", z);
+            }
+            if let Some(tz) = data.timezone.as_deref() {
+                ev = ev.with_attr("timezone", tz);
+            }
+            if let Some(isp) = data.isp.as_deref() {
+                ev = ev.with_attr("isp", isp);
+            }
+            if let Some(asn) = data.asn.as_deref() {
+                ev = ev.with_attr("asn", asn);
+            }
+            if let Some(v) = data.proxy {
+                ev = ev.with_attr("is_proxy", v.to_string());
+            }
+            if let Some(v) = data.hosting {
+                ev = ev.with_attr("is_hosting", v.to_string());
+            }
+            if let Some(v) = data.mobile {
+                ev = ev.with_attr("is_mobile", v.to_string());
+            }
+            e.add_evidence(ev);
             result.push(e);
         }
 
         if let Some(org) = &data.org {
             let mut e = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
-            e.add_evidence(
-                Evidence::new("ip_geo", format!("IP org for {}", target.value))
-                    .with_attr("asn", data.asn.as_deref().unwrap_or("-")),
-            );
+            let mut ev = Evidence::new("ip_geo", format!("IP org for {}", target.value))
+                .with_attr("asn", data.asn.as_deref().unwrap_or("-"));
+            if let Some(isp) = data.isp.as_deref() {
+                ev = ev.with_attr("isp", isp);
+            }
+            if let Some(cc) = data.country_code.as_deref() {
+                ev = ev.with_attr("country_code", cc);
+            }
+            e.add_evidence(ev);
             result.push(e);
         }
 

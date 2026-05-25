@@ -54,6 +54,8 @@ struct UrlEntry {
     threat: Option<String>,
     #[serde(default)]
     url_status: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
 }
 
 #[async_trait]
@@ -147,6 +149,12 @@ impl Module for UrlHaus {
                 .count();
             ev = ev.with_attr("urls_online", online.to_string());
 
+            let offline = urls
+                .iter()
+                .filter(|u| u.url_status.as_deref() == Some("offline"))
+                .count();
+            ev = ev.with_attr("urls_offline", offline.to_string());
+
             // Distinct threat families seen (e.g. "malware_download",
             // "phishing"). Capped at the first 8 to keep the row tidy.
             let mut threats: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
@@ -161,6 +169,30 @@ impl Module for UrlHaus {
             if !threats.is_empty() {
                 let threat_vec: Vec<&str> = threats.into_iter().collect();
                 ev = ev.with_attr("threats", threat_vec.join(","));
+            }
+
+            // Aggregate tags across URL entries and surface the top ones.
+            let mut tag_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for u in urls {
+                if let Some(ref tag_list) = u.tags {
+                    for tag in tag_list {
+                        let trimmed = tag.trim();
+                        if !trimmed.is_empty() {
+                            *tag_counts.entry(trimmed.to_string()).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+            if !tag_counts.is_empty() {
+                let mut sorted_tags: Vec<(String, usize)> = tag_counts.into_iter().collect();
+                sorted_tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                let top: Vec<String> = sorted_tags
+                    .iter()
+                    .take(10)
+                    .map(|(tag, count)| format!("{tag}({count})"))
+                    .collect();
+                ev = ev.with_attr("top_tags", top.join(", "));
             }
         }
         entity.add_evidence(ev);

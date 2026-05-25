@@ -56,6 +56,18 @@ struct Record {
 
 pub struct IntelX;
 
+/// Map IntelX media type codes to human-readable labels.
+fn media_label(code: i32) -> Option<&'static str> {
+    match code {
+        0 => Some("pastes"),
+        1 => Some("darknet"),
+        2 => Some("breach"),
+        3 => Some("general"),
+        5 => Some("leaks"),
+        _ => None,
+    }
+}
+
 #[async_trait]
 impl Module for IntelX {
     fn name(&self) -> &'static str {
@@ -202,6 +214,15 @@ impl Module for IntelX {
         .with_attr("search_id", search_id);
         if !top.is_empty() {
             ev = ev.with_attr("top_buckets", top);
+        }
+        // Map media type codes to human-readable labels.
+        let media_labels: std::collections::BTreeSet<&str> = media_counts
+            .keys()
+            .filter_map(|code| media_label(*code))
+            .collect();
+        if !media_labels.is_empty() {
+            let types_joined: Vec<&str> = media_labels.into_iter().collect();
+            ev = ev.with_attr("media_types", types_joined.join(", "));
         }
         if let Some(d) = latest {
             ev = ev.with_attr("latest_record", d);

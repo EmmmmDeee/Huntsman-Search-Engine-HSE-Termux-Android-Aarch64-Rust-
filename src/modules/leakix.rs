@@ -24,13 +24,15 @@ use crate::util::http::error_snippet;
 
 const KEY_ENV: &str = "HUNTSMAN_LEAKIX_KEY";
 
-/// Subset of the LeakIX event fields we actually consume. `event_source`
-/// and `protocol` exist on the wire but we don't surface them yet —
-/// deserialise-and-drop would trigger `dead_code`, so they're omitted.
+/// Subset of the LeakIX event fields we actually consume.
 #[derive(Deserialize)]
 struct Event {
     #[serde(default)]
     event_type: Option<String>,
+    #[serde(default)]
+    event_source: Option<String>,
+    #[serde(default)]
+    protocol: Option<String>,
     #[serde(default)]
     time: Option<String>,
     #[serde(default)]
@@ -153,16 +155,44 @@ impl Module for LeakIx {
         if !port_str.is_empty() {
             ev = ev.with_attr("ports", port_str);
         }
-        // Most-recent timestamp across all events.
-        let latest = body
+        // Most-recent and earliest timestamps across all events.
+        let all_times: Vec<&str> = body
             .services
             .iter()
             .chain(body.leaks.iter())
             .filter_map(|e| e.time.as_deref())
-            .max();
-        if let Some(t) = latest {
+            .collect();
+        if let Some(t) = all_times.iter().copied().max() {
             ev = ev.with_attr("most_recent", t);
         }
+        if let Some(t) = all_times.iter().copied().min() {
+            ev = ev.with_attr("earliest", t);
+        }
+
+        // Aggregate event_source values across all events.
+        let sources: Vec<String> = body
+            .services
+            .iter()
+            .chain(body.leaks.iter())
+            .filter_map(|e| e.event_source.clone())
+            .collect();
+        let top_sources = crate::util::freq::top_n(sources.iter().map(String::as_str), 8);
+        if !top_sources.is_empty() {
+            ev = ev.with_attr("event_sources", top_sources);
+        }
+
+        // Aggregate protocol values across all events.
+        let protocols: Vec<String> = body
+            .services
+            .iter()
+            .chain(body.leaks.iter())
+            .filter_map(|e| e.protocol.clone())
+            .collect();
+        let top_protocols = crate::util::freq::top_n(protocols.iter().map(String::as_str), 8);
+        if !top_protocols.is_empty() {
+            ev = ev.with_attr("protocols", top_protocols);
+        }
+
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();
         result.push(entity);

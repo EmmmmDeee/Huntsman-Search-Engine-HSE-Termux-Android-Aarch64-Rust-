@@ -219,6 +219,32 @@ impl Module for CriminalIp {
         if let Some(v) = body.vulnerability.and_then(|v| v.count) {
             ev = ev.with_attr("vuln_count", v.to_string());
         }
+        if let Some(is) = &body.issues {
+            if is.is_vpn == Some(true) {
+                ev = ev.with_attr("is_vpn", "true");
+            }
+            if is.is_proxy == Some(true) {
+                ev = ev.with_attr("is_proxy", "true");
+            }
+            if is.is_tor == Some(true) {
+                ev = ev.with_attr("is_tor", "true");
+            }
+            if is.is_hosting == Some(true) {
+                ev = ev.with_attr("is_hosting", "true");
+            }
+            if is.is_anonymous_vpn == Some(true) {
+                ev = ev.with_attr("is_anonymous_vpn", "true");
+            }
+            if is.is_cloud == Some(true) {
+                ev = ev.with_attr("is_cloud", "true");
+            }
+            if is.is_scanner == Some(true) {
+                ev = ev.with_attr("is_scanner", "true");
+            }
+            if is.is_dark_web == Some(true) {
+                ev = ev.with_attr("is_dark_web", "true");
+            }
+        }
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();
         result.push(entity);

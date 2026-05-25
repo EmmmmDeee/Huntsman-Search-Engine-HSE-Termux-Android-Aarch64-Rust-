@@ -37,7 +37,9 @@ struct GhUser {
     company: Option<String>,
     location: Option<String>,
     bio: Option<String>,
+    twitter_username: Option<String>,
     public_repos: Option<u64>,
+    public_gists: Option<u64>,
     followers: Option<u64>,
     following: Option<u64>,
     created_at: Option<String>,
@@ -136,12 +138,20 @@ impl Module for GithubUser {
         if let Some(n) = user.public_repos {
             ev = ev.with_attr("public_repos", n.to_string());
         }
+        if let Some(n) = user.public_gists {
+            ev = ev.with_attr("public_gists", n.to_string());
+        }
         if let Some(n) = user.followers {
             ev = ev.with_attr("followers", n.to_string());
         }
         if let Some(n) = user.following {
             ev = ev.with_attr("following", n.to_string());
         }
+        if let Some(ref tw) = user.twitter_username
+            && !tw.is_empty() {
+                ev = ev.with_attr("twitter", tw);
+                u_entity.tag(format!("twitter:{tw}"));
+            }
         u_entity.add_evidence(ev);
         result.push(u_entity);
 

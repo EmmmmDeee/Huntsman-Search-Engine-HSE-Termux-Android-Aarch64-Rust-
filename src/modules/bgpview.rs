@@ -149,21 +149,33 @@ async fn lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
 
     // Surface contact emails as discrete Email entities — they're real
     // identity signals (the AS holder's abuse / NOC mailbox).
-    for email in data
-        .email_contacts
-        .into_iter()
-        .flatten()
-        .chain(data.abuse_contacts.into_iter().flatten())
-    {
+    for email in data.email_contacts.into_iter().flatten() {
         if !email.contains('@') {
             continue;
         }
         let mut e = Entity::new(EntityKind::Email, &email, 0.78, &ctx.scan_id);
         e.tag("asn-contact");
+        e.tag("role:admin");
         e.add_evidence(
             Evidence::new("bgpview", format!("Contact for {asn_label}"))
                 .with_attr("source", "bgpview")
-                .with_attr("asn", &asn_str),
+                .with_attr("asn", &asn_str)
+                .with_attr("contact_role", "admin"),
+        );
+        result.push(e);
+    }
+    for email in data.abuse_contacts.into_iter().flatten() {
+        if !email.contains('@') {
+            continue;
+        }
+        let mut e = Entity::new(EntityKind::Email, &email, 0.78, &ctx.scan_id);
+        e.tag("asn-contact");
+        e.tag("role:abuse");
+        e.add_evidence(
+            Evidence::new("bgpview", format!("Contact for {asn_label}"))
+                .with_attr("source", "bgpview")
+                .with_attr("asn", &asn_str)
+                .with_attr("contact_role", "abuse"),
         );
         result.push(e);
     }

@@ -57,6 +57,9 @@ const BINARY_EXTENSIONS: &[&str] = &[
     "css", "map",
 ];
 
+const NOTABLE_PAGES_CAP: usize = 20;
+const NOTABLE_PAGE_TYPES: &[&str] = &["login_form", "file_upload", "admin_panel", "api_reference"];
+
 struct CrawlState {
     visited: HashSet<String>,
     queue: VecDeque<(String, u32)>,
@@ -73,6 +76,7 @@ struct CrawlState {
     security_headers: Vec<(&'static str, bool)>,
     internal_links: usize,
     external_links: usize,
+    notable_pages: Vec<String>,
 }
 
 #[async_trait]
@@ -120,6 +124,7 @@ impl Module for WebCrawler {
             security_headers: Vec::new(),
             internal_links: 0,
             external_links: 0,
+            notable_pages: Vec::new(),
         };
 
         fetch_robots(&ctx.http, &seed_url, &mut state.disallow_rules).await;
@@ -176,7 +181,16 @@ impl Module for WebCrawler {
             state.pages_fetched += 1;
 
             detect_frameworks(&body, &mut state.frameworks);
-            detect_page_types(&body, &mut state.page_types);
+
+            let mut per_page_types: HashSet<&'static str> = HashSet::new();
+            detect_page_types(&body, &mut per_page_types);
+            if state.notable_pages.len() < NOTABLE_PAGES_CAP
+                && per_page_types.iter().any(|pt| NOTABLE_PAGE_TYPES.contains(pt))
+            {
+                state.notable_pages.push(url.clone());
+            }
+            state.page_types.extend(per_page_types);
+
             extract_emails(&body, &mut state.emails);
             extract_phones(&body, &mut state.phones);
 
@@ -600,6 +614,13 @@ fn build_entities(
         pts.sort_unstable();
         ev = ev.with_attr("page_types", pts.join(", "));
     }
+    if !state.notable_pages.is_empty() {
+        ev = ev.with_attr("notable_pages", state.notable_pages.join(" | "));
+    }
+    ev = ev.with_attr("subdomains_found", state.subdomains.len().to_string());
+    ev = ev.with_attr("emails_found", state.emails.len().to_string());
+    ev = ev.with_attr("phones_found", state.phones.len().to_string());
+
     if !missing_headers.is_empty() {
         ev = ev.with_attr("missing_security_headers", missing_headers.join(", "));
     }

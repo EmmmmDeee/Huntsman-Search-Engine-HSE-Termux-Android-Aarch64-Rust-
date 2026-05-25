@@ -68,6 +68,8 @@ struct BreachDetail {
     xposed_records: Option<u64>,
     #[serde(alias = "xposure_desc")]
     xposure_desc: Option<String>,
+    #[serde(alias = "xposed_date")]
+    xposed_date: Option<String>,
     #[serde(alias = "password_risk")]
     password_risk: Option<String>,
 }
@@ -198,6 +200,66 @@ fn build_result(
                 entity.tag(tags::PASSWORD_AT_RISK);
                 ev = ev.with_attr("password_risk", "true");
             }
+
+            // Surface per-breach summaries with description and record counts.
+            let mut breach_summaries: Vec<String> = Vec::new();
+            let mut descriptions: Vec<String> = Vec::new();
+            for d in details {
+                let name = match d.breach.as_deref() {
+                    Some(n) if !n.is_empty() => n,
+                    _ => continue,
+                };
+
+                // Build summary like "LinkedIn (2012, 117M records): Emails;Passwords"
+                let year = d.xposed_date.as_deref()
+                    .and_then(|s| s.get(..4))
+                    .filter(|y| y.chars().all(|c| c.is_ascii_digit()));
+
+                let records_label = d.xposed_records.map(|n| {
+                    if n >= 1_000_000 {
+                        format!("{}M records", n / 1_000_000)
+                    } else if n >= 1_000 {
+                        format!("{}K records", n / 1_000)
+                    } else {
+                        format!("{n} records")
+                    }
+                });
+
+                let data = d.xposed_data.as_deref().unwrap_or("");
+
+                let mut parts = Vec::new();
+                if let Some(y) = year {
+                    parts.push(y.to_string());
+                }
+                if let Some(ref rl) = records_label {
+                    parts.push(rl.clone());
+                }
+
+                let summary = if parts.is_empty() && data.is_empty() {
+                    name.to_string()
+                } else if parts.is_empty() {
+                    format!("{name}: {data}")
+                } else if data.is_empty() {
+                    format!("{name} ({})", parts.join(", "))
+                } else {
+                    format!("{name} ({}):{data}", parts.join(", "))
+                };
+                breach_summaries.push(summary);
+
+                // Surface xposure_desc when present and non-empty.
+                if let Some(desc) = d.xposure_desc.as_deref() {
+                    let desc = desc.trim();
+                    if !desc.is_empty() {
+                        descriptions.push(format!("{name}: {desc}"));
+                    }
+                }
+            }
+            if !breach_summaries.is_empty() {
+                ev = ev.with_attr("breach_summaries", breach_summaries.join(" | "));
+            }
+            if !descriptions.is_empty() {
+                ev = ev.with_attr("breach_descriptions", descriptions.join(" | "));
+            }
         }
     }
 
@@ -278,5 +340,61 @@ mod tests {
         let target = Target::new(TargetKind::Email, "many@example.com");
         let r = build_result(&breaches, None, &target, "s");
         assert!(r.entities[0].has_tag("high-exposure"));
+    }
+
+    #[test]
+    fn analytics_surfaces_breach_summaries_and_descriptions() {
+        let breaches = vec!["LinkedIn".into()];
+        let analytics = AnalyticsResp {
+            exposed_breaches: Some(AnalyticsBreaches {
+                breaches_details: Some(vec![BreachDetail {
+                    breach: Some("LinkedIn".into()),
+                    xposed_data: Some("Emails;Passwords".into()),
+                    xposed_records: Some(117_000_000),
+                    xposure_desc: Some("LinkedIn suffered a data breach in 2012".into()),
+                    xposed_date: Some("2012-06-05".into()),
+                    password_risk: Some("none".into()),
+                }]),
+            }),
+            pastes_summary: None,
+        };
+        let target = Target::new(TargetKind::Email, "a@b.com");
+        let r = build_result(&breaches, Some(&analytics), &target, "s");
+
+        let ev = &r.entities[0].evidence[0];
+        let summaries = ev.attributes.get("breach_summaries").unwrap();
+        assert!(summaries.contains("LinkedIn"));
+        assert!(summaries.contains("2012"));
+        assert!(summaries.contains("117M records"));
+        assert!(summaries.contains("Emails;Passwords"));
+
+        let descs = ev.attributes.get("breach_descriptions").unwrap();
+        assert!(descs.contains("LinkedIn: LinkedIn suffered a data breach in 2012"));
+    }
+
+    #[test]
+    fn analytics_without_desc_omits_descriptions_attr() {
+        let breaches = vec!["SomeService".into()];
+        let analytics = AnalyticsResp {
+            exposed_breaches: Some(AnalyticsBreaches {
+                breaches_details: Some(vec![BreachDetail {
+                    breach: Some("SomeService".into()),
+                    xposed_data: Some("Emails".into()),
+                    xposed_records: Some(500),
+                    xposure_desc: None,
+                    xposed_date: None,
+                    password_risk: None,
+                }]),
+            }),
+            pastes_summary: None,
+        };
+        let target = Target::new(TargetKind::Email, "a@b.com");
+        let r = build_result(&breaches, Some(&analytics), &target, "s");
+
+        let ev = &r.entities[0].evidence[0];
+        let summaries = ev.attributes.get("breach_summaries").unwrap();
+        assert!(summaries.contains("SomeService"));
+        assert!(summaries.contains("500 records"));
+        assert!(!ev.attributes.contains_key("breach_descriptions"));
     }
 }
