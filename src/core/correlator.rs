@@ -148,6 +148,7 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     out.extend(rule_au_005_multi_device_stealer(idx.all, scan_id, now));
     out.extend(rule_au_006_breach_weak_infra(&idx, scan_id, now));
     out.extend(rule_au_007_shared_hosting(&idx.infra, scan_id, now));
+    out.extend(rule_au_008_blocklisted_infra(&idx.infra, scan_id, now));
     out.extend(rule_au_010_infra_consensus(&idx.infra, scan_id, now));
     out
 }
@@ -438,6 +439,36 @@ fn rule_au_007_shared_hosting(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec<
             }
         })
         .collect()
+}
+
+/// `AU-008` — Blocklisted infrastructure: an IP in the scan has been
+/// flagged by the `dns_blocklist` module (tag `blocklisted`). This
+/// is a free, zero-API signal that the IP appears on DNS-based spam/
+/// malware/botnet blocklists.
+fn rule_au_008_blocklisted_infra(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    for e in infra.iter().filter(|e| matches!(e.kind, EntityKind::IpAddress) && e.has_tag("blocklisted")) {
+        let lists = e
+            .evidence
+            .iter()
+            .filter(|ev| ev.source == "dns_blocklist")
+            .filter_map(|ev| ev.attributes.get("listed_on").map(String::as_str))
+            .next()
+            .unwrap_or("unknown");
+        out.push(Correlation {
+            rule_id: "AU-008".into(),
+            rule_name: "Blocklisted infrastructure".into(),
+            severity: Severity::High,
+            description: format!(
+                "IP {} appears on DNS blocklists: {}",
+                e.value, lists
+            ),
+            entity_uids: vec![e.uid.clone()],
+            scan_id: scan_id.into(),
+            ts,
+        });
+    }
+    out
 }
 
 /// `AU-010` — Infrastructure consensus: a single Domain or IpAddress has

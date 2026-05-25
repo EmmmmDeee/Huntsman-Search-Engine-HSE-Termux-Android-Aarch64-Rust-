@@ -12,6 +12,7 @@ pub mod cell_survey;
 pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
+pub mod dns_blocklist;
 pub mod dns_brute;
 pub mod dns_resolver;
 pub mod email_to_domain;
@@ -33,6 +34,7 @@ pub mod reverse_dns;
 pub mod search_engines;
 pub mod securitytrails;
 pub mod shodan;
+pub mod ssl_probe;
 pub mod tor_exit_check;
 pub mod urlhaus;
 pub mod username_search;
@@ -85,6 +87,12 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(ip_geo::IpGeo),
         // Tor exit-relay membership check (free, single fetch cached).
         Arc::new(tor_exit_check::TorExitCheck),
+        // DNS blocklist (DNSBL) checker — pure DNS queries against 8
+        // blocklists (Spamhaus, SpamCop, SORBS, etc.). Zero API keys.
+        Arc::new(dns_blocklist::DnsBlocklist),
+        // SSL/TLS certificate probe — extracts SANs, issuer, validity.
+        // SAN discovery reveals subdomains not visible via DNS/CT. Free.
+        Arc::new(ssl_probe::SslProbe),
         // Multi-engine search scraping (DuckDuckGo, Brave, Startpage,
         // Mojeek, Yahoo) — discovers subdomains, linked domains, emails
         // from search result URLs and snippets. Zero API keys.
