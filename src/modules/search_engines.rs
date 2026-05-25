@@ -117,14 +117,21 @@ const ENGINES: &[EngineSpec] = &[
     EngineSpec {
         name: "bing",
         build_url: |q| format!(
-            "https://www.bing.com/search?q={}",
+            "https://www.bing.com/search?q={}&count=20",
             crate::util::http::urlencode(q)
         ),
     },
     EngineSpec {
         name: "yahoo",
         build_url: |q| format!(
-            "https://search.yahoo.com/search?p={}",
+            "https://search.yahoo.com/search?p={}&n=20",
+            crate::util::http::urlencode(q)
+        ),
+    },
+    EngineSpec {
+        name: "aol",
+        build_url: |q| format!(
+            "https://search.aol.com/aol/search?q={}",
             crate::util::http::urlencode(q)
         ),
     },
@@ -170,13 +177,13 @@ fn build_queries(target: &Target) -> Vec<String> {
             let local = v.split('@').next().unwrap_or("");
             let mut q = vec![
                 format!("\"{v}\""),
-                format!("{local} {domain}"),
+                format!("\"{local}\""),
             ];
-            if !domain.is_empty() && domain != "gmail.com" && domain != "yahoo.com" {
+            if !domain.is_empty() && !["gmail.com","yahoo.com","hotmail.com","outlook.com"].contains(&domain) {
                 q.push(format!("\"{v}\" site:linkedin.com OR site:github.com OR site:facebook.com"));
             }
             if local.len() >= 3 {
-                q.push(format!("\"{local}\" site:linkedin.com OR site:twitter.com OR site:facebook.com"));
+                q.push(format!("\"{local}\" site:linkedin.com OR site:twitter.com OR site:facebook.com OR site:myspace.com"));
             }
             q
         }
@@ -406,6 +413,7 @@ const ENGINE_DOMAINS: &[&str] = &[
     "brave.com", "yahoo.com", "bing.com", "google.com",
     "yandex.com", "yimg.com", "search.yahoo.com",
     "r.search.yahoo.com", "cc.bingj.com",
+    "aol.com", "search.aol.com", "oath.com",
 ];
 
 fn is_engine_domain(host: &str) -> bool {

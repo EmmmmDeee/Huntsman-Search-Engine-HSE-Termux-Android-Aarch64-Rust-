@@ -49,6 +49,14 @@ const USERNAME_PLATFORMS: &[Platform] = &[
     Platform { name: "flickr",      url_pattern: "https://www.flickr.com/people/{}",      exists_codes: &[200] },
     Platform { name: "bitbucket",   url_pattern: "https://bitbucket.org/{}/",             exists_codes: &[200] },
     Platform { name: "stackoverflow", url_pattern: "https://stackoverflow.com/users/{}",  exists_codes: &[200] },
+    Platform { name: "myspace",     url_pattern: "https://myspace.com/{}",                exists_codes: &[200] },
+    Platform { name: "linktree",    url_pattern: "https://linktr.ee/{}",                  exists_codes: &[200] },
+    Platform { name: "about.me",    url_pattern: "https://about.me/{}",                   exists_codes: &[200] },
+    Platform { name: "behance",     url_pattern: "https://www.behance.net/{}",            exists_codes: &[200] },
+    Platform { name: "dribbble",    url_pattern: "https://dribbble.com/{}",               exists_codes: &[200] },
+    Platform { name: "mastodon",    url_pattern: "https://mastodon.social/@{}",           exists_codes: &[200] },
+    Platform { name: "bluesky",     url_pattern: "https://bsky.app/profile/{}.bsky.social", exists_codes: &[200] },
+    Platform { name: "threads",     url_pattern: "https://www.threads.net/@{}",           exists_codes: &[200] },
 ];
 
 const NAME_PLATFORMS: &[Platform] = &[
@@ -203,7 +211,7 @@ mod tests {
 
     #[test]
     fn platform_count() {
-        assert!(USERNAME_PLATFORMS.len() >= 20);
+        assert!(USERNAME_PLATFORMS.len() >= 28);
         assert!(NAME_PLATFORMS.len() >= 2);
     }
 }
