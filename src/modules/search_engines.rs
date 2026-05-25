@@ -675,7 +675,6 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
     let target_lower = target.value.to_lowercase();
 
     for r in results {
-        // Strip HTML artifacts before scanning for names
         let raw = format!("{} {}", r.title, r.snippet);
         let text = strip_tags(&raw, raw.len());
         let lower = text.to_lowercase();
