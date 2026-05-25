@@ -95,9 +95,10 @@ pub struct Target {
 
 impl Target {
     pub fn new(kind: TargetKind, value: impl Into<String>) -> Self {
+        let value = value.into();
         Self {
             kind,
-            value: value.into(),
+            value: value.trim().to_string(),
         }
     }
 
@@ -536,6 +537,12 @@ mod tests {
     }
 
     // ── Target::to_entity ──────────────────────────────────────────────────
+
+    #[test]
+    fn target_new_trims_value() {
+        let t = Target::new(TargetKind::Email, "  x@y.com  ");
+        assert_eq!(t.value, "x@y.com");
+    }
 
     #[test]
     fn to_entity_creates_matching_entity() {
