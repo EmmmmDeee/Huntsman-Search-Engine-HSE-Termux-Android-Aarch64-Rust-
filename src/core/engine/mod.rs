@@ -46,12 +46,9 @@ pub struct ScanEngine {
 /// Reason an expansion round stopped before depth was exhausted.
 enum StopReason {
     NoMoreCandidates,
+    DepthExhausted,
     MaxEntities(usize),
     MaxWallTime(u64),
-    /// Operator-initiated cancellation via the `CancelHandle` plumbed
-    /// through `ModuleContext`. Distinct from the budget stops so the
-    /// `ExpansionStop` event reads "cancelled" rather than "budget
-    /// exceeded" — the SPA / log consumers can colour it differently.
     Cancelled,
 }
 
@@ -59,6 +56,7 @@ impl StopReason {
     fn label(&self) -> String {
         match self {
             Self::NoMoreCandidates => "no more high-confidence candidates".into(),
+            Self::DepthExhausted => "maximum expansion depth reached".into(),
             Self::MaxEntities(n) => format!("max_entities={n} reached"),
             Self::MaxWallTime(s) => format!("max_wall_time_secs={s} exceeded"),
             Self::Cancelled => "cancelled by operator".into(),
@@ -163,18 +161,25 @@ impl ScanEngine {
         entity_map: HashMap<String, Entity>,
         ctx: &ModuleContext,
     ) -> Result<Scan> {
-        let entity_count = entity_map.len();
+        let mut persisted = 0usize;
+        let mut first_err: Option<String> = None;
+        for entity in entity_map.into_values() {
+            match self.store.upsert_entity(&entity) {
+                Ok(()) => persisted += 1,
+                Err(e) => {
+                    warn!(scan_id = %scan.id, entity_uid = %entity.uid, error = %e, "entity persist failed");
+                    if first_err.is_none() {
+                        first_err = Some(e.to_string());
+                    }
+                }
+            }
+        }
+        let entity_count = persisted;
 
-        let persist_err: Option<String> = entity_map
-            .into_values()
-            .find_map(|entity| self.store.upsert_entity(&entity).err())
-            .map(|e| e.to_string());
-
-        if let Some(err) = persist_err {
-            warn!(scan_id = %scan.id, error = %err, "entity persist failed");
+        if persisted == 0 && first_err.is_some() {
             scan.status = ScanStatus::Failed;
             scan.entity_count = 0;
-            scan.error = Some(err);
+            scan.error = first_err;
             scan.finished_at = Some(crate::core::entity::unix_now());
             let _ = self.store.upsert_scan(scan);
             self.emit(
@@ -324,7 +329,7 @@ impl ScanEngine {
                 }
             }
         }
-        StopReason::NoMoreCandidates
+        StopReason::DepthExhausted
     }
 }
 
@@ -401,6 +406,7 @@ mod tests {
     #[test]
     fn stop_reason_labels_are_descriptive() {
         assert!(StopReason::NoMoreCandidates.label().contains("candidate"));
+        assert!(StopReason::DepthExhausted.label().contains("depth"));
         assert!(StopReason::MaxEntities(10).label().contains("10"));
         assert!(StopReason::MaxWallTime(60).label().contains("60"));
         assert!(StopReason::Cancelled.label().contains("cancel"));

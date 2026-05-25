@@ -128,7 +128,7 @@ impl Target {
         if v.len() > 1024 {
             return Err("value too long (>1024 chars)");
         }
-        if v.contains(['\n', '\r', '\0']) {
+        if v.chars().any(|c| c.is_control()) {
             return Err("value contains control characters");
         }
         match self.kind {
@@ -157,7 +157,8 @@ impl Target {
                     .map_err(|_| "not a valid IPv4 or IPv6 address")?;
             }
             TargetKind::Asn => {
-                let digits = v.strip_prefix("AS").unwrap_or(v);
+                let upper = v.to_uppercase();
+                let digits = upper.strip_prefix("AS").unwrap_or(&upper);
                 if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
                     return Err("ASN must be digits, optionally prefixed by 'AS'");
                 }
@@ -434,6 +435,16 @@ mod tests {
                 .validate()
                 .is_err()
         );
+        assert!(
+            Target::new(TargetKind::Domain, "example\t.com")
+                .validate()
+                .is_err()
+        );
+        assert!(
+            Target::new(TargetKind::Username, "user\x1B[0m")
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]
@@ -485,6 +496,7 @@ mod tests {
     #[test]
     fn validate_asn() {
         assert!(Target::new(TargetKind::Asn, "AS13335").validate().is_ok());
+        assert!(Target::new(TargetKind::Asn, "as13335").validate().is_ok());
         assert!(Target::new(TargetKind::Asn, "13335").validate().is_ok());
         assert!(Target::new(TargetKind::Asn, "BS13335").validate().is_err());
     }

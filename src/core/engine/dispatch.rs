@@ -327,6 +327,13 @@ impl ScanEngine {
                 Ok(o) => o,
                 Err(e) => {
                     warn!(error = %e, "concurrent module task panicked");
+                    self.emit(
+                        scan_id,
+                        EventKind::ModuleError {
+                            module: "unknown (panicked)".into(),
+                            error: e.to_string(),
+                        },
+                    );
                     continue;
                 }
             };

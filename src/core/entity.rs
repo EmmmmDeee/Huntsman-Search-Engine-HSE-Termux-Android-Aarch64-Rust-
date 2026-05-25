@@ -222,7 +222,8 @@ impl Entity {
     /// Architecture invariant — do not modify the formula.
     #[inline]
     pub fn c_effective(&self) -> f64 {
-        let boost = CORROBORATION_COEFF.mul_add((self.corroboration as f64).ln(), 1.0);
+        let corr = self.corroboration.max(1) as f64;
+        let boost = CORROBORATION_COEFF.mul_add(corr.ln(), 1.0);
         (self.confidence * boost).clamp(0.0, 1.0)
     }
 
@@ -289,8 +290,11 @@ impl Entity {
         if self.uid != other.uid {
             return;
         }
-        self.confidence = f64::max(self.confidence, other.confidence);
-        self.corroboration = self.corroboration.saturating_add(other.corroboration);
+        self.confidence = f64::max(self.confidence, other.confidence).clamp(0.0, 1.0);
+        self.corroboration = self
+            .corroboration
+            .saturating_add(other.corroboration)
+            .max(1);
         self.observed_at = u64::max(self.observed_at, other.observed_at);
         self.evidence.extend(other.evidence);
         for t in other.tags {
@@ -461,6 +465,37 @@ mod tests {
         e.confidence = 0.99;
         e.corroboration = 1000;
         assert!(e.c_effective() <= 1.0);
+    }
+
+    #[test]
+    fn c_eff_safe_with_zero_corroboration() {
+        let mut e = email("a@b.com");
+        e.corroboration = 0;
+        let c = e.c_effective();
+        assert!(!c.is_nan(), "c_effective must not be NaN");
+        assert!((0.0..=1.0).contains(&c));
+    }
+
+    #[test]
+    fn merge_clamps_confidence() {
+        let mut a = email("x@y.com");
+        a.confidence = 1.5; // corrupted
+        let b = email("x@y.com");
+        a.merge(b);
+        assert!(a.confidence <= 1.0, "merge must clamp confidence");
+    }
+
+    #[test]
+    fn merge_corroboration_never_zero() {
+        let mut a = email("x@y.com");
+        a.corroboration = 0;
+        let mut b = email("x@y.com");
+        b.corroboration = 0;
+        a.merge(b);
+        assert!(
+            a.corroboration >= 1,
+            "corroboration must be at least 1 after merge"
+        );
     }
 
     // ── Classification ───────────────────────────────────────────────────────

@@ -114,8 +114,8 @@ impl Store {
             next_param += 1;
         }
         if value_contains.is_some() {
-            sql.push_str(&format!(" AND e.value LIKE ?{next_param}"));
-            let _ = next_param; // suppress unused warning
+            sql.push_str(&format!(" AND e.value LIKE ?{next_param} ESCAPE '\\'"));
+            let _ = next_param;
         }
         sql.push_str(" ORDER BY e.confidence DESC LIMIT 500");
 
@@ -123,7 +123,10 @@ impl Store {
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(&sql)?;
 
-            let like_pattern = value_contains.map(|v| format!("%{v}%"));
+            let like_pattern = value_contains.map(|v| {
+                let escaped = v.replace('%', "\\%").replace('_', "\\_");
+                format!("%{escaped}%")
+            });
 
             let rows = stmt.query_map(
                 rusqlite::params_from_iter(
@@ -169,11 +172,12 @@ impl Store {
     }
 
     pub fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<Entity>> {
-        let pattern = format!("%{query}%");
+        let escaped = query.replace('%', "\\%").replace('_', "\\_");
+        let pattern = format!("%{escaped}%");
         let raw: Vec<String> = {
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(
-                "SELECT data_json FROM entities WHERE value LIKE ?1 \
+                "SELECT data_json FROM entities WHERE value LIKE ?1 ESCAPE '\\' \
                  ORDER BY confidence DESC LIMIT ?2",
             )?;
             let rows = stmt.query_map(params![pattern, limit as i64], |r| r.get::<_, String>(0))?;
