@@ -232,7 +232,11 @@ async fn session_loop(
     let interval = Duration::from_secs(live.interval_secs.max(1));
     let max_iter = live.iterations;
     let http = build_client();
-    let loaded_keys = keys::load();
+    let mut loaded_keys = keys::load();
+    crate::util::key_pool::merge_pool_into_env(
+        &crate::util::key_pool::global_pool(),
+        &mut loaded_keys,
+    );
 
     let _ = inner.bus.send(Event::new(
         &live_id,

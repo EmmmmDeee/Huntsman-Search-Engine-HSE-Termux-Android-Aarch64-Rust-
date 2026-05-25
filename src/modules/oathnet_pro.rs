@@ -125,6 +125,18 @@ impl Module for OathnetPro {
             }
         }
 
+        // ── Victims search (additional stealer intelligence) ────────
+        if !ctx.cancel.is_cancelled()
+            && let Ok(victim_items) =
+                oathnet::search(key, paths::VICTIMS, field, &target.value, 20).await
+        {
+            for item in &victim_items {
+                extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
+                store_api_credential(item);
+                extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
+            }
+        }
+
         // ── Holehe (email targets) ──────────────────────────────────
         if target.kind == TargetKind::Email
             && !ctx.cancel.is_cancelled()
@@ -133,9 +145,82 @@ impl Module for OathnetPro {
             extract_holehe(holehe, &target.value, &ctx.scan_id, &mut result);
         }
 
+        // ── Recursive credential discovery ─────────────────────────
+        // Use discovered emails from breach data to search stealer
+        // endpoint for additional credential exposure.
+        if !ctx.cancel.is_cancelled() {
+            let discovered_emails: Vec<String> = result
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Email && e.value != target.value)
+                .take(5)
+                .map(|e| e.value.clone())
+                .collect();
+            for email in &discovered_emails {
+                if ctx.cancel.is_cancelled() {
+                    break;
+                }
+                if let Ok(items) =
+                    oathnet::search(key, paths::STEALER, "email", email, 10).await
+                {
+                    for item in &items {
+                        store_api_credential(item);
+                        extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
+                    }
+                }
+            }
+        }
+
+        // ── OSINT enrichment (Discord, Steam, GHunt) ──────────────
+        if !ctx.cancel.is_cancelled() {
+            let usernames: Vec<String> = result
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Username && e.confidence >= 0.60)
+                .take(3)
+                .map(|e| e.value.clone())
+                .collect();
+            for uname in &usernames {
+                if ctx.cancel.is_cancelled() { break; }
+                // Discord user info
+                if let Ok(data) = oathnet::osint(key, paths::DISCORD_USER, "user", uname).await
+                    && let Some(id) = data.get("id").and_then(|v| v.as_str())
+                {
+                        let mut e = Entity::new(EntityKind::Username, format!("discord:{id}"), 0.65, &ctx.scan_id);
+                        e.tag("oathnet-pro");
+                        e.tag("discord");
+                        let mut ev = Evidence::new("oathnet_pro", format!("Discord lookup for {uname}"));
+                        if let Some(n) = data.get("username").and_then(|v| v.as_str()) {
+                            ev = ev.with_attr("discord_username", n);
+                        }
+                        if let Some(a) = data.get("avatar").and_then(|v| v.as_str()) {
+                            ev = ev.with_attr("avatar", a);
+                        }
+                        e.add_evidence(ev);
+                        if seen.insert(format!("@discord:{id}")) {
+                            result.push(e);
+                        }
+                }
+            }
+
+            // GHunt for email targets
+            if target.kind == TargetKind::Email
+                && let Ok(data) = oathnet::osint(key, paths::GHUNT, "email", &target.value).await
+                && let Some(name) = data.get("name").and_then(|v| v.as_str())
+                && name.len() >= 3 && name.contains(' ')
+                && seen.insert(format!("@ghunt:{}", name.to_lowercase()))
+            {
+                let mut e = Entity::new(EntityKind::Person, name, 0.70, &ctx.scan_id);
+                e.tag("oathnet-pro");
+                e.tag("google");
+                e.add_evidence(
+                    Evidence::new("oathnet_pro", format!("GHunt: Google account for {}", &target.value))
+                );
+                result.push(e);
+            }
+        }
+
         // ── Targeted API credential harvest ─────────────────────────
-        // Query stealer endpoint for known API service domains to find
-        // credentials that can be stored for future module use.
         if !ctx.cancel.is_cancelled() {
             harvest_api_credentials_from_stealer(key).await;
         }

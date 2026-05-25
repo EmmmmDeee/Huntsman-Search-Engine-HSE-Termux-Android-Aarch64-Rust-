@@ -65,11 +65,16 @@ fn spawn_scan(state: &Arc<AppState>, scan: Scan, target: Target) {
         sid.clone(),
         cancel.clone(),
     );
+    let mut loaded_keys = keys::load();
+    crate::util::key_pool::merge_pool_into_env(
+        &crate::util::key_pool::global_pool(),
+        &mut loaded_keys,
+    );
     let ctx = ModuleContext {
         scan_id: sid.clone(),
         bus: state.bus.clone(),
         http: state.http.clone(),
-        keys: keys::load(),
+        keys: loaded_keys,
         cancel,
         proxy_pool: std::sync::Arc::clone(&state.proxy_pool),
     };

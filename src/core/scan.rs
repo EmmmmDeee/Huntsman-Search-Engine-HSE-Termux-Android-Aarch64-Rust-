@@ -42,9 +42,9 @@ impl TargetKind {
             EntityKind::Url => Some(Self::Url),
             EntityKind::Organisation => Some(Self::Organisation),
             EntityKind::AbnAcn => Some(Self::AbnAcn),
+            EntityKind::Credential => Some(Self::ApiKey),
             EntityKind::MacAddress
             | EntityKind::DeviceId
-            | EntityKind::Credential
             | EntityKind::Password
             | EntityKind::Other(_) => None,
         }
@@ -408,8 +408,7 @@ mod tests {
             TargetKind::Address,
             TargetKind::Organisation,
             TargetKind::AbnAcn,
-            // ApiKey is intentionally not here — it maps to Credential
-            // but Credential doesn't auto-expand back to ApiKey.
+            TargetKind::ApiKey,
         ] {
             let ek = tk.to_entity_kind();
             assert_eq!(TargetKind::from_entity_kind(&ek), Some(tk));
@@ -419,8 +418,15 @@ mod tests {
     #[test]
     fn unscannable_entity_kinds_return_none() {
         assert!(TargetKind::from_entity_kind(&EntityKind::MacAddress).is_none());
-        assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::Password).is_none());
+    }
+
+    #[test]
+    fn credential_expands_to_api_key() {
+        assert_eq!(
+            TargetKind::from_entity_kind(&EntityKind::Credential),
+            Some(TargetKind::ApiKey)
+        );
     }
 
     #[test]
