@@ -8,7 +8,22 @@ use serde::de::DeserializeOwned;
 use crate::MODULE_TIMEOUT_MS;
 use crate::core::error::{Error, Result};
 
-/// Build a fresh reqwest client. Cheap to call per scan.
+/// Build a fresh reqwest client tuned for OSINT scanning on Termux.
+///
+/// Connection pool settings discovered via Exa research on reqwest
+/// best practices for high-throughput HTTP scanning:
+///
+/// * `connect_timeout(5s)` — fail fast on firewalled hosts instead of
+///   consuming the module's full timeout budget on a dead TCP connect.
+/// * `pool_idle_timeout(90s)` — keep connections warm for bursty
+///   traffic to the same API host. Most OSINT APIs are hit once per
+///   scan, but live-mode iterations re-hit them every interval.
+/// * `pool_max_idle_per_host(5)` — moderate pool since most modules
+///   make 1 request per host. Higher values waste file descriptors on
+///   Termux's tight ulimit.
+/// * `tcp_keepalive(30s)` — prevents intermediate NATs on cellular
+///   networks from dropping idle connections (critical for Termux
+///   scanning over mobile data).
 ///
 /// User-Agent uses the conventional `name/version (+url)` form. Bare
 /// short UAs like `HSE/0.8.0` are frequently rejected by anti-bot WAFs
@@ -18,6 +33,10 @@ use crate::core::error::{Error, Result};
 pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_millis(MODULE_TIMEOUT_MS))
+        .connect_timeout(Duration::from_secs(5))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(5)
+        .tcp_keepalive(Duration::from_secs(30))
         .user_agent(concat!(
             "huntsman-search-engine/",
             env!("CARGO_PKG_VERSION"),
