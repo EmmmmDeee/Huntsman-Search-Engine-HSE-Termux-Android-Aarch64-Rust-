@@ -95,6 +95,11 @@ impl LiveScanner {
     }
 
     pub fn start(&self, target: Target, scan_options: ScanOptions, live: LiveOptions) -> String {
+        const MAX_SESSIONS: usize = 100;
+        if self.inner.sessions.read().len() >= MAX_SESSIONS {
+            return String::new();
+        }
+
         let live_id = new_live_id(&target);
         let session = LiveSession {
             id: live_id.clone(),

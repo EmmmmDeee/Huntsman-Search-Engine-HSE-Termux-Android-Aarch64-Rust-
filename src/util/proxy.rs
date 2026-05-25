@@ -65,7 +65,7 @@ pub async fn harvest() -> Vec<String> {
     ).await {
         for line in body.lines() {
             let trimmed = line.trim();
-            if trimmed.contains(':') && trimmed.len() >= 9 {
+            if trimmed.contains(':') && trimmed.len() >= 9 && !trimmed.bytes().any(|b| b < 0x20) {
                 raw.push(trimmed.to_string());
             }
         }
@@ -76,7 +76,7 @@ pub async fn harvest() -> Vec<String> {
     {
         for line in body.lines() {
             let trimmed = line.trim();
-            if trimmed.contains(':') && trimmed.len() >= 9 {
+            if trimmed.contains(':') && trimmed.len() >= 9 && !trimmed.bytes().any(|b| b < 0x20) {
                 raw.push(trimmed.to_string());
             }
         }
@@ -103,6 +103,9 @@ pub async fn harvest() -> Vec<String> {
 }
 
 pub async fn validate(addr: &str) -> Option<Proxy> {
+    if addr.bytes().any(|b| b < 0x20) || addr.len() > 64 {
+        return None;
+    }
     let start = std::time::Instant::now();
     let proxy_url = format!("http://{addr}");
 

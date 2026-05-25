@@ -37,6 +37,10 @@ impl Module for EmailToDomain {
             _ => return Ok(ModuleResult::new()),
         };
 
+        if domain.starts_with('.') || domain.ends_with('.') || domain.contains("..") {
+            return Ok(ModuleResult::new());
+        }
+
         if is_freemail(&domain) {
             return Ok(ModuleResult::new());
         }

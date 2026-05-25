@@ -157,6 +157,9 @@ pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, Stri
 }
 
 async fn curl_get(url: &str, key: &str) -> Result<String> {
+    if key.bytes().any(|b| b < 0x20) {
+        return Err(Error::module("oathnet", "API key contains control characters"));
+    }
     let secs = 12u64.to_string();
     let header = format!("x-api-key: {key}");
     let mut cmd = tokio::process::Command::new("curl");

@@ -75,6 +75,21 @@ impl ScanEngine {
     }
 
     pub async fn run(&self, mut scan: Scan, target: Target, ctx: ModuleContext) -> Result<Scan> {
+        if let Err(msg) = target.validate() {
+            scan.status = ScanStatus::Failed;
+            scan.error = Some(format!("invalid target: {msg}"));
+            scan.finished_at = Some(crate::core::entity::unix_now());
+            let _ = self.store.upsert_scan(&scan);
+            return Ok(scan);
+        }
+        if let Err(msg) = scan.options.validate() {
+            scan.status = ScanStatus::Failed;
+            scan.error = Some(format!("invalid options: {msg}"));
+            scan.finished_at = Some(crate::core::entity::unix_now());
+            let _ = self.store.upsert_scan(&scan);
+            return Ok(scan);
+        }
+
         scan.status = ScanStatus::Running;
         self.store.upsert_scan(&scan)?;
 

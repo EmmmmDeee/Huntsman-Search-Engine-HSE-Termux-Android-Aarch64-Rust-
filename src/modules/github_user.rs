@@ -144,6 +144,7 @@ impl Module for GithubUser {
 
         if let Some(email) = user.email.as_deref()
             && email.contains('@')
+            && email.split('@').nth(1).map_or(false, |h| h.contains('.') && !h.starts_with('.') && !h.ends_with('.'))
         {
             let mut e = Entity::new(EntityKind::Email, email, 0.90, &ctx.scan_id);
             e.tag("public-profile");

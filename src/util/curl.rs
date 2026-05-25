@@ -17,12 +17,24 @@ pub fn pick_ua(idx: usize) -> &'static str {
     UA_POOL[idx % UA_POOL.len()]
 }
 
+fn has_control_chars(s: &str) -> bool {
+    s.bytes().any(|b| b < 0x20 && b != b'\t')
+}
+
 async fn curl_exec(
     url: &str,
     timeout_ms: u64,
     ua: &str,
     post_data: Option<&str>,
 ) -> Option<String> {
+    if has_control_chars(url) || has_control_chars(ua) {
+        return None;
+    }
+    if let Some(data) = post_data {
+        if has_control_chars(data) {
+            return None;
+        }
+    }
     let secs = (timeout_ms / 1000).max(3).to_string();
     let mut cmd = Command::new("curl");
     cmd.args(["-s", "--max-time", &secs, "-A", ua]);
@@ -80,6 +92,9 @@ pub async fn fetch_post_with_ua(
 }
 
 pub async fn fetch_via_proxy(url: &str, timeout_ms: u64, ua: &str, proxy: &str) -> Option<String> {
+    if has_control_chars(url) || has_control_chars(ua) || has_control_chars(proxy) {
+        return None;
+    }
     let secs = (timeout_ms / 1000).max(3).to_string();
     let mut cmd = Command::new("curl");
     cmd.args(["-s", "--max-time", &secs, "-A", ua]);

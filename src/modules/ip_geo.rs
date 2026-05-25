@@ -69,33 +69,40 @@ impl Module for IpGeo {
         let mut result = ModuleResult::new();
 
         if let (Some(lat), Some(lon)) = (data.lat, data.lon) {
-            let coords = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.70, &ctx.scan_id);
-            e.tag("geoint");
-            if let Some(cc) = data.country_code.as_deref() {
-                e.tag(format!("country:{}", cc.to_uppercase()));
+            if !lat.is_finite() || !lon.is_finite()
+                || !(-90.0..=90.0).contains(&lat)
+                || !(-180.0..=180.0).contains(&lon)
+            {
+                // Skip invalid coordinates
+            } else {
+                let coords = format!("{lat:.6},{lon:.6}");
+                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.70, &ctx.scan_id);
+                e.tag("geoint");
+                if let Some(cc) = data.country_code.as_deref() {
+                    e.tag(format!("country:{}", cc.to_uppercase()));
+                }
+                e.tag_opt(data.proxy, "proxy");
+                e.tag_opt(data.hosting, "hosting");
+                e.tag_opt(data.mobile, "mobile");
+                e.add_evidence(
+                    Evidence::new("ip_geo", format!("IP geolocation for {}", target.value))
+                        .with_attr("country", data.country.as_deref().unwrap_or("-"))
+                        .with_attr("region", data.region_name.as_deref().unwrap_or("-"))
+                        .with_attr("city", data.city.as_deref().unwrap_or("-"))
+                        .with_attr("latitude", lat.to_string())
+                        .with_attr("longitude", lon.to_string())
+                        .with_attr("source", "ip-api.com")
+                        .with_opt_attr("country_code", data.country_code.as_deref())
+                        .with_opt_attr("zip", data.zip.as_deref())
+                        .with_opt_attr("timezone", data.timezone.as_deref())
+                        .with_opt_attr("isp", data.isp.as_deref())
+                        .with_opt_attr("asn", data.asn.as_deref())
+                        .with_opt_attr("is_proxy", data.proxy.map(|v| v.to_string()))
+                        .with_opt_attr("is_hosting", data.hosting.map(|v| v.to_string()))
+                        .with_opt_attr("is_mobile", data.mobile.map(|v| v.to_string())),
+                );
+                result.push(e);
             }
-            e.tag_opt(data.proxy, "proxy");
-            e.tag_opt(data.hosting, "hosting");
-            e.tag_opt(data.mobile, "mobile");
-            e.add_evidence(
-                Evidence::new("ip_geo", format!("IP geolocation for {}", target.value))
-                    .with_attr("country", data.country.as_deref().unwrap_or("-"))
-                    .with_attr("region", data.region_name.as_deref().unwrap_or("-"))
-                    .with_attr("city", data.city.as_deref().unwrap_or("-"))
-                    .with_attr("latitude", lat.to_string())
-                    .with_attr("longitude", lon.to_string())
-                    .with_attr("source", "ip-api.com")
-                    .with_opt_attr("country_code", data.country_code.as_deref())
-                    .with_opt_attr("zip", data.zip.as_deref())
-                    .with_opt_attr("timezone", data.timezone.as_deref())
-                    .with_opt_attr("isp", data.isp.as_deref())
-                    .with_opt_attr("asn", data.asn.as_deref())
-                    .with_opt_attr("is_proxy", data.proxy.map(|v| v.to_string()))
-                    .with_opt_attr("is_hosting", data.hosting.map(|v| v.to_string()))
-                    .with_opt_attr("is_mobile", data.mobile.map(|v| v.to_string())),
-            );
-            result.push(e);
         }
 
         if let Some(org) = &data.org {

@@ -55,6 +55,10 @@ impl super::ScanEngine {
             Ok(Ok(mut mr)) => {
                 let mut found = 0usize;
                 for entity in mr.entities.drain(..) {
+                    if !entity.confidence.is_finite() || !(0.0..=1.0).contains(&entity.confidence) {
+                        warn!(module = name, "entity has invalid confidence {}, skipping", entity.confidence);
+                        continue;
+                    }
                     if let Some(min) = min_confidence
                         && entity.confidence < min
                     {
@@ -166,7 +170,8 @@ impl ScanEngine {
 
             let module_timeout_ms = opts
                 .module_timeout_ms
-                .unwrap_or_else(|| module.max_timeout_ms());
+                .unwrap_or_else(|| module.max_timeout_ms())
+                .max(100);
             let result = timeout(
                 Duration::from_millis(module_timeout_ms),
                 module.process(target, ctx),
@@ -235,7 +240,8 @@ impl ScanEngine {
             let throttle_ms = opts.throttle_ms;
             let module_timeout_ms = opts
                 .module_timeout_ms
-                .unwrap_or_else(|| module_arc.max_timeout_ms());
+                .unwrap_or_else(|| module_arc.max_timeout_ms())
+                .max(100);
 
             set.spawn(async move {
                 let _permit = permit;

@@ -25,9 +25,10 @@ use crate::{
 };
 
 fn internal_error(err: &impl ToString) -> axum::response::Response {
+    tracing::error!(error = %err.to_string(), "internal server error");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({ "error": err.to_string() })),
+        Json(json!({ "error": "internal server error" })),
     )
         .into_response()
 }
@@ -238,7 +239,8 @@ pub async fn scan_entities_filter(
     let kind = params.get("kind").map(String::as_str);
     let min_conf = params
         .get("min_confidence")
-        .and_then(|v| v.parse::<f64>().ok());
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|c| c.is_finite() && (0.0..=1.0).contains(c));
     let q = params.get("q").map(String::as_str);
     match s.store.entities_filtered(&id, kind, min_conf, q) {
         Ok(entities) => ok_list("entities", entities),
@@ -267,6 +269,13 @@ pub async fn entity_get(
     State(s): State<Arc<AppState>>,
     Path(uid): Path<String>,
 ) -> impl IntoResponse {
+    if uid.len() != 64 || !uid.chars().all(|c| c.is_ascii_hexdigit()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid uid format" })),
+        )
+            .into_response();
+    }
     match s.store.get_entity(&uid) {
         Ok(Some(entity)) => {
             let scan_ids = s.store.scan_ids_for_entity(&uid).unwrap_or_default();
@@ -291,7 +300,17 @@ pub async fn search_entities(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let query = match params.get("q") {
-        Some(q) if !q.trim().is_empty() => q.trim(),
+        Some(q) if !q.trim().is_empty() => {
+            let trimmed = q.trim();
+            if trimmed.len() > 256 {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "query too long (max 256 chars)"})),
+                )
+                    .into_response();
+            }
+            trimmed
+        }
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -488,6 +507,13 @@ pub async fn live_create(
 ) -> impl IntoResponse {
     let target = Target::new(req.kind, req.value);
     let live_id = s.live.start(target, req.options, req.live);
+    if live_id.is_empty() {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "too many live sessions" })),
+        )
+            .into_response();
+    }
     (
         StatusCode::ACCEPTED,
         Json(json!({ "live_id": live_id, "status": "running" })),
