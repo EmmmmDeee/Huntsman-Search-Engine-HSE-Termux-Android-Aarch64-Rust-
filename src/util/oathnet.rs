@@ -171,6 +171,126 @@ pub async fn osint_opt(key: &str, path: &str, param: &str, value: &str) -> Resul
     Ok(env.data)
 }
 
+pub async fn search_cached(
+    key: &str,
+    path: &str,
+    field: &str,
+    value: &str,
+    page_size: u32,
+    store: &crate::storage::store::Store,
+    scan_id: &str,
+    cache_hours: u32,
+) -> Result<Vec<Value>> {
+    // Check cache first
+    if cache_hours > 0 {
+        if let Some(cached) = store
+            .cached_response("oathnet_pro", path, field, value, cache_hours)
+            .ok()
+            .flatten()
+        {
+            if let Ok(items) = serde_json::from_str::<Vec<Value>>(&cached) {
+                return Ok(items);
+            }
+        }
+    }
+
+    // Cache miss — make the API call
+    let items = search(key, path, field, value, page_size).await?;
+
+    // Store the response
+    let response_json = serde_json::to_string(&items).unwrap_or_default();
+    let _ = store.cache_api_response(
+        "oathnet_pro",
+        path,
+        field,
+        value,
+        &response_json,
+        items.len(),
+        scan_id,
+        cache_hours,
+    );
+
+    Ok(items)
+}
+
+pub async fn osint_cached(
+    key: &str,
+    path: &str,
+    param: &str,
+    value: &str,
+    store: &crate::storage::store::Store,
+    scan_id: &str,
+    cache_hours: u32,
+) -> Result<Value> {
+    if cache_hours > 0 {
+        if let Some(cached) = store
+            .cached_response("oathnet_pro", path, param, value, cache_hours)
+            .ok()
+            .flatten()
+        {
+            if let Ok(data) = serde_json::from_str::<Value>(&cached) {
+                return Ok(data);
+            }
+        }
+    }
+
+    let data = osint(key, path, param, value).await?;
+
+    let response_json = data.to_string();
+    let _ = store.cache_api_response(
+        "oathnet_pro",
+        path,
+        param,
+        value,
+        &response_json,
+        1,
+        scan_id,
+        cache_hours,
+    );
+
+    Ok(data)
+}
+
+pub async fn osint_opt_cached(
+    key: &str,
+    path: &str,
+    param: &str,
+    value: &str,
+    store: &crate::storage::store::Store,
+    scan_id: &str,
+    cache_hours: u32,
+) -> Result<Option<Value>> {
+    if cache_hours > 0 {
+        if let Some(cached) = store
+            .cached_response("oathnet_pro", path, param, value, cache_hours)
+            .ok()
+            .flatten()
+        {
+            if let Ok(data) = serde_json::from_str::<Value>(&cached) {
+                return Ok(Some(data));
+            }
+        }
+    }
+
+    let data = osint_opt(key, path, param, value).await?;
+
+    if let Some(ref d) = data {
+        let response_json = d.to_string();
+        let _ = store.cache_api_response(
+            "oathnet_pro",
+            path,
+            param,
+            value,
+            &response_json,
+            1,
+            scan_id,
+            cache_hours,
+        );
+    }
+
+    Ok(data)
+}
+
 pub fn val_str(item: &Value, key: &str) -> Option<String> {
     item.get(key)
         .and_then(|v| v.as_str())

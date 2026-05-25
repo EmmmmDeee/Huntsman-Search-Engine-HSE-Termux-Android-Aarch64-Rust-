@@ -94,6 +94,31 @@ impl ModuleContext {
     pub fn existing_by_kind(&self, kind: &str, limit: usize) -> Vec<Entity> {
         self.store.entities_by_kind(kind, limit).unwrap_or_default()
     }
+
+    pub fn cache_response(
+        &self,
+        endpoint: &str,
+        query_key: &str,
+        query_value: &str,
+        response: &str,
+        item_count: usize,
+        ttl_hours: u32,
+    ) {
+        let _ = self.store.cache_api_response(
+            "oathnet_pro",
+            endpoint,
+            query_key,
+            query_value,
+            response,
+            item_count,
+            &self.scan_id,
+            ttl_hours,
+        );
+    }
+
+    pub fn get_cached(&self, module: &str, endpoint: &str, query_key: &str, query_value: &str, max_age_hours: u32) -> Option<String> {
+        self.store.cached_response(module, endpoint, query_key, query_value, max_age_hours).ok().flatten()
+    }
 }
 
 #[derive(Debug, Default)]

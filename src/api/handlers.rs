@@ -611,6 +611,49 @@ pub async fn scan_events_sse(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+pub async fn api_cache_list(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let module = params.get("module").map(String::as_str);
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(100)
+        .min(1000);
+    match s.store.list_cached_responses(module, limit) {
+        Ok(entries) => {
+            let items: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|(module, endpoint, qk, qv, count, ts)| {
+                    serde_json::json!({
+                        "module": module,
+                        "endpoint": endpoint,
+                        "query_key": qk,
+                        "query_value": qv,
+                        "item_count": count,
+                        "fetched_at": ts,
+                    })
+                })
+                .collect();
+            let n = items.len();
+            Json(serde_json::json!({ "cache": items, "count": n })).into_response()
+        }
+        Err(e) => internal_error(&e),
+    }
+}
+
+pub async fn api_cache_stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    match s.store.cache_stats() {
+        Ok((total, modules)) => Json(serde_json::json!({
+            "total_entries": total,
+            "distinct_modules": modules,
+        }))
+        .into_response(),
+        Err(e) => internal_error(&e),
+    }
+}
+
 pub async fn settings_keys_get(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     use std::path::PathBuf;
     let path = keys::env_path();

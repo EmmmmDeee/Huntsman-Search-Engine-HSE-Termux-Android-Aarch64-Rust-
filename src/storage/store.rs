@@ -82,6 +82,25 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
+
+            CREATE TABLE IF NOT EXISTS api_cache (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                module      TEXT NOT NULL,
+                endpoint    TEXT NOT NULL,
+                query_key   TEXT NOT NULL,
+                query_value TEXT NOT NULL,
+                response    TEXT NOT NULL,
+                item_count  INTEGER NOT NULL DEFAULT 0,
+                fetched_at  INTEGER NOT NULL,
+                scan_id     TEXT NOT NULL,
+                ttl_hours   INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cache_lookup
+                ON api_cache(module, endpoint, query_key, query_value);
+            CREATE INDEX IF NOT EXISTS idx_cache_module ON api_cache(module);
+            CREATE INDEX IF NOT EXISTS idx_cache_scan ON api_cache(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_cache_time ON api_cache(fetched_at DESC);
             ",
         )?;
 
@@ -411,6 +430,7 @@ impl Store {
             params![scan_id],
         )?;
         tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
+        tx.execute("DELETE FROM api_cache WHERE scan_id = ?1", params![scan_id])?;
         tx.execute(
             "DELETE FROM entities
              WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
@@ -482,6 +502,104 @@ impl Store {
             .into_iter()
             .filter_map(|s| serde_json::from_str(&s).ok())
             .collect())
+    }
+
+    pub fn cache_api_response(
+        &self,
+        module: &str,
+        endpoint: &str,
+        query_key: &str,
+        query_value: &str,
+        response: &str,
+        item_count: usize,
+        scan_id: &str,
+        ttl_hours: u32,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO api_cache(module, endpoint, query_key, query_value, response, item_count, fetched_at, scan_id, ttl_hours)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                module,
+                endpoint,
+                query_key,
+                query_value,
+                response,
+                item_count as i64,
+                crate::core::entity::unix_now() as i64,
+                scan_id,
+                ttl_hours as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn cached_response(
+        &self,
+        module: &str,
+        endpoint: &str,
+        query_key: &str,
+        query_value: &str,
+        max_age_hours: u32,
+    ) -> Result<Option<String>> {
+        let cutoff = if max_age_hours == 0 {
+            0i64
+        } else {
+            crate::core::entity::unix_now() as i64 - (max_age_hours as i64 * 3600)
+        };
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT response FROM api_cache
+             WHERE module = ?1 AND endpoint = ?2 AND query_key = ?3 AND query_value = ?4
+             AND fetched_at >= ?5
+             ORDER BY fetched_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![module, endpoint, query_key, query_value, cutoff])?;
+        Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
+    }
+
+    pub fn list_cached_responses(
+        &self,
+        module: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, String, String, String, i64, i64)>> {
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(m) = module {
+            (
+                "SELECT module, endpoint, query_key, query_value, item_count, fetched_at \
+                 FROM api_cache WHERE module = ?1 ORDER BY fetched_at DESC LIMIT ?2".to_string(),
+                vec![Box::new(m.to_string()) as Box<dyn rusqlite::types::ToSql>, Box::new(limit as i64)],
+            )
+        } else {
+            (
+                "SELECT module, endpoint, query_key, query_value, item_count, fetched_at \
+                 FROM api_cache ORDER BY fetched_at DESC LIMIT ?1".to_string(),
+                vec![Box::new(limit as i64) as Box<dyn rusqlite::types::ToSql>],
+            )
+        };
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+            ))
+        })?;
+        Ok(rows.flatten().collect())
+    }
+
+    pub fn cache_stats(&self) -> Result<(usize, usize)> {
+        let conn = self.conn.lock();
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM api_cache", [], |r| r.get(0))?;
+        let modules: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT module) FROM api_cache",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok((total as usize, modules as usize))
     }
 }
 
@@ -790,6 +908,72 @@ mod tests {
         let store = Store::open(&path).unwrap();
         let evs = store.events_for_scan("never-existed").unwrap();
         assert!(evs.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn api_cache_round_trip() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        store.cache_api_response(
+            "oathnet_pro",
+            "/service/v2/breach/search",
+            "email",
+            "test@example.com",
+            r#"[{"email":"test@example.com","dbname":"linkedin"}]"#,
+            1,
+            "scan-cache",
+            24,
+        ).unwrap();
+
+        let cached = store.cached_response(
+            "oathnet_pro",
+            "/service/v2/breach/search",
+            "email",
+            "test@example.com",
+            24,
+        ).unwrap();
+        assert!(cached.is_some());
+        assert!(cached.unwrap().contains("linkedin"));
+
+        let miss = store.cached_response(
+            "oathnet_pro",
+            "/service/v2/breach/search",
+            "email",
+            "other@example.com",
+            24,
+        ).unwrap();
+        assert!(miss.is_none());
+
+        let (total, modules) = store.cache_stats().unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(modules, 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn api_cache_respects_ttl() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        // Insert with fetched_at far in the past
+        {
+            let conn = store.conn.lock();
+            conn.execute(
+                "INSERT INTO api_cache(module, endpoint, query_key, query_value, response, item_count, fetched_at, scan_id, ttl_hours)
+                 VALUES('test', '/test', 'k', 'v', '[]', 0, 1000, 'scan-old', 1)",
+                [],
+            ).unwrap();
+        }
+
+        let expired = store.cached_response("test", "/test", "k", "v", 1).unwrap();
+        assert!(expired.is_none(), "expired cache entry should not be returned");
+
+        let no_ttl = store.cached_response("test", "/test", "k", "v", 0).unwrap();
+        assert!(no_ttl.is_some(), "max_age_hours=0 should return any entry regardless of age");
+
         let _ = std::fs::remove_file(&path);
     }
 

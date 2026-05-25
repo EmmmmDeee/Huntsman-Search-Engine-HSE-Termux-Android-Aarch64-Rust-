@@ -114,6 +114,8 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/entities/kind/{kind}", get(handlers::entities_by_kind))
         .route("/entities/{uid}", get(handlers::entity_get))
         .route("/search", get(handlers::search_entities))
+        .route("/cache", get(handlers::api_cache_list))
+        .route("/cache/stats", get(handlers::api_cache_stats))
         .route(
             "/settings/keys",
             get(handlers::settings_keys_get).put(handlers::settings_keys_put),

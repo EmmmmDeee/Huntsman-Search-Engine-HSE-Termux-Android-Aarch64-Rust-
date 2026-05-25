@@ -93,7 +93,7 @@ impl Module for OathnetPro {
         };
 
         // Phase 1: breach search
-        let items = oathnet::search(key, paths::BREACH, field, &target.value, 50).await?;
+        let items = oathnet::search_cached(key, paths::BREACH, field, &target.value, 50, &ctx.store, &ctx.scan_id, 24).await?;
 
         if !items.is_empty() {
             let total = items.len();
@@ -166,7 +166,7 @@ impl Module for OathnetPro {
         // Phase 2: stealer logs
         if !ctx.cancel.is_cancelled()
             && let Ok(stealer_items) =
-                oathnet::search(key, paths::STEALER, field, &target.value, 50).await
+                oathnet::search_cached(key, paths::STEALER, field, &target.value, 50, &ctx.store, &ctx.scan_id, 24).await
         {
             if !stealer_items.is_empty() {
                 let stl_count = stealer_items.len();
@@ -218,7 +218,7 @@ impl Module for OathnetPro {
         let mut victim_hits = Vec::new();
         if target.kind == TargetKind::Domain && !ctx.cancel.is_cancelled() {
             if let Ok(victims) =
-                oathnet::search(key, paths::VICTIMS, "domain", &target.value, 20).await
+                oathnet::search_cached(key, paths::VICTIMS, "domain", &target.value, 20, &ctx.store, &ctx.scan_id, 24).await
             {
                 victim_hits = victims.clone();
                 extract_victims(&victims, &target.value, &ctx.scan_id, &mut seen, &mut result);
@@ -233,12 +233,15 @@ impl Module for OathnetPro {
                     break;
                 }
                 let employee_email = format!("{prefix}@{}", target.value);
-                if let Ok(emp_items) = oathnet::search(
+                if let Ok(emp_items) = oathnet::search_cached(
                     key,
                     paths::STEALER,
                     "email",
                     &employee_email,
                     5,
+                    &ctx.store,
+                    &ctx.scan_id,
+                    24,
                 )
                 .await
                 {
@@ -270,7 +273,7 @@ impl Module for OathnetPro {
         // Phase 4: Holehe email enumeration (email targets)
         if target.kind == TargetKind::Email && !ctx.cancel.is_cancelled() {
             if let Ok(holehe) =
-                oathnet::osint(key, paths::HOLEHE, "email", &target.value).await
+                oathnet::osint_cached(key, paths::HOLEHE, "email", &target.value, &ctx.store, &ctx.scan_id, 24).await
             {
                 extract_holehe(holehe, &target.value, &ctx.scan_id, &mut result);
             }
@@ -279,7 +282,7 @@ impl Module for OathnetPro {
         // Phase 5: GHunt Google account recon (email targets)
         if target.kind == TargetKind::Email && !ctx.cancel.is_cancelled() {
             if let Ok(Some(ghunt)) =
-                oathnet::osint_opt(key, paths::GHUNT, "email", &target.value).await
+                oathnet::osint_opt_cached(key, paths::GHUNT, "email", &target.value, &ctx.store, &ctx.scan_id, 24).await
             {
                 extract_ghunt(ghunt, &ctx.scan_id, &mut seen, &mut result);
             }
@@ -291,7 +294,7 @@ impl Module for OathnetPro {
 
             if !ctx.cancel.is_cancelled() {
                 if let Ok(Some(data)) =
-                    oathnet::osint_opt(key, paths::DISCORD_USER, "username", username).await
+                    oathnet::osint_opt_cached(key, paths::DISCORD_USER, "username", username, &ctx.store, &ctx.scan_id, 24).await
                 {
                     extract_discord(data, &ctx.scan_id, &mut seen, &mut result);
                 }
@@ -299,7 +302,7 @@ impl Module for OathnetPro {
 
             if !ctx.cancel.is_cancelled() {
                 if let Ok(Some(data)) =
-                    oathnet::osint_opt(key, paths::STEAM, "username", username).await
+                    oathnet::osint_opt_cached(key, paths::STEAM, "username", username, &ctx.store, &ctx.scan_id, 24).await
                 {
                     extract_steam(data, &ctx.scan_id, &mut seen, &mut result);
                 }
@@ -307,7 +310,7 @@ impl Module for OathnetPro {
 
             if !ctx.cancel.is_cancelled() {
                 if let Ok(Some(data)) =
-                    oathnet::osint_opt(key, paths::XBOX, "username", username).await
+                    oathnet::osint_opt_cached(key, paths::XBOX, "username", username, &ctx.store, &ctx.scan_id, 24).await
                 {
                     extract_xbox(data, username, &ctx.scan_id, &mut result);
                 }
@@ -315,7 +318,7 @@ impl Module for OathnetPro {
 
             if !ctx.cancel.is_cancelled() {
                 if let Ok(Some(data)) =
-                    oathnet::osint_opt(key, paths::ROBLOX, "username", username).await
+                    oathnet::osint_opt_cached(key, paths::ROBLOX, "username", username, &ctx.store, &ctx.scan_id, 24).await
                 {
                     extract_roblox(data, &ctx.scan_id, &mut seen, &mut result);
                 }
@@ -334,7 +337,7 @@ impl Module for OathnetPro {
                 if ctx.cancel.is_cancelled() {
                     break;
                 }
-                if let Ok(info) = oathnet::osint(key, paths::IP_INFO, "ip", ip).await {
+                if let Ok(info) = oathnet::osint_cached(key, paths::IP_INFO, "ip", ip, &ctx.store, &ctx.scan_id, 24).await {
                     extract_ip_info(info, ip, &ctx.scan_id, &mut result);
                 }
             }
@@ -360,7 +363,7 @@ impl Module for OathnetPro {
                     break;
                 }
                 if let Ok(hits) =
-                    oathnet::search(key, paths::STEALER, "domain", svc_domain, 3).await
+                    oathnet::search_cached(key, paths::STEALER, "domain", svc_domain, 3, &ctx.store, &ctx.scan_id, 12).await
                 {
                     let relevant: Vec<&Value> = hits
                         .iter()
@@ -842,7 +845,7 @@ impl OathnetPro {
                 if ctx.cancel.is_cancelled() {
                     break;
                 }
-                if let Ok(info) = oathnet::osint(key, paths::IP_INFO, "ip", ip).await {
+                if let Ok(info) = oathnet::osint_cached(key, paths::IP_INFO, "ip", ip, &ctx.store, &ctx.scan_id, 24).await {
                     extract_ip_info(info, ip, &ctx.scan_id, &mut result);
                 }
             }
@@ -945,7 +948,7 @@ impl OathnetPro {
                 if ctx.cancel.is_cancelled() {
                     break;
                 }
-                if let Ok(info) = oathnet::osint(key, paths::IP_INFO, "ip", ip).await {
+                if let Ok(info) = oathnet::osint_cached(key, paths::IP_INFO, "ip", ip, &ctx.store, &ctx.scan_id, 24).await {
                     extract_ip_info(info, ip, &ctx.scan_id, &mut result);
                 }
             }
