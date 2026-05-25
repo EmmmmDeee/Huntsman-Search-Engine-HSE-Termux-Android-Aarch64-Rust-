@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::core::{
     entity::Evidence,
@@ -31,6 +34,14 @@ struct Pulse {
     adversary: Option<String>,
     tlp: Option<String>,
     created: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    references: Option<Vec<String>>,
+    #[serde(default)]
+    author_name: Option<String>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[async_trait]
@@ -133,10 +144,53 @@ impl Module for AlienVaultOtx {
         if !all_tags.is_empty() {
             ev = ev.with_attr("pulse_tags", all_tags.join(", "));
         }
+        // Collect descriptions and references from pulses
+        let descriptions: Vec<&str> = pulse_info
+            .pulses
+            .iter()
+            .filter_map(|p| p.description.as_deref().filter(|d| !d.is_empty()))
+            .take(3)
+            .collect();
+        let references: Vec<&str> = pulse_info
+            .pulses
+            .iter()
+            .filter_map(|p| p.references.as_ref())
+            .flat_map(|refs| refs.iter().map(String::as_str))
+            .take(10)
+            .collect();
+        let authors: Vec<&str> = pulse_info
+            .pulses
+            .iter()
+            .filter_map(|p| p.author_name.as_deref().filter(|a| !a.is_empty()))
+            .collect();
+        let mut unique_authors = authors.clone();
+        unique_authors.sort_unstable();
+        unique_authors.dedup();
+        unique_authors.truncate(5);
+
         ev = ev
             .with_opt_attr("adversary", adversary)
             .with_opt_attr("tlp", latest_tlp)
             .with_opt_attr("first_pulse_created", earliest_created);
+        if !descriptions.is_empty() {
+            ev = ev.with_attr("pulse_descriptions", descriptions.join(" | "));
+        }
+        if !references.is_empty() {
+            ev = ev.with_attr("pulse_references", references.join(", "));
+        }
+        if !unique_authors.is_empty() {
+            ev = ev.with_attr("pulse_authors", unique_authors.join(", "));
+        }
+        // Store overflow fields from each pulse
+        for pulse in &pulse_info.pulses {
+            for (k, v) in &pulse.extra {
+                let val_str = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                ev = ev.with_attr(format!("otx_{k}"), val_str);
+            }
+        }
         entity.add_evidence(ev);
 
         let mut result = ModuleResult::new();

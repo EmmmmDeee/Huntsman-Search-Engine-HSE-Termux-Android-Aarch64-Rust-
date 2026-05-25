@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::core::{
     entity::Evidence,
@@ -25,6 +28,8 @@ struct Resp {
     port: Option<PortBlock>,
     #[serde(default)]
     vulnerability: Option<VulnBlock>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -45,6 +50,8 @@ struct Issues {
     is_scanner: Option<bool>,
     #[serde(default)]
     is_dark_web: Option<bool>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -53,6 +60,8 @@ struct Score {
     inbound: Option<String>,
     #[serde(default)]
     outbound: Option<String>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -71,6 +80,8 @@ struct WhoisRow {
     org_name: Option<String>,
     #[serde(default)]
     org_country_code: Option<String>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -194,6 +205,46 @@ impl Module for CriminalIp {
                 .with_opt_attr("is_cloud", is.is_cloud.filter(|&v| v).map(|_| "true"))
                 .with_opt_attr("is_scanner", is.is_scanner.filter(|&v| v).map(|_| "true"))
                 .with_opt_attr("is_dark_web", is.is_dark_web.filter(|&v| v).map(|_| "true"));
+        }
+        // Store overflow fields from top-level response
+        for (k, v) in &body.extra {
+            let val_str = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            ev = ev.with_attr(format!("criminal_ip_{k}"), val_str);
+        }
+        // Store overflow fields from issues sub-object
+        if let Some(issues) = &body.issues {
+            for (k, v) in &issues.extra {
+                let val_str = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                ev = ev.with_attr(format!("criminal_ip_{k}"), val_str);
+            }
+        }
+        // Store overflow fields from score sub-object
+        if let Some(score) = &body.score {
+            for (k, v) in &score.extra {
+                let val_str = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                ev = ev.with_attr(format!("criminal_ip_score_{k}"), val_str);
+            }
+        }
+        // Store overflow fields from whois rows
+        if let Some(w) = body.whois.as_ref() {
+            for row in &w.data {
+                for (k, v) in &row.extra {
+                    let val_str = match v {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    ev = ev.with_attr(format!("criminal_ip_whois_{k}"), val_str);
+                }
+            }
         }
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();

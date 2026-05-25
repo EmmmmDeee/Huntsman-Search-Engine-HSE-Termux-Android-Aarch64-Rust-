@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::core::{
     entity::Evidence,
@@ -38,6 +39,8 @@ struct Record {
     media: Option<i32>,
     #[serde(default)]
     date: Option<String>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 pub struct IntelX;
@@ -207,11 +210,32 @@ impl Module for IntelX {
                 ),
             )
             .with_attr("records", last_records.len().to_string())
-            .with_attr("search_id", search_id)
+            .with_attr("search_id", &search_id)
             .with_opt_attr("top_buckets", if top.is_empty() { None } else { Some(top) })
             .with_opt_attr("media_types", media_types)
             .with_opt_attr("latest_record", latest.map(String::from)),
         );
+
+        // Per-record evidence with ALL fields including overflow
+        for (idx, rec) in last_records.iter().take(20).enumerate() {
+            let label = media_label(rec.media.unwrap_or(-1)).unwrap_or("unknown");
+            let mut rec_ev = Evidence::new(
+                "intelx",
+                format!("IntelX record #{} ({label})", idx + 1),
+            )
+            .with_opt_attr("bucket", rec.bucket.as_deref())
+            .with_opt_attr("media", rec.media.map(|m| m.to_string()))
+            .with_opt_attr("date", rec.date.as_deref())
+            .with_attr("search_id", &search_id);
+            for (k, v) in &rec.extra {
+                let val_str = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                rec_ev = rec_ev.with_attr(format!("intelx_{k}"), val_str);
+            }
+            entity.add_evidence(rec_ev);
+        }
 
         let mut result = ModuleResult::new();
         result.push(entity);

@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -17,6 +20,8 @@ struct Resp {
     subdomains: Vec<String>,
     #[serde(default)]
     subdomain_count: Option<u64>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 pub struct SecurityTrails;
@@ -75,7 +80,28 @@ impl Module for SecurityTrails {
 
         let total = body.subdomain_count.unwrap_or(body.subdomains.len() as u64);
         let total_str = total.to_string();
-        let mut result = ModuleResult::with_capacity(body.subdomains.len());
+        let mut result = ModuleResult::with_capacity(body.subdomains.len() + 1);
+
+        // Store overflow fields from the response as evidence on parent domain entity
+        if !body.extra.is_empty() {
+            let mut parent = Entity::new(EntityKind::Domain, &domain, 0.88, &ctx.scan_id);
+            parent.tag("securitytrails");
+            let mut ev = Evidence::new(
+                "securitytrails",
+                format!("SecurityTrails API response extras for {domain}"),
+            )
+            .with_attr("total_subdomains", &total_str);
+            for (k, v) in &body.extra {
+                let val_str = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                ev = ev.with_attr(format!("securitytrails_{k}"), val_str);
+            }
+            parent.add_evidence(ev);
+            result.push(parent);
+        }
+
         for sub in &body.subdomains {
             if sub.is_empty() {
                 continue;

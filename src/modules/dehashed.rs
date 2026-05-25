@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::core::{
     entity::Evidence,
@@ -21,15 +24,28 @@ struct DehashedResp {
     total: Option<u64>,
 }
 
-/// Password fields deliberately omitted to prevent accidental credential exposure.
 #[derive(Deserialize)]
 struct Entry {
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    hashed_password: Option<String>,
+    #[serde(default)]
+    ip_address: Option<String>,
+    #[serde(default)]
+    phone: Option<String>,
     #[serde(default)]
     database_name: Option<String>,
     #[serde(default)]
     obtained_from: Option<String>,
     #[serde(default)]
     created_at: Option<String>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 pub struct DeHashed;
@@ -133,6 +149,39 @@ impl Module for DeHashed {
             .with_opt_attr("earliest_record", earliest)
             .with_opt_attr("latest_record", latest);
         entity.add_evidence(ev);
+
+        // Tag password-at-risk when any entry has a password
+        for entry in &entries {
+            if let Some(ref pw) = entry.password {
+                if pw.len() >= 4 {
+                    entity.tag(crate::core::tags::PASSWORD_AT_RISK);
+                    break;
+                }
+            }
+        }
+
+        // Per-entry evidence with ALL fields
+        for entry in entries.iter().take(20) {
+            let mut entry_ev = Evidence::new("dehashed", format!("Breach record from {}", entry.database_name.as_deref().or(entry.obtained_from.as_deref()).unwrap_or("unknown")));
+            entry_ev = entry_ev
+                .with_opt_attr("email", entry.email.as_deref())
+                .with_opt_attr("username", entry.username.as_deref())
+                .with_opt_attr("password", entry.password.as_deref())
+                .with_opt_attr("hashed_password", entry.hashed_password.as_deref())
+                .with_opt_attr("ip_address", entry.ip_address.as_deref())
+                .with_opt_attr("phone", entry.phone.as_deref())
+                .with_opt_attr("database_name", entry.database_name.as_deref())
+                .with_opt_attr("obtained_from", entry.obtained_from.as_deref())
+                .with_opt_attr("created_at", entry.created_at.as_deref());
+            for (k, v) in &entry.extra {
+                let val_str = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                entry_ev = entry_ev.with_attr(k, val_str);
+            }
+            entity.add_evidence(entry_ev);
+        }
 
         // OathNet stealer cross-reference — supplements DeHashed breach data
         let oathnet_key =

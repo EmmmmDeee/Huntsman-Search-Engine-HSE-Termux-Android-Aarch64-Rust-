@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::core::{
     entity::Evidence,
@@ -53,6 +56,8 @@ struct Common {
     carrier: Option<String>,
     #[serde(default)]
     active: Option<bool>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -132,8 +137,7 @@ impl Module for IpQs {
             entity.tag(format!("country:{}", c.to_uppercase()));
         }
 
-        entity.add_evidence(
-            Evidence::new(
+        let mut ev = Evidence::new(
                 "ipqs",
                 format!("IPQS {endpoint} reputation for {value} (fraud_score={score})"),
             )
@@ -152,8 +156,15 @@ impl Module for IpQs {
             .with_opt_attr(
                 "first_seen",
                 body.first_seen.as_ref().and_then(|fs| fs.human.clone()),
-            ),
-        );
+            );
+        for (k, v) in &body.extra {
+            let val_str = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            ev = ev.with_attr(format!("ipqs_{k}"), val_str);
+        }
+        entity.add_evidence(ev);
         let mut result = ModuleResult::new();
         result.push(entity);
         Ok(result)

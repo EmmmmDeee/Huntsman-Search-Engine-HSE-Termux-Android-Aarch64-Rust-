@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use md5::{Digest, Md5};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::core::{
     entity::Evidence,
@@ -33,6 +36,8 @@ struct ProfileEntry {
     about_me: Option<String>,
     #[serde(default)]
     photos: Option<Vec<PhotoEntry>>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -126,8 +131,7 @@ impl Module for Gravatar {
                 joined
             })
         };
-        entity.add_evidence(
-            Evidence::new("gravatar", format!("Gravatar profile for {normalised}"))
+        let mut ev = Evidence::new("gravatar", format!("Gravatar profile for {normalised}"))
                 .with_attr("md5", &hash)
                 .with_attr("profile_url", format!("https://www.gravatar.com/{hash}"))
                 .with_opt_attr("display_name", entry.display_name.as_deref())
@@ -143,8 +147,15 @@ impl Module for Gravatar {
                         .and_then(|p| p.first())
                         .and_then(|p| p.value.clone()),
                 )
-                .with_opt_attr("urls", urls_joined),
-        );
+                .with_opt_attr("urls", urls_joined);
+        for (k, v) in &entry.extra {
+            let val_str = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            ev = ev.with_attr(format!("gravatar_{k}"), val_str);
+        }
+        entity.add_evidence(ev);
 
         // Holehe email service enumeration via OathNet
         let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));

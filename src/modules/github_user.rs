@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -28,6 +31,8 @@ struct GhUser {
     following: Option<u64>,
     created_at: Option<String>,
     html_url: Option<String>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[async_trait]
@@ -98,7 +103,7 @@ impl Module for GithubUser {
                 u_entity.tag(format!("twitter:{tw}"));
             }
         }
-        let ev = Evidence::new("github_user", format!("GitHub profile @{}", user.login))
+        let mut ev = Evidence::new("github_user", format!("GitHub profile @{}", user.login))
             .with_attr("github_id", user.id.to_string())
             .with_attr(
                 "profile_url",
@@ -123,6 +128,13 @@ impl Module for GithubUser {
                     .as_deref()
                     .filter(|tw| !tw.is_empty()),
             );
+        for (k, v) in &user.extra {
+            let val_str = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            ev = ev.with_attr(format!("github_{k}"), val_str);
+        }
         u_entity.add_evidence(ev);
         result.push(u_entity);
 

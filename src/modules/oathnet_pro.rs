@@ -105,15 +105,30 @@ impl Module for OathnetPro {
                 ev = ev.with_attr("hashes_found", hash_count.to_string());
             }
 
-            for item in &items {
-                ev = ev
-                    .with_opt_attr("country", val_str(item, "country"))
-                    .with_opt_attr("full_name", val_str(item, "full_name"))
-                    .with_opt_attr("gender", val_str(item, "gender"))
-                    .with_opt_attr("date_of_birth", val_str(item, "date_birth"));
-                if item.get("country").is_some() || item.get("full_name").is_some() {
-                    break;
+            {
+                let mut countries: Vec<String> = Vec::new();
+                let mut names: Vec<String> = Vec::new();
+                let mut genders: Vec<String> = Vec::new();
+                let mut dobs: Vec<String> = Vec::new();
+                for item in &items {
+                    if let Some(c) = val_str(item, "country") {
+                        if !countries.contains(&c) { countries.push(c); }
+                    }
+                    if let Some(n) = val_str(item, "full_name") {
+                        if !names.contains(&n) { names.push(n); }
+                    }
+                    if let Some(g) = val_str(item, "gender") {
+                        if !genders.contains(&g) { genders.push(g); }
+                    }
+                    if let Some(d) = val_str(item, "date_birth") {
+                        if !dobs.contains(&d) { dobs.push(d); }
+                    }
                 }
+                ev = ev
+                    .with_opt_attr("countries", if countries.is_empty() { None } else { Some(countries.join(", ")) })
+                    .with_opt_attr("full_names", if names.is_empty() { None } else { Some(names.join(", ")) })
+                    .with_opt_attr("genders", if genders.is_empty() { None } else { Some(genders.join(", ")) })
+                    .with_opt_attr("dates_of_birth", if dobs.is_empty() { None } else { Some(dobs.join(", ")) });
             }
             parent.add_evidence(ev);
             result.push(parent);
@@ -485,6 +500,7 @@ fn breach_evidence(item: &Value) -> Evidence {
         }
     }
     ev = ev.with_opt_attr("followers", val_str(item, "followers"));
+    ev = ev.with_attr("raw", item.to_string());
     ev
 }
 
@@ -695,7 +711,8 @@ fn extract_stealer_entities(
         .with_opt_attr("url", val_str(item, "url_str"))
         .with_opt_attr("log_id", val_str(item, "log_id"))
         .with_opt_attr("password", val_str(item, "password"))
-        .with_opt_attr("username", val_str(item, "username"));
+        .with_opt_attr("username", val_str(item, "username"))
+        .with_attr("raw", item.to_string());
 
     if let Some(emails) = item.get("email").and_then(|v| v.as_array()) {
         for email_val in emails {
@@ -862,6 +879,21 @@ fn extract_victims(
         }
     }
 
+    let mut countries: Vec<String> = Vec::new();
+    let mut sectors: Vec<String> = Vec::new();
+    let mut descriptions: Vec<String> = Vec::new();
+    for item in items {
+        if let Some(c) = val_str(item, "country") {
+            if !countries.contains(&c) { countries.push(c); }
+        }
+        if let Some(s) = val_str_or(item, &["sector", "industry", "category"]) {
+            if !sectors.contains(&s) { sectors.push(s); }
+        }
+        if let Some(d) = val_str_or(item, &["description", "notes", "details"]) {
+            if !descriptions.contains(&d) { descriptions.push(d); }
+        }
+    }
+
     let summary = format!(
         "Ransomware victim: {} hit(s) by {}",
         items.len(),
@@ -894,7 +926,11 @@ fn extract_victims(
                 } else {
                     Some(dates.join(", "))
                 },
-            ),
+            )
+            .with_opt_attr("countries", if countries.is_empty() { None } else { Some(countries.join(", ")) })
+            .with_opt_attr("sectors", if sectors.is_empty() { None } else { Some(sectors.join(", ")) })
+            .with_opt_attr("descriptions", if descriptions.is_empty() { None } else { Some(descriptions.join(" | ")) })
+            .with_attr("raw_records", serde_json::to_string(items).unwrap_or_default()),
     );
     result.push(e);
 
@@ -917,6 +953,7 @@ fn extract_victims(
 }
 
 fn extract_holehe(data: Value, email: &str, scan_id: &str, result: &mut ModuleResult) {
+    let raw = data.to_string();
     let domains = match data.get("domains").and_then(|v| v.as_array()) {
         Some(d) if !d.is_empty() => d,
         _ => return,
@@ -932,12 +969,14 @@ fn extract_holehe(data: Value, email: &str, scan_id: &str, result: &mut ModuleRe
             format!("Holehe: email registered on {} service(s)", domains_str.len()),
         )
         .with_attr("holehe_count", domains_str.len().to_string())
-        .with_attr("holehe_domains", domains_str.join(", ")),
+        .with_attr("holehe_domains", domains_str.join(", "))
+        .with_attr("raw", &raw),
     );
     result.push(parent);
 }
 
 fn extract_ghunt(data: Value, scan_id: &str, seen: &mut HashSet<String>, result: &mut ModuleResult) {
+    let raw = data.to_string();
     let name = val_str_or(&data, &["name", "display_name", "fullName"]);
     let profile_pic = val_str(&data, "profile_pic");
     let last_edit = val_str_or(&data, &["last_edit", "lastUpdated"]);
@@ -948,7 +987,8 @@ fn extract_ghunt(data: Value, scan_id: &str, seen: &mut HashSet<String>, result:
         .with_opt_attr("name", name.clone())
         .with_opt_attr("profile_pic", profile_pic)
         .with_opt_attr("last_edit", last_edit)
-        .with_opt_attr("gaia_id", gaia_id.clone());
+        .with_opt_attr("gaia_id", gaia_id.clone())
+        .with_attr("raw", &raw);
 
     // Extract Google Maps reviews
     let reviews = val_array_strings(&data, "reviews");
@@ -996,6 +1036,7 @@ fn extract_ghunt(data: Value, scan_id: &str, seen: &mut HashSet<String>, result:
 }
 
 fn extract_discord(data: Value, scan_id: &str, seen: &mut HashSet<String>, result: &mut ModuleResult) {
+    let raw = data.to_string();
     let discord_id = val_str_or(&data, &["id", "user_id", "discord_id"]);
     let username = val_str_or(&data, &["username", "global_name"]);
     let avatar = val_str(&data, "avatar");
@@ -1025,7 +1066,8 @@ fn extract_discord(data: Value, scan_id: &str, seen: &mut HashSet<String>, resul
         .with_opt_attr("avatar", avatar)
         .with_opt_attr("discriminator", discriminator)
         .with_opt_attr("created_at", created_at)
-        .with_opt_attr("banner_color", banner_color);
+        .with_opt_attr("banner_color", banner_color)
+        .with_attr("raw", &raw);
 
     if !badges.is_empty() {
         ev = ev.with_attr("badges", badges.join(", "));
@@ -1045,6 +1087,7 @@ fn extract_discord(data: Value, scan_id: &str, seen: &mut HashSet<String>, resul
 }
 
 fn extract_steam(data: Value, scan_id: &str, seen: &mut HashSet<String>, result: &mut ModuleResult) {
+    let raw = data.to_string();
     let steam_id = val_str_or(&data, &["steamid", "steam_id", "id"]);
     let persona = val_str_or(&data, &["personaname", "persona_name", "username"]);
     let real_name = val_str_or(&data, &["realname", "real_name"]);
@@ -1075,7 +1118,8 @@ fn extract_steam(data: Value, scan_id: &str, seen: &mut HashSet<String>, result:
         .with_opt_attr("profile_url", profile_url.clone())
         .with_opt_attr("country", loc_country.clone())
         .with_opt_attr("state", loc_state)
-        .with_opt_attr("created_at", created);
+        .with_opt_attr("created_at", created)
+        .with_attr("raw", &raw);
 
     let mut e = Entity::new(EntityKind::Username, &display, 0.70, scan_id);
     e.tag("oathnet-pro");
@@ -1117,6 +1161,7 @@ fn extract_steam(data: Value, scan_id: &str, seen: &mut HashSet<String>, result:
 }
 
 fn extract_xbox(data: Value, username: &str, scan_id: &str, result: &mut ModuleResult) {
+    let raw = data.to_string();
     let gamertag = val_str_or(&data, &["gamertag", "Gamertag", "username"]);
     let gamerscore = val_str_or(&data, &["gamerscore", "Gamerscore"]);
     let account_tier = val_str_or(&data, &["accountTier", "account_tier"]);
@@ -1129,7 +1174,8 @@ fn extract_xbox(data: Value, username: &str, scan_id: &str, result: &mut ModuleR
         .with_opt_attr("gamertag", gamertag)
         .with_opt_attr("gamerscore", gamerscore)
         .with_opt_attr("account_tier", account_tier)
-        .with_opt_attr("bio", bio);
+        .with_opt_attr("bio", bio)
+        .with_attr("raw", &raw);
 
     for e in &mut result.entities {
         if e.kind == EntityKind::Username
@@ -1150,6 +1196,7 @@ fn extract_xbox(data: Value, username: &str, scan_id: &str, result: &mut ModuleR
 }
 
 fn extract_roblox(data: Value, scan_id: &str, seen: &mut HashSet<String>, result: &mut ModuleResult) {
+    let raw = data.to_string();
     let roblox_id = val_str_or(&data, &["id", "user_id"]);
     let display_name = val_str_or(&data, &["displayName", "display_name", "name"]);
     let username = val_str_or(&data, &["name", "username"]);
@@ -1175,7 +1222,8 @@ fn extract_roblox(data: Value, scan_id: &str, seen: &mut HashSet<String>, result
         .with_opt_attr("display_name", display_name)
         .with_opt_attr("username", username)
         .with_opt_attr("created", created)
-        .with_opt_attr("description", description);
+        .with_opt_attr("description", description)
+        .with_attr("raw", &raw);
 
     if is_banned == Some(true) {
         ev = ev.with_attr("banned", "true");
@@ -1190,8 +1238,9 @@ fn extract_roblox(data: Value, scan_id: &str, seen: &mut HashSet<String>, result
 }
 
 fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResult) {
+    let raw = data.to_string();
     let mut ev =
-        Evidence::new("oathnet_pro", format!("IP info for {ip}")).with_attr("source", "ip-info");
+        Evidence::new("oathnet_pro", format!("IP info for {ip}")).with_attr("source", "ip-info").with_attr("raw", &raw);
     for (field, attr) in [
         ("city", "city"),
         ("regionName", "region"),

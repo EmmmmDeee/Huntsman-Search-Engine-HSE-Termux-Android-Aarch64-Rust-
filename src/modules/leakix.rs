@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::core::{
     entity::Evidence,
@@ -23,6 +26,8 @@ struct Event {
     time: Option<String>,
     #[serde(default)]
     port: Option<i64>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -177,6 +182,16 @@ impl Module for LeakIx {
             ev = ev.with_attr("protocols", top_protocols);
         }
 
+        // Store overflow fields from each event
+        for event in body.services.iter().chain(body.leaks.iter()) {
+            for (k, v) in &event.extra {
+                let val_str = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                ev = ev.with_attr(format!("leakix_{k}"), val_str);
+            }
+        }
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();
         result.push(entity);

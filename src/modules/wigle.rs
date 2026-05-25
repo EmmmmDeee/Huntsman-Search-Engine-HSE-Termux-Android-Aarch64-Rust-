@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -30,6 +33,8 @@ struct Network {
     encryption: Option<String>,
     #[serde(default)]
     lastupdt: Option<String>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 pub struct Wigle;
@@ -149,6 +154,16 @@ impl Module for Wigle {
         }
         if let Some(t) = most_recent {
             ev = ev.with_attr("most_recent_observation", t);
+        }
+        // Store overflow fields from each network
+        for network in &body.results {
+            for (k, v) in &network.extra {
+                let val_str = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                ev = ev.with_attr(format!("wigle_{k}"), val_str);
+            }
         }
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();

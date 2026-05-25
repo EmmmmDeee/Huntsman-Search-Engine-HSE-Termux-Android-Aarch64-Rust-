@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::core::{
     entity::Evidence,
@@ -29,6 +32,8 @@ struct Stealer {
     malware_path: Option<String>,
     #[serde(default)]
     credentials: Vec<serde_json::Value>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 const BASE_CONFIDENCE: f64 = 0.85;
@@ -98,8 +103,7 @@ impl Module for HudsonRock {
                 seen_hosts.insert(h);
             }
 
-            entity.add_evidence(
-                Evidence::new(
+            let mut stealer_ev = Evidence::new(
                     "hudsonrock",
                     format!("Stealer log: {cred_count} credentials on compromised machine"),
                 )
@@ -122,8 +126,15 @@ impl Module for HudsonRock {
                 )
                 .with_attr("credential_count", cred_count.to_string())
                 .with_opt_attr("date_uploaded", stealer.date_uploaded.as_deref())
-                .with_opt_attr("victim_ip", stealer.ip.as_deref()),
-            );
+                .with_opt_attr("victim_ip", stealer.ip.as_deref());
+            for (k, v) in &stealer.extra {
+                let val_str = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                stealer_ev = stealer_ev.with_attr(format!("hudsonrock_{k}"), val_str);
+            }
+            entity.add_evidence(stealer_ev);
         }
 
         for family in &seen_families {
@@ -404,6 +415,7 @@ mod tests {
             ip: None,
             malware_path: None,
             credentials: vec![],
+            extra: HashMap::new(),
         };
         assert!((compute_confidence(&[recent]) - FRESH_CONFIDENCE).abs() < 1e-9);
     }
@@ -419,6 +431,7 @@ mod tests {
             ip: None,
             malware_path: None,
             credentials: vec![],
+            extra: HashMap::new(),
         };
         assert!((compute_confidence(&[old]) - BASE_CONFIDENCE).abs() < 1e-9);
     }

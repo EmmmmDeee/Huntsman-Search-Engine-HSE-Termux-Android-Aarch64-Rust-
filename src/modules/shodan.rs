@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -34,6 +37,8 @@ struct HostResp {
     country_code: Option<String>,
     #[serde(default)]
     os: Option<String>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 pub struct Shodan;
@@ -120,6 +125,13 @@ impl Module for Shodan {
                         .collect::<Vec<_>>()
                         .join(","),
                 );
+        }
+        for (k, v) in &body.extra {
+            let val_str = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            ev = ev.with_attr(format!("shodan_{k}"), val_str);
         }
         entity.add_evidence(ev);
         result.push(entity);
