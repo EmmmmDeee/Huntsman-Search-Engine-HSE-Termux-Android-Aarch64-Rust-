@@ -462,6 +462,288 @@ impl Module for OathnetPro {
     }
 }
 
+#[allow(dead_code)]
+struct RegexCategory {
+    name: &'static str,
+    description: &'static str,
+    field: &'static str,
+    patterns: &'static [&'static str],
+    entity_kind: EntityKind,
+    confidence: f64,
+    tags: &'static [&'static str],
+}
+
+const REGEX_CATEGORIES: &[RegexCategory] = &[
+    // === FINANCIAL ===
+    RegexCategory {
+        name: "credit_card",
+        description: "Credit card numbers (Visa, Mastercard, Amex, Discover)",
+        field: "q",
+        patterns: &[
+            r"4[0-9]{12}(?:[0-9]{3})?",       // Visa
+            r"5[1-5][0-9]{14}",                 // Mastercard
+            r"3[47][0-9]{13}",                  // Amex
+            r"6(?:011|5[0-9]{2})[0-9]{12}",     // Discover
+        ],
+        entity_kind: EntityKind::Credential,
+        confidence: 0.75,
+        tags: &["financial", "credit-card", "pci-risk"],
+    },
+    RegexCategory {
+        name: "iban",
+        description: "International Bank Account Numbers",
+        field: "q",
+        patterns: &[r"[A-Z]{2}[0-9]{2}[A-Z0-9]{4}[0-9]{7}([A-Z0-9]?){0,16}"],
+        entity_kind: EntityKind::Credential,
+        confidence: 0.70,
+        tags: &["financial", "iban"],
+    },
+    RegexCategory {
+        name: "bitcoin_address",
+        description: "Bitcoin wallet addresses",
+        field: "q",
+        patterns: &[r"[13][a-km-zA-HJ-NP-Z1-9]{25,34}", r"bc1[a-zA-HJ-NP-Z0-9]{39,59}"],
+        entity_kind: EntityKind::Credential,
+        confidence: 0.70,
+        tags: &["cryptocurrency", "bitcoin"],
+    },
+    RegexCategory {
+        name: "ethereum_address",
+        description: "Ethereum wallet addresses",
+        field: "q",
+        patterns: &[r"0x[0-9a-fA-F]{40}"],
+        entity_kind: EntityKind::Credential,
+        confidence: 0.70,
+        tags: &["cryptocurrency", "ethereum"],
+    },
+    // === IDENTITY DOCUMENTS ===
+    RegexCategory {
+        name: "ssn",
+        description: "US Social Security Numbers",
+        field: "q",
+        patterns: &[r"[0-9]{3}-[0-9]{2}-[0-9]{4}"],
+        entity_kind: EntityKind::Credential,
+        confidence: 0.80,
+        tags: &["identity-document", "ssn", "pii"],
+    },
+    RegexCategory {
+        name: "passport",
+        description: "Passport numbers (US, UK, AU formats)",
+        field: "q",
+        patterns: &[r"[A-Z]{1,2}[0-9]{6,9}"],
+        entity_kind: EntityKind::Credential,
+        confidence: 0.60,
+        tags: &["identity-document", "passport", "pii"],
+    },
+    RegexCategory {
+        name: "drivers_license",
+        description: "Driver's license numbers (US state formats)",
+        field: "q",
+        patterns: &[r"[A-Z][0-9]{4,8}[A-Z0-9]{0,4}"],
+        entity_kind: EntityKind::Credential,
+        confidence: 0.55,
+        tags: &["identity-document", "drivers-license", "pii"],
+    },
+    // === API KEYS & TOKENS ===
+    RegexCategory {
+        name: "aws_key",
+        description: "AWS Access Key IDs",
+        field: "password",
+        patterns: &[r"AKIA[0-9A-Z]{16}"],
+        entity_kind: EntityKind::ApiKey,
+        confidence: 0.90,
+        tags: &["api-key-exposed", "cloud", "aws"],
+    },
+    RegexCategory {
+        name: "aws_secret",
+        description: "AWS Secret Access Keys",
+        field: "password",
+        patterns: &[r"[0-9a-zA-Z/+]{40}"],
+        entity_kind: EntityKind::ApiKey,
+        confidence: 0.65,
+        tags: &["api-key-exposed", "cloud", "aws"],
+    },
+    RegexCategory {
+        name: "github_token",
+        description: "GitHub Personal Access Tokens",
+        field: "password",
+        patterns: &[r"ghp_[0-9a-zA-Z]{36}", r"gho_[0-9a-zA-Z]{36}", r"github_pat_[0-9a-zA-Z_]{82}"],
+        entity_kind: EntityKind::ApiKey,
+        confidence: 0.90,
+        tags: &["api-key-exposed", "github"],
+    },
+    RegexCategory {
+        name: "slack_token",
+        description: "Slack Bot and User OAuth Tokens",
+        field: "password",
+        patterns: &[r"xoxb-[0-9]{11,13}-[0-9]{11,13}-[0-9a-zA-Z]{24}", r"xoxp-[0-9]{11,13}-[0-9]{11,13}-[0-9a-zA-Z]{24}"],
+        entity_kind: EntityKind::ApiKey,
+        confidence: 0.90,
+        tags: &["api-key-exposed", "slack"],
+    },
+    RegexCategory {
+        name: "stripe_key",
+        description: "Stripe API Keys",
+        field: "password",
+        patterns: &[r"sk_live_[0-9a-zA-Z]{24,}", r"pk_live_[0-9a-zA-Z]{24,}", r"rk_live_[0-9a-zA-Z]{24,}"],
+        entity_kind: EntityKind::ApiKey,
+        confidence: 0.90,
+        tags: &["api-key-exposed", "stripe", "financial"],
+    },
+    RegexCategory {
+        name: "google_api_key",
+        description: "Google API Keys",
+        field: "password",
+        patterns: &[r"AIza[0-9A-Za-z\-_]{35}"],
+        entity_kind: EntityKind::ApiKey,
+        confidence: 0.85,
+        tags: &["api-key-exposed", "google"],
+    },
+    RegexCategory {
+        name: "sendgrid_key",
+        description: "SendGrid API Keys",
+        field: "password",
+        patterns: &[r"SG\.[0-9A-Za-z\-_]{22}\.[0-9A-Za-z\-_]{43}"],
+        entity_kind: EntityKind::ApiKey,
+        confidence: 0.90,
+        tags: &["api-key-exposed", "sendgrid"],
+    },
+    RegexCategory {
+        name: "twilio_key",
+        description: "Twilio API Keys and Auth Tokens",
+        field: "password",
+        patterns: &[r"SK[0-9a-fA-F]{32}"],
+        entity_kind: EntityKind::ApiKey,
+        confidence: 0.85,
+        tags: &["api-key-exposed", "twilio"],
+    },
+    RegexCategory {
+        name: "jwt_token",
+        description: "JSON Web Tokens",
+        field: "password",
+        patterns: &[r"eyJ[0-9a-zA-Z_-]*\.eyJ[0-9a-zA-Z_-]*\.[0-9a-zA-Z_-]*"],
+        entity_kind: EntityKind::ApiKey,
+        confidence: 0.80,
+        tags: &["api-key-exposed", "jwt"],
+    },
+    RegexCategory {
+        name: "private_key",
+        description: "PEM-encoded private keys",
+        field: "q",
+        patterns: &[r"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----"],
+        entity_kind: EntityKind::ApiKey,
+        confidence: 0.90,
+        tags: &["api-key-exposed", "private-key", "cryptographic"],
+    },
+    // === PASSWORD HASHES ===
+    RegexCategory {
+        name: "md5_hash",
+        description: "MD5 password hashes",
+        field: "password_hash",
+        patterns: &[r"^[a-f0-9]{32}$"],
+        entity_kind: EntityKind::Password,
+        confidence: 0.70,
+        tags: &["password-at-risk", "hash:md5"],
+    },
+    RegexCategory {
+        name: "sha1_hash",
+        description: "SHA-1 password hashes",
+        field: "password_hash",
+        patterns: &[r"^[a-f0-9]{40}$"],
+        entity_kind: EntityKind::Password,
+        confidence: 0.70,
+        tags: &["password-at-risk", "hash:sha1"],
+    },
+    RegexCategory {
+        name: "sha256_hash",
+        description: "SHA-256 password hashes",
+        field: "password_hash",
+        patterns: &[r"^[a-f0-9]{64}$"],
+        entity_kind: EntityKind::Password,
+        confidence: 0.70,
+        tags: &["password-at-risk", "hash:sha256"],
+    },
+    RegexCategory {
+        name: "bcrypt_hash",
+        description: "Bcrypt password hashes",
+        field: "password_hash",
+        patterns: &[r"\$2[aby]?\$[0-9]{2}\$[./0-9A-Za-z]{53}"],
+        entity_kind: EntityKind::Password,
+        confidence: 0.75,
+        tags: &["password-at-risk", "hash:bcrypt"],
+    },
+    // === NETWORK / INFRASTRUCTURE ===
+    RegexCategory {
+        name: "ipv4_cidr",
+        description: "IPv4 addresses and CIDR blocks",
+        field: "ip",
+        patterns: &[r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}"],
+        entity_kind: EntityKind::IpAddress,
+        confidence: 0.70,
+        tags: &["network"],
+    },
+    RegexCategory {
+        name: "mac_address",
+        description: "MAC addresses in breach/stealer data",
+        field: "q",
+        patterns: &[r"([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}"],
+        entity_kind: EntityKind::MacAddress,
+        confidence: 0.65,
+        tags: &["device", "mac-address"],
+    },
+    RegexCategory {
+        name: "internal_ip",
+        description: "Internal/private IP addresses in breach data",
+        field: "ip",
+        patterns: &[r"(?:10\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.)[0-9.]+"],
+        entity_kind: EntityKind::IpAddress,
+        confidence: 0.65,
+        tags: &["network", "internal-ip", "victim-machine"],
+    },
+    // === DOMAIN / URL PATTERNS ===
+    RegexCategory {
+        name: "onion_domain",
+        description: "Tor .onion hidden service domains",
+        field: "domain",
+        patterns: &[r"[a-z2-7]{16,56}\.onion"],
+        entity_kind: EntityKind::Domain,
+        confidence: 0.80,
+        tags: &["tor", "anonymous-network", "dark-web"],
+    },
+    RegexCategory {
+        name: "government_email",
+        description: "Government email addresses (.gov, .mil)",
+        field: "email",
+        patterns: &[r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(?:gov|mil)(?:\.[a-z]{2})?"],
+        entity_kind: EntityKind::Email,
+        confidence: 0.85,
+        tags: &["government", "high-value-target"],
+    },
+    RegexCategory {
+        name: "corporate_email",
+        description: "Corporate email addresses from major providers",
+        field: "email",
+        patterns: &[r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(?:com|org|net|io|co)"],
+        entity_kind: EntityKind::Email,
+        confidence: 0.65,
+        tags: &["corporate"],
+    },
+    // === PHONE PATTERNS ===
+    RegexCategory {
+        name: "phone_intl",
+        description: "International phone numbers with country codes",
+        field: "phone",
+        patterns: &[r"\+[0-9]{1,3}[0-9]{6,14}"],
+        entity_kind: EntityKind::Phone,
+        confidence: 0.75,
+        tags: &["phone"],
+    },
+];
+
+pub fn regex_categories() -> Vec<(&'static str, &'static str)> {
+    REGEX_CATEGORIES.iter().map(|c| (c.name, c.description)).collect()
+}
+
 impl OathnetPro {
     async fn process_regex(
         &self,
@@ -469,6 +751,17 @@ impl OathnetPro {
         ctx: &ModuleContext,
         key: &str,
     ) -> Result<ModuleResult> {
+        // Check for category-prefixed searches: "category:custom_pattern"
+        // or bare category name for built-in patterns: "aws_key", "credit_card"
+        if let Some(cat) = REGEX_CATEGORIES.iter().find(|c| {
+            target.value == c.name
+                || target.value.starts_with(&format!("{}:", c.name))
+        }) {
+            let custom_suffix = target.value.strip_prefix(&format!("{}:", cat.name));
+            return self.process_regex_category(cat, custom_suffix, ctx, key).await;
+        }
+
+        // Existing generic regex search follows...
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
 
@@ -519,6 +812,109 @@ impl OathnetPro {
         }
 
         // IP geolocation enrichment for discovered IPs
+        if !ctx.cancel.is_cancelled() {
+            let ips: Vec<String> = result
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::IpAddress)
+                .map(|e| e.value.clone())
+                .collect();
+            for ip in ips.iter().take(3) {
+                if ctx.cancel.is_cancelled() {
+                    break;
+                }
+                if let Ok(info) = oathnet::osint(key, paths::IP_INFO, "ip", ip).await {
+                    extract_ip_info(info, ip, &ctx.scan_id, &mut result);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    async fn process_regex_category(
+        &self,
+        cat: &RegexCategory,
+        custom_pattern: Option<&str>,
+        ctx: &ModuleContext,
+        key: &str,
+    ) -> Result<ModuleResult> {
+        let mut result = ModuleResult::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut total_hits = 0usize;
+
+        let patterns: Vec<&str> = if let Some(custom) = custom_pattern {
+            vec![custom]
+        } else {
+            cat.patterns.to_vec()
+        };
+
+        for pattern in &patterns {
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+
+            let items = oathnet::field_regex_search(
+                key,
+                paths::BREACH,
+                cat.field,
+                pattern,
+                50,
+            )
+            .await
+            .unwrap_or_default();
+
+            let stealer_items = if !ctx.cancel.is_cancelled() {
+                oathnet::field_regex_search(key, paths::STEALER, cat.field, pattern, 50)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+            total_hits += items.len() + stealer_items.len();
+
+            for item in &items {
+                extract_breach_entities(item, pattern, &ctx.scan_id, &mut seen, &mut result);
+            }
+            for item in &stealer_items {
+                extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
+            }
+        }
+
+        if total_hits > 0 {
+            let mut parent = Entity::new(
+                EntityKind::Regex,
+                &format!("{}:{}", cat.name, patterns.join("|")),
+                0.90,
+                &ctx.scan_id,
+            );
+            parent.tag("oathnet-pro");
+            parent.tag("regex-search");
+            parent.tag(format!("regex-category:{}", cat.name));
+            for tag in cat.tags {
+                parent.tag(*tag);
+            }
+            parent.add_evidence(
+                Evidence::new(
+                    "oathnet_pro",
+                    format!(
+                        "Regex category '{}': {} total matches across {} pattern(s)",
+                        cat.name,
+                        total_hits,
+                        patterns.len()
+                    ),
+                )
+                .with_attr("category", cat.name)
+                .with_attr("description", cat.description)
+                .with_attr("field", cat.field)
+                .with_attr("total_hits", total_hits.to_string())
+                .with_attr("patterns", patterns.join(" | ")),
+            );
+            result.push(parent);
+        }
+
+        // IP enrichment for discovered IPs
         if !ctx.cancel.is_cancelled() {
             let ips: Vec<String> = result
                 .entities
@@ -1508,5 +1904,37 @@ mod tests {
         assert!(email_ent.unwrap().has_tag("stealer-log"));
         let url_ent = result.entities.iter().find(|e| e.kind == EntityKind::Url);
         assert!(url_ent.is_some());
+    }
+
+    #[test]
+    fn regex_category_catalog_is_comprehensive() {
+        let cats = regex_categories();
+        assert!(cats.len() >= 20, "should have at least 20 categories, got {}", cats.len());
+
+        let names: Vec<&str> = cats.iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"credit_card"));
+        assert!(names.contains(&"aws_key"));
+        assert!(names.contains(&"ssn"));
+        assert!(names.contains(&"md5_hash"));
+        assert!(names.contains(&"onion_domain"));
+        assert!(names.contains(&"government_email"));
+        assert!(names.contains(&"bitcoin_address"));
+        assert!(names.contains(&"jwt_token"));
+        assert!(names.contains(&"private_key"));
+    }
+
+    #[test]
+    fn regex_categories_have_valid_fields() {
+        let valid_fields = ["q", "email", "username", "password", "password_hash", "ip", "domain", "phone"];
+        for cat in REGEX_CATEGORIES {
+            assert!(
+                valid_fields.contains(&cat.field),
+                "category '{}' has invalid field '{}'",
+                cat.name,
+                cat.field
+            );
+            assert!(!cat.patterns.is_empty(), "category '{}' has no patterns", cat.name);
+            assert!(!cat.tags.is_empty(), "category '{}' has no tags", cat.name);
+        }
     }
 }
