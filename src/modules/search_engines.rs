@@ -131,9 +131,6 @@ impl Module for SearchEngines {
 
         let mut module_result = build_entities(target, &ctx.scan_id, &all_results);
 
-        //    discovered entities. Only fires when the API key is configured
-        //    and we have entities worth enriching. Maximises value from
-        //    free results before spending API credits. ──────────────────
         if !ctx.cancel.is_cancelled() {
             enrich_via_oathnet(ctx, &mut module_result).await;
         }
@@ -1180,7 +1177,6 @@ const ENGINE_DOMAINS: &[&str] = &[
     "syndicatedsearch.goog",
     "microsoftonline.com",
     "msn.com",
-    // Engine-adjacent infrastructure that appears in their chrome
     "teleguard.com",
     "shdw.me",
     "unpkg.com",
@@ -1572,7 +1568,6 @@ fn clean_snippet(s: &str) -> String {
     while out.contains("  ") {
         out = out.replace("  ", " ");
     }
-    // Remove Bing-style SERP ID artifacts: h="ID=SERP,1234.5"
     if let Some(start) = out.find("h=\"ID=SERP")
         && let Some(end) = out[start..].find('"').and_then(|first_q| {
             out[start + first_q + 1..]
@@ -2067,15 +2062,10 @@ fn extract_addresses_from_text(text: &str) -> Vec<String> {
             let abs = search_from + pos;
             search_from = abs + state.len();
 
-            // Need ", State" — check for comma before the state name
             let before = text[..abs].trim_end();
             if !before.ends_with(',') {
                 continue;
             }
-            // Extract the city name between the nearest prior comma
-            // (or start of text) and the comma before the state name.
-            // "Jerome Despal, Nundah, Queensland" → "Nundah"
-            // "lives in Houston, Texas" → "Houston"
             let pre_comma = before.trim_end_matches(',').trim();
             let last_segment = match pre_comma.rfind(',') {
                 Some(i) => pre_comma[i + 1..].trim(),
@@ -2114,7 +2104,6 @@ fn extract_addresses_from_text(text: &str) -> Vec<String> {
         }
     }
 
-    // Second pass: find "City, Australia" patterns with major AU cities
     const AU_CITIES: &[&str] = &[
         "Brisbane",
         "Sydney",
