@@ -113,16 +113,11 @@ struct EngineSpec {
     build_url: fn(&str) -> String,
 }
 
+// Engines ordered by reliability: Yahoo/Bing are most reliable from
+// datacenter IPs. DDG/Google/Brave work from residential IPs (Termux)
+// but get CAPTCHA'd from datacenters. All are tried; blocked ones
+// are skipped in <1s via the interstitial detector in fetch_and_parse.
 const ENGINES: &[EngineSpec] = &[
-    EngineSpec {
-        name: "bing",
-        build_url: |q| {
-            format!(
-                "https://www.bing.com/search?q={}&count=20",
-                crate::util::http::urlencode(q)
-            )
-        },
-    },
     EngineSpec {
         name: "yahoo",
         build_url: |q| {
@@ -133,10 +128,10 @@ const ENGINES: &[EngineSpec] = &[
         },
     },
     EngineSpec {
-        name: "aol",
+        name: "bing",
         build_url: |q| {
             format!(
-                "https://search.aol.com/aol/search?q={}",
+                "https://www.bing.com/search?q={}&count=30",
                 crate::util::http::urlencode(q)
             )
         },
@@ -164,15 +159,6 @@ const ENGINES: &[EngineSpec] = &[
         build_url: |q| {
             format!(
                 "https://search.brave.com/search?q={}",
-                crate::util::http::urlencode(q)
-            )
-        },
-    },
-    EngineSpec {
-        name: "mojeek",
-        build_url: |q| {
-            format!(
-                "https://www.mojeek.com/search?q={}",
                 crate::util::http::urlencode(q)
             )
         },
@@ -244,6 +230,16 @@ async fn fetch_and_parse(
 ) -> Option<Vec<SearchResult>> {
     let body = crate::util::curl::fetch(url, 10_000).await?;
     if body.len() < 500 {
+        return None;
+    }
+    // Skip CAPTCHA/interstitial pages that waste parsing time
+    let lower = body.to_lowercase();
+    if lower.contains("anomaly-modal")
+        || lower.contains("unusual traffic")
+        || lower.contains("are not a robot")
+        || (lower.contains("consent") && lower.contains("before you continue"))
+        || lower.contains("httpservice/retry")
+    {
         return None;
     }
     Some(parse_results(&body, engine, query))
@@ -691,21 +687,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             let mut e = Entity::new(EntityKind::Domain, &host, 0.70, scan_id);
             e.tag(tags::SUBDOMAIN);
             e.tag("search-discovered");
-            let mut ev = Evidence::new(
-                "search_engines",
-                format!("Subdomain via {} search", r.engine),
-            )
-            .with_attr("source_url", &r.url)
-            .with_attr("engine", r.engine)
-            .with_attr("query", &r.query);
-            if !r.title.is_empty() {
-                ev = ev.with_attr("page_title", &r.title);
-            }
-            if !r.snippet.is_empty() {
-                let snip: String = r.snippet.chars().take(300).collect();
-                ev = ev.with_attr("snippet", snip);
-            }
-            e.add_evidence(ev);
+            e.add_evidence(build_search_evidence(r));
             result.push(e);
         } else if target_domain.as_ref().is_none_or(|td| domain != *td)
             && seen_domains.insert(domain.clone())
@@ -713,17 +695,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             let mut e = Entity::new(EntityKind::Domain, &domain, 0.45, scan_id);
             e.tag(tags::EXTERNAL);
             e.tag("search-discovered");
-            let mut ev = Evidence::new(
-                "search_engines",
-                format!("Linked domain via {} search", r.engine),
-            )
-            .with_attr("source_url", &r.url)
-            .with_attr("engine", r.engine)
-            .with_attr("query", &r.query);
-            if !r.title.is_empty() {
-                ev = ev.with_attr("page_title", &r.title);
-            }
-            e.add_evidence(ev);
+            e.add_evidence(build_search_evidence(r));
             result.push(e);
         }
 
@@ -734,25 +706,40 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                 e.tag(tags::WEB_SCRAPED);
                 e.tag("search-discovered");
                 e.add_evidence(
-                    Evidence::new("search_engines", format!("Email in {} snippet", r.engine))
-                        .with_attr("engine", r.engine)
-                        .with_attr("source_url", &r.url)
-                        .with_attr("query", &r.query),
+                    Evidence::new(
+                        "search_engines",
+                        format!(
+                            "[{}] Email found on {} — {}",
+                            r.engine,
+                            extract_host(&r.url),
+                            r.url
+                        ),
+                    )
+                    .with_attr("url", &r.url)
+                    .with_attr("engine", r.engine)
+                    .with_attr("query", &r.query),
                 );
                 result.push(e);
             }
         }
 
-        // Extract phones from snippet text
         for phone in extract_phones_from_text(&r.snippet) {
             if seen_phones.insert(phone.clone()) {
                 let mut e = Entity::new(EntityKind::Phone, &phone, 0.55, scan_id);
                 e.tag(tags::WEB_SCRAPED);
                 e.tag("search-discovered");
                 e.add_evidence(
-                    Evidence::new("search_engines", format!("Phone in {} snippet", r.engine))
-                        .with_attr("engine", r.engine)
-                        .with_attr("source_url", &r.url),
+                    Evidence::new(
+                        "search_engines",
+                        format!(
+                            "[{}] Phone found on {} — {}",
+                            r.engine,
+                            extract_host(&r.url),
+                            r.url
+                        ),
+                    )
+                    .with_attr("url", &r.url)
+                    .with_attr("engine", r.engine),
                 );
                 result.push(e);
             }
@@ -769,6 +756,32 @@ fn extract_registrable(host: &str) -> String {
     } else {
         host.to_string()
     }
+}
+
+/// Build a clean, structured evidence entry from a search result.
+/// Every evidence entry includes the full navigable URL so the user
+/// can click through to verify the finding.
+fn build_search_evidence(r: &SearchResult) -> Evidence {
+    let title_clean: String = r.title.chars().take(200).collect();
+    let snippet_clean: String = r.snippet.chars().take(400).collect();
+
+    let summary = if !title_clean.is_empty() {
+        format!("[{}] {} — {}", r.engine, title_clean.trim(), r.url)
+    } else {
+        format!("[{}] {}", r.engine, r.url)
+    };
+
+    let mut ev = Evidence::new("search_engines", summary)
+        .with_attr("url", &r.url)
+        .with_attr("engine", r.engine)
+        .with_attr("query", &r.query);
+    if !title_clean.is_empty() {
+        ev = ev.with_attr("page_title", title_clean.trim());
+    }
+    if !snippet_clean.is_empty() {
+        ev = ev.with_attr("snippet", snippet_clean.trim());
+    }
+    ev
 }
 
 fn extract_emails_from_text(text: &str) -> Vec<String> {
