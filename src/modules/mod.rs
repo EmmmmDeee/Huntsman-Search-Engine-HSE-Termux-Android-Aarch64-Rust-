@@ -18,16 +18,21 @@ pub mod dns_brute;
 pub mod dns_resolver;
 pub mod email_to_username;
 pub mod emailrep;
+pub mod fullhunt;
 pub mod github_user;
 pub mod gps_fix;
 pub mod gravatar;
+pub mod greynoise;
+pub mod haveibeenpwned;
 pub mod hudsonrock;
 pub mod intelx;
+pub mod ip2location;
 pub mod ip_geo;
 pub mod ip_rdap;
 pub mod ipinfo;
 pub mod ipqs;
 pub mod leakix;
+pub mod name_to_email;
 pub mod net_interfaces;
 pub mod nominatim;
 pub mod numverify;
@@ -114,13 +119,19 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(bgpview::BgpView),
         // Domain history
         Arc::new(wayback::Wayback),
-        // ── People-centric (SpiderFoot sfp_emailrep equivalent) ──
+        // ── People-centric ──
         Arc::new(emailrep::EmailRep),
-        // ── Geolocation (SpiderFoot sfp_ipinfo / sfp_openstreetmap / sfp_opencellid) ──
+        Arc::new(haveibeenpwned::HaveIBeenPwned),
+        Arc::new(name_to_email::NameToEmail),
+        // ── Geolocation ──
         Arc::new(ipinfo::IpInfo),
+        Arc::new(ip2location::Ip2Location),
         Arc::new(nominatim::Nominatim),
-        // ── IP abuse / reputation (SpiderFoot sfp_abuseipdb) ──
+        // ── IP abuse / threat intel ──
         Arc::new(abuseipdb::AbuseIpDb),
+        Arc::new(greynoise::GreyNoise),
+        // ── Attack surface discovery ──
+        Arc::new(fullhunt::FullHunt),
         // Termux sensors (v0.6+). Accept any target, is_passive=true.
         // Off-device they no-op cleanly via the termux_cmd helper.
         Arc::new(wifi_connect::WifiConnect),
