@@ -19,7 +19,17 @@
        Anything that diverges visibly from Spiderfoot's chrome belongs
        in spiderfoot-style.css upstream — these rules are deliberately
        narrow. */
-    body { background-color: #fff; }
+    body { background-color: #fff; -webkit-text-size-adjust: 100%; }
+    @media (max-width: 767px) {
+      .container-fluid { padding-left: 8px; padding-right: 8px; }
+      .stat-card .val { font-size: 18px; }
+      .navbar-form { display: none; }
+      .table-responsive { border: none; }
+      h2 { font-size: 18px; }
+      h2 .pull-right { float: none !important; margin-top: 8px; }
+      .mod-grid { grid-template-columns: 1fr; max-height: none; }
+      .panel-heading input.pull-right { width: 100% !important; margin-top: 6px; float: none !important; }
+    }
     .navbar-brand b { color: #059CD7; font-weight: 600; }
     .navbar-brand small { color: #888; font-weight: 400; font-size: 11px; margin-left: 6px; }
     .stat-card { background:#f7f7f7; border:1px solid #e3e3e3; border-radius:4px;
@@ -42,6 +52,10 @@
     .k-coordinates{background:#fde2d4;color:#8a4b1f}
     .k-organisation{background:#e6e6fa;color:#5a4d8a}
     .k-url{background:#d9edf7;color:#31708f}
+    .k-api_key{background:#f2dede;color:#a94442;border:1px solid #e6b4b4}
+    .k-regex{background:#e6e6fa;color:#5a4d8a;border:1px solid #c5c5e6}
+    .k-mac_address{background:#fce8e6;color:#a94442}
+    .k-device_id{background:#eee;color:#666}
     .k-other{background:#eee;color:#666}
     .status-pill { font-size:10px; padding:2px 8px; border-radius:10px; font-weight:500; }
     .s-complete{background:#dff0d8;color:#3c763d}
@@ -173,6 +187,7 @@
       <ul class="nav navbar-nav">
         <li id="nav-newscan"><a href="#/newscan"><i class="glyphicon glyphicon-screenshot"></i>&nbsp;New Scan</a></li>
         <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
+        <li id="nav-cache"  ><a href="#/cache"  ><i class="glyphicon glyphicon-hdd"></i>&nbsp;Archive</a></li>
         <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a></li>
       </ul>
       <form class="navbar-form navbar-left" style="margin-left:10px" onsubmit="globalSearch(event)">
@@ -252,6 +267,8 @@ const TARGET_KINDS = [
   {v:'asn',         label:'Network ASN'},
   {v:'coordinates', label:'GPS Coordinates'},
   {v:'address',     label:'Postal Address'},
+  {v:'api_key',     label:'API Key / Token'},
+  {v:'regex',       label:'Regex Pattern (OathNet)'},
 ];
 
 const USE_CASES = {
@@ -366,7 +383,8 @@ const API = {
   csvUrl:    id=>'/api/v1/scans/'+encodeURIComponent(id)+'/entities.csv',
   reportUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
-  keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body})
+  keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
+  get:       path=>API._req('/api/v1'+path)
 };
 
 /* ─── Router (hash-based, mirrors SpiderFoot's path semantics) ─── */
@@ -381,6 +399,7 @@ function parseHash(){
   if (segs.length===0 || segs[0]==='scans') return {name:'scans', params:{}, query};
   if (segs[0]==='newscan')                  return {name:'newscan', params:{}, query};
   if (segs[0]==='opts'||segs[0]==='settings') return {name:'opts', params:{}, query};
+  if (segs[0]==='cache'||segs[0]==='archive') return {name:'cache', params:{}, query};
   if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
   return {name:'scans', params:{}, query};
 }
@@ -392,7 +411,7 @@ async function render(){
   closeSse();
   S.route = parseHash();
   $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
-  const navMap = {scans:'nav-scans', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans'};
+  const navMap = {scans:'nav-scans', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', cache:'nav-cache'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
   const v = $('#view');
@@ -401,6 +420,7 @@ async function render(){
     if (S.route.name==='scans')    return await renderScans(v);
     if (S.route.name==='newscan')  return await renderNewScan(v);
     if (S.route.name==='scaninfo') return await renderScanInfo(v);
+    if (S.route.name==='cache')    return await renderCache(v);
     if (S.route.name==='opts')     return await renderOpts(v);
   } catch(e){
     v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
@@ -1358,6 +1378,85 @@ function renderInfo(host, scan){
       <table class="table table-striped table-condensed" style="margin-bottom:0">
         <tbody>${rows.map(([k,v])=>`<tr><td style="width:220px;color:#666">${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody>
       </table>
+    </div>
+  `;
+}
+
+/* ═══════════ Page: ARCHIVE / Cache (#/cache) ═══════════ */
+async function renderCache(v){
+  const [statsData, cacheData, ledgerData] = await Promise.all([
+    API.get('/cache/stats'),
+    API.get('/cache?limit=200'),
+    API.get('/keys/ledger'),
+  ]);
+
+  const stats = statsData || {total_entries:0, distinct_modules:0};
+  const entries = (cacheData && cacheData.cache) || [];
+  const keys = (ledgerData && ledgerData.keys) || [];
+
+  v.innerHTML = `
+    <h2>Intelligence Archive
+        <div class="pull-right">
+          <button class="btn btn-default btn-sm" onclick="render()"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Refresh</button>
+        </div>
+    </h2>
+    <hr style="margin:8px 0 14px 0">
+
+    <div class="row">
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Cached API Responses</div><div class="val">${stats.total_entries}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Source Modules</div><div class="val">${stats.distinct_modules}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Discovered Credentials</div><div class="val">${keys.length}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Retention</div><div class="val dim">Permanent</div></div></div>
+    </div>
+
+    <ul class="nav nav-tabs" style="margin-bottom:12px">
+      <li class="active"><a data-toggle="tab" href="#cache-responses">API Response Cache</a></li>
+      <li><a data-toggle="tab" href="#cache-keys">Discovered Credentials</a></li>
+    </ul>
+    <div class="tab-content">
+      <div id="cache-responses" class="tab-pane active">
+        <div class="panel panel-default"><div class="panel-body" style="padding:0">
+          <table class="table table-striped table-condensed" style="margin:0">
+            <thead><tr><th>Module</th><th>Endpoint</th><th>Query</th><th>Results</th><th>Fetched</th></tr></thead>
+            <tbody>${entries.map(e=>`
+              <tr>
+                <td><span class="src-pill">${esc(e.module)}</span></td>
+                <td style="font-size:11px;font-family:monospace;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                    title="${esc(e.endpoint)}">${esc(e.endpoint)}</td>
+                <td><code>${esc(e.query_key)}=${esc(e.query_value)}</code></td>
+                <td>${e.item_count}</td>
+                <td style="font-size:11px;color:#888">${fmtTs(e.fetched_at)}</td>
+              </tr>
+            `).join('')}
+            ${entries.length===0?'<tr><td colspan="5" class="text-center text-muted">No cached responses yet. Run a scan to populate.</td></tr>':''}
+            </tbody>
+          </table>
+        </div></div>
+      </div>
+      <div id="cache-keys" class="tab-pane">
+        <div class="panel panel-default"><div class="panel-body" style="padding:0">
+          <table class="table table-striped table-condensed" style="margin:0">
+            <thead><tr><th>Service</th><th>Username</th><th>Credential</th><th>Source</th><th>Time</th></tr></thead>
+            <tbody>${keys.map(k=>`
+              <tr>
+                <td><span class="src-pill">${esc(k.service||'')}</span></td>
+                <td style="font-family:monospace;font-size:11px">${esc(k.username||'')}</td>
+                <td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                    title="${esc(k.credential||'')}">${esc(k.credential||'')}</td>
+                <td><span class="tag">${esc(k.source_module||'')}</span></td>
+                <td style="font-size:11px;color:#888">${fmtTs(k.timestamp)}</td>
+              </tr>
+            `).join('')}
+            ${keys.length===0?'<tr><td colspan="5" class="text-center text-muted">No credentials discovered yet.</td></tr>':''}
+            </tbody>
+          </table>
+        </div></div>
+        <p style="font-size:11px;color:#888;margin-top:6px">
+          <i class="glyphicon glyphicon-info-sign"></i>
+          Credentials are permanently stored in <code>${esc(ledgerData.ledger_path||'~/.huntsman/discovered_keys.jsonl')}</code>.
+          This file is append-only and never cleared.
+        </p>
+      </div>
     </div>
   `;
 }
