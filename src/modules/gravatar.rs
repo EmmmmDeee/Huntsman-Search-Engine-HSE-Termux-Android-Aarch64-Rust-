@@ -146,6 +146,33 @@ impl Module for Gravatar {
                 .with_opt_attr("urls", urls_joined),
         );
 
+        // Holehe email service enumeration via OathNet
+        let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+        if !ctx.cancel.is_cancelled() {
+            if let Ok(holehe) = crate::util::oathnet::osint(
+                key,
+                crate::util::oathnet::paths::HOLEHE,
+                "email",
+                &target.value,
+            ).await {
+                if let Some(domains) = holehe.get("domains").and_then(|v| v.as_array()) {
+                    if !domains.is_empty() {
+                        let domains_str: Vec<&str> = domains.iter().filter_map(|v| v.as_str()).collect();
+                        entity.tag("holehe");
+                        entity.tag_if(domains_str.len() >= 5, crate::core::tags::HIGH_EXPOSURE);
+                        entity.add_evidence(
+                            crate::core::entity::Evidence::new(
+                                "gravatar:oathnet",
+                                format!("Holehe: email registered on {} service(s)", domains_str.len()),
+                            )
+                            .with_attr("holehe_count", domains_str.len().to_string())
+                            .with_attr("holehe_domains", domains_str.join(", ")),
+                        );
+                    }
+                }
+            }
+        }
+
         let mut result = ModuleResult::new();
         result.push(entity);
         Ok(result)

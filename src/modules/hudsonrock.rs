@@ -132,6 +132,84 @@ impl Module for HudsonRock {
         entity.tag_if(seen_hosts.len() >= 2, tags::MULTI_DEVICE);
         entity.tag(format!("stealer-count:{}", data.stealers.len()));
 
+        // OathNet stealer cross-reference for deeper breach intel
+        let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+        if !ctx.cancel.is_cancelled() {
+            let oathnet_field = match target.kind {
+                TargetKind::Email => "email",
+                TargetKind::Username => "username",
+                TargetKind::Domain => "domain",
+                _ => "",
+            };
+            if !oathnet_field.is_empty() {
+                if let Ok(items) = crate::util::oathnet::search(
+                    key,
+                    crate::util::oathnet::paths::STEALER,
+                    oathnet_field,
+                    &target.value,
+                    20,
+                ).await {
+                    if !items.is_empty() {
+                        let mut summary_parts: Vec<String> = Vec::new();
+                        for item in items.iter().take(5) {
+                            if let Some(url) = crate::util::oathnet::val_str(item, "url_str") {
+                                summary_parts.push(url);
+                            }
+                        }
+                        entity.add_evidence(
+                            Evidence::new(
+                                "hudsonrock:oathnet",
+                                format!("OathNet: {} additional stealer record(s)", items.len()),
+                            )
+                            .with_attr("oathnet_stealer_hits", items.len().to_string())
+                            .with_opt_attr(
+                                "compromised_urls",
+                                if summary_parts.is_empty() { None } else { Some(summary_parts.join(" | ")) },
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+
+        // OathNet IP geolocation for victim IPs discovered by HudsonRock
+        if !ctx.cancel.is_cancelled() {
+            let victim_ips: Vec<String> = data.stealers.iter()
+                .filter_map(|s| s.ip.clone())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .take(2)
+                .collect();
+            for ip in &victim_ips {
+                if ctx.cancel.is_cancelled() { break; }
+                if let Ok(Some(info)) = crate::util::oathnet::osint_opt(
+                    key,
+                    crate::util::oathnet::paths::IP_INFO,
+                    "ip",
+                    ip,
+                ).await {
+                    let city = info.get("city").and_then(|v| v.as_str());
+                    let country = info.get("country").and_then(|v| v.as_str());
+                    if city.is_some() || country.is_some() {
+                        let loc = [city, country]
+                            .iter()
+                            .flatten()
+                            .copied()
+                            .collect::<Vec<&str>>()
+                            .join(", ");
+                        entity.add_evidence(
+                            Evidence::new("hudsonrock:oathnet", format!("Victim IP {ip} geolocated: {loc}"))
+                                .with_attr("source", "ip-info")
+                                .with_attr("victim_ip", ip)
+                                .with_opt_attr("city", city)
+                                .with_opt_attr("country", country)
+                                .with_opt_attr("isp", info.get("isp").and_then(|v| v.as_str())),
+                        );
+                    }
+                }
+            }
+        }
+
         let mut result = ModuleResult::new();
         result.push(entity);
         Ok(result)

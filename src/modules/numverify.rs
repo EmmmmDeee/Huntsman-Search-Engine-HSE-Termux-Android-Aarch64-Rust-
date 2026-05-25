@@ -122,6 +122,72 @@ impl Module for Numverify {
         .with_opt_attr("carrier", body.carrier.as_deref())
         .with_opt_attr("line_type", body.line_type.as_deref());
         entity.add_evidence(ev);
+
+        // OathNet phone lookup enrichment
+        let oathnet_key =
+            crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+        if !ctx.cancel.is_cancelled() {
+            if let Ok(Some(phone_data)) = crate::util::oathnet::osint_opt(
+                oathnet_key,
+                crate::util::oathnet::paths::PHONE_LOOKUP,
+                "phone",
+                &target.value,
+            )
+            .await
+            {
+                let mut phone_ev = Evidence::new(
+                    "numverify:oathnet",
+                    format!("OathNet phone intelligence for {}", target.value),
+                )
+                .with_attr("source", "phone-lookup");
+                for (field, attr) in [
+                    ("carrier", "oathnet_carrier"),
+                    ("country", "oathnet_country"),
+                    ("line_type", "oathnet_line_type"),
+                    ("location", "oathnet_location"),
+                    ("name", "registered_name"),
+                    ("caller_name", "caller_name"),
+                ] {
+                    phone_ev = phone_ev.with_opt_attr(
+                        attr,
+                        crate::util::oathnet::val_str(&phone_data, field),
+                    );
+                }
+                entity.add_evidence(phone_ev);
+            }
+        }
+
+        // OathNet breach search for the phone number
+        if !ctx.cancel.is_cancelled() {
+            if let Ok(breach_items) = crate::util::oathnet::search(
+                oathnet_key,
+                crate::util::oathnet::paths::BREACH,
+                "phone",
+                &target.value,
+                10,
+            )
+            .await
+            {
+                if !breach_items.is_empty() {
+                    let top_dbs = crate::util::oathnet::top_dbnames(&breach_items, 3);
+                    entity.tag(crate::core::tags::BREACH);
+                    entity.tag("oathnet-enriched");
+                    entity.add_evidence(
+                        Evidence::new(
+                            "numverify:oathnet",
+                            format!(
+                                "Phone in {} breach(es) — {}",
+                                breach_items.len(),
+                                top_dbs.join(", ")
+                            ),
+                        )
+                        .with_attr("breach_hits", breach_items.len().to_string())
+                        .with_attr("top_dbnames", top_dbs.join(", ")),
+                    );
+                }
+            }
+        }
+
         let mut result = ModuleResult::new();
         result.push(entity);
         Ok(result)

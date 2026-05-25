@@ -133,6 +133,49 @@ impl Module for DeHashed {
             .with_opt_attr("earliest_record", earliest)
             .with_opt_attr("latest_record", latest);
         entity.add_evidence(ev);
+
+        // OathNet stealer cross-reference — supplements DeHashed breach data
+        let oathnet_key =
+            crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+        if !ctx.cancel.is_cancelled() {
+            let oathnet_field = match target.kind {
+                TargetKind::Email => "email",
+                TargetKind::Username => "username",
+                TargetKind::Phone => "phone",
+                TargetKind::IpAddress => "ip",
+                TargetKind::Domain => "domain",
+                _ => "",
+            };
+            if !oathnet_field.is_empty() {
+                if let Ok(stealer_items) = crate::util::oathnet::search(
+                    oathnet_key,
+                    crate::util::oathnet::paths::STEALER,
+                    oathnet_field,
+                    &target.value,
+                    20,
+                )
+                .await
+                {
+                    if !stealer_items.is_empty() {
+                        entity.tag(tags::STEALER_LOG);
+                        entity.add_evidence(
+                            crate::core::entity::Evidence::new(
+                                "dehashed:oathnet",
+                                format!(
+                                    "OathNet: {} stealer log record(s)",
+                                    stealer_items.len()
+                                ),
+                            )
+                            .with_attr(
+                                "stealer_hits",
+                                stealer_items.len().to_string(),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+
         let mut result = ModuleResult::new();
         result.push(entity);
         Ok(result)

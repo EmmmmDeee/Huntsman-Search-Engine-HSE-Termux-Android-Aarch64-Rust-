@@ -197,6 +197,88 @@ impl Module for GithubUser {
             }
         }
 
+        // OathNet GHunt enrichment for Gmail addresses found on GitHub
+        let oathnet_key =
+            crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+        if let Some(email) = user.email.as_deref()
+            && !ctx.cancel.is_cancelled()
+        {
+            let is_google = email.ends_with("@gmail.com")
+                || email.ends_with("@googlemail.com")
+                || email.ends_with("@google.com");
+            if is_google {
+                if let Ok(Some(ghunt)) = crate::util::oathnet::osint_opt(
+                    oathnet_key,
+                    crate::util::oathnet::paths::GHUNT,
+                    "email",
+                    email,
+                )
+                .await
+                {
+                    let gname = crate::util::oathnet::val_str_or(
+                        &ghunt,
+                        &["name", "display_name", "fullName"],
+                    );
+                    let gaia_id = crate::util::oathnet::val_str_or(
+                        &ghunt,
+                        &["gaia_id", "gaiaId", "id"],
+                    );
+                    let last_edit = crate::util::oathnet::val_str_or(
+                        &ghunt,
+                        &["last_edit", "lastUpdated"],
+                    );
+                    let yt = crate::util::oathnet::val_str_or(
+                        &ghunt,
+                        &["youtube_channel", "youtube"],
+                    );
+
+                    let ghunt_ev = Evidence::new(
+                        "github_user:ghunt",
+                        format!("GHunt Google account recon for {email}"),
+                    )
+                    .with_attr("source", "ghunt")
+                    .with_opt_attr("google_name", gname.clone())
+                    .with_opt_attr("gaia_id", gaia_id)
+                    .with_opt_attr("last_edit", last_edit)
+                    .with_opt_attr("youtube", yt.clone());
+
+                    for e in &mut result.entities {
+                        if e.kind == EntityKind::Email && e.value == email {
+                            e.tag("ghunt");
+                            e.add_evidence(ghunt_ev.clone());
+                            break;
+                        }
+                    }
+
+                    if let Some(ref yt_url) = yt {
+                        if yt_url.starts_with("http") {
+                            let mut ye =
+                                Entity::new(EntityKind::Url, yt_url, 0.70, &ctx.scan_id);
+                            ye.tag("ghunt");
+                            ye.tag("youtube");
+                            ye.tag("personal-site");
+                            ye.add_evidence(Evidence::new(
+                                "github_user:ghunt",
+                                "YouTube channel from GHunt via GitHub email",
+                            ));
+                            result.push(ye);
+                        }
+                    }
+
+                    if let Some(ref n) = gname {
+                        let t = n.trim();
+                        if t.len() >= 3 && t.contains(' ') {
+                            let mut pe =
+                                Entity::new(EntityKind::Person, t, 0.75, &ctx.scan_id);
+                            pe.tag("ghunt");
+                            pe.add_evidence(ghunt_ev);
+                            result.push(pe);
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(result)
     }
 }

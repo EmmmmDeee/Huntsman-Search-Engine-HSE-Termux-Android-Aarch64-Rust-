@@ -38,7 +38,7 @@ impl Module for Whois {
         matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
     }
 
-    async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let raw = query(IANA_WHOIS, &target.value)
             .await
             .map_err(|e| Error::module("whois", e.to_string()))?;
@@ -111,7 +111,7 @@ impl Module for Whois {
             return Ok(ModuleResult::new());
         }
 
-        let mut entity = target.to_entity(0.85, &_ctx.scan_id);
+        let mut entity = target.to_entity(0.85, &ctx.scan_id);
 
         for status in &statuses {
             let lower = status.to_lowercase();
@@ -182,7 +182,7 @@ impl Module for Whois {
             (&abuse_email, "abuse"),
         ] {
             if let Some(addr) = email {
-                let mut e = Entity::new(EntityKind::Email, addr, 0.78, &_ctx.scan_id);
+                let mut e = Entity::new(EntityKind::Email, addr, 0.78, &ctx.scan_id);
                 e.tag(format!("whois-{role}"));
                 e.add_evidence(
                     Evidence::new(
@@ -201,13 +201,51 @@ impl Module for Whois {
             if host.is_empty() {
                 continue;
             }
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.82, &_ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &host, 0.82, &ctx.scan_id);
             e.tag("whois-ns");
             e.add_evidence(
                 Evidence::new("whois", format!("Nameserver for {}", target.value))
                     .with_attr("parent_target", target.value.as_str()),
             );
             result.push(e);
+        }
+
+        // OathNet breach enrichment for WHOIS contact emails
+        let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+        let emails: Vec<String> = result.entities
+            .iter()
+            .filter(|e| e.kind == crate::core::entity::EntityKind::Email)
+            .map(|e| e.value.clone())
+            .collect();
+        for email in emails.iter().take(3) {
+            if ctx.cancel.is_cancelled() { break; }
+            if let Ok(items) = crate::util::oathnet::search(
+                key,
+                crate::util::oathnet::paths::BREACH,
+                "email",
+                email,
+                10,
+            ).await {
+                if !items.is_empty() {
+                    let top_dbs = crate::util::oathnet::top_dbnames(&items, 3);
+                    for e in &mut result.entities {
+                        if e.kind == crate::core::entity::EntityKind::Email && e.value == *email {
+                            e.tag(crate::core::tags::BREACH);
+                            e.tag("oathnet-enriched");
+                            e.add_evidence(
+                                crate::core::entity::Evidence::new(
+                                    "whois:oathnet",
+                                    format!("WHOIS contact {} in {} breach(es) — {}",
+                                        email, items.len(), top_dbs.join(", ")),
+                                )
+                                .with_attr("breach_hits", items.len().to_string())
+                                .with_attr("top_dbnames", top_dbs.join(", ")),
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         Ok(result)

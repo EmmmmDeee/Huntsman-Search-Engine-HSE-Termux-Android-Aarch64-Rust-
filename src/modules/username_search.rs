@@ -1769,6 +1769,140 @@ impl Module for UsernameSearch {
             );
             module_result.push(summary);
         }
+
+        // Maigret API enrichment — server-side username search supplements local probing
+        let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+        if !ctx.cancel.is_cancelled() {
+            if let Ok(Some(maigret)) = crate::util::oathnet::osint_opt(
+                key,
+                crate::util::oathnet::paths::MAIGRET,
+                "username",
+                &target.value,
+            )
+            .await
+            {
+                let existing_sites: std::collections::HashSet<String> = module_result
+                    .entities
+                    .iter()
+                    .filter(|e| e.kind == EntityKind::Url)
+                    .map(|e| e.value.to_lowercase())
+                    .collect();
+
+                // Maigret returns a list of site results with url, site_name, etc.
+                let sites = maigret
+                    .get("sites")
+                    .or_else(|| maigret.get("results"))
+                    .and_then(|v| v.as_array());
+
+                let mut new_count = 0u32;
+                if let Some(sites) = sites {
+                    for site in sites {
+                        let url = crate::util::oathnet::val_str(site, "url")
+                            .or_else(|| crate::util::oathnet::val_str(site, "profile_url"));
+                        let site_name = crate::util::oathnet::val_str(site, "site_name")
+                            .or_else(|| crate::util::oathnet::val_str(site, "name"));
+
+                        if let Some(ref url) = url {
+                            if !url.starts_with("http")
+                                || existing_sites.contains(&url.to_lowercase())
+                            {
+                                continue;
+                            }
+                            let mut e =
+                                Entity::new(EntityKind::Url, url, 0.70, &ctx.scan_id);
+                            e.tag("username-search");
+                            e.tag("maigret");
+                            e.tag("oathnet-enriched");
+                            if let Some(ref name) = site_name {
+                                e.tag(format!("platform:{}", name.to_lowercase()));
+                            }
+                            e.add_evidence(
+                                Evidence::new(
+                                    "username_search:maigret",
+                                    format!(
+                                        "Maigret: {} on {}",
+                                        target.value,
+                                        site_name.as_deref().unwrap_or("unknown")
+                                    ),
+                                )
+                                .with_attr("source", "maigret")
+                                .with_opt_attr("site_name", site_name)
+                                .with_opt_attr("url", Some(url.clone())),
+                            );
+                            module_result.push(e);
+                            new_count += 1;
+                        }
+                    }
+                }
+
+                // Also check if Maigret returns sites as a flat object keyed by site name
+                if new_count == 0 {
+                    if let Some(obj) = maigret.as_object() {
+                        for (site_name, site_data) in obj {
+                            if site_name == "sites"
+                                || site_name == "results"
+                                || site_name == "username"
+                            {
+                                continue;
+                            }
+                            let url = crate::util::oathnet::val_str(site_data, "url")
+                                .or_else(|| {
+                                    crate::util::oathnet::val_str(site_data, "profile_url")
+                                });
+                            if let Some(ref url) = url {
+                                if !url.starts_with("http")
+                                    || existing_sites.contains(&url.to_lowercase())
+                                {
+                                    continue;
+                                }
+                                let mut e =
+                                    Entity::new(EntityKind::Url, url, 0.70, &ctx.scan_id);
+                                e.tag("username-search");
+                                e.tag("maigret");
+                                e.tag("oathnet-enriched");
+                                e.tag(format!("platform:{}", site_name.to_lowercase()));
+                                e.add_evidence(
+                                    Evidence::new(
+                                        "username_search:maigret",
+                                        format!(
+                                            "Maigret: {} on {site_name}",
+                                            target.value
+                                        ),
+                                    )
+                                    .with_attr("source", "maigret")
+                                    .with_attr("site_name", site_name),
+                                );
+                                module_result.push(e);
+                            }
+                        }
+                    }
+                }
+
+                // Update the summary Username entity with Maigret count
+                if new_count > 0 {
+                    for e in &mut module_result.entities {
+                        if e.kind == EntityKind::Username
+                            && e.value.to_lowercase() == target.value.to_lowercase()
+                        {
+                            e.add_evidence(
+                                Evidence::new(
+                                    "username_search:maigret",
+                                    format!(
+                                        "Maigret added {new_count} additional platform(s)"
+                                    ),
+                                )
+                                .with_attr(
+                                    "maigret_new_platforms",
+                                    new_count.to_string(),
+                                ),
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(module_result)
     }
 }

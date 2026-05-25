@@ -115,12 +115,43 @@ impl Module for XposedOrNot {
 
         let analytics = fetch_analytics(&ctx.http, &target.value).await;
 
-        Ok(build_result(
+        let mut result = build_result(
             inner,
             analytics.as_ref(),
             target,
             &ctx.scan_id,
-        ))
+        );
+
+        // OathNet breach cross-validation
+        let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+        if !ctx.cancel.is_cancelled() && !result.is_empty() {
+            if let Ok(items) = crate::util::oathnet::search(
+                key,
+                crate::util::oathnet::paths::BREACH,
+                "email",
+                &target.value,
+                20,
+            ).await {
+                if !items.is_empty() {
+                    let top_dbs = crate::util::oathnet::top_dbnames(&items, 5);
+                    for e in &mut result.entities {
+                        if e.kind == crate::core::entity::EntityKind::Email {
+                            e.add_evidence(
+                                crate::core::entity::Evidence::new(
+                                    "xposed_or_not:oathnet",
+                                    format!("OathNet: {} breach record(s) — {}", items.len(), top_dbs.join(", ")),
+                                )
+                                .with_attr("oathnet_breach_hits", items.len().to_string())
+                                .with_attr("oathnet_top_dbs", top_dbs.join(", ")),
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(result)
     }
 }
 
