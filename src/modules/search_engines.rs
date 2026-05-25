@@ -398,6 +398,7 @@ fn build_queries(target: &Target) -> Vec<String> {
                     "\"{v}\" site:peekyou.com OR site:spokeo.com \
                      OR site:nuwber.com OR site:pipl.com"
                 ));
+                q.push(format!("\"{v}\" address OR location OR city OR suburb"));
             }
             q
         }
@@ -900,45 +901,67 @@ fn is_tracking_url(url: &str) -> bool {
 
 fn is_navigation_path(s: &str) -> bool {
     const EXACT: &[&str] = &[
+        "about",
+        "api",
+        "business",
+        "company",
+        "contact",
+        "events",
+        "explore",
+        "features",
+        "feed",
+        "groups",
+        "help",
+        "home",
+        "legal",
+        "marketplace",
+        "messenger",
+        "myspace",
+        "photos",
+        "posts",
+        "privacy",
+        "reel",
+        "reels",
+        "settings",
+        "status",
+        "stories",
+        "tag",
+        "tags",
+        "terms",
+        "tpm",
+        "trends",
+        "videos",
+        "web",
+        "wiki",
+    ];
+    const CONTAINS: &[&str] = &[
         "login",
         "signup",
         "signin",
-        "search",
-        "public",
-        "upload",
-        "discover",
-        "settings",
-        "explore",
-        "stories",
-        "company",
-        "marketplace",
-        "home",
-        "about",
-        "help",
-        "contact",
-        "terms",
-        "privacy",
-        "posts",
-        "api",
-        "web",
-        "tpm",
-        "feed",
-        "status",
-        "trends",
-        "legal",
-        "groups",
-        "events",
-        "messenger",
+        "signout",
+        "logout",
+        "register",
         "getstarted",
+        "official",
+        "dogpile",
+        "swisscows",
+        "qwant",
         "instagram",
         "facebook",
         "twitter",
         "youtube",
         "tiktok",
         "ecosia",
+        ".php",
+        ".html",
+        ".asp",
     ];
-    const CONTAINS: &[&str] = &["official", "dogpile", "swisscows", "qwant"];
-    EXACT.contains(&s) || CONTAINS.iter().any(|n| s.contains(n))
+    EXACT.contains(&s)
+        || s.starts_with("search")
+        || s.starts_with("public")
+        || s.starts_with("upload")
+        || s.starts_with("discover")
+        || CONTAINS.iter().any(|n| s.contains(n))
 }
 
 fn canonicalize_url(url: &str) -> String {
@@ -1149,6 +1172,29 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             }
         }
 
+        // Extract addresses from snippet text (geolocation pivot)
+        for addr in extract_addresses_from_text(&combined_text) {
+            if seen_domains.insert(format!("@addr:{}", addr.to_lowercase())) {
+                let mut e = Entity::new(EntityKind::Address, &addr, 0.40, scan_id);
+                e.tag("search-discovered");
+                e.tag(tags::WEB_SCRAPED);
+                e.add_evidence(
+                    Evidence::new(
+                        "search_engines",
+                        format!(
+                            "[{}] Address near {} — {}",
+                            r.engine,
+                            extract_host(&r.url),
+                            r.url
+                        ),
+                    )
+                    .with_attr("url", &r.url)
+                    .with_attr("engine", r.engine),
+                );
+                result.push(e);
+            }
+        }
+
         // Extract usernames and person names from social profile URLs
         if let Some(username) = extract_path_username(&r.url) {
             let social_hosts = [
@@ -1240,6 +1286,132 @@ fn build_search_evidence(r: &SearchResult) -> Evidence {
         ev = ev.with_attr("snippet", snippet_clean.trim());
     }
     ev
+}
+
+/// Extract "City, State" patterns from text for geolocation.
+/// Only matches when a comma-separated city name precedes a known
+/// state/territory name, and the city portion starts with an uppercase
+/// letter (filters out random sentence fragments).
+fn extract_addresses_from_text(text: &str) -> Vec<String> {
+    const STATES: &[&str] = &[
+        "Queensland",
+        "New South Wales",
+        "Victoria",
+        "Tasmania",
+        "South Australia",
+        "Western Australia",
+        "Northern Territory",
+        "NSW",
+        "QLD",
+        "VIC",
+        "TAS",
+        "ACT",
+        "Alabama",
+        "Alaska",
+        "Arizona",
+        "Arkansas",
+        "California",
+        "Colorado",
+        "Connecticut",
+        "Delaware",
+        "Florida",
+        "Georgia",
+        "Hawaii",
+        "Idaho",
+        "Illinois",
+        "Indiana",
+        "Iowa",
+        "Kansas",
+        "Kentucky",
+        "Louisiana",
+        "Maine",
+        "Maryland",
+        "Massachusetts",
+        "Michigan",
+        "Minnesota",
+        "Mississippi",
+        "Missouri",
+        "Montana",
+        "Nebraska",
+        "Nevada",
+        "New Hampshire",
+        "New Jersey",
+        "New Mexico",
+        "New York",
+        "North Carolina",
+        "North Dakota",
+        "Ohio",
+        "Oklahoma",
+        "Oregon",
+        "Pennsylvania",
+        "Rhode Island",
+        "South Carolina",
+        "South Dakota",
+        "Tennessee",
+        "Texas",
+        "Utah",
+        "Vermont",
+        "Virginia",
+        "Washington",
+        "West Virginia",
+        "Wisconsin",
+        "Wyoming",
+    ];
+
+    let mut addrs = Vec::new();
+    for state in STATES {
+        let mut search_from = 0;
+        while let Some(pos) = text[search_from..].find(state) {
+            let abs = search_from + pos;
+            search_from = abs + state.len();
+
+            // Need ", State" — check for comma before the state name
+            let before = text[..abs].trim_end();
+            if !before.ends_with(',') {
+                continue;
+            }
+            // Extract the city name between the nearest prior comma
+            // (or start of text) and the comma before the state name.
+            // "Jerome Despal, Nundah, Queensland" → "Nundah"
+            // "lives in Houston, Texas" → "Houston"
+            let pre_comma = before.trim_end_matches(',').trim();
+            let last_segment = match pre_comma.rfind(',') {
+                Some(i) => pre_comma[i + 1..].trim(),
+                None => {
+                    let words: Vec<&str> = pre_comma.split_whitespace().collect();
+                    let mut n = 0;
+                    for w in words.iter().rev() {
+                        if w.starts_with(|c: char| c.is_ascii_uppercase()) {
+                            n += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    if n == 0 {
+                        continue;
+                    }
+                    let start_idx = words.len() - n;
+                    &pre_comma[pre_comma.find(words[start_idx]).unwrap_or(0)..]
+                }
+            };
+            let city = last_segment.trim();
+            if city.len() < 2
+                || city.len() > 40
+                || !city.starts_with(|c: char| c.is_ascii_uppercase())
+            {
+                continue;
+            }
+            if !city
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == ' ' || c == '-')
+            {
+                continue;
+            }
+            let addr = format!("{city}, {state}");
+            addrs.push(addr);
+        }
+    }
+    addrs
 }
 
 fn extract_emails_from_text(text: &str) -> Vec<String> {
@@ -1379,7 +1551,7 @@ mod tests {
     fn build_queries_fullname_covers_professional() {
         let t = Target::new(TargetKind::FullName, "Jane Doe");
         let q = build_queries(&t);
-        assert_eq!(q.len(), 5);
+        assert_eq!(q.len(), 6);
         assert!(q[0].contains("\"Jane Doe\""));
         assert!(q[1].contains("linkedin.com") || q[1].contains("facebook.com"));
         assert!(
@@ -1652,6 +1824,49 @@ mod tests {
         assert!(
             q.iter()
                 .any(|qr| qr.contains("peekyou.com") || qr.contains("nuwber.com"))
+        );
+    }
+
+    #[test]
+    fn address_extraction_au_state() {
+        let text = "Jerome Despal, Nundah, Queensland, Australia";
+        let addrs = extract_addresses_from_text(text);
+        assert!(!addrs.is_empty());
+        assert_eq!(addrs[0], "Nundah, Queensland");
+    }
+
+    #[test]
+    fn address_extraction_us_state() {
+        let text = "lives in Houston, Texas since 2020";
+        let addrs = extract_addresses_from_text(text);
+        assert!(!addrs.is_empty());
+        assert_eq!(addrs[0], "Houston, Texas");
+    }
+
+    #[test]
+    fn address_extraction_rejects_noise() {
+        let text = "arguments, got nothing back from the server";
+        let addrs = extract_addresses_from_text(text);
+        assert!(addrs.is_empty());
+    }
+
+    #[test]
+    fn navigation_path_catches_extensions() {
+        assert!(is_navigation_path("login.php"));
+        assert!(is_navigation_path("signin_page"));
+        assert!(is_navigation_path("qwantcom"));
+        assert!(is_navigation_path("swisscows_ch"));
+        assert!(!is_navigation_path("jerome-despal"));
+        assert!(!is_navigation_path("shinigami_jerome"));
+    }
+
+    #[test]
+    fn fullname_query_includes_geolocation() {
+        let t = Target::new(TargetKind::FullName, "Jane Doe");
+        let q = build_queries(&t);
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("address") || qr.contains("location"))
         );
     }
 
