@@ -556,4 +556,224 @@ mod tests {
         assert!(s.contains("email"));
         assert!(s.contains("CANDIDATE") || s.contains("PROBABLE") || s.contains("VERIFIED"));
     }
+
+    // ── apply_decay ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_decay_mutates_confidence_in_place() {
+        let mut e = email("a@b.com");
+        e.confidence = 1.0;
+        e.observed_at = unix_now() - 7200; // 2 hours ago
+        let expected = e.decayed_confidence();
+        e.apply_decay();
+        assert!((e.confidence - expected).abs() < 1e-9);
+    }
+
+    // ── add_evidence ────────────────────────────────────────────────────────
+
+    #[test]
+    fn add_evidence_appends_to_vec() {
+        let mut e = email("a@b.com");
+        assert!(e.evidence.is_empty());
+        e.add_evidence(Evidence::new("mod-a", "found via breach db"));
+        e.add_evidence(Evidence::new("mod-b", "confirmed via DNS"));
+        assert_eq!(e.evidence.len(), 2);
+        assert_eq!(e.evidence[0].source, "mod-a");
+        assert_eq!(e.evidence[1].source, "mod-b");
+    }
+
+    // ── Evidence::new ───────────────────────────────────────────────────────
+
+    #[test]
+    fn evidence_new_sets_fields_and_empty_attributes() {
+        let before = unix_now();
+        let ev = Evidence::new("src", "summary text");
+        let after = unix_now();
+        assert_eq!(ev.source, "src");
+        assert_eq!(ev.summary, "summary text");
+        assert!(ev.attributes.is_empty());
+        assert!(ev.recorded_at >= before && ev.recorded_at <= after);
+    }
+
+    // ── Evidence::with_attr ─────────────────────────────────────────────────
+
+    #[test]
+    fn evidence_with_attr_chaining() {
+        let ev = Evidence::new("src", "sum")
+            .with_attr("key1", "val1")
+            .with_attr("key2", "val2");
+        assert_eq!(ev.attributes.len(), 2);
+        assert_eq!(ev.attributes.get("key1").unwrap(), "val1");
+        assert_eq!(ev.attributes.get("key2").unwrap(), "val2");
+    }
+
+    // ── Entity::new confidence clamping ─────────────────────────────────────
+
+    #[test]
+    fn new_clamps_confidence_above_one() {
+        let e = Entity::new(EntityKind::Email, "a@b.com", 1.5, "s");
+        assert!((e.confidence - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn new_clamps_confidence_below_zero() {
+        let e = Entity::new(EntityKind::Email, "a@b.com", -0.3, "s");
+        assert!((e.confidence - 0.0).abs() < 1e-9);
+    }
+
+    // ── Entity merge: evidence appended ─────────────────────────────────────
+
+    #[test]
+    fn merge_evidence_appended_from_both() {
+        let mut a = email("x@y.com");
+        a.add_evidence(Evidence::new("mod-a", "evidence A"));
+        let mut b = email("x@y.com");
+        b.add_evidence(Evidence::new("mod-b", "evidence B"));
+        b.add_evidence(Evidence::new("mod-c", "evidence C"));
+        a.merge(b);
+        assert_eq!(a.evidence.len(), 3);
+        let sources: Vec<&str> = a.evidence.iter().map(|e| e.source.as_str()).collect();
+        assert!(sources.contains(&"mod-a"));
+        assert!(sources.contains(&"mod-b"));
+        assert!(sources.contains(&"mod-c"));
+    }
+
+    // ── Entity merge: tags union dedup ───────────────────────────────────────
+
+    #[test]
+    fn merge_tags_union_dedup() {
+        let mut a = email("x@y.com");
+        a.tag("shared");
+        a.tag("only-a");
+        let mut b = email("x@y.com");
+        b.tag("shared");
+        b.tag("only-b");
+        a.merge(b);
+        assert!(a.has_tag("shared"));
+        assert!(a.has_tag("only-a"));
+        assert!(a.has_tag("only-b"));
+        // "shared" must not be duplicated
+        assert_eq!(a.tags.iter().filter(|t| *t == "shared").count(), 1);
+    }
+
+    // ── Entity merge: observed_at takes max ─────────────────────────────────
+
+    #[test]
+    fn merge_observed_at_takes_max() {
+        let mut a = email("x@y.com");
+        a.observed_at = 1000;
+        let mut b = email("x@y.com");
+        b.observed_at = 2000;
+        a.merge(b);
+        assert_eq!(a.observed_at, 2000);
+
+        // Also verify when self is already newer
+        let mut c = email("x@y.com");
+        c.observed_at = 5000;
+        let mut d = email("x@y.com");
+        d.observed_at = 3000;
+        c.merge(d);
+        assert_eq!(c.observed_at, 5000);
+    }
+
+    // ── Entity merge: UID mismatch is no-op (release mode) ──────────────────
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn merge_uid_mismatch_is_noop() {
+        let mut a = email("x@y.com");
+        let original_confidence = a.confidence;
+        let original_corroboration = a.corroboration;
+        let b = Entity::new(EntityKind::Email, "different@z.com", 0.9, "s");
+        a.merge(b);
+        assert!((a.confidence - original_confidence).abs() < 1e-9);
+        assert_eq!(a.corroboration, original_corroboration);
+    }
+
+    // ── EntityKind::Other Display ───────────────────────────────────────────
+
+    #[test]
+    fn entity_kind_other_display() {
+        let kind = EntityKind::Other("foo".to_string());
+        assert_eq!(kind.to_string(), "other:foo");
+    }
+
+    // ── EntityRef from Entity ───────────────────────────────────────────────
+
+    #[test]
+    fn entity_ref_from_entity() {
+        let e = email("a@b.com");
+        let r = EntityRef::from(&e);
+        assert_eq!(r.uid, e.uid);
+        assert_eq!(r.kind, e.kind);
+        assert_eq!(r.value, e.value);
+    }
+
+    // ── normalise: non-email kinds just trim ────────────────────────────────
+
+    #[test]
+    fn normalise_ip_address_trims() {
+        let result = normalise(&EntityKind::IpAddress, "  192.168.1.1  ");
+        assert_eq!(result, "192.168.1.1");
+    }
+
+    #[test]
+    fn normalise_other_kind_trims() {
+        let result = normalise(&EntityKind::Other("custom".into()), "  some value  ");
+        assert_eq!(result, "some value");
+    }
+
+    // ── normalise: Username ─────────────────────────────────────────────────
+
+    #[test]
+    fn normalise_username_lowercases_and_trims() {
+        let result = normalise(&EntityKind::Username, "  MyUser  ");
+        assert_eq!(result, "myuser");
+    }
+
+    // ── Classification::as_str round-trips ──────────────────────────────────
+
+    #[test]
+    fn classification_as_str_round_trips() {
+        assert_eq!(Classification::Candidate.as_str(), "CANDIDATE");
+        assert_eq!(Classification::Probable.as_str(), "PROBABLE");
+        assert_eq!(Classification::Verified.as_str(), "VERIFIED");
+
+        // Also verify Display matches as_str
+        assert_eq!(Classification::Candidate.to_string(), "CANDIDATE");
+        assert_eq!(Classification::Probable.to_string(), "PROBABLE");
+        assert_eq!(Classification::Verified.to_string(), "VERIFIED");
+    }
+
+    // ── EntityKind serde round-trip ─────────────────────────────────────────
+
+    #[test]
+    fn entity_kind_serde_round_trip() {
+        let variants = vec![
+            EntityKind::Person,
+            EntityKind::Email,
+            EntityKind::Phone,
+            EntityKind::Username,
+            EntityKind::Credential,
+            EntityKind::Password,
+            EntityKind::IpAddress,
+            EntityKind::Domain,
+            EntityKind::Url,
+            EntityKind::Asn,
+            EntityKind::Address,
+            EntityKind::Coordinates,
+            EntityKind::Organisation,
+            EntityKind::AbnAcn,
+            EntityKind::MacAddress,
+            EntityKind::DeviceId,
+            EntityKind::Other("custom".to_string()),
+        ];
+        for kind in variants {
+            let json = serde_json::to_string(&kind)
+                .unwrap_or_else(|e| panic!("serialize {:?} failed: {e}", kind));
+            let back: EntityKind = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("deserialize {json} failed: {e}"));
+            assert_eq!(kind, back, "round-trip failed for {json}");
+        }
+    }
 }

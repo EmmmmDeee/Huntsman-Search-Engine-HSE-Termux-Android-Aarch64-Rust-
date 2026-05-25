@@ -173,3 +173,162 @@ impl ModuleResult {
         self.entities.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::entity::{Entity, EntityKind};
+
+    fn make_ctx(keys: HashMap<String, String>) -> ModuleContext {
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        ModuleContext {
+            scan_id: "test".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys,
+            cancel: crate::core::cancel::CancelHandle::new(),
+        }
+    }
+
+    // ── ModuleContext::key ───────────────────────────────────────────────
+
+    #[test]
+    fn key_returns_ok_when_present() {
+        let ctx = make_ctx(HashMap::from([(
+            "HUNTSMAN_FOO".to_string(),
+            "bar".to_string(),
+        )]));
+        let val = ctx.key("HUNTSMAN_FOO").unwrap();
+        assert_eq!(val, "bar");
+    }
+
+    #[test]
+    fn key_returns_missing_key_error_when_absent() {
+        let ctx = make_ctx(HashMap::new());
+        let err = ctx.key("NO_SUCH_KEY").unwrap_err();
+        assert!(
+            matches!(err, Error::MissingKey(ref k) if k == "NO_SUCH_KEY"),
+            "expected MissingKey, got: {err:?}",
+        );
+    }
+
+    // ── ModuleContext::key_opt ───────────────────────────────────────────
+
+    #[test]
+    fn key_opt_returns_some_when_present() {
+        let ctx = make_ctx(HashMap::from([(
+            "HUNTSMAN_FOO".to_string(),
+            "bar".to_string(),
+        )]));
+        assert_eq!(ctx.key_opt("HUNTSMAN_FOO"), Some("bar"));
+    }
+
+    #[test]
+    fn key_opt_returns_none_when_absent() {
+        let ctx = make_ctx(HashMap::new());
+        assert_eq!(ctx.key_opt("NO_SUCH_KEY"), None);
+    }
+
+    // ── ModuleResult ────────────────────────────────────────────────────
+
+    #[test]
+    fn new_result_is_empty() {
+        let r = ModuleResult::new();
+        assert!(r.is_empty());
+        assert_eq!(r.len(), 0);
+    }
+
+    #[test]
+    fn with_capacity_is_empty_but_pre_allocated() {
+        let r = ModuleResult::with_capacity(16);
+        assert!(r.is_empty());
+        assert_eq!(r.len(), 0);
+        assert!(r.entities.capacity() >= 16);
+    }
+
+    #[test]
+    fn push_increments_len() {
+        let mut r = ModuleResult::new();
+        r.push(Entity::new(EntityKind::Email, "a@b.com", 0.5, "s"));
+        assert_eq!(r.len(), 1);
+        assert!(!r.is_empty());
+    }
+
+    #[test]
+    fn extend_adds_multiple_entities() {
+        let mut r = ModuleResult::new();
+        let entities = vec![
+            Entity::new(EntityKind::Email, "a@b.com", 0.5, "s"),
+            Entity::new(EntityKind::Domain, "example.com", 0.7, "s"),
+            Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "s"),
+        ];
+        r.extend(entities);
+        assert_eq!(r.len(), 3);
+    }
+
+    #[test]
+    fn is_empty_and_len_track_correctly() {
+        let mut r = ModuleResult::new();
+        assert!(r.is_empty());
+        assert_eq!(r.len(), 0);
+
+        r.push(Entity::new(EntityKind::Email, "a@b.com", 0.5, "s"));
+        assert!(!r.is_empty());
+        assert_eq!(r.len(), 1);
+
+        r.push(Entity::new(EntityKind::Domain, "x.com", 0.6, "s"));
+        assert_eq!(r.len(), 2);
+    }
+
+    // ── ModuleCost serde ────────────────────────────────────────────────
+
+    #[test]
+    fn module_cost_serializes_to_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&ModuleCost::Free).unwrap(),
+            "\"free\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ModuleCost::KeyGated).unwrap(),
+            "\"key_gated\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ModuleCost::Paid).unwrap(),
+            "\"paid\""
+        );
+    }
+
+    // ── ModuleInfo via trait defaults ────────────────────────────────────
+
+    /// Minimal module that only overrides the required methods, leaving all
+    /// defaulted methods at their trait-provided values.
+    struct StubModule;
+
+    #[async_trait]
+    impl Module for StubModule {
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+        fn priority(&self) -> u8 {
+            42
+        }
+        fn accepts(&self, _target: &Target) -> bool {
+            true
+        }
+        async fn process(&self, _target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+            Ok(ModuleResult::new())
+        }
+    }
+
+    #[test]
+    fn module_info_reflects_trait_defaults() {
+        let m = StubModule;
+        let info = m.info();
+
+        assert_eq!(info.name, "stub");
+        assert_eq!(info.priority, 42);
+        assert_eq!(info.cost, ModuleCost::Free);
+        assert!(!info.passive);
+        assert_eq!(info.description, "");
+    }
+}

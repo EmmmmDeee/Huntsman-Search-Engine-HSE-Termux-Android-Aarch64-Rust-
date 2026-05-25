@@ -412,6 +412,194 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    // ── list_scans ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn list_scans_returns_newest_first() {
+        use crate::core::entity::unix_now;
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        let base = unix_now();
+        for (id, offset) in [("oldest", 0u64), ("middle", 100), ("newest", 200)] {
+            let target = Target::new(TargetKind::Email, "x@y.com");
+            let mut scan = Scan::new(id, target);
+            scan.started_at = base + offset;
+            store.upsert_scan(&scan).unwrap();
+        }
+
+        let scans = store.list_scans(10).unwrap();
+        assert_eq!(scans.len(), 3);
+        assert_eq!(scans[0].id, "newest");
+        assert_eq!(scans[1].id, "middle");
+        assert_eq!(scans[2].id, "oldest");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn list_scans_respects_limit() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        for i in 0..5 {
+            let target = Target::new(TargetKind::Email, "x@y.com");
+            let mut scan = Scan::new(format!("scan-{i}"), target);
+            scan.started_at = 1000 + i as u64;
+            store.upsert_scan(&scan).unwrap();
+        }
+
+        let scans = store.list_scans(2).unwrap();
+        assert_eq!(scans.len(), 2, "should return exactly 2 scans");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn list_scans_empty_db_returns_empty_vec() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        let scans = store.list_scans(10).unwrap();
+        assert!(scans.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── upsert_scan / get_scan ──────────────────────────────────────────────
+
+    #[test]
+    fn upsert_scan_updates_existing() {
+        use crate::core::scan::ScanStatus;
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        let target = Target::new(TargetKind::Email, "x@y.com");
+        let mut scan = Scan::new("update-me", target);
+        scan.status = ScanStatus::Running;
+        store.upsert_scan(&scan).unwrap();
+
+        // mutate and upsert again
+        scan.status = ScanStatus::Complete;
+        scan.entity_count = 42;
+        store.upsert_scan(&scan).unwrap();
+
+        let fetched = store.get_scan("update-me").unwrap().unwrap();
+        assert_eq!(fetched.status, ScanStatus::Complete);
+        assert_eq!(fetched.entity_count, 42);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn get_scan_nonexistent_returns_none() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        let result = store.get_scan("nonexistent").unwrap();
+        assert!(result.is_none());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Correlations ────────────────────────────────────────────────────────
+
+    #[test]
+    fn upsert_correlation_and_correlations_for_scan_round_trip() {
+        use crate::core::correlator::{Correlation, Severity};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "corr-scan");
+
+        let c = Correlation::new(
+            "AU-001",
+            "Test rule",
+            Severity::High,
+            "test desc".into(),
+            vec!["uid1".into()],
+            "corr-scan",
+            12345,
+        );
+        store.upsert_correlation(&c).unwrap();
+
+        let corrs = store.correlations_for_scan("corr-scan").unwrap();
+        assert_eq!(corrs.len(), 1);
+        assert_eq!(corrs[0].rule_id, "AU-001");
+        assert_eq!(corrs[0].rule_name, "Test rule");
+        assert_eq!(corrs[0].severity, Severity::High);
+        assert_eq!(corrs[0].description, "test desc");
+        assert_eq!(corrs[0].entity_uids, vec!["uid1".to_string()]);
+        assert_eq!(corrs[0].scan_id, "corr-scan");
+        assert_eq!(corrs[0].ts, 12345);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn correlations_for_scan_empty_scan_returns_empty() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        let corrs = store.correlations_for_scan("unknown-scan").unwrap();
+        assert!(corrs.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn correlations_for_scan_orders_by_severity() {
+        use crate::core::correlator::{Correlation, Severity};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "sev-scan");
+
+        let c_low = Correlation::new(
+            "R-LOW", "Low rule", Severity::Low,
+            "low finding".into(), vec!["u1".into()], "sev-scan", 100,
+        );
+        let c_crit = Correlation::new(
+            "R-CRIT", "Critical rule", Severity::Critical,
+            "critical finding".into(), vec!["u2".into()], "sev-scan", 200,
+        );
+        let c_high = Correlation::new(
+            "R-HIGH", "High rule", Severity::High,
+            "high finding".into(), vec!["u3".into()], "sev-scan", 300,
+        );
+
+        // insert in non-severity order
+        store.upsert_correlation(&c_low).unwrap();
+        store.upsert_correlation(&c_crit).unwrap();
+        store.upsert_correlation(&c_high).unwrap();
+
+        let corrs = store.correlations_for_scan("sev-scan").unwrap();
+        assert_eq!(corrs.len(), 3);
+        assert_eq!(corrs[0].severity, Severity::Critical);
+        assert_eq!(corrs[1].severity, Severity::High);
+        assert_eq!(corrs[2].severity, Severity::Low);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn duplicate_correlation_is_ignored_upsert_idempotent() {
+        use crate::core::correlator::{Correlation, Severity};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "dup-scan");
+
+        let c = Correlation::new(
+            "AU-001", "Test rule", Severity::High,
+            "test desc".into(), vec!["uid1".into()], "dup-scan", 12345,
+        );
+        store.upsert_correlation(&c).unwrap();
+        store.upsert_correlation(&c).unwrap();
+
+        let corrs = store.correlations_for_scan("dup-scan").unwrap();
+        assert_eq!(corrs.len(), 1, "duplicate correlation should be ignored");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn event_log_round_trips_in_emission_order() {
         use crate::core::event::{Event, EventKind};

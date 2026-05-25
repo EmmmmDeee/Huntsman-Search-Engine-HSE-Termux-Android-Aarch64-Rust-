@@ -107,3 +107,104 @@ impl Correlator {
         Ok(firings)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Severity::as_canonical ──────────────────────────────────────────
+
+    #[test]
+    fn as_canonical_returns_lowercase() {
+        assert_eq!(Severity::Low.as_canonical(), "low");
+        assert_eq!(Severity::Medium.as_canonical(), "medium");
+        assert_eq!(Severity::High.as_canonical(), "high");
+        assert_eq!(Severity::Critical.as_canonical(), "critical");
+    }
+
+    // ── Severity Display ────────────────────────────────────────────────
+
+    #[test]
+    fn display_returns_uppercase() {
+        assert_eq!(Severity::Low.to_string(), "LOW");
+        assert_eq!(Severity::Medium.to_string(), "MEDIUM");
+        assert_eq!(Severity::High.to_string(), "HIGH");
+        assert_eq!(Severity::Critical.to_string(), "CRITICAL");
+    }
+
+    // ── Severity ordering ───────────────────────────────────────────────
+
+    #[test]
+    fn severity_ordering() {
+        assert!(Severity::Low < Severity::Medium);
+        assert!(Severity::Medium < Severity::High);
+        assert!(Severity::High < Severity::Critical);
+    }
+
+    // ── Severity serde ──────────────────────────────────────────────────
+
+    #[test]
+    fn severity_json_round_trip() {
+        for (variant, expected_str) in [
+            (Severity::Low, "\"low\""),
+            (Severity::Medium, "\"medium\""),
+            (Severity::High, "\"high\""),
+            (Severity::Critical, "\"critical\""),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, expected_str);
+            let back: Severity = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+        }
+    }
+
+    // ── Correlation::new ────────────────────────────────────────────────
+
+    #[test]
+    fn correlation_new_sets_all_fields() {
+        let uids = vec!["uid-a".to_string(), "uid-b".to_string()];
+        let c = Correlation::new(
+            "R001",
+            "test rule",
+            Severity::High,
+            "something suspicious".to_string(),
+            uids.clone(),
+            "scan-1",
+            1700000000,
+        );
+
+        assert_eq!(c.rule_id, "R001");
+        assert_eq!(c.rule_name, "test rule");
+        assert_eq!(c.severity, Severity::High);
+        assert_eq!(c.description, "something suspicious");
+        assert_eq!(c.entity_uids, uids);
+        assert_eq!(c.scan_id, "scan-1");
+        assert_eq!(c.ts, 1700000000);
+    }
+
+    // ── Correlation serde round-trip ────────────────────────────────────
+
+    #[test]
+    fn correlation_json_round_trip() {
+        let original = Correlation::new(
+            "R002",
+            "exposed creds",
+            Severity::Critical,
+            "credentials found in breach db".to_string(),
+            vec!["uid-x".to_string()],
+            "scan-99",
+            1700000001,
+        );
+
+        let json = serde_json::to_string(&original).unwrap();
+        let back: Correlation = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(back.rule_id, original.rule_id);
+        assert_eq!(back.rule_name, original.rule_name);
+        assert_eq!(back.severity, original.severity);
+        assert_eq!(back.description, original.description);
+        assert_eq!(back.entity_uids, original.entity_uids);
+        assert_eq!(back.scan_id, original.scan_id);
+        assert_eq!(back.ts, original.ts);
+    }
+}
