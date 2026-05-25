@@ -91,4 +91,35 @@ mod tests {
     fn accepts_any_target() {
         assert!(NetInterfaces.accepts(&Target::new(TargetKind::Domain, "x.com")));
     }
+
+    #[test]
+    fn module_name() {
+        assert_eq!(NetInterfaces.name(), "net_interfaces");
+    }
+
+    #[test]
+    fn module_priority() {
+        assert_eq!(NetInterfaces.priority(), 55);
+    }
+
+    #[test]
+    fn accepts_all_target_kinds() {
+        assert!(NetInterfaces.accepts(&Target::new(TargetKind::Email, "a@b.com")));
+        assert!(NetInterfaces.accepts(&Target::new(TargetKind::IpAddress, "10.0.0.1")));
+        assert!(NetInterfaces.accepts(&Target::new(TargetKind::Username, "user1")));
+    }
+
+    #[test]
+    fn cost_is_free() {
+        use crate::core::module::ModuleCost;
+        assert_eq!(NetInterfaces.cost(), ModuleCost::Free);
+    }
+
+    #[test]
+    fn info_aggregates_metadata() {
+        let info = NetInterfaces.info();
+        assert_eq!(info.name, "net_interfaces");
+        assert_eq!(info.priority, 55);
+        assert!(info.passive);
+    }
 }

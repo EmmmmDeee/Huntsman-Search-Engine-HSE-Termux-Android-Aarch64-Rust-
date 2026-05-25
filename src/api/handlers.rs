@@ -91,7 +91,10 @@ pub async fn health() -> Json<Value> {
 /// by status, total entities across all scans, and module count. The
 /// SPA's home page consumes this for the stat-card row.
 pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    let scans = s.store.list_scans(10_000).unwrap_or_default();
+    let scans = match s.store.list_scans(10_000) {
+        Ok(scans) => scans,
+        Err(e) => return internal_error(&e),
+    };
     let mut by_status: std::collections::BTreeMap<&'static str, u64> =
         std::collections::BTreeMap::new();
     let mut total_entities = 0u64;
@@ -108,14 +111,15 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     }
     let modules = s.engine.modules().len();
     let live_sessions = s.live.list().len();
-    Json(json!({
+    (StatusCode::OK, Json(json!({
         "scans_total": scans.len(),
         "scans_by_status": by_status,
         "entities_total": total_entities,
         "modules": modules,
         "live_sessions": live_sessions,
         "version": crate::VERSION,
-    }))
+    })))
+    .into_response()
 }
 
 pub async fn version() -> Json<Value> {
@@ -248,7 +252,10 @@ pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     match s.store.get_scan(&id) {
         Ok(Some(scan)) => (
             StatusCode::OK,
-            Json(serde_json::to_value(&scan).unwrap_or_else(|_| json!({}))),
+            Json(serde_json::to_value(&scan).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to serialize scan to JSON value");
+                json!({})
+            })),
         )
             .into_response(),
         Ok(None) => not_found(),
@@ -413,8 +420,14 @@ pub async fn scan_report_json(
         Ok(None) => return not_found(),
         Err(e) => return internal_error(&e),
     };
-    let entities = s.store.entities_for_scan(&id).unwrap_or_default();
-    let correlations = s.store.correlations_for_scan(&id).unwrap_or_default();
+    let entities = match s.store.entities_for_scan(&id) {
+        Ok(entities) => entities,
+        Err(e) => return internal_error(&e),
+    };
+    let correlations = match s.store.correlations_for_scan(&id) {
+        Ok(correlations) => correlations,
+        Err(e) => return internal_error(&e),
+    };
 
     let report = json!({
         "scan": scan,
@@ -429,7 +442,10 @@ pub async fn scan_report_json(
         "hse-report-{}.json",
         id.chars().take(12).collect::<String>()
     );
-    let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into());
+    let body = serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
+        "{}".into()
+    });
     let disposition = format!("attachment; filename=\"{filename}\"");
     let mut resp = (StatusCode::OK, body).into_response();
     let headers = resp.headers_mut();
@@ -474,7 +490,10 @@ pub async fn live_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     match s.live.get(&id) {
         Some(session) => (
             StatusCode::OK,
-            Json(serde_json::to_value(&session).unwrap_or_else(|_| json!({}))),
+            Json(serde_json::to_value(&session).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to serialize live session to JSON value");
+                json!({})
+            })),
         )
             .into_response(),
         None => not_found(),

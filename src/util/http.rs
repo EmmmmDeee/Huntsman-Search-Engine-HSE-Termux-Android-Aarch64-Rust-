@@ -15,6 +15,14 @@ use crate::core::error::{Error, Result};
 /// (HudsonRock's cavalier API among them — observed returning HTTP 400
 /// on Termux). The `+https://` contact link is the format recommended
 /// by RFC 7231 §5.5.3 and accepted by most rate-limiters.
+///
+/// # Panics
+///
+/// Panics (via `.expect()`) if the reqwest builder fails. This is
+/// intentional: the builder uses only hard-coded, known-good settings
+/// (timeouts, pool sizes, a static user-agent) so failure indicates a
+/// broken build environment, not a runtime condition worth recovering
+/// from. The panic fires at startup before any scan work begins.
 pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_millis(MODULE_TIMEOUT_MS))

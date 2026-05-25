@@ -137,4 +137,85 @@ mod tests {
         let r = parse_fix(json, "test");
         assert_eq!(r.entities[0].value, "-27.4698241,153.0251988");
     }
+
+    #[test]
+    fn module_name_and_priority() {
+        assert_eq!(GpsFix.name(), "gps_fix");
+        assert_eq!(GpsFix.priority(), 68);
+    }
+
+    #[test]
+    fn max_timeout_is_20s() {
+        assert_eq!(GpsFix.max_timeout_ms(), 20_000);
+    }
+
+    #[test]
+    fn entity_tags_and_kind() {
+        let json = br#"{"latitude":51.5074,"longitude":-0.1278,"provider":"network"}"#;
+        let r = parse_fix(json, "scan-gps");
+        let e = &r.entities[0];
+        assert_eq!(e.kind, EntityKind::Coordinates);
+        assert!(e.has_tag("geoint"));
+        assert!(e.has_tag("provider:network"));
+        assert_eq!(e.scan_id, "scan-gps");
+    }
+
+    #[test]
+    fn gps_provider_tag() {
+        let json = br#"{"latitude":0.0,"longitude":0.0,"provider":"gps"}"#;
+        let r = parse_fix(json, "test");
+        assert!(r.entities[0].has_tag("provider:gps"));
+    }
+
+    #[test]
+    fn evidence_attributes_populated() {
+        let json = br#"{"latitude":37.7749,"longitude":-122.4194,"altitude":15.5,
+            "accuracy":8.2,"speed":1.5,"bearing":90.0,"provider":"gps"}"#;
+        let r = parse_fix(json, "test");
+        let ev = &r.entities[0].evidence[0];
+        assert_eq!(ev.source, "gps_fix");
+        assert_eq!(ev.attributes.get("latitude").unwrap(), "37.7749");
+        assert_eq!(ev.attributes.get("longitude").unwrap(), "-122.4194");
+        assert_eq!(ev.attributes.get("altitude").unwrap(), "15.5");
+        assert_eq!(ev.attributes.get("accuracy_m").unwrap(), "8.2");
+        assert_eq!(ev.attributes.get("speed").unwrap(), "1.5");
+        assert_eq!(ev.attributes.get("bearing").unwrap(), "90");
+        assert_eq!(ev.attributes.get("provider").unwrap(), "gps");
+    }
+
+    #[test]
+    fn missing_optional_fields_default_to_zero() {
+        let json = br#"{"latitude":10.0,"longitude":20.0}"#;
+        let r = parse_fix(json, "test");
+        assert_eq!(r.entities.len(), 1);
+        let ev = &r.entities[0].evidence[0];
+        // Missing provider defaults to "network"
+        assert_eq!(ev.attributes.get("provider").unwrap(), "network");
+        assert_eq!(ev.attributes.get("altitude").unwrap(), "0");
+        assert_eq!(ev.attributes.get("accuracy_m").unwrap(), "0");
+        assert_eq!(ev.attributes.get("speed").unwrap(), "0");
+        assert_eq!(ev.attributes.get("bearing").unwrap(), "0");
+        // Missing provider means network confidence
+        assert!((r.entities[0].confidence - 0.65).abs() < 1e-6);
+    }
+
+    #[test]
+    fn malformed_json_no_ops() {
+        let r = parse_fix(b"not json at all", "test");
+        assert_eq!(r.entities.len(), 0);
+    }
+
+    #[test]
+    fn empty_object_fails_missing_required_fields() {
+        let r = parse_fix(b"{}", "test");
+        // latitude and longitude are required (f64, not Option), so {} should fail deserialization
+        assert_eq!(r.entities.len(), 0);
+    }
+
+    #[test]
+    fn negative_coordinates_handled() {
+        let json = br#"{"latitude":-33.8688,"longitude":151.2093,"provider":"network"}"#;
+        let r = parse_fix(json, "test");
+        assert_eq!(r.entities[0].value, "-33.8688000,151.2093000");
+    }
 }

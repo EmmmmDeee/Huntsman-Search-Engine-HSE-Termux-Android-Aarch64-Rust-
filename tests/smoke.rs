@@ -703,3 +703,81 @@ fn tempfile_path(suffix: &str) -> String {
     p.push(format!("hse-smoke-{}-{}.db", std::process::id(), suffix));
     p.to_string_lossy().into_owned()
 }
+
+// ── Live mode tests ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn live_session_runs_two_iterations_and_completes() {
+    use huntsman_search_engine::core::live::{LiveOptions, LiveScanner, LiveStatus};
+
+    let tmp = tempfile_path("live-2iter");
+    let _ = std::fs::remove_file(&tmp);
+    let store = Arc::new(Store::open(&tmp).unwrap());
+    let (bus, _rx) = tokio::sync::broadcast::channel(256);
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
+    let engine = Arc::new(ScanEngine::new(modules, Arc::clone(&store), bus.clone()));
+    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
+
+    let target = Target::new(TargetKind::Email, "live@example.com");
+    let live_id = scanner.start(
+        target,
+        ScanOptions::default(),
+        LiveOptions {
+            interval_secs: 1,
+            iterations: Some(2),
+        },
+    );
+
+    // Wait for completion (2 iterations × 1s interval + processing time).
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    let session = scanner.get(&live_id).expect("session should exist");
+    assert!(
+        matches!(session.status, LiveStatus::Completed),
+        "expected Completed, got {:?}",
+        session.status
+    );
+    assert_eq!(session.iteration, 2);
+    assert_eq!(
+        session.scan_ids.len(),
+        2,
+        "should have spawned 2 scans"
+    );
+}
+
+#[tokio::test]
+async fn live_session_stops_on_explicit_cancel() {
+    use huntsman_search_engine::core::live::{LiveOptions, LiveScanner, LiveStatus};
+
+    let tmp = tempfile_path("live-cancel");
+    let _ = std::fs::remove_file(&tmp);
+    let store = Arc::new(Store::open(&tmp).unwrap());
+    let (bus, _rx) = tokio::sync::broadcast::channel(256);
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
+    let engine = Arc::new(ScanEngine::new(modules, Arc::clone(&store), bus.clone()));
+    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
+
+    let target = Target::new(TargetKind::Email, "cancel-live@example.com");
+    let live_id = scanner.start(
+        target,
+        ScanOptions::default(),
+        LiveOptions {
+            interval_secs: 30,
+            iterations: None,
+        },
+    );
+
+    // Let the first iteration start, then stop.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(scanner.stop(&live_id), "stop should find the session");
+
+    // Give the loop time to notice the cancel and clean up.
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    let session = scanner.get(&live_id).expect("session should still exist");
+    assert!(
+        matches!(session.status, LiveStatus::Stopped),
+        "expected Stopped, got {:?}",
+        session.status
+    );
+}

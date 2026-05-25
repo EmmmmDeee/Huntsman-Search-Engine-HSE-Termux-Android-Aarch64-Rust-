@@ -82,7 +82,13 @@ pub(crate) fn emit_event(store: &Store, bus: &EventBus, scan_id: &str, kind: Eve
     if let Err(e) = store.insert_event(&event) {
         warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
     }
-    let _ = bus.send(event);
+    // `send` returns Err when there are zero active subscribers. This is
+    // normal during early startup (before any SSE client connects), so
+    // log at trace level — just enough to diagnose "events never reach
+    // the UI" without spamming production logs.
+    if bus.send(event).is_err() {
+        tracing::trace!(scan_id, "broadcast dropped (no subscribers)");
+    }
 }
 
 impl ScanEngine {

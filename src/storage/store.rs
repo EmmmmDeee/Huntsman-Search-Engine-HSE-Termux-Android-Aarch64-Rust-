@@ -307,7 +307,9 @@ impl Store {
         if n == 0 {
             // Rolling back is moot (we wrote nothing) but explicit is
             // clearer than dropping the unused transaction.
-            let _ = tx.rollback();
+            if let Err(e) = tx.rollback() {
+                tracing::warn!(error = %e, "rollback failed during delete_scan");
+            }
             return Ok(false);
         }
         tx.execute(

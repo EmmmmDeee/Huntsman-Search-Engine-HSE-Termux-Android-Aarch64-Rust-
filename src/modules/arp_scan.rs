@@ -136,4 +136,67 @@ IP address       HW type     Flags       HW address            Mask     Device
         let r = parse_arp("IP\nshort line\n", "test-scan");
         assert_eq!(r.entities.len(), 0);
     }
+
+    #[test]
+    fn module_name_and_priority() {
+        assert_eq!(ArpScan.name(), "arp_scan");
+        assert_eq!(ArpScan.priority(), 58);
+    }
+
+    #[test]
+    fn parser_entity_fields_correct() {
+        let sample = "\
+IP address       HW type     Flags       HW address            Mask     Device
+192.168.1.1      0x1         0x2         aa:bb:cc:dd:ee:ff     *        wlan0
+";
+        let r = parse_arp(sample, "test-scan");
+        assert_eq!(r.entities.len(), 2);
+
+        // First entity: IP address
+        let ip = &r.entities[0];
+        assert_eq!(ip.kind, EntityKind::IpAddress);
+        assert_eq!(ip.value, "192.168.1.1");
+        assert!((ip.confidence - 0.95).abs() < 1e-6);
+        assert!(ip.has_tag("local-arp"));
+        assert_eq!(ip.evidence.len(), 1);
+        assert_eq!(ip.evidence[0].source, "arp_scan");
+        assert_eq!(ip.evidence[0].attributes.get("mac").unwrap(), "aa:bb:cc:dd:ee:ff");
+        assert_eq!(ip.evidence[0].attributes.get("interface").unwrap(), "wlan0");
+
+        // Second entity: MAC address
+        let mac = &r.entities[1];
+        assert_eq!(mac.kind, EntityKind::MacAddress);
+        assert_eq!(mac.value, "aa:bb:cc:dd:ee:ff");
+        assert!(mac.has_tag("local-arp"));
+        assert_eq!(mac.evidence[0].attributes.get("ip").unwrap(), "192.168.1.1");
+        assert_eq!(mac.evidence[0].attributes.get("interface").unwrap(), "wlan0");
+    }
+
+    #[test]
+    fn parser_header_only_yields_empty() {
+        let sample = "IP address       HW type     Flags       HW address            Mask     Device\n";
+        let r = parse_arp(sample, "test-scan");
+        assert_eq!(r.entities.len(), 0);
+    }
+
+    #[test]
+    fn parser_mixed_valid_and_incomplete_rows() {
+        let sample = "\
+IP address       HW type     Flags       HW address            Mask     Device
+10.0.0.1         0x1         0x2         de:ad:be:ef:00:01     *        eth0
+10.0.0.2         0x1         0x0         00:00:00:00:00:00     *        eth0
+10.0.0.3         0x1         0x2         de:ad:be:ef:00:03     *        eth0
+";
+        let r = parse_arp(sample, "s");
+        // Row 2 is incomplete (all-zero MAC) so skipped; rows 1 and 3 produce 2 entities each
+        assert_eq!(r.entities.len(), 4);
+        assert_eq!(r.entities[0].value, "10.0.0.1");
+        assert_eq!(r.entities[2].value, "10.0.0.3");
+    }
+
+    #[test]
+    fn parser_empty_input() {
+        let r = parse_arp("", "test-scan");
+        assert_eq!(r.entities.len(), 0);
+    }
 }
