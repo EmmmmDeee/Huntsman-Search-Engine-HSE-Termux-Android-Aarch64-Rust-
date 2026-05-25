@@ -693,7 +693,18 @@ fn build_queries(target: &Target) -> Vec<String> {
             }
             q
         }
-        TargetKind::Phone => vec![format!("\"{v}\"")],
+        TargetKind::Phone => {
+            let mut q = vec![format!("\"{v}\"")];
+            let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+            if digits.len() >= 7 {
+                q.push(format!(
+                    "\"{v}\" site:whitepages.com OR site:truecaller.com \
+                     OR site:whocalledme.com OR site:reversephonelookup.com"
+                ));
+                q.push(format!("\"{v}\" name OR address OR owner"));
+            }
+            q
+        }
         _ => Vec::new(),
     }
 }
@@ -1053,7 +1064,7 @@ fn add_result(
             extract_surrounding_text(html, anchor, 200)
         }
     };
-    let snippet = extract_snippet_near(html, anchor, 400);
+    let snippet = extract_snippet_near(html, anchor, 800);
     results.push(SearchResult {
         url: url.to_string(),
         title,
@@ -1633,8 +1644,30 @@ fn extract_snippet_near(html: &str, anchor: &str, max_len: usize) -> String {
         None => return String::new(),
     };
     let pos = ceil_char_boundary(html, raw);
-    let end = ceil_char_boundary(html, (pos + 800).min(html.len()));
-    strip_tags(&html[pos..end], max_len)
+    let end = ceil_char_boundary(html, (pos + 1600).min(html.len()));
+    let raw_text = strip_tags(&html[pos..end], max_len);
+    clean_snippet(&raw_text)
+}
+
+fn clean_snippet(s: &str) -> String {
+    let mut out = s
+        .replace("\\\"", "")
+        .replace("\\n", " ")
+        .replace("\\t", " ");
+    while out.contains("  ") {
+        out = out.replace("  ", " ");
+    }
+    // Remove Bing-style SERP ID artifacts: h="ID=SERP,1234.5"
+    if let Some(start) = out.find("h=\"ID=SERP")
+        && let Some(end) = out[start..].find('"').and_then(|first_q| {
+            out[start + first_q + 1..]
+                .find('"')
+                .map(|second_q| start + first_q + 1 + second_q + 1)
+        })
+    {
+        out = format!("{}{}", &out[..start], &out[end..]);
+    }
+    out.trim().to_string()
 }
 
 fn strip_tags(html: &str, max_len: usize) -> String {
@@ -2011,7 +2044,7 @@ fn extract_registrable(host: &str) -> String {
 /// can click through to verify the finding.
 fn build_search_evidence(r: &SearchResult) -> Evidence {
     let title_clean: String = r.title.chars().take(200).collect();
-    let snippet_clean: String = r.snippet.chars().take(400).collect();
+    let snippet_clean: String = r.snippet.chars().take(800).collect();
 
     let summary = if !title_clean.is_empty() {
         format!("[{}] {} — {}", r.engine, title_clean.trim(), r.url)
