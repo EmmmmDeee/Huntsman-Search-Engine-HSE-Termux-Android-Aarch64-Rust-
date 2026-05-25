@@ -32,6 +32,10 @@ impl Module for Crtsh {
         "crtsh"
     }
 
+    fn description(&self) -> &'static str {
+        "Certificate transparency log subdomain discovery"
+    }
+
     fn priority(&self) -> u8 {
         35
     }

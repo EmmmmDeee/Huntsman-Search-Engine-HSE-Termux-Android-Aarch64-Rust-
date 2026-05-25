@@ -41,6 +41,9 @@ impl Module for CellSurvey {
     fn name(&self) -> &'static str {
         "cell_survey"
     }
+    fn description(&self) -> &'static str {
+        "Termux cellular tower survey for device geolocation"
+    }
     fn priority(&self) -> u8 {
         62
     }

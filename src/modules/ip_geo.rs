@@ -47,6 +47,10 @@ impl Module for IpGeo {
         "ip_geo"
     }
 
+    fn description(&self) -> &'static str {
+        "IP geolocation, ISP, proxy and hosting detection"
+    }
+
     fn priority(&self) -> u8 {
         28
     }

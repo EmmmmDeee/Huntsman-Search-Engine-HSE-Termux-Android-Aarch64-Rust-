@@ -73,6 +73,9 @@ impl Module for IntelX {
     fn name(&self) -> &'static str {
         "intelx"
     }
+    fn description(&self) -> &'static str {
+        "Intelligence X selector search across breach data"
+    }
     fn priority(&self) -> u8 {
         116
     }

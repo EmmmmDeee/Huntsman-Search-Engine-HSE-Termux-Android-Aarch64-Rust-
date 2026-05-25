@@ -105,6 +105,10 @@ impl Module for DnsBrute {
         "dns_brute"
     }
 
+    fn description(&self) -> &'static str {
+        "Subdomain enumeration via common-name dictionary"
+    }
+
     fn priority(&self) -> u8 {
         22
     }

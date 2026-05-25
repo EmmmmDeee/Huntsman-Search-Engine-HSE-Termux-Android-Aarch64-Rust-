@@ -52,6 +52,10 @@ impl Module for GithubUser {
         "github_user"
     }
 
+    fn description(&self) -> &'static str {
+        "GitHub profile, repos, and social metadata lookup"
+    }
+
     fn priority(&self) -> u8 {
         108
     }

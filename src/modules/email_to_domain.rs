@@ -36,6 +36,10 @@ impl Module for EmailToDomain {
         "email_to_domain"
     }
 
+    fn description(&self) -> &'static str {
+        "Extract domain from email for infrastructure pivot"
+    }
+
     fn priority(&self) -> u8 {
         96
     }

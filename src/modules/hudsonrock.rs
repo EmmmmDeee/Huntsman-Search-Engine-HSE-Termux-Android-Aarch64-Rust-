@@ -63,6 +63,10 @@ impl Module for HudsonRock {
         "hudsonrock"
     }
 
+    fn description(&self) -> &'static str {
+        "Free stealer-log lookup via HudsonRock Cavalier"
+    }
+
     fn priority(&self) -> u8 {
         130
     }

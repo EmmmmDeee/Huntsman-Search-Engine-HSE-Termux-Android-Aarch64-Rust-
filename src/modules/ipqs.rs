@@ -82,6 +82,9 @@ impl Module for IpQs {
     fn name(&self) -> &'static str {
         "ipqs"
     }
+    fn description(&self) -> &'static str {
+        "IP, email, and phone quality scoring"
+    }
     fn priority(&self) -> u8 {
         100
     }

@@ -33,6 +33,7 @@ pub struct ModuleInfo {
     pub priority: u8,
     pub cost: ModuleCost,
     pub passive: bool,
+    pub description: &'static str,
 }
 
 /// All modules implement this trait. Default methods give sensible answers
@@ -76,6 +77,11 @@ pub trait Module: Send + Sync {
         crate::MODULE_TIMEOUT_MS
     }
 
+    /// One-line human-readable description for the UI module list.
+    fn description(&self) -> &'static str {
+        ""
+    }
+
     /// Built from the other methods — don't override.
     fn info(&self) -> ModuleInfo {
         ModuleInfo {
@@ -83,6 +89,7 @@ pub trait Module: Send + Sync {
             priority: self.priority(),
             cost: self.cost(),
             passive: self.is_passive(),
+            description: self.description(),
         }
     }
 }

@@ -24,6 +24,9 @@ impl Module for ArpScan {
     fn name(&self) -> &'static str {
         "arp_scan"
     }
+    fn description(&self) -> &'static str {
+        "Local ARP table enumeration with vendor OUI lookup"
+    }
     fn priority(&self) -> u8 {
         58
     }

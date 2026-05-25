@@ -50,6 +50,10 @@ impl Module for DnsBlocklist {
         "dns_blocklist"
     }
 
+    fn description(&self) -> &'static str {
+        "DNSBL reputation check against 8 blocklists"
+    }
+
     fn priority(&self) -> u8 {
         29
     }

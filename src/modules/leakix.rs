@@ -54,6 +54,9 @@ impl Module for LeakIx {
     fn name(&self) -> &'static str {
         "leakix"
     }
+    fn description(&self) -> &'static str {
+        "Host and domain exposure event analysis"
+    }
     fn priority(&self) -> u8 {
         102
     }

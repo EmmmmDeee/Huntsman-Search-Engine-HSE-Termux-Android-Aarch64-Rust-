@@ -69,6 +69,10 @@ impl Module for Gravatar {
         "gravatar"
     }
 
+    fn description(&self) -> &'static str {
+        "Gravatar profile lookup by email hash"
+    }
+
     fn priority(&self) -> u8 {
         85
     }

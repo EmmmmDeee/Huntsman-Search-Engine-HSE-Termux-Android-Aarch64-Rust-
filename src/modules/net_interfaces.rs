@@ -20,6 +20,9 @@ impl Module for NetInterfaces {
     fn name(&self) -> &'static str {
         "net_interfaces"
     }
+    fn description(&self) -> &'static str {
+        "Local network interface enumeration"
+    }
     fn priority(&self) -> u8 {
         55
     }

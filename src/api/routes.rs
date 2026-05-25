@@ -140,6 +140,8 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/scans/{id}/rerun", post(handlers::scan_rerun))
         .route("/scans/{id}/cancel", post(handlers::scan_cancel))
         .route("/scans/{id}/entities", get(handlers::scan_entities))
+        .route("/scans/{id}/entities/filter", get(handlers::scan_entities_filter))
+        .route("/scans/{id}/entities/facets", get(handlers::scan_entities_facets))
         .route("/scans/{id}/entities.csv", get(handlers::scan_entities_csv))
         .route(
             "/scans/{id}/report.json",
@@ -161,6 +163,9 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(handlers::live_get).delete(handlers::live_stop),
         )
         .route("/live/{id}/events", get(handlers::live_events_sse))
+        // ── entities (cross-scan) ──
+        .route("/entities/{uid}", get(handlers::entity_get))
+        .route("/search", get(handlers::search_entities))
         // ── settings (v0.10+) ──
         .route(
             "/settings/keys",

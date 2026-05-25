@@ -33,6 +33,9 @@ impl Module for GpsFix {
     fn name(&self) -> &'static str {
         "gps_fix"
     }
+    fn description(&self) -> &'static str {
+        "Termux GPS location fix for device geolocation"
+    }
     fn priority(&self) -> u8 {
         68
     }

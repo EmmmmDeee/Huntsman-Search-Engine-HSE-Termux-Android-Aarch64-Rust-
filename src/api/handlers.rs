@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc
 
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::StatusCode,
     response::{
         IntoResponse,
@@ -153,11 +153,12 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
                 .map(|k| k.canonical_str())
                 .collect();
             json!({
-                "name":     m.name(),
-                "priority": m.priority(),
-                "cost":     cost,
-                "passive":  m.is_passive(),
-                "accepts":  accepts,
+                "name":        m.name(),
+                "description": m.description(),
+                "priority":    m.priority(),
+                "cost":        cost,
+                "passive":     m.is_passive(),
+                "accepts":     accepts,
             })
         })
         .collect();
@@ -261,6 +262,89 @@ pub async fn scan_entities(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match s.store.entities_for_scan(&id) {
+        Ok(entities) => ok_list("entities", entities),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `GET /api/v1/scans/{id}/entities/filter?kind=email&min_confidence=0.75&q=acme`
+pub async fn scan_entities_filter(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let kind = params.get("kind").map(String::as_str);
+    let min_conf = params.get("min_confidence").and_then(|v| v.parse::<f64>().ok());
+    let q = params.get("q").map(String::as_str);
+    match s.store.entities_filtered(&id, kind, min_conf, q) {
+        Ok(entities) => ok_list("entities", entities),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `GET /api/v1/scans/{id}/entities/facets` — entity counts by kind.
+pub async fn scan_entities_facets(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.entity_facets(&id) {
+        Ok(facets) => {
+            let items: Vec<serde_json::Value> = facets
+                .iter()
+                .map(|(kind, count)| serde_json::json!({ "kind": kind, "count": count }))
+                .collect();
+            let n = items.len();
+            Json(serde_json::json!({ "facets": items, "count": n })).into_response()
+        }
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `GET /api/v1/entities/{uid}` — cross-scan entity detail.
+pub async fn entity_get(
+    State(s): State<Arc<AppState>>,
+    Path(uid): Path<String>,
+) -> impl IntoResponse {
+    match s.store.get_entity(&uid) {
+        Ok(Some(entity)) => {
+            let scan_ids = s.store.scan_ids_for_entity(&uid).unwrap_or_default();
+            let obs_count = s.store.observation_count(&uid).unwrap_or(0);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "entity": entity,
+                    "scan_ids": scan_ids,
+                    "observation_count": obs_count,
+                })),
+            )
+                .into_response()
+        }
+        Ok(None) => not_found(),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `GET /api/v1/search?q=value&limit=50` — global entity search.
+pub async fn search_entities(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let query = match params.get("q") {
+        Some(q) if !q.trim().is_empty() => q.trim(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "missing or empty 'q' parameter"})),
+            )
+                .into_response()
+        }
+    };
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50)
+        .min(200);
+    match s.store.search_entities(query, limit) {
         Ok(entities) => ok_list("entities", entities),
         Err(e) => internal_error(&e),
     }

@@ -102,6 +102,9 @@ impl Module for CriminalIp {
     fn name(&self) -> &'static str {
         "criminal_ip"
     }
+    fn description(&self) -> &'static str {
+        "IP risk scoring and threat classification"
+    }
     fn priority(&self) -> u8 {
         103
     }

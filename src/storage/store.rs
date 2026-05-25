@@ -260,6 +260,102 @@ impl Store {
         Ok(n.max(0) as usize)
     }
 
+    /// Filtered entity query. All filter params are optional — omit to
+    /// match all. Runs a single SQL query with dynamic WHERE clauses.
+    pub fn entities_filtered(
+        &self,
+        scan_id: &str,
+        kind: Option<&str>,
+        min_confidence: Option<f64>,
+        value_contains: Option<&str>,
+    ) -> Result<Vec<Entity>> {
+        let mut sql = String::from(
+            "SELECT e.data_json FROM entities e \
+             JOIN entity_observations o ON o.entity_uid = e.uid \
+             WHERE o.scan_id = ?1",
+        );
+        if kind.is_some() {
+            sql.push_str(" AND e.kind = ?2");
+        }
+        if min_confidence.is_some() {
+            sql.push_str(" AND e.confidence >= ?3");
+        }
+        if value_contains.is_some() {
+            sql.push_str(" AND e.value LIKE ?4");
+        }
+        sql.push_str(" ORDER BY e.confidence DESC LIMIT 500");
+
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(&sql)?;
+
+            let like_pattern = value_contains.map(|v| format!("%{v}%"));
+
+            let rows = stmt.query_map(
+                rusqlite::params_from_iter(
+                    std::iter::once(scan_id.to_string())
+                        .chain(kind.map(|k| k.to_string()).into_iter())
+                        .chain(min_confidence.map(|c| c.to_string()).into_iter())
+                        .chain(like_pattern.into_iter()),
+                ),
+                |r| r.get::<_, String>(0),
+            )?;
+            rows.filter_map(std::result::Result::ok).collect()
+        };
+        Ok(raw
+            .into_iter()
+            .filter_map(|s| serde_json::from_str(&s).ok())
+            .collect())
+    }
+
+    /// Entity facets: count by kind for a scan. Returns (kind, count) pairs.
+    pub fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT e.kind, COUNT(*) FROM entities e \
+             JOIN entity_observations o ON o.entity_uid = e.uid \
+             WHERE o.scan_id = ?1 \
+             GROUP BY e.kind ORDER BY COUNT(*) DESC",
+        )?;
+        let rows = stmt.query_map(params![scan_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+        })?;
+        Ok(rows.flatten().collect())
+    }
+
+    /// Look up a single entity by UID across all scans.
+    pub fn get_entity(&self, uid: &str) -> Result<Option<Entity>> {
+        let json: Option<String> = {
+            let conn = self.conn.lock();
+            let mut stmt =
+                conn.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
+            let mut rows = stmt.query(params![uid])?;
+            rows.next()?.map(|r| r.get(0)).transpose()?
+        };
+        json.map(|j| serde_json::from_str(&j))
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    /// Global entity search across all scans. Returns up to `limit` entities
+    /// whose value contains the search term (case-insensitive via LIKE).
+    pub fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<Entity>> {
+        let pattern = format!("%{query}%");
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT data_json FROM entities WHERE value LIKE ?1 \
+                 ORDER BY confidence DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![pattern, limit as i64], |r| r.get::<_, String>(0))?;
+            rows.filter_map(std::result::Result::ok).collect()
+        };
+        Ok(raw
+            .into_iter()
+            .filter_map(|s| serde_json::from_str(&s).ok())
+            .collect())
+    }
+
     // ── Correlations (v0.4+) ─────────────────────────────────────────────────
 
     /// Insert a correlation, ignoring duplicates on

@@ -53,6 +53,9 @@ impl Module for Numverify {
     fn name(&self) -> &'static str {
         "numverify"
     }
+    fn description(&self) -> &'static str {
+        "Phone number validation and carrier lookup"
+    }
     fn priority(&self) -> u8 {
         90
     }

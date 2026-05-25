@@ -314,6 +314,14 @@ pub struct ScanOptions {
 
     /// Hard cap on total wall-time, in seconds. Stops expansion once exceeded. `None` = no cap.
     pub max_wall_time_secs: Option<u64>,
+
+    /// User-assigned labels for campaign tracking (e.g., "apt-29", "q2-audit").
+    #[serde(default)]
+    pub scan_tags: Vec<String>,
+
+    /// Freeform notes / investigation context.
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 impl Default for ScanOptions {
@@ -331,6 +339,8 @@ impl Default for ScanOptions {
             min_expand_confidence: default_min_expand_confidence(),
             max_entities: None,
             max_wall_time_secs: None,
+            scan_tags: Vec::new(),
+            notes: None,
         }
     }
 }

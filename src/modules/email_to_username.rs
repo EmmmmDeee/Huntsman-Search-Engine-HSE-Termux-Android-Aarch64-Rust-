@@ -18,6 +18,10 @@ impl Module for EmailToUsername {
         "email_to_username"
     }
 
+    fn description(&self) -> &'static str {
+        "Derive plausible usernames from email local part"
+    }
+
     fn priority(&self) -> u8 {
         95
     }

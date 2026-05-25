@@ -76,6 +76,10 @@ impl Module for BgpView {
         "bgpview"
     }
 
+    fn description(&self) -> &'static str {
+        "ASN, prefix, and abuse contact lookup via BGPView"
+    }
+
     fn priority(&self) -> u8 {
         25
     }

@@ -69,6 +69,10 @@ impl Module for IpRdap {
         "ip_rdap"
     }
 
+    fn description(&self) -> &'static str {
+        "RDAP registry allocation record for IP addresses"
+    }
+
     fn priority(&self) -> u8 {
         27
     }

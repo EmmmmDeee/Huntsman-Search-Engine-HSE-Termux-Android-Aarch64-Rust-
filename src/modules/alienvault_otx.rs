@@ -48,6 +48,10 @@ impl Module for AlienVaultOtx {
         "alienvault_otx"
     }
 
+    fn description(&self) -> &'static str {
+        "OTX pulse threat intelligence for IPs and domains"
+    }
+
     fn priority(&self) -> u8 {
         78
     }

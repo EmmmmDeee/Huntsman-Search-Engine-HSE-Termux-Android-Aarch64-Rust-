@@ -35,6 +35,10 @@ impl Module for DnsResolver {
         "dns_resolver"
     }
 
+    fn description(&self) -> &'static str {
+        "DNS A/AAAA/MX/NS/SOA/TXT record resolution"
+    }
+
     fn priority(&self) -> u8 {
         30
     }
