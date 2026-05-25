@@ -110,6 +110,7 @@ impl Module for OathnetPro {
         for item in &items {
             extract_breach_entities(item, &target.value, &ctx.scan_id, &mut seen, &mut result);
             store_api_credential(item);
+            extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
         }
 
         // ── Stealer search ──────────────────────────────────────────
@@ -120,6 +121,7 @@ impl Module for OathnetPro {
             for item in &stealer_items {
                 extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
                 store_api_credential(item);
+                extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
             }
         }
 
@@ -505,6 +507,152 @@ fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResu
         e.tag("geolocation");
         e.add_evidence(ev);
         result.push(e);
+    }
+}
+
+// ─── API key pattern recognition ─────────────────────────────────────────────
+
+struct KeyPattern {
+    prefix: &'static str,
+    service: &'static str,
+    min_len: usize,
+}
+
+const KEY_PATTERNS: &[KeyPattern] = &[
+    KeyPattern { prefix: "sk-ant-", service: "anthropic", min_len: 40 },
+    KeyPattern { prefix: "sk-proj-", service: "openai", min_len: 40 },
+    KeyPattern { prefix: "sk-", service: "openai_or_stripe", min_len: 20 },
+    KeyPattern { prefix: "AIzaSy", service: "google", min_len: 30 },
+    KeyPattern { prefix: "AKIA", service: "aws", min_len: 16 },
+    KeyPattern { prefix: "ASIA", service: "aws_sts", min_len: 16 },
+    KeyPattern { prefix: "ghp_", service: "github", min_len: 36 },
+    KeyPattern { prefix: "gho_", service: "github_oauth", min_len: 36 },
+    KeyPattern { prefix: "ghs_", service: "github_app", min_len: 36 },
+    KeyPattern { prefix: "github_pat_", service: "github", min_len: 40 },
+    KeyPattern { prefix: "SG.", service: "sendgrid", min_len: 20 },
+    KeyPattern { prefix: "xkeysib-", service: "brevo", min_len: 40 },
+    KeyPattern { prefix: "key-", service: "mailgun", min_len: 30 },
+    KeyPattern { prefix: "sk_live_", service: "stripe", min_len: 24 },
+    KeyPattern { prefix: "pk_live_", service: "stripe_pub", min_len: 24 },
+    KeyPattern { prefix: "sk_test_", service: "stripe_test", min_len: 24 },
+    KeyPattern { prefix: "hf_", service: "huggingface", min_len: 30 },
+    KeyPattern { prefix: "r8_", service: "replicate", min_len: 30 },
+    KeyPattern { prefix: "pplx-", service: "perplexity", min_len: 30 },
+    KeyPattern { prefix: "sntrys_", service: "sentry", min_len: 20 },
+    KeyPattern { prefix: "glc_", service: "grafana", min_len: 20 },
+    KeyPattern { prefix: "NRAK-", service: "newrelic", min_len: 20 },
+    KeyPattern { prefix: "dapi", service: "databricks", min_len: 30 },
+    KeyPattern { prefix: "cfut_", service: "cloudflare", min_len: 40 },
+    KeyPattern { prefix: "cfat_", service: "cloudflare_acct", min_len: 40 },
+    KeyPattern { prefix: "shpat_", service: "shopify", min_len: 30 },
+    KeyPattern { prefix: "ntn_", service: "notion", min_len: 40 },
+    KeyPattern { prefix: "lin_api_", service: "linear", min_len: 30 },
+    KeyPattern { prefix: "tfp_", service: "typeform", min_len: 30 },
+    KeyPattern { prefix: "fo1_", service: "flyio", min_len: 30 },
+    KeyPattern { prefix: "sbp_", service: "supabase", min_len: 30 },
+    KeyPattern { prefix: "pul-", service: "pulumi", min_len: 30 },
+    KeyPattern { prefix: "ATATT3", service: "atlassian", min_len: 40 },
+    KeyPattern { prefix: "xoxb-", service: "slack_bot", min_len: 30 },
+    KeyPattern { prefix: "xoxp-", service: "slack_user", min_len: 30 },
+    KeyPattern { prefix: "xapp-", service: "slack_app", min_len: 30 },
+    KeyPattern { prefix: "EAA", service: "facebook", min_len: 40 },
+];
+
+fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
+    let trimmed = value.trim();
+    if trimmed.len() < 16 {
+        return None;
+    }
+    for pat in KEY_PATTERNS {
+        if trimmed.starts_with(pat.prefix) && trimmed.len() >= pat.min_len {
+            return Some((pat.service, trimmed));
+        }
+    }
+    // Generic hex key detection (32 or 64 char hex = potential API key)
+    if (trimmed.len() == 32 || trimmed.len() == 64)
+        && trimmed.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Some(("generic_hex", trimmed));
+    }
+    None
+}
+
+fn extract_api_keys_from_item(
+    item: &Value,
+    scan_id: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let fields = ["password", "password_hash", "api_key", "token", "secret",
+                   "access_key", "auth_token", "api_token"];
+
+    for field in &fields {
+        if let Some(val) = val_str(item, field)
+            && let Some((service, key_val)) = identify_api_key(&val)
+        {
+                let dedup = format!("@apikey:{service}:{}", &key_val[..key_val.len().min(16)]);
+                if !seen.insert(dedup) {
+                    continue;
+                }
+
+                // Emit as Credential entity tagged for api_key_probe expansion
+                let mut entity = Entity::new(
+                    EntityKind::Credential,
+                    key_val,
+                    0.80,
+                    scan_id,
+                );
+                entity.tag("api-key");
+                entity.tag(format!("service:{service}"));
+                entity.tag("oathnet-pro");
+                entity.tag("auto-discovered");
+
+                let db = val_str(item, "dbname").unwrap_or_default();
+                entity.add_evidence(
+                    Evidence::new(
+                        "oathnet_pro",
+                        format!("API key discovered ({service}) in {}", if db.is_empty() { "stealer log" } else { &db }),
+                    )
+                    .with_attr("service", service)
+                    .with_attr("key_prefix", &key_val[..key_val.len().min(8)])
+                    .with_attr("key_length", key_val.len().to_string()),
+                );
+                result.push(entity);
+
+                // Auto-store in key pool
+                let pool = crate::util::key_pool::global_pool();
+                let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+                entry.notes = Some(format!("Auto-discovered {service} key from OathNet breach/stealer data"));
+                pool.add(service, entry);
+                let _ = crate::util::key_pool::save_pool(&pool);
+        }
+    }
+
+    // Also scan the username field — some stealer logs store API keys as usernames
+    if let Some(user) = val_str(item, "username")
+        && let Some((service, key_val)) = identify_api_key(&user)
+    {
+            let dedup = format!("@apikey:{service}:{}", &key_val[..key_val.len().min(16)]);
+            if seen.insert(dedup) {
+                let mut entity = Entity::new(EntityKind::Credential, key_val, 0.75, scan_id);
+                entity.tag("api-key");
+                entity.tag(format!("service:{service}"));
+                entity.tag("oathnet-pro");
+                entity.add_evidence(
+                    Evidence::new(
+                        "oathnet_pro",
+                        format!("API key in username field ({service})"),
+                    )
+                    .with_attr("service", service),
+                );
+                result.push(entity);
+
+                let pool = crate::util::key_pool::global_pool();
+                let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+                entry.notes = Some(format!("Auto-discovered {service} key (username field)"));
+                pool.add(service, entry);
+                let _ = crate::util::key_pool::save_pool(&pool);
+        }
     }
 }
 
