@@ -135,7 +135,7 @@ impl ScanEngine {
         let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
 
         visited.insert(visit_key(&target));
-        self.dispatch_target(&scan.id, &target, &ctx, &opts, &mut entity_map)
+        self.dispatch_target(&scan.id, &target, &ctx, &opts, &mut entity_map, false)
             .await?;
 
         if opts.depth > 0 {
@@ -313,7 +313,7 @@ impl ScanEngine {
                     return stop;
                 }
                 if let Err(e) = self
-                    .dispatch_target(scan_id, nt, ctx, opts, entity_map)
+                    .dispatch_target(scan_id, nt, ctx, opts, entity_map, true)
                     .await
                 {
                     // Per-target dispatch errors are already surfaced as
