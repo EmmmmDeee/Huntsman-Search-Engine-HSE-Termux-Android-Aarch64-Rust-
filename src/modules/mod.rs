@@ -35,6 +35,7 @@ pub mod reverse_geocode;
 pub mod search_engines;
 pub mod securitytrails;
 pub mod shodan;
+pub mod social_probe;
 pub mod ssl_probe;
 pub mod tor_exit_check;
 pub mod urlhaus;
@@ -111,6 +112,9 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(web_crawler::WebCrawler),
         Arc::new(email_to_domain::EmailToDomain),
         Arc::new(email_to_username::EmailToUsername),
+        // Direct social profile probing — HEAD/GET 20+ platforms to
+        // confirm profile existence. Uses curl for TLS compatibility.
+        Arc::new(social_probe::SocialProbe),
         // Username / identity expansion (sherlock/Maigret-style)
         Arc::new(username_search::UsernameSearch),
         Arc::new(github_user::GithubUser),
