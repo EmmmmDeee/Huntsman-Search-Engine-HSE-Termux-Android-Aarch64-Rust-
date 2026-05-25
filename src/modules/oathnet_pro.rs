@@ -158,9 +158,7 @@ impl Module for OathnetPro {
                 if ctx.cancel.is_cancelled() {
                     break;
                 }
-                if let Ok(items) =
-                    oathnet::search(key, paths::STEALER, "email", email, 10).await
-                {
+                if let Ok(items) = oathnet::search(key, paths::STEALER, "email", email, 10).await {
                     for item in &items {
                         store_api_credential(item);
                         extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
@@ -179,25 +177,33 @@ impl Module for OathnetPro {
                 .map(|e| e.value.clone())
                 .collect();
             for uname in &usernames {
-                if ctx.cancel.is_cancelled() { break; }
+                if ctx.cancel.is_cancelled() {
+                    break;
+                }
                 // Discord user info
                 if let Ok(data) = oathnet::osint(key, paths::DISCORD_USER, "user", uname).await
                     && let Some(id) = data.get("id").and_then(|v| v.as_str())
                 {
-                        let mut e = Entity::new(EntityKind::Username, format!("discord:{id}"), 0.65, &ctx.scan_id);
-                        e.tag("oathnet-pro");
-                        e.tag("discord");
-                        let mut ev = Evidence::new("oathnet_pro", format!("Discord lookup for {uname}"));
-                        if let Some(n) = data.get("username").and_then(|v| v.as_str()) {
-                            ev = ev.with_attr("discord_username", n);
-                        }
-                        if let Some(a) = data.get("avatar").and_then(|v| v.as_str()) {
-                            ev = ev.with_attr("avatar", a);
-                        }
-                        e.add_evidence(ev);
-                        if seen.insert(format!("@discord:{id}")) {
-                            result.push(e);
-                        }
+                    let mut e = Entity::new(
+                        EntityKind::Username,
+                        format!("discord:{id}"),
+                        0.65,
+                        &ctx.scan_id,
+                    );
+                    e.tag("oathnet-pro");
+                    e.tag("discord");
+                    let mut ev =
+                        Evidence::new("oathnet_pro", format!("Discord lookup for {uname}"));
+                    if let Some(n) = data.get("username").and_then(|v| v.as_str()) {
+                        ev = ev.with_attr("discord_username", n);
+                    }
+                    if let Some(a) = data.get("avatar").and_then(|v| v.as_str()) {
+                        ev = ev.with_attr("avatar", a);
+                    }
+                    e.add_evidence(ev);
+                    if seen.insert(format!("@discord:{id}")) {
+                        result.push(e);
+                    }
                 }
             }
 
@@ -205,15 +211,17 @@ impl Module for OathnetPro {
             if target.kind == TargetKind::Email
                 && let Ok(data) = oathnet::osint(key, paths::GHUNT, "email", &target.value).await
                 && let Some(name) = data.get("name").and_then(|v| v.as_str())
-                && name.len() >= 3 && name.contains(' ')
+                && name.len() >= 3
+                && name.contains(' ')
                 && seen.insert(format!("@ghunt:{}", name.to_lowercase()))
             {
                 let mut e = Entity::new(EntityKind::Person, name, 0.70, &ctx.scan_id);
                 e.tag("oathnet-pro");
                 e.tag("google");
-                e.add_evidence(
-                    Evidence::new("oathnet_pro", format!("GHunt: Google account for {}", &target.value))
-                );
+                e.add_evidence(Evidence::new(
+                    "oathnet_pro",
+                    format!("GHunt: Google account for {}", &target.value),
+                ));
                 result.push(e);
             }
         }
@@ -625,10 +633,7 @@ fn extract_victim_entities(
                 let mut e = Entity::new(EntityKind::IpAddress, ip, 0.50, scan_id);
                 e.tag("oathnet-pro");
                 e.tag("victim-device");
-                e.add_evidence(Evidence::new(
-                    "oathnet_pro",
-                    "IP from compromised device",
-                ));
+                e.add_evidence(Evidence::new("oathnet_pro", "IP from compromised device"));
                 result.push(e);
             }
         }
@@ -644,43 +649,191 @@ struct KeyPattern {
 }
 
 const KEY_PATTERNS: &[KeyPattern] = &[
-    KeyPattern { prefix: "sk-ant-", service: "anthropic", min_len: 40 },
-    KeyPattern { prefix: "sk-proj-", service: "openai", min_len: 40 },
-    KeyPattern { prefix: "sk-", service: "openai_or_stripe", min_len: 20 },
-    KeyPattern { prefix: "AIzaSy", service: "google", min_len: 30 },
-    KeyPattern { prefix: "AKIA", service: "aws", min_len: 16 },
-    KeyPattern { prefix: "ASIA", service: "aws_sts", min_len: 16 },
-    KeyPattern { prefix: "ghp_", service: "github", min_len: 36 },
-    KeyPattern { prefix: "gho_", service: "github_oauth", min_len: 36 },
-    KeyPattern { prefix: "ghs_", service: "github_app", min_len: 36 },
-    KeyPattern { prefix: "github_pat_", service: "github", min_len: 40 },
-    KeyPattern { prefix: "SG.", service: "sendgrid", min_len: 20 },
-    KeyPattern { prefix: "xkeysib-", service: "brevo", min_len: 40 },
-    KeyPattern { prefix: "key-", service: "mailgun", min_len: 30 },
-    KeyPattern { prefix: "sk_live_", service: "stripe", min_len: 24 },
-    KeyPattern { prefix: "pk_live_", service: "stripe_pub", min_len: 24 },
-    KeyPattern { prefix: "sk_test_", service: "stripe_test", min_len: 24 },
-    KeyPattern { prefix: "hf_", service: "huggingface", min_len: 30 },
-    KeyPattern { prefix: "r8_", service: "replicate", min_len: 30 },
-    KeyPattern { prefix: "pplx-", service: "perplexity", min_len: 30 },
-    KeyPattern { prefix: "sntrys_", service: "sentry", min_len: 20 },
-    KeyPattern { prefix: "glc_", service: "grafana", min_len: 20 },
-    KeyPattern { prefix: "NRAK-", service: "newrelic", min_len: 20 },
-    KeyPattern { prefix: "dapi", service: "databricks", min_len: 30 },
-    KeyPattern { prefix: "cfut_", service: "cloudflare", min_len: 40 },
-    KeyPattern { prefix: "cfat_", service: "cloudflare_acct", min_len: 40 },
-    KeyPattern { prefix: "shpat_", service: "shopify", min_len: 30 },
-    KeyPattern { prefix: "ntn_", service: "notion", min_len: 40 },
-    KeyPattern { prefix: "lin_api_", service: "linear", min_len: 30 },
-    KeyPattern { prefix: "tfp_", service: "typeform", min_len: 30 },
-    KeyPattern { prefix: "fo1_", service: "flyio", min_len: 30 },
-    KeyPattern { prefix: "sbp_", service: "supabase", min_len: 30 },
-    KeyPattern { prefix: "pul-", service: "pulumi", min_len: 30 },
-    KeyPattern { prefix: "ATATT3", service: "atlassian", min_len: 40 },
-    KeyPattern { prefix: "xoxb-", service: "slack_bot", min_len: 30 },
-    KeyPattern { prefix: "xoxp-", service: "slack_user", min_len: 30 },
-    KeyPattern { prefix: "xapp-", service: "slack_app", min_len: 30 },
-    KeyPattern { prefix: "EAA", service: "facebook", min_len: 40 },
+    KeyPattern {
+        prefix: "sk-ant-",
+        service: "anthropic",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "sk-proj-",
+        service: "openai",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "sk-",
+        service: "openai_or_stripe",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "AIzaSy",
+        service: "google",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "AKIA",
+        service: "aws",
+        min_len: 16,
+    },
+    KeyPattern {
+        prefix: "ASIA",
+        service: "aws_sts",
+        min_len: 16,
+    },
+    KeyPattern {
+        prefix: "ghp_",
+        service: "github",
+        min_len: 36,
+    },
+    KeyPattern {
+        prefix: "gho_",
+        service: "github_oauth",
+        min_len: 36,
+    },
+    KeyPattern {
+        prefix: "ghs_",
+        service: "github_app",
+        min_len: 36,
+    },
+    KeyPattern {
+        prefix: "github_pat_",
+        service: "github",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "SG.",
+        service: "sendgrid",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "xkeysib-",
+        service: "brevo",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "key-",
+        service: "mailgun",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "sk_live_",
+        service: "stripe",
+        min_len: 24,
+    },
+    KeyPattern {
+        prefix: "pk_live_",
+        service: "stripe_pub",
+        min_len: 24,
+    },
+    KeyPattern {
+        prefix: "sk_test_",
+        service: "stripe_test",
+        min_len: 24,
+    },
+    KeyPattern {
+        prefix: "hf_",
+        service: "huggingface",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "r8_",
+        service: "replicate",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "pplx-",
+        service: "perplexity",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "sntrys_",
+        service: "sentry",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "glc_",
+        service: "grafana",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "NRAK-",
+        service: "newrelic",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "dapi",
+        service: "databricks",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "cfut_",
+        service: "cloudflare",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "cfat_",
+        service: "cloudflare_acct",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "shpat_",
+        service: "shopify",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "ntn_",
+        service: "notion",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "lin_api_",
+        service: "linear",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "tfp_",
+        service: "typeform",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "fo1_",
+        service: "flyio",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "sbp_",
+        service: "supabase",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "pul-",
+        service: "pulumi",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "ATATT3",
+        service: "atlassian",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "xoxb-",
+        service: "slack_bot",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "xoxp-",
+        service: "slack_user",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "xapp-",
+        service: "slack_app",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "EAA",
+        service: "facebook",
+        min_len: 40,
+    },
 ];
 
 fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
@@ -708,48 +861,56 @@ fn extract_api_keys_from_item(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    let fields = ["password", "password_hash", "api_key", "token", "secret",
-                   "access_key", "auth_token", "api_token"];
+    let fields = [
+        "password",
+        "password_hash",
+        "api_key",
+        "token",
+        "secret",
+        "access_key",
+        "auth_token",
+        "api_token",
+    ];
 
     for field in &fields {
         if let Some(val) = val_str(item, field)
             && let Some((service, key_val)) = identify_api_key(&val)
         {
-                let dedup = format!("@apikey:{service}:{}", &key_val[..key_val.len().min(16)]);
-                if !seen.insert(dedup) {
-                    continue;
-                }
+            let dedup = format!("@apikey:{service}:{}", &key_val[..key_val.len().min(16)]);
+            if !seen.insert(dedup) {
+                continue;
+            }
 
-                // Emit as Credential entity tagged for api_key_probe expansion
-                let mut entity = Entity::new(
-                    EntityKind::ApiKey,
-                    key_val,
-                    0.80,
-                    scan_id,
-                );
-                entity.tag("api-key");
-                entity.tag(format!("service:{service}"));
-                entity.tag("oathnet-pro");
-                entity.tag("auto-discovered");
+            // Emit as Credential entity tagged for api_key_probe expansion
+            let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.80, scan_id);
+            entity.tag("api-key");
+            entity.tag(format!("service:{service}"));
+            entity.tag("oathnet-pro");
+            entity.tag("auto-discovered");
 
-                let db = val_str(item, "dbname").unwrap_or_default();
-                entity.add_evidence(
-                    Evidence::new(
-                        "oathnet_pro",
-                        format!("API key discovered ({service}) in {}", if db.is_empty() { "stealer log" } else { &db }),
-                    )
-                    .with_attr("service", service)
-                    .with_attr("key_prefix", &key_val[..key_val.len().min(8)])
-                    .with_attr("key_length", key_val.len().to_string()),
-                );
-                result.push(entity);
+            let db = val_str(item, "dbname").unwrap_or_default();
+            entity.add_evidence(
+                Evidence::new(
+                    "oathnet_pro",
+                    format!(
+                        "API key discovered ({service}) in {}",
+                        if db.is_empty() { "stealer log" } else { &db }
+                    ),
+                )
+                .with_attr("service", service)
+                .with_attr("key_prefix", &key_val[..key_val.len().min(8)])
+                .with_attr("key_length", key_val.len().to_string()),
+            );
+            result.push(entity);
 
-                // Auto-store in key pool
-                let pool = crate::util::key_pool::global_pool();
-                let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-                entry.notes = Some(format!("Auto-discovered {service} key from OathNet breach/stealer data"));
-                pool.add(service, entry);
-                let _ = crate::util::key_pool::save_pool(&pool);
+            // Auto-store in key pool
+            let pool = crate::util::key_pool::global_pool();
+            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            entry.notes = Some(format!(
+                "Auto-discovered {service} key from OathNet breach/stealer data"
+            ));
+            pool.add(service, entry);
+            let _ = crate::util::key_pool::save_pool(&pool);
         }
     }
 
@@ -757,26 +918,26 @@ fn extract_api_keys_from_item(
     if let Some(user) = val_str(item, "username")
         && let Some((service, key_val)) = identify_api_key(&user)
     {
-            let dedup = format!("@apikey:{service}:{}", &key_val[..key_val.len().min(16)]);
-            if seen.insert(dedup) {
-                let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.75, scan_id);
-                entity.tag("api-key");
-                entity.tag(format!("service:{service}"));
-                entity.tag("oathnet-pro");
-                entity.add_evidence(
-                    Evidence::new(
-                        "oathnet_pro",
-                        format!("API key in username field ({service})"),
-                    )
-                    .with_attr("service", service),
-                );
-                result.push(entity);
+        let dedup = format!("@apikey:{service}:{}", &key_val[..key_val.len().min(16)]);
+        if seen.insert(dedup) {
+            let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.75, scan_id);
+            entity.tag("api-key");
+            entity.tag(format!("service:{service}"));
+            entity.tag("oathnet-pro");
+            entity.add_evidence(
+                Evidence::new(
+                    "oathnet_pro",
+                    format!("API key in username field ({service})"),
+                )
+                .with_attr("service", service),
+            );
+            result.push(entity);
 
-                let pool = crate::util::key_pool::global_pool();
-                let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-                entry.notes = Some(format!("Auto-discovered {service} key (username field)"));
-                pool.add(service, entry);
-                let _ = crate::util::key_pool::save_pool(&pool);
+            let pool = crate::util::key_pool::global_pool();
+            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            entry.notes = Some(format!("Auto-discovered {service} key (username field)"));
+            pool.add(service, entry);
+            let _ = crate::util::key_pool::save_pool(&pool);
         }
     }
 }
@@ -896,8 +1057,7 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
                 let pw = val_str(item, "password").unwrap_or_default();
                 let user = val_str(item, "username").unwrap_or_default();
                 let url = val_str(item, "url").unwrap_or_default();
-                if user.is_empty() || pw.is_empty()
-                    || !seen.insert(format!("pw:{service}:{user}"))
+                if user.is_empty() || pw.is_empty() || !seen.insert(format!("pw:{service}:{user}"))
                 {
                     continue;
                 }
@@ -922,13 +1082,27 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
     // field contains the actual key value. NOT domain-precise, but the
     // values are API-key-shaped (28+ chars, mixed alphanumeric).
     const KEY_FIELD_NAMES: &[&str] = &[
-        "api_key", "apikey", "api-key", "apiKey",
-        "access_key", "secret_key", "api_token", "auth_token",
-        "token", "access_token", "x-api-key", "x-key",
-        "SHODAN_API_KEY", "VT_API_KEY", "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY", "GITHUB_TOKEN",
-        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-        "STRIPE_SECRET_KEY", "SENDGRID_API_KEY",
+        "api_key",
+        "apikey",
+        "api-key",
+        "apiKey",
+        "access_key",
+        "secret_key",
+        "api_token",
+        "auth_token",
+        "token",
+        "access_token",
+        "x-api-key",
+        "x-key",
+        "SHODAN_API_KEY",
+        "VT_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GITHUB_TOKEN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "STRIPE_SECRET_KEY",
+        "SENDGRID_API_KEY",
     ];
     for field_name in KEY_FIELD_NAMES {
         if pool.total_keys() > 500 {
@@ -942,7 +1116,11 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
                     continue;
                 }
                 let service = identify_service_from_url(&url);
-                let label = if service != "unknown" { service } else { "discovered_api_key" };
+                let label = if service != "unknown" {
+                    service
+                } else {
+                    "discovered_api_key"
+                };
                 let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
                 entry.notes = Some(format!(
                     "OathNet field-capture [{field_name}->{label}]: url={}",
@@ -967,7 +1145,9 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
                         && seen.insert(format!("br:{svc}:{}", &key_val[..key_val.len().min(12)]))
                     {
                         let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-                        entry.notes = Some(format!("OathNet breach [{svc}]: field={field} via={service}"));
+                        entry.notes = Some(format!(
+                            "OathNet breach [{svc}]: field={field} via={service}"
+                        ));
                         pool.add(svc, entry);
                         stored += 1;
                     }
@@ -980,8 +1160,6 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
         let _ = crate::util::key_pool::save_pool(&pool);
     }
 }
-
-
 
 fn store_unique_stealer_keys(
     items: &[Value],
@@ -1014,8 +1192,8 @@ fn store_unique_stealer_keys(
             })
             .unwrap_or_default();
 
-        let url_matches = url_lower.contains(domain)
-            || domains_field.iter().any(|d| d.contains(domain));
+        let url_matches =
+            url_lower.contains(domain) || domains_field.iter().any(|d| d.contains(domain));
 
         if url_matches {
             let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
@@ -1079,9 +1257,7 @@ fn store_api_credential(item: &Value) {
         let _ = crate::util::key_pool::save_pool(&pool);
     }
 
-    let user_entry = crate::util::key_pool::KeyEntry::new(
-        format!("{}:{}", username, password),
-    );
+    let user_entry = crate::util::key_pool::KeyEntry::new(format!("{}:{}", username, password));
     pool.add(&format!("{service}_login"), user_entry);
     let _ = crate::util::key_pool::save_pool(&pool);
 }

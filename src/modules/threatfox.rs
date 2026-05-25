@@ -140,7 +140,10 @@ impl Module for ThreatFox {
             "no_result" => return Ok(ModuleResult::new()),
             "rate_limited" => {
                 ctx.report_key_exhausted("threatfox", key, 429);
-                return Err(Error::module("threatfox", "query_status=rate_limited".to_string()));
+                return Err(Error::module(
+                    "threatfox",
+                    "query_status=rate_limited".to_string(),
+                ));
             }
             other => {
                 return Err(Error::module("threatfox", format!("query_status={other}")));

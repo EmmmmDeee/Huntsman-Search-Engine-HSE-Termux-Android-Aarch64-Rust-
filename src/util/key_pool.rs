@@ -386,8 +386,7 @@ impl KeyPool {
             entry.status = status;
             if status == KeyStatus::RateLimited {
                 let reset = rate_limit_reset(service);
-                entry.rate_limit_reset =
-                    Some(crate::core::entity::unix_now() + reset);
+                entry.rate_limit_reset = Some(crate::core::entity::unix_now() + reset);
             }
         }
     }
@@ -433,7 +432,9 @@ impl KeyPool {
         let data = self.data.lock();
         data.services
             .get(&service.to_lowercase())
-            .map_or(0, |entries| entries.iter().filter(|e| e.is_usable()).count())
+            .map_or(0, |entries| {
+                entries.iter().filter(|e| e.is_usable()).count()
+            })
     }
 
     pub fn total_keys(&self) -> usize {
@@ -474,8 +475,7 @@ pub fn load_pool() -> KeyPool {
 pub fn save_pool(pool: &KeyPool) -> std::io::Result<()> {
     let path = pool_path();
     let data = pool.snapshot();
-    let json = serde_json::to_string_pretty(&data)
-        .map_err(std::io::Error::other)?;
+    let json = serde_json::to_string_pretty(&data).map_err(std::io::Error::other)?;
     std::fs::write(&path, json)?;
     #[cfg(unix)]
     {
@@ -498,7 +498,15 @@ async fn validate_against_endpoint(sdef: ServiceDef, key: &str) -> bool {
     let secs = (timeout_ms / 1000).to_string();
 
     let mut cmd = tokio::process::Command::new("curl");
-    cmd.args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", &secs]);
+    cmd.args([
+        "-s",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "--max-time",
+        &secs,
+    ]);
 
     match sdef.key_header {
         KeyPlacement::QueryParam(param) => {
@@ -541,10 +549,7 @@ async fn validate_against_endpoint(sdef: ServiceDef, key: &str) -> bool {
 
 // ── Integration with ModuleContext keys ──────────────────────────────────────
 
-pub fn merge_pool_into_env(
-    pool: &KeyPool,
-    keys: &mut HashMap<String, String>,
-) {
+pub fn merge_pool_into_env(pool: &KeyPool, keys: &mut HashMap<String, String>) {
     let defs = service_defs();
     for sdef in &defs {
         if keys.contains_key(sdef.env_var) {

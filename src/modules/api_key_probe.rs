@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleCost, ModuleContext, ModuleResult},
+    module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::key_pool::{self, KeyEntry, KeyStatus};
@@ -36,9 +36,7 @@ fn probes() -> Vec<Probe> {
             service: "shodan",
             category: "infrastructure",
             env_var: "HUNTSMAN_SHODAN_KEY",
-            url_builder: |key| {
-                (format!("https://api.shodan.io/api-info?key={key}"), vec![])
-            },
+            url_builder: |key| (format!("https://api.shodan.io/api-info?key={key}"), vec![]),
             parse_info: |v| {
                 let mut out = Vec::new();
                 if let Some(p) = v.get("plan").and_then(|v| v.as_str()) {
@@ -58,8 +56,10 @@ fn probes() -> Vec<Probe> {
             category: "threat_intel",
             env_var: "HUNTSMAN_VIRUSTOTAL_KEY",
             url_builder: |_key| {
-                ("https://www.virustotal.com/api/v3/users/me".into(),
-                 vec![("x-apikey", String::new())])
+                (
+                    "https://www.virustotal.com/api/v3/users/me".into(),
+                    vec![("x-apikey", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -82,8 +82,10 @@ fn probes() -> Vec<Probe> {
             category: "breach",
             env_var: "HUNTSMAN_INTELX_KEY",
             url_builder: |_key| {
-                ("https://2.intelx.io/authenticate/info".into(),
-                 vec![("x-key", String::new())])
+                (
+                    "https://2.intelx.io/authenticate/info".into(),
+                    vec![("x-key", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -104,8 +106,10 @@ fn probes() -> Vec<Probe> {
             category: "infrastructure",
             env_var: "HUNTSMAN_SECTRAILS_KEY",
             url_builder: |_key| {
-                ("https://api.securitytrails.com/v1/ping".into(),
-                 vec![("APIKEY", String::new())])
+                (
+                    "https://api.securitytrails.com/v1/ping".into(),
+                    vec![("APIKEY", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -120,7 +124,10 @@ fn probes() -> Vec<Probe> {
             category: "identity",
             env_var: "HUNTSMAN_HUNTER_KEY",
             url_builder: |key| {
-                (format!("https://api.hunter.io/v2/account?api_key={key}"), vec![])
+                (
+                    format!("https://api.hunter.io/v2/account?api_key={key}"),
+                    vec![],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -129,7 +136,10 @@ fn probes() -> Vec<Probe> {
                         out.push(("plan".into(), p.to_string()));
                     }
                     if let Some(r) = data.get("requests")
-                        && let Some(avail) = r.get("searches").and_then(|s| s.get("available")).and_then(|v| v.as_u64())
+                        && let Some(avail) = r
+                            .get("searches")
+                            .and_then(|s| s.get("available"))
+                            .and_then(|v| v.as_u64())
                     {
                         out.push(("searches_available".into(), avail.to_string()));
                     }
@@ -142,19 +152,22 @@ fn probes() -> Vec<Probe> {
             category: "breach",
             env_var: "HUNTSMAN_LEAKIX_KEY",
             url_builder: |_key| {
-                ("https://leakix.net/api/subdomains/example.com".into(),
-                 vec![("api-key", String::new())])
+                (
+                    "https://leakix.net/api/subdomains/example.com".into(),
+                    vec![("api-key", String::new())],
+                )
             },
-            parse_info: |_v| {
-                vec![("status".into(), "authenticated".into())]
-            },
+            parse_info: |_v| vec![("status".into(), "authenticated".into())],
         },
         Probe {
             service: "ipqs",
             category: "threat_intel",
             env_var: "HUNTSMAN_IPQS_KEY",
             url_builder: |key| {
-                (format!("https://ipqualityscore.com/api/json/account/{key}"), vec![])
+                (
+                    format!("https://ipqualityscore.com/api/json/account/{key}"),
+                    vec![],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -172,8 +185,10 @@ fn probes() -> Vec<Probe> {
             category: "threat_intel",
             env_var: "HUNTSMAN_CRIMINALIP_KEY",
             url_builder: |_key| {
-                ("https://api.criminalip.io/v1/user/me".into(),
-                 vec![("x-api-key", String::new())])
+                (
+                    "https://api.criminalip.io/v1/user/me".into(),
+                    vec![("x-api-key", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -190,7 +205,12 @@ fn probes() -> Vec<Probe> {
             category: "identity",
             env_var: "HUNTSMAN_NUMVERIFY_KEY",
             url_builder: |key| {
-                (format!("https://apilayer.net/api/validate?number=14158586273&access_key={key}"), vec![])
+                (
+                    format!(
+                        "https://apilayer.net/api/validate?number=14158586273&access_key={key}"
+                    ),
+                    vec![],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -205,8 +225,10 @@ fn probes() -> Vec<Probe> {
             category: "geoint",
             env_var: "HUNTSMAN_WIGLE_TOKEN",
             url_builder: |_key| {
-                ("https://api.wigle.net/api/v2/profile/user".into(),
-                 vec![("Authorization", "Basic".to_string())])
+                (
+                    "https://api.wigle.net/api/v2/profile/user".into(),
+                    vec![("Authorization", "Basic".to_string())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -221,20 +243,23 @@ fn probes() -> Vec<Probe> {
             category: "breach",
             env_var: "HUNTSMAN_HIBP_KEY",
             url_builder: |_key| {
-                ("https://haveibeenpwned.com/api/v3/breaches".into(),
-                 vec![("hibp-api-key", String::new())])
+                (
+                    "https://haveibeenpwned.com/api/v3/breaches".into(),
+                    vec![("hibp-api-key", String::new())],
+                )
             },
-            parse_info: |_v| {
-                vec![("status".into(), "authenticated".into())]
-            },
+            parse_info: |_v| vec![("status".into(), "authenticated".into())],
         },
         Probe {
             service: "abuseipdb",
             category: "threat_intel",
             env_var: "HUNTSMAN_ABUSEIPDB_KEY",
             url_builder: |_key| {
-                ("https://api.abuseipdb.com/api/v2/check?ipAddress=8.8.8.8&maxAgeInDays=1".into(),
-                 vec![("Key", String::new())])
+                (
+                    "https://api.abuseipdb.com/api/v2/check?ipAddress=8.8.8.8&maxAgeInDays=1"
+                        .into(),
+                    vec![("Key", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -251,8 +276,10 @@ fn probes() -> Vec<Probe> {
             url_builder: |_key| {
                 // Censys uses HTTP Basic Auth with API_ID:API_SECRET
                 // The key value should be "id:secret" format
-                ("https://search.censys.io/api/v2/hosts/1.1.1.1".into(),
-                 vec![("_basic_auth", String::new())])
+                (
+                    "https://search.censys.io/api/v2/hosts/1.1.1.1".into(),
+                    vec![("_basic_auth", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -268,12 +295,18 @@ fn probes() -> Vec<Probe> {
             category: "infrastructure",
             env_var: "HUNTSMAN_BINARYEDGE_KEY",
             url_builder: |_key| {
-                ("https://api.binaryedge.io/v2/user/subscription".into(),
-                 vec![("X-Key", String::new())])
+                (
+                    "https://api.binaryedge.io/v2/user/subscription".into(),
+                    vec![("X-Key", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
-                if let Some(p) = v.get("subscription").and_then(|s| s.get("name")).and_then(|v| v.as_str()) {
+                if let Some(p) = v
+                    .get("subscription")
+                    .and_then(|s| s.get("name"))
+                    .and_then(|v| v.as_str())
+                {
                     out.push(("plan".into(), p.to_string()));
                 }
                 if let Some(c) = v.get("requests_left").and_then(|v| v.as_u64()) {
@@ -289,8 +322,10 @@ fn probes() -> Vec<Probe> {
             url_builder: |_key| {
                 // Use the paid v3 IP endpoint — community endpoint works
                 // without auth and would cause false positives
-                ("https://api.greynoise.io/v3/ip/8.8.8.8".into(),
-                 vec![("key", String::new())])
+                (
+                    "https://api.greynoise.io/v3/ip/8.8.8.8".into(),
+                    vec![("key", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -308,15 +343,26 @@ fn probes() -> Vec<Probe> {
             category: "infrastructure",
             env_var: "HUNTSMAN_FULLHUNT_KEY",
             url_builder: |_key| {
-                ("https://fullhunt.io/api/v1/auth/status".into(),
-                 vec![("X-API-KEY", String::new())])
+                (
+                    "https://fullhunt.io/api/v1/auth/status".into(),
+                    vec![("X-API-KEY", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
-                if let Some(u) = v.get("user").and_then(|u| u.get("plan")).and_then(|v| v.as_str()) {
+                if let Some(u) = v
+                    .get("user")
+                    .and_then(|u| u.get("plan"))
+                    .and_then(|v| v.as_str())
+                {
                     out.push(("plan".into(), u.to_string()));
                 }
-                if let Some(c) = v.get("user").and_then(|u| u.get("credits")).and_then(|u| u.get("remaining")).and_then(|v| v.as_u64()) {
+                if let Some(c) = v
+                    .get("user")
+                    .and_then(|u| u.get("credits"))
+                    .and_then(|u| u.get("remaining"))
+                    .and_then(|v| v.as_u64())
+                {
                     out.push(("credits_remaining".into(), c.to_string()));
                 }
                 out
@@ -327,8 +373,10 @@ fn probes() -> Vec<Probe> {
             category: "threat_intel",
             env_var: "HUNTSMAN_URLSCAN_KEY",
             url_builder: |_key| {
-                ("https://urlscan.io/api/v1/search/?q=domain:example.com&size=1".into(),
-                 vec![("API-Key", String::new())])
+                (
+                    "https://urlscan.io/api/v1/search/?q=domain:example.com&size=1".into(),
+                    vec![("API-Key", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -343,12 +391,18 @@ fn probes() -> Vec<Probe> {
             category: "infrastructure",
             env_var: "HUNTSMAN_PASSIVETOTAL_KEY",
             url_builder: |_key| {
-                ("https://api.passivetotal.org/v2/account/quota".into(),
-                 vec![("_basic_auth", String::new())])
+                (
+                    "https://api.passivetotal.org/v2/account/quota".into(),
+                    vec![("_basic_auth", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
-                if let Some(u) = v.get("user").and_then(|u| u.get("owner")).and_then(|v| v.as_str()) {
+                if let Some(u) = v
+                    .get("user")
+                    .and_then(|u| u.get("owner"))
+                    .and_then(|v| v.as_str())
+                {
                     out.push(("owner".into(), u.to_string()));
                 }
                 out
@@ -359,8 +413,10 @@ fn probes() -> Vec<Probe> {
             category: "infrastructure",
             env_var: "HUNTSMAN_ONYPHE_KEY",
             url_builder: |_key| {
-                ("https://www.onyphe.io/api/v2/simple/whois/best/8.8.8.8".into(),
-                 vec![("Authorization", "bearer".to_string())])
+                (
+                    "https://www.onyphe.io/api/v2/simple/whois/best/8.8.8.8".into(),
+                    vec![("Authorization", "bearer".to_string())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -375,15 +431,21 @@ fn probes() -> Vec<Probe> {
             category: "infrastructure",
             env_var: "HUNTSMAN_ZOOMEYE_KEY",
             url_builder: |_key| {
-                ("https://api.zoomeye.org/resources-info".into(),
-                 vec![("API-KEY", String::new())])
+                (
+                    "https://api.zoomeye.org/resources-info".into(),
+                    vec![("API-KEY", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
                 if let Some(p) = v.get("plan").and_then(|v| v.as_str()) {
                     out.push(("plan".into(), p.to_string()));
                 }
-                if let Some(c) = v.get("resources").and_then(|r| r.get("search")).and_then(|v| v.as_u64()) {
+                if let Some(c) = v
+                    .get("resources")
+                    .and_then(|r| r.get("search"))
+                    .and_then(|v| v.as_u64())
+                {
                     out.push(("search_credits".into(), c.to_string()));
                 }
                 out
@@ -394,8 +456,10 @@ fn probes() -> Vec<Probe> {
             category: "infrastructure",
             env_var: "HUNTSMAN_NETLAS_KEY",
             url_builder: |_key| {
-                ("https://app.netlas.io/api/users/current/".into(),
-                 vec![("X-API-Key", String::new())])
+                (
+                    "https://app.netlas.io/api/users/current/".into(),
+                    vec![("X-API-Key", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -410,7 +474,10 @@ fn probes() -> Vec<Probe> {
             category: "threat_intel",
             env_var: "HUNTSMAN_PULSEDIVE_KEY",
             url_builder: |key| {
-                (format!("https://pulsedive.com/api/info.php?indicator=pulsedive.com&key={key}"), vec![])
+                (
+                    format!("https://pulsedive.com/api/info.php?indicator=pulsedive.com&key={key}"),
+                    vec![],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -425,8 +492,10 @@ fn probes() -> Vec<Probe> {
             category: "identity",
             env_var: "HUNTSMAN_EMAILREP_KEY",
             url_builder: |_key| {
-                ("https://emailrep.io/test@example.com".into(),
-                 vec![("Key", String::new())])
+                (
+                    "https://emailrep.io/test@example.com".into(),
+                    vec![("Key", String::new())],
+                )
             },
             parse_info: |v| {
                 let mut out = Vec::new();
@@ -527,7 +596,10 @@ impl Module for ApiKeyProbe {
 
             let mut ev = Evidence::new(
                 "api_key_probe",
-                format!("API key identified as {} ({})", probe.service, probe.category),
+                format!(
+                    "API key identified as {} ({})",
+                    probe.service, probe.category
+                ),
             )
             .with_attr("service", probe.service)
             .with_attr("category", probe.category)
@@ -582,11 +654,7 @@ impl Module for ApiKeyProbe {
     }
 }
 
-async fn probe_endpoint(
-    url: &str,
-    key: &str,
-    headers: &[(&str, String)],
-) -> Option<String> {
+async fn probe_endpoint(url: &str, key: &str, headers: &[(&str, String)]) -> Option<String> {
     let secs = 10u64.to_string();
     let mut cmd = tokio::process::Command::new("curl");
     cmd.args(["-s", "--max-time", &secs]);
@@ -609,13 +677,10 @@ async fn probe_endpoint(
     cmd.args(["--", url]);
     cmd.kill_on_drop(true);
 
-    let output = tokio::time::timeout(
-        Duration::from_secs(12),
-        cmd.output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
+    let output = tokio::time::timeout(Duration::from_secs(12), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
 
     if !output.status.success() {
         return None;
@@ -636,8 +701,10 @@ fn is_error_response(v: &Value) -> bool {
     }
     if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
         let lower = err.to_lowercase();
-        if lower.contains("invalid") || lower.contains("unauthorized")
-            || lower.contains("denied") || lower.contains("forbidden")
+        if lower.contains("invalid")
+            || lower.contains("unauthorized")
+            || lower.contains("denied")
+            || lower.contains("forbidden")
             || lower.contains("authentication")
         {
             return true;

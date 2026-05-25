@@ -110,7 +110,8 @@ impl Module for WebCrawler {
             }
             let parsed = Url::parse(&raw)
                 .map_err(|e| Error::module("web_crawler", format!("bad URL target: {e}")))?;
-            let host = parsed.host_str()
+            let host = parsed
+                .host_str()
                 .ok_or_else(|| Error::module("web_crawler", "URL has no host"))?
                 .to_lowercase();
             (raw, host)
@@ -123,8 +124,16 @@ impl Module for WebCrawler {
             (s, d)
         };
 
-        let max_pages = if is_url_target { URL_TARGET_MAX_PAGES } else { MAX_PAGES };
-        let max_depth = if is_url_target { URL_TARGET_MAX_DEPTH } else { MAX_DEPTH };
+        let max_pages = if is_url_target {
+            URL_TARGET_MAX_PAGES
+        } else {
+            MAX_PAGES
+        };
+        let max_depth = if is_url_target {
+            URL_TARGET_MAX_DEPTH
+        } else {
+            MAX_DEPTH
+        };
 
         let seed_url = Url::parse(&seed)
             .map_err(|e| Error::module("web_crawler", format!("bad seed URL: {e}")))?;
@@ -230,7 +239,15 @@ impl Module for WebCrawler {
             }
         }
 
-        build_entities(&domain, &base_host, &ctx.scan_id, max_depth, is_url_target, &seed_for_entities, &mut state);
+        build_entities(
+            &domain,
+            &base_host,
+            &ctx.scan_id,
+            max_depth,
+            is_url_target,
+            &seed_for_entities,
+            &mut state,
+        );
         Ok(state.result)
     }
 }
@@ -605,7 +622,15 @@ fn audit_security_headers(
     }
 }
 
-fn build_entities(domain: &str, _base_host: &str, scan_id: &str, max_depth: u32, is_url_target: bool, seed_url: &str, state: &mut CrawlState) {
+fn build_entities(
+    domain: &str,
+    _base_host: &str,
+    scan_id: &str,
+    max_depth: u32,
+    is_url_target: bool,
+    seed_url: &str,
+    state: &mut CrawlState,
+) {
     // For URL targets, emit the URL entity itself with crawl results
     if is_url_target {
         let mut url_entity = Entity::new(EntityKind::Url, seed_url, 0.90, scan_id);
@@ -617,7 +642,10 @@ fn build_entities(domain: &str, _base_host: &str, scan_id: &str, max_depth: u32,
         url_entity.add_evidence(
             Evidence::new(
                 "web_crawler",
-                format!("Single-page harvest of {seed_url}: {} pages", state.pages_fetched),
+                format!(
+                    "Single-page harvest of {seed_url}: {} pages",
+                    state.pages_fetched
+                ),
             )
             .with_attr("pages_crawled", state.pages_fetched.to_string())
             .with_attr("emails_found", state.emails.len().to_string())

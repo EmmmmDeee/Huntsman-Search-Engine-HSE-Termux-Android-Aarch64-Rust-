@@ -176,8 +176,7 @@ pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, Stri
                     continue;
                 }
                 let url_lower = url.to_lowercase();
-                let url_matches = url_lower.contains(service)
-                    || url_lower.contains(svc_base);
+                let url_matches = url_lower.contains(service) || url_lower.contains(svc_base);
                 if !url_matches {
                     continue;
                 }

@@ -602,7 +602,11 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
     let pool = key_pool::global_pool();
 
     match action {
-        KeysAction::Add { service, key, notes } => {
+        KeysAction::Add {
+            service,
+            key,
+            notes,
+        } => {
             if key_pool::find_service(&service).is_none() {
                 let names: Vec<&str> = key_pool::service_defs().iter().map(|s| s.name).collect();
                 println!("Unknown service '{service}'. Known: {}", names.join(", "));
@@ -611,8 +615,7 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
             let mut entry = KeyEntry::new(&key);
             entry.notes = notes;
             if pool.add(&service, entry) {
-                key_pool::save_pool(&pool)
-                    .map_err(|e| Error::Other(format!("save: {e}")))?;
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
                 println!(
                     "Added key to '{service}' pool ({} total)",
                     pool.service_count(&service)
@@ -678,7 +681,10 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
             let mut active = 0u32;
             for (svc, entries) in &targets {
                 for entry in entries {
-                    print!("  {svc}: testing {}… ", &entry.value[..entry.value.len().min(8)]);
+                    print!(
+                        "  {svc}: testing {}… ",
+                        &entry.value[..entry.value.len().min(8)]
+                    );
                     match key_pool::validate_key(svc, &entry.value).await {
                         Some(true) => {
                             pool.mark_validated(svc, &entry.value, true);
@@ -696,15 +702,13 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
                     validated += 1;
                 }
             }
-            key_pool::save_pool(&pool)
-                .map_err(|e| Error::Other(format!("save: {e}")))?;
+            key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
             println!("\nValidated {validated} keys: {active} active.");
         }
 
         KeysAction::Remove { service, key } => {
             if pool.remove(&service, &key) {
-                key_pool::save_pool(&pool)
-                    .map_err(|e| Error::Other(format!("save: {e}")))?;
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
                 println!("Removed key from '{service}' pool.");
             } else {
                 println!("Key not found in '{service}' pool.");

@@ -124,14 +124,13 @@ impl Module for Numverify {
             Ok(Some(data))
         };
         let https = format!("https://apilayer.net{qs}");
-        let (body_opt, transport): (Option<Resp>, &'static str) =
-            match try_url(https).await {
-                Ok(b) => (b, "https"),
-                Err(_) => {
-                    let http = format!("http://apilayer.net{qs}");
-                    (try_url(http).await?, "http")
-                }
-            };
+        let (body_opt, transport): (Option<Resp>, &'static str) = match try_url(https).await {
+            Ok(b) => (b, "https"),
+            Err(_) => {
+                let http = format!("http://apilayer.net{qs}");
+                (try_url(http).await?, "http")
+            }
+        };
         let Some(body) = body_opt else {
             return Ok(ModuleResult::new());
         };
