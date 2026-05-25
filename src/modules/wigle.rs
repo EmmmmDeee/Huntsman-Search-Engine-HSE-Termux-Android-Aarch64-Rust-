@@ -54,6 +54,9 @@ impl Module for Wigle {
     fn name(&self) -> &'static str {
         "wigle"
     }
+    fn description(&self) -> &'static str {
+        "WiGLE wireless network geolocation database"
+    }
     fn priority(&self) -> u8 {
         70
     }

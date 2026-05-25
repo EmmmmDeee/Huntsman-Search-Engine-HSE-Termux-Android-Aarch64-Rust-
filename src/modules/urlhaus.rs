@@ -64,6 +64,10 @@ impl Module for UrlHaus {
         "urlhaus"
     }
 
+    fn description(&self) -> &'static str {
+        "Abuse.ch URLhaus malware URL threat check"
+    }
+
     fn priority(&self) -> u8 {
         // High-signal threat intel — runs early so other modules see
         // the "malicious" tag in correlations they emit.

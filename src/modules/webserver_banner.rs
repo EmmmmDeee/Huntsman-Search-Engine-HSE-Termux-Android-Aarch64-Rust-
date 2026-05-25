@@ -47,6 +47,10 @@ impl Module for WebserverBanner {
         "webserver_banner"
     }
 
+    fn description(&self) -> &'static str {
+        "HTTP header fingerprinting and tech stack detection"
+    }
+
     fn priority(&self) -> u8 {
         36
     }

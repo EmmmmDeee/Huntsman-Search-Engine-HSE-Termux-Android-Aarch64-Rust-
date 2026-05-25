@@ -53,6 +53,9 @@ impl Module for Shodan {
     fn name(&self) -> &'static str {
         "shodan"
     }
+    fn description(&self) -> &'static str {
+        "Internet-wide service scan data for IP addresses"
+    }
     fn priority(&self) -> u8 {
         105
     }

@@ -33,6 +33,9 @@ impl Module for WifiScan {
     fn name(&self) -> &'static str {
         "wifi_scan"
     }
+    fn description(&self) -> &'static str {
+        "Termux WiFi access point survey"
+    }
     fn priority(&self) -> u8 {
         65
     }

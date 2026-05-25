@@ -271,6 +271,10 @@ impl Module for PhoneIntl {
         "phone_intl"
     }
 
+    fn description(&self) -> &'static str {
+        "Offline phone number country and format analysis"
+    }
+
     fn priority(&self) -> u8 {
         // Highest among Phone-accepting modules so it runs before any
         // future paid carrier-lookup modules — country code is the

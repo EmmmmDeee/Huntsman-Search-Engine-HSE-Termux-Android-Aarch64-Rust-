@@ -81,6 +81,10 @@ impl Module for TorExitCheck {
         "tor_exit_check"
     }
 
+    fn description(&self) -> &'static str {
+        "Tor exit relay membership verification"
+    }
+
     fn priority(&self) -> u8 {
         32
     }

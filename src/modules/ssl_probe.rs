@@ -30,6 +30,10 @@ impl Module for SslProbe {
         "ssl_probe"
     }
 
+    fn description(&self) -> &'static str {
+        "TLS certificate analysis and SAN subdomain discovery"
+    }
+
     fn priority(&self) -> u8 {
         26
     }

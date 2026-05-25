@@ -27,6 +27,10 @@ impl Module for ReverseDns {
         "reverse_dns"
     }
 
+    fn description(&self) -> &'static str {
+        "PTR record lookup for IP to hostname mapping"
+    }
+
     fn priority(&self) -> u8 {
         // Same band as dns_resolver — runs alongside the forward lookup
         // so the SPA shows them as a pair.

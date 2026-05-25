@@ -54,6 +54,10 @@ impl Module for SearchEngines {
         "search_engines"
     }
 
+    fn description(&self) -> &'static str {
+        "Multi-engine OSINT dork search across 5 engines"
+    }
+
     fn priority(&self) -> u8 {
         25
     }

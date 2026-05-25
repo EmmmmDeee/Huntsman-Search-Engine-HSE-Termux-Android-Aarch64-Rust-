@@ -251,6 +251,10 @@ impl Module for UsernameSearch {
         "username_search"
     }
 
+    fn description(&self) -> &'static str {
+        "Username enumeration across social platforms"
+    }
+
     fn priority(&self) -> u8 {
         // Higher than email_to_username (95) so it dispatches first when
         // a Username target is the seed — gives the user visible progress

@@ -94,6 +94,10 @@ impl Module for XposedOrNot {
         "xposed_or_not"
     }
 
+    fn description(&self) -> &'static str {
+        "Email breach lookup with analytics enrichment"
+    }
+
     fn priority(&self) -> u8 {
         128
     }

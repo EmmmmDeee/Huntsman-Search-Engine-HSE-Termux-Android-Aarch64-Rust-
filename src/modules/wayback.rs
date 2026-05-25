@@ -38,6 +38,10 @@ impl Module for Wayback {
         "wayback"
     }
 
+    fn description(&self) -> &'static str {
+        "Internet Archive Wayback Machine history lookup"
+    }
+
     fn priority(&self) -> u8 {
         38
     }

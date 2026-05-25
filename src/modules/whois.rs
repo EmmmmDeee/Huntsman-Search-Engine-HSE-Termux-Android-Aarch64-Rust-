@@ -29,6 +29,10 @@ impl Module for Whois {
         "whois"
     }
 
+    fn description(&self) -> &'static str {
+        "WHOIS registration data and contact extraction"
+    }
+
     fn priority(&self) -> u8 {
         32
     }

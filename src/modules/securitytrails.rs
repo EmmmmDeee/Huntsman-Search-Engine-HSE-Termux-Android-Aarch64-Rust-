@@ -36,6 +36,9 @@ impl Module for SecurityTrails {
     fn name(&self) -> &'static str {
         "securitytrails"
     }
+    fn description(&self) -> &'static str {
+        "Subdomain enumeration via SecurityTrails API"
+    }
     fn priority(&self) -> u8 {
         45
     }

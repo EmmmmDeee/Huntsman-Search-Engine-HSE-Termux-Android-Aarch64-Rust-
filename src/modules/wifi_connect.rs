@@ -33,6 +33,9 @@ impl Module for WifiConnect {
     fn name(&self) -> &'static str {
         "wifi_connect"
     }
+    fn description(&self) -> &'static str {
+        "Termux current WiFi connection metadata"
+    }
     fn priority(&self) -> u8 {
         70
     }

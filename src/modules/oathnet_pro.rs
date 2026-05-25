@@ -71,6 +71,10 @@ impl Module for OathnetPro {
         "oathnet_pro"
     }
 
+    fn description(&self) -> &'static str {
+        "Premium breach record search via OathNet API"
+    }
+
     fn priority(&self) -> u8 {
         128
     }

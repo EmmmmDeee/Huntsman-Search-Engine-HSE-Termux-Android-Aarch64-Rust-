@@ -53,6 +53,10 @@ impl Module for ReverseGeocode {
         "reverse_geocode"
     }
 
+    fn description(&self) -> &'static str {
+        "Coordinates to address via OpenStreetMap Nominatim"
+    }
+
     fn priority(&self) -> u8 {
         22
     }
