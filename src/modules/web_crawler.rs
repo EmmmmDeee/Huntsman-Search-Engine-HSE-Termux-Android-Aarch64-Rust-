@@ -46,6 +46,8 @@ const MAX_PAGES: usize = 60;
 const MAX_DEPTH: u32 = 3;
 const BODY_CAP: usize = 65_536;
 const INTER_REQUEST_MS: u64 = 200;
+const URL_TARGET_MAX_PAGES: usize = 5;
+const URL_TARGET_MAX_DEPTH: u32 = 1;
 
 const BINARY_EXTENSIONS: &[&str] = &[
     "png", "gif", "jpg", "jpeg", "tiff", "tif", "webp", "svg", "ico", "pdf", "doc", "docx", "xls",
@@ -91,7 +93,7 @@ impl Module for WebCrawler {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
+        matches!(t.kind, TargetKind::Domain | TargetKind::Url)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -99,12 +101,39 @@ impl Module for WebCrawler {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let domain = target.value.trim().to_lowercase();
-        if domain.is_empty() {
-            return Ok(ModuleResult::new());
-        }
+        let is_url_target = target.kind == TargetKind::Url;
 
-        let seed = resolve_seed(&ctx.http, &domain).await?;
+        let (seed, domain) = if is_url_target {
+            let raw = target.value.trim().to_string();
+            if raw.is_empty() {
+                return Ok(ModuleResult::new());
+            }
+            let parsed = Url::parse(&raw)
+                .map_err(|e| Error::module("web_crawler", format!("bad URL target: {e}")))?;
+            let host = parsed
+                .host_str()
+                .ok_or_else(|| Error::module("web_crawler", "URL has no host"))?
+                .to_lowercase();
+            (raw, host)
+        } else {
+            let d = target.value.trim().to_lowercase();
+            if d.is_empty() {
+                return Ok(ModuleResult::new());
+            }
+            let s = resolve_seed(&ctx.http, &d).await?;
+            (s, d)
+        };
+
+        let max_pages = if is_url_target {
+            URL_TARGET_MAX_PAGES
+        } else {
+            MAX_PAGES
+        };
+        let max_depth = if is_url_target {
+            URL_TARGET_MAX_DEPTH
+        } else {
+            MAX_DEPTH
+        };
 
         let seed_url = Url::parse(&seed)
             .map_err(|e| Error::module("web_crawler", format!("bad seed URL: {e}")))?;
@@ -130,10 +159,11 @@ impl Module for WebCrawler {
 
         fetch_robots(&ctx.http, &seed_url, &mut state.disallow_rules).await;
 
+        let seed_for_entities = seed.clone();
         state.queue.push_back((seed, 0));
 
         while let Some((url, depth)) = state.queue.pop_front() {
-            if state.pages_fetched >= MAX_PAGES || ctx.cancel.is_cancelled() {
+            if state.pages_fetched >= max_pages || ctx.cancel.is_cancelled() {
                 break;
             }
             if state.visited.contains(&url) {
@@ -200,16 +230,24 @@ impl Module for WebCrawler {
             extract_emails(&body, &mut state.emails);
             extract_phones(&body, &mut state.phones);
 
-            if depth < MAX_DEPTH {
+            if depth < max_depth {
                 extract_links(&body, &url, &base_host, &domain, &mut state);
             }
 
-            if state.pages_fetched < MAX_PAGES {
+            if state.pages_fetched < max_pages {
                 tokio::time::sleep(std::time::Duration::from_millis(INTER_REQUEST_MS)).await;
             }
         }
 
-        build_entities(&domain, &base_host, &ctx.scan_id, &mut state);
+        build_entities(
+            &domain,
+            &base_host,
+            &ctx.scan_id,
+            max_depth,
+            is_url_target,
+            &seed_for_entities,
+            &mut state,
+        );
         Ok(state.result)
     }
 }
@@ -584,7 +622,38 @@ fn audit_security_headers(
     }
 }
 
-fn build_entities(domain: &str, _base_host: &str, scan_id: &str, state: &mut CrawlState) {
+fn build_entities(
+    domain: &str,
+    _base_host: &str,
+    scan_id: &str,
+    max_depth: u32,
+    is_url_target: bool,
+    seed_url: &str,
+    state: &mut CrawlState,
+) {
+    // For URL targets, emit the URL entity itself with crawl results
+    if is_url_target {
+        let mut url_entity = Entity::new(EntityKind::Url, seed_url, 0.90, scan_id);
+        url_entity.tag(tags::WEB);
+        url_entity.tag(tags::CRAWLED);
+        for fw in &state.frameworks {
+            url_entity.tag(format!("tech:{}", fw.to_lowercase().replace(' ', "-")));
+        }
+        url_entity.add_evidence(
+            Evidence::new(
+                "web_crawler",
+                format!(
+                    "Single-page harvest of {seed_url}: {} pages",
+                    state.pages_fetched
+                ),
+            )
+            .with_attr("pages_crawled", state.pages_fetched.to_string())
+            .with_attr("emails_found", state.emails.len().to_string())
+            .with_attr("phones_found", state.phones.len().to_string()),
+        );
+        state.result.push(url_entity);
+    }
+
     // Main domain entity with crawl summary
     let mut entity = Entity::new(EntityKind::Domain, domain, 0.90, scan_id);
     entity.tag(tags::WEB);
@@ -618,7 +687,7 @@ fn build_entities(domain: &str, _base_host: &str, scan_id: &str, state: &mut Cra
     .with_attr("pages_crawled", state.pages_fetched.to_string())
     .with_attr("internal_links", state.internal_links.to_string())
     .with_attr("external_links", state.external_links.to_string())
-    .with_attr("max_depth", MAX_DEPTH.to_string());
+    .with_attr("max_depth", max_depth.to_string());
 
     if !state.frameworks.is_empty() {
         let mut fws: Vec<&str> = state.frameworks.iter().copied().collect();
@@ -710,9 +779,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_domain_only() {
+    fn accepts_domain_and_url() {
         let m = WebCrawler;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
+        assert!(m.accepts(&Target::new(TargetKind::Url, "https://example.com/profile")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
         assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
     }

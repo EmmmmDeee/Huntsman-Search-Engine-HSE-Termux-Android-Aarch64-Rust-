@@ -102,6 +102,10 @@ impl Module for DeHashed {
             .map_err(|e| Error::module("dehashed", e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
+            let code = status.as_u16();
+            if code == 429 || code == 401 || code == 403 {
+                ctx.report_key_exhausted("dehashed", key, code);
+            }
             return Err(Error::module(
                 "dehashed",
                 format!("HTTP {status}: {}", error_snippet(resp).await),

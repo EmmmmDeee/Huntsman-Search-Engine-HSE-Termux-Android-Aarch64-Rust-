@@ -725,6 +725,7 @@ fn setup(
         http: build_client(),
         keys: Default::default(),
         cancel: Default::default(),
+        proxy_pool: Default::default(),
     };
     (engine, store, sid, target, ctx)
 }

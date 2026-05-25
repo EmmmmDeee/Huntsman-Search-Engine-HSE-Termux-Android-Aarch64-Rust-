@@ -355,9 +355,8 @@ async fn run_smoke(target: Target, options: ScanOptions) -> Result<SmokeResult> 
         bus: bus.clone(),
         http: build_client(),
         keys: keys::load(),
-        // Smoke scans aren't externally cancellable; a default handle
-        // never fires.
         cancel: crate::core::cancel::CancelHandle::new(),
+        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
 
     // Capture ModuleError events to extract `missing key: …` strings —

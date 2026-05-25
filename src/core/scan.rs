@@ -13,9 +13,13 @@ pub enum TargetKind {
     FullName,
     IpAddress,
     Domain,
+    Url,
     Asn,
     Coordinates,
     Address,
+    Organisation,
+    AbnAcn,
+    ApiKey,
 }
 
 impl TargetKind {
@@ -35,12 +39,13 @@ impl TargetKind {
             EntityKind::Asn => Some(Self::Asn),
             EntityKind::Coordinates => Some(Self::Coordinates),
             EntityKind::Address => Some(Self::Address),
-            EntityKind::Organisation
-            | EntityKind::AbnAcn
+            EntityKind::Url => Some(Self::Url),
+            EntityKind::Organisation => Some(Self::Organisation),
+            EntityKind::AbnAcn => Some(Self::AbnAcn),
+            EntityKind::ApiKey => Some(Self::ApiKey),
+            EntityKind::Credential
             | EntityKind::MacAddress
             | EntityKind::DeviceId
-            | EntityKind::Url
-            | EntityKind::Credential
             | EntityKind::Password
             | EntityKind::Other(_) => None,
         }
@@ -55,9 +60,13 @@ impl TargetKind {
             Self::FullName => EntityKind::Person,
             Self::IpAddress => EntityKind::IpAddress,
             Self::Domain => EntityKind::Domain,
+            Self::Url => EntityKind::Url,
             Self::Asn => EntityKind::Asn,
             Self::Coordinates => EntityKind::Coordinates,
             Self::Address => EntityKind::Address,
+            Self::Organisation => EntityKind::Organisation,
+            Self::AbnAcn => EntityKind::AbnAcn,
+            Self::ApiKey => EntityKind::ApiKey,
         }
     }
 
@@ -80,9 +89,13 @@ impl TargetKind {
             Self::FullName => "full_name",
             Self::IpAddress => "ip_address",
             Self::Domain => "domain",
+            Self::Url => "url",
             Self::Asn => "asn",
             Self::Coordinates => "coordinates",
             Self::Address => "address",
+            Self::Organisation => "organisation",
+            Self::AbnAcn => "abn_acn",
+            Self::ApiKey => "api_key",
         }
     }
 }
@@ -185,8 +198,25 @@ impl Target {
                     return Err("longitude must be in [-180, 180]");
                 }
             }
+            TargetKind::Url => {
+                if !(v.starts_with("http://") || v.starts_with("https://")) {
+                    return Err("URL must start with http:// or https://");
+                }
+                if v.len() < 10 {
+                    return Err("URL too short");
+                }
+            }
             // Free-form text kinds: only the universal checks above apply.
-            TargetKind::Username | TargetKind::FullName | TargetKind::Address => {}
+            TargetKind::ApiKey => {
+                if v.len() < 8 {
+                    return Err("API key too short (min 8 chars)");
+                }
+            }
+            TargetKind::Username
+            | TargetKind::FullName
+            | TargetKind::Address
+            | TargetKind::Organisation
+            | TargetKind::AbnAcn => {}
         }
         Ok(())
     }
@@ -373,9 +403,13 @@ mod tests {
             TargetKind::FullName,
             TargetKind::IpAddress,
             TargetKind::Domain,
+            TargetKind::Url,
             TargetKind::Asn,
             TargetKind::Coordinates,
             TargetKind::Address,
+            TargetKind::Organisation,
+            TargetKind::AbnAcn,
+            TargetKind::ApiKey,
         ] {
             let ek = tk.to_entity_kind();
             assert_eq!(TargetKind::from_entity_kind(&ek), Some(tk));
@@ -384,10 +418,17 @@ mod tests {
 
     #[test]
     fn unscannable_entity_kinds_return_none() {
-        assert!(TargetKind::from_entity_kind(&EntityKind::Organisation).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::MacAddress).is_none());
-        assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::Password).is_none());
+        assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
+    }
+
+    #[test]
+    fn api_key_entity_expands() {
+        assert_eq!(
+            TargetKind::from_entity_kind(&EntityKind::ApiKey),
+            Some(TargetKind::ApiKey)
+        );
     }
 
     #[test]
@@ -518,6 +559,30 @@ mod tests {
         ); // lon out of range
         assert!(
             Target::new(TargetKind::Coordinates, "not-coords")
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn validate_url() {
+        assert!(
+            Target::new(TargetKind::Url, "https://example.com/path")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::Url, "http://x.com")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::Url, "ftp://nope.com")
+                .validate()
+                .is_err()
+        );
+        assert!(
+            Target::new(TargetKind::Url, "not-a-url")
                 .validate()
                 .is_err()
         );

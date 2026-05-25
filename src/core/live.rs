@@ -232,7 +232,10 @@ async fn session_loop(
     let interval = Duration::from_secs(live.interval_secs.max(1));
     let max_iter = live.iterations;
     let http = build_client();
-    let loaded_keys = keys::load();
+    let mut loaded_keys = keys::load();
+    let kpool = crate::util::key_pool::global_pool();
+    crate::util::key_pool::merge_pool_into_env(&kpool, &mut loaded_keys);
+    let _ = crate::util::key_pool::save_pool(&kpool);
 
     let _ = inner.bus.send(Event::new(
         &live_id,
@@ -287,15 +290,8 @@ async fn session_loop(
             bus: inner.bus.clone(),
             http: http.clone(),
             keys: loaded_keys.clone(),
-            // Plumb the SAME live-session cancel handle into the engine
-            // so `DELETE /api/v1/live/{id}` aborts the in-flight
-            // iteration at the next module boundary (the iteration's
-            // scan completes with `ScanStatus::Aborted` and partial
-            // entities are preserved exactly as for one-shot scans).
-            // Without this share-rather-than-replace, stop() only
-            // affected the outer loop and the iteration had to run to
-            // its full expansion depth before stopping.
             cancel: cancel.clone(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         };
 
         if let Err(e) = inner.engine.run(scan, target.clone(), ctx).await {

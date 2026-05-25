@@ -65,12 +65,17 @@ fn spawn_scan(state: &Arc<AppState>, scan: Scan, target: Target) {
         sid.clone(),
         cancel.clone(),
     );
+    let mut loaded_keys = keys::load();
+    let kpool = crate::util::key_pool::global_pool();
+    crate::util::key_pool::merge_pool_into_env(&kpool, &mut loaded_keys);
+    let _ = crate::util::key_pool::save_pool(&kpool);
     let ctx = ModuleContext {
         scan_id: sid.clone(),
         bus: state.bus.clone(),
         http: state.http.clone(),
-        keys: keys::load(),
+        keys: loaded_keys,
         cancel,
+        proxy_pool: std::sync::Arc::clone(&state.proxy_pool),
     };
     let engine = Arc::clone(&state.engine);
     tokio::spawn(async move {
@@ -129,16 +134,20 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
     // Probe each module against a dummy of every TargetKind to surface
     // which kinds it accepts. The wizard uses this to skip impossible
     // module/target combinations without round-tripping back to the API.
-    const ALL_KINDS: [TargetKind; 9] = [
+    const ALL_KINDS: [TargetKind; 13] = [
         TargetKind::Email,
         TargetKind::Username,
         TargetKind::Phone,
         TargetKind::FullName,
         TargetKind::IpAddress,
         TargetKind::Domain,
+        TargetKind::Url,
         TargetKind::Asn,
         TargetKind::Coordinates,
         TargetKind::Address,
+        TargetKind::Organisation,
+        TargetKind::AbnAcn,
+        TargetKind::ApiKey,
     ];
 
     let mods: Vec<Value> = s

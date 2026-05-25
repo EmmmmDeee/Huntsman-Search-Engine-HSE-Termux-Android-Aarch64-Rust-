@@ -112,6 +112,10 @@ impl Module for Wigle {
             .map_err(|e| Error::module("wigle", e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
+            let code = status.as_u16();
+            if code == 429 || code == 401 || code == 403 {
+                ctx.report_key_exhausted("wigle", token, code);
+            }
             return Err(Error::module(
                 "wigle",
                 format!("HTTP {status}: {}", error_snippet(resp).await),

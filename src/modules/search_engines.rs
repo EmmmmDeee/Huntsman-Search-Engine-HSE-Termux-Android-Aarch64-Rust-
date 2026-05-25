@@ -431,6 +431,33 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
             apply_breach_evidence(result, uname, &hits, &scan_id);
         }
     }
+
+    // Store any API credentials found in stealer results.
+    // Uses "domain" field (verified precise) extracted from email domains.
+    let mut queried_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for email in &emails {
+        if ctx.cancel.is_cancelled() {
+            break;
+        }
+        if let Some(domain) = email.split('@').nth(1) {
+            if !queried_domains.insert(domain.to_lowercase()) {
+                continue;
+            }
+            if let Ok(items) = crate::util::oathnet::search(
+                key,
+                crate::util::oathnet::paths::STEALER,
+                "domain",
+                domain,
+                10,
+            )
+            .await
+            {
+                for item in &items {
+                    crate::modules::oathnet_pro::store_api_credential_from_item(item);
+                }
+            }
+        }
+    }
 }
 
 fn apply_breach_evidence(

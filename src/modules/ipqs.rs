@@ -14,11 +14,11 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::Evidence,
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{fetch_json_or_404, urlencode};
+use crate::util::http::{error_snippet, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_IPQS_KEY";
 
@@ -119,9 +119,30 @@ impl Module for IpQs {
             urlencode(key),
             urlencode(value),
         );
-        let Some(body): Option<Common> = fetch_json_or_404(&ctx.http, "ipqs", &url).await? else {
+        let resp = ctx
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| Error::module("ipqs", e.to_string()))?;
+        let status = resp.status();
+        if status.as_u16() == 404 {
             return Ok(ModuleResult::new());
-        };
+        }
+        if !status.is_success() {
+            let code = status.as_u16();
+            if code == 429 || code == 401 || code == 403 {
+                ctx.report_key_exhausted("ipqs", key, code);
+            }
+            return Err(Error::module(
+                "ipqs",
+                format!("HTTP {status}: {}", error_snippet(resp).await),
+            ));
+        }
+        let body: Common = resp
+            .json()
+            .await
+            .map_err(|e| Error::module("ipqs", e.to_string()))?;
         if body.success == Some(false) {
             return Ok(ModuleResult::new());
         }

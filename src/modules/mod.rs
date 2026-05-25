@@ -6,6 +6,7 @@
 //! Nothing else in the codebase needs to know about the new module.
 
 pub mod alienvault_otx;
+pub mod api_key_probe;
 pub mod arp_scan;
 pub mod bgpview;
 pub mod caa_records;
@@ -149,5 +150,9 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(cell_survey::CellSurvey),
         Arc::new(arp_scan::ArpScan),
         Arc::new(net_interfaces::NetInterfaces),
+        // API key identification — probes a raw key against 17+ service
+        // endpoints, identifies the service, extracts account metadata,
+        // and auto-stores valid keys in the key pool.
+        Arc::new(api_key_probe::ApiKeyProbe),
     ]
 }

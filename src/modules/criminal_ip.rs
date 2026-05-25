@@ -135,6 +135,10 @@ impl Module for CriminalIp {
             .map_err(|e| Error::module("criminal_ip", e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
+            let code = status.as_u16();
+            if code == 429 || code == 401 || code == 403 {
+                ctx.report_key_exhausted("criminal_ip", key, code);
+            }
             return Err(Error::module(
                 "criminal_ip",
                 format!("HTTP {status}: {}", error_snippet(resp).await),
