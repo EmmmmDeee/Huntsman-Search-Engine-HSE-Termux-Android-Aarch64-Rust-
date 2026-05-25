@@ -26,6 +26,7 @@ pub mod hudsonrock;
 pub mod intelx;
 pub mod ip_geo;
 pub mod ip_rdap;
+pub mod ip_whois_geo;
 pub mod ipqs;
 pub mod leakix;
 pub mod net_interfaces;
@@ -92,6 +93,9 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // RDAP registry view of an IP (complements whois + bgpview).
         Arc::new(ip_rdap::IpRdap),
         Arc::new(ip_geo::IpGeo),
+        // Second-source HTTPS IP geolocation (ipwho.is). Two independent
+        // geo sources on the same IP let AU-014 geo-cluster fire.
+        Arc::new(ip_whois_geo::IpWhois),
         // Reverse geocoding via OpenStreetMap Nominatim — converts
         // Coordinates entities from ip_geo/gps_fix into Address entities
         // with country, state, city, street. Free, no API key.
