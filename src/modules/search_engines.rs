@@ -525,26 +525,33 @@ fn apply_breach_evidence(
                 new_ents.push(e);
             }
         }
-        if row_matches
-            && let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
+        // Preserve non-target rows as CANDIDATE (0.25) instead of discarding
+        let conf = |base: f64| -> f64 { if row_matches { base } else { 0.25 } };
+        if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
             && ph.len() >= 7
             && seen.insert(ph.to_lowercase())
         {
-            let mut e = Entity::new(EntityKind::Phone, &ph, 0.70, scan_id);
+            let mut e = Entity::new(EntityKind::Phone, &ph, conf(0.70), scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
+            if !row_matches {
+                e.tag("candidate");
+            }
             e.add_evidence(
                 Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
                     .with_attr("dbname", &db),
             );
             new_ents.push(e);
         }
-        if row_matches && let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
+        if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
             let t = n.trim();
             if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
-                let mut e = Entity::new(EntityKind::Person, t, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Person, t, conf(0.70), scan_id);
                 e.tag(tags::BREACH);
                 e.tag("oathnet-enriched");
+                if !row_matches {
+                    e.tag("candidate");
+                }
                 e.add_evidence(
                     Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
                         .with_attr("dbname", &db),
@@ -552,29 +559,33 @@ fn apply_breach_evidence(
                 new_ents.push(e);
             }
         }
-        if row_matches
-            && let Some(ip) = val_str(item, "ip")
+        if let Some(ip) = val_str(item, "ip")
             && ip.contains('.')
             && ip.len() >= 7
             && seen.insert(ip.clone())
         {
-            let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id);
+            let mut e = Entity::new(EntityKind::IpAddress, &ip, conf(0.60), scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
             e.tag("geolocation-lead");
+            if !row_matches {
+                e.tag("candidate");
+            }
             e.add_evidence(
                 Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
                     .with_attr("dbname", &db),
             );
             new_ents.push(e);
         }
-        if row_matches
-            && let Some(country) = val_str(item, "country")
+        if let Some(country) = val_str(item, "country")
             && seen.insert(format!("@country:{country}"))
         {
-            let mut e = Entity::new(EntityKind::Address, &country, 0.55, scan_id);
+            let mut e = Entity::new(EntityKind::Address, &country, conf(0.55), scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
+            if !row_matches {
+                e.tag("candidate");
+            }
             e.add_evidence(
                 Evidence::new("search_engines:oathnet", format!("Country from {db}"))
                     .with_attr("dbname", &db),
