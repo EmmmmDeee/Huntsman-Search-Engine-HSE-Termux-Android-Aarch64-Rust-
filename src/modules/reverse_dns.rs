@@ -37,9 +37,6 @@ impl Module for ReverseDns {
         29
     }
 
-    fn description(&self) -> &'static str {
-        "PTR record lookup for an IP → one or more reverse-DNS hostnames via the shared Cloudflare resolver."
-    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)

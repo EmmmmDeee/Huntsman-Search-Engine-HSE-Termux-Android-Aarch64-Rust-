@@ -80,9 +80,6 @@ impl Module for IntelX {
         116
     }
 
-    fn description(&self) -> &'static str {
-        "Intelligence X selector search across pastebins, darknet indexes, and cold-dump storage. Paid; aggregate-only."
-    }
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }

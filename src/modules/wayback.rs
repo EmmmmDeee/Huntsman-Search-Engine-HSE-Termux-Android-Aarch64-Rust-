@@ -46,9 +46,6 @@ impl Module for Wayback {
         38
     }
 
-    fn description(&self) -> &'static str {
-        "Wayback Machine CDX query — historical-snapshot count + first/last-seen for a domain."
-    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)

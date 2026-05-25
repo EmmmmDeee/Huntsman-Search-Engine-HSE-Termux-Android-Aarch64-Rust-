@@ -40,9 +40,6 @@ impl Module for Crtsh {
         35
     }
 
-    fn description(&self) -> &'static str {
-        "Certificate Transparency log scrape via crt.sh → historical subdomains issued certificates for the input domain."
-    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)

@@ -55,9 +55,6 @@ impl Module for WebserverBanner {
         36
     }
 
-    fn description(&self) -> &'static str {
-        "HTTP HEAD fingerprint — Server / X-Powered-By / CSP / HSTS headers + auto-tag for nginx/apache/iis/cloudflare/…"
-    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)

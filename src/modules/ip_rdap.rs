@@ -77,9 +77,6 @@ impl Module for IpRdap {
         27
     }
 
-    fn description(&self) -> &'static str {
-        "RDAP registry record via ARIN (auto-redirects to RIPE/APNIC/LACNIC/AFRINIC): handle, name, CIDR, allocation dates."
-    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)

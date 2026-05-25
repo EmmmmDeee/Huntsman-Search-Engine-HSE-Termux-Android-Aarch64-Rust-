@@ -60,9 +60,6 @@ impl Module for GithubUser {
         108
     }
 
-    fn description(&self) -> &'static str {
-        "GitHub user profile basics for a username: real name, bio, followers, public-repo count, account creation date."
-    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Username)

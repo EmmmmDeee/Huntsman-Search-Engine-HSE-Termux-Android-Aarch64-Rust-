@@ -92,9 +92,6 @@ impl Module for TorExitCheck {
         32
     }
 
-    fn description(&self) -> &'static str {
-        "Tor exit-relay membership check via check.torproject.org's published exit list (cached, free)."
-    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)

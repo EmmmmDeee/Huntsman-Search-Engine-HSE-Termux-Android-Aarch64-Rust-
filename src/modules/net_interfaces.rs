@@ -27,9 +27,6 @@ impl Module for NetInterfaces {
         55
     }
 
-    fn description(&self) -> &'static str {
-        "Termux network interface enumeration (passive) — IPv4/IPv6 addresses per interface (eth0, wlan0, …)."
-    }
     fn is_passive(&self) -> bool {
         true
     }

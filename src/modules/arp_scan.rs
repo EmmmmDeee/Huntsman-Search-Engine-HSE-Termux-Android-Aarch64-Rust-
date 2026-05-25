@@ -31,9 +31,6 @@ impl Module for ArpScan {
         58
     }
 
-    fn description(&self) -> &'static str {
-        "Local ARP cache snapshot — IP↔MAC pairs visible on this device's current L2 segment (Termux passive sensor)."
-    }
     fn is_passive(&self) -> bool {
         true
     }

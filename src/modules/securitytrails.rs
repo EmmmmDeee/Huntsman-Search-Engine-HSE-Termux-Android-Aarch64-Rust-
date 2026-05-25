@@ -43,9 +43,6 @@ impl Module for SecurityTrails {
         45
     }
 
-    fn description(&self) -> &'static str {
-        "SecurityTrails subdomain enumeration via passive-DNS registry view. Key-gated, generous free tier."
-    }
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }

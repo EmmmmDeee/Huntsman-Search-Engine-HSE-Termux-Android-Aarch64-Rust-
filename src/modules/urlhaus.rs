@@ -74,9 +74,6 @@ impl Module for UrlHaus {
         110
     }
 
-    fn description(&self) -> &'static str {
-        "abuse.ch URLhaus malicious-host check for a domain or IP (free); aggregate count + threat families."
-    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)

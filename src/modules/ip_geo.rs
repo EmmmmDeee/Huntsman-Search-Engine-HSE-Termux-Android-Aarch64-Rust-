@@ -55,9 +55,6 @@ impl Module for IpGeo {
         28
     }
 
-    fn description(&self) -> &'static str {
-        "Free GeoIP lookup via ip-api.com — country, region, city, ISP, AS, mobile/proxy/hosting flags."
-    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)

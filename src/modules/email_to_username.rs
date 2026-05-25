@@ -26,9 +26,6 @@ impl Module for EmailToUsername {
         95
     }
 
-    fn description(&self) -> &'static str {
-        "Heuristic email-local-part → username candidate(s). Offline, no network — generates plus-tag and dotted variants."
-    }
 
     fn is_passive(&self) -> bool {
         true

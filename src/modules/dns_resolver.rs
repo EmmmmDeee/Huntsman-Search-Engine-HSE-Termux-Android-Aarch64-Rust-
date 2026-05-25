@@ -43,9 +43,6 @@ impl Module for DnsResolver {
         30
     }
 
-    fn description(&self) -> &'static str {
-        "Cloudflare-backed DNS resolution: A, AAAA, MX, NS, SOA (with admin email), and TXT records for a domain."
-    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)

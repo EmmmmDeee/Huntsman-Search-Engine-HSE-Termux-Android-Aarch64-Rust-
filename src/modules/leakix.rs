@@ -61,9 +61,6 @@ impl Module for LeakIx {
         102
     }
 
-    fn description(&self) -> &'static str {
-        "LeakIX exposure events for an IP or domain — service banners (count-only) and known leaks. Key-gated."
-    }
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }

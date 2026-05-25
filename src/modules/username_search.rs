@@ -1580,6 +1580,138 @@ const SITES: &[Site] = &[
         "not be found",
         "forum"
     ),
+    // ══════════════════════════════════════════════════════════════════
+    // People-centric additions — social media, dating, and messaging
+    // are FAR more valuable for identity OSINT than dev platforms.
+    // ══════════════════════════════════════════════════════════════════
+    // ── Dating / Relationships (HIGH people-centric value) ─────────
+    s!("Tinder", "https://tinder.com/@{}", H, 200, "dating"),
+    s!("Bumble", "https://bumble.com/profile/{}", H, 200, "dating"),
+    s!(
+        "PlentyOfFish",
+        "https://www.pof.com/viewprofile.aspx?profile_id={}",
+        H,
+        200,
+        "dating"
+    ),
+    s!("HER", "https://weareher.com/users/{}", H, 200, "dating"),
+    s!("Feeld", "https://feeld.co/{}", H, 200, "dating"),
+    s!("Hinge", "https://hinge.co/{}", H, 200, "dating"),
+    s!(
+        "Match.com",
+        "https://www.match.com/profile/{}",
+        H,
+        200,
+        "dating"
+    ),
+    // ── Social Media (people-centric core) ─────────────────────────
+    s!(
+        "Facebook (alt)",
+        "https://www.facebook.com/{}",
+        HAS,
+        200,
+        "fb_content",
+        "social"
+    ),
+    s!(
+        "LinkedIn",
+        "https://www.linkedin.com/in/{}",
+        H,
+        200,
+        "social"
+    ),
+    s!("WeChat", "https://weixin.qq.com/r/{}", H, 200, "social"),
+    s!("Line", "https://line.me/ti/p/@{}", H, 200, "social"),
+    s!("Viber", "https://viber.com/{}", H, 200, "social"),
+    s!(
+        "Nextdoor",
+        "https://nextdoor.com/profile/{}/",
+        H,
+        200,
+        "social"
+    ),
+    s!("MeWe", "https://mewe.com/i/{}", H, 200, "social"),
+    s!("Gab", "https://gab.com/{}", H, 200, "social"),
+    s!("Parler", "https://parler.com/user/{}", H, 200, "social"),
+    s!(
+        "Truth Social",
+        "https://truthsocial.com/@{}",
+        H,
+        200,
+        "social"
+    ),
+    s!("Gettr", "https://gettr.com/user/{}", H, 200, "social"),
+    // ── Messaging / Communication ──────────────────────────────────
+    s!("WhatsApp", "https://wa.me/{}", H, 200, "messaging"),
+    s!(
+        "Skype",
+        "https://join.skype.com/invite/{}",
+        H,
+        200,
+        "messaging"
+    ),
+    s!(
+        "Viber (alt)",
+        "https://chats.viber.com/{}",
+        H,
+        200,
+        "messaging"
+    ),
+    s!("Wire", "https://app.wire.com/{}", H, 200, "messaging"),
+    s!(
+        "Element/Matrix",
+        "https://matrix.to/#/@{}:matrix.org",
+        H,
+        200,
+        "messaging"
+    ),
+    // ── Lifestyle / Fitness / Social ───────────────────────────────
+    s!(
+        "Strava (social)",
+        "https://www.strava.com/athletes/{}",
+        H,
+        200,
+        "social"
+    ),
+    s!("Fitbit", "https://www.fitbit.com/user/{}", H, 200, "social"),
+    s!(
+        "MyFitnessPal",
+        "https://www.myfitnesspal.com/profile/{}",
+        H,
+        200,
+        "social"
+    ),
+    s!(
+        "Peloton",
+        "https://members.onepeloton.com/members/{}",
+        H,
+        200,
+        "social"
+    ),
+    // ── Classified / Marketplace (people-centric) ──────────────────
+    s!("Depop", "https://www.depop.com/{}", H, 200, "social"),
+    s!(
+        "Poshmark",
+        "https://poshmark.com/closet/{}",
+        H,
+        200,
+        "social"
+    ),
+    s!(
+        "Vinted",
+        "https://www.vinted.com/member/{}",
+        H,
+        200,
+        "social"
+    ),
+    // ── Family / Parenting ─────────────────────────────────────────
+    s!(
+        "BabyCenter",
+        "https://www.babycenter.com/profile/{}",
+        H,
+        200,
+        "social"
+    ),
 ];
 
 #[async_trait]
@@ -1705,10 +1837,34 @@ impl Module for UsernameSearch {
         if !found_names.is_empty() {
             let mut summary = Entity::new(EntityKind::Username, username, 0.95, &ctx.scan_id);
             summary.tag("multi-platform");
-            // Tag each category that had at least one hit for correlator use.
+
+            // Tag each category that had at least one hit.
             for cat in category_counts.keys() {
                 summary.tag(format!("cat:{cat}"));
             }
+
+            // People-centric intelligence tags: flag high-value
+            // categories that reveal personal lifestyle/identity
+            // exposure. These are MORE valuable for OSINT than dev
+            // platform presence (which is professional, not personal).
+            let social_count = category_counts.get("social").copied().unwrap_or(0);
+            let dating_count = category_counts.get("dating").copied().unwrap_or(0);
+            let messaging_count = category_counts.get("messaging").copied().unwrap_or(0);
+            let gaming_count = category_counts.get("gaming").copied().unwrap_or(0);
+
+            if social_count >= 3 {
+                summary.tag("strong-social-presence");
+            }
+            if dating_count > 0 {
+                summary.tag("dating-profile-exposed");
+            }
+            if messaging_count > 0 {
+                summary.tag("messaging-identity");
+            }
+            if social_count + dating_count + messaging_count + gaming_count >= 5 {
+                summary.tag("high-personal-exposure");
+            }
+
             let cat_summary: Vec<String> = category_counts
                 .iter()
                 .map(|(c, n)| format!("{c}:{n}"))
@@ -1725,6 +1881,9 @@ impl Module for UsernameSearch {
                 .with_attr("platforms_count", found_names.len().to_string())
                 .with_attr("platforms", found_names.join(", "))
                 .with_attr("categories", cat_summary.join(", "))
+                .with_attr("social_count", social_count.to_string())
+                .with_attr("dating_count", dating_count.to_string())
+                .with_attr("messaging_count", messaging_count.to_string())
                 .with_attr("sites_probed", SITES.len().to_string()),
             );
             module_result.push(summary);

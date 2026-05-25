@@ -37,9 +37,6 @@ impl Module for Whois {
         32
     }
 
-    fn description(&self) -> &'static str {
-        "WHOIS lookup for a domain or IP — registrar, registrant org, creation/expiry dates, abuse contact."
-    }
 
     /// IANA query + one referral follow-up, each capped at
     /// `QUERY_TIMEOUT_MS = 4000`. Worst case 2 × 4 s = 8 s; round up

@@ -77,9 +77,6 @@ impl Module for Gravatar {
         85
     }
 
-    fn description(&self) -> &'static str {
-        "Gravatar profile probe for an email → display name, profile URL, linked accounts (when public)."
-    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email)

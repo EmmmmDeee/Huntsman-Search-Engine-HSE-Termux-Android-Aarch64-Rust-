@@ -61,9 +61,6 @@ impl Module for Wigle {
         70
     }
 
-    fn description(&self) -> &'static str {
-        "WiGLE geographic WiFi-network search by GPS coordinates. Key-gated; aggregate counts + encryption types only."
-    }
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
