@@ -461,16 +461,8 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
             continue;
         }
         match e.kind {
-            EntityKind::Email => {
-                if emails.len() < 10 {
-                    emails.push(e.value.clone());
-                }
-            }
-            EntityKind::Username => {
-                if usernames.len() < 5 {
-                    usernames.push(e.value.clone());
-                }
-            }
+            EntityKind::Email if emails.len() < 10 => emails.push(e.value.clone()),
+            EntityKind::Username if usernames.len() < 5 => usernames.push(e.value.clone()),
             _ => {}
         }
     }
@@ -517,17 +509,17 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
             }
             let lower = e.value.to_lowercase();
             match e.kind {
-                EntityKind::Email => {
-                    if !emails.iter().any(|x| x.to_lowercase() == lower) && new_emails.len() < 5 {
-                        new_emails.push(e.value.clone());
-                    }
+                EntityKind::Email
+                    if !emails.iter().any(|x| x.to_lowercase() == lower)
+                        && new_emails.len() < 5 =>
+                {
+                    new_emails.push(e.value.clone());
                 }
-                EntityKind::Username => {
+                EntityKind::Username
                     if !usernames.iter().any(|x| x.to_lowercase() == lower)
-                        && new_usernames.len() < 3
-                    {
-                        new_usernames.push(e.value.clone());
-                    }
+                        && new_usernames.len() < 3 =>
+                {
+                    new_usernames.push(e.value.clone());
                 }
                 _ => {}
             }

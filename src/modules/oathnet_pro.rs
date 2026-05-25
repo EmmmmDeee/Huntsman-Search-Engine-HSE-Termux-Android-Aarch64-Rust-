@@ -622,7 +622,7 @@ fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {
         }
     }
     let mut sorted: Vec<(String, usize)> = counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
     sorted.into_iter().take(n).map(|(k, _)| k).collect()
 }
 
