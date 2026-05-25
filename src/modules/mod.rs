@@ -19,6 +19,7 @@ pub mod dns_resolver;
 pub mod email_to_username;
 pub mod emailrep;
 pub mod fullhunt;
+pub mod geocoded;
 pub mod github_user;
 pub mod gps_fix;
 pub mod gravatar;
@@ -29,6 +30,7 @@ pub mod intelx;
 pub mod ip2location;
 pub mod ip_geo;
 pub mod ip_rdap;
+pub mod ipdetails;
 pub mod ipinfo;
 pub mod ipqs;
 pub mod ipstack;
@@ -131,6 +133,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(ipinfo::IpInfo),
         Arc::new(ip2location::Ip2Location),
         Arc::new(nominatim::Nominatim),
+        Arc::new(geocoded::Geocoded),
+        Arc::new(ipdetails::IpDetails),
         Arc::new(wigle_bssid::WigleBssid),
         // ── IP abuse / threat intel ──
         Arc::new(abuseipdb::AbuseIpDb),

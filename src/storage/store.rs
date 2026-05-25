@@ -23,6 +23,8 @@ impl Store {
             PRAGMA synchronous=NORMAL;
             PRAGMA temp_store=MEMORY;
             PRAGMA foreign_keys=ON;
+            PRAGMA cache_size=-8192;
+            PRAGMA mmap_size=67108864;
 
             CREATE TABLE IF NOT EXISTS scans (
                 id           TEXT PRIMARY KEY,
