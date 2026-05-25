@@ -650,6 +650,10 @@ fn build_queries(target: &Target) -> Vec<String> {
                      OR site:youtube.com OR site:tiktok.com"
                 ));
                 q.push(format!("\"{local}\" address OR location OR city"));
+                q.push(format!(
+                    "\"{local}\" site:whitepages.com.au OR site:locatefamily.com \
+                     OR site:peoplefinder.com.au OR site:searchfind.com.au"
+                ));
             }
             q
         }
@@ -682,6 +686,10 @@ fn build_queries(target: &Target) -> Vec<String> {
                 ));
                 q.push(format!("\"{v}\" address OR location OR city OR suburb"));
                 q.push(format!("\"{v}\" ABN OR ACN OR \"Pty Ltd\" OR director"));
+                q.push(format!(
+                    "\"{v}\" site:whitepages.com.au OR site:locatefamily.com \
+                     OR site:peoplefinder.com.au OR site:searchfind.com.au"
+                ));
             }
             q
         }
@@ -1511,6 +1519,10 @@ fn score_username(
         "nuwber.com",
         "whitepages.com",
         "thatsthem.com",
+        "whitepages.com.au",
+        "locatefamily.com",
+        "peoplefinder.com.au",
+        "ancestry.com.au",
     ];
     if people_search.iter().any(|ps| host.ends_with(ps)) {
         score += 3;
@@ -1902,7 +1914,16 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
 
             // People-search sites encode real names in paths:
             // peekyou.com/jerome_despal → "Jerome Despal"
-            let people_hosts = ["peekyou.com", "spokeo.com", "nuwber.com"];
+            let people_hosts = [
+                "peekyou.com",
+                "spokeo.com",
+                "nuwber.com",
+                "whitepages.com.au",
+                "locatefamily.com",
+                "peoplefinder.com.au",
+                "searchfind.com.au",
+                "ancestry.com.au",
+            ];
             if people_hosts
                 .iter()
                 .any(|s| host == *s || host.ends_with(&format!(".{s}")))
@@ -2179,6 +2200,48 @@ fn extract_addresses_from_text(text: &str) -> Vec<String> {
             addrs.push(addr);
         }
     }
+
+    // Second pass: find "City, Australia" patterns with major AU cities
+    const AU_CITIES: &[&str] = &[
+        "Brisbane",
+        "Sydney",
+        "Melbourne",
+        "Perth",
+        "Adelaide",
+        "Canberra",
+        "Hobart",
+        "Darwin",
+        "Gold Coast",
+        "Newcastle",
+        "Wollongong",
+        "Geelong",
+        "Cairns",
+        "Townsville",
+        "Toowoomba",
+        "Nundah",
+        "Redcliffe",
+        "Caboolture",
+        "Long Beach",
+    ];
+    for city in AU_CITIES {
+        if let Some(pos) = text.find(city) {
+            let after = &text[pos + city.len()..];
+            let context = after.chars().take(40).collect::<String>().to_lowercase();
+            if context.contains("australia")
+                || context.contains("qld")
+                || context.contains("nsw")
+                || context.contains("vic")
+                || context.contains("queensland")
+                || context.contains("new south wales")
+            {
+                let addr = format!("{city}, Australia");
+                if !addrs.iter().any(|a| a.contains(city)) {
+                    addrs.push(addr);
+                }
+            }
+        }
+    }
+
     addrs
 }
 
@@ -2451,7 +2514,7 @@ mod tests {
     fn build_queries_fullname_covers_professional() {
         let t = Target::new(TargetKind::FullName, "Jane Doe");
         let q = build_queries(&t);
-        assert_eq!(q.len(), 7);
+        assert_eq!(q.len(), 8);
         assert!(q[0].contains("\"Jane Doe\""));
         assert!(q[1].contains("linkedin.com") || q[1].contains("facebook.com"));
         assert!(
