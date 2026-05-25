@@ -21,6 +21,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::freq::top_n;
 use crate::util::http::{fetch_json, urlencode};
 
 pub struct Wayback;
@@ -75,6 +76,14 @@ impl Module for Wayback {
         let first_ts = rows.get(1).and_then(|r| r.0.first());
         let last_ts = rows.last().and_then(|r| r.0.first());
 
+        // Collect status codes from data rows (index 1 in each row,
+        // since fl=timestamp,statuscode).
+        let status_codes: Vec<&str> = rows[1..]
+            .iter()
+            .filter_map(|r| r.0.get(1).map(|s| s.as_str()))
+            .collect();
+        let status_dist = top_n(status_codes.iter().copied(), 10);
+
         let mut entity = target.to_entity(0.80, &ctx.scan_id);
         entity.tag("archived");
         let mut ev = Evidence::new(
@@ -92,6 +101,9 @@ impl Module for Wayback {
             ev = ev
                 .with_attr("last_seen", t.as_str())
                 .with_attr("last_seen_iso", iso_from_cdx(t));
+        }
+        if !status_dist.is_empty() {
+            ev = ev.with_attr("status_distribution", &status_dist);
         }
         entity.add_evidence(ev);
 

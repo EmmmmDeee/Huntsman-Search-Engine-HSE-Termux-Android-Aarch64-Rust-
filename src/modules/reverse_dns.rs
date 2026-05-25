@@ -66,7 +66,8 @@ impl Module for ReverseDns {
             e.add_evidence(
                 Evidence::new("reverse_dns", format!("PTR record for {ip}"))
                     .with_attr("record_type", "PTR")
-                    .with_attr("ip", target.value.as_str()),
+                    .with_attr("ip", target.value.as_str())
+                    .with_attr("ttl_secs", record.ttl.to_string()),
             );
             result.push(e);
         }

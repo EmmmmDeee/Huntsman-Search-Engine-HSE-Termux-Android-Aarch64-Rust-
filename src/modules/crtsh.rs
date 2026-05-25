@@ -22,6 +22,8 @@ struct CrtEntry {
     name_value: String,
     issuer_name: Option<String>,
     not_before: Option<String>,
+    not_after: Option<String>,
+    serial_number: Option<String>,
 }
 
 #[async_trait]
@@ -62,6 +64,8 @@ impl Module for Crtsh {
                         Evidence::new("crtsh", format!("Certificate transparency: {name}"))
                             .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))
                             .with_attr("not_before", entry.not_before.as_deref().unwrap_or("-"))
+                            .with_attr("not_after", entry.not_after.as_deref().unwrap_or("-"))
+                            .with_attr("serial_number", entry.serial_number.as_deref().unwrap_or("-"))
                             .with_attr("parent_domain", &target.value),
                     );
                     result.push(e);

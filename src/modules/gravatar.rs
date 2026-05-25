@@ -41,6 +41,10 @@ struct ProfileEntry {
     urls: Vec<UrlEntry>,
     #[serde(rename = "currentLocation")]
     location: Option<String>,
+    #[serde(rename = "aboutMe")]
+    about_me: Option<String>,
+    #[serde(default)]
+    photos: Option<Vec<PhotoEntry>>,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +56,11 @@ struct NameField {
 struct UrlEntry {
     value: Option<String>,
     title: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PhotoEntry {
+    value: Option<String>,
 }
 
 #[async_trait]
@@ -129,6 +138,17 @@ impl Module for Gravatar {
         }
         if let Some(loc) = entry.location.as_deref() {
             ev = ev.with_attr("location", loc);
+        }
+        if let Some(bio) = entry.about_me.as_deref() {
+            ev = ev.with_attr("bio", bio);
+        }
+        if let Some(avatar) = entry
+            .photos
+            .as_ref()
+            .and_then(|p| p.first())
+            .and_then(|p| p.value.as_deref())
+        {
+            ev = ev.with_attr("avatar_url", avatar);
         }
         if !entry.urls.is_empty() {
             let mut urls_iter = entry.urls.iter().filter_map(|u| {

@@ -56,7 +56,7 @@ fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
 
     for line in content.lines().skip(1) {
         let mut cols = line.split_whitespace();
-        let (Some(ip), Some(_hw), Some(_flags), Some(mac), Some(_mask), Some(dev)) =
+        let (Some(ip), Some(hw_type), Some(flags), Some(mac), Some(_mask), Some(dev)) =
             (
                 cols.next(),
                 cols.next(),
@@ -72,26 +72,67 @@ fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
             continue;
         }
 
+        let vendor = oui_vendor(mac);
+
         let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, 0.95, scan_id);
         ip_entity.tag("local-arp");
-        ip_entity.add_evidence(
-            Evidence::new("arp_scan", format!("ARP entry on {dev}"))
-                .with_attr("mac", mac)
-                .with_attr("interface", dev),
-        );
+        let mut ip_ev = Evidence::new("arp_scan", format!("ARP entry on {dev}"))
+            .with_attr("mac", mac)
+            .with_attr("interface", dev)
+            .with_attr("hw_type", hw_type)
+            .with_attr("flags", flags);
+        if let Some(v) = vendor {
+            ip_ev = ip_ev.with_attr("vendor", v);
+        }
+        ip_entity.add_evidence(ip_ev);
         result.push(ip_entity);
 
         let mut mac_entity = Entity::new(EntityKind::MacAddress, mac, 0.95, scan_id);
         mac_entity.tag("local-arp");
-        mac_entity.add_evidence(
-            Evidence::new("arp_scan", format!("ARP: {ip} via {dev}"))
-                .with_attr("ip", ip)
-                .with_attr("interface", dev),
-        );
+        if let Some(v) = vendor {
+            mac_entity.tag(format!("vendor:{}", v.to_lowercase().replace(' ', "-")));
+        }
+        let mut mac_ev = Evidence::new("arp_scan", format!("ARP: {ip} via {dev}"))
+            .with_attr("ip", ip)
+            .with_attr("interface", dev)
+            .with_attr("hw_type", hw_type)
+            .with_attr("flags", flags);
+        if let Some(v) = vendor {
+            mac_ev = mac_ev.with_attr("vendor", v);
+        }
+        mac_entity.add_evidence(mac_ev);
         result.push(mac_entity);
     }
 
     result
+}
+
+fn oui_vendor(mac: &str) -> Option<&'static str> {
+    let prefix = mac.get(..8)?.to_uppercase();
+    match prefix.as_str() {
+        "00:50:56" | "00:0C:29" | "00:05:69" => Some("VMware"),
+        "08:00:27" => Some("VirtualBox"),
+        "52:54:00" => Some("QEMU"),
+        "00:15:5D" => Some("Hyper-V"),
+        "00:16:3E" => Some("Xen"),
+        "02:42:AC" | "02:42:00" => Some("Docker"),
+        "DC:A6:32" | "B8:27:EB" | "E4:5F:01" => Some("Raspberry Pi"),
+        "3C:22:FB" | "AC:BC:32" | "F0:18:98" => Some("Apple"),
+        "00:25:00" | "04:D4:C4" | "88:36:6C" => Some("Apple"),
+        "FC:F5:C4" | "3C:06:30" | "38:F9:D3" => Some("Apple"),
+        "28:6C:07" | "48:2C:A0" | "CC:46:D6" => Some("Samsung"),
+        "00:1A:11" | "00:E0:4C" | "52:54:AB" => Some("Realtek"),
+        "00:24:D7" | "B4:2E:99" | "C8:5B:76" => Some("Intel"),
+        "00:1B:21" | "3C:97:0E" | "40:8D:5C" => Some("Intel"),
+        "00:26:18" | "00:AA:01" | "68:05:CA" => Some("Cisco"),
+        "00:0C:42" | "A4:56:02" | "C4:71:54" => Some("Cisco"),
+        "00:1E:58" | "04:18:D6" | "24:A0:74" => Some("TP-Link"),
+        "00:0E:8F" | "2C:56:DC" | "78:44:76" => Some("Netgear"),
+        "00:90:A9" | "04:A1:51" | "6C:B0:CE" => Some("Huawei"),
+        "74:DA:38" | "7C:B5:9B" | "AC:CF:85" => Some("Espressif"),
+        "84:0D:8E" | "84:F3:EB" | "A0:20:A6" => Some("Espressif"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

@@ -91,9 +91,23 @@ fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
     {
         let mut e = Entity::new(EntityKind::IpAddress, ip.as_str(), 0.90, scan_id);
         e.tag("local-wifi");
-        e.add_evidence(
-            Evidence::new("wifi_connect", format!("Local IP on {ssid}")).with_attr("ssid", ssid),
-        );
+        let mut ip_ev =
+            Evidence::new("wifi_connect", format!("Local IP on {ssid}")).with_attr("ssid", ssid);
+        if let Some(ref bssid) = info.bssid {
+            ip_ev = ip_ev.with_attr("bssid", bssid.as_str());
+        }
+        ip_ev = ip_ev
+            .with_attr("frequency_mhz", info.frequency_mhz.unwrap_or(0).to_string())
+            .with_attr("rssi_dbm", info.rssi.unwrap_or(0).to_string())
+            .with_attr(
+                "link_speed_mbps",
+                info.link_speed_mbps.unwrap_or(0).to_string(),
+            )
+            .with_attr(
+                "supplicant_state",
+                info.supplicant_state.as_deref().unwrap_or("-"),
+            );
+        e.add_evidence(ip_ev);
         result.push(e);
     }
 

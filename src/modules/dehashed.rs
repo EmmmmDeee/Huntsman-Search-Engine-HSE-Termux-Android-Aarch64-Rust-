@@ -40,6 +40,8 @@ struct Entry {
     database_name: Option<String>,
     #[serde(default)]
     obtained_from: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
 }
 
 pub struct DeHashed;
@@ -131,6 +133,14 @@ impl Module for DeHashed {
         .with_attr("selector", selector);
         if !top.is_empty() {
             ev = ev.with_attr("top_databases", top);
+        }
+        let earliest = entries.iter().filter_map(|e| e.created_at.as_deref()).min();
+        let latest = entries.iter().filter_map(|e| e.created_at.as_deref()).max();
+        if let Some(e) = earliest {
+            ev = ev.with_attr("earliest_record", e);
+        }
+        if let Some(l) = latest {
+            ev = ev.with_attr("latest_record", l);
         }
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();
