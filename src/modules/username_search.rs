@@ -1634,11 +1634,14 @@ impl Module for UsernameSearch {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Username)
+        matches!(t.kind, TargetKind::Username | TargetKind::Email)
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let username = target.value.trim();
+        let username = match target.kind {
+            TargetKind::Email => target.value.split('@').next().unwrap_or("").trim(),
+            _ => target.value.trim(),
+        };
         if username.is_empty() || username.len() > 64 {
             return Ok(ModuleResult::new());
         }
@@ -1920,10 +1923,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_only_username() {
+    fn accepts_username_and_email() {
         let m = UsernameSearch;
         assert!(m.accepts(&Target::new(TargetKind::Username, "test")));
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "test@example.com")));
+        assert!(m.accepts(&Target::new(TargetKind::Email, "test@example.com")));
         assert!(!m.accepts(&Target::new(TargetKind::Domain, "example.com")));
     }
 

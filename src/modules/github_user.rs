@@ -50,11 +50,14 @@ impl Module for GithubUser {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Username)
+        matches!(t.kind, TargetKind::Username | TargetKind::Email)
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let login = target.value.trim();
+        let login = match target.kind {
+            TargetKind::Email => target.value.split('@').next().unwrap_or("").trim(),
+            _ => target.value.trim(),
+        };
         // Reject non-conforming logins to avoid a wasted HTTP round-trip.
         if login.is_empty()
             || login.len() > 39
@@ -289,9 +292,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_only_username() {
+    fn accepts_username_and_email() {
         let m = GithubUser;
         assert!(m.accepts(&Target::new(TargetKind::Username, "octocat")));
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::Domain, "github.com")));
     }
 }
