@@ -76,6 +76,38 @@ pub async fn search(
     Ok(sd.items)
 }
 
+pub async fn regex_search(
+    key: &str,
+    path: &str,
+    pattern: &str,
+    page_size: u32,
+) -> Result<Vec<Value>> {
+    let encoded = crate::util::http::urlencode(pattern);
+    let url = format!(
+        "{}{}?q%5B%5D={}&page_size={}&search_type=regex",
+        base_url(),
+        path,
+        encoded,
+        page_size
+    );
+    let body = curl_get(&url, key).await?;
+    let env: Envelope =
+        serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
+    if !env.success {
+        if env.errors.as_ref().and_then(|e| e.status_code) == Some(404) {
+            return Ok(Vec::new());
+        }
+        return Err(Error::module("oathnet", "regex search failed"));
+    }
+    let data = match env.data {
+        Some(d) => d,
+        None => return Ok(Vec::new()),
+    };
+    let sd: SearchData =
+        serde_json::from_value(data).map_err(|e| Error::module("oathnet", e.to_string()))?;
+    Ok(sd.items)
+}
+
 pub async fn osint(key: &str, path: &str, param: &str, value: &str) -> Result<Value> {
     let encoded = crate::util::http::urlencode(value);
     let url = format!("{}{}?{}={}", base_url(), path, param, encoded);

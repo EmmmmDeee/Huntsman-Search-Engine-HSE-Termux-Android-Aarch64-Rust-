@@ -110,7 +110,7 @@ pub async fn version() -> Json<Value> {
 
 pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
     use crate::core::scan::TargetKind;
-    const ALL_KINDS: [TargetKind; 10] = [
+    const ALL_KINDS: [TargetKind; 11] = [
         TargetKind::Email,
         TargetKind::Username,
         TargetKind::Phone,
@@ -121,6 +121,7 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
         TargetKind::Coordinates,
         TargetKind::Address,
         TargetKind::ApiKey,
+        TargetKind::Regex,
     ];
 
     let mods: Vec<Value> = s

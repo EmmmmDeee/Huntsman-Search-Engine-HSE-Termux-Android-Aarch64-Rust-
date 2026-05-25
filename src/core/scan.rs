@@ -15,6 +15,7 @@ pub enum TargetKind {
     Coordinates,
     Address,
     ApiKey,
+    Regex,
 }
 
 impl TargetKind {
@@ -30,6 +31,7 @@ impl TargetKind {
             EntityKind::Coordinates => Some(Self::Coordinates),
             EntityKind::Address => Some(Self::Address),
             EntityKind::ApiKey => Some(Self::ApiKey),
+            EntityKind::Regex => Some(Self::Regex),
             EntityKind::Credential => Some(Self::ApiKey), // Credentials expand as API key searches
             EntityKind::Password => Some(Self::ApiKey),
             EntityKind::Organisation
@@ -53,6 +55,7 @@ impl TargetKind {
             Self::Coordinates => EntityKind::Coordinates,
             Self::Address => EntityKind::Address,
             Self::ApiKey => EntityKind::ApiKey,
+            Self::Regex => EntityKind::Regex,
         }
     }
 
@@ -68,6 +71,7 @@ impl TargetKind {
             Self::Coordinates => "coordinates",
             Self::Address => "address",
             Self::ApiKey => "api_key",
+            Self::Regex => "regex",
         }
     }
 }
@@ -171,6 +175,14 @@ impl Target {
                 }
                 if v.len() > 2048 {
                     return Err("API key too long (max 2048 chars)");
+                }
+            }
+            TargetKind::Regex => {
+                if v.len() < 2 {
+                    return Err("regex pattern too short");
+                }
+                if v.len() > 512 {
+                    return Err("regex pattern too long (max 512 chars)");
                 }
             }
             TargetKind::Username | TargetKind::FullName | TargetKind::Address => {}
@@ -352,6 +364,7 @@ mod tests {
             TargetKind::Coordinates,
             TargetKind::Address,
             TargetKind::ApiKey,
+            TargetKind::Regex,
         ] {
             let ek = tk.to_entity_kind();
             assert_eq!(TargetKind::from_entity_kind(&ek), Some(tk));

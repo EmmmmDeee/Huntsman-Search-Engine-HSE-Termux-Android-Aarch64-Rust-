@@ -624,8 +624,9 @@ pub fn parse_target_kind(s: &str) -> Result<TargetKind> {
         "coordinates" | "coords" => Ok(TargetKind::Coordinates),
         "address" => Ok(TargetKind::Address),
         "apikey" | "api_key" | "key" => Ok(TargetKind::ApiKey),
+        "regex" | "re" | "pattern" => Ok(TargetKind::Regex),
         other => Err(Error::InvalidTarget(format!(
-            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, asn, coords, address, apikey"
+            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, asn, coords, address, apikey, regex"
         ))),
     }
 }

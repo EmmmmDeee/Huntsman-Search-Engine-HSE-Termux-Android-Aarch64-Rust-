@@ -41,6 +41,7 @@ pub enum EntityKind {
     Credential,
     Password,
     ApiKey,
+    Regex,
 
     // Network / infrastructure
     IpAddress,
@@ -74,6 +75,7 @@ impl fmt::Display for EntityKind {
             Self::Credential => f.write_str("credential"),
             Self::Password => f.write_str("password"),
             Self::ApiKey => f.write_str("api_key"),
+            Self::Regex => f.write_str("regex"),
             Self::IpAddress => f.write_str("ip_address"),
             Self::Domain => f.write_str("domain"),
             Self::Url => f.write_str("url"),

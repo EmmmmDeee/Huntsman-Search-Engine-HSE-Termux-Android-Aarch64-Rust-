@@ -42,6 +42,7 @@ impl Module for OathnetPro {
                 | TargetKind::Domain
                 | TargetKind::FullName
                 | TargetKind::ApiKey
+                | TargetKind::Regex
         )
     }
 
@@ -51,6 +52,11 @@ impl Module for OathnetPro {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = oathnet::resolve_key(ctx.key_opt(oathnet::KEY_ENV));
+
+        // Regex targets use dedicated regex search endpoint
+        if target.kind == TargetKind::Regex {
+            return self.process_regex(target, ctx, key).await;
+        }
 
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -448,6 +454,84 @@ impl Module for OathnetPro {
                         e.tag(tags::BREACH);
                         break;
                     }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+}
+
+impl OathnetPro {
+    async fn process_regex(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+        key: &str,
+    ) -> Result<ModuleResult> {
+        let mut result = ModuleResult::new();
+        let mut seen: HashSet<String> = HashSet::new();
+
+        // Search both breach and stealer databases with the regex
+        let breach_items =
+            oathnet::regex_search(key, paths::BREACH, &target.value, 50).await?;
+        let stealer_items = if !ctx.cancel.is_cancelled() {
+            oathnet::regex_search(key, paths::STEALER, &target.value, 50)
+                .await
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let total = breach_items.len() + stealer_items.len();
+        if total == 0 {
+            return Ok(result);
+        }
+
+        // Parent entity represents the regex search itself
+        let mut parent = Entity::new(EntityKind::Regex, &target.value, 0.90, &ctx.scan_id);
+        parent.tag("oathnet-pro");
+        parent.tag("regex-search");
+        parent.add_evidence(
+            Evidence::new(
+                "oathnet_pro",
+                format!(
+                    "Regex '{}': {} breach + {} stealer matches",
+                    target.value,
+                    breach_items.len(),
+                    stealer_items.len()
+                ),
+            )
+            .with_attr("breach_hits", breach_items.len().to_string())
+            .with_attr("stealer_hits", stealer_items.len().to_string())
+            .with_attr("pattern", &target.value),
+        );
+        result.push(parent);
+
+        // Extract entities from breach results
+        for item in &breach_items {
+            extract_breach_entities(item, &target.value, &ctx.scan_id, &mut seen, &mut result);
+        }
+
+        // Extract entities from stealer results
+        for item in &stealer_items {
+            extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
+        }
+
+        // IP geolocation enrichment for discovered IPs
+        if !ctx.cancel.is_cancelled() {
+            let ips: Vec<String> = result
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::IpAddress)
+                .map(|e| e.value.clone())
+                .collect();
+            for ip in ips.iter().take(3) {
+                if ctx.cancel.is_cancelled() {
+                    break;
+                }
+                if let Ok(info) = oathnet::osint(key, paths::IP_INFO, "ip", ip).await {
+                    extract_ip_info(info, ip, &ctx.scan_id, &mut result);
                 }
             }
         }
@@ -1314,6 +1398,7 @@ mod tests {
             TargetKind::Domain,
             TargetKind::FullName,
             TargetKind::ApiKey,
+            TargetKind::Regex,
         ] {
             assert!(m.accepts(&Target::new(k, "x")), "should accept {k:?}");
         }
