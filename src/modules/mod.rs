@@ -30,6 +30,7 @@ pub mod numverify;
 pub mod oathnet_pro;
 pub mod phone_intl;
 pub mod reverse_dns;
+pub mod search_engines;
 pub mod securitytrails;
 pub mod shodan;
 pub mod tor_exit_check;
@@ -84,6 +85,10 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(ip_geo::IpGeo),
         // Tor exit-relay membership check (free, single fetch cached).
         Arc::new(tor_exit_check::TorExitCheck),
+        // Multi-engine search scraping (DuckDuckGo, Brave, Startpage,
+        // Mojeek, Yahoo) — discovers subdomains, linked domains, emails
+        // from search result URLs and snippets. Zero API keys.
+        Arc::new(search_engines::SearchEngines),
         // Web stack fingerprint via HEAD on the domain's homepage.
         Arc::new(webserver_banner::WebserverBanner),
         // Recursive BFS web crawler — link discovery, content extraction,
