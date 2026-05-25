@@ -401,6 +401,8 @@ struct OathItem {
     #[serde(default)]
     phone_number: Option<String>,
     #[serde(default)]
+    phone_national: Option<String>,
+    #[serde(default)]
     ip: Option<String>,
     #[serde(default)]
     name: Option<String>,
@@ -410,6 +412,26 @@ struct OathItem {
     display_name: Option<String>,
     #[serde(default)]
     country: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    password_hash: Option<String>,
+    #[serde(default)]
+    salt: Option<String>,
+    #[serde(default)]
+    date_birth: Option<String>,
+    #[serde(default)]
+    age: Option<serde_json::Value>,
+    #[serde(default)]
+    gender: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    account_id: Option<String>,
+    #[serde(default)]
+    followers: Option<String>,
+    #[serde(default)]
+    language: Option<String>,
 }
 
 async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
@@ -466,6 +488,53 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
         }
         if let Some(hits) = oathnet_lookup(key, "username", uname).await {
             apply_breach_evidence(result, uname, &hits, &scan_id);
+        }
+    }
+
+    // Recursive enrichment: look up newly discovered emails and
+    // usernames that came from the first round of breach data.
+    // This catches cross-linked identities (e.g. breach reveals
+    // shinigami_jerome@hotmail.com → username jmdespal → look up
+    // jmdespal → finds the same IP, confirming the link).
+    if !ctx.cancel.is_cancelled() {
+        let mut new_emails: Vec<String> = Vec::new();
+        let mut new_usernames: Vec<String> = Vec::new();
+        for e in &result.entities {
+            if !e.tags.contains(&"oathnet-enriched".to_string()) {
+                continue;
+            }
+            let lower = e.value.to_lowercase();
+            match e.kind {
+                EntityKind::Email => {
+                    if !emails.iter().any(|x| x.to_lowercase() == lower) && new_emails.len() < 5 {
+                        new_emails.push(e.value.clone());
+                    }
+                }
+                EntityKind::Username => {
+                    if !usernames.iter().any(|x| x.to_lowercase() == lower)
+                        && new_usernames.len() < 3
+                    {
+                        new_usernames.push(e.value.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        for email in &new_emails {
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+            if let Some(hits) = oathnet_lookup(key, "email", email).await {
+                apply_breach_evidence(result, email, &hits, &scan_id);
+            }
+        }
+        for uname in &new_usernames {
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+            if let Some(hits) = oathnet_lookup(key, "username", uname).await {
+                apply_breach_evidence(result, uname, &hits, &scan_id);
+            }
         }
     }
 }
@@ -526,7 +595,7 @@ fn apply_breach_evidence(
         }
     );
 
-    // Tag the existing entity with breach data if it matches
+    // Tag the existing entity with full breach metadata
     let lookup_lower = lookup_value.to_lowercase();
     for e in &mut result.entities {
         if e.value.to_lowercase() == lookup_lower {
@@ -535,12 +604,42 @@ fn apply_breach_evidence(
             if e.confidence < 0.70 {
                 e.confidence = 0.70;
             }
-            e.add_evidence(
-                Evidence::new("search_engines:oathnet", &summary)
-                    .with_attr("breach_hits", total.to_string())
-                    .with_attr("top_dbnames", top_dbs.join(", "))
-                    .with_attr("lookup_value", lookup_value),
-            );
+            let mut ev = Evidence::new("search_engines:oathnet", &summary)
+                .with_attr("breach_hits", total.to_string())
+                .with_attr("top_dbnames", top_dbs.join(", "))
+                .with_attr("lookup_value", lookup_value);
+            // Attach all available fields from the first rich item
+            for item in items {
+                if let Some(c) = &item.country {
+                    ev = ev.with_attr("country", c);
+                }
+                if let Some(g) = &item.gender {
+                    ev = ev.with_attr("gender", g);
+                }
+                if let Some(dob) = &item.date_birth {
+                    ev = ev.with_attr("date_of_birth", dob);
+                }
+                if let Some(age) = &item.age {
+                    ev = ev.with_attr("age", age.to_string().trim_matches('"'));
+                }
+                if let Some(ca) = &item.created_at {
+                    ev = ev.with_attr("account_created", ca);
+                }
+                if let Some(fn_) = &item.full_name {
+                    ev = ev.with_attr("full_name", fn_);
+                }
+                if let Some(ph) = item
+                    .phone_number
+                    .as_deref()
+                    .or(item.phone_national.as_deref())
+                {
+                    ev = ev.with_attr("phone", ph);
+                }
+                if item.country.is_some() || item.full_name.is_some() {
+                    break;
+                }
+            }
+            e.add_evidence(ev);
         }
     }
 
@@ -554,6 +653,47 @@ fn apply_breach_evidence(
         let db = item.dbname.as_deref().unwrap_or("unknown");
         let country = item.country.as_deref().unwrap_or("");
 
+        // Build a rich evidence object with ALL available fields
+        let breach_ev = |summary: &str| -> Evidence {
+            let mut ev = Evidence::new("search_engines:oathnet", summary)
+                .with_attr("dbname", db)
+                .with_attr("lookup_value", lookup_value);
+            if !country.is_empty() {
+                ev = ev.with_attr("country", country);
+            }
+            if let Some(g) = &item.gender {
+                ev = ev.with_attr("gender", g);
+            }
+            if let Some(dob) = &item.date_birth {
+                ev = ev.with_attr("date_of_birth", dob);
+            }
+            if let Some(age) = &item.age {
+                ev = ev.with_attr("age", age.to_string().trim_matches('"'));
+            }
+            if let Some(ca) = &item.created_at {
+                ev = ev.with_attr("account_created", ca);
+            }
+            if let Some(aid) = &item.account_id {
+                ev = ev.with_attr("account_id", aid);
+            }
+            if let Some(fol) = &item.followers {
+                ev = ev.with_attr("followers", fol);
+            }
+            if let Some(lang) = &item.language {
+                ev = ev.with_attr("language", lang);
+            }
+            if let Some(pw) = &item.password {
+                ev = ev.with_attr("password", pw);
+            }
+            if let Some(ph) = &item.password_hash {
+                ev = ev.with_attr("password_hash", ph);
+            }
+            if let Some(s) = &item.salt {
+                ev = ev.with_attr("salt", s);
+            }
+            ev
+        };
+
         // Email
         if let Some(email) = &item.email {
             let lower = email.to_lowercase();
@@ -561,15 +701,7 @@ fn apply_breach_evidence(
                 let mut e = Entity::new(EntityKind::Email, email, 0.70, scan_id);
                 e.tag(tags::BREACH);
                 e.tag("oathnet-enriched");
-                let mut ev = Evidence::new(
-                    "search_engines:oathnet",
-                    format!("Breach on {db} — {lookup_value}"),
-                )
-                .with_attr("dbname", db);
-                if !country.is_empty() {
-                    ev = ev.with_attr("country", country);
-                }
-                e.add_evidence(ev);
+                e.add_evidence(breach_ev(&format!("Breach on {db} — {lookup_value}")));
                 new_ents.push(e);
             }
         }
@@ -581,19 +713,19 @@ fn apply_breach_evidence(
                 let mut e = Entity::new(EntityKind::Username, uname, 0.65, scan_id);
                 e.tag(tags::BREACH);
                 e.tag("oathnet-enriched");
-                e.add_evidence(
-                    Evidence::new(
-                        "search_engines:oathnet",
-                        format!("Breach username on {db} — {lookup_value}"),
-                    )
-                    .with_attr("dbname", db),
-                );
+                e.add_evidence(breach_ev(&format!(
+                    "Breach username on {db} — {lookup_value}"
+                )));
                 new_ents.push(e);
             }
         }
 
-        // Phone — check both phone and phone_number fields
-        let phone_val = item.phone_number.as_deref().or(item.phone.as_deref());
+        // Phone — check phone_number, phone_national, phone
+        let phone_val = item
+            .phone_number
+            .as_deref()
+            .or(item.phone_national.as_deref())
+            .or(item.phone.as_deref());
         if let Some(phone) = phone_val
             && phone.len() >= 7
             && seen.insert(phone.to_lowercase())
@@ -601,19 +733,11 @@ fn apply_breach_evidence(
             let mut e = Entity::new(EntityKind::Phone, phone, 0.70, scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
-            let mut ev = Evidence::new(
-                "search_engines:oathnet",
-                format!("Breach phone on {db} — {lookup_value}"),
-            )
-            .with_attr("dbname", db);
-            if !country.is_empty() {
-                ev = ev.with_attr("country", country);
-            }
-            e.add_evidence(ev);
+            e.add_evidence(breach_ev(&format!("Breach phone on {db} — {lookup_value}")));
             new_ents.push(e);
         }
 
-        // Full name — check full_name, display_name, name fields
+        // Full name — check full_name, display_name, name
         let name_val = item
             .full_name
             .as_deref()
@@ -625,15 +749,7 @@ fn apply_breach_evidence(
                 let mut e = Entity::new(EntityKind::Person, t, 0.70, scan_id);
                 e.tag(tags::BREACH);
                 e.tag("oathnet-enriched");
-                let mut ev = Evidence::new(
-                    "search_engines:oathnet",
-                    format!("Breach name on {db} — {lookup_value}"),
-                )
-                .with_attr("dbname", db);
-                if !country.is_empty() {
-                    ev = ev.with_attr("country", country);
-                }
-                e.add_evidence(ev);
+                e.add_evidence(breach_ev(&format!("Breach name on {db} — {lookup_value}")));
                 new_ents.push(e);
             }
         }
@@ -648,13 +764,7 @@ fn apply_breach_evidence(
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
             e.tag("geolocation-lead");
-            e.add_evidence(
-                Evidence::new(
-                    "search_engines:oathnet",
-                    format!("Breach IP on {db} — {lookup_value}"),
-                )
-                .with_attr("dbname", db),
-            );
+            e.add_evidence(breach_ev(&format!("Breach IP on {db} — {lookup_value}")));
             new_ents.push(e);
         }
 
@@ -663,13 +773,9 @@ fn apply_breach_evidence(
             let mut e = Entity::new(EntityKind::Address, country, 0.55, scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
-            e.add_evidence(
-                Evidence::new(
-                    "search_engines:oathnet",
-                    format!("Country from {db} breach — {lookup_value}"),
-                )
-                .with_attr("dbname", db),
-            );
+            e.add_evidence(breach_ev(&format!(
+                "Country from {db} breach — {lookup_value}"
+            )));
             new_ents.push(e);
         }
     }
