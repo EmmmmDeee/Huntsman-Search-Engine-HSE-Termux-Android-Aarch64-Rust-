@@ -14,8 +14,13 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
     use crate::core::live::LiveScanner;
 
     let (store, bus, engine) = build_runtime(1024)?;
-    let live = LiveScanner::new(Arc::clone(&engine), bus.clone());
     let http = build_client();
+    let live = LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        http.clone(),
+        crate::util::keys::load(),
+    );
     let state = Arc::new(AppState {
         store,
         engine,

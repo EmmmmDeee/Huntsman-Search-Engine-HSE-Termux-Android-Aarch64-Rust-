@@ -73,6 +73,17 @@ fn modules_do_not_import_engine_or_storage() {
 }
 
 #[test]
+fn core_does_not_import_util_directly() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
+    let v = scan_for_violations(&dir, &["crate::util"]);
+    assert!(
+        v.is_empty(),
+        "core/ must not import util/ — inject dependencies at construction.\nViolations:\n{}",
+        v.join("\n")
+    );
+}
+
+#[test]
 fn storage_port_is_object_safe() {
     use huntsman_search_engine::core::StoragePort;
     fn _assert_object_safety(_: &dyn StoragePort) {}

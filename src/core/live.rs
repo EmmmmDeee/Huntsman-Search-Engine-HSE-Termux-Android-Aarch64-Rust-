@@ -37,7 +37,17 @@ use crate::core::{
     module::ModuleContext,
     scan::{Scan, ScanOptions, Target},
 };
-use crate::util::{http::build_client, keys, uid::scan_id};
+
+fn make_scan_id(kind: &str, value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(kind.as_bytes());
+    h.update(b":");
+    h.update(value.as_bytes());
+    h.update(b":");
+    h.update(unix_now().to_be_bytes());
+    hex::encode(h.finalize())
+}
 
 /// User-tunable knobs for a live session, on top of [`ScanOptions`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,28 +122,29 @@ pub struct LiveScanner {
 }
 
 struct LiveInner {
-    // Map keys are `live_id`. Entries are pruned when `session_loop`
-    // exits (either via natural iteration count or explicit stop) — see
-    // the cleanup at the bottom of `session_loop` below. This keeps the
-    // registry bounded in long-running `hse serve` processes.
     sessions: RwLock<HashMap<String, LiveSession>>,
-    /// Per-session cancel handle. The SAME handle is plumbed into each
-    /// iteration's `ModuleContext.cancel`, so `LiveScanner::stop` aborts
-    /// the in-flight iteration at the engine's next module boundary —
-    /// not just the next iteration. (Issue #23.)
     cancels: RwLock<HashMap<String, CancelHandle>>,
     engine: Arc<ScanEngine>,
     bus: EventBus,
+    http: reqwest::Client,
+    keys: std::collections::HashMap<String, String>,
 }
 
 impl LiveScanner {
-    pub fn new(engine: Arc<ScanEngine>, bus: EventBus) -> Self {
+    pub fn new(
+        engine: Arc<ScanEngine>,
+        bus: EventBus,
+        http: reqwest::Client,
+        keys: std::collections::HashMap<String, String>,
+    ) -> Self {
         Self {
             inner: Arc::new(LiveInner {
                 sessions: RwLock::new(HashMap::new()),
                 cancels: RwLock::new(HashMap::new()),
                 engine,
                 bus,
+                http,
+                keys,
             }),
         }
     }
@@ -231,8 +242,8 @@ async fn session_loop(
 ) {
     let interval = Duration::from_secs(live.interval_secs.max(1));
     let max_iter = live.iterations;
-    let http = build_client();
-    let loaded_keys = keys::load();
+    let http = inner.http.clone();
+    let loaded_keys = inner.keys.clone();
 
     let _ = inner.bus.send(Event::new(
         &live_id,
@@ -264,7 +275,7 @@ async fn session_loop(
         // Spawn a fresh scan for this iteration. scan_id() mixes unix_now()
         // so back-to-back ticks get distinct ids. Canonical snake_case form
         // matches CLI/API scan_id derivation.
-        let sid = scan_id(target.kind.canonical_str(), &target.value);
+        let sid = make_scan_id(target.kind.canonical_str(), &target.value);
 
         // Register the scan_id with the session BEFORE running, so the SSE
         // handler can forward its events the moment they fire.

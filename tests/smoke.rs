@@ -755,7 +755,12 @@ async fn live_session_runs_two_iterations_and_completes() {
         Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
         bus.clone(),
     ));
-    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    let scanner = LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        reqwest::Client::new(),
+        Default::default(),
+    );
 
     let target = Target::new(TargetKind::Email, "live@example.com");
     let live_id = scanner.start(
@@ -794,7 +799,12 @@ async fn live_session_stops_on_explicit_cancel() {
         Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
         bus.clone(),
     ));
-    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    let scanner = LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        reqwest::Client::new(),
+        Default::default(),
+    );
 
     let target = Target::new(TargetKind::Email, "cancel-live@example.com");
     let live_id = scanner.start(

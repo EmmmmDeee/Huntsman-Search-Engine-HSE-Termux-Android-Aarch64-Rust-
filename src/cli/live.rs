@@ -41,7 +41,12 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     };
 
     let (_store, bus, engine) = build_runtime(1024)?;
-    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    let scanner = LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        crate::util::http::build_client(),
+        crate::util::keys::load(),
+    );
 
     let live_id = scanner.start(target, scan_options, live_options);
     eprintln!("live session {live_id} — Ctrl-C to stop");

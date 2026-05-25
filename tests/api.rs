@@ -76,7 +76,12 @@ fn test_app(suffix: &str) -> axum::Router {
         Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
         bus.clone(),
     ));
-    let live = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    let live = LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        reqwest::Client::new(),
+        Default::default(),
+    );
     let state = Arc::new(AppState {
         store,
         engine,
