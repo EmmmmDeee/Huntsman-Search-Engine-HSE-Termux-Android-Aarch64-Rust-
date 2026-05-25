@@ -188,6 +188,11 @@ pub enum ScanStatus {
     Running,
     Complete,
     Failed,
+    /// Operator-initiated cancellation (issue #23). Distinct from
+    /// `Failed` because the scan didn't error — it was told to stop.
+    /// Any entities + correlations produced before the cancel are
+    /// persisted as for a `Complete` scan.
+    Aborted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

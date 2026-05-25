@@ -45,6 +45,7 @@
     .k-other{background:#eee;color:#666}
     .status-pill { font-size:10px; padding:2px 8px; border-radius:10px; font-weight:500; }
     .s-complete{background:#dff0d8;color:#3c763d}
+    .s-aborted{background:#fcf8e3;color:#8a6d3b}
     .s-running{background:#d9edf7;color:#31708f}
     .s-failed{background:#f2dede;color:#a94442}
     .s-pending{background:#eee;color:#666}
@@ -304,7 +305,7 @@ function fmtDuration(secs){
   return `${h}h ${mm}m`;
 }
 function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
-function statusPill(s){const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
+function statusPill(s){const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending',aborted:'s-aborted'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
 function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
 function kindPill(k){return `<span class="kind-pill k-${attr(k)}">${esc(k)}</span>`;}
 function effC(e){const c=e.confidence??0;const corr=Math.max(1,e.corroboration??1);return Math.min(1,Math.max(0,c*(1+0.15*Math.log(corr))));}
@@ -339,6 +340,7 @@ const API = {
   correlations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/correlations'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
   rerun:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/rerun',{method:'POST'}),
+  cancel:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/cancel',{method:'POST'}),
   remove:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id),{method:'DELETE'}),
   csvUrl:    id=>'/api/v1/scans/'+encodeURIComponent(id)+'/entities.csv',
   reportUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json',
@@ -763,6 +765,9 @@ async function renderScanInfo(v){
         <small class="text-muted" style="margin-left:6px">${kindPill(scan.target?.kind)} ${statusPill(scan.status)}</small>
         <div class="pull-right">
           <button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button>
+          ${(scan.status==='running'||scan.status==='pending')
+            ? `<button class="btn btn-warning btn-sm" data-cancel="${attr(id)}" title="Abort scan"><i class="glyphicon glyphicon-stop"></i>&nbsp;Abort</button>`
+            : ''}
           <button class="btn btn-default btn-sm" data-rerun="${attr(id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i>&nbsp;Rescan</button>
           <a class="btn btn-default btn-sm" href="${API.csvUrl(id)}" title="Export entities as CSV"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;CSV</a>
           <a class="btn btn-default btn-sm" href="${API.reportUrl(id)}" title="Export full report as JSON"><i class="glyphicon glyphicon-save"></i>&nbsp;JSON</a>
@@ -798,6 +803,21 @@ async function renderScanInfo(v){
     alertify.confirm('Delete scan','This deletes the scan, its correlations, and orphan entities. Continue?', async()=>{
       try{ await API.remove(b.dataset.delete); toast('Scan deleted'); nav('#/scans'); }
       catch(e){ alertify.error(e.message); }
+    }, ()=>{});
+  }));
+  // Abort flips the cancel flag for an in-flight scan (issue #23).
+  // The engine sees it at its next per-module / per-target gate, lets
+  // in-flight modules finish naturally, and marks the scan `aborted`
+  // instead of `complete`. Confirm because partial results are kept
+  // but no more modules will run.
+  $$('button[data-cancel]').forEach(b=>b.addEventListener('click',()=>{
+    alertify.confirm('Abort scan','Stop the scan now? Modules already in flight will complete, then no further work will run. Entities + correlations produced so far are kept.', async()=>{
+      try{
+        await API.cancel(b.dataset.cancel);
+        toast('Cancellation requested');
+        // Re-render in ~2 s so the status pill updates to "aborted".
+        setTimeout(render, 2000);
+      } catch(e){ alertify.error(e.message); }
     }, ()=>{});
   }));
   $$('.nav-tabs a[data-sub]').forEach(a=>a.addEventListener('click', e=>{

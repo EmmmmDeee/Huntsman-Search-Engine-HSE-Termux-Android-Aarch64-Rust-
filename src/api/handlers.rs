@@ -56,6 +56,31 @@ fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response::Response {
     (StatusCode::OK, Json(Value::Object(map))).into_response()
 }
 
+/// Shared scan-spawn wiring used by `scan_create` and `scan_rerun`.
+fn spawn_scan(state: &Arc<AppState>, scan: Scan, target: Target) {
+    let sid = scan.id.clone();
+    let cancel = crate::core::cancel::CancelHandle::new();
+    let cancel_guard = super::CancelRegistryGuard::install(
+        Arc::clone(&state.cancellations),
+        sid.clone(),
+        cancel.clone(),
+    );
+    let ctx = ModuleContext {
+        scan_id: sid.clone(),
+        bus: state.bus.clone(),
+        http: state.http.clone(),
+        keys: keys::load(),
+        cancel,
+    };
+    let engine = Arc::clone(&state.engine);
+    tokio::spawn(async move {
+        let _cancel_guard = cancel_guard;
+        if let Err(e) = engine.run(scan, target, ctx).await {
+            tracing::warn!(scan_id = %sid, error = %e, "scan failed");
+        }
+    });
+}
+
 // ─── Health / Version ────────────────────────────────────────────────────────
 
 pub async fn health() -> Json<Value> {
@@ -165,22 +190,7 @@ pub async fn scan_create(
         return internal_error(&e);
     }
 
-    let ctx = ModuleContext {
-        scan_id: sid.clone(),
-        bus: s.bus.clone(),
-        http: s.http.clone(),
-        keys: keys::load(),
-    };
-
-    // Spawn the scan — handler returns immediately with the scan id so the
-    // client can subscribe to /events for live progress.
-    let engine = Arc::clone(&s.engine);
-    let scan_for_run = scan.clone();
-    tokio::spawn(async move {
-        if let Err(e) = engine.run(scan_for_run, target, ctx).await {
-            tracing::warn!(scan_id = %sid, error = %e, "scan failed");
-        }
-    });
+    spawn_scan(&s, scan.clone(), target);
 
     info!(scan_id = %scan.id, kind = ?scan.target.kind, "scan queued");
     (
@@ -188,6 +198,34 @@ pub async fn scan_create(
         Json(json!({ "scan_id": scan.id, "status": "queued" })),
     )
         .into_response()
+}
+
+/// `POST /api/v1/scans/{id}/cancel` — flip the cancel flag for an
+/// in-flight scan. The engine sees it at its next cancellation gate
+/// (between modules + between expansion rounds), stops queuing new
+/// work, lets in-flight modules finish naturally, and marks the
+/// scan `Aborted` instead of `Complete`.
+pub async fn scan_cancel(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let handle = s.cancellations.lock().get(&id).cloned();
+    match handle {
+        Some(h) => {
+            h.cancel();
+            info!(scan_id = %id, "scan cancellation requested");
+            (
+                StatusCode::OK,
+                Json(json!({ "scan_id": id, "status": "cancelling" })),
+            )
+                .into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no in-flight scan with that id" })),
+        )
+            .into_response(),
+    }
 }
 
 pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
@@ -283,21 +321,7 @@ pub async fn scan_rerun(
         return internal_error(&e);
     }
 
-    let ctx = ModuleContext {
-        scan_id: sid.clone(),
-        bus: s.bus.clone(),
-        http: s.http.clone(),
-        keys: keys::load(),
-    };
-
-    let engine = Arc::clone(&s.engine);
-    let scan_for_run = new_scan.clone();
-    let target_for_run = original.target.clone();
-    tokio::spawn(async move {
-        if let Err(e) = engine.run(scan_for_run, target_for_run, ctx).await {
-            tracing::warn!(scan_id = %sid, error = %e, "rerun failed");
-        }
-    });
+    spawn_scan(&s, new_scan.clone(), original.target.clone());
 
     info!(scan_id = %new_scan.id, source = %id, "scan rerun queued");
     (

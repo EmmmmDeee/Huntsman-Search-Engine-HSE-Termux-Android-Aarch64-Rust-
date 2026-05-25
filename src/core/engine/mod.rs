@@ -47,6 +47,11 @@ enum StopReason {
     NoMoreCandidates,
     MaxEntities(usize),
     MaxWallTime(u64),
+    /// Operator-initiated cancellation via the `CancelHandle` plumbed
+    /// through `ModuleContext`. Distinct from the budget stops so the
+    /// `ExpansionStop` event reads "cancelled" rather than "budget
+    /// exceeded" — the SPA / log consumers can colour it differently.
+    Cancelled,
 }
 
 impl StopReason {
@@ -55,6 +60,7 @@ impl StopReason {
             Self::NoMoreCandidates => "no more high-confidence candidates".into(),
             Self::MaxEntities(n) => format!("max_entities={n} reached"),
             Self::MaxWallTime(s) => format!("max_wall_time_secs={s} exceeded"),
+            Self::Cancelled => "cancelled by operator".into(),
         }
     }
 }
@@ -168,7 +174,17 @@ impl ScanEngine {
             return Ok(scan);
         }
 
-        scan.status = ScanStatus::Complete;
+        // If the operator cancelled mid-flight, mark Aborted rather
+        // than Complete. The dispatcher + expansion loop both stopped
+        // honouring `ctx.cancel`, so any entities the in-flight
+        // modules emitted up to the cancel point are still in
+        // `entity_map` — we persist them as for a normal run and just
+        // change the terminal label.
+        scan.status = if ctx.cancel.is_cancelled() {
+            ScanStatus::Aborted
+        } else {
+            ScanStatus::Complete
+        };
         scan.entity_count = entity_count;
         scan.finished_at = Some(crate::core::entity::unix_now());
         self.store.upsert_scan(&scan)?;
@@ -219,6 +235,18 @@ impl ScanEngine {
         visited: &mut HashSet<(TargetKind, String)>,
     ) -> StopReason {
         for depth in 1..=opts.depth {
+            // Cancellation gate at round entry — between rounds is the
+            // cheapest place to exit because nothing new has spawned.
+            if ctx.cancel.is_cancelled() {
+                let stop = StopReason::Cancelled;
+                let _ = self.bus.send(Event::new(
+                    scan_id,
+                    EventKind::ExpansionStop {
+                        reason: stop.label(),
+                    },
+                ));
+                return stop;
+            }
             // Snapshot the entity set at round start — entities discovered
             // during this round will be expansion candidates in the next round,
             // not this one.
@@ -260,6 +288,16 @@ impl ScanEngine {
             );
 
             for nt in &next {
+                if ctx.cancel.is_cancelled() {
+                    let stop = StopReason::Cancelled;
+                    let _ = self.bus.send(Event::new(
+                        scan_id,
+                        EventKind::ExpansionStop {
+                            reason: stop.label(),
+                        },
+                    ));
+                    return stop;
+                }
                 if let Some(stop) = budget_check(opts, started, entity_map.len()) {
                     self.emit(
                         scan_id,

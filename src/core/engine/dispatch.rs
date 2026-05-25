@@ -161,6 +161,12 @@ impl ScanEngine {
         entity_map: &mut HashMap<String, Entity>,
     ) -> Result<()> {
         for module in &self.modules {
+            // Cancellation gate at the top of the per-module loop — the
+            // cheapest spot to exit because we haven't fired off the
+            // next module's I/O yet (issue #23).
+            if ctx.cancel.is_cancelled() {
+                return Ok(());
+            }
             let name = module.name();
 
             if !module.accepts(target) {
@@ -197,6 +203,15 @@ impl ScanEngine {
 
             self.finalise_module_result(scan_id, name, opts.min_confidence, entity_map, result);
 
+            // Re-check the cancel flag before the throttle sleep so an
+            // operator cancel between modules doesn't pay the full
+            // `throttle_ms` latency before the next gate at the top of
+            // the loop is reached. The throttle exists to be polite to
+            // upstreams; once the operator has asked us to stop there's
+            // nothing left to be polite about.
+            if ctx.cancel.is_cancelled() {
+                return Ok(());
+            }
             if opts.throttle_ms > 0 {
                 sleep(Duration::from_millis(opts.throttle_ms)).await;
             }
@@ -230,6 +245,13 @@ impl ScanEngine {
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
 
         for module in &self.modules {
+            // Cancellation gate before spawning each module. Tasks
+            // already in flight are left to complete naturally — their
+            // results still flow through finalise_module_result so
+            // partial work isn't lost (issue #23).
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
             let name = module.name();
 
             if !module.accepts(target) {

@@ -10,7 +10,7 @@ use huntsman_search_engine::{
         entity::{Entity, EntityKind},
         error::Result,
         module::{Module, ModuleContext, ModuleResult},
-        scan::{Scan, ScanOptions, Target, TargetKind},
+        scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
     },
     storage::store::Store,
     util::{http::build_client, uid::scan_id},
@@ -247,6 +247,158 @@ async fn expansion_respects_max_entities_budget() {
         result.entity_count <= 1,
         "max_entities=1 should cap at 1 (got {})",
         result.entity_count
+    );
+}
+
+#[tokio::test]
+async fn cancellation_pre_run_aborts_immediately() {
+    // Pre-set the cancel flag before engine.run starts. The first
+    // per-module gate (issue #23) catches it; no modules get
+    // dispatched and the scan terminates `Aborted` rather than
+    // `Complete`.
+    let (engine, _store, sid, target, ctx) = setup(
+        vec![Arc::new(SyntheticModule)],
+        "cancel-pre",
+        TargetKind::Email,
+        "alice@example.com",
+    );
+    ctx.cancel.cancel();
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(ScanOptions::default());
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    assert!(
+        matches!(result.status, ScanStatus::Aborted),
+        "pre-cancelled scan must terminate Aborted, got {:?}",
+        result.status
+    );
+    // No modules ran → no entities.
+    assert_eq!(result.entity_count, 0);
+}
+
+#[tokio::test]
+async fn pre_cancellation_aborts_scan_before_any_module_runs() {
+    // Deterministic pre-flight scenario: the operator's `cancel()` has
+    // already fired before `engine.run()` starts. The sequential
+    // dispatcher's per-module gate catches the flag on the first
+    // iteration, no module runs, and the terminal status is Aborted.
+    //
+    // (The companion test `mid_flight_cancellation_aborts_running_scan`
+    // exercises the post-ModuleStart cancel path where a module is
+    // actually in flight when the flag flips.)
+    let (engine, _store, sid, target, ctx) = setup(
+        vec![Arc::new(SyntheticModule)],
+        "cancel-pre",
+        TargetKind::Email,
+        "bob@example.com",
+    );
+    ctx.cancel.cancel();
+    let opts = ScanOptions {
+        depth: 3,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    assert!(
+        matches!(result.status, ScanStatus::Aborted),
+        "pre-cancelled scan must terminate Aborted, got {:?}",
+        result.status
+    );
+    // No module ever entered `process()` — no entities should exist.
+    assert_eq!(result.entity_count, 0);
+}
+
+#[tokio::test]
+async fn mid_flight_cancellation_aborts_running_scan() {
+    // Real operator flow: a scan is already running when the cancel
+    // flag flips. We use a slow synthetic module that signals when its
+    // `process()` begins; the test driver waits on that signal, calls
+    // `cancel()`, and verifies the scan terminates Aborted while
+    // preserving the partial results the slow module emitted before
+    // its sleep.
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    /// Synthetic module that emits one entity, signals start via a
+    /// `Notify`, then sleeps a while so the test can observe the
+    /// mid-flight state and call `cancel()`.
+    struct SlowSignallingModule {
+        started: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for SlowSignallingModule {
+        fn name(&self) -> &'static str {
+            "slow"
+        }
+        fn priority(&self) -> u8 {
+            200 // highest, so it runs first
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Email)
+        }
+        fn max_timeout_ms(&self) -> u64 {
+            5_000
+        }
+        async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+            self.started.notify_one();
+            // Long enough for the test to observe the start signal and
+            // call cancel(), but short enough not to slow the suite if
+            // something goes wrong.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let mut r = ModuleResult::new();
+            let e = Entity::new(EntityKind::Email, &target.value, 0.9, &ctx.scan_id);
+            r.push(e);
+            Ok(r)
+        }
+    }
+
+    // Fresh `Notify` per test invocation — a `static OnceLock` would
+    // outlive a single run, so `cargo test --retries` or any harness
+    // that re-runs this test in the same process could carry over a
+    // leftover `notify_one` permit and fire `cancel()` before the
+    // module's `process()` had started, dropping `entity_count` to 0
+    // and breaking the `==1` assertion below.
+    let started = Arc::new(Notify::new());
+
+    let modules: Vec<Arc<dyn Module>> = vec![
+        Arc::new(SlowSignallingModule {
+            started: Arc::clone(&started),
+        }),
+        // A second module that should be skipped via the cancel gate
+        // (its `ModuleStart` must never fire).
+        Arc::new(SyntheticModule),
+    ];
+    let (engine, _store, sid, target, ctx) =
+        setup(modules, "cancel-mid", TargetKind::Email, "mid@example.com");
+    let cancel_handle = ctx.cancel.clone();
+    let started_for_task = Arc::clone(&started);
+
+    // Spawn the cancel-trigger task. It waits for the slow module to
+    // signal `process()` start, then flips the cancel flag — exactly
+    // the operator-issued mid-flight cancel scenario.
+    let canceller = tokio::spawn(async move {
+        started_for_task.notified().await;
+        cancel_handle.cancel();
+    });
+
+    let opts = ScanOptions {
+        depth: 0,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    canceller.await.unwrap();
+
+    assert!(
+        matches!(result.status, ScanStatus::Aborted),
+        "mid-flight cancelled scan must terminate Aborted, got {:?}",
+        result.status
+    );
+    // The slow module's 300 ms sleep is shorter than its 5 s timeout
+    // so it completes successfully and its one entity persists. The
+    // second module's cancel-gate fires before its `process()` runs.
+    assert_eq!(
+        result.entity_count, 1,
+        "partial results from the in-flight module must survive cancel"
     );
 }
 
@@ -541,6 +693,7 @@ fn setup(
         bus,
         http: build_client(),
         keys: Default::default(),
+        cancel: Default::default(),
     };
     (engine, store, sid, target, ctx)
 }
