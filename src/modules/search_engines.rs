@@ -100,6 +100,7 @@ impl Module for SearchEngines {
 
         let mut all_results: Vec<SearchResult> = Vec::new();
 
+        // ── Primary pass: run all queries against all engines ───────
         for query in &queries {
             if ctx.cancel.is_cancelled() {
                 break;
@@ -112,11 +113,37 @@ impl Module for SearchEngines {
                 let url = (engine.build_url)(query);
                 let post_body = engine.build_post.map(|f| f(query));
                 if let Some(mut results) =
-                    fetch_and_parse(&url, engine.name, query, post_body.as_deref()).await
+                    fetch_and_parse(&url, engine, query, post_body.as_deref()).await
                 {
                     all_results.append(&mut results);
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS)).await;
+            }
+        }
+
+        // ── Secondary pivot: extract usernames from result URLs and
+        //    re-search on the top-3 most reliable engines ────────────
+        if !ctx.cancel.is_cancelled() {
+            let pivots = extract_username_pivots(&all_results, target);
+            if !pivots.is_empty() {
+                let reliable = [&ENGINES[0], &ENGINES[1], &ENGINES[5]]; // yahoo, bing, brave
+                for pivot_query in pivots.iter().take(3) {
+                    if ctx.cancel.is_cancelled() {
+                        break;
+                    }
+                    for engine in &reliable {
+                        if ctx.cancel.is_cancelled() {
+                            break;
+                        }
+                        let url = (engine.build_url)(pivot_query);
+                        if let Some(mut results) =
+                            fetch_and_parse(&url, engine, pivot_query, None).await
+                        {
+                            all_results.append(&mut results);
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS)).await;
+                    }
+                }
             }
         }
 
@@ -130,6 +157,10 @@ struct EngineSpec {
     name: &'static str,
     build_url: fn(&str) -> String,
     build_post: Option<fn(&str) -> String>,
+    /// Preferred User-Agent class for this engine.
+    ua: &'static str,
+    /// Fallback User-Agent to retry when the primary UA gets blocked.
+    ua_alt: &'static str,
 }
 
 // All 13 engines are always tried. Blocked engines are detected and
@@ -154,6 +185,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        ua: crate::util::curl::UA_MOBILE,
+        ua_alt: crate::util::curl::UA_DESKTOP,
     },
     EngineSpec {
         name: "bing",
@@ -164,6 +197,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        ua: crate::util::curl::UA_MOBILE,
+        ua_alt: crate::util::curl::UA_DESKTOP,
     },
     EngineSpec {
         name: "aol",
@@ -174,6 +209,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        ua: crate::util::curl::UA_MOBILE,
+        ua_alt: crate::util::curl::UA_DESKTOP,
     },
     EngineSpec {
         name: "duckduckgo",
@@ -184,6 +221,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        ua: crate::util::curl::UA_FIREFOX,
+        ua_alt: crate::util::curl::UA_DESKTOP,
     },
     EngineSpec {
         name: "google",
@@ -194,6 +233,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        ua: crate::util::curl::UA_MOBILE,
+        ua_alt: crate::util::curl::UA_DESKTOP,
     },
     EngineSpec {
         name: "brave",
@@ -204,6 +245,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        ua: crate::util::curl::UA_DESKTOP,
+        ua_alt: crate::util::curl::UA_SAFARI,
     },
     EngineSpec {
         name: "mojeek",
@@ -214,6 +257,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        ua: crate::util::curl::UA_DESKTOP,
+        ua_alt: crate::util::curl::UA_MOBILE,
     },
     // ── New engines (2026) ──────────────────────────────────────────
     EngineSpec {
@@ -225,6 +270,8 @@ const ENGINES: &[EngineSpec] = &[
                 crate::util::http::urlencode(q)
             )
         }),
+        ua: crate::util::curl::UA_FIREFOX,
+        ua_alt: crate::util::curl::UA_DESKTOP,
     },
     EngineSpec {
         name: "yandex",
@@ -235,6 +282,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        ua: crate::util::curl::UA_DESKTOP,
+        ua_alt: crate::util::curl::UA_MOBILE,
     },
     EngineSpec {
         name: "ecosia",
@@ -245,6 +294,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        ua: crate::util::curl::UA_DESKTOP,
+        ua_alt: crate::util::curl::UA_FIREFOX,
     },
     EngineSpec {
         name: "qwant",
@@ -255,6 +306,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        ua: crate::util::curl::UA_FIREFOX,
+        ua_alt: crate::util::curl::UA_DESKTOP,
     },
     EngineSpec {
         name: "dogpile",
@@ -265,6 +318,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        ua: crate::util::curl::UA_DESKTOP,
+        ua_alt: crate::util::curl::UA_SAFARI,
     },
     EngineSpec {
         name: "swisscows",
@@ -275,6 +330,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        ua: crate::util::curl::UA_DESKTOP,
+        ua_alt: crate::util::curl::UA_FIREFOX,
     },
 ];
 
@@ -304,7 +361,14 @@ fn build_queries(target: &Target) -> Vec<String> {
                 ));
             }
             if local.len() >= 3 {
-                q.push(format!("\"{local}\" site:linkedin.com OR site:twitter.com OR site:facebook.com OR site:myspace.com"));
+                q.push(format!(
+                    "\"{local}\" site:linkedin.com OR site:twitter.com \
+                     OR site:facebook.com OR site:myspace.com"
+                ));
+                q.push(format!(
+                    "\"{local}\" site:peekyou.com OR site:nuwber.com \
+                     OR site:spokeo.com OR site:pipl.com"
+                ));
             }
             q
         }
@@ -334,35 +398,130 @@ fn build_queries(target: &Target) -> Vec<String> {
     }
 }
 
+// ─── Secondary pivot: extract usernames from discovered URLs ────────────────
+
+/// Extract potential username pivots from search results. Social
+/// profile URLs contain usernames in their path that can be used
+/// as secondary search seeds to find cross-platform identity links.
+fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<String> {
+    let social_hosts = [
+        "facebook.com",
+        "linkedin.com",
+        "twitter.com",
+        "x.com",
+        "instagram.com",
+        "github.com",
+        "reddit.com",
+        "myspace.com",
+        "soundcloud.com",
+        "peekyou.com",
+        "youtube.com",
+        "tiktok.com",
+        "pinterest.com",
+        "tumblr.com",
+        "linktr.ee",
+        "medium.com",
+    ];
+
+    let mut seen = HashSet::new();
+    let target_lower = target.value.to_lowercase();
+    let mut pivots = Vec::new();
+
+    for r in results {
+        let host = extract_host(&r.url);
+        if !social_hosts
+            .iter()
+            .any(|s| host == *s || host.ends_with(&format!(".{s}")))
+        {
+            continue;
+        }
+        if let Some(username) = extract_path_username(&r.url) {
+            let lower = username.to_lowercase();
+            if lower.len() >= 3
+                && lower != target_lower
+                && !lower.contains("login")
+                && !lower.contains("signup")
+                && !lower.contains("search")
+                && !lower.contains("public")
+                && !lower.contains("upload")
+                && !lower.contains("discover")
+                && !lower.contains("signin")
+                && seen.insert(lower.clone())
+            {
+                pivots.push(format!("\"{username}\""));
+            }
+        }
+    }
+    pivots
+}
+
+fn extract_path_username(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let segments: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
+    let candidate = segments.first()?;
+    if candidate.len() >= 3
+        && candidate.len() <= 40
+        && candidate
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
 // ─── Fetch + parse ──────────────────────────────────────────────────────────
 
+/// Attempt to fetch search results, retrying once with an alternate
+/// User-Agent if the primary attempt is blocked or empty.
 async fn fetch_and_parse(
     url: &str,
-    engine: &'static str,
+    engine: &EngineSpec,
     query: &str,
     post_body: Option<&str>,
 ) -> Option<Vec<SearchResult>> {
+    // Primary attempt with engine-preferred UA
+    if let Some(body) = try_fetch(url, engine.ua, post_body).await {
+        let results = parse_results(&body, engine.name, query);
+        if !results.is_empty() {
+            return Some(results);
+        }
+    }
+
+    // Retry with alternate UA (different browser fingerprint class)
+    if engine.ua != engine.ua_alt
+        && let Some(body) = try_fetch(url, engine.ua_alt, post_body).await
+    {
+        let results = parse_results(&body, engine.name, query);
+        if !results.is_empty() {
+            return Some(results);
+        }
+    }
+
+    None
+}
+
+/// Single fetch attempt: call curl, check for blocking, return body.
+async fn try_fetch(url: &str, ua: &str, post_body: Option<&str>) -> Option<String> {
     let body = if let Some(data) = post_body {
-        crate::util::curl::fetch_post(url, data, 10_000).await?
+        crate::util::curl::fetch_post_with_ua(url, data, 10_000, ua).await?
     } else {
-        crate::util::curl::fetch(url, 10_000).await?
+        crate::util::curl::fetch_with_ua(url, 10_000, ua).await?
     };
     if body.len() < 500 {
         return None;
     }
-    // Skip CAPTCHA/interstitial pages that waste parsing time.
-    // Each pattern targets a specific anti-bot system:
-    //   - anomaly-modal: Cloudflare managed challenge
-    //   - unusual traffic: Google rate-limit page
-    //   - are not a robot: reCAPTCHA / hCaptcha
-    //   - consent + before you continue: GDPR consent walls
-    //   - httpservice/retry: Google JS-required redirect (since 2025)
-    //   - captcha-delivery.com: DataDome (Qwant, etc.)
-    //   - showcaptcha / smartcaptcha: Yandex SmartCaptcha
-    //   - challenges.cloudflare.com: Cloudflare Turnstile
-    //   - just a moment: Cloudflare interstitial
+    if is_captcha_page(&body) {
+        return None;
+    }
+    Some(body)
+}
+
+/// Detect CAPTCHA/interstitial pages that contain no real results.
+fn is_captcha_page(body: &str) -> bool {
     let lower = body.to_lowercase();
-    if lower.contains("anomaly-modal")
+    lower.contains("anomaly-modal")
         || lower.contains("unusual traffic")
         || lower.contains("are not a robot")
         || (lower.contains("consent") && lower.contains("before you continue"))
@@ -372,10 +531,6 @@ async fn fetch_and_parse(
         || lower.contains("smartcaptcha")
         || lower.contains("challenges.cloudflare.com")
         || (lower.contains("just a moment") && lower.contains("cloudflare"))
-    {
-        return None;
-    }
-    Some(parse_results(&body, engine, query))
 }
 
 fn parse_results(html: &str, engine: &'static str, query: &str) -> Vec<SearchResult> {
@@ -554,8 +709,20 @@ impl<'a> Iterator for GoogleUrlIter<'a> {
     }
 }
 
+/// Decode common HTML entities in href values. Search engines
+/// (especially DDG) emit `&amp;` instead of `&` inside href attrs.
+fn decode_html_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+}
+
 /// Resolve an href into a clean URL, decoding engine-specific redirects.
 fn resolve_href(href: &str) -> Option<String> {
+    let href = &decode_html_entities(href);
+
     // DuckDuckGo wraps URLs: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&rut=...
     if href.contains("uddg=") {
         return extract_url_param(href, "uddg=");
@@ -879,8 +1046,9 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             result.push(e);
         }
 
-        // Extract emails from snippet text
-        for email in extract_emails_from_text(&r.snippet) {
+        // Extract emails from title + snippet text
+        let combined_text = format!("{} {}", r.title, r.snippet);
+        for email in extract_emails_from_text(&combined_text) {
             if seen_emails.insert(email.clone()) {
                 let mut e = Entity::new(EntityKind::Email, &email, 0.60, scan_id);
                 e.tag(tags::WEB_SCRAPED);
@@ -903,7 +1071,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             }
         }
 
-        for phone in extract_phones_from_text(&r.snippet) {
+        for phone in extract_phones_from_text(&combined_text) {
             if seen_phones.insert(phone.clone()) {
                 let mut e = Entity::new(EntityKind::Phone, &phone, 0.55, scan_id);
                 e.tag(tags::WEB_SCRAPED);
@@ -921,6 +1089,42 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                     .with_attr("url", &r.url)
                     .with_attr("engine", r.engine),
                 );
+                result.push(e);
+            }
+        }
+
+        // Extract usernames from social profile URLs
+        if let Some(username) = extract_path_username(&r.url) {
+            let social_hosts = [
+                "facebook.com",
+                "linkedin.com",
+                "twitter.com",
+                "x.com",
+                "instagram.com",
+                "github.com",
+                "reddit.com",
+                "myspace.com",
+                "soundcloud.com",
+                "peekyou.com",
+                "tiktok.com",
+                "pinterest.com",
+                "linktr.ee",
+            ];
+            let lower_user = username.to_lowercase();
+            if social_hosts
+                .iter()
+                .any(|s| host == *s || host.ends_with(&format!(".{s}")))
+                && lower_user.len() >= 3
+                && !lower_user.contains("login")
+                && !lower_user.contains("signup")
+                && !lower_user.contains("search")
+                && !lower_user.contains("public")
+                && seen_domains.insert(format!("@username:{lower_user}"))
+            {
+                let mut e = Entity::new(EntityKind::Username, &lower_user, 0.55, scan_id);
+                e.tag("search-discovered");
+                e.tag("social-profile");
+                e.add_evidence(build_search_evidence(r));
                 result.push(e);
             }
         }
@@ -1326,6 +1530,51 @@ mod tests {
                      <body>showcaptcha challenge</body></html>";
         let lower = body.to_lowercase();
         assert!(lower.contains("showcaptcha"));
+    }
+
+    #[test]
+    fn html_entity_decoding() {
+        assert_eq!(
+            decode_html_entities("uddg=https%3A%2F%2Fexample.com&amp;rut=abc"),
+            "uddg=https%3A%2F%2Fexample.com&rut=abc"
+        );
+    }
+
+    #[test]
+    fn extract_path_username_social() {
+        assert_eq!(
+            extract_path_username("https://soundcloud.com/jerome-despal").as_deref(),
+            Some("jerome-despal")
+        );
+        assert_eq!(
+            extract_path_username("https://myspace.com/shinigami_jerome").as_deref(),
+            Some("shinigami_jerome")
+        );
+        assert!(extract_path_username("https://example.com/").is_none());
+        assert!(extract_path_username("https://example.com/ab").is_none());
+    }
+
+    #[test]
+    fn captcha_page_detection() {
+        assert!(is_captcha_page(
+            "<html><body>captcha-delivery.com script</body></html>"
+        ));
+        assert!(is_captcha_page(
+            "<html><body>httpservice/retry redirect</body></html>"
+        ));
+        assert!(!is_captcha_page(
+            "<html><body>Normal search results page with lots of content</body></html>"
+        ));
+    }
+
+    #[test]
+    fn email_query_includes_people_search() {
+        let t = Target::new(TargetKind::Email, "jdespal@gmail.com");
+        let q = build_queries(&t);
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("peekyou.com") || qr.contains("nuwber.com"))
+        );
     }
 
     #[test]
