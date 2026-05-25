@@ -18,7 +18,7 @@ use parking_lot::Mutex;
 
 use crate::{
     core::cancel::CancelHandle, core::engine::ScanEngine, core::event::EventBus,
-    core::live::LiveScanner, storage::store::Store,
+    core::live::LiveScanner, core::port::StoragePort,
 };
 
 /// Registry of in-flight scan cancellations. Keyed by scan_id; the
@@ -117,7 +117,7 @@ mod tests {
 /// * `live` — the live-session registry (v0.5+); manages periodic re-scans.
 #[derive(Clone)]
 pub struct AppState {
-    pub store: Arc<Store>,
+    pub store: Arc<dyn StoragePort>,
     pub engine: Arc<ScanEngine>,
     pub bus: EventBus,
     pub live: LiveScanner,

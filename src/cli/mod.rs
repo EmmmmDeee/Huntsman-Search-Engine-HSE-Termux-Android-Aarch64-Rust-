@@ -409,12 +409,17 @@ fn split_csv(s: Option<String>) -> Option<Vec<String>> {
 
 fn build_runtime(
     bus_capacity: usize,
-) -> Result<(Arc<Store>, crate::core::event::EventBus, Arc<ScanEngine>)> {
-    let store = Arc::new(Store::open(&default_db_path())?);
+) -> Result<(
+    Arc<dyn crate::core::port::StoragePort>,
+    crate::core::event::EventBus,
+    Arc<ScanEngine>,
+)> {
+    let store: Arc<dyn crate::core::port::StoragePort> =
+        Arc::new(Store::open(&default_db_path())?);
     let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
     let engine = Arc::new(ScanEngine::new(
         registry(),
-        Arc::clone(&store) as Arc<dyn crate::core::port::StoragePort>,
+        Arc::clone(&store),
         bus.clone(),
     ));
     Ok((store, bus, engine))
