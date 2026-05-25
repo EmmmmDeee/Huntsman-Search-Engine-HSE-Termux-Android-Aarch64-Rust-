@@ -117,6 +117,21 @@
     .tablesorter-default thead .tablesorter-headerDesc::after { content:" ▼"; color:#059CD7 }
     .progress.thin{height:6px;margin-bottom:0}
     .scan-error{color:#a94442;font-family:monospace;font-size:11px}
+    .entity-detail{background:#f7f9fc;border-top:1px solid #e3e3e3;padding:10px 14px}
+    .entity-detail .ev-block{margin-bottom:8px;padding:6px 10px;background:#fff;border:1px solid #e3e3e3;border-radius:3px}
+    .entity-detail .ev-src{font-family:monospace;font-size:11px;color:#31708f;font-weight:600}
+    .entity-detail .ev-sum{font-size:12px;color:#444;margin:2px 0}
+    .entity-detail .ev-attrs{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
+    .entity-detail .ev-attr{font-size:10px;background:#eef3f8;padding:1px 6px;border-radius:3px;color:#333;font-family:monospace}
+    .entity-detail .ev-attr .ak{color:#666}
+    #browse-table tbody tr{cursor:pointer}
+    #browse-table tbody tr:hover{background:#f0f7ff !important}
+    body.dark-theme .entity-detail{background:#1e2228}
+    body.dark-theme .entity-detail .ev-block{background:#252830;border-color:#333}
+    body.dark-theme .entity-detail .ev-attr{background:#2a2f38;color:#ccc}
+    .search-results{padding:12px}
+    .search-results .sr-item{padding:8px 12px;border-bottom:1px solid #eee;cursor:pointer}
+    .search-results .sr-item:hover{background:#f0f7ff}
     .empty-state{padding:32px 20px;text-align:center;color:#888}
     .empty-state h3{color:#555;font-weight:500;font-size:16px;margin-bottom:6px}
     .empty-state p{font-size:13px;max-width:480px;margin:0 auto 12px;line-height:1.5}
@@ -160,6 +175,12 @@
         <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
         <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a></li>
       </ul>
+      <form class="navbar-form navbar-left" style="margin-left:10px" onsubmit="globalSearch(event)">
+        <div class="input-group input-group-sm" style="width:220px">
+          <input type="search" id="global-q" class="form-control" placeholder="Search all entities…">
+          <span class="input-group-btn"><button class="btn btn-default" type="submit"><i class="glyphicon glyphicon-search"></i></button></span>
+        </div>
+      </form>
       <ul class="nav navbar-nav navbar-right">
         <li><a href="#" id="theme-toggle"><i class="glyphicon glyphicon-adjust"></i>&nbsp;<span id="theme-label">Dark Mode</span></a></li>
         <li><a href="#aboutmodal" data-toggle="modal" data-target="#aboutmodal"><i class="glyphicon glyphicon-info-sign"></i>&nbsp;About</a></li>
@@ -620,7 +641,16 @@ async function renderNewScan(v){
         </label>
       </div>
 
-      <div class="control-group">
+      <div class="control-group" style="margin-top:14px">
+        <label class="text-muted" style="font-size:12px">Tags <span class="text-muted">(comma-separated labels for campaign tracking)</span></label>
+        <input type="text" class="form-control input-sm" id="w-tags" placeholder="e.g. investigation-001, apt-29">
+      </div>
+      <div class="control-group" style="margin-top:6px">
+        <label class="text-muted" style="font-size:12px">Notes</label>
+        <textarea class="form-control input-sm" id="w-notes" rows="2" placeholder="Investigation context…" style="resize:vertical"></textarea>
+      </div>
+
+      <div class="control-group" style="margin-top:14px">
         <button id="btn-run-scan" type="submit" class="btn btn-danger"><i class="glyphicon glyphicon-play"></i>&nbsp;Run Scan Now</button>
         <a href="#/scans" class="btn btn-default">Cancel</a>
       </div>
@@ -732,6 +762,10 @@ async function submitWizard(){
   if (W.options.max_wall_time_secs!=null && W.options.max_wall_time_secs!=='') opts.max_wall_time_secs = Number(W.options.max_wall_time_secs);
   if (W.options.min_confidence!=null && W.options.min_confidence!=='') opts.min_confidence = Number(W.options.min_confidence);
   if (W.modules!==null) opts.modules = W.modules.length?W.modules:null;
+  const tagsStr = ($('#w-tags')||{}).value||'';
+  if (tagsStr.trim()) opts.scan_tags = tagsStr.split(',').map(t=>t.trim()).filter(Boolean);
+  const notesStr = ($('#w-notes')||{}).value||'';
+  if (notesStr.trim()) opts.notes = notesStr.trim();
 
   const btn = $('#btn-run-scan');
   btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Queuing…';
@@ -968,10 +1002,14 @@ function renderBrowseTable(rows){
   if (!rows.length){
     return '<div class="empty-state"><h3>No entities match</h3><p>Adjust the filter, or check the Scan Log if the scan is still running.</p></div>';
   }
-  const body = rows.map(e=>{
+  const body = rows.map((e,idx)=>{
     const eff = effC(e), tier = classify(eff);
     const sources = Array.from(new Set((e.evidence||[]).map(ev=>ev.source))).sort();
-    return `<tr>
+    const evDetail = (e.evidence||[]).map(ev=>{
+      const attrs = Object.entries(ev.attributes||{}).map(([k,v])=>`<span class="ev-attr"><span class="ak">${esc(k)}:</span> ${esc((v||'').substring(0,120))}</span>`).join('');
+      return `<div class="ev-block"><span class="ev-src">${esc(ev.source)}</span><div class="ev-sum">${esc(ev.summary)}</div>${attrs?`<div class="ev-attrs">${attrs}</div>`:''}</div>`;
+    }).join('');
+    return `<tr onclick="toggleDetail(this)" data-idx="${idx}">
       <td>${kindPill(e.kind)}</td>
       <td style="word-break:break-word"><code>${esc(e.raw_value||e.value)}</code></td>
       <td class="text-right"><code>${eff.toFixed(3)}</code></td>
@@ -980,7 +1018,12 @@ function renderBrowseTable(rows){
       <td>${(e.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</td>
       <td>${sources.map(s=>`<span class="src-pill">${esc(s)}</span>`).join('')}</td>
       <td><span class="text-muted" style="font-family:monospace;font-size:11px">${esc(fmtDate(e.observed_at))}</span></td>
-    </tr>`;
+    </tr>
+    <tr class="entity-detail-row" style="display:none"><td colspan="8"><div class="entity-detail">
+      <div style="margin-bottom:4px"><b>UID:</b> <code style="font-size:10px">${esc(e.uid||'')}</code></div>
+      <div style="margin-bottom:6px"><b>${(e.evidence||[]).length} evidence entries:</b></div>
+      ${evDetail || '<span class="text-muted">No evidence attached</span>'}
+    </div></td></tr>`;
   }).join('');
   return `<table class="table table-striped table-condensed tablesorter" id="browse-table">
     <thead><tr>
@@ -1301,6 +1344,8 @@ function renderInfo(host, scan){
     ['Min expand C_eff', String(opts.min_expand_confidence??0.75)],
     ['Max entities', opts.max_entities!=null?String(opts.max_entities):'<span class="text-muted">unlimited</span>'],
     ['Max wall time (s)', opts.max_wall_time_secs!=null?String(opts.max_wall_time_secs):'<span class="text-muted">unlimited</span>'],
+    ['Tags', (opts.scan_tags||[]).length ? opts.scan_tags.map(t=>`<span class="tag">${esc(t)}</span>`).join(' ') : '<span class="text-muted">none</span>'],
+    ['Notes', opts.notes ? `<span style="font-size:12px">${esc(opts.notes)}</span>` : '<span class="text-muted">none</span>'],
   ];
   host.innerHTML = `
     <div class="panel panel-default">
@@ -1415,6 +1460,35 @@ function wireKeyEditor(){
 }
 
 /* ═══════════ Theme toggler (Spiderfoot-compatible localStorage key) ═══════════ */
+function toggleDetail(tr){
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains('entity-detail-row')){
+    next.style.display = next.style.display === 'none' ? '' : 'none';
+  }
+}
+
+async function globalSearch(e){
+  e.preventDefault();
+  const q = ($('#global-q')||{}).value;
+  if (!q || q.trim().length < 2) return;
+  try {
+    const resp = await fetch(`/api/v1/search?q=${encodeURIComponent(q.trim())}&limit=50`);
+    const data = await resp.json();
+    const entities = data.entities || [];
+    if (!entities.length){
+      if (typeof alertify !== 'undefined') alertify.warning('No entities match "'+q+'"');
+      return;
+    }
+    S.entities = entities;
+    S.correlations = [];
+    S.route = {page:'scan',id:'search',tab:'browse',query:{}};
+    render();
+    if (typeof alertify !== 'undefined') alertify.success(entities.length+' entities found');
+  } catch(err){
+    if (typeof alertify !== 'undefined') alertify.error('Search failed: '+err.message);
+  }
+}
+
 function applyTheme(){
   const dark = localStorage.getItem('theme') === 'dark-theme';
   document.body.classList.toggle('dark-theme', dark);
