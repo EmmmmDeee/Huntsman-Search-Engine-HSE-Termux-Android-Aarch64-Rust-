@@ -36,16 +36,23 @@ impl Module for Crtsh {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
+        matches!(t.kind, TargetKind::Domain | TargetKind::Email)
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let url = format!("https://crt.sh/?q=%.{}&output=json", target.value);
+        let domain = match target.kind {
+            TargetKind::Email => match target.value.rsplit_once('@') {
+                Some((_, host)) if host.contains('.') => host.trim().to_string(),
+                _ => return Ok(ModuleResult::new()),
+            },
+            _ => target.value.trim().to_string(),
+        };
+        let url = format!("https://crt.sh/?q=%.{}&output=json", domain);
         let entries: Vec<CrtEntry> = fetch_json(&ctx.http, "crtsh", &url).await?;
 
         let mut seen: HashSet<String> = HashSet::with_capacity(entries.len());
         let mut result = ModuleResult::new();
-        let parent = target.value.to_lowercase();
+        let parent = domain.to_lowercase();
 
         for entry in &entries {
             for name in entry.name_value.split('\n') {
@@ -68,7 +75,7 @@ impl Module for Crtsh {
                                 "serial_number",
                                 entry.serial_number.as_deref().unwrap_or("-"),
                             )
-                            .with_attr("parent_domain", &target.value),
+                            .with_attr("parent_domain", &domain),
                     );
                     result.push(e);
                 }
@@ -83,9 +90,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_domain_only() {
+    fn accepts_domain_and_email() {
         let m = Crtsh;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x")));
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "x")));
+        assert!(m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::Username, "x")));
     }
 }

@@ -93,7 +93,7 @@ impl Module for XposedOrNot {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
+        matches!(t.kind, TargetKind::Email | TargetKind::Username)
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -311,9 +311,10 @@ mod tests {
     use crate::core::entity::EntityKind;
 
     #[test]
-    fn accepts_email_only() {
+    fn accepts_email_and_username() {
         let m = XposedOrNot;
         assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(m.accepts(&Target::new(TargetKind::Username, "johndoe")));
         assert!(!m.accepts(&Target::new(TargetKind::Domain, "y.com")));
         assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
     }

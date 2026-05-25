@@ -30,11 +30,17 @@ impl Module for Wayback {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
+        matches!(t.kind, TargetKind::Domain | TargetKind::Email)
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let domain = target.value.trim().to_lowercase();
+        let domain = match target.kind {
+            TargetKind::Email => match target.value.rsplit_once('@') {
+                Some((_, host)) if host.contains('.') => host.trim().to_lowercase(),
+                _ => return Ok(ModuleResult::new()),
+            },
+            _ => target.value.trim().to_lowercase(),
+        };
         if domain.is_empty() {
             return Ok(ModuleResult::new());
         }
@@ -109,9 +115,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_only_domain() {
+    fn accepts_domain_and_email() {
         let m = Wayback;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
+        assert!(m.accepts(&Target::new(TargetKind::Email, "a@example.com")));
         assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
     }
 

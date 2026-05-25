@@ -26,12 +26,19 @@ impl Module for DnsResolver {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
+        matches!(t.kind, TargetKind::Domain | TargetKind::Email)
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let resolver = shared_resolver();
-        let domain = target.value.as_str();
+        let domain = match target.kind {
+            TargetKind::Email => match target.value.rsplit_once('@') {
+                Some((_, host)) if host.contains('.') => host.trim().to_string(),
+                _ => return Ok(ModuleResult::new()),
+            },
+            _ => target.value.trim().to_string(),
+        };
+        let domain = domain.as_str();
         let mut result = ModuleResult::new();
 
         let (ips, mxs, nss, soa, txts) = tokio::join!(
@@ -228,10 +235,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_domain_only() {
+    fn accepts_domain_and_email() {
         let m = DnsResolver;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x")));
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "x")));
+        assert!(m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::Username, "x")));
     }
 
     #[test]

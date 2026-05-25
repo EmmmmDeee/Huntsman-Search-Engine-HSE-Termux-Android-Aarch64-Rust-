@@ -35,18 +35,28 @@ impl Module for Whois {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::IpAddress | TargetKind::Email
+        )
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let raw = query(IANA_WHOIS, &target.value)
+        let query_value = match target.kind {
+            TargetKind::Email => match target.value.rsplit_once('@') {
+                Some((_, host)) if host.contains('.') => host.trim().to_string(),
+                _ => return Ok(ModuleResult::new()),
+            },
+            _ => target.value.trim().to_string(),
+        };
+        let raw = query(IANA_WHOIS, &query_value)
             .await
             .map_err(|e| Error::module("whois", e.to_string()))?;
 
         let response = match find_referral(&raw) {
             Some(server) => {
                 let target_server = format!("{server}:43");
-                query(&target_server, &target.value).await.unwrap_or(raw)
+                query(&target_server, &query_value).await.unwrap_or(raw)
             }
             None => raw,
         };
@@ -147,7 +157,7 @@ impl Module for Whois {
             entity.tag("dnssec:signed");
         }
 
-        let mut ev = Evidence::new("whois", format!("WHOIS for {}", target.value))
+        let mut ev = Evidence::new("whois", format!("WHOIS for {}", query_value))
             .with_opt_attr("registrar", registrar.as_deref())
             .with_opt_attr("registrar_iana_id", registrar_iana.as_deref())
             .with_opt_attr("registrar_url", registrar_url.as_deref())
@@ -335,11 +345,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_domain_and_ip() {
+    fn accepts_domain_ip_and_email() {
         let m = Whois;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x.com")));
         assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::Username, "user")));
     }
 
     #[test]

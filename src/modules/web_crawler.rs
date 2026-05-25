@@ -62,7 +62,7 @@ impl Module for WebCrawler {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
+        matches!(t.kind, TargetKind::Domain | TargetKind::Email)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -70,7 +70,13 @@ impl Module for WebCrawler {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let domain = target.value.trim().to_lowercase();
+        let domain = match target.kind {
+            TargetKind::Email => match target.value.rsplit_once('@') {
+                Some((_, host)) if host.contains('.') => host.trim().to_lowercase(),
+                _ => return Ok(ModuleResult::new()),
+            },
+            _ => target.value.trim().to_lowercase(),
+        };
         if domain.is_empty() {
             return Ok(ModuleResult::new());
         }
@@ -190,7 +196,7 @@ impl Module for WebCrawler {
                 oathnet_key,
                 crate::util::oathnet::paths::STEALER,
                 "domain",
-                &target.value,
+                &domain,
                 20,
             )
             .await
@@ -198,9 +204,7 @@ impl Module for WebCrawler {
         {
             // Tag the parent domain entity
             for e in &mut state.result.entities {
-                if e.kind == EntityKind::Domain
-                    && e.value.to_lowercase() == target.value.to_lowercase()
-                {
+                if e.kind == EntityKind::Domain && e.value.to_lowercase() == domain {
                     e.tag(tags::STEALER_LOG);
                     e.tag(tags::COMPROMISED_SERVICE);
                     e.add_evidence(
@@ -209,7 +213,7 @@ impl Module for WebCrawler {
                             format!(
                                 "{} stolen credential(s) reference {}",
                                 stealer_items.len(),
-                                target.value
+                                domain
                             ),
                         )
                         .with_attr("stealer_hits", stealer_items.len().to_string()),
@@ -233,7 +237,7 @@ impl Module for WebCrawler {
                             e.add_evidence(
                                 Evidence::new(
                                     "web_crawler:oathnet",
-                                    format!("Credential stolen from {}", target.value),
+                                    format!("Credential stolen from {}", domain),
                                 )
                                 .with_attr("source", "stealer"),
                             );
@@ -272,7 +276,7 @@ impl Module for WebCrawler {
                     ce.add_evidence(
                         Evidence::new(
                             "web_crawler:oathnet",
-                            format!("Stolen credential for {}", target.value),
+                            format!("Stolen credential for {}", domain),
                         )
                         .with_attr("source", "stealer")
                         .with_opt_attr("username", user.clone())
@@ -776,10 +780,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_domain_only() {
+    fn accepts_domain_and_email() {
         let m = WebCrawler;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
+        assert!(m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
         assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
     }
 

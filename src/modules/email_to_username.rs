@@ -73,7 +73,7 @@ impl Module for EmailToUsername {
 
         let mut result = ModuleResult::new();
         for candidate in candidates {
-            let mut entity = Entity::new(EntityKind::Username, &candidate, 0.65, &ctx.scan_id);
+            let mut entity = Entity::new(EntityKind::Username, &candidate, 0.76, &ctx.scan_id);
             entity.tag("derived");
             entity.add_evidence(
                 Evidence::new(

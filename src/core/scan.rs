@@ -37,9 +37,13 @@ impl TargetKind {
             EntityKind::Organisation
             | EntityKind::AbnAcn
             | EntityKind::MacAddress
-            | EntityKind::DeviceId
-            | EntityKind::Url
-            | EntityKind::Other(_) => None,
+            | EntityKind::DeviceId => None,
+            // Url entities are not directly expandable — passing a URL string as a
+            // domain target value would be invalid. Modules that produce Url entities
+            // (social_probe, web_crawler, search_engines) already emit Domain entities
+            // alongside them, so domain-level expansion happens naturally.
+            EntityKind::Url => None,
+            EntityKind::Other(_) => None,
         }
     }
 
