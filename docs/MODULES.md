@@ -4,7 +4,14 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (v0.9 — 21 modules)
+## Catalogue (v0.10 — 50 modules)
+
+> **Note**: This table reflects the 50-module registry as of PR #34.
+> Modules added since v0.9: `emailrep`, `ipinfo`, `ip2location`,
+> `nominatim`, `abuseipdb`, `greynoise`, `haveibeenpwned`, `fullhunt`,
+> `name_to_email`, `shodan_internetdb`, `caa_records`, `threatfox`,
+> `rdap_domain`. The `username_search` module now probes 303 sites
+> (Maigret + Sherlock databases).
 
 ### Network / identity modules (target-driven)
 
