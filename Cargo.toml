@@ -43,6 +43,8 @@ futures            = "0.3"
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
+tower  = { version = "0.5", features = ["util"] }
+http   = "1"
 
 [profile.release]
 opt-level     = "s"

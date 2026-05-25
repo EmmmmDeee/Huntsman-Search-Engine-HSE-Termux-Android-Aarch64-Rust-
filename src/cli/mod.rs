@@ -412,7 +412,11 @@ fn build_runtime(
 ) -> Result<(Arc<Store>, crate::core::event::EventBus, Arc<ScanEngine>)> {
     let store = Arc::new(Store::open(&default_db_path())?);
     let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
-    let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
+    let engine = Arc::new(ScanEngine::new(
+        registry(),
+        Arc::clone(&store) as Arc<dyn crate::core::port::StoragePort>,
+        bus.clone(),
+    ));
     Ok((store, bus, engine))
 }
 

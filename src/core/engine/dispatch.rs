@@ -305,7 +305,7 @@ impl ScanEngine {
                 let name = module_arc.name();
 
                 super::emit_event(
-                    &store,
+                    &*store,
                     &bus,
                     &scan_id_owned,
                     EventKind::ModuleStart {

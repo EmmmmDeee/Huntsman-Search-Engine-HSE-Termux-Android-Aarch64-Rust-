@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::core::error::Result;
-use crate::storage::store::Store;
+use crate::core::port::StoragePort;
 
 // ─── Severity ──────────────────────────────────────────────────────────────
 
@@ -86,11 +86,11 @@ impl Correlation {
 // ─── Correlator ────────────────────────────────────────────────────────────
 
 pub struct Correlator {
-    store: Arc<Store>,
+    store: Arc<dyn StoragePort>,
 }
 
 impl Correlator {
-    pub fn new(store: Arc<Store>) -> Self {
+    pub fn new(store: Arc<dyn StoragePort>) -> Self {
         Self { store }
     }
 

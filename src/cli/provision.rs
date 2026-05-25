@@ -343,7 +343,7 @@ async fn run_smoke(target: Target, options: ScanOptions) -> Result<SmokeResult> 
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let engine = Arc::new(crate::core::engine::ScanEngine::new(
         crate::modules::registry(),
-        Arc::clone(&store),
+        Arc::clone(&store) as Arc<dyn crate::core::port::StoragePort>,
         bus.clone(),
     ));
 

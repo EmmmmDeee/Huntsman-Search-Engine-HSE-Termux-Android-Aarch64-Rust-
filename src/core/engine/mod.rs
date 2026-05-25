@@ -32,13 +32,13 @@ use crate::core::{
     error::Result,
     event::{Event, EventBus, EventKind},
     module::{Module, ModuleContext},
+    port::StoragePort,
     scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
 };
-use crate::storage::store::Store;
 
 pub struct ScanEngine {
     modules: Vec<Arc<dyn Module>>,
-    store: Arc<Store>,
+    store: Arc<dyn StoragePort>,
     bus: EventBus,
 }
 
@@ -73,7 +73,7 @@ impl StopReason {
 /// then broadcast for any live SSE subscribers. Both writes are
 /// best-effort — store-write errors don't abort the scan, broadcast
 /// errors just mean nobody is currently subscribed.
-pub(crate) fn emit_event(store: &Store, bus: &EventBus, scan_id: &str, kind: EventKind) {
+pub(crate) fn emit_event(store: &dyn StoragePort, bus: &EventBus, scan_id: &str, kind: EventKind) {
     let event = Event::new(scan_id, kind);
     // Persist-first so live SSE subscribers can't have an event that
     // history-fetch never sees. The DB write is best-effort: surface
@@ -92,7 +92,7 @@ pub(crate) fn emit_event(store: &Store, bus: &EventBus, scan_id: &str, kind: Eve
 }
 
 impl ScanEngine {
-    pub fn new(mut modules: Vec<Arc<dyn Module>>, store: Arc<Store>, bus: EventBus) -> Self {
+    pub fn new(mut modules: Vec<Arc<dyn Module>>, store: Arc<dyn StoragePort>, bus: EventBus) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
         Self {
             modules,
@@ -105,7 +105,7 @@ impl ScanEngine {
     /// emit path for engine-side events; see `emit_event` for the free
     /// function used inside spawned dispatch tasks.
     fn emit(&self, scan_id: &str, kind: EventKind) {
-        emit_event(&self.store, &self.bus, scan_id, kind);
+        emit_event(&*self.store, &self.bus, scan_id, kind);
     }
 
     pub fn modules(&self) -> &[Arc<dyn Module>] {
