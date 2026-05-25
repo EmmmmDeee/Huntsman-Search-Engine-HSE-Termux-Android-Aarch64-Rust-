@@ -461,6 +461,8 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
                 "correlations": correlations,
             }))?
         );
+    } else if cmd.output == "report" {
+        print_full_report(&scan, &entities, &correlations, &cmd.value, &cmd.kind);
     } else {
         println!(
             "\nScan {} — {} entities for {}={}\n",
@@ -504,6 +506,152 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_full_report(
+    scan: &crate::core::scan::Scan,
+    entities: &[crate::core::entity::Entity],
+    correlations: &[crate::core::correlator::Correlation],
+    target_value: &str,
+    target_kind: &str,
+) {
+    use std::collections::BTreeMap;
+
+    let dur = scan
+        .finished_at
+        .unwrap_or(0)
+        .saturating_sub(scan.started_at);
+
+    eprintln!("\n{}", "═".repeat(90));
+    eprintln!("  HUNTSMAN SEARCH ENGINE — INTELLIGENCE REPORT");
+    eprintln!("{}", "═".repeat(90));
+    eprintln!("  Target:   {} ({})", target_value, target_kind);
+    eprintln!(
+        "  Status:   {} | Duration: {}s | Entities: {} | Correlations: {}",
+        scan.status.as_str(),
+        dur,
+        entities.len(),
+        correlations.len()
+    );
+    eprintln!("{}", "═".repeat(90));
+
+    // Group entities by kind
+    let mut by_kind: BTreeMap<String, Vec<&crate::core::entity::Entity>> = BTreeMap::new();
+    for e in entities {
+        by_kind.entry(e.kind.to_string()).or_default().push(e);
+    }
+
+    // Print summary
+    eprintln!("\n  ┌─ ENTITY SUMMARY ─────────────────────────────────────────────");
+    for (kind, group) in &by_kind {
+        eprintln!("  │  {:15} {:>4} found", kind, group.len());
+    }
+    eprintln!(
+        "  └────────────────────────────────────────────────────── total: {}\n",
+        entities.len()
+    );
+
+    // Print HIGH severity correlations first
+    let high_corr: Vec<_> = correlations
+        .iter()
+        .filter(|c| c.severity.as_canonical() == "high" || c.severity.as_canonical() == "critical")
+        .collect();
+    if !high_corr.is_empty() {
+        eprintln!("  ┌─ HIGH/CRITICAL ALERTS ──────────────────────────────────────");
+        for c in &high_corr {
+            eprintln!(
+                "  │  [{}] {} — {}",
+                c.rule_id,
+                c.severity.as_canonical().to_uppercase(),
+                c.description
+            );
+        }
+        eprintln!("  └───────────────────────────────────────────────────────────────\n");
+    }
+
+    // Print each entity kind section with full evidence
+    let kind_order = [
+        "person",
+        "email",
+        "username",
+        "phone",
+        "credential",
+        "password",
+        "api_key",
+        "url",
+        "domain",
+        "ip_address",
+        "address",
+        "coordinates",
+        "organisation",
+        "mac_address",
+    ];
+    for kind_name in kind_order {
+        let group = match by_kind.get(kind_name) {
+            Some(g) => g,
+            None => continue,
+        };
+        eprintln!(
+            "  ╔═ {} ({}) ═══════════════════════════════════════════════",
+            kind_name.to_uppercase(),
+            group.len()
+        );
+        for (i, e) in group.iter().enumerate() {
+            let srcs: Vec<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
+            let unique_srcs: std::collections::BTreeSet<&str> = srcs.into_iter().collect();
+            eprintln!("  ║");
+            eprintln!("  ║  [{}] {}", i + 1, e.value);
+            eprintln!(
+                "  ║      Confidence: {:.3} | Corroboration: {} | Sources: {}",
+                e.confidence,
+                e.corroboration,
+                unique_srcs.into_iter().collect::<Vec<_>>().join(", ")
+            );
+            if !e.tags.is_empty() {
+                eprintln!("  ║      Tags: {}", e.tags.join(", "));
+            }
+            for ev in &e.evidence {
+                eprintln!("  ║      ├── [{}] {}", ev.source, ev.summary);
+                for (k, v) in &ev.attributes {
+                    if k == "raw" {
+                        eprintln!("  ║      │   {}: <{} bytes>", k, v.len());
+                    } else {
+                        let display = if v.len() > 200 { &v[..200] } else { v.as_str() };
+                        eprintln!("  ║      │   {}: {}", k, display);
+                    }
+                }
+            }
+        }
+        eprintln!("  ╚═══════════════════════════════════════════════════════════════\n");
+    }
+
+    // Print all correlations
+    if !correlations.is_empty() {
+        eprintln!(
+            "  ┌─ ALL CORRELATIONS ({}) ────────────────────────────────────",
+            correlations.len()
+        );
+        for (i, c) in correlations.iter().enumerate() {
+            eprintln!(
+                "  │  [{}] {} — {} [{}]",
+                i + 1,
+                c.rule_id,
+                c.rule_name,
+                c.severity.as_canonical().to_uppercase()
+            );
+            eprintln!("  │      {}", c.description);
+        }
+        eprintln!("  └───────────────────────────────────────────────────────────────");
+    }
+
+    eprintln!("\n{}", "═".repeat(90));
+    eprintln!(
+        "  SCAN COMPLETE: {} entities, {} correlations, {}s",
+        entities.len(),
+        correlations.len(),
+        dur
+    );
+    eprintln!("{}\n", "═".repeat(90));
 }
 
 async fn cmd_provision(env_only: bool, verify_only: bool, dry_run: bool) -> Result<()> {
