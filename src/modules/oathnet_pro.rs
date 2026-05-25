@@ -108,7 +108,7 @@ impl Module for OathnetPro {
         result.push(parent);
 
         for item in &items {
-            extract_breach_entities(item, &ctx.scan_id, &mut seen, &mut result);
+            extract_breach_entities(item, &target.value, &ctx.scan_id, &mut seen, &mut result);
         }
 
         // ── Stealer search ──────────────────────────────────────────
@@ -199,11 +199,34 @@ fn breach_evidence(item: &Value) -> Evidence {
 
 fn extract_breach_entities(
     item: &Value,
+    target_value: &str,
     scan_id: &str,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
     let ev = breach_evidence(item);
+
+    // Only emit entities from records that match the target lookup.
+    // Breach databases contain millions of records — a phone/IP search
+    // returns rows for many different people. We only want entities
+    // from rows where the email/username/phone matches our target.
+    let target_lower = target_value.to_lowercase();
+    let target_terms: Vec<&str> = target_lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .collect();
+    let row_matches_target = |item: &Value| -> bool {
+        for field in ["email", "username", "phone_number", "full_name"] {
+            if let Some(v) = val_str(item, field) {
+                let vl = v.to_lowercase();
+                if vl == target_lower || target_terms.iter().any(|t| vl.contains(t)) {
+                    return true;
+                }
+            }
+        }
+        false
+    };
+    let is_target_row = row_matches_target(item);
 
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
@@ -227,7 +250,9 @@ fn extract_breach_entities(
         }
     }
 
-    if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
+    // Phone and Person: only from rows that match the target
+    if is_target_row
+        && let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
         && ph.len() >= 7
         && seen.insert(ph.to_lowercase())
     {
@@ -238,7 +263,7 @@ fn extract_breach_entities(
         result.push(e);
     }
 
-    if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
+    if is_target_row && let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
         let t = n.trim();
         if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
             let mut e = Entity::new(EntityKind::Person, t, 0.70, scan_id);
@@ -249,7 +274,9 @@ fn extract_breach_entities(
         }
     }
 
-    if let Some(ip) = val_str(item, "ip")
+    // IP/country/address: only from rows matching the target
+    if is_target_row
+        && let Some(ip) = val_str(item, "ip")
         && ip.len() >= 7
         && seen.insert(ip.clone())
     {
@@ -261,7 +288,8 @@ fn extract_breach_entities(
         result.push(e);
     }
 
-    if let Some(country) = val_str(item, "country")
+    if is_target_row
+        && let Some(country) = val_str(item, "country")
         && seen.insert(format!("@country:{country}"))
     {
         let mut e = Entity::new(EntityKind::Address, &country, 0.55, scan_id);

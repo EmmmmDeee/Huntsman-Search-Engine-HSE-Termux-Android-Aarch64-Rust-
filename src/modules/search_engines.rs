@@ -475,9 +475,29 @@ fn apply_breach_evidence(
         .iter()
         .map(|e| e.value.to_lowercase())
         .collect();
+    let lookup_lower = lookup_value.to_lowercase();
+    let lookup_terms: Vec<&str> = lookup_lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .collect();
     let mut new_ents: Vec<Entity> = Vec::new();
     for item in items {
         let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
+
+        // Only emit Person/Phone/IP from rows matching the lookup target.
+        let row_matches = {
+            let mut matches = false;
+            for field in ["email", "username", "phone_number", "full_name"] {
+                if let Some(v) = val_str(item, field) {
+                    let vl = v.to_lowercase();
+                    if vl == lookup_lower || lookup_terms.iter().any(|t| vl.contains(t)) {
+                        matches = true;
+                        break;
+                    }
+                }
+            }
+            matches
+        };
 
         if let Some(email) = val_str(item, "email") {
             let lower = email.to_lowercase();
@@ -505,7 +525,8 @@ fn apply_breach_evidence(
                 new_ents.push(e);
             }
         }
-        if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
+        if row_matches
+            && let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
             && ph.len() >= 7
             && seen.insert(ph.to_lowercase())
         {
@@ -518,7 +539,7 @@ fn apply_breach_evidence(
             );
             new_ents.push(e);
         }
-        if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
+        if row_matches && let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
             let t = n.trim();
             if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
                 let mut e = Entity::new(EntityKind::Person, t, 0.70, scan_id);
@@ -531,7 +552,8 @@ fn apply_breach_evidence(
                 new_ents.push(e);
             }
         }
-        if let Some(ip) = val_str(item, "ip")
+        if row_matches
+            && let Some(ip) = val_str(item, "ip")
             && ip.contains('.')
             && ip.len() >= 7
             && seen.insert(ip.clone())
@@ -546,7 +568,8 @@ fn apply_breach_evidence(
             );
             new_ents.push(e);
         }
-        if let Some(country) = val_str(item, "country")
+        if row_matches
+            && let Some(country) = val_str(item, "country")
             && seen.insert(format!("@country:{country}"))
         {
             let mut e = Entity::new(EntityKind::Address, &country, 0.55, scan_id);
@@ -744,6 +767,9 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
                 continue;
             }
             if target_lower.contains(first) {
+                continue;
+            }
+            if is_non_name_word(first) {
                 continue;
             }
             if !seen.insert(first.to_string()) {
@@ -1323,6 +1349,63 @@ fn is_tracking_url(url: &str) -> bool {
         || lower.contains("guce.aol.com")
         || lower.contains("advertising.yahoo.com")
         || lower.contains("feedback.yahoo.com")
+}
+
+fn is_non_name_word(s: &str) -> bool {
+    const BLOCKED: &[&str] = &[
+        "about",
+        "amp",
+        "ancientfaces",
+        "and",
+        "blog",
+        "com",
+        "find",
+        "for",
+        "from",
+        "github",
+        "has",
+        "his",
+        "home",
+        "how",
+        "img",
+        "info",
+        "into",
+        "its",
+        "linkedin",
+        "locatefamily",
+        "may",
+        "net",
+        "new",
+        "not",
+        "now",
+        "old",
+        "one",
+        "org",
+        "our",
+        "out",
+        "own",
+        "page",
+        "per",
+        "photos",
+        "profile",
+        "public",
+        "results",
+        "search",
+        "shop",
+        "site",
+        "surname",
+        "the",
+        "their",
+        "this",
+        "was",
+        "web",
+        "who",
+        "with",
+        "www",
+        "you",
+        "your",
+    ];
+    BLOCKED.contains(&s)
 }
 
 fn is_navigation_path(s: &str) -> bool {
