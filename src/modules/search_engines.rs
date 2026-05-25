@@ -294,8 +294,8 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
-        ua: crate::util::curl::UA_DESKTOP,
-        ua_alt: crate::util::curl::UA_FIREFOX,
+        ua: crate::util::curl::UA_FIREFOX,
+        ua_alt: crate::util::curl::UA_SAFARI,
     },
     EngineSpec {
         name: "qwant",
@@ -390,6 +390,10 @@ fn build_queries(target: &Target) -> Vec<String> {
                     "{first} {last} site:instagram.com OR site:github.com OR site:reddit.com"
                 ));
                 q.push(format!("\"{v}\" email OR contact OR profile"));
+                q.push(format!(
+                    "\"{v}\" site:peekyou.com OR site:spokeo.com \
+                     OR site:nuwber.com OR site:pipl.com"
+                ));
             }
             q
         }
@@ -861,6 +865,10 @@ const ENGINE_DOMAINS: &[&str] = &[
     "system1.com",
     "flocdn.com",
     "cookielaw.org",
+    "onetrust.com",
+    "syndicatedsearch.goog",
+    "microsoftonline.com",
+    "msn.com",
 ];
 
 fn is_engine_domain(host: &str) -> bool {
@@ -883,6 +891,13 @@ fn is_tracking_url(url: &str) -> bool {
         || lower.contains("ecosia.org/newtab")
         || lower.contains("dogpile.com/click")
         || lower.contains("swisscows.com/api")
+        || lower.contains("/privacy-policy")
+        || lower.contains("/terms-of-use")
+        || lower.contains("/terms-of-service")
+        || lower.contains("guce.yahoo.com")
+        || lower.contains("guce.aol.com")
+        || lower.contains("advertising.yahoo.com")
+        || lower.contains("feedback.yahoo.com")
 }
 
 fn canonicalize_url(url: &str) -> String {
@@ -1305,7 +1320,7 @@ mod tests {
     fn build_queries_fullname_covers_professional() {
         let t = Target::new(TargetKind::FullName, "Jane Doe");
         let q = build_queries(&t);
-        assert_eq!(q.len(), 4);
+        assert_eq!(q.len(), 5);
         assert!(q[0].contains("\"Jane Doe\""));
         assert!(q[1].contains("linkedin.com") || q[1].contains("facebook.com"));
         assert!(
@@ -1315,6 +1330,10 @@ mod tests {
         assert!(
             q.iter()
                 .any(|qr| qr.contains("email") || qr.contains("contact") || qr.contains("profile"))
+        );
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("peekyou.com") || qr.contains("nuwber.com"))
         );
     }
 
