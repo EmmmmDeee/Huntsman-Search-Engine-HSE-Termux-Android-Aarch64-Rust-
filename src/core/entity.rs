@@ -790,4 +790,28 @@ mod tests {
             assert_eq!(kind, back, "round-trip failed for {json}");
         }
     }
+
+    // ── scan_id ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn scan_id_is_64_hex_chars() {
+        let id = scan_id("email", "x@y.com");
+        assert_eq!(id.len(), 64);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn scan_id_different_inputs_differ() {
+        let a = scan_id("email", "a@b.com");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let b = scan_id("email", "a@b.com");
+        assert_ne!(a, b, "same inputs at different times must differ");
+    }
+
+    #[test]
+    fn scan_id_different_kinds_differ() {
+        let a = scan_id("email", "x");
+        let b = scan_id("domain", "x");
+        assert_ne!(a, b);
+    }
 }
