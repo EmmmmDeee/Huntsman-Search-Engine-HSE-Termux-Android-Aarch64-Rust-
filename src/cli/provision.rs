@@ -339,11 +339,12 @@ struct SmokeResult {
 /// Run one scan synchronously and harvest the diagnostic metrics we
 /// care about (entity count, correlation count, missing-key errors).
 async fn run_smoke(target: Target, options: ScanOptions) -> Result<SmokeResult> {
-    let store = Arc::new(Store::open(&crate::default_db_path())?);
+    let store: Arc<dyn crate::core::port::StoragePort> =
+        Arc::new(Store::open(&crate::default_db_path())?);
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let engine = Arc::new(crate::core::engine::ScanEngine::new(
         crate::modules::registry(),
-        Arc::clone(&store) as Arc<dyn crate::core::port::StoragePort>,
+        Arc::clone(&store),
         bus.clone(),
     ));
 

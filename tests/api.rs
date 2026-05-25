@@ -404,3 +404,142 @@ async fn settings_keys_put_forbidden_without_flag() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 403);
 }
+
+// ── Scan rerun ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_rerun_creates_new_scan() {
+    let (app, scan_id) = create_scan("rerun").await;
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let resp = app
+        .oneshot(post_json(&format!("/api/v1/scans/{scan_id}/rerun"), "{}"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let json = body_json(resp).await;
+    assert!(json["scan_id"].is_string());
+    assert_eq!(json["source_scan_id"].as_str().unwrap(), scan_id);
+}
+
+#[tokio::test]
+async fn scan_rerun_not_found() {
+    let app = test_app("rerun_nf");
+    let resp = app
+        .oneshot(post_json("/api/v1/scans/nonexistent/rerun", "{}"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+// ── CSV export ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_entities_csv_returns_csv_content_type() {
+    let (app, scan_id) = create_scan("csv").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{scan_id}/entities.csv")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(ct.contains("text/csv"), "expected text/csv, got {ct}");
+    let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.starts_with("kind,"),
+        "CSV should start with header row"
+    );
+}
+
+// ── JSON report ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_report_json_returns_full_report() {
+    let (app, scan_id) = create_scan("report").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{scan_id}/report.json")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(ct.contains("application/json"));
+    let json = body_json(resp).await;
+    assert!(json.get("scan").is_some());
+    assert!(json.get("entities").is_some());
+    assert!(json.get("correlations").is_some());
+    assert!(json.get("exported_at").is_some());
+}
+
+#[tokio::test]
+async fn scan_report_json_not_found() {
+    let app = test_app("report_nf");
+    let resp = app
+        .oneshot(get("/api/v1/scans/nonexistent/report.json"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+// ── Events history ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_events_history_returns_list() {
+    let (app, scan_id) = create_scan("evt_hist").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{scan_id}/events.history")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert!(json["events"].is_array());
+}
+
+// ── Facets ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_entities_facets_returns_facets() {
+    let (app, scan_id) = create_scan("facets").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{scan_id}/entities/facets")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert!(json["facets"].is_array());
+}
+
+// ── Cancel nonexistent ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_cancel_not_found() {
+    let app = test_app("cancel_nf");
+    let resp = app
+        .oneshot(post_json("/api/v1/scans/nonexistent/cancel", "{}"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+// ── Live create with invalid target ─────────────────────────────────────
+
+#[tokio::test]
+async fn live_create_rejects_invalid_target() {
+    let app = test_app("live_bad");
+    let body = r#"{"kind":"email","value":"not-an-email","options":{},"live":{}}"#;
+    let resp = app.oneshot(post_json("/api/v1/live", body)).await.unwrap();
+    assert_eq!(resp.status(), 400);
+    let json = body_json(resp).await;
+    assert!(json["error"].as_str().unwrap().contains("invalid target"));
+}
