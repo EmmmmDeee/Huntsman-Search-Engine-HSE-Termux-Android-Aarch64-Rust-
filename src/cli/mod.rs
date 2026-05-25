@@ -691,3 +691,136 @@ fn truncate(s: &str, max: usize) -> String {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::scan::TargetKind;
+
+    // ── parse_target_kind ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_email() {
+        assert_eq!(parse_target_kind("email").unwrap(), TargetKind::Email);
+        assert_eq!(parse_target_kind("EMAIL").unwrap(), TargetKind::Email);
+        assert_eq!(parse_target_kind(" Email ").unwrap(), TargetKind::Email);
+    }
+
+    #[test]
+    fn parse_username() {
+        assert_eq!(parse_target_kind("username").unwrap(), TargetKind::Username);
+    }
+
+    #[test]
+    fn parse_phone() {
+        assert_eq!(parse_target_kind("phone").unwrap(), TargetKind::Phone);
+    }
+
+    #[test]
+    fn parse_name_aliases() {
+        assert_eq!(parse_target_kind("name").unwrap(), TargetKind::FullName);
+        assert_eq!(parse_target_kind("fullname").unwrap(), TargetKind::FullName);
+    }
+
+    #[test]
+    fn parse_ip_aliases() {
+        assert_eq!(parse_target_kind("ip").unwrap(), TargetKind::IpAddress);
+        assert_eq!(
+            parse_target_kind("ipaddress").unwrap(),
+            TargetKind::IpAddress
+        );
+    }
+
+    #[test]
+    fn parse_domain() {
+        assert_eq!(parse_target_kind("domain").unwrap(), TargetKind::Domain);
+    }
+
+    #[test]
+    fn parse_asn() {
+        assert_eq!(parse_target_kind("asn").unwrap(), TargetKind::Asn);
+    }
+
+    #[test]
+    fn parse_coords_aliases() {
+        assert_eq!(
+            parse_target_kind("coords").unwrap(),
+            TargetKind::Coordinates
+        );
+        assert_eq!(
+            parse_target_kind("coordinates").unwrap(),
+            TargetKind::Coordinates
+        );
+    }
+
+    #[test]
+    fn parse_address() {
+        assert_eq!(parse_target_kind("address").unwrap(), TargetKind::Address);
+    }
+
+    #[test]
+    fn parse_unknown_kind_is_err() {
+        assert!(parse_target_kind("foobar").is_err());
+        assert!(parse_target_kind("").is_err());
+    }
+
+    // ── split_csv ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn split_csv_none_stays_none() {
+        assert!(split_csv(None).is_none());
+    }
+
+    #[test]
+    fn split_csv_single_entry() {
+        let r = split_csv(Some("dns_resolver".into())).unwrap();
+        assert_eq!(r, vec!["dns_resolver"]);
+    }
+
+    #[test]
+    fn split_csv_multiple_entries() {
+        let r = split_csv(Some("a, b ,c".into())).unwrap();
+        assert_eq!(r, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn split_csv_empty_string() {
+        let r = split_csv(Some(String::new())).unwrap();
+        assert_eq!(r, vec![""]);
+    }
+
+    // ── cost_label ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn cost_labels() {
+        assert_eq!(cost_label(ModuleCost::Free), "free");
+        assert_eq!(cost_label(ModuleCost::KeyGated), "key-gated");
+        assert_eq!(cost_label(ModuleCost::Paid), "paid");
+    }
+
+    // ── truncate ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_length_unchanged() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_long_string_adds_ellipsis() {
+        let r = truncate("hello world", 5);
+        assert!(r.contains('…'));
+        assert_eq!(r.chars().count(), 5);
+    }
+
+    #[test]
+    fn truncate_unicode() {
+        let r = truncate("café latte", 5);
+        assert_eq!(r.chars().count(), 5);
+        assert!(r.ends_with('…'));
+    }
+}
