@@ -69,7 +69,8 @@ impl Module for IpGeo {
         let mut result = ModuleResult::new();
 
         if let (Some(lat), Some(lon)) = (data.lat, data.lon) {
-            if !lat.is_finite() || !lon.is_finite()
+            if !lat.is_finite()
+                || !lon.is_finite()
                 || !(-90.0..=90.0).contains(&lat)
                 || !(-180.0..=180.0).contains(&lon)
             {

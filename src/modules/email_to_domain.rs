@@ -95,9 +95,7 @@ mod tests {
 
     fn ctx() -> ModuleContext {
         let (bus, _rx) = tokio::sync::broadcast::channel(8);
-        let store = std::sync::Arc::new(
-            crate::storage::store::Store::open(":memory:").unwrap(),
-        );
+        let store = std::sync::Arc::new(crate::storage::store::Store::open(":memory:").unwrap());
         ModuleContext {
             scan_id: "t".into(),
             bus,

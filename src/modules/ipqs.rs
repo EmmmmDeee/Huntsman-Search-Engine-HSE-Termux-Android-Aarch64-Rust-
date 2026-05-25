@@ -138,25 +138,25 @@ impl Module for IpQs {
         }
 
         let mut ev = Evidence::new(
-                "ipqs",
-                format!("IPQS {endpoint} reputation for {value} (fraud_score={score})"),
-            )
-            .with_attr("endpoint", endpoint)
-            .with_attr("fraud_score", score.to_string())
-            .with_opt_attr("isp", body.isp.as_deref())
-            .with_opt_attr("organization", body.organization.as_deref())
-            .with_opt_attr("asn", body.asn.map(|v| v.to_string()))
-            .with_opt_attr("country", body.country_code.as_deref())
-            .with_opt_attr("deliverability", body.deliverability.as_deref())
-            .with_opt_attr("smtp_score", body.smtp_score.map(|v| v.to_string()))
-            .with_opt_attr("line_type", body.line_type.as_deref())
-            .with_opt_attr("carrier", body.carrier.as_deref())
-            .with_opt_attr("valid", body.valid.map(|v| v.to_string()))
-            .with_opt_attr("active", body.active.map(|v| v.to_string()))
-            .with_opt_attr(
-                "first_seen",
-                body.first_seen.as_ref().and_then(|fs| fs.human.clone()),
-            );
+            "ipqs",
+            format!("IPQS {endpoint} reputation for {value} (fraud_score={score})"),
+        )
+        .with_attr("endpoint", endpoint)
+        .with_attr("fraud_score", score.to_string())
+        .with_opt_attr("isp", body.isp.as_deref())
+        .with_opt_attr("organization", body.organization.as_deref())
+        .with_opt_attr("asn", body.asn.map(|v| v.to_string()))
+        .with_opt_attr("country", body.country_code.as_deref())
+        .with_opt_attr("deliverability", body.deliverability.as_deref())
+        .with_opt_attr("smtp_score", body.smtp_score.map(|v| v.to_string()))
+        .with_opt_attr("line_type", body.line_type.as_deref())
+        .with_opt_attr("carrier", body.carrier.as_deref())
+        .with_opt_attr("valid", body.valid.map(|v| v.to_string()))
+        .with_opt_attr("active", body.active.map(|v| v.to_string()))
+        .with_opt_attr(
+            "first_seen",
+            body.first_seen.as_ref().and_then(|fs| fs.human.clone()),
+        );
         for (k, v) in &body.extra {
             let val_str = match v {
                 Value::String(s) => s.clone(),

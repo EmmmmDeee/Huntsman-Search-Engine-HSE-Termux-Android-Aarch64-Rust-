@@ -662,11 +662,7 @@ pub async fn keys_ledger(
     let filtered: Vec<&serde_json::Value> = if let Some(svc) = service_filter {
         entries
             .iter()
-            .filter(|e| {
-                e.get("service")
-                    .and_then(|v| v.as_str())
-                    .map_or(false, |s| s == svc)
-            })
+            .filter(|e| e.get("service").and_then(|v| v.as_str()) == Some(svc))
             .collect()
     } else {
         entries.iter().collect()

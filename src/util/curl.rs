@@ -30,10 +30,10 @@ async fn curl_exec(
     if has_control_chars(url) || has_control_chars(ua) {
         return None;
     }
-    if let Some(data) = post_data {
-        if has_control_chars(data) {
-            return None;
-        }
+    if let Some(data) = post_data
+        && has_control_chars(data)
+    {
+        return None;
     }
     let secs = (timeout_ms / 1000).max(3).to_string();
     let mut cmd = Command::new("curl");

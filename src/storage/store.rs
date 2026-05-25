@@ -504,6 +504,7 @@ impl Store {
             .collect())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn cache_api_response(
         &self,
         module: &str,
@@ -558,24 +559,31 @@ impl Store {
         Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn list_cached_responses(
         &self,
         module: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, String, String, String, i64, i64)>> {
-        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(m) = module {
-            (
-                "SELECT module, endpoint, query_key, query_value, item_count, fetched_at \
-                 FROM api_cache WHERE module = ?1 ORDER BY fetched_at DESC LIMIT ?2".to_string(),
-                vec![Box::new(m.to_string()) as Box<dyn rusqlite::types::ToSql>, Box::new(limit as i64)],
-            )
-        } else {
-            (
-                "SELECT module, endpoint, query_key, query_value, item_count, fetched_at \
-                 FROM api_cache ORDER BY fetched_at DESC LIMIT ?1".to_string(),
-                vec![Box::new(limit as i64) as Box<dyn rusqlite::types::ToSql>],
-            )
-        };
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            if let Some(m) = module {
+                (
+                    "SELECT module, endpoint, query_key, query_value, item_count, fetched_at \
+                 FROM api_cache WHERE module = ?1 ORDER BY fetched_at DESC LIMIT ?2"
+                        .to_string(),
+                    vec![
+                        Box::new(m.to_string()) as Box<dyn rusqlite::types::ToSql>,
+                        Box::new(limit as i64),
+                    ],
+                )
+            } else {
+                (
+                    "SELECT module, endpoint, query_key, query_value, item_count, fetched_at \
+                 FROM api_cache ORDER BY fetched_at DESC LIMIT ?1"
+                        .to_string(),
+                    vec![Box::new(limit as i64) as Box<dyn rusqlite::types::ToSql>],
+                )
+            };
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |r| {
@@ -594,11 +602,10 @@ impl Store {
     pub fn cache_stats(&self) -> Result<(usize, usize)> {
         let conn = self.conn.lock();
         let total: i64 = conn.query_row("SELECT COUNT(*) FROM api_cache", [], |r| r.get(0))?;
-        let modules: i64 = conn.query_row(
-            "SELECT COUNT(DISTINCT module) FROM api_cache",
-            [],
-            |r| r.get(0),
-        )?;
+        let modules: i64 =
+            conn.query_row("SELECT COUNT(DISTINCT module) FROM api_cache", [], |r| {
+                r.get(0)
+            })?;
         Ok((total as usize, modules as usize))
     }
 }
@@ -890,9 +897,20 @@ mod tests {
         let store = Store::open(&path).unwrap();
         insert_scan(&store, "s1");
 
-        store.upsert_entity(&Entity::new(EntityKind::ApiKey, "key_low", 0.3, "s1")).unwrap();
-        store.upsert_entity(&Entity::new(EntityKind::ApiKey, "key_high", 0.9, "s1")).unwrap();
-        store.upsert_entity(&Entity::new(EntityKind::Email, "not_a_key@x.com", 0.8, "s1")).unwrap();
+        store
+            .upsert_entity(&Entity::new(EntityKind::ApiKey, "key_low", 0.3, "s1"))
+            .unwrap();
+        store
+            .upsert_entity(&Entity::new(EntityKind::ApiKey, "key_high", 0.9, "s1"))
+            .unwrap();
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::Email,
+                "not_a_key@x.com",
+                0.8,
+                "s1",
+            ))
+            .unwrap();
 
         let keys = store.entities_by_kind("api_key", 10).unwrap();
         assert_eq!(keys.len(), 2);
@@ -916,34 +934,40 @@ mod tests {
         let path = tmp_db();
         let store = Store::open(&path).unwrap();
 
-        store.cache_api_response(
-            "oathnet_pro",
-            "/service/v2/breach/search",
-            "email",
-            "test@example.com",
-            r#"[{"email":"test@example.com","dbname":"linkedin"}]"#,
-            1,
-            "scan-cache",
-            24,
-        ).unwrap();
+        store
+            .cache_api_response(
+                "oathnet_pro",
+                "/service/v2/breach/search",
+                "email",
+                "test@example.com",
+                r#"[{"email":"test@example.com","dbname":"linkedin"}]"#,
+                1,
+                "scan-cache",
+                24,
+            )
+            .unwrap();
 
-        let cached = store.cached_response(
-            "oathnet_pro",
-            "/service/v2/breach/search",
-            "email",
-            "test@example.com",
-            24,
-        ).unwrap();
+        let cached = store
+            .cached_response(
+                "oathnet_pro",
+                "/service/v2/breach/search",
+                "email",
+                "test@example.com",
+                24,
+            )
+            .unwrap();
         assert!(cached.is_some());
         assert!(cached.unwrap().contains("linkedin"));
 
-        let miss = store.cached_response(
-            "oathnet_pro",
-            "/service/v2/breach/search",
-            "email",
-            "other@example.com",
-            24,
-        ).unwrap();
+        let miss = store
+            .cached_response(
+                "oathnet_pro",
+                "/service/v2/breach/search",
+                "email",
+                "other@example.com",
+                24,
+            )
+            .unwrap();
         assert!(miss.is_none());
 
         let (total, modules) = store.cache_stats().unwrap();
@@ -969,10 +993,16 @@ mod tests {
         }
 
         let expired = store.cached_response("test", "/test", "k", "v", 1).unwrap();
-        assert!(expired.is_none(), "expired cache entry should not be returned");
+        assert!(
+            expired.is_none(),
+            "expired cache entry should not be returned"
+        );
 
         let no_ttl = store.cached_response("test", "/test", "k", "v", 0).unwrap();
-        assert!(no_ttl.is_some(), "max_age_hours=0 should return any entry regardless of age");
+        assert!(
+            no_ttl.is_some(),
+            "max_age_hours=0 should return any entry regardless of age"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

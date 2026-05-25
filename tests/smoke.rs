@@ -829,20 +829,47 @@ fn evidence_preserves_all_attributes() {
         .with_attr("ip", "192.168.1.1")
         .with_attr("city", "New York")
         .with_attr("full_name", "John Doe")
-        .with_attr("raw", r#"{"email":"test@example.com","password":"hunter2"}"#);
+        .with_attr(
+            "raw",
+            r#"{"email":"test@example.com","password":"hunter2"}"#,
+        );
     entity.add_evidence(ev);
 
     assert_eq!(entity.evidence.len(), 1);
     let stored = &entity.evidence[0];
-    assert_eq!(stored.attributes.get("password").map(String::as_str), Some("hunter2"));
-    assert_eq!(stored.attributes.get("password_hash").map(String::as_str), Some("5f4dcc3b5aa765d61d8327deb882cf99"));
-    assert_eq!(stored.attributes.get("salt").map(String::as_str), Some("abc123"));
-    assert_eq!(stored.attributes.get("ip").map(String::as_str), Some("192.168.1.1"));
-    assert_eq!(stored.attributes.get("city").map(String::as_str), Some("New York"));
-    assert_eq!(stored.attributes.get("full_name").map(String::as_str), Some("John Doe"));
-    assert_eq!(stored.attributes.get("raw").map(String::as_str),
-        Some(r#"{"email":"test@example.com","password":"hunter2"}"#));
-    assert!(stored.attributes.len() >= 9, "all 9+ attributes must be preserved, got {}", stored.attributes.len());
+    assert_eq!(
+        stored.attributes.get("password").map(String::as_str),
+        Some("hunter2")
+    );
+    assert_eq!(
+        stored.attributes.get("password_hash").map(String::as_str),
+        Some("5f4dcc3b5aa765d61d8327deb882cf99")
+    );
+    assert_eq!(
+        stored.attributes.get("salt").map(String::as_str),
+        Some("abc123")
+    );
+    assert_eq!(
+        stored.attributes.get("ip").map(String::as_str),
+        Some("192.168.1.1")
+    );
+    assert_eq!(
+        stored.attributes.get("city").map(String::as_str),
+        Some("New York")
+    );
+    assert_eq!(
+        stored.attributes.get("full_name").map(String::as_str),
+        Some("John Doe")
+    );
+    assert_eq!(
+        stored.attributes.get("raw").map(String::as_str),
+        Some(r#"{"email":"test@example.com","password":"hunter2"}"#)
+    );
+    assert!(
+        stored.attributes.len() >= 9,
+        "all 9+ attributes must be preserved, got {}",
+        stored.attributes.len()
+    );
 }
 
 #[test]
@@ -866,14 +893,27 @@ fn merge_preserves_all_evidence_from_both_entities() {
     assert_eq!(a.uid, b.uid, "same entity by UID");
     a.merge(b);
 
-    assert_eq!(a.evidence.len(), 2, "both evidence entries must survive merge");
-    assert!((a.confidence - 0.9).abs() < 1e-9, "GREATEST confidence wins");
+    assert_eq!(
+        a.evidence.len(),
+        2,
+        "both evidence entries must survive merge"
+    );
+    assert!(
+        (a.confidence - 0.9).abs() < 1e-9,
+        "GREATEST confidence wins"
+    );
     assert_eq!(a.corroboration, 2, "corroboration accumulates");
 
     let a_ev = a.evidence.iter().find(|e| e.source == "module_a").unwrap();
-    assert_eq!(a_ev.attributes.get("password").map(String::as_str), Some("secret_a"));
+    assert_eq!(
+        a_ev.attributes.get("password").map(String::as_str),
+        Some("secret_a")
+    );
     let b_ev = a.evidence.iter().find(|e| e.source == "module_b").unwrap();
-    assert_eq!(b_ev.attributes.get("password_hash").map(String::as_str), Some("abc123def456"));
+    assert_eq!(
+        b_ev.attributes.get("password_hash").map(String::as_str),
+        Some("abc123def456")
+    );
 }
 
 #[test]
@@ -885,9 +925,18 @@ fn with_opt_attr_preserves_some_skips_none() {
         .with_opt_attr("absent", None::<String>)
         .with_opt_attr("also_present", Some("here".to_string()));
 
-    assert_eq!(ev.attributes.get("present").map(String::as_str), Some("value"));
-    assert!(!ev.attributes.contains_key("absent"), "None must not create an entry");
-    assert_eq!(ev.attributes.get("also_present").map(String::as_str), Some("here"));
+    assert_eq!(
+        ev.attributes.get("present").map(String::as_str),
+        Some("value")
+    );
+    assert!(
+        !ev.attributes.contains_key("absent"),
+        "None must not create an entry"
+    );
+    assert_eq!(
+        ev.attributes.get("also_present").map(String::as_str),
+        Some("here")
+    );
     assert_eq!(ev.attributes.len(), 2);
 }
 
@@ -914,7 +963,11 @@ fn all_target_kinds_have_canonical_str() {
         assert!(!s.is_empty(), "{kind:?} has empty canonical_str");
         let ek = kind.to_entity_kind();
         let back = TargetKind::from_entity_kind(&ek);
-        assert_eq!(back, Some(*kind), "{kind:?} must round-trip through entity kind");
+        assert_eq!(
+            back,
+            Some(*kind),
+            "{kind:?} must round-trip through entity kind"
+        );
     }
 }
 
@@ -958,7 +1011,10 @@ async fn store_preserves_complete_evidence_with_sensitive_fields() {
             .with_attr("password", "p@ssw0rd!")
             .with_attr("password_hash", "e10adc3949ba59abbe56e057f20f883e")
             .with_attr("salt", "NaCl")
-            .with_attr("raw", r#"{"email":"evidence@test.com","password":"p@ssw0rd!"}"#)
+            .with_attr(
+                "raw",
+                r#"{"email":"evidence@test.com","password":"p@ssw0rd!"}"#,
+            )
             .with_attr("dbname", "linkedin")
             .with_attr("country", "AU"),
     );
@@ -970,14 +1026,29 @@ async fn store_preserves_complete_evidence_with_sensitive_fields() {
     assert_eq!(loaded_entity.evidence.len(), 1);
 
     let ev = &loaded_entity.evidence[0];
-    assert_eq!(ev.attributes.get("password").map(String::as_str), Some("p@ssw0rd!"),
-        "password must survive store round-trip");
-    assert_eq!(ev.attributes.get("password_hash").map(String::as_str), Some("e10adc3949ba59abbe56e057f20f883e"),
-        "hash must survive store round-trip");
-    assert_eq!(ev.attributes.get("salt").map(String::as_str), Some("NaCl"),
-        "salt must survive store round-trip");
-    assert!(ev.attributes.get("raw").is_some(), "raw JSON must survive store round-trip");
-    assert_eq!(ev.attributes.get("dbname").map(String::as_str), Some("linkedin"));
+    assert_eq!(
+        ev.attributes.get("password").map(String::as_str),
+        Some("p@ssw0rd!"),
+        "password must survive store round-trip"
+    );
+    assert_eq!(
+        ev.attributes.get("password_hash").map(String::as_str),
+        Some("e10adc3949ba59abbe56e057f20f883e"),
+        "hash must survive store round-trip"
+    );
+    assert_eq!(
+        ev.attributes.get("salt").map(String::as_str),
+        Some("NaCl"),
+        "salt must survive store round-trip"
+    );
+    assert!(
+        ev.attributes.contains_key("raw"),
+        "raw JSON must survive store round-trip"
+    );
+    assert_eq!(
+        ev.attributes.get("dbname").map(String::as_str),
+        Some("linkedin")
+    );
     assert_eq!(ev.attributes.get("country").map(String::as_str), Some("AU"));
 
     let _ = std::fs::remove_file(&path);

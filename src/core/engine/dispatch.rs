@@ -56,7 +56,10 @@ impl super::ScanEngine {
                 let mut found = 0usize;
                 for entity in mr.entities.drain(..) {
                     if !entity.confidence.is_finite() || !(0.0..=1.0).contains(&entity.confidence) {
-                        warn!(module = name, "entity has invalid confidence {}, skipping", entity.confidence);
+                        warn!(
+                            module = name,
+                            "entity has invalid confidence {}, skipping", entity.confidence
+                        );
                         continue;
                     }
                     if let Some(min) = min_confidence

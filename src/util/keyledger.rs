@@ -27,6 +27,7 @@ fn ledger_path() -> PathBuf {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn append_key(
     service: &str,
     username: &str,

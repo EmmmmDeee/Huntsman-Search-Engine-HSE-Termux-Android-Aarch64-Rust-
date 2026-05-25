@@ -116,8 +116,18 @@ impl ModuleContext {
         );
     }
 
-    pub fn get_cached(&self, module: &str, endpoint: &str, query_key: &str, query_value: &str, max_age_hours: u32) -> Option<String> {
-        self.store.cached_response(module, endpoint, query_key, query_value, max_age_hours).ok().flatten()
+    pub fn get_cached(
+        &self,
+        module: &str,
+        endpoint: &str,
+        query_key: &str,
+        query_value: &str,
+        max_age_hours: u32,
+    ) -> Option<String> {
+        self.store
+            .cached_response(module, endpoint, query_key, query_value, max_age_hours)
+            .ok()
+            .flatten()
     }
 }
 

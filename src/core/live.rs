@@ -202,7 +202,7 @@ async fn session_loop(
                 sess.last_iteration_at = Some(unix_now());
                 sess.iteration
             } else {
-                    break;
+                break;
             }
         };
 

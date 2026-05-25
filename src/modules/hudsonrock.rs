@@ -104,29 +104,29 @@ impl Module for HudsonRock {
             }
 
             let mut stealer_ev = Evidence::new(
-                    "hudsonrock",
-                    format!("Stealer log: {cred_count} credentials on compromised machine"),
-                )
-                .with_attr(
-                    "computer_name",
-                    stealer.computer_name.as_deref().unwrap_or("-"),
-                )
-                .with_attr(
-                    "operating_system",
-                    stealer.operating_system.as_deref().unwrap_or("-"),
-                )
-                .with_attr(
-                    "date_compromised",
-                    stealer.date_compromised.as_deref().unwrap_or("-"),
-                )
-                .with_attr("stealer_family", family)
-                .with_attr(
-                    "malware_path",
-                    stealer.malware_path.as_deref().unwrap_or("-"),
-                )
-                .with_attr("credential_count", cred_count.to_string())
-                .with_opt_attr("date_uploaded", stealer.date_uploaded.as_deref())
-                .with_opt_attr("victim_ip", stealer.ip.as_deref());
+                "hudsonrock",
+                format!("Stealer log: {cred_count} credentials on compromised machine"),
+            )
+            .with_attr(
+                "computer_name",
+                stealer.computer_name.as_deref().unwrap_or("-"),
+            )
+            .with_attr(
+                "operating_system",
+                stealer.operating_system.as_deref().unwrap_or("-"),
+            )
+            .with_attr(
+                "date_compromised",
+                stealer.date_compromised.as_deref().unwrap_or("-"),
+            )
+            .with_attr("stealer_family", family)
+            .with_attr(
+                "malware_path",
+                stealer.malware_path.as_deref().unwrap_or("-"),
+            )
+            .with_attr("credential_count", cred_count.to_string())
+            .with_opt_attr("date_uploaded", stealer.date_uploaded.as_deref())
+            .with_opt_attr("victim_ip", stealer.ip.as_deref());
             for (k, v) in &stealer.extra {
                 let val_str = match v {
                     Value::String(s) => s.clone(),
@@ -161,44 +161,46 @@ impl Module for HudsonRock {
                 ip_entity.tag(tags::STEALER_LOG);
                 ip_entity.tag(tags::VICTIM_MACHINE);
                 ip_entity.add_evidence(
-                    Evidence::new("hudsonrock", format!("Victim machine IP from stealer log"))
-                        .with_attr("source", "stealer")
-                        .with_opt_attr("computer_name", stealer.computer_name.as_deref())
-                        .with_opt_attr("os", stealer.operating_system.as_deref())
-                        .with_opt_attr("stealer_family", stealer.stealer_family.as_deref()),
+                    Evidence::new(
+                        "hudsonrock",
+                        "Victim machine IP from stealer log".to_string(),
+                    )
+                    .with_attr("source", "stealer")
+                    .with_opt_attr("computer_name", stealer.computer_name.as_deref())
+                    .with_opt_attr("os", stealer.operating_system.as_deref())
+                    .with_opt_attr("stealer_family", stealer.stealer_family.as_deref()),
                 );
                 result.push(ip_entity);
             }
         }
 
         // Extract compromised service URLs from credential data
-        let mut seen_cred_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen_cred_urls: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for stealer in &data.stealers {
             for cred in &stealer.credentials {
                 if let Some(url) = cred.get("url").and_then(|v| v.as_str())
                     && url.starts_with("http")
                     && seen_cred_urls.insert(url.to_lowercase())
+                    && let Ok(parsed) = url::Url::parse(url)
+                    && let Some(host) = parsed.host_str()
                 {
-                    if let Ok(parsed) = url::Url::parse(url)
-                        && let Some(host) = parsed.host_str()
-                    {
-                        let domain = host.to_lowercase();
-                        if domain.contains('.') && seen_cred_urls.insert(format!("@dom:{domain}")) {
-                            let mut d = crate::core::entity::Entity::new(
-                                crate::core::entity::EntityKind::Domain,
-                                &domain,
-                                0.50,
-                                &ctx.scan_id,
-                            );
-                            d.tag(tags::STEALER_LOG);
-                            d.tag(tags::COMPROMISED_SERVICE);
-                            d.add_evidence(
-                                Evidence::new("hudsonrock", format!("Stolen credential for {domain}"))
-                                    .with_attr("source", "stealer")
-                                    .with_attr("credential_url", url),
-                            );
-                            result.push(d);
-                        }
+                    let domain = host.to_lowercase();
+                    if domain.contains('.') && seen_cred_urls.insert(format!("@dom:{domain}")) {
+                        let mut d = crate::core::entity::Entity::new(
+                            crate::core::entity::EntityKind::Domain,
+                            &domain,
+                            0.50,
+                            &ctx.scan_id,
+                        );
+                        d.tag(tags::STEALER_LOG);
+                        d.tag(tags::COMPROMISED_SERVICE);
+                        d.add_evidence(
+                            Evidence::new("hudsonrock", format!("Stolen credential for {domain}"))
+                                .with_attr("source", "stealer")
+                                .with_attr("credential_url", url),
+                        );
+                        result.push(d);
                     }
                 }
             }
@@ -224,18 +226,29 @@ impl Module for HudsonRock {
                         ce.tag(tags::STEALER_LOG);
                         ce.tag("credential-exposed");
                         ce.add_evidence(
-                            Evidence::new("hudsonrock", format!("Stolen credential for {cred_url}"))
-                                .with_attr("source", "stealer")
-                                .with_attr("username", cred_user)
-                                .with_attr("password", cred_pass)
-                                .with_attr("url", cred_url)
-                                .with_opt_attr("stealer_family", stealer.stealer_family.as_deref()),
+                            Evidence::new(
+                                "hudsonrock",
+                                format!("Stolen credential for {cred_url}"),
+                            )
+                            .with_attr("source", "stealer")
+                            .with_attr("username", cred_user)
+                            .with_attr("password", cred_pass)
+                            .with_attr("url", cred_url)
+                            .with_opt_attr("stealer_family", stealer.stealer_family.as_deref()),
                         );
                         if !cred_pass.is_empty() {
                             crate::util::keyledger::append_key(
-                                cred_url.split('/').nth(2).unwrap_or("unknown").trim_start_matches("www."),
-                                cred_user, cred_pass, cred_url,
-                                "hudsonrock", &ctx.scan_id, "credential",
+                                cred_url
+                                    .split('/')
+                                    .nth(2)
+                                    .unwrap_or("unknown")
+                                    .trim_start_matches("www."),
+                                cred_user,
+                                cred_pass,
+                                cred_url,
+                                "hudsonrock",
+                                &ctx.scan_id,
+                                "credential",
                                 &["stealer-log".into()],
                             );
                         }
@@ -244,7 +257,9 @@ impl Module for HudsonRock {
                 }
 
                 // Create Password entity for cross-correlation pivoting
-                if cred_pass.len() >= 4 && seen_creds.insert(format!("@pw:{}", cred_pass.to_lowercase())) {
+                if cred_pass.len() >= 4
+                    && seen_creds.insert(format!("@pw:{}", cred_pass.to_lowercase()))
+                {
                     let mut pe = crate::core::entity::Entity::new(
                         crate::core::entity::EntityKind::Password,
                         cred_pass,
@@ -259,16 +274,25 @@ impl Module for HudsonRock {
                             .with_attr("credential_url", cred_url),
                     );
                     crate::util::keyledger::append_key(
-                        cred_url.split('/').nth(2).unwrap_or("unknown").trim_start_matches("www."),
-                        cred_user, cred_pass, cred_url,
-                        "hudsonrock", &ctx.scan_id, "password",
+                        cred_url
+                            .split('/')
+                            .nth(2)
+                            .unwrap_or("unknown")
+                            .trim_start_matches("www."),
+                        cred_user,
+                        cred_pass,
+                        cred_url,
+                        "hudsonrock",
+                        &ctx.scan_id,
+                        "password",
                         &["stealer-log".into()],
                     );
                     result.push(pe);
                 }
 
                 // Create Email entities from credential usernames that look like emails
-                if cred_user.contains('@') && cred_user.len() >= 5
+                if cred_user.contains('@')
+                    && cred_user.len() >= 5
                     && seen_creds.insert(format!("@cred-email:{}", cred_user.to_lowercase()))
                 {
                     let mut email_ent = crate::core::entity::Entity::new(
@@ -281,10 +305,13 @@ impl Module for HudsonRock {
                     email_ent.tag(tags::BREACH);
                     email_ent.tag(tags::PASSWORD_AT_RISK);
                     email_ent.add_evidence(
-                        Evidence::new("hudsonrock", format!("Email credential stolen from {cred_url}"))
-                            .with_attr("source", "stealer")
-                            .with_attr("password", cred_pass)
-                            .with_attr("url", cred_url),
+                        Evidence::new(
+                            "hudsonrock",
+                            format!("Email credential stolen from {cred_url}"),
+                        )
+                        .with_attr("source", "stealer")
+                        .with_attr("password", cred_pass)
+                        .with_attr("url", cred_url),
                     );
                     result.push(email_ent);
                 }
@@ -300,53 +327,63 @@ impl Module for HudsonRock {
                 TargetKind::Domain => "domain",
                 _ => "",
             };
-            if !oathnet_field.is_empty() {
-                if let Ok(items) = crate::util::oathnet::search(
+            if !oathnet_field.is_empty()
+                && let Ok(items) = crate::util::oathnet::search(
                     key,
                     crate::util::oathnet::paths::STEALER,
                     oathnet_field,
                     &target.value,
                     20,
-                ).await {
-                    if !items.is_empty() {
-                        let mut summary_parts: Vec<String> = Vec::new();
-                        for item in items.iter().take(5) {
-                            if let Some(url) = crate::util::oathnet::val_str(item, "url_str") {
-                                summary_parts.push(url);
-                            }
-                        }
-                        entity.add_evidence(
-                            Evidence::new(
-                                "hudsonrock:oathnet",
-                                format!("OathNet: {} additional stealer record(s)", items.len()),
-                            )
-                            .with_attr("oathnet_stealer_hits", items.len().to_string())
-                            .with_opt_attr(
-                                "compromised_urls",
-                                if summary_parts.is_empty() { None } else { Some(summary_parts.join(" | ")) },
-                            ),
-                        );
+                )
+                .await
+                && !items.is_empty()
+            {
+                let mut summary_parts: Vec<String> = Vec::new();
+                for item in items.iter().take(5) {
+                    if let Some(url) = crate::util::oathnet::val_str(item, "url_str") {
+                        summary_parts.push(url);
                     }
                 }
+                entity.add_evidence(
+                    Evidence::new(
+                        "hudsonrock:oathnet",
+                        format!("OathNet: {} additional stealer record(s)", items.len()),
+                    )
+                    .with_attr("oathnet_stealer_hits", items.len().to_string())
+                    .with_opt_attr(
+                        "compromised_urls",
+                        if summary_parts.is_empty() {
+                            None
+                        } else {
+                            Some(summary_parts.join(" | "))
+                        },
+                    ),
+                );
             }
         }
 
         // OathNet IP geolocation for victim IPs discovered by HudsonRock
         if !ctx.cancel.is_cancelled() {
-            let victim_ips: Vec<String> = data.stealers.iter()
+            let victim_ips: Vec<String> = data
+                .stealers
+                .iter()
                 .filter_map(|s| s.ip.clone())
                 .collect::<std::collections::HashSet<_>>()
                 .into_iter()
                 .take(2)
                 .collect();
             for ip in &victim_ips {
-                if ctx.cancel.is_cancelled() { break; }
+                if ctx.cancel.is_cancelled() {
+                    break;
+                }
                 if let Ok(Some(info)) = crate::util::oathnet::osint_opt(
                     key,
                     crate::util::oathnet::paths::IP_INFO,
                     "ip",
                     ip,
-                ).await {
+                )
+                .await
+                {
                     let city = info.get("city").and_then(|v| v.as_str());
                     let country = info.get("country").and_then(|v| v.as_str());
                     if city.is_some() || country.is_some() {
@@ -357,12 +394,15 @@ impl Module for HudsonRock {
                             .collect::<Vec<&str>>()
                             .join(", ");
                         entity.add_evidence(
-                            Evidence::new("hudsonrock:oathnet", format!("Victim IP {ip} geolocated: {loc}"))
-                                .with_attr("source", "ip-info")
-                                .with_attr("victim_ip", ip)
-                                .with_opt_attr("city", city)
-                                .with_opt_attr("country", country)
-                                .with_opt_attr("isp", info.get("isp").and_then(|v| v.as_str())),
+                            Evidence::new(
+                                "hudsonrock:oathnet",
+                                format!("Victim IP {ip} geolocated: {loc}"),
+                            )
+                            .with_attr("source", "ip-info")
+                            .with_attr("victim_ip", ip)
+                            .with_opt_attr("city", city)
+                            .with_opt_attr("country", country)
+                            .with_opt_attr("isp", info.get("isp").and_then(|v| v.as_str())),
                         );
                     }
                 }

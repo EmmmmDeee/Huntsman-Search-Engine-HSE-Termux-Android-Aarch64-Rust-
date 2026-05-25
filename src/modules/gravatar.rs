@@ -132,22 +132,22 @@ impl Module for Gravatar {
             })
         };
         let mut ev = Evidence::new("gravatar", format!("Gravatar profile for {normalised}"))
-                .with_attr("md5", &hash)
-                .with_attr("profile_url", format!("https://www.gravatar.com/{hash}"))
-                .with_opt_attr("display_name", entry.display_name.as_deref())
-                .with_opt_attr("preferred_username", entry.preferred_username.as_deref())
-                .with_opt_attr("name", entry.name.and_then(|n| n.formatted))
-                .with_opt_attr("location", entry.location.as_deref())
-                .with_opt_attr("bio", entry.about_me.as_deref())
-                .with_opt_attr(
-                    "avatar_url",
-                    entry
-                        .photos
-                        .as_ref()
-                        .and_then(|p| p.first())
-                        .and_then(|p| p.value.clone()),
-                )
-                .with_opt_attr("urls", urls_joined);
+            .with_attr("md5", &hash)
+            .with_attr("profile_url", format!("https://www.gravatar.com/{hash}"))
+            .with_opt_attr("display_name", entry.display_name.as_deref())
+            .with_opt_attr("preferred_username", entry.preferred_username.as_deref())
+            .with_opt_attr("name", entry.name.and_then(|n| n.formatted))
+            .with_opt_attr("location", entry.location.as_deref())
+            .with_opt_attr("bio", entry.about_me.as_deref())
+            .with_opt_attr(
+                "avatar_url",
+                entry
+                    .photos
+                    .as_ref()
+                    .and_then(|p| p.first())
+                    .and_then(|p| p.value.clone()),
+            )
+            .with_opt_attr("urls", urls_joined);
         for (k, v) in &entry.extra {
             let val_str = match v {
                 Value::String(s) => s.clone(),
@@ -159,29 +159,31 @@ impl Module for Gravatar {
 
         // Holehe email service enumeration via OathNet
         let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
-        if !ctx.cancel.is_cancelled() {
-            if let Ok(holehe) = crate::util::oathnet::osint(
+        if !ctx.cancel.is_cancelled()
+            && let Ok(holehe) = crate::util::oathnet::osint(
                 key,
                 crate::util::oathnet::paths::HOLEHE,
                 "email",
                 &target.value,
-            ).await {
-                if let Some(domains) = holehe.get("domains").and_then(|v| v.as_array()) {
-                    if !domains.is_empty() {
-                        let domains_str: Vec<&str> = domains.iter().filter_map(|v| v.as_str()).collect();
-                        entity.tag("holehe");
-                        entity.tag_if(domains_str.len() >= 5, crate::core::tags::HIGH_EXPOSURE);
-                        entity.add_evidence(
-                            crate::core::entity::Evidence::new(
-                                "gravatar:oathnet",
-                                format!("Holehe: email registered on {} service(s)", domains_str.len()),
-                            )
-                            .with_attr("holehe_count", domains_str.len().to_string())
-                            .with_attr("holehe_domains", domains_str.join(", ")),
-                        );
-                    }
-                }
-            }
+            )
+            .await
+            && let Some(domains) = holehe.get("domains").and_then(|v| v.as_array())
+            && !domains.is_empty()
+        {
+            let domains_str: Vec<&str> = domains.iter().filter_map(|v| v.as_str()).collect();
+            entity.tag("holehe");
+            entity.tag_if(domains_str.len() >= 5, crate::core::tags::HIGH_EXPOSURE);
+            entity.add_evidence(
+                crate::core::entity::Evidence::new(
+                    "gravatar:oathnet",
+                    format!(
+                        "Holehe: email registered on {} service(s)",
+                        domains_str.len()
+                    ),
+                )
+                .with_attr("holehe_count", domains_str.len().to_string())
+                .with_attr("holehe_domains", domains_str.join(", ")),
+            );
         }
 
         let mut result = ModuleResult::new();

@@ -285,69 +285,83 @@ impl Module for SocialProbe {
         }
 
         // Stealer-log enrichment for confirmed usernames
-        let oathnet_key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
-        if !ctx.cancel.is_cancelled() && !result.is_empty() {
-            if let Ok(items) = crate::util::oathnet::search(
+        let oathnet_key =
+            crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+        if !ctx.cancel.is_cancelled()
+            && !result.is_empty()
+            && let Ok(items) = crate::util::oathnet::search(
                 oathnet_key,
                 crate::util::oathnet::paths::STEALER,
                 "username",
                 &target.value,
                 10,
-            ).await {
-                if !items.is_empty() {
-                    for e in &mut result.entities {
-                        if e.kind == EntityKind::Username
-                            && e.value.to_lowercase() == target.value.to_lowercase()
-                        {
-                            e.tag(crate::core::tags::STEALER_LOG);
-                            e.tag(crate::core::tags::CREDENTIAL_EXPOSED);
-                            e.add_evidence(
-                                Evidence::new(
-                                    "social_probe:oathnet",
-                                    format!("{} stealer log(s) for username {}", items.len(), target.value),
-                                )
-                                .with_attr("stealer_hits", items.len().to_string()),
-                            );
-                            break;
-                        }
-                    }
+            )
+            .await
+            && !items.is_empty()
+        {
+            for e in &mut result.entities {
+                if e.kind == EntityKind::Username
+                    && e.value.to_lowercase() == target.value.to_lowercase()
+                {
+                    e.tag(crate::core::tags::STEALER_LOG);
+                    e.tag(crate::core::tags::CREDENTIAL_EXPOSED);
+                    e.add_evidence(
+                        Evidence::new(
+                            "social_probe:oathnet",
+                            format!(
+                                "{} stealer log(s) for username {}",
+                                items.len(),
+                                target.value
+                            ),
+                        )
+                        .with_attr("stealer_hits", items.len().to_string()),
+                    );
+                    break;
+                }
+            }
 
-                    // Create Credential entities from stealer data for pivot chain
-                    for item in items.iter().take(5) {
-                        let user = crate::util::oathnet::val_str(item, "username");
-                        let pw = crate::util::oathnet::val_str(item, "password");
-                        let url = crate::util::oathnet::val_str(item, "url_str");
-                        if let (Some(u), Some(url_val)) = (&user, &url) {
-                            if let Some(ref p) = pw {
-                                crate::util::keyledger::append_key(
-                                    url_val.split('/').nth(2).unwrap_or("unknown").trim_start_matches("www."),
-                                    u, p, url_val,
-                                    "social_probe", &ctx.scan_id, "credential",
-                                    &["stealer-log".into()],
-                                );
-                            }
-                            let cred_val = format!("{u}@{url_val}");
-                            let mut ce = crate::core::entity::Entity::new(
-                                crate::core::entity::EntityKind::Credential,
-                                &cred_val,
-                                0.55,
-                                &ctx.scan_id,
-                            );
-                            ce.tag(crate::core::tags::STEALER_LOG);
-                            ce.tag("credential-exposed");
-                            ce.add_evidence(
-                                crate::core::entity::Evidence::new(
-                                    "social_probe:oathnet",
-                                    format!("Stolen credential for {}", target.value),
-                                )
-                                .with_attr("source", "stealer")
-                                .with_opt_attr("username", user.clone())
-                                .with_opt_attr("password", pw)
-                                .with_opt_attr("url", url),
-                            );
-                            result.push(ce);
-                        }
+            // Create Credential entities from stealer data for pivot chain
+            for item in items.iter().take(5) {
+                let user = crate::util::oathnet::val_str(item, "username");
+                let pw = crate::util::oathnet::val_str(item, "password");
+                let url = crate::util::oathnet::val_str(item, "url_str");
+                if let (Some(u), Some(url_val)) = (&user, &url) {
+                    if let Some(ref p) = pw {
+                        crate::util::keyledger::append_key(
+                            url_val
+                                .split('/')
+                                .nth(2)
+                                .unwrap_or("unknown")
+                                .trim_start_matches("www."),
+                            u,
+                            p,
+                            url_val,
+                            "social_probe",
+                            &ctx.scan_id,
+                            "credential",
+                            &["stealer-log".into()],
+                        );
                     }
+                    let cred_val = format!("{u}@{url_val}");
+                    let mut ce = crate::core::entity::Entity::new(
+                        crate::core::entity::EntityKind::Credential,
+                        &cred_val,
+                        0.55,
+                        &ctx.scan_id,
+                    );
+                    ce.tag(crate::core::tags::STEALER_LOG);
+                    ce.tag("credential-exposed");
+                    ce.add_evidence(
+                        crate::core::entity::Evidence::new(
+                            "social_probe:oathnet",
+                            format!("Stolen credential for {}", target.value),
+                        )
+                        .with_attr("source", "stealer")
+                        .with_opt_attr("username", user.clone())
+                        .with_opt_attr("password", pw)
+                        .with_opt_attr("url", url),
+                    );
+                    result.push(ce);
                 }
             }
         }

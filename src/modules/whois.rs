@@ -212,37 +212,45 @@ impl Module for Whois {
 
         // OathNet breach enrichment for WHOIS contact emails
         let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
-        let emails: Vec<String> = result.entities
+        let emails: Vec<String> = result
+            .entities
             .iter()
             .filter(|e| e.kind == crate::core::entity::EntityKind::Email)
             .map(|e| e.value.clone())
             .collect();
         for email in emails.iter().take(3) {
-            if ctx.cancel.is_cancelled() { break; }
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
             if let Ok(items) = crate::util::oathnet::search(
                 key,
                 crate::util::oathnet::paths::BREACH,
                 "email",
                 email,
                 10,
-            ).await {
-                if !items.is_empty() {
-                    let top_dbs = crate::util::oathnet::top_dbnames(&items, 3);
-                    for e in &mut result.entities {
-                        if e.kind == crate::core::entity::EntityKind::Email && e.value == *email {
-                            e.tag(crate::core::tags::BREACH);
-                            e.tag("oathnet-enriched");
-                            e.add_evidence(
-                                crate::core::entity::Evidence::new(
-                                    "whois:oathnet",
-                                    format!("WHOIS contact {} in {} breach(es) — {}",
-                                        email, items.len(), top_dbs.join(", ")),
-                                )
-                                .with_attr("breach_hits", items.len().to_string())
-                                .with_attr("top_dbnames", top_dbs.join(", ")),
-                            );
-                            break;
-                        }
+            )
+            .await
+                && !items.is_empty()
+            {
+                let top_dbs = crate::util::oathnet::top_dbnames(&items, 3);
+                for e in &mut result.entities {
+                    if e.kind == crate::core::entity::EntityKind::Email && e.value == *email {
+                        e.tag(crate::core::tags::BREACH);
+                        e.tag("oathnet-enriched");
+                        e.add_evidence(
+                            crate::core::entity::Evidence::new(
+                                "whois:oathnet",
+                                format!(
+                                    "WHOIS contact {} in {} breach(es) — {}",
+                                    email,
+                                    items.len(),
+                                    top_dbs.join(", ")
+                                ),
+                            )
+                            .with_attr("breach_hits", items.len().to_string())
+                            .with_attr("top_dbnames", top_dbs.join(", ")),
+                        );
+                        break;
                     }
                 }
             }
@@ -273,7 +281,7 @@ async fn query(server: &str, q: &str) -> std::io::Result<String> {
 
 fn find_referral(text: &str) -> Option<String> {
     for line in text.lines() {
-            if (starts_with_ascii_ci(line, "whois:") || starts_with_ascii_ci(line, "refer:"))
+        if (starts_with_ascii_ci(line, "whois:") || starts_with_ascii_ci(line, "refer:"))
             && let Some((_, rest)) = line.split_once(':')
         {
             let v = rest.trim().to_string();

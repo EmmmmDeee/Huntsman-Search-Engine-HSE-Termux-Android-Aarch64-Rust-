@@ -409,7 +409,16 @@ fn rule_au_008_exposed_service(entities: &[Entity], scan_id: &str, ts: u64) -> V
 fn rule_au_009_stealer_log(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     entities
         .iter()
-        .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Username | EntityKind::Phone | EntityKind::Domain | EntityKind::ApiKey) && e.has_tag("stealer-log"))
+        .filter(|e| {
+            matches!(
+                e.kind,
+                EntityKind::Email
+                    | EntityKind::Username
+                    | EntityKind::Phone
+                    | EntityKind::Domain
+                    | EntityKind::ApiKey
+            ) && e.has_tag("stealer-log")
+        })
         .map(|e| Correlation {
             rule_id: "AU-009".into(),
             rule_name: "Stealer-log compromise".into(),
@@ -629,27 +638,40 @@ fn rule_au_016_credential_cluster(entities: &[Entity], scan_id: &str, ts: u64) -
     )]
 }
 
-fn rule_au_017_ransomware_and_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+fn rule_au_017_ransomware_and_breach(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Domain && e.has_tag("ransomware-victim") && e.has_tag("breach"))
-        .map(|e| Correlation::new(
-            "AU-017",
-            "Ransomware victim with breached employees",
-            Severity::Critical,
-            format!(
-                "Domain '{}' is both a ransomware victim and has employees in breach databases",
-                e.value
-            ),
-            vec![e.uid.clone()],
-            scan_id,
-            ts,
-        ))
+        .filter(|e| {
+            e.kind == EntityKind::Domain && e.has_tag("ransomware-victim") && e.has_tag("breach")
+        })
+        .map(|e| {
+            Correlation::new(
+                "AU-017",
+                "Ransomware victim with breached employees",
+                Severity::Critical,
+                format!(
+                    "Domain '{}' is both a ransomware victim and has employees in breach databases",
+                    e.value
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            )
+        })
         .collect()
 }
 
-fn rule_au_018_stealer_family_spread(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
-    let mut family_entities: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+fn rule_au_018_stealer_family_spread(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut family_entities: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     for e in entities {
         for tag in &e.tags {
             if let Some(family) = tag.strip_prefix("stealer:") {
@@ -1093,7 +1115,11 @@ mod tests {
 
     #[test]
     fn au017_fires_on_ransomware_plus_breach() {
-        let e = tagged(EntityKind::Domain, "victim.com", &["ransomware-victim", "breach"]);
+        let e = tagged(
+            EntityKind::Domain,
+            "victim.com",
+            &["ransomware-victim", "breach"],
+        );
         let r = rule_au_017_ransomware_and_breach(&[e], "s", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].severity, Severity::Critical);

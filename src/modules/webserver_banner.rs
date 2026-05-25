@@ -116,14 +116,26 @@ fn apply_stack_tags(e: &mut Entity, headers: &[(String, String)]) {
     let names: Vec<&str> = headers.iter().map(|(n, _)| n.as_str()).collect();
     e.tag_if(blob.contains("nginx"), "nginx");
     e.tag_if(blob.contains("apache"), "apache");
-    e.tag_if(blob.contains("microsoft-iis") || blob.contains("iis/"), "iis");
-    e.tag_if(blob.contains("cloudflare") || names.contains(&"cf-ray"), "cloudflare");
+    e.tag_if(
+        blob.contains("microsoft-iis") || blob.contains("iis/"),
+        "iis",
+    );
+    e.tag_if(
+        blob.contains("cloudflare") || names.contains(&"cf-ray"),
+        "cloudflare",
+    );
     e.tag_if(names.contains(&"x-amz-cf-id"), "aws-cloudfront");
-    e.tag_if(names.contains(&"x-served-by") || names.contains(&"x-cache"), "fastly");
+    e.tag_if(
+        names.contains(&"x-served-by") || names.contains(&"x-cache"),
+        "fastly",
+    );
     e.tag_if(blob.contains("wordpress"), "wordpress");
     e.tag_if(blob.contains("drupal"), "drupal");
     e.tag_if(blob.contains("php"), "php");
-    e.tag_if(blob.contains("aspnet") || names.contains(&"x-aspnet-version"), "aspnet");
+    e.tag_if(
+        blob.contains("aspnet") || names.contains(&"x-aspnet-version"),
+        "aspnet",
+    );
 }
 
 #[cfg(test)]

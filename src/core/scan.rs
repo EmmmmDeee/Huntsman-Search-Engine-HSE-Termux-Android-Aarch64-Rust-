@@ -106,7 +106,11 @@ impl Target {
         if v.is_empty() {
             return Err("value is empty");
         }
-        let general_max = if matches!(self.kind, TargetKind::ApiKey) { 2048 } else { 1024 };
+        let general_max = if matches!(self.kind, TargetKind::ApiKey) {
+            2048
+        } else {
+            1024
+        };
         if v.len() > general_max {
             return Err("value too long");
         }
@@ -160,8 +164,12 @@ impl Target {
                     .trim()
                     .parse()
                     .map_err(|_| "coordinates lon is not a number")?;
-                if !lat.is_finite() { return Err("latitude is not a finite number"); }
-                if !lon.is_finite() { return Err("longitude is not a finite number"); }
+                if !lat.is_finite() {
+                    return Err("latitude is not a finite number");
+                }
+                if !lon.is_finite() {
+                    return Err("longitude is not a finite number");
+                }
                 if !(-90.0..=90.0).contains(&lat) {
                     return Err("latitude must be in [-90, 90]");
                 }
@@ -323,10 +331,10 @@ impl ScanOptions {
         if !(0.0..=1.0).contains(&self.min_expand_confidence) {
             return Err("min_expand_confidence must be in [0.0, 1.0]");
         }
-        if let Some(c) = self.min_confidence {
-            if !c.is_finite() || !(0.0..=1.0).contains(&c) {
-                return Err("min_confidence must be a finite number in [0.0, 1.0]");
-            }
+        if let Some(c) = self.min_confidence
+            && (!c.is_finite() || !(0.0..=1.0).contains(&c))
+        {
+            return Err("min_confidence must be a finite number in [0.0, 1.0]");
         }
         Ok(())
     }

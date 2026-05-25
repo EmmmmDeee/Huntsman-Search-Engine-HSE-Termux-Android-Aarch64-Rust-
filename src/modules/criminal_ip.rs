@@ -193,15 +193,26 @@ impl Module for CriminalIp {
                 .with_opt_attr("country", w.org_country_code.as_deref());
         }
         ev = ev
-            .with_opt_attr("open_port_count", body.port.and_then(|p| p.count).map(|v| v.to_string()))
-            .with_opt_attr("vuln_count", body.vulnerability.and_then(|v| v.count).map(|v| v.to_string()));
+            .with_opt_attr(
+                "open_port_count",
+                body.port.and_then(|p| p.count).map(|v| v.to_string()),
+            )
+            .with_opt_attr(
+                "vuln_count",
+                body.vulnerability
+                    .and_then(|v| v.count)
+                    .map(|v| v.to_string()),
+            );
         if let Some(is) = &body.issues {
             ev = ev
                 .with_opt_attr("is_vpn", is.is_vpn.filter(|&v| v).map(|_| "true"))
                 .with_opt_attr("is_proxy", is.is_proxy.filter(|&v| v).map(|_| "true"))
                 .with_opt_attr("is_tor", is.is_tor.filter(|&v| v).map(|_| "true"))
                 .with_opt_attr("is_hosting", is.is_hosting.filter(|&v| v).map(|_| "true"))
-                .with_opt_attr("is_anonymous_vpn", is.is_anonymous_vpn.filter(|&v| v).map(|_| "true"))
+                .with_opt_attr(
+                    "is_anonymous_vpn",
+                    is.is_anonymous_vpn.filter(|&v| v).map(|_| "true"),
+                )
                 .with_opt_attr("is_cloud", is.is_cloud.filter(|&v| v).map(|_| "true"))
                 .with_opt_attr("is_scanner", is.is_scanner.filter(|&v| v).map(|_| "true"))
                 .with_opt_attr("is_dark_web", is.is_dark_web.filter(|&v| v).map(|_| "true"));

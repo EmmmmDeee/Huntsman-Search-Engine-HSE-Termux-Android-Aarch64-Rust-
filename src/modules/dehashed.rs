@@ -152,17 +152,27 @@ impl Module for DeHashed {
 
         // Tag password-at-risk when any entry has a password
         for entry in &entries {
-            if let Some(ref pw) = entry.password {
-                if pw.len() >= 4 {
-                    entity.tag(crate::core::tags::PASSWORD_AT_RISK);
-                    break;
-                }
+            if let Some(ref pw) = entry.password
+                && pw.len() >= 4
+            {
+                entity.tag(crate::core::tags::PASSWORD_AT_RISK);
+                break;
             }
         }
 
         // Per-entry evidence with ALL fields
         for entry in entries.iter().take(20) {
-            let mut entry_ev = Evidence::new("dehashed", format!("Breach record from {}", entry.database_name.as_deref().or(entry.obtained_from.as_deref()).unwrap_or("unknown")));
+            let mut entry_ev = Evidence::new(
+                "dehashed",
+                format!(
+                    "Breach record from {}",
+                    entry
+                        .database_name
+                        .as_deref()
+                        .or(entry.obtained_from.as_deref())
+                        .unwrap_or("unknown")
+                ),
+            );
             entry_ev = entry_ev
                 .with_opt_attr("email", entry.email.as_deref())
                 .with_opt_attr("username", entry.username.as_deref())
@@ -195,8 +205,8 @@ impl Module for DeHashed {
                 TargetKind::Domain => "domain",
                 _ => "",
             };
-            if !oathnet_field.is_empty() {
-                if let Ok(stealer_items) = crate::util::oathnet::search(
+            if !oathnet_field.is_empty()
+                && let Ok(stealer_items) = crate::util::oathnet::search(
                     oathnet_key,
                     crate::util::oathnet::paths::STEALER,
                     oathnet_field,
@@ -204,24 +214,16 @@ impl Module for DeHashed {
                     20,
                 )
                 .await
-                {
-                    if !stealer_items.is_empty() {
-                        entity.tag(tags::STEALER_LOG);
-                        entity.add_evidence(
-                            crate::core::entity::Evidence::new(
-                                "dehashed:oathnet",
-                                format!(
-                                    "OathNet: {} stealer log record(s)",
-                                    stealer_items.len()
-                                ),
-                            )
-                            .with_attr(
-                                "stealer_hits",
-                                stealer_items.len().to_string(),
-                            ),
-                        );
-                    }
-                }
+                && !stealer_items.is_empty()
+            {
+                entity.tag(tags::STEALER_LOG);
+                entity.add_evidence(
+                    crate::core::entity::Evidence::new(
+                        "dehashed:oathnet",
+                        format!("OathNet: {} stealer log record(s)", stealer_items.len()),
+                    )
+                    .with_attr("stealer_hits", stealer_items.len().to_string()),
+                );
             }
         }
 

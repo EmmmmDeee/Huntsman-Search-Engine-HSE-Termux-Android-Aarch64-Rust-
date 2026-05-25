@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::core::{
     entity::Evidence,
@@ -219,14 +219,12 @@ impl Module for IntelX {
         // Per-record evidence with ALL fields including overflow
         for (idx, rec) in last_records.iter().take(20).enumerate() {
             let label = media_label(rec.media.unwrap_or(-1)).unwrap_or("unknown");
-            let mut rec_ev = Evidence::new(
-                "intelx",
-                format!("IntelX record #{} ({label})", idx + 1),
-            )
-            .with_opt_attr("bucket", rec.bucket.as_deref())
-            .with_opt_attr("media", rec.media.map(|m| m.to_string()))
-            .with_opt_attr("date", rec.date.as_deref())
-            .with_attr("search_id", &search_id);
+            let mut rec_ev =
+                Evidence::new("intelx", format!("IntelX record #{} ({label})", idx + 1))
+                    .with_opt_attr("bucket", rec.bucket.as_deref())
+                    .with_opt_attr("media", rec.media.map(|m| m.to_string()))
+                    .with_opt_attr("date", rec.date.as_deref())
+                    .with_attr("search_id", &search_id);
             for (k, v) in &rec.extra {
                 let val_str = match v {
                     Value::String(s) => s.clone(),

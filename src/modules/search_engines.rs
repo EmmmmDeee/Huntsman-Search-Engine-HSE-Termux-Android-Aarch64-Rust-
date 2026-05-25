@@ -139,7 +139,6 @@ impl Module for SearchEngines {
     }
 }
 
-
 struct EngineSpec {
     name: &'static str,
     build_url: fn(&str) -> String,
@@ -301,7 +300,6 @@ const ENGINES: &[EngineSpec] = &[
         ua_alt: crate::util::curl::UA_FIREFOX,
     },
 ];
-
 
 async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
     let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
@@ -616,7 +614,6 @@ fn build_queries(target: &Target) -> Vec<String> {
     }
 }
 
-
 fn generate_username_variants(base: &str) -> Vec<String> {
     let lower = base.to_lowercase();
     let mut variants = Vec::with_capacity(8);
@@ -710,7 +707,6 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
     found
 }
 
-
 fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<String> {
     let social_hosts = [
         "facebook.com",
@@ -776,7 +772,6 @@ fn extract_path_username(url: &str) -> Option<String> {
         None
     }
 }
-
 
 enum FetchOutcome {
     Body(String),
@@ -1090,7 +1085,6 @@ fn extract_url_param(href: &str, param: &str) -> Option<String> {
         })
 }
 
-
 struct HrefIter<'a> {
     remaining: &'a str,
 }
@@ -1131,7 +1125,6 @@ impl<'a> Iterator for HrefIter<'a> {
         }
     }
 }
-
 
 fn extract_host(url: &str) -> String {
     url::Url::parse(url)
@@ -1603,7 +1596,6 @@ fn strip_tags(html: &str, max_len: usize) -> String {
     }
     out.trim().to_string()
 }
-
 
 fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> ModuleResult {
     let mut result = ModuleResult::new();

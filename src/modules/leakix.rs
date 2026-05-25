@@ -114,7 +114,10 @@ impl Module for LeakIx {
 
         let all_events = body.services.iter().chain(body.leaks.iter());
 
-        let types: Vec<String> = all_events.clone().filter_map(|e| e.event_type.clone()).collect();
+        let types: Vec<String> = all_events
+            .clone()
+            .filter_map(|e| e.event_type.clone())
+            .collect();
         let top = crate::util::freq::top_n(types.iter().map(String::as_str), 8);
 
         let mut ports: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();

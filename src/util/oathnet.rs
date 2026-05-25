@@ -139,17 +139,17 @@ pub async fn search_all_pages(
         }
 
         // Stop if we've reached the total reported by the API
-        if let Some(total) = sd.total {
-            if all_items.len() as u64 >= total {
-                break;
-            }
+        if let Some(total) = sd.total
+            && all_items.len() as u64 >= total
+        {
+            break;
         }
 
         // Stop if we've reached the total page count
-        if let Some(total_pages) = sd.pages {
-            if page as u64 >= total_pages {
-                break;
-            }
+        if let Some(total_pages) = sd.pages
+            && page as u64 >= total_pages
+        {
+            break;
         }
 
         page += 1;
@@ -275,10 +275,10 @@ pub async fn regex_search_all_pages(
         if (page_count as u32) < page_size {
             break;
         }
-        if let Some(total) = sd.total {
-            if all_items.len() as u64 >= total {
-                break;
-            }
+        if let Some(total) = sd.total
+            && all_items.len() as u64 >= total
+        {
+            break;
         }
 
         page += 1;
@@ -337,10 +337,10 @@ pub async fn field_regex_search_all(
         if (page_count as u32) < page_size {
             break;
         }
-        if let Some(total) = sd.total {
-            if all_items.len() as u64 >= total {
-                break;
-            }
+        if let Some(total) = sd.total
+            && all_items.len() as u64 >= total
+        {
+            break;
         }
 
         page += 1;
@@ -378,6 +378,7 @@ pub async fn osint_opt(key: &str, path: &str, param: &str, value: &str) -> Resul
     Ok(env.data)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn search_cached(
     key: &str,
     path: &str,
@@ -389,16 +390,14 @@ pub async fn search_cached(
     cache_hours: u32,
 ) -> Result<Vec<Value>> {
     // Check cache first
-    if cache_hours > 0 {
-        if let Some(cached) = store
+    if cache_hours > 0
+        && let Some(cached) = store
             .cached_response("oathnet_pro", path, field, value, cache_hours)
             .ok()
             .flatten()
-        {
-            if let Ok(items) = serde_json::from_str::<Vec<Value>>(&cached) {
-                return Ok(items);
-            }
-        }
+        && let Ok(items) = serde_json::from_str::<Vec<Value>>(&cached)
+    {
+        return Ok(items);
     }
 
     // Cache miss — make the API call
@@ -420,6 +419,7 @@ pub async fn search_cached(
     Ok(items)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn search_all_cached(
     key: &str,
     path: &str,
@@ -431,18 +431,15 @@ pub async fn search_all_cached(
     scan_id: &str,
     cache_hours: u32,
 ) -> Result<Vec<Value>> {
-    if cache_hours > 0 {
-        if let Some(cached) = store
+    if cache_hours > 0
+        && let Some(cached) = store
             .cached_response("oathnet_pro", path, field, value, cache_hours)
             .ok()
             .flatten()
-        {
-            if let Ok(items) = serde_json::from_str::<Vec<Value>>(&cached) {
-                if !items.is_empty() {
-                    return Ok(items);
-                }
-            }
-        }
+        && let Ok(items) = serde_json::from_str::<Vec<Value>>(&cached)
+        && !items.is_empty()
+    {
+        return Ok(items);
     }
 
     let items = search_all_pages(key, path, field, value, page_size, max_pages).await?;
@@ -471,16 +468,14 @@ pub async fn osint_cached(
     scan_id: &str,
     cache_hours: u32,
 ) -> Result<Value> {
-    if cache_hours > 0 {
-        if let Some(cached) = store
+    if cache_hours > 0
+        && let Some(cached) = store
             .cached_response("oathnet_pro", path, param, value, cache_hours)
             .ok()
             .flatten()
-        {
-            if let Ok(data) = serde_json::from_str::<Value>(&cached) {
-                return Ok(data);
-            }
-        }
+        && let Ok(data) = serde_json::from_str::<Value>(&cached)
+    {
+        return Ok(data);
     }
 
     let data = osint(key, path, param, value).await?;
@@ -509,16 +504,14 @@ pub async fn osint_opt_cached(
     scan_id: &str,
     cache_hours: u32,
 ) -> Result<Option<Value>> {
-    if cache_hours > 0 {
-        if let Some(cached) = store
+    if cache_hours > 0
+        && let Some(cached) = store
             .cached_response("oathnet_pro", path, param, value, cache_hours)
             .ok()
             .flatten()
-        {
-            if let Ok(data) = serde_json::from_str::<Value>(&cached) {
-                return Ok(Some(data));
-            }
-        }
+        && let Ok(data) = serde_json::from_str::<Value>(&cached)
+    {
+        return Ok(Some(data));
     }
 
     let data = osint_opt(key, path, param, value).await?;
@@ -633,7 +626,10 @@ pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, Stri
 
 async fn curl_get(url: &str, key: &str) -> Result<String> {
     if key.bytes().any(|b| b < 0x20) {
-        return Err(Error::module("oathnet", "API key contains control characters"));
+        return Err(Error::module(
+            "oathnet",
+            "API key contains control characters",
+        ));
     }
     let secs = 12u64.to_string();
     let header = format!("x-api-key: {key}");

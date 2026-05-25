@@ -136,7 +136,12 @@ impl Module for DnsResolver {
             e.add_evidence(ev);
             result.push(e);
 
-            if admin_email.contains('@') && admin_email.split('@').nth(1).map_or(false, |h| h.contains('.')) {
+            if admin_email.contains('@')
+                && admin_email
+                    .split('@')
+                    .nth(1)
+                    .is_some_and(|h| h.contains('.'))
+            {
                 let mut em = Entity::new(EntityKind::Email, &admin_email, 0.70, &ctx.scan_id);
                 em.tag("dns-admin");
                 em.add_evidence(

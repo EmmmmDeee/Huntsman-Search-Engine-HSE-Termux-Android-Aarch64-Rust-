@@ -233,7 +233,9 @@ impl Entity {
     /// Architecture invariant — do not modify the formula.
     #[inline]
     pub fn c_effective(&self) -> f64 {
-        if self.corroboration == 0 { return self.confidence.clamp(0.0, 1.0); }
+        if self.corroboration == 0 {
+            return self.confidence.clamp(0.0, 1.0);
+        }
         let boost = CORROBORATION_COEFF.mul_add((self.corroboration as f64).ln(), 1.0);
         (self.confidence * boost).clamp(0.0, 1.0)
     }
