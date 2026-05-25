@@ -28,6 +28,7 @@ const USER_ENV: &str = "HUNTSMAN_WIGLE_USER";
 const TOKEN_ENV: &str = "HUNTSMAN_WIGLE_TOKEN";
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct Resp {
     #[serde(default)]
     success: Option<bool>,
@@ -40,11 +41,24 @@ struct Resp {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct Network {
+    #[serde(default)]
+    netid: Option<String>,
+    #[serde(default)]
+    ssid: Option<String>,
     #[serde(default)]
     encryption: Option<String>,
     #[serde(default)]
+    channel: Option<i32>,
+    #[serde(default)]
+    trilat: Option<f64>,
+    #[serde(default)]
+    trilong: Option<f64>,
+    #[serde(default)]
     lastupdt: Option<String>,
+    #[serde(default, rename = "type")]
+    net_type: Option<String>,
 }
 
 pub struct Wigle;
@@ -63,6 +77,7 @@ impl Module for Wigle {
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Coordinates)
     }
+
     fn max_timeout_ms(&self) -> u64 {
         12_000
     }
@@ -129,6 +144,9 @@ impl Module for Wigle {
             return Ok(ModuleResult::new());
         }
 
+        let mut result = ModuleResult::new();
+
+        // Summary entity on the input coordinates.
         let mut entity = Entity::new(EntityKind::Coordinates, &target.value, 0.85, &ctx.scan_id);
         entity.tag("wigle");
         entity.tag("wifi-observed");
@@ -167,14 +185,67 @@ impl Module for Wigle {
         .with_attr("returned", body.results.len().to_string())
         .with_attr("bbox_half_size_deg", D.to_string());
         if !top_encryption.is_empty() {
-            ev = ev.with_attr("top_encryption", top_encryption);
+            ev = ev.with_attr("top_encryption", &top_encryption);
         }
         if let Some(t) = most_recent {
             ev = ev.with_attr("most_recent_observation", t);
         }
         entity.add_evidence(ev);
-        let mut result = ModuleResult::new();
         result.push(entity);
+
+        // Emit individual MacAddress entities for the top networks so
+        // the on-device wifi_scan output can cross-reference against
+        // WiGLE's crowdsourced database. Each network with a BSSID
+        // (netid) and trilateration coordinates becomes a geolocated
+        // access point — the correlator can match these against
+        // wifi_scan's local observations for location corroboration.
+        const MAX_NETWORKS: usize = 20;
+        for net in body.results.iter().take(MAX_NETWORKS) {
+            let Some(bssid) = net.netid.as_deref() else {
+                continue;
+            };
+            if bssid.is_empty() || bssid.len() < 11 {
+                continue;
+            }
+            let mut mac = Entity::new(EntityKind::MacAddress, bssid, 0.78, &ctx.scan_id);
+            mac.tag("wigle");
+            mac.tag("wifi-ap");
+            let mut mac_ev = Evidence::new("wigle", format!("WiFi AP {bssid} observed by WiGLE"));
+            if let Some(ssid) = net.ssid.as_deref() {
+                mac_ev = mac_ev.with_attr("ssid", ssid);
+                mac.tag(format!("ssid:{ssid}"));
+            }
+            if let Some(enc) = net.encryption.as_deref() {
+                mac_ev = mac_ev.with_attr("encryption", enc);
+            }
+            if let Some(ch) = net.channel {
+                mac_ev = mac_ev.with_attr("channel", ch.to_string());
+            }
+            if let Some(t) = net.lastupdt.as_deref() {
+                mac_ev = mac_ev.with_attr("last_seen", t);
+            }
+            // Emit the trilaterated coordinates of this specific AP
+            // so the correlator can cluster per-AP locations.
+            if let (Some(tlat), Some(tlon)) = (net.trilat, net.trilong) {
+                let ap_coords = format!("{tlat:.6},{tlon:.6}");
+                mac_ev = mac_ev
+                    .with_attr("trilat", tlat.to_string())
+                    .with_attr("trilong", tlon.to_string());
+
+                let mut ap_loc =
+                    Entity::new(EntityKind::Coordinates, &ap_coords, 0.82, &ctx.scan_id);
+                ap_loc.tag("wigle");
+                ap_loc.tag("wifi-trilaterated");
+                ap_loc.add_evidence(
+                    Evidence::new("wigle", format!("AP {bssid} trilaterated to {ap_coords}"))
+                        .with_attr("bssid", bssid),
+                );
+                result.push(ap_loc);
+            }
+            mac.add_evidence(mac_ev);
+            result.push(mac);
+        }
+
         Ok(result)
     }
 }

@@ -75,6 +75,7 @@ impl ScanEngine {
             TargetKind::Asn,
             TargetKind::Coordinates,
             TargetKind::Address,
+            TargetKind::MacAddress,
         ];
         for kind in all_kinds {
             let probe = Target::new(kind, "probe");

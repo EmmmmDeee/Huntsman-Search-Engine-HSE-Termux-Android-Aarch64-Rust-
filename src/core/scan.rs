@@ -16,6 +16,7 @@ pub enum TargetKind {
     Asn,
     Coordinates,
     Address,
+    MacAddress,
 }
 
 impl TargetKind {
@@ -35,9 +36,9 @@ impl TargetKind {
             EntityKind::Asn => Some(Self::Asn),
             EntityKind::Coordinates => Some(Self::Coordinates),
             EntityKind::Address => Some(Self::Address),
+            EntityKind::MacAddress => Some(Self::MacAddress),
             EntityKind::Organisation
             | EntityKind::AbnAcn
-            | EntityKind::MacAddress
             | EntityKind::DeviceId
             | EntityKind::Url
             | EntityKind::Credential
@@ -58,6 +59,7 @@ impl TargetKind {
             Self::Asn => EntityKind::Asn,
             Self::Coordinates => EntityKind::Coordinates,
             Self::Address => EntityKind::Address,
+            Self::MacAddress => EntityKind::MacAddress,
         }
     }
 
@@ -83,6 +85,7 @@ impl TargetKind {
             Self::Asn => "asn",
             Self::Coordinates => "coordinates",
             Self::Address => "address",
+            Self::MacAddress => "mac_address",
         }
     }
 }
@@ -184,7 +187,10 @@ impl Target {
                 }
             }
             // Free-form text kinds: only the universal checks above apply.
-            TargetKind::Username | TargetKind::FullName | TargetKind::Address => {}
+            TargetKind::Username
+            | TargetKind::FullName
+            | TargetKind::Address
+            | TargetKind::MacAddress => {}
         }
         Ok(())
     }
@@ -356,7 +362,10 @@ mod tests {
     #[test]
     fn unscannable_entity_kinds_return_none() {
         assert!(TargetKind::from_entity_kind(&EntityKind::Organisation).is_none());
-        assert!(TargetKind::from_entity_kind(&EntityKind::MacAddress).is_none());
+        assert_eq!(
+            TargetKind::from_entity_kind(&EntityKind::MacAddress),
+            Some(TargetKind::MacAddress)
+        );
         assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::Password).is_none());
     }

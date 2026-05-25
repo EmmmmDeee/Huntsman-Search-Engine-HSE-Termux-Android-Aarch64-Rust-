@@ -53,6 +53,7 @@ pub mod whois;
 pub mod wifi_connect;
 pub mod wifi_scan;
 pub mod wigle;
+pub mod wigle_bssid;
 pub mod xposed_or_not;
 
 use std::sync::Arc;
@@ -127,6 +128,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(ipinfo::IpInfo),
         Arc::new(ip2location::Ip2Location),
         Arc::new(nominatim::Nominatim),
+        Arc::new(wigle_bssid::WigleBssid),
         // ── IP abuse / threat intel ──
         Arc::new(abuseipdb::AbuseIpDb),
         Arc::new(greynoise::GreyNoise),
