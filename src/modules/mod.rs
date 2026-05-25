@@ -5,6 +5,7 @@
 //!
 //! Nothing else in the codebase needs to know about the new module.
 
+pub mod abuseipdb;
 pub mod alienvault_otx;
 pub mod arp_scan;
 pub mod bgpview;
@@ -16,6 +17,7 @@ pub mod dehashed;
 pub mod dns_brute;
 pub mod dns_resolver;
 pub mod email_to_username;
+pub mod emailrep;
 pub mod github_user;
 pub mod gps_fix;
 pub mod gravatar;
@@ -23,9 +25,11 @@ pub mod hudsonrock;
 pub mod intelx;
 pub mod ip_geo;
 pub mod ip_rdap;
+pub mod ipinfo;
 pub mod ipqs;
 pub mod leakix;
 pub mod net_interfaces;
+pub mod nominatim;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod phone_intl;
@@ -110,6 +114,13 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(bgpview::BgpView),
         // Domain history
         Arc::new(wayback::Wayback),
+        // ── People-centric (SpiderFoot sfp_emailrep equivalent) ──
+        Arc::new(emailrep::EmailRep),
+        // ── Geolocation (SpiderFoot sfp_ipinfo / sfp_openstreetmap / sfp_opencellid) ──
+        Arc::new(ipinfo::IpInfo),
+        Arc::new(nominatim::Nominatim),
+        // ── IP abuse / reputation (SpiderFoot sfp_abuseipdb) ──
+        Arc::new(abuseipdb::AbuseIpDb),
         // Termux sensors (v0.6+). Accept any target, is_passive=true.
         // Off-device they no-op cleanly via the termux_cmd helper.
         Arc::new(wifi_connect::WifiConnect),
