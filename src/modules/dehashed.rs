@@ -79,10 +79,9 @@ impl Module for DeHashed {
             TargetKind::Domain => "domain",
             _ => return Ok(ModuleResult::new()),
         };
-        let value = target.value.trim();
-        if value.is_empty() {
+        let Some(value) = target.trimmed() else {
             return Ok(ModuleResult::new());
-        }
+        };
         let q = format!("{selector}:{value}");
         let url = format!("https://api.dehashed.com/search?query={}", urlencode(&q));
         let resp = ctx

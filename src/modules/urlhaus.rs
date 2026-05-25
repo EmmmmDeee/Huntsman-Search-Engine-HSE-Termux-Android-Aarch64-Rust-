@@ -73,10 +73,9 @@ impl Module for UrlHaus {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let host = target.value.trim();
-        if host.is_empty() {
+        let Some(host) = target.trimmed() else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let resp = ctx
             .http

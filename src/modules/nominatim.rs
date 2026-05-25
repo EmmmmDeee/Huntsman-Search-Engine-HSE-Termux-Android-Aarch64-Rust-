@@ -211,7 +211,7 @@ impl Nominatim {
                 ev = ev.with_attr("country", c);
             }
             if let Some(cc) = addr.country_code.as_deref() {
-                entity.tag(format!("country:{}", cc.to_uppercase()));
+                entity.tag_country(cc);
                 ev = ev.with_attr("country_code", cc);
             }
             if let Some(s) = addr.state.as_deref() {

@@ -108,6 +108,12 @@ impl super::ScanEngine {
     }
 }
 
+/// Per-module timeout: user override > module's declared max.
+fn module_timeout_ms(module: &dyn Module, opts: &ScanOptions) -> u64 {
+    opts.module_timeout_ms
+        .unwrap_or_else(|| module.max_timeout_ms())
+}
+
 /// Returns `Some(reason)` if `module` should be skipped under `opts`.
 /// `accepts(target)` is intentionally NOT checked here — that case skips
 /// silently with no `ModuleSkipped` event, the others all emit one.
@@ -181,13 +187,8 @@ impl ScanEngine {
                 },
             ));
 
-            // Per-module timeout: user override > module's declared max.
-            // gps_fix needs 15+ s, whois can chain 2× 4 s referrals, etc.
-            let module_timeout_ms = opts
-                .module_timeout_ms
-                .unwrap_or_else(|| module.max_timeout_ms());
             let result = timeout(
-                Duration::from_millis(module_timeout_ms),
+                Duration::from_millis(module_timeout_ms(&**module, opts)),
                 module.process(target, ctx),
             )
             .await;
@@ -254,10 +255,7 @@ impl ScanEngine {
             let bus = self.bus.clone();
             let scan_id_owned = scan_id.to_string();
             let throttle_ms = opts.throttle_ms;
-            // Per-module timeout: user override > module's declared max.
-            let module_timeout_ms = opts
-                .module_timeout_ms
-                .unwrap_or_else(|| module_arc.max_timeout_ms());
+            let timeout_ms = module_timeout_ms(&**module, opts);
 
             set.spawn(async move {
                 let _permit = permit;
@@ -271,7 +269,7 @@ impl ScanEngine {
                 ));
 
                 let result = timeout(
-                    Duration::from_millis(module_timeout_ms),
+                    Duration::from_millis(timeout_ms),
                     module_arc.process(&target, &ctx),
                 )
                 .await;

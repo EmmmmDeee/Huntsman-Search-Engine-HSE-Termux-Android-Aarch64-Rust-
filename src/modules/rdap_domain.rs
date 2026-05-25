@@ -108,10 +108,9 @@ impl Module for RdapDomain {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let domain = target.value.trim();
-        if domain.is_empty() {
+        let Some(domain) = target.trimmed() else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         // urlencode the path segment defensively: TargetKind::Domain
         // values are already DNS-label-shape per validation, but

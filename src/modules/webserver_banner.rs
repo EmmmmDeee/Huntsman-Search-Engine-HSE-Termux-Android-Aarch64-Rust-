@@ -62,7 +62,9 @@ impl Module for WebserverBanner {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let domain = target.value.trim();
+        let Some(domain) = target.trimmed() else {
+            return Ok(ModuleResult::new());
+        };
         if domain.is_empty() || domain.contains('/') {
             return Ok(ModuleResult::new());
         }

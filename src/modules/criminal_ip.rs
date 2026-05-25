@@ -189,7 +189,7 @@ impl Module for CriminalIp {
         if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first())
             && let Some(c) = w.org_country_code.as_deref()
         {
-            entity.tag(format!("country:{}", c.to_uppercase()));
+            entity.tag_country(c);
         }
 
         let mut ev = Evidence::new("criminal_ip", format!("Criminal IP report for {ip}"));

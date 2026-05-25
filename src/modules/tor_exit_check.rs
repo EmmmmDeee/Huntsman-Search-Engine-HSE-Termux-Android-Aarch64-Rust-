@@ -93,10 +93,9 @@ impl Module for TorExitCheck {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let ip = target.value.trim();
-        if ip.is_empty() {
+        let Some(ip) = target.trimmed() else {
             return Ok(ModuleResult::new());
-        }
+        };
         let Some(set) = exit_set(&ctx.http).await else {
             // Couldn't fetch the list AND no prior success — quietly
             // skip; the rest of the scan continues unaffected, and the

@@ -110,7 +110,7 @@ impl Module for Numverify {
         entity.tag("validated");
         entity.tag(format!("transport:{transport}"));
         if let Some(c) = body.country_code.as_deref() {
-            entity.tag(format!("country:{}", c.to_uppercase()));
+            entity.tag_country(c);
         }
         if let Some(lt) = body.line_type.as_deref()
             && !lt.is_empty()

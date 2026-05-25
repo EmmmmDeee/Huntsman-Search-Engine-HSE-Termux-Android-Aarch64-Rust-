@@ -59,7 +59,9 @@ impl Module for GithubUser {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let login = target.value.trim();
+        let Some(login) = target.trimmed() else {
+            return Ok(ModuleResult::new());
+        };
         // GitHub login rules: alphanumeric and hyphens, max 39 chars,
         // not starting/ending with a hyphen. Saves a wasted HTTP round-
         // trip for non-conforming inputs.

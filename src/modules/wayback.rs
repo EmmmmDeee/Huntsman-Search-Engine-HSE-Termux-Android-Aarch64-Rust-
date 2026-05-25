@@ -47,9 +47,6 @@ impl Module for Wayback {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let domain = target.value.trim().to_lowercase();
-        if domain.is_empty() {
-            return Ok(ModuleResult::new());
-        }
 
         // collapse=urlkey deduplicates same-URL snapshots; limit=1000
         // caps response size for very old domains (some have millions

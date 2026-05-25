@@ -309,7 +309,7 @@ impl Module for PhoneIntl {
         let canonical = format!("+{digits}");
         let mut entity = Entity::new(EntityKind::Phone, &canonical, 0.85, &ctx.scan_id);
         entity.tag("e164");
-        entity.tag(format!("country:{iso}"));
+        entity.tag_country(iso);
         entity.add_evidence(
             Evidence::new("phone_intl", format!("Phone {canonical} → {name}"))
                 .with_attr("country_code", prefix)

@@ -90,7 +90,7 @@ impl Module for Shodan {
             entity.tag("vulnerable");
         }
         if let Some(c) = body.country_code.as_deref() {
-            entity.tag(format!("country:{}", c.to_uppercase()));
+            entity.tag_country(c);
         }
 
         let mut ev = Evidence::new("shodan", format!("Shodan host record for {ip}"));

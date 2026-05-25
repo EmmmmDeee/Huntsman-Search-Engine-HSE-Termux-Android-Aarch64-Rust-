@@ -83,10 +83,9 @@ impl Module for IpRdap {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let ip = target.value.trim();
-        if ip.is_empty() {
+        let Some(ip) = target.trimmed() else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let url = format!("https://rdap.arin.net/registry/ip/{ip}");
         let Some(body): Option<RdapResp> = fetch_json_or_404(&ctx.http, "ip_rdap", &url).await?
@@ -114,7 +113,7 @@ impl Module for IpRdap {
         let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.90, &ctx.scan_id);
         entity.tag("rdap");
         if let Some(c) = body.country.as_deref() {
-            entity.tag(format!("country:{}", c.to_uppercase()));
+            entity.tag_country(c);
         }
 
         let mut ev = Evidence::new("ip_rdap", format!("RDAP allocation record for {ip}"));

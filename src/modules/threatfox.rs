@@ -84,10 +84,9 @@ impl Module for ThreatFox {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = ctx.key(KEY_ENV)?;
-        let term = target.value.trim();
-        if term.is_empty() {
+        let Some(term) = target.trimmed() else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         // `exact_match: true` — without it the API does a wildcard
         // match that returns IOCs containing the search_term as a

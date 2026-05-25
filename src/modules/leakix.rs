@@ -67,10 +67,9 @@ impl Module for LeakIx {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = ctx.key(KEY_ENV)?;
-        let value = target.value.trim();
-        if value.is_empty() {
+        let Some(value) = target.trimmed() else {
             return Ok(ModuleResult::new());
-        }
+        };
         let path = match target.kind {
             TargetKind::IpAddress => "host",
             TargetKind::Domain => "domain",
