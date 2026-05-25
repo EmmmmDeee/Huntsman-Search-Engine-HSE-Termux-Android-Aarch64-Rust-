@@ -160,7 +160,17 @@ impl Module for SearchEngines {
             }
         }
 
-        Ok(build_entities(target, &ctx.scan_id, &all_results))
+        let mut module_result = build_entities(target, &ctx.scan_id, &all_results);
+
+        // ── API enrichment pass: batch-query OathNet for high-confidence
+        //    discovered entities. Only fires when the API key is configured
+        //    and we have entities worth enriching. Maximises value from
+        //    free results before spending API credits. ──────────────────
+        if !ctx.cancel.is_cancelled() {
+            enrich_via_oathnet(ctx, &mut module_result).await;
+        }
+
+        Ok(module_result)
     }
 }
 
@@ -342,6 +352,246 @@ const ENGINES: &[EngineSpec] = &[
         ua_alt: crate::util::curl::UA_FIREFOX,
     },
 ];
+
+// ─── API enrichment: OathNet batch breach lookups ──────────────────────────
+
+const OATHNET_KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
+const OATHNET_ENDPOINT: &str = "https://oathnet.org/api/service/v2/breach/search";
+
+#[derive(serde::Deserialize)]
+struct OathEnvelope {
+    data: Option<OathData>,
+}
+
+#[derive(serde::Deserialize)]
+struct OathData {
+    #[serde(default)]
+    items: Vec<OathItem>,
+}
+
+#[derive(serde::Deserialize)]
+struct OathItem {
+    #[serde(default)]
+    dbname: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    ip: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
+    let key = match ctx.key_opt(OATHNET_KEY_ENV) {
+        Some(k) if !k.is_empty() => k,
+        _ => return,
+    };
+
+    // Collect high-confidence emails and usernames (PROBABLE tier,
+    // confidence ≥ 0.50) worth spending API credits on.
+    let mut emails: Vec<String> = Vec::new();
+    let mut usernames: Vec<String> = Vec::new();
+    for e in &result.entities {
+        if e.confidence < 0.50 {
+            continue;
+        }
+        match e.kind {
+            EntityKind::Email => {
+                if emails.len() < 10 {
+                    emails.push(e.value.clone());
+                }
+            }
+            EntityKind::Username => {
+                if usernames.len() < 5 {
+                    usernames.push(e.value.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if emails.is_empty() && usernames.is_empty() {
+        return;
+    }
+
+    let scan_id = result
+        .entities
+        .first()
+        .map(|e| e.scan_id.clone())
+        .unwrap_or_default();
+
+    for email in &emails {
+        if ctx.cancel.is_cancelled() {
+            break;
+        }
+        if let Some(hits) = oathnet_lookup(&ctx.http, key, "email", email).await {
+            apply_breach_evidence(result, email, &hits, &scan_id);
+        }
+    }
+
+    for uname in &usernames {
+        if ctx.cancel.is_cancelled() {
+            break;
+        }
+        if let Some(hits) = oathnet_lookup(&ctx.http, key, "username", uname).await {
+            apply_breach_evidence(result, uname, &hits, &scan_id);
+        }
+    }
+}
+
+async fn oathnet_lookup(
+    http: &reqwest::Client,
+    key: &str,
+    field: &str,
+    value: &str,
+) -> Option<Vec<OathItem>> {
+    let param = format!("{field}[]");
+    let resp = http
+        .get(OATHNET_ENDPOINT)
+        .header("x-api-key", key)
+        .query(&[(param.as_str(), value), ("page_size", "20")])
+        .send()
+        .await
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let env: OathEnvelope = resp.json().await.ok()?;
+    let data = env.data?;
+    if data.items.is_empty() {
+        return None;
+    }
+    Some(data.items)
+}
+
+fn apply_breach_evidence(
+    result: &mut ModuleResult,
+    lookup_value: &str,
+    items: &[OathItem],
+    scan_id: &str,
+) {
+    let total = items.len();
+    let top_dbs: Vec<&str> = items
+        .iter()
+        .filter_map(|i| i.dbname.as_deref())
+        .take(5)
+        .collect();
+    let summary = format!(
+        "OathNet breach: {total} record(s) for {lookup_value} — {}",
+        if top_dbs.is_empty() {
+            "no dbnames".to_string()
+        } else {
+            top_dbs.join(", ")
+        }
+    );
+
+    // Tag the existing entity with breach data if it matches
+    let lookup_lower = lookup_value.to_lowercase();
+    for e in &mut result.entities {
+        if e.value.to_lowercase() == lookup_lower {
+            e.tag(tags::BREACH);
+            e.tag("oathnet-enriched");
+            if e.confidence < 0.70 {
+                e.confidence = 0.70;
+            }
+            e.add_evidence(
+                Evidence::new("search_engines:oathnet", &summary)
+                    .with_attr("breach_hits", total.to_string())
+                    .with_attr("top_dbnames", top_dbs.join(", "))
+                    .with_attr("lookup_value", lookup_value),
+            );
+        }
+    }
+
+    let mut seen: HashSet<String> = result
+        .entities
+        .iter()
+        .map(|e| e.value.to_lowercase())
+        .collect();
+    let mut new_ents: Vec<Entity> = Vec::new();
+    for item in items {
+        let db = item.dbname.as_deref().unwrap_or("unknown");
+        if let Some(email) = &item.email {
+            let lower = email.to_lowercase();
+            if lower.contains('@') && lower.len() >= 5 && seen.insert(lower) {
+                let mut e = Entity::new(EntityKind::Email, email, 0.65, scan_id);
+                e.tag(tags::BREACH);
+                e.tag("oathnet-enriched");
+                e.add_evidence(
+                    Evidence::new(
+                        "search_engines:oathnet",
+                        format!("Breach record linked to {lookup_value}"),
+                    )
+                    .with_attr("dbname", db),
+                );
+                new_ents.push(e);
+            }
+        }
+        if let Some(uname) = &item.username {
+            let lower = uname.to_lowercase();
+            if lower.len() >= 3 && !is_navigation_path(&lower) && seen.insert(lower) {
+                let mut e = Entity::new(EntityKind::Username, uname, 0.60, scan_id);
+                e.tag(tags::BREACH);
+                e.tag("oathnet-enriched");
+                e.add_evidence(
+                    Evidence::new(
+                        "search_engines:oathnet",
+                        format!("Breach username linked to {lookup_value}"),
+                    )
+                    .with_attr("dbname", db),
+                );
+                new_ents.push(e);
+            }
+        }
+        if let Some(phone) = &item.phone
+            && phone.len() >= 7
+            && seen.insert(phone.to_lowercase())
+        {
+            let mut e = Entity::new(EntityKind::Phone, phone, 0.60, scan_id);
+            e.tag(tags::BREACH);
+            e.tag("oathnet-enriched");
+            e.add_evidence(Evidence::new(
+                "search_engines:oathnet",
+                format!("Breach phone linked to {lookup_value}"),
+            ));
+            new_ents.push(e);
+        }
+        if let Some(name) = &item.name {
+            let t = name.trim();
+            if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
+                let mut e = Entity::new(EntityKind::Person, t, 0.55, scan_id);
+                e.tag(tags::BREACH);
+                e.tag("oathnet-enriched");
+                e.add_evidence(Evidence::new(
+                    "search_engines:oathnet",
+                    format!("Breach name linked to {lookup_value}"),
+                ));
+                new_ents.push(e);
+            }
+        }
+        if let Some(ip) = &item.ip
+            && ip.contains('.')
+            && ip.len() >= 7
+            && seen.insert(ip.clone())
+        {
+            let mut e = Entity::new(EntityKind::IpAddress, ip, 0.50, scan_id);
+            e.tag(tags::BREACH);
+            e.tag("oathnet-enriched");
+            e.add_evidence(Evidence::new(
+                "search_engines:oathnet",
+                format!("Breach IP linked to {lookup_value}"),
+            ));
+            new_ents.push(e);
+        }
+    }
+    result.extend(new_ents);
+}
 
 // ─── Query generation ───────────────────────────────────────────────────────
 
