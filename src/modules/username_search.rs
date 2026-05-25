@@ -997,6 +997,589 @@ const SITES: &[Site] = &[
         200,
         "other"
     ),
+    // ══════════════════════════════════════════════════════════════════
+    // Sherlock project additions — every status_code site from
+    // sherlock_project/resources/data.json not already in the database.
+    // ══════════════════════════════════════════════════════════════════
+    // ── Social / People (Sherlock) ──────────────────────────────────
+    s!("9GAG", "https://www.9gag.com/u/{}", H, 200, "social"),
+    s!("AllMyLinks", "https://allmylinks.com/{}", H, 200, "social"),
+    s!("CashApp", "https://cash.app/${}", H, 200, "social"),
+    s!("Flipboard", "https://flipboard.com/@{}", H, 200, "social"),
+    s!("Ifunny", "https://ifunny.co/user/{}", H, 200, "social"),
+    s!("Minds", "https://www.minds.com/{}", H, 200, "social"),
+    s!("Plurk", "https://www.plurk.com/{}", H, 200, "social"),
+    s!("SpaceHey", "https://spacehey.com/{}", H, 200, "social"),
+    s!("Tellonym", "https://tellonym.me/{}", H, 200, "social"),
+    s!("Vero", "https://vero.co/{}", H, 200, "social"),
+    s!("YouNow", "https://www.younow.com/{}", H, 200, "social"),
+    s!(
+        "Couchsurfing",
+        "https://www.couchsurfing.com/people/{}",
+        H,
+        200,
+        "social"
+    ),
+    s!("Mastodon.xyz", "https://mastodon.xyz/@{}", H, 200, "social"),
+    s!(
+        "Mastodon.cloud",
+        "https://mastodon.cloud/@{}",
+        H,
+        200,
+        "social"
+    ),
+    s!("Pixelfed", "https://pixelfed.social/{}", H, 200, "social"),
+    // ── Dev / Tech (Sherlock) ──────────────────────────────────────
+    s!("Asciinema", "https://asciinema.org/~{}", H, 200, "dev"),
+    s!("AtCoder", "https://atcoder.jp/users/{}", H, 200, "dev"),
+    s!(
+        "Codechef",
+        "https://www.codechef.com/users/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "Codeforces",
+        "https://codeforces.com/profile/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!("CodePen", "https://codepen.io/{}", H, 200, "dev"),
+    s!("Credly", "https://www.credly.com/users/{}", H, 200, "dev"),
+    s!("Crowdin", "https://crowdin.com/profile/{}", H, 200, "dev"),
+    s!(
+        "Freecodecamp",
+        "https://www.freecodecamp.org/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!("Gitea", "https://gitea.com/{}", H, 200, "dev"),
+    s!("Gitee", "https://gitee.com/{}", H, 200, "dev"),
+    s!(
+        "HackTheBox",
+        "https://app.hackthebox.com/users/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "HackerEarth",
+        "https://www.hackerearth.com/@{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!("Hackaday", "https://hackaday.io/{}", H, 200, "dev"),
+    s!("Hackster", "https://www.hackster.io/{}", H, 200, "dev"),
+    s!(
+        "Monkeytype",
+        "https://monkeytype.com/profile/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "PentesterLab",
+        "https://pentesterlab.com/profile/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "Topcoder",
+        "https://www.topcoder.com/members/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "TryHackMe",
+        "https://tryhackme.com/p/{}",
+        NOT,
+        200,
+        "has not earned any badges yet",
+        "dev"
+    ),
+    s!(
+        "Opensource",
+        "https://opensource.com/users/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "N8N Community",
+        "https://community.n8n.io/u/{}",
+        H,
+        200,
+        "dev"
+    ),
+    // ── Gaming (Sherlock) ──────────────────────────────────────────
+    s!(
+        "BoardGameGeek",
+        "https://boardgamegeek.com/user/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!(
+        "FortniteTracker",
+        "https://fortnitetracker.com/profile/all/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!(
+        "GameFAQs",
+        "https://gamefaqs.gamespot.com/community/{}/boards",
+        H,
+        200,
+        "gaming"
+    ),
+    s!(
+        "Gamespot",
+        "https://www.gamespot.com/profile/{}/",
+        H,
+        200,
+        "gaming"
+    ),
+    s!(
+        "Giant Bomb",
+        "https://www.giantbomb.com/profile/{}/",
+        H,
+        200,
+        "gaming"
+    ),
+    s!(
+        "Kongregate",
+        "https://www.kongregate.com/accounts/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!("Newgrounds", "https://{}.newgrounds.com", H, 200, "gaming"),
+    s!(
+        "NintendoLife",
+        "https://www.nintendolife.com/users/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!(
+        "Pokemon Showdown",
+        "https://pokemonshowdown.com/users/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!(
+        "Sporcle",
+        "https://www.sporcle.com/user/{}/",
+        H,
+        200,
+        "gaming"
+    ),
+    s!("Untappd", "https://untappd.com/user/{}", H, 200, "gaming"),
+    s!(
+        "Xbox Gamertag",
+        "https://www.xboxgamertag.com/search/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    s!(
+        "Playstrategy",
+        "https://playstrategy.org/@/{}",
+        H,
+        200,
+        "gaming"
+    ),
+    // ── Music / Media (Sherlock) ───────────────────────────────────
+    s!(
+        "Discogs",
+        "https://www.discogs.com/user/{}",
+        H,
+        200,
+        "music"
+    ),
+    s!(
+        "Freesound",
+        "https://freesound.org/people/{}/",
+        H,
+        200,
+        "music"
+    ),
+    s!(
+        "MuseScore",
+        "https://musescore.com/user/{}",
+        H,
+        200,
+        "music"
+    ),
+    s!("Splice", "https://splice.com/{}", H, 200, "music"),
+    s!(
+        "Ultimate-Guitar",
+        "https://www.ultimate-guitar.com/u/{}",
+        H,
+        200,
+        "music"
+    ),
+    s!(
+        "Rate Your Music",
+        "https://rateyourmusic.com/~{}",
+        H,
+        200,
+        "music"
+    ),
+    s!("TRAKTRAIN", "https://traktrain.com/{}", H, 200, "music"),
+    // ── Photo / Art (Sherlock) ─────────────────────────────────────
+    s!("Blipfoto", "https://www.blipfoto.com/{}", H, 200, "photo"),
+    s!(
+        "ColourLovers",
+        "https://www.colourlovers.com/lover/{}",
+        H,
+        200,
+        "photo"
+    ),
+    s!("EyeEm", "https://www.eyeem.com/u/{}", H, 200, "photo"),
+    s!("LottieFiles", "https://lottiefiles.com/{}", H, 200, "photo"),
+    s!(
+        "MyMiniFactory",
+        "https://www.myminifactory.com/users/{}",
+        H,
+        200,
+        "photo"
+    ),
+    s!(
+        "OpenGameArt",
+        "https://opengameart.org/users/{}",
+        H,
+        200,
+        "photo"
+    ),
+    s!(
+        "Redbubble",
+        "https://www.redbubble.com/people/{}/shop",
+        H,
+        200,
+        "photo"
+    ),
+    s!("Sketchfab", "https://sketchfab.com/{}", H, 200, "photo"),
+    s!(
+        "YouPic",
+        "https://youpic.com/photographer/{}/",
+        H,
+        200,
+        "photo"
+    ),
+    s!(
+        "Cults3D",
+        "https://cults3d.com/en/users/{}/3d-models",
+        H,
+        200,
+        "photo"
+    ),
+    // ── Professional (Sherlock) ────────────────────────────────────
+    s!("Carrd", "https://{}.carrd.co", H, 200, "business"),
+    s!("Houzz", "https://www.houzz.com/user/{}", H, 200, "business"),
+    s!("HubPages", "https://hubpages.com/@{}", H, 200, "business"),
+    s!(
+        "SpeakerDeck",
+        "https://speakerdeck.com/{}",
+        H,
+        200,
+        "business"
+    ),
+    s!(
+        "Strava",
+        "https://www.strava.com/athletes/{}",
+        H,
+        200,
+        "business"
+    ),
+    s!(
+        "TradingView",
+        "https://www.tradingview.com/u/{}/",
+        H,
+        200,
+        "business"
+    ),
+    s!("Topmate", "https://topmate.io/{}", H, 200, "business"),
+    s!(
+        "BiggerPockets",
+        "https://www.biggerpockets.com/users/{}",
+        H,
+        200,
+        "business"
+    ),
+    s!(
+        "Fameswap",
+        "https://fameswap.com/user/{}",
+        H,
+        200,
+        "business"
+    ),
+    // ── Education (Sherlock) ───────────────────────────────────────
+    s!(
+        "Codecademy",
+        "https://www.codecademy.com/profiles/{}",
+        H,
+        200,
+        "education"
+    ),
+    s!(
+        "GeeksforGeeks",
+        "https://auth.geeksforgeeks.org/user/{}/",
+        H,
+        200,
+        "education"
+    ),
+    s!(
+        "Memrise",
+        "https://www.memrise.com/user/{}/",
+        H,
+        200,
+        "education"
+    ),
+    s!(
+        "NitroType",
+        "https://www.nitrotype.com/racer/{}",
+        H,
+        200,
+        "education"
+    ),
+    s!(
+        "Clozemaster",
+        "https://www.clozemaster.com/players/{}",
+        H,
+        200,
+        "education"
+    ),
+    // ── Regional (Sherlock) ────────────────────────────────────────
+    s!(
+        "Habr (RU)",
+        "https://habr.com/ru/users/{}/",
+        H,
+        200,
+        "forum"
+    ),
+    s!("Pikabu (RU)", "https://pikabu.ru/@{}", H, 200, "forum"),
+    s!(
+        "Drive2 (RU)",
+        "https://www.drive2.ru/users/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Wykop (PL)",
+        "https://www.wykop.pl/ludzie/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Nairaland (NG)",
+        "https://www.nairaland.com/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!("Aparat (IR)", "https://www.aparat.com/{}", H, 200, "video"),
+    s!(
+        "SportsRU",
+        "https://www.sports.ru/profile/{}/",
+        H,
+        200,
+        "forum"
+    ),
+    // ── Forum / Community (Sherlock) ───────────────────────────────
+    s!(
+        "Ask Fedora",
+        "https://discussion.fedoraproject.org/u/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Caddy Community",
+        "https://caddy.community/u/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Ionic Forum",
+        "https://forum.ionicframework.com/u/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Joplin Forum",
+        "https://discourse.joplinapp.org/u/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Nextcloud Forum",
+        "https://help.nextcloud.com/u/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Envato Forum",
+        "https://forums.envato.com/u/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Nothing Forum",
+        "https://nothing.community/u/{}",
+        H,
+        200,
+        "forum"
+    ),
+    s!(
+        "Warrior Forum",
+        "https://www.warriorforum.com/members/{}.html",
+        H,
+        200,
+        "forum"
+    ),
+    // ── Video / Streaming (Sherlock) ───────────────────────────────
+    s!(
+        "Twitch Tracker",
+        "https://twitchtracker.com/{}",
+        H,
+        200,
+        "video"
+    ),
+    s!(
+        "Flightradar24",
+        "https://www.flightradar24.com/{}",
+        H,
+        200,
+        "other"
+    ),
+    // ── Fitness / Sports ───────────────────────────────────────────
+    s!(
+        "Geocaching",
+        "https://www.geocaching.com/p/default.aspx?u={}",
+        H,
+        200,
+        "travel"
+    ),
+    // ── Messaging (Sherlock) ───────────────────────────────────────
+    s!("Kik", "https://ws2.kik.com/user/{}", H, 200, "messaging"),
+    // ── Shopping / Marketplace (Sherlock) ──────────────────────────
+    s!(
+        "Pinkbike",
+        "https://www.pinkbike.com/u/{}/",
+        H,
+        200,
+        "other"
+    ),
+    s!(
+        "Audiojungle",
+        "https://audiojungle.net/user/{}",
+        H,
+        200,
+        "other"
+    ),
+    // ── Crypto (Sherlock) ──────────────────────────────────────────
+    s!(
+        "CryptoHack",
+        "https://cryptohack.org/user/{}",
+        H,
+        200,
+        "crypto"
+    ),
+    s!(
+        "Coinvote",
+        "https://coinvote.cc/trader/{}",
+        H,
+        200,
+        "crypto"
+    ),
+    // ── News / Reading ─────────────────────────────────────────────
+    s!(
+        "Wordnik",
+        "https://www.wordnik.com/users/{}",
+        H,
+        200,
+        "media"
+    ),
+    s!(
+        "Instapaper",
+        "https://www.instapaper.com/p/{}",
+        H,
+        200,
+        "media"
+    ),
+    // ── Message-detection Sherlock sites (using body markers) ──────
+    s!(
+        "DeviantArt (alt)",
+        "https://www.deviantart.com/{}",
+        NOT,
+        200,
+        "DeviantArt: 404",
+        "photo"
+    ),
+    s!(
+        "BuyMeACoffee",
+        "https://buymeacoffee.com/{}",
+        NOT,
+        200,
+        "Oops! We couldn",
+        "crowdfunding"
+    ),
+    s!(
+        "HackerNews (alt)",
+        "https://news.ycombinator.com/user?id={}",
+        NOT,
+        200,
+        "No such user.",
+        "forum"
+    ),
+    s!(
+        "Minecraft",
+        "https://namemc.com/profile/{}",
+        NOT,
+        200,
+        "Profiles matching",
+        "gaming"
+    ),
+    s!(
+        "RuneScape",
+        "https://apps.runescape.com/runemetrics/profile/profile?user={}",
+        HAS,
+        200,
+        "\"name\"",
+        "gaming"
+    ),
+    s!(
+        "Star Citizen",
+        "https://robertsspaceindustries.com/citizens/{}",
+        NOT,
+        200,
+        "citizens/404",
+        "gaming"
+    ),
+    s!(
+        "Archive of Our Own",
+        "https://archiveofourown.org/users/{}",
+        NOT,
+        200,
+        "not be found",
+        "forum"
+    ),
 ];
 
 #[async_trait]
