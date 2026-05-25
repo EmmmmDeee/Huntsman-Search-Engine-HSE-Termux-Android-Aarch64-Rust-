@@ -100,8 +100,13 @@ impl Module for SearchEngines {
 
         let mut all_results: Vec<SearchResult> = Vec::new();
 
-        // ── Primary pass: run all queries against all engines ───────
-        for query in &queries {
+        // Track engines that failed on the first query so we skip them
+        // on subsequent queries — avoids burning the entire timeout
+        // budget on engines that are down/blocked for this session.
+        let mut dead_engines: HashSet<&str> = HashSet::new();
+
+        // ── Primary pass: run all queries against live engines ─────
+        for (qi, query) in queries.iter().enumerate() {
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -110,6 +115,9 @@ impl Module for SearchEngines {
                 if ctx.cancel.is_cancelled() {
                     break;
                 }
+                if qi > 0 && dead_engines.contains(engine.name) {
+                    continue;
+                }
                 let url = (engine.build_url)(query);
                 let post_body = engine.build_post.map(|f| f(query));
                 let before = all_results.len();
@@ -117,9 +125,9 @@ impl Module for SearchEngines {
                     fetch_and_parse(&url, engine, query, post_body.as_deref()).await
                 {
                     all_results.append(&mut results);
+                } else if qi == 0 {
+                    dead_engines.insert(engine.name);
                 }
-                // Only delay when the fetch actually returned data
-                // (blocked engines fail fast and need no cooldown)
                 if all_results.len() > before {
                     tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS)).await;
                 }
@@ -373,6 +381,7 @@ fn build_queries(target: &Target) -> Vec<String> {
                     "{local} site:soundcloud.com OR site:instagram.com \
                      OR site:youtube.com OR site:tiktok.com"
                 ));
+                q.push(format!("\"{local}\" address OR location OR city"));
             }
             q
         }
@@ -380,6 +389,11 @@ fn build_queries(target: &Target) -> Vec<String> {
             format!("\"{v}\" site:github.com OR site:linkedin.com OR site:facebook.com"),
             format!("\"{v}\" site:twitter.com OR site:reddit.com OR site:instagram.com"),
             format!("\"{v}\" profile OR account OR about"),
+            format!("\"{v}\" email OR contact OR address"),
+            format!(
+                "\"{v}\" site:peekyou.com OR site:nuwber.com \
+                 OR site:spokeo.com OR site:pipl.com"
+            ),
         ],
         TargetKind::FullName => {
             let parts: Vec<&str> = v.split_whitespace().collect();
@@ -450,10 +464,12 @@ fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<Str
             if lower.len() >= 3
                 && lower != target_lower
                 && !is_navigation_path(&lower)
-                && username_relevant_to_target(&lower, &terms)
                 && seen.insert(lower.clone())
             {
-                pivots.push(format!("\"{username}\""));
+                let (score, _) = score_username(&lower, &extract_host(&r.url), &terms, r);
+                if score >= 3 {
+                    pivots.push(format!("\"{username}\""));
+                }
             }
         }
     }
@@ -973,6 +989,7 @@ fn is_navigation_path(s: &str) -> bool {
         "jobs",
         "legal",
         "live",
+        "log-in",
         "marketplace",
         "media",
         "messenger",
@@ -1063,21 +1080,78 @@ fn url_matches_target(url: &str, terms: &[String]) -> bool {
         .any(|w| path.contains(w.as_str()))
 }
 
-/// Check whether a discovered username shares at least one meaningful
-/// term with the target. Prevents emitting unrelated social profiles
-/// that just happened to appear in search results.
-fn username_relevant_to_target(username: &str, terms: &[String]) -> bool {
+/// Score how strongly a discovered username is connected to the target.
+/// Uses multiple independent signals — a username that shares no terms
+/// with the seed can still be validated through co-occurrence, people-
+/// search provenance, or search-engine contextual linking.
+///
+/// Returns (score, confidence):
+///   score ≥ 3 → strong: 0.55 confidence (PROBABLE tier)
+///   score 1-2 → weak:   0.30 confidence (CANDIDATE tier)
+///   score 0   → drop:   not emitted
+fn score_username(
+    username: &str,
+    host: &str,
+    terms: &[String],
+    result: &SearchResult,
+) -> (u8, f64) {
+    let mut score: u8 = 0;
+
+    // Signal 1: direct term overlap (strongest)
     let parts: Vec<String> = username
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() >= 3)
         .map(String::from)
         .collect();
-    terms.iter().any(|t| {
+    if terms.iter().any(|t| {
         parts
             .iter()
             .any(|p| p == t || p.contains(t.as_str()) || t.contains(p.as_str()))
-    })
+    }) {
+        score += 3;
+    }
+
+    // Signal 2: people-search provenance — the site specialises in
+    // linking identities, so any username it connects to the target
+    // has high implicit credibility
+    let people_search = [
+        "peekyou.com",
+        "spokeo.com",
+        "nuwber.com",
+        "whitepages.com",
+        "thatsthem.com",
+    ];
+    if people_search.iter().any(|ps| host.ends_with(ps)) {
+        score += 3;
+    }
+
+    // Signal 3: co-occurrence — a target term (≥4 chars) appears
+    // in the same snippet/title as this username, meaning the search
+    // engine's result page explicitly associates both
+    let text = format!("{} {}", result.title, result.snippet).to_lowercase();
+    if terms
+        .iter()
+        .filter(|t| t.len() >= 4)
+        .any(|t| text.contains(t.as_str()))
+    {
+        score += 2;
+    }
+
+    // Signal 4: platform-targeted query — the query used site:
+    // for this exact platform, meaning the engine specifically
+    // matched the target to this profile on this platform
+    let ql = result.query.to_lowercase();
+    let host_base = host
+        .trim_start_matches("www.")
+        .trim_start_matches("m.")
+        .trim_start_matches("mobile.");
+    if ql.contains(&format!("site:{host_base}")) {
+        score += 1;
+    }
+
+    let confidence = if score >= 3 { 0.55 } else { 0.30 };
+    (score, confidence)
 }
 
 fn canonicalize_url(url: &str) -> String {
@@ -1351,14 +1425,19 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             if is_social
                 && lower_user.len() >= 3
                 && !is_navigation_path(&lower_user)
-                && username_relevant_to_target(&lower_user, &terms)
                 && seen_domains.insert(format!("@username:{lower_user}"))
             {
-                let mut e = Entity::new(EntityKind::Username, &lower_user, 0.55, scan_id);
-                e.tag("search-discovered");
-                e.tag("social-profile");
-                e.add_evidence(build_search_evidence(r));
-                result.push(e);
+                let (score, confidence) = score_username(&lower_user, &host, &terms, r);
+                if score >= 1 {
+                    let mut e = Entity::new(EntityKind::Username, &lower_user, confidence, scan_id);
+                    e.tag("search-discovered");
+                    e.tag("social-profile");
+                    if score < 3 {
+                        e.tag("candidate");
+                    }
+                    e.add_evidence(build_search_evidence(r));
+                    result.push(e);
+                }
             }
 
             // People-search sites encode real names in paths:
@@ -1699,10 +1778,12 @@ mod tests {
     fn build_queries_username_covers_social_platforms() {
         let t = Target::new(TargetKind::Username, "johndoe");
         let q = build_queries(&t);
-        assert_eq!(q.len(), 3);
+        assert_eq!(q.len(), 5);
         assert!(q[0].contains("github.com") && q[0].contains("linkedin.com"));
         assert!(q[1].contains("twitter.com") && q[1].contains("reddit.com"));
         assert!(q[2].contains("profile"));
+        assert!(q[3].contains("email") || q[3].contains("contact"));
+        assert!(q[4].contains("peekyou.com") || q[4].contains("nuwber.com"));
     }
 
     #[test]
@@ -2029,15 +2110,67 @@ mod tests {
     }
 
     #[test]
-    fn username_relevance_filtering() {
+    fn username_scoring_term_overlap() {
         let terms = vec!["jerome".into(), "despal".into()];
-        assert!(username_relevant_to_target("jerome-despal", &terms));
-        assert!(username_relevant_to_target("jerome_despal", &terms));
-        assert!(username_relevant_to_target("despal", &terms));
-        assert!(username_relevant_to_target("jeromepolin", &terms));
-        assert!(!username_relevant_to_target("web.mc", &terms));
-        assert!(!username_relevant_to_target("grilme99", &terms));
-        assert!(!username_relevant_to_target("jenellelevans", &terms));
+        let r = SearchResult {
+            url: "https://soundcloud.com/jerome-despal".into(),
+            title: String::new(),
+            snippet: String::new(),
+            engine: "yahoo",
+            query: "\"Jerome Despal\"".into(),
+        };
+        let (score, conf) = score_username("jerome-despal", "soundcloud.com", &terms, &r);
+        assert!(score >= 3);
+        assert!((conf - 0.55).abs() < 0.01);
+    }
+
+    #[test]
+    fn username_scoring_no_overlap_with_site_query() {
+        let terms = vec!["jdespal".into()];
+        let r = SearchResult {
+            url: "https://soundcloud.com/jaydes/tracks".into(),
+            title: String::new(),
+            snippet: String::new(),
+            engine: "yahoo",
+            query: "Jdespal site:soundcloud.com OR site:instagram.com".into(),
+        };
+        let (score, conf) = score_username("jaydes", "soundcloud.com", &terms, &r);
+        assert!(
+            score >= 1,
+            "site: query should give score >= 1, got {score}"
+        );
+        assert!((conf - 0.30).abs() < 0.01);
+    }
+
+    #[test]
+    fn username_scoring_cooccurrence() {
+        let terms = vec!["jdespal".into()];
+        let r = SearchResult {
+            url: "https://soundcloud.com/jaydes/tracks".into(),
+            title: "Jdespal's favorite tracks".into(),
+            snippet: String::new(),
+            engine: "yahoo",
+            query: "\"Jdespal\"".into(),
+        };
+        let (score, _) = score_username("jaydes", "soundcloud.com", &terms, &r);
+        assert!(score >= 2, "co-occurrence should boost score, got {score}");
+    }
+
+    #[test]
+    fn username_scoring_people_search() {
+        let terms = vec!["shinigami".into(), "jerome".into()];
+        let r = SearchResult {
+            url: "https://www.peekyou.com/jerome_despal".into(),
+            title: String::new(),
+            snippet: String::new(),
+            engine: "bing",
+            query: "\"shinigami_jerome\"".into(),
+        };
+        let (score, _) = score_username("jerome_despal", "www.peekyou.com", &terms, &r);
+        assert!(
+            score >= 3,
+            "people-search provenance should give high score, got {score}"
+        );
     }
 
     #[test]
