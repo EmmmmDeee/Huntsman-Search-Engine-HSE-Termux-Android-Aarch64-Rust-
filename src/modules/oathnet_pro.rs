@@ -250,37 +250,44 @@ fn extract_breach_entities(
         }
     }
 
-    // Phone and Person: only from rows that match the target
-    if is_target_row
-        && let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
+    // Phone/Person/IP: full confidence for target-matching rows,
+    // CANDIDATE confidence for non-matching rows (preserved for
+    // investigation — never silently discarded).
+    let conf = |base: f64| -> f64 { if is_target_row { base } else { 0.25 } };
+
+    if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
         && ph.len() >= 7
         && seen.insert(ph.to_lowercase())
     {
-        let mut e = Entity::new(EntityKind::Phone, &ph, 0.70, scan_id);
+        let mut e = Entity::new(EntityKind::Phone, &ph, conf(0.70), scan_id);
         e.tag(tags::BREACH);
         e.tag("oathnet-pro");
+        if !is_target_row {
+            e.tag("candidate");
+        }
         e.add_evidence(ev.clone());
         result.push(e);
     }
 
-    if is_target_row && let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
+    if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
         let t = n.trim();
         if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
-            let mut e = Entity::new(EntityKind::Person, t, 0.70, scan_id);
+            let mut e = Entity::new(EntityKind::Person, t, conf(0.70), scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-pro");
+            if !is_target_row {
+                e.tag("candidate");
+            }
             e.add_evidence(ev.clone());
             result.push(e);
         }
     }
 
-    // IP/country/address: only from rows matching the target
-    if is_target_row
-        && let Some(ip) = val_str(item, "ip")
+    if let Some(ip) = val_str(item, "ip")
         && ip.len() >= 7
         && seen.insert(ip.clone())
     {
-        let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id);
+        let mut e = Entity::new(EntityKind::IpAddress, &ip, conf(0.60), scan_id);
         e.tag(tags::BREACH);
         e.tag("oathnet-pro");
         e.tag("geolocation-lead");
@@ -288,13 +295,15 @@ fn extract_breach_entities(
         result.push(e);
     }
 
-    if is_target_row
-        && let Some(country) = val_str(item, "country")
+    if let Some(country) = val_str(item, "country")
         && seen.insert(format!("@country:{country}"))
     {
-        let mut e = Entity::new(EntityKind::Address, &country, 0.55, scan_id);
+        let mut e = Entity::new(EntityKind::Address, &country, conf(0.55), scan_id);
         e.tag(tags::BREACH);
         e.tag("oathnet-pro");
+        if !is_target_row {
+            e.tag("candidate");
+        }
         e.add_evidence(ev.clone());
         result.push(e);
     }
