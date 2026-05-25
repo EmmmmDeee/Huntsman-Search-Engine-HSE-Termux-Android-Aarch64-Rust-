@@ -1,8 +1,3 @@
-//! OathNet Pro — full-spectrum breach, stealer, OSINT, and intelligence API.
-//!
-//! Uses the shared `util::oathnet` client for API calls. This module
-//! orchestrates the search→extract→enrich pipeline and produces entities.
-
 use std::collections::HashSet;
 
 use async_trait::async_trait;
@@ -68,7 +63,6 @@ impl Module for OathnetPro {
             _ => return Ok(result),
         };
 
-        // ── Breach search ───────────────────────────────────────────
         let items = oathnet::search(key, paths::BREACH, field, &target.value, 50).await?;
         if items.is_empty() {
             return Ok(result);
@@ -111,7 +105,6 @@ impl Module for OathnetPro {
             extract_breach_entities(item, &target.value, &ctx.scan_id, &mut seen, &mut result);
         }
 
-        // ── Stealer search ──────────────────────────────────────────
         if !ctx.cancel.is_cancelled()
             && let Ok(stealer_items) =
                 oathnet::search(key, paths::STEALER, field, &target.value, 50).await
@@ -121,7 +114,6 @@ impl Module for OathnetPro {
             }
         }
 
-        // ── Holehe (email targets) ──────────────────────────────────
         if target.kind == TargetKind::Email
             && !ctx.cancel.is_cancelled()
             && let Ok(holehe) = oathnet::osint(key, paths::HOLEHE, "email", &target.value).await
@@ -129,7 +121,6 @@ impl Module for OathnetPro {
             extract_holehe(holehe, &target.value, &ctx.scan_id, &mut result);
         }
 
-        // ── IP info for discovered IPs ──────────────────────────────
         if !ctx.cancel.is_cancelled() {
             let ips: Vec<String> = result
                 .entities
@@ -150,8 +141,6 @@ impl Module for OathnetPro {
         Ok(result)
     }
 }
-
-// ─── Entity extraction ─────────────────────────────────────────────────────
 
 fn breach_evidence(item: &Value) -> Evidence {
     let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
@@ -206,10 +195,6 @@ fn extract_breach_entities(
 ) {
     let ev = breach_evidence(item);
 
-    // Only emit entities from records that match the target lookup.
-    // Breach databases contain millions of records — a phone/IP search
-    // returns rows for many different people. We only want entities
-    // from rows where the email/username/phone matches our target.
     let target_lower = target_value.to_lowercase();
     let target_terms: Vec<&str> = target_lower
         .split(|c: char| !c.is_alphanumeric())
@@ -250,9 +235,6 @@ fn extract_breach_entities(
         }
     }
 
-    // Phone/Person/IP: full confidence for target-matching rows,
-    // CANDIDATE confidence for non-matching rows (preserved for
-    // investigation — never silently discarded).
     let conf = |base: f64| -> f64 { if is_target_row { base } else { 0.25 } };
 
     if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
@@ -262,9 +244,7 @@ fn extract_breach_entities(
         let mut e = Entity::new(EntityKind::Phone, &ph, conf(0.70), scan_id);
         e.tag(tags::BREACH);
         e.tag("oathnet-pro");
-        if !is_target_row {
-            e.tag("candidate");
-        }
+        e.tag_if(!is_target_row, "candidate");
         e.add_evidence(ev.clone());
         result.push(e);
     }
@@ -275,9 +255,7 @@ fn extract_breach_entities(
             let mut e = Entity::new(EntityKind::Person, t, conf(0.70), scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-pro");
-            if !is_target_row {
-                e.tag("candidate");
-            }
+            e.tag_if(!is_target_row, "candidate");
             e.add_evidence(ev.clone());
             result.push(e);
         }
@@ -301,9 +279,7 @@ fn extract_breach_entities(
         let mut e = Entity::new(EntityKind::Address, &country, conf(0.55), scan_id);
         e.tag(tags::BREACH);
         e.tag("oathnet-pro");
-        if !is_target_row {
-            e.tag("candidate");
-        }
+        e.tag_if(!is_target_row, "candidate");
         e.add_evidence(ev.clone());
         result.push(e);
     }
@@ -361,20 +337,12 @@ fn extract_stealer_entities(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    let mut ev = Evidence::new("oathnet_pro", "Stealer log entry".to_string())
-        .with_attr("source", "stealer");
-    if let Some(url) = val_str(item, "url_str") {
-        ev = ev.with_attr("url", &url);
-    }
-    if let Some(lid) = val_str(item, "log_id") {
-        ev = ev.with_attr("log_id", &lid);
-    }
-    if let Some(pw) = val_str(item, "password") {
-        ev = ev.with_attr("password", &pw);
-    }
-    if let Some(uname) = val_str(item, "username") {
-        ev = ev.with_attr("username", &uname);
-    }
+    let ev = Evidence::new("oathnet_pro", "Stealer log entry".to_string())
+        .with_attr("source", "stealer")
+        .with_opt_attr("url", val_str(item, "url_str"))
+        .with_opt_attr("log_id", val_str(item, "log_id"))
+        .with_opt_attr("password", val_str(item, "password"))
+        .with_opt_attr("username", val_str(item, "username"));
 
     if let Some(emails) = item.get("email").and_then(|v| v.as_array()) {
         for email_val in emails {

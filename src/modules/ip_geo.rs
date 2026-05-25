@@ -1,8 +1,3 @@
-//! ip-api.com IP geolocation. Free tier (HTTP only), 45 req/min limit.
-//!
-//! Yields a Coordinates entity (when lat/lon present) and an Organisation
-//! entity (when org/ASN present).
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -60,16 +55,11 @@ impl Module for IpGeo {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // ip-api.com free tier is HTTP only — HTTPS requires paid plan.
         let url = format!(
             "http://ip-api.com/json/{}?fields=status,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,mobile,proxy,hosting",
             target.value
         );
 
-        // ip-api.com free tier rate-limits at 45 req/min and returns
-        // HTTP 429 with a JSON body when exceeded. `fetch_json` surfaces
-        // the body as a `module_error`, keeping rate-limit conditions
-        // visible (previous silent-empty behaviour hid them).
         let data: IpApiResp = fetch_json(&ctx.http, "ip_geo", &url).await?;
 
         if data.status != "success" {
@@ -85,61 +75,37 @@ impl Module for IpGeo {
             if let Some(cc) = data.country_code.as_deref() {
                 e.tag(format!("country:{}", cc.to_uppercase()));
             }
-            if data.proxy == Some(true) {
-                e.tag("proxy");
-            }
-            if data.hosting == Some(true) {
-                e.tag("hosting");
-            }
-            if data.mobile == Some(true) {
-                e.tag("mobile");
-            }
-            let mut ev = Evidence::new("ip_geo", format!("IP geolocation for {}", target.value))
-                .with_attr("country", data.country.as_deref().unwrap_or("-"))
-                .with_attr("region", data.region_name.as_deref().unwrap_or("-"))
-                .with_attr("city", data.city.as_deref().unwrap_or("-"))
-                .with_attr("latitude", lat.to_string())
-                .with_attr("longitude", lon.to_string())
-                .with_attr("source", "ip-api.com");
-            if let Some(cc) = data.country_code.as_deref() {
-                ev = ev.with_attr("country_code", cc);
-            }
-            if let Some(z) = data.zip.as_deref() {
-                ev = ev.with_attr("zip", z);
-            }
-            if let Some(tz) = data.timezone.as_deref() {
-                ev = ev.with_attr("timezone", tz);
-            }
-            if let Some(isp) = data.isp.as_deref() {
-                ev = ev.with_attr("isp", isp);
-            }
-            if let Some(asn) = data.asn.as_deref() {
-                ev = ev.with_attr("asn", asn);
-            }
-            if let Some(v) = data.proxy {
-                ev = ev.with_attr("is_proxy", v.to_string());
-            }
-            if let Some(v) = data.hosting {
-                ev = ev.with_attr("is_hosting", v.to_string());
-            }
-            if let Some(v) = data.mobile {
-                ev = ev.with_attr("is_mobile", v.to_string());
-            }
-            e.add_evidence(ev);
+            e.tag_opt(data.proxy, "proxy");
+            e.tag_opt(data.hosting, "hosting");
+            e.tag_opt(data.mobile, "mobile");
+            e.add_evidence(
+                Evidence::new("ip_geo", format!("IP geolocation for {}", target.value))
+                    .with_attr("country", data.country.as_deref().unwrap_or("-"))
+                    .with_attr("region", data.region_name.as_deref().unwrap_or("-"))
+                    .with_attr("city", data.city.as_deref().unwrap_or("-"))
+                    .with_attr("latitude", lat.to_string())
+                    .with_attr("longitude", lon.to_string())
+                    .with_attr("source", "ip-api.com")
+                    .with_opt_attr("country_code", data.country_code.as_deref())
+                    .with_opt_attr("zip", data.zip.as_deref())
+                    .with_opt_attr("timezone", data.timezone.as_deref())
+                    .with_opt_attr("isp", data.isp.as_deref())
+                    .with_opt_attr("asn", data.asn.as_deref())
+                    .with_opt_attr("is_proxy", data.proxy.map(|v| v.to_string()))
+                    .with_opt_attr("is_hosting", data.hosting.map(|v| v.to_string()))
+                    .with_opt_attr("is_mobile", data.mobile.map(|v| v.to_string())),
+            );
             result.push(e);
         }
 
         if let Some(org) = &data.org {
             let mut e = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
-            let mut ev = Evidence::new("ip_geo", format!("IP org for {}", target.value))
-                .with_attr("asn", data.asn.as_deref().unwrap_or("-"));
-            if let Some(isp) = data.isp.as_deref() {
-                ev = ev.with_attr("isp", isp);
-            }
-            if let Some(cc) = data.country_code.as_deref() {
-                ev = ev.with_attr("country_code", cc);
-            }
-            e.add_evidence(ev);
+            e.add_evidence(
+                Evidence::new("ip_geo", format!("IP org for {}", target.value))
+                    .with_attr("asn", data.asn.as_deref().unwrap_or("-"))
+                    .with_opt_attr("isp", data.isp.as_deref())
+                    .with_opt_attr("country_code", data.country_code.as_deref()),
+            );
             result.push(e);
         }
 

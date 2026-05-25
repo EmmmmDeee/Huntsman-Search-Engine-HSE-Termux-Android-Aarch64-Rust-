@@ -1,18 +1,8 @@
-//! Live proxy harvester and validator.
-//!
-//! Discovers free HTTP/SOCKS proxies from public sources, validates
-//! them against a test endpoint, and maintains a rotating pool. The
-//! pool is stored in memory and refreshed on demand.
-//!
-//! Compatible with Termux aarch64 — uses curl subprocess for all
-//! network calls (no native TLS dependencies).
-
 use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
 
-/// A validated proxy entry.
 #[derive(Debug, Clone)]
 pub struct Proxy {
     pub addr: String,
@@ -26,7 +16,6 @@ impl Proxy {
     }
 }
 
-/// Thread-safe proxy pool with round-robin selection.
 pub struct ProxyPool {
     proxies: Mutex<Vec<Proxy>>,
     index: Mutex<usize>,
@@ -68,11 +57,9 @@ impl ProxyPool {
     }
 }
 
-/// Harvest proxies from multiple free public sources.
 pub async fn harvest() -> Vec<String> {
     let mut raw: Vec<String> = Vec::new();
 
-    // Source 1: proxyscrape.com (text list, one per line)
     if let Some(body) = curl_get(
         "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=all",
     ).await {
@@ -84,7 +71,6 @@ pub async fn harvest() -> Vec<String> {
         }
     }
 
-    // Source 2: proxy-list.download (text list)
     if let Some(body) =
         curl_get("https://www.proxy-list.download/api/v1/get?type=https&anon=elite").await
     {
@@ -96,7 +82,6 @@ pub async fn harvest() -> Vec<String> {
         }
     }
 
-    // Source 3: geonode (JSON)
     if let Some(body) = curl_get(
         "https://proxylist.geonode.com/api/proxy-list?limit=50&page=1&sort_by=lastChecked&sort_type=desc&protocols=http%2Chttps",
     ).await
@@ -117,8 +102,6 @@ pub async fn harvest() -> Vec<String> {
     raw
 }
 
-/// Validate a proxy by making a test request through it.
-/// Returns the proxy with latency if valid, None if dead.
 pub async fn validate(addr: &str) -> Option<Proxy> {
     let start = std::time::Instant::now();
     let proxy_url = format!("http://{addr}");
@@ -158,8 +141,6 @@ pub async fn validate(addr: &str) -> Option<Proxy> {
     }
 }
 
-/// Harvest and validate proxies, returning only live ones.
-/// Validates up to `max_validate` candidates in parallel.
 pub async fn refresh_pool(pool: &Arc<ProxyPool>, max_validate: usize) {
     let candidates = harvest().await;
     if candidates.is_empty() {

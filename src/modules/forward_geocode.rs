@@ -1,9 +1,3 @@
-//! Forward geocoding — Address → Coordinates via OSM Nominatim.
-//!
-//! Free, no API key. Same endpoint as reverse_geocode but in the
-//! opposite direction: takes a text address and returns lat/lon.
-//! Rate-limited to 1 req/s by Nominatim's usage policy.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -88,18 +82,14 @@ impl Module for ForwardGeocode {
             let coords = format!("{lat:.6},{lon:.6}");
             let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.60, &ctx.scan_id);
             e.tag("geocoded");
-            let mut ev =
+            e.add_evidence(
                 Evidence::new("forward_geocode", format!("Geocoded \"{addr}\" → {coords}"))
                     .with_attr("input_address", addr)
                     .with_attr("latitude", lat_str)
-                    .with_attr("longitude", lon_str);
-            if let Some(dn) = &first.display_name {
-                ev = ev.with_attr("display_name", dn);
-            }
-            if let Some(pt) = &first.place_type {
-                ev = ev.with_attr("place_type", pt);
-            }
-            e.add_evidence(ev);
+                    .with_attr("longitude", lon_str)
+                    .with_opt_attr("display_name", first.display_name.as_deref())
+                    .with_opt_attr("place_type", first.place_type.as_deref()),
+            );
             result.push(e);
         }
 

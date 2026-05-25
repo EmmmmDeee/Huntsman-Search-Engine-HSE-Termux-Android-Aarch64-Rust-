@@ -1,20 +1,3 @@
-//! abuse.ch ThreatFox — IOC reputation. Key-gated.
-//!
-//! Endpoint: `POST https://threatfox-api.abuse.ch/api/v1/`
-//! Auth:     HTTP header `Auth-Key: <HUNTSMAN_THREATFOX_KEY>`.
-//! Body:     `{"query":"search_ioc","search_term":"<value>","exact_match":true}`
-//!
-//! ThreatFox is abuse.ch's IOC sharing platform — every result here is
-//! hand-curated by malware analysts. As of 2024 abuse.ch requires a
-//! free Auth-Key on every request (see https://threatfox.abuse.ch/api).
-//! Without the key every request would 4xx; we treat the module as
-//! KeyGated and silently no-op when the env var is absent, matching
-//! the project's other key-gated modules.
-//!
-//! Per project invariants we surface aggregate counts, threat families
-//! and IOC types but never ingest the underlying malware sample hashes,
-//! credentials, or live C2 URLs.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
@@ -50,9 +33,6 @@ struct Ioc {
     first_seen: Option<String>,
     #[serde(default)]
     last_seen: Option<String>,
-    // ThreatFox attaches high-value contextual labels here
-    // (e.g. `Magecart`, `CobaltStrike`, `WSHRAT`). The field can
-    // be either a JSON array or `null` per the documented samples.
     #[serde(default)]
     tags: Option<Vec<String>>,
 }
@@ -70,7 +50,6 @@ impl Module for ThreatFox {
     }
 
     fn priority(&self) -> u8 {
-        // Same band as urlhaus — high-signal threat intel.
         109
     }
 
@@ -93,18 +72,12 @@ impl Module for ThreatFox {
             return Ok(ModuleResult::new());
         }
 
-        // `exact_match: true` — without it the API does a wildcard
-        // match that returns IOCs containing the search_term as a
-        // substring (e.g. searching for `1.2.3.4` would also return
-        // `1.2.3.40` records).
         let body = json!({
             "query": "search_ioc",
             "search_term": term,
             "exact_match": true,
         });
 
-        // ctx.http carries a 3 s default timeout (MODULE_TIMEOUT_MS);
-        // override per-request to match this module's declared 12 s.
         let resp = ctx
             .http
             .post("https://threatfox-api.abuse.ch/api/v1/")
@@ -126,11 +99,6 @@ impl Module for ThreatFox {
             .await
             .map_err(|e| Error::module("threatfox", e.to_string()))?;
 
-        // abuse.ch's anonymous tier returns HTTP 200 + `query_status:
-        // "rate_limited"` (or `illegal_search_term` etc.) instead of a
-        // non-success HTTP code. Surface these as module errors so the
-        // operator can distinguish them from genuine clean indicators
-        // (which return `query_status: "no_result"`).
         match parsed.query_status.as_str() {
             "ok" => {}
             "no_result" => return Ok(ModuleResult::new()),
@@ -182,7 +150,6 @@ impl Module for ThreatFox {
             if let Some(c) = ioc.confidence_level {
                 max_confidence = max_confidence.max(c);
             }
-            // Only allocate when we actually replace the running min/max.
             if let Some(f) = ioc.first_seen.as_deref()
                 && first_seen.as_deref().is_none_or(|e| f < e)
             {
@@ -217,19 +184,15 @@ impl Module for ThreatFox {
             );
         }
         if !ioc_tags.is_empty() {
-            // Cap at 16 so a noisy IOC doesn't blow up the evidence row.
             let tags_vec: Vec<String> = ioc_tags.into_iter().take(16).collect();
             ev = ev.with_attr("ioc_tags", tags_vec.join(","));
         }
         if max_confidence > 0 {
             ev = ev.with_attr("max_confidence", max_confidence.to_string());
         }
-        if let Some(f) = first_seen {
-            ev = ev.with_attr("first_seen", f);
-        }
-        if let Some(l) = last_seen {
-            ev = ev.with_attr("last_seen", l);
-        }
+        ev = ev
+            .with_opt_attr("first_seen", first_seen)
+            .with_opt_attr("last_seen", last_seen);
         entity.add_evidence(ev);
 
         let mut result = ModuleResult::new();

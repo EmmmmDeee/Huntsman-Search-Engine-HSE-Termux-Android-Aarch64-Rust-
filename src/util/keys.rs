@@ -1,9 +1,3 @@
-//! Loads and writes API keys from `$HOME/.huntsman.env`.
-//!
-//! Only variables prefixed `HUNTSMAN_` are exposed to modules.
-//! `write_keys` is opt-in (CLI `--allow-key-write` + loopback-only) and
-//! is the only path that mutates the env file; modules never call it.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::Write;
@@ -11,35 +5,25 @@ use std::path::{Path, PathBuf};
 
 use crate::core::error::{Error, Result};
 
-/// Names of HUNTSMAN_* keys recognised by current/planned modules. Drives
-/// the Settings UI so users see a populated grid before they've configured
-/// anything. Matches the template comments in `install.sh`.
 pub const KNOWN_KEYS: &[&str] = &[
-    // Identity / breach
     "HUNTSMAN_OATHNET_KEY",
     "HUNTSMAN_HIBP_KEY",
     "HUNTSMAN_DEHASHED_USER",
     "HUNTSMAN_DEHASHED_KEY",
     "HUNTSMAN_HUNTER_KEY",
     "HUNTSMAN_INTELX_KEY",
-    // Infrastructure / threat intel
     "HUNTSMAN_SHODAN_KEY",
     "HUNTSMAN_SECTRAILS_KEY",
     "HUNTSMAN_LEAKIX_KEY",
     "HUNTSMAN_CRIMINALIP_KEY",
     "HUNTSMAN_IPQS_KEY",
     "HUNTSMAN_VIRUSTOTAL_KEY",
-    // Validation / enrichment
     "HUNTSMAN_NUMVERIFY_KEY",
     "HUNTSMAN_WIGLE_USER",
     "HUNTSMAN_WIGLE_TOKEN",
     "HUNTSMAN_ABR_GUID",
 ];
 
-/// Resolve the keys env-file path.
-///
-/// Termux: `$HOME/.huntsman.env` (typically `/data/data/com.termux/files/home/...`).
-/// Falls back to `.huntsman.env` in the current directory if `$HOME` is unset.
 pub fn env_path() -> String {
     std::env::var("HOME").map_or_else(
         |_| ".huntsman.env".to_string(),
@@ -52,12 +36,6 @@ pub fn env_path() -> String {
     )
 }
 
-/// Load `HUNTSMAN_*` keys from the env file + process environment.
-/// File entries are loaded first; process env wins on conflict.
-///
-/// This is what modules see at scan-launch time — both the env file
-/// values *and* anything the user exported in the shell before
-/// launching the binary.
 pub fn load() -> HashMap<String, String> {
     let _ = dotenvy::from_path(env_path());
 
@@ -66,14 +44,9 @@ pub fn load() -> HashMap<String, String> {
         .collect()
 }
 
-/// Parse `HUNTSMAN_*` lines from the env file at `path`, **ignoring the
-/// process environment**.
-///
-/// The Settings UI uses this to answer "which keys are currently
-/// configured in the file?" — a question [`load`] cannot answer once
-/// `dotenvy::from_path` has populated the process env, because process
-/// vars survive subsequent file deletes for the lifetime of the binary
-/// (and `#![forbid(unsafe_code)]` rules out `std::env::remove_var`).
+/// Reads keys from the env file only, ignoring the process environment.
+/// Needed because `dotenvy::from_path` populates process env and those
+/// vars survive file deletes for the lifetime of the binary.
 pub fn load_from_file_only(path: &Path) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let Ok(body) = fs::read_to_string(path) else {
@@ -97,7 +70,6 @@ pub fn load_from_file_only(path: &Path) -> HashMap<String, String> {
     out
 }
 
-/// Reject key names that aren't safe to write to the env file.
 fn validate_key_name(name: &str) -> Result<()> {
     if !name.starts_with("HUNTSMAN_") {
         return Err(Error::Other(format!("refusing non-HUNTSMAN_ key: {name}")));
@@ -114,8 +86,6 @@ fn validate_key_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reject values that would break dotenv parsing or smuggle additional
-/// lines into the env file.
 fn validate_value(name: &str, value: &str) -> Result<()> {
     if value.contains(['\n', '\r', '\0']) {
         return Err(Error::Other(format!(
@@ -130,28 +100,10 @@ fn validate_value(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Atomically update HUNTSMAN_* entries in `$HOME/.huntsman.env`.
-///
-/// See [`write_keys_at`] for the full contract; this thin wrapper exists
-/// so callers don't have to thread `env_path()` themselves.
 pub fn write_keys(updates: &BTreeMap<String, String>, deletes: &[String]) -> Result<()> {
     write_keys_at(&PathBuf::from(env_path()), updates, deletes)
 }
 
-/// Atomically update HUNTSMAN_* entries in the env file at `path`.
-///
-/// * Non-HUNTSMAN_ lines (comments, blanks, other variables) are preserved
-///   verbatim — users keep their template comments and any custom shell
-///   variables they've added.
-/// * Commented `#HUNTSMAN_FOO=...` template lines are left alone — only
-///   *uncommented* HUNTSMAN_ lines are touched.
-/// * Keys in `updates` replace existing values in place; new keys are
-///   appended at the end of the file.
-/// * Keys in `deletes` are removed entirely.
-///
-/// Write is atomic: temp-file + rename, with mode 0600 set on the temp
-/// file before rename. Symlink handling is left to the OS — if the user
-/// has symlinked `.huntsman.env` somewhere else, the rename follows it.
 pub fn write_keys_at(
     path: &Path,
     updates: &BTreeMap<String, String>,
@@ -164,10 +116,6 @@ pub fn write_keys_at(
         validate_value(name, value)?;
     }
 
-    // Only treat NotFound as "empty file" — any other read error
-    // (permission denied, IO failure) must surface so we don't silently
-    // overwrite a partially-readable env file with our new content and
-    // drop the user's existing keys/comments.
     let existing = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -181,8 +129,6 @@ pub fn write_keys_at(
 
     for line in existing.lines() {
         let trimmed = line.trim_start();
-        // Leave comment lines exactly as-is — including the template's
-        // `#HUNTSMAN_OATHNET_KEY=` placeholders.
         if trimmed.starts_with('#') || trimmed.is_empty() {
             out_lines.push(line.to_string());
             continue;
@@ -191,10 +137,6 @@ pub fn write_keys_at(
             out_lines.push(line.to_string());
             continue;
         };
-        // Trim whitespace around the key so `HUNTSMAN_FOO =bar` and
-        // `HUNTSMAN_FOO= bar` still match the user's `updates`/`deletes`
-        // entries. Comparisons against `updates`/`deletes` keys (always
-        // un-padded) work correctly after trimming.
         let key = trimmed[..eq].trim_end();
         if !key.starts_with("HUNTSMAN_") {
             out_lines.push(line.to_string());
@@ -211,7 +153,6 @@ pub fn write_keys_at(
         out_lines.push(line.to_string());
     }
 
-    // Append updates that weren't already present in the file.
     for (k, v) in updates {
         if !seen.contains(k) {
             out_lines.push(format!("{k}={v}"));
@@ -224,11 +165,6 @@ pub fn write_keys_at(
     }
 
     let tmp = path.with_extension("env.tmp");
-    // Mode-0600 file creation is Unix-specific (the `mode()` builder
-    // method is gated behind `OpenOptionsExt`). HSE is Termux/Android/
-    // Linux-only by design, but we still gate the import so any future
-    // cross-platform build of the crate produces a clean fallback that
-    // writes the file without the mode bit instead of failing to compile.
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -244,9 +180,6 @@ pub fn write_keys_at(
     }
     #[cfg(not(unix))]
     {
-        // On non-Unix the OS doesn't expose `mode()` via the standard
-        // builder; fall back to a plain write. Callers should still treat
-        // the resulting file as sensitive and apply ACLs separately.
         fs::write(&tmp, body.as_bytes())
             .map_err(|e| Error::Other(format!("write {}: {e}", tmp.display())))?;
     }

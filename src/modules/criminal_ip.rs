@@ -1,13 +1,3 @@
-//! Criminal IP (criminalip.io) — IP threat scoring. Key-gated.
-//!
-//! Endpoint: `GET https://api.criminalip.io/v1/asset/ip/report?ip={ip}`
-//! Auth:     `x-api-key: <key>` request header.
-//!
-//! Surfaces the inbound/outbound risk classification, open ports count,
-//! ASN/ISP/country, and any vulnerability count. The full per-port
-//! breakdown is left out of evidence (verbose and changes frequently);
-//! consumers can re-query the API for the full record.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -163,30 +153,14 @@ impl Module for CriminalIp {
             }
         }
         if let Some(is) = &body.issues {
-            if is.is_vpn == Some(true) {
-                entity.tag("vpn");
-            }
-            if is.is_proxy == Some(true) {
-                entity.tag("proxy");
-            }
-            if is.is_tor == Some(true) {
-                entity.tag("tor");
-            }
-            if is.is_hosting == Some(true) {
-                entity.tag("hosting");
-            }
-            if is.is_anonymous_vpn == Some(true) {
-                entity.tag("anonymous-vpn");
-            }
-            if is.is_cloud == Some(true) {
-                entity.tag("cloud");
-            }
-            if is.is_scanner == Some(true) {
-                entity.tag("scanner");
-            }
-            if is.is_dark_web == Some(true) {
-                entity.tag("dark-web");
-            }
+            entity.tag_opt(is.is_vpn, "vpn");
+            entity.tag_opt(is.is_proxy, "proxy");
+            entity.tag_opt(is.is_tor, "tor");
+            entity.tag_opt(is.is_hosting, "hosting");
+            entity.tag_opt(is.is_anonymous_vpn, "anonymous-vpn");
+            entity.tag_opt(is.is_cloud, "cloud");
+            entity.tag_opt(is.is_scanner, "scanner");
+            entity.tag_opt(is.is_dark_web, "dark-web");
         }
         if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first())
             && let Some(c) = w.org_country_code.as_deref()
@@ -196,58 +170,30 @@ impl Module for CriminalIp {
 
         let mut ev = Evidence::new("criminal_ip", format!("Criminal IP report for {ip}"));
         if let Some(s) = body.score.as_ref() {
-            if let Some(i) = s.inbound.as_deref() {
-                ev = ev.with_attr("inbound_risk", i);
-            }
-            if let Some(o) = s.outbound.as_deref() {
-                ev = ev.with_attr("outbound_risk", o);
-            }
+            ev = ev
+                .with_opt_attr("inbound_risk", s.inbound.as_deref())
+                .with_opt_attr("outbound_risk", s.outbound.as_deref());
         }
         if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first()) {
-            if let Some(v) = w.as_no {
-                ev = ev.with_attr("asn", v.to_string());
-            }
-            if let Some(v) = w.as_name.as_deref() {
-                ev = ev.with_attr("as_name", v);
-            }
-            if let Some(v) = w.org_name.as_deref() {
-                ev = ev.with_attr("org", v);
-            }
-            if let Some(v) = w.org_country_code.as_deref() {
-                ev = ev.with_attr("country", v);
-            }
+            ev = ev
+                .with_opt_attr("asn", w.as_no.map(|v| v.to_string()))
+                .with_opt_attr("as_name", w.as_name.as_deref())
+                .with_opt_attr("org", w.org_name.as_deref())
+                .with_opt_attr("country", w.org_country_code.as_deref());
         }
-        if let Some(p) = body.port.and_then(|p| p.count) {
-            ev = ev.with_attr("open_port_count", p.to_string());
-        }
-        if let Some(v) = body.vulnerability.and_then(|v| v.count) {
-            ev = ev.with_attr("vuln_count", v.to_string());
-        }
+        ev = ev
+            .with_opt_attr("open_port_count", body.port.and_then(|p| p.count).map(|v| v.to_string()))
+            .with_opt_attr("vuln_count", body.vulnerability.and_then(|v| v.count).map(|v| v.to_string()));
         if let Some(is) = &body.issues {
-            if is.is_vpn == Some(true) {
-                ev = ev.with_attr("is_vpn", "true");
-            }
-            if is.is_proxy == Some(true) {
-                ev = ev.with_attr("is_proxy", "true");
-            }
-            if is.is_tor == Some(true) {
-                ev = ev.with_attr("is_tor", "true");
-            }
-            if is.is_hosting == Some(true) {
-                ev = ev.with_attr("is_hosting", "true");
-            }
-            if is.is_anonymous_vpn == Some(true) {
-                ev = ev.with_attr("is_anonymous_vpn", "true");
-            }
-            if is.is_cloud == Some(true) {
-                ev = ev.with_attr("is_cloud", "true");
-            }
-            if is.is_scanner == Some(true) {
-                ev = ev.with_attr("is_scanner", "true");
-            }
-            if is.is_dark_web == Some(true) {
-                ev = ev.with_attr("is_dark_web", "true");
-            }
+            ev = ev
+                .with_opt_attr("is_vpn", is.is_vpn.filter(|&v| v).map(|_| "true"))
+                .with_opt_attr("is_proxy", is.is_proxy.filter(|&v| v).map(|_| "true"))
+                .with_opt_attr("is_tor", is.is_tor.filter(|&v| v).map(|_| "true"))
+                .with_opt_attr("is_hosting", is.is_hosting.filter(|&v| v).map(|_| "true"))
+                .with_opt_attr("is_anonymous_vpn", is.is_anonymous_vpn.filter(|&v| v).map(|_| "true"))
+                .with_opt_attr("is_cloud", is.is_cloud.filter(|&v| v).map(|_| "true"))
+                .with_opt_attr("is_scanner", is.is_scanner.filter(|&v| v).map(|_| "true"))
+                .with_opt_attr("is_dark_web", is.is_dark_web.filter(|&v| v).map(|_| "true"));
         }
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();

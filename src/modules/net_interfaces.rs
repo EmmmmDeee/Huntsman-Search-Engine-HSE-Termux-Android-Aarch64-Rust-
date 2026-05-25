@@ -1,9 +1,3 @@
-//! Local network interface enumerator — reads `/sys/class/net/*/address`
-//! (MAC) and `/sys/class/net/*/operstate`. Pure file I/O, no termux-api,
-//! no network traffic — passive sensor.
-//!
-//! Off-Linux hosts (macOS, Windows) lack `/sys/class/net` and no-op cleanly.
-
 use async_trait::async_trait;
 
 use crate::core::{
@@ -36,15 +30,12 @@ impl Module for NetInterfaces {
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
-        // not Linux — no-op
         let Ok(mut entries) = tokio::fs::read_dir("/sys/class/net").await else {
             return Ok(result);
         };
 
         while let Ok(Some(entry)) = entries.next_entry().await {
             let iface_os = entry.file_name();
-            // Skip loopback by name — its MAC is always all-zero, also skipped
-            // by the placeholder check below, but this saves a file read.
             if iface_os == "lo" {
                 continue;
             }

@@ -1,18 +1,3 @@
-//! WiGLE WiFi network search by geographic point. Key-gated.
-//!
-//! Endpoint: `GET https://api.wigle.net/api/v2/network/search`
-//! Auth:     HTTP Basic — `HUNTSMAN_WIGLE_USER` (API name) + `HUNTSMAN_WIGLE_TOKEN`.
-//!
-//! Accepts a `Coordinates` target (`"lat,lon"`). WiGLE wants a bounding
-//! box; we expand the point to ±0.001° (~111 m at the equator) — large
-//! enough to catch the immediate neighbourhood, small enough not to
-//! burn the lookup quota on a noisy match.
-//!
-//! Per project invariants, we never store the raw observation list
-//! (which can include personal MAC addresses observed in scans). We
-//! summarise: total networks found + the top encryption types + the
-//! highest-quality (lowest-trilateration-error) SSID, if any.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -92,7 +77,6 @@ impl Module for Wigle {
                 ));
             }
         };
-        // Small bounding box around the requested point.
         const D: f64 = 0.001;
         let url = format!(
             "https://api.wigle.net/api/v2/network/search?latrange1={lat_lo:.6}&latrange2={lat_hi:.6}&longrange1={lon_lo:.6}&longrange2={lon_hi:.6}&onlymine=false",
@@ -137,7 +121,6 @@ impl Module for Wigle {
         entity.tag("wigle");
         entity.tag("wifi-observed");
 
-        // Aggregate encryption types.
         let enc_types: Vec<String> = body
             .results
             .iter()

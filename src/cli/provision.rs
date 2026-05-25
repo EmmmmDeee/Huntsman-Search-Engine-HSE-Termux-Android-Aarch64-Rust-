@@ -1,18 +1,3 @@
-//! `hse provision` — Rust-native replacement for the post-build phases of
-//! the Termux provisioning pipeline (env-file merge + diagnostics + smoke
-//! test). The pre-build phases (Termux wake-lock, `pkg install`, `git`,
-//! `cargo build`) stay in `install.sh` — by definition they have to run
-//! before this binary exists.
-//!
-//! Sub-flow:
-//!   * `hse provision --env-only`    → atomic merge of `~/.huntsman.env`
-//!   * `hse provision --verify-only` → doctor + passive smoke test
-//!   * `hse provision`               → both
-//!
-//! The env-merge logic is the canonical source of truth for the
-//! template; the script-side bash port that previously lived in
-//! `tools/provision-termux.sh` has been removed in favour of this.
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -29,18 +14,11 @@ use crate::core::{
 use crate::storage::store::Store;
 use crate::util::{http::build_client, keys, uid::scan_id};
 
-/// Canonical env-file template, embedded at compile time. Edit
-/// `src/cli/env_template.txt` to change the on-disk shape; the binary
-/// picks it up on next build.
 const ENV_TEMPLATE: &str = include_str!("env_template.txt");
 
 const PLACEHOLDER_PREFIX: &str = "insert_";
 const PLACEHOLDER_SUFFIX: &str = "_here";
 
-/// Parse a single env-file line of the form `KEY="value"` (with optional
-/// trailing whitespace / inline comment). Returns `Some((key, value))`
-/// when the line is shaped right, `None` for blank / comment / malformed
-/// lines.
 fn parse_kv(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim_start();
     if trimmed.starts_with('#') || trimmed.is_empty() {
@@ -52,14 +30,10 @@ fn parse_kv(line: &str) -> Option<(String, String)> {
         return None;
     }
     let rest = trimmed[eq + 1..].trim_start();
-    // Accept double-quoted values; reject anything we can't safely round-trip
-    // back through the keys::write_keys_at validator (which forbids `"` in
-    // values). A bare unquoted value works too — dotenvy accepts both.
     let value = if let Some(rest) = rest.strip_prefix('"') {
         let end = rest.find('"')?;
         rest[..end].to_string()
     } else {
-        // Stop at first whitespace or '#'.
         rest.split(['#', ' ', '\t']).next()?.to_string()
     };
     Some((key.to_string(), value))
@@ -69,15 +43,7 @@ fn is_placeholder(value: &str) -> bool {
     value.starts_with(PLACEHOLDER_PREFIX) && value.ends_with(PLACEHOLDER_SUFFIX)
 }
 
-/// Merge `existing` env-file contents into `template`, preserving every
-/// real (non-placeholder) value from `existing` and appending any
-/// `HUNTSMAN_*` entries that exist in `existing` but not in `template`.
-///
-/// Pure, deterministic, side-effect-free. The CLI driver layers backup
-/// / atomic-write / chmod 0600 on top of this.
 pub fn merge_template(existing: &str, template: &str) -> String {
-    // Real values from the existing file: key → value, only when the
-    // value is not a template placeholder and not empty.
     let mut real_values: BTreeMap<String, String> = BTreeMap::new();
     for line in existing.lines() {
         if let Some((k, v)) = parse_kv(line)
@@ -88,8 +54,6 @@ pub fn merge_template(existing: &str, template: &str) -> String {
         }
     }
 
-    // Track which template keys we re-emit so we know what's "leftover"
-    // (user-custom keys not in the template).
     let mut seen_in_template: BTreeMap<String, ()> = BTreeMap::new();
 
     let mut out = String::with_capacity(template.len() + 256);
@@ -97,11 +61,6 @@ pub fn merge_template(existing: &str, template: &str) -> String {
         if let Some((k, _)) = parse_kv(line) {
             seen_in_template.insert(k.clone(), ());
             if let Some(real) = real_values.get(&k) {
-                // Substitute the real value in place. Drop any inline
-                // comment — the template's per-line comments described
-                // "what this key is for" and are still in the file via
-                // the template-shape lines; we don't need them on the
-                // populated line.
                 out.push_str(&format!("{k}=\"{real}\"\n"));
                 continue;
             }
@@ -110,9 +69,6 @@ pub fn merge_template(existing: &str, template: &str) -> String {
         out.push('\n');
     }
 
-    // Append user-custom HUNTSMAN_* values that the template doesn't
-    // know about (e.g. an integration the user added before a future
-    // module ships).
     let leftover: Vec<(&String, &String)> = real_values
         .iter()
         .filter(|(k, _)| !seen_in_template.contains_key(*k))
@@ -126,9 +82,6 @@ pub fn merge_template(existing: &str, template: &str) -> String {
     out
 }
 
-/// Write the merged content to `path` atomically (temp-file + rename),
-/// after first backing up any pre-existing file to `path + .bak.<ts>`.
-/// File mode is 0600 on Unix; on non-Unix the OS-default mode applies.
 fn write_env_file(path: &Path, contents: &str) -> Result<Option<PathBuf>> {
     let backup = if path.exists() {
         let bak = path.with_extension(format!("env.bak.{}", unix_now()));
@@ -173,7 +126,6 @@ fn write_env_file(path: &Path, contents: &str) -> Result<Option<PathBuf>> {
     Ok(backup)
 }
 
-/// Run the env-merge phase. Prints a summary of what changed.
 pub fn cmd_provision_env(dry_run: bool) -> Result<()> {
     let path = PathBuf::from(keys::env_path());
     let existing = fs::read_to_string(&path).unwrap_or_default();
@@ -225,14 +177,11 @@ fn count_keys(existing: &str) -> (usize, usize, usize) {
     (template_keys.len(), real, custom)
 }
 
-/// Run the verify phase: doctor + passive smoke test + missing-key
-/// micro-test pinned to `oathnet_pro`.
 pub async fn cmd_provision_verify() -> Result<()> {
     use crate::modules::registry;
 
     println!("==> Phase: verify");
 
-    // ── 1. Doctor-like snapshot ─────────────────────────────────────────
     let mods = registry();
     println!(
         "    modules:        {} registered ({} free, {} key-gated, {} paid)",
@@ -251,8 +200,6 @@ pub async fn cmd_provision_verify() -> Result<()> {
     println!("    keys path:      {}", keys::env_path());
 
     let loaded = keys::load();
-    // Count REAL key values (skip template placeholders) so the report
-    // reflects what the operator actually has set.
     let real_count = loaded
         .iter()
         .filter(|(k, v)| k.starts_with("HUNTSMAN_") && !is_placeholder(v) && !v.is_empty())
@@ -265,7 +212,6 @@ pub async fn cmd_provision_verify() -> Result<()> {
         "    keys loaded:    {real_count} real, {placeholder_count} placeholders awaiting values"
     );
 
-    // ── 2. Passive smoke scan ───────────────────────────────────────────
     println!("    smoke test:     passive-only scan against example.com…");
     let SmokeResult {
         entity_count,
@@ -287,10 +233,6 @@ pub async fn cmd_provision_verify() -> Result<()> {
         if correlation_count == 1 { "" } else { "s" },
     );
 
-    // ── 3. Missing-key micro-test ───────────────────────────────────────
-    // Pin a scan to `oathnet_pro` to force the missing-key path. Skip
-    // entirely if the key has a real (non-placeholder) value — the
-    // assertion only makes sense when the key is genuinely absent.
     let oathnet_real = loaded
         .get("HUNTSMAN_OATHNET_KEY")
         .map(|v| !is_placeholder(v) && !v.is_empty())
@@ -318,7 +260,6 @@ pub async fn cmd_provision_verify() -> Result<()> {
                 expected error not observed"
             );
         }
-        // Also report any other missing keys the scan encountered.
         for k in &missing_keys {
             if k != "HUNTSMAN_OATHNET_KEY" {
                 println!("                    (also missing: {k})");
@@ -336,8 +277,6 @@ struct SmokeResult {
     completed: bool,
 }
 
-/// Run one scan synchronously and harvest the diagnostic metrics we
-/// care about (entity count, correlation count, missing-key errors).
 async fn run_smoke(target: Target, options: ScanOptions) -> Result<SmokeResult> {
     let store = Arc::new(Store::open(&crate::default_db_path())?);
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
@@ -355,19 +294,9 @@ async fn run_smoke(target: Target, options: ScanOptions) -> Result<SmokeResult> 
         bus: bus.clone(),
         http: build_client(),
         keys: keys::load(),
-        // Smoke scans aren't externally cancellable; a default handle
-        // never fires.
         cancel: crate::core::cancel::CancelHandle::new(),
     };
 
-    // Capture ModuleError events to extract `missing key: …` strings —
-    // the cheapest way to verify the engine's error path fires correctly.
-    // We don't spawn a long-lived collector because the engine + bus
-    // would need to be Drop-ed for the receiver's `.recv()` to return
-    // `Err`, and the bus is held inside `engine` (an Arc the engine
-    // struct owns a strong ref of). Instead, we drain non-blockingly
-    // after `engine.run` returns — by then every module has flushed
-    // its events through the broadcast channel.
     let mut rx = bus.subscribe();
 
     let completed = engine.run(scan.clone(), target, ctx).await.is_ok();
@@ -375,8 +304,6 @@ async fn run_smoke(target: Target, options: ScanOptions) -> Result<SmokeResult> 
     let entities = store.entities_for_scan(&sid).unwrap_or_default();
     let correlations = store.correlations_for_scan(&sid).unwrap_or_default();
 
-    // Drain queued events; never block waiting for more. `try_recv`
-    // returns `Err(Empty)` once the buffer is exhausted, ending the loop.
     let mut missing_keys = Vec::<String>::new();
     while let Ok(ev) = rx.try_recv() {
         if let EventKind::ModuleError { error, .. } = &ev.kind

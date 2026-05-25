@@ -1,13 +1,3 @@
-//! SecurityTrails subdomain enumeration. Key-gated; free tier 50 q/mo.
-//!
-//! Endpoint: `GET https://api.securitytrails.com/v1/domain/{domain}/subdomains`
-//! Auth:     `APIKEY` request header
-//!
-//! Returns sub-labels (without the parent suffix). We emit each as a
-//! `Domain` entity tagged `subdomain` + `securitytrails`. SecurityTrails
-//! also offers `/v1/history/...` endpoints that we don't yet wire — same
-//! key, future module.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 

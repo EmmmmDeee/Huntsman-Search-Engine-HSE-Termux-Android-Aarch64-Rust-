@@ -1,24 +1,3 @@
-//! Extract the domain part of an Email target and emit it as a Domain entity.
-//! No network — pure string transformation.
-//!
-//! This is the critical enrichment bridge between identity modules and
-//! infrastructure modules. Without it, an email scan with `--depth 1+`
-//! never triggers DNS, WHOIS, crt.sh, web crawler, webserver banner, or
-//! any of the 15+ domain-accepting modules — the expansion engine can
-//! only feed entities whose kind maps to a TargetKind, and no other
-//! email module emits a Domain entity.
-//!
-//! With this module, `hse scan --kind email --value user@acme.com --depth 1`
-//! produces:
-//!   Round 0: Email entities (breach modules) + Username entities
-//!            (email_to_username) + **Domain entity `acme.com`** (this module)
-//!   Round 1: Domain `acme.com` triggers dns_resolver, crtsh, whois,
-//!            web_crawler, webserver_banner, wayback, dns_brute,
-//!            securitytrails, urlhaus, leakix, hudsonrock (domain mode) ...
-//!
-//! Priority is set high (96) so the Domain entity is available early in
-//! the seed round for the engine's expansion candidate selection.
-
 use async_trait::async_trait;
 
 use crate::core::{

@@ -1,25 +1,3 @@
-//! Live mode — re-run a scan on a fixed interval.
-//!
-//! A live session wraps the existing [`ScanEngine`] and invokes
-//! [`ScanEngine::run`] in a loop with the same `Target` and `ScanOptions`
-//! on every tick. Each iteration is a normal scan — events flow through
-//! the existing [`EventBus`] and entities/correlations persist to the
-//! store via [`Store`] exactly as one-shot scans do.
-//!
-//! Why this design choice:
-//! - Reuses every piece of the engine (correlator, expansion, throttle,
-//!   ScanOptions filters) without an "if live" branch anywhere in core.
-//! - The SSE endpoint at `/api/v1/live/{id}/events` simply demultiplexes
-//!   events tagged with this session's live-id (live-level) plus any
-//!   scan-id the session has spawned (scan-level), so observers see
-//!   the same module/entity/correlation events as for a static scan.
-//! - Per-session cancellation via the same `CancelHandle` the engine
-//!   polls, so `DELETE /api/v1/live/{id}` aborts the currently-running
-//!   iteration at the next module boundary rather than waiting for it
-//!   to run to completion before the outer loop's next check (issue #23).
-//! - Sessions are in-memory only. Restart → cleared. Persistence is a
-//!   v0.7+ concern.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,15 +17,11 @@ use crate::core::{
 };
 use crate::util::{http::build_client, keys, uid::scan_id};
 
-/// User-tunable knobs for a live session, on top of [`ScanOptions`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveOptions {
-    /// Seconds between iteration starts. Default 30; minimum enforced is 1.
     #[serde(default = "default_interval_secs")]
     pub interval_secs: u64,
 
-    /// Stop after this many iterations. `None` = run forever (until
-    /// explicit stop or process exit).
     #[serde(default)]
     pub iterations: Option<u32>,
 }
@@ -65,7 +39,6 @@ fn default_interval_secs() -> u64 {
     crate::LIVE_DEFAULT_INTERVAL_SECS
 }
 
-/// Status of a live session at a moment in time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LiveStatus {
@@ -74,7 +47,6 @@ pub enum LiveStatus {
     Stopped,
 }
 
-/// The public view of a live session. Returned by list/get endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveSession {
     pub id: String,
@@ -85,14 +57,9 @@ pub struct LiveSession {
     pub started_at: u64,
     pub last_iteration_at: Option<u64>,
     pub iteration: u32,
-    /// scan_ids spawned by this session so far. Stored as a `HashSet` so
-    /// the SSE handler's per-event `session_owns_scan` check is O(1)
-    /// rather than O(N) — important for long-running sessions where each
-    /// broadcast event would otherwise trigger a linear scan.
     pub scan_ids: std::collections::HashSet<String>,
 }
 
-/// The request payload for starting a live session via API or CLI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveRequest {
     pub kind: crate::core::scan::TargetKind,
@@ -103,24 +70,13 @@ pub struct LiveRequest {
     pub live: LiveOptions,
 }
 
-// ─── Scanner ─────────────────────────────────────────────────────────────────
-
-/// Owns the set of in-flight live sessions. Cheap to clone (single `Arc`).
 #[derive(Clone)]
 pub struct LiveScanner {
     inner: Arc<LiveInner>,
 }
 
 struct LiveInner {
-    // Map keys are `live_id`. Entries are pruned when `session_loop`
-    // exits (either via natural iteration count or explicit stop) — see
-    // the cleanup at the bottom of `session_loop` below. This keeps the
-    // registry bounded in long-running `hse serve` processes.
     sessions: RwLock<HashMap<String, LiveSession>>,
-    /// Per-session cancel handle. The SAME handle is plumbed into each
-    /// iteration's `ModuleContext.cancel`, so `LiveScanner::stop` aborts
-    /// the in-flight iteration at the engine's next module boundary —
-    /// not just the next iteration. (Issue #23.)
     cancels: RwLock<HashMap<String, CancelHandle>>,
     engine: Arc<ScanEngine>,
     bus: EventBus,
@@ -138,8 +94,6 @@ impl LiveScanner {
         }
     }
 
-    /// Spawn a new live session. Returns the new `live_id`. Sessions run
-    /// detached on the tokio runtime; cancellation is via [`stop`](Self::stop).
     pub fn start(&self, target: Target, scan_options: ScanOptions, live: LiveOptions) -> String {
         let live_id = new_live_id(&target);
         let session = LiveSession {
@@ -165,10 +119,6 @@ impl LiveScanner {
         let live_id_for_task = live_id.clone();
         let cancel_for_task = cancel.clone();
 
-        // The JoinHandle is intentionally dropped — we don't need it for
-        // shutdown (the tokio runtime cleans up tasks when it stops) or
-        // for cancellation (the CancelHandle covers that). Storing it would
-        // grow `LiveInner` unboundedly with completed handles.
         tokio::spawn(async move {
             session_loop(
                 inner,
@@ -185,13 +135,6 @@ impl LiveScanner {
         live_id
     }
 
-    /// Request a session to stop. The same handle is plumbed into the
-    /// in-flight iteration's `ModuleContext.cancel`, so flipping it
-    /// aborts the running scan at the engine's next module-boundary
-    /// gate (~3–8 s p99 under typical `max_timeout_ms` budgets), AND
-    /// the outer loop's pre-iteration check sees it and exits before
-    /// starting the next iteration. Returns `true` if a matching
-    /// session was found.
     pub fn stop(&self, live_id: &str) -> bool {
         self.inner.cancels.read().get(live_id).is_some_and(|c| {
             c.cancel();
@@ -207,9 +150,6 @@ impl LiveScanner {
         self.inner.sessions.read().values().cloned().collect()
     }
 
-    /// True if the given `scan_id` was spawned by `live_id`. Used by the
-    /// SSE handler to forward scan-level events to live-session
-    /// subscribers. O(1) thanks to `scan_ids` being a `HashSet`.
     pub fn session_owns_scan(&self, live_id: &str, scan_id: &str) -> bool {
         self.inner
             .sessions
@@ -218,8 +158,6 @@ impl LiveScanner {
             .is_some_and(|s| s.scan_ids.contains(scan_id))
     }
 }
-
-// ─── Loop ────────────────────────────────────────────────────────────────────
 
 async fn session_loop(
     inner: Arc<LiveInner>,
@@ -256,18 +194,12 @@ async fn session_loop(
                 sess.last_iteration_at = Some(unix_now());
                 sess.iteration
             } else {
-                // Session was removed externally — bail.
-                break;
+                    break;
             }
         };
 
-        // Spawn a fresh scan for this iteration. scan_id() mixes unix_now()
-        // so back-to-back ticks get distinct ids. Canonical snake_case form
-        // matches CLI/API scan_id derivation.
         let sid = scan_id(target.kind.canonical_str(), &target.value);
 
-        // Register the scan_id with the session BEFORE running, so the SSE
-        // handler can forward its events the moment they fire.
         if let Some(s) = inner.sessions.write().get_mut(&live_id) {
             s.scan_ids.insert(sid.clone());
         }
@@ -287,14 +219,7 @@ async fn session_loop(
             bus: inner.bus.clone(),
             http: http.clone(),
             keys: loaded_keys.clone(),
-            // Plumb the SAME live-session cancel handle into the engine
-            // so `DELETE /api/v1/live/{id}` aborts the in-flight
-            // iteration at the next module boundary (the iteration's
-            // scan completes with `ScanStatus::Aborted` and partial
-            // entities are preserved exactly as for one-shot scans).
-            // Without this share-rather-than-replace, stop() only
-            // affected the outer loop and the iteration had to run to
-            // its full expansion depth before stopping.
+            // Shared with the session so stop() aborts the in-flight iteration too.
             cancel: cancel.clone(),
         };
 
@@ -309,8 +234,6 @@ async fn session_loop(
             return;
         }
 
-        // Wait the configured interval, but check cancellation periodically
-        // so a long interval doesn't delay a Stop request.
         let mut remaining = interval;
         let tick = Duration::from_millis(250);
         while remaining > Duration::ZERO {
@@ -330,10 +253,6 @@ fn mark_completed(inner: &LiveInner, live_id: &str, reason: &'static str) {
     if let Some(s) = inner.sessions.write().get_mut(live_id) {
         s.status = LiveStatus::Completed;
     }
-    // Session has ended — no further `stop()` calls can meaningfully act on
-    // it, so drop the AtomicBool entry to bound `cancels` map growth in
-    // long-running `hse serve` processes. The `sessions` entry stays so
-    // GET /api/v1/live/{id} keeps returning the completed record.
     inner.cancels.write().remove(live_id);
     let _ = inner.bus.send(Event::new(
         live_id,
@@ -347,15 +266,12 @@ fn mark_completed(inner: &LiveInner, live_id: &str, reason: &'static str) {
 fn mark_stopped(inner: &LiveInner, live_id: &str) {
     let mut emit_event = true;
     if let Some(s) = inner.sessions.write().get_mut(live_id) {
-        // Don't overwrite Completed → Stopped if iterations naturally ended.
         if matches!(s.status, LiveStatus::Completed) {
             emit_event = false;
         } else {
             s.status = LiveStatus::Stopped;
         }
     }
-    // Same cleanup as `mark_completed` — drop the cancel flag once the
-    // session is terminal. See note there.
     inner.cancels.write().remove(live_id);
     if emit_event {
         let _ = inner.bus.send(Event::new(
@@ -368,9 +284,6 @@ fn mark_stopped(inner: &LiveInner, live_id: &str) {
     }
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/// `live-<16 hex>` — collision-resistant per-target+timestamp identifier.
 fn new_live_id(target: &Target) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();

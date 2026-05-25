@@ -1,16 +1,3 @@
-//! LeakIX host / domain exposure check. Key-gated; free tier available.
-//!
-//! Endpoints:
-//!   * `GET https://leakix.net/host/{ip}`     (Accept: application/json)
-//!   * `GET https://leakix.net/domain/{domain}` (Accept: application/json)
-//!
-//! Auth: `api-key: <key>` request header.
-//!
-//! Returns service-by-service exposure events (open SSH, leaks, known
-//! vulnerabilities). We summarise the count by event type and surface
-//! the most recent timestamps; individual service banners are NOT
-//! stored verbatim (some include credentials).
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -24,7 +11,6 @@ use crate::util::http::error_snippet;
 
 const KEY_ENV: &str = "HUNTSMAN_LEAKIX_KEY";
 
-/// Subset of the LeakIX event fields we actually consume.
 #[derive(Deserialize)]
 struct Event {
     #[serde(default)]
@@ -111,28 +97,21 @@ impl Module for LeakIx {
 
         let mut entity = target.to_entity(0.88, &ctx.scan_id);
         entity.tag("leakix");
-        if !body.leaks.is_empty() {
-            entity.tag("leak");
-        }
-        if body.services.iter().any(|e| {
-            e.event_type
-                .as_deref()
-                .is_some_and(|t| t.eq_ignore_ascii_case("ssh"))
-        }) {
-            entity.tag("ssh-exposed");
-        }
+        entity.tag_if(!body.leaks.is_empty(), "leak");
+        entity.tag_if(
+            body.services.iter().any(|e| {
+                e.event_type
+                    .as_deref()
+                    .is_some_and(|t| t.eq_ignore_ascii_case("ssh"))
+            }),
+            "ssh-exposed",
+        );
 
-        // Aggregate event-type counts so the evidence row stays compact
-        // even when leakix returns dozens of services.
-        let types: Vec<String> = body
-            .services
-            .iter()
-            .chain(body.leaks.iter())
-            .filter_map(|e| e.event_type.clone())
-            .collect();
+        let all_events = body.services.iter().chain(body.leaks.iter());
+
+        let types: Vec<String> = all_events.clone().filter_map(|e| e.event_type.clone()).collect();
         let top = crate::util::freq::top_n(types.iter().map(String::as_str), 8);
 
-        // Open ports across services.
         let mut ports: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
         for e in &body.services {
             if let Some(p) = e.port {
@@ -162,7 +141,7 @@ impl Module for LeakIx {
         if !port_str.is_empty() {
             ev = ev.with_attr("ports", port_str);
         }
-        // Most-recent and earliest timestamps across all events.
+
         let all_times: Vec<&str> = body
             .services
             .iter()
@@ -176,7 +155,6 @@ impl Module for LeakIx {
             ev = ev.with_attr("earliest", t);
         }
 
-        // Aggregate event_source values across all events.
         let sources: Vec<String> = body
             .services
             .iter()
@@ -188,7 +166,6 @@ impl Module for LeakIx {
             ev = ev.with_attr("event_sources", top_sources);
         }
 
-        // Aggregate protocol values across all events.
         let protocols: Vec<String> = body
             .services
             .iter()

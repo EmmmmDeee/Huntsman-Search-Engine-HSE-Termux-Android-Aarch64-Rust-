@@ -1,14 +1,3 @@
-//! Subdomain brute-force against a bounded common-name dictionary.
-//!
-//! Runs ~60 candidate sub-labels (`www`, `mail`, `api`, `dev`, `staging`,
-//! …) as A/AAAA lookups against the shared resolver, bounded to 12 in
-//! flight at a time so Termux's cellular link doesn't drown.
-//!
-//! Tighter than `crtsh` (CT-log scrape — historical, may include dead
-//! names) and complementary to `dns_resolver` (one parent record, not
-//! enumeration). The dictionary is intentionally small — anything
-//! larger belongs behind a dedicated module with a wordlist file.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -22,9 +11,6 @@ use crate::core::{
 };
 use crate::util::dns::shared_resolver;
 
-/// Curated set — covers ~99% of the public-facing subdomains operators
-/// actually want to discover. Ordered roughly by frequency so cancellation
-/// during a partial run still surfaces the highest-value names first.
 const SUBDOMAINS: &[&str] = &[
     "www",
     "mail",
@@ -118,8 +104,6 @@ impl Module for DnsBrute {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // 67 lookups bounded to MAX_CONCURRENT; the shared resolver
-        // keeps most hits warm, but a slow upstream can drag.
         15_000
     }
 
@@ -134,8 +118,6 @@ impl Module for DnsBrute {
         let mut set = tokio::task::JoinSet::new();
 
         for sub in SUBDOMAINS {
-            // Skip if the sub-label happens to already be part of the
-            // input domain (defensive — avoids generating `www.www.x.com`).
             if parent.starts_with(sub) && parent.as_bytes().get(sub.len()) == Some(&b'.') {
                 continue;
             }

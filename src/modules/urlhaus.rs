@@ -1,15 +1,3 @@
-//! abuse.ch URLhaus — known-malicious URL/host check. Free, no key.
-//!
-//! Endpoint: `POST https://urlhaus-api.abuse.ch/v1/host/`
-//! Form body: `host=<domain or ip>`
-//!
-//! Anonymous queries are subject to abuse.ch's standard rate limit
-//! (no key required for low-volume use). The response carries a
-//! `url_count` per host plus per-URL threat tags — we surface the
-//! aggregate (count, threat families seen, third-party blocklist
-//! hits) and never store the individual malicious URLs (they're often
-//! still live).
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -69,8 +57,6 @@ impl Module for UrlHaus {
     }
 
     fn priority(&self) -> u8 {
-        // High-signal threat intel — runs early so other modules see
-        // the "malicious" tag in correlations they emit.
         110
     }
 
@@ -105,7 +91,6 @@ impl Module for UrlHaus {
             .await
             .map_err(|e| Error::module("urlhaus", e.to_string()))?;
 
-        // "no_results" is the common case for clean hosts — not an error.
         if body.query_status != "ok" {
             return Ok(ModuleResult::new());
         }
@@ -129,22 +114,14 @@ impl Module for UrlHaus {
         )
         .with_attr("url_count", url_count.to_string());
 
-        if let Some(r) = body.urlhaus_reference.as_deref() {
-            ev = ev.with_attr("reference", r);
-        }
-        if let Some(f) = body.firstseen.as_deref() {
-            ev = ev.with_attr("first_seen", f);
-        }
-        if let Some(l) = body.lastseen.as_deref() {
-            ev = ev.with_attr("last_seen", l);
-        }
+        ev = ev
+            .with_opt_attr("reference", body.urlhaus_reference.as_deref())
+            .with_opt_attr("first_seen", body.firstseen.as_deref())
+            .with_opt_attr("last_seen", body.lastseen.as_deref());
         if let Some(bl) = &body.blacklists {
-            if let Some(s) = bl.surbl.as_deref() {
-                ev = ev.with_attr("surbl", s);
-            }
-            if let Some(s) = bl.spamhaus_dbl.as_deref() {
-                ev = ev.with_attr("spamhaus_dbl", s);
-            }
+            ev = ev
+                .with_opt_attr("surbl", bl.surbl.as_deref())
+                .with_opt_attr("spamhaus_dbl", bl.spamhaus_dbl.as_deref());
         }
         if let Some(urls) = body.urls.as_ref() {
             let online = urls
@@ -159,8 +136,6 @@ impl Module for UrlHaus {
                 .count();
             ev = ev.with_attr("urls_offline", offline.to_string());
 
-            // Distinct threat families seen (e.g. "malware_download",
-            // "phishing"). Capped at the first 8 to keep the row tidy.
             let mut threats: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
             for u in urls {
                 if let Some(t) = u.threat.as_deref() {
@@ -175,7 +150,6 @@ impl Module for UrlHaus {
                 ev = ev.with_attr("threats", threat_vec.join(","));
             }
 
-            // Aggregate tags across URL entries and surface the top ones.
             let mut tag_counts: std::collections::HashMap<String, usize> =
                 std::collections::HashMap::new();
             for u in urls {

@@ -1,12 +1,3 @@
-//! AlienVault OTX — public threat-intel pulse lookup.
-//!
-//! Free, no key required. Endpoint:
-//!   `https://otx.alienvault.com/api/v1/indicators/{IPv4|domain}/{value}/general`
-//!
-//! Returns the count of OTX "pulses" (community-reported threat indicators)
-//! the target appears in. Used by `AU-010` (infrastructure consensus) when
-//! threat intel adds another source to an already-discovered domain/IP.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -73,8 +64,6 @@ impl Module for AlienVaultOtx {
             urlencode(&target.value)
         );
 
-        // 404 = target not in OTX (no findings); 429 / 5xx surface as
-        // module_error via fetch_json_or_404's standard error path.
         let Some(data): Option<OtxResp> =
             fetch_json_or_404(&ctx.http, "alienvault_otx", &url).await?
         else {
@@ -93,10 +82,6 @@ impl Module for AlienVaultOtx {
         let mut entity = target.to_entity(0.72, &ctx.scan_id);
         entity.tag("threat-intel");
 
-        // Surface up to 5 pulse names + tag aggregate so the evidence is
-        // actually actionable rather than just a count. Tags from across
-        // all pulses are deduped and joined; the top pulse's adversary
-        // (when present) is highlighted.
         let pulse_names: Vec<&str> = pulse_info
             .pulses
             .iter()
@@ -113,15 +98,12 @@ impl Module for AlienVaultOtx {
         );
         all_tags.sort_unstable();
         all_tags.dedup();
-        // Hard cap to keep the evidence row compact for the SPA.
         all_tags.truncate(20);
         let adversary = pulse_info
             .pulses
             .iter()
             .find_map(|p| p.adversary.as_deref().filter(|s| !s.is_empty()));
 
-        // The most recent pulse's TLP tier — strong signal of how
-        // sensitive the underlying intelligence is.
         let latest_tlp = pulse_info
             .pulses
             .iter()
@@ -132,8 +114,6 @@ impl Module for AlienVaultOtx {
             .filter_map(|p| p.created.as_deref())
             .min();
 
-        // Tag the entity with high-level threat hints so the SPA can
-        // colour-code rows. These are bucketed from the raw pulse tags.
         let combined_tags = all_tags.join(",").to_lowercase();
         for hint in ["malware", "ransomware", "apt", "phishing", "botnet", "c2"] {
             if combined_tags.contains(hint) {
@@ -153,15 +133,10 @@ impl Module for AlienVaultOtx {
         if !all_tags.is_empty() {
             ev = ev.with_attr("pulse_tags", all_tags.join(", "));
         }
-        if let Some(a) = adversary {
-            ev = ev.with_attr("adversary", a);
-        }
-        if let Some(t) = latest_tlp {
-            ev = ev.with_attr("tlp", t);
-        }
-        if let Some(c) = earliest_created {
-            ev = ev.with_attr("first_pulse_created", c);
-        }
+        ev = ev
+            .with_opt_attr("adversary", adversary)
+            .with_opt_attr("tlp", latest_tlp)
+            .with_opt_attr("first_pulse_created", earliest_created);
         entity.add_evidence(ev);
 
         let mut result = ModuleResult::new();

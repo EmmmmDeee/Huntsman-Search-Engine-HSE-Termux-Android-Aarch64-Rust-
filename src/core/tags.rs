@@ -1,8 +1,3 @@
-//! Well-known entity tag constants. Using these instead of bare string
-//! literals prevents typo-driven bugs (the compiler catches a misspelled
-//! constant but not a misspelled `"brecah"` tag) and makes tag usage
-//! discoverable via grep/IDE "find usages".
-
 pub const BREACH: &str = "breach";
 pub const STEALER_LOG: &str = "stealer-log";
 pub const WEB: &str = "web";

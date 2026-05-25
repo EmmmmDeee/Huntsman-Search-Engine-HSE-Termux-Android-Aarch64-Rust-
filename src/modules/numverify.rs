@@ -1,14 +1,3 @@
-//! Numverify phone validation. Key-gated, 100 free lookups/month.
-//!
-//! Endpoint: `GET https://apilayer.net/api/validate?access_key={KEY}&number={E164}`
-//! Returns: validity flag + country/carrier/line-type.
-//!
-//! Transport: we try HTTPS first to protect the key + queried number
-//! in transit. The free plan historically required HTTP; if HTTPS
-//! errors out, we fall back to HTTP and tag the resulting entity with
-//! `transport:http` so the operator can see the request went over
-//! cleartext. Paid plans accept HTTPS and the fallback never fires.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -82,17 +71,13 @@ impl Module for Numverify {
         if phone.is_empty() {
             return Ok(ModuleResult::new());
         }
-        // Numverify accepts both formats; strip leading '+' since their
-        // examples use E.164 without it.
         let q = phone.trim_start_matches('+');
         let qs = format!(
             "/api/validate?access_key={}&number={}",
             urlencode(key),
             urlencode(q),
         );
-        // HTTPS first. If the call fails outright (free-tier rejection,
-        // TLS refusal), fall back to HTTP and remember the transport
-        // we ended up using.
+        // HTTPS first; free-tier may reject TLS, so fall back to HTTP.
         let https = format!("https://apilayer.net{qs}");
         let (body_opt, transport): (Option<Resp>, &'static str) =
             match fetch_json_or_404(&ctx.http, "numverify", &https).await {
@@ -123,35 +108,19 @@ impl Module for Numverify {
         {
             entity.tag(format!("line:{lt}"));
         }
-        let mut ev = Evidence::new(
+        let ev = Evidence::new(
             "numverify",
             format!("Numverify confirmed valid phone {}", target.value),
         )
-        .with_attr("transport", transport);
-        if let Some(v) = body.number.as_deref() {
-            ev = ev.with_attr("normalised", v);
-        }
-        if let Some(v) = body.international_format.as_deref() {
-            ev = ev.with_attr("international", v);
-        }
-        if let Some(v) = body.local_format.as_deref() {
-            ev = ev.with_attr("local", v);
-        }
-        if let Some(v) = body.country_prefix.as_deref() {
-            ev = ev.with_attr("country_prefix", v);
-        }
-        if let Some(v) = body.country_name.as_deref() {
-            ev = ev.with_attr("country", v);
-        }
-        if let Some(v) = body.location.as_deref() {
-            ev = ev.with_attr("location", v);
-        }
-        if let Some(v) = body.carrier.as_deref() {
-            ev = ev.with_attr("carrier", v);
-        }
-        if let Some(v) = body.line_type.as_deref() {
-            ev = ev.with_attr("line_type", v);
-        }
+        .with_attr("transport", transport)
+        .with_opt_attr("normalised", body.number.as_deref())
+        .with_opt_attr("international", body.international_format.as_deref())
+        .with_opt_attr("local", body.local_format.as_deref())
+        .with_opt_attr("country_prefix", body.country_prefix.as_deref())
+        .with_opt_attr("country", body.country_name.as_deref())
+        .with_opt_attr("location", body.location.as_deref())
+        .with_opt_attr("carrier", body.carrier.as_deref())
+        .with_opt_attr("line_type", body.line_type.as_deref());
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();
         result.push(entity);

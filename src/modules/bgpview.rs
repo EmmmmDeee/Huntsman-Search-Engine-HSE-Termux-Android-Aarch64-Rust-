@@ -1,14 +1,3 @@
-//! BGPView ASN lookup. Free, no key, 1 req/sec public rate limit.
-//!
-//! Endpoint: `https://api.bgpview.io/asn/{asn}` — returns the AS's
-//! holder name, country, RIR, and contact addresses. Closes the
-//! `TargetKind::Asn` coverage gap (zero modules accepted ASN inputs
-//! before this).
-//!
-//! Also accepts an `IpAddress` target and reverse-maps it to the
-//! announcing ASN via `/ip/{ip}` — emits one Asn entity tagged
-//! `announcing` so an IP scan picks up its network operator.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -99,7 +88,6 @@ impl Module for BgpView {
 
 async fn lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let raw = target.value.trim().to_uppercase();
-    // Accept both "AS15169" and "15169".
     let digits = raw.trim_start_matches("AS").trim();
     let asn: u64 = match digits.parse() {
         Ok(n) => n,
@@ -125,34 +113,21 @@ async fn lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
     entity.tag("registered");
 
     let mut ev = Evidence::new("bgpview", format!("ASN {asn_label} registry record"))
-        .with_attr("asn_number", &asn_str);
-    if let Some(n) = data.name.as_deref() {
-        ev = ev.with_attr("handle", n);
-    }
-    if let Some(d) = data.description_short.as_deref() {
-        ev = ev.with_attr("name", d);
-    }
-    if let Some(c) = data.country_code.as_deref() {
-        ev = ev.with_attr("country", c);
-    }
+        .with_attr("asn_number", &asn_str)
+        .with_opt_attr("handle", data.name.as_deref())
+        .with_opt_attr("name", data.description_short.as_deref())
+        .with_opt_attr("country", data.country_code.as_deref());
     if let Some(rir) = &data.rir_allocation {
-        if let Some(n) = rir.rir_name.as_deref() {
-            ev = ev.with_attr("rir", n);
-        }
-        if let Some(d) = rir.date_allocated.as_deref() {
-            ev = ev.with_attr("allocated", d);
-        }
+        ev = ev
+            .with_opt_attr("rir", rir.rir_name.as_deref())
+            .with_opt_attr("allocated", rir.date_allocated.as_deref());
     }
-    if let Some(w) = data.website.as_deref()
-        && !w.is_empty()
-    {
+    if let Some(w) = data.website.as_deref().filter(|w| !w.is_empty()) {
         ev = ev.with_attr("website", w);
     }
     entity.add_evidence(ev);
     result.push(entity);
 
-    // Surface contact emails as discrete Email entities — they're real
-    // identity signals (the AS holder's abuse / NOC mailbox).
     for email in data.email_contacts.into_iter().flatten() {
         if !email.contains('@') {
             continue;
@@ -184,7 +159,6 @@ async fn lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
         result.push(e);
     }
 
-    // If the AS has a website, emit it as a Url entity.
     if let Some(w) = data
         .website
         .as_deref()
@@ -218,8 +192,6 @@ async fn lookup_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult>
     };
 
     let mut result = ModuleResult::new();
-    // Take only the most-specific (first) prefix announcement — bgpview
-    // returns them ordered by length descending.
     if let Some(prefix) = data.prefixes.into_iter().flatten().next()
         && let Some(asn_ref) = prefix.asn
         && let Some(asn_num) = asn_ref.asn
@@ -227,20 +199,12 @@ async fn lookup_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult>
         let asn_num_str = asn_num.to_string();
         let mut e = Entity::new(EntityKind::Asn, format!("AS{asn_num}"), 0.88, &ctx.scan_id);
         e.tag("announcing");
-        let mut ev = Evidence::new("bgpview", format!("ASN announcing {ip}"))
-            .with_attr("asn_number", &asn_num_str);
-        if let Some(p) = prefix.prefix.as_deref() {
-            ev = ev.with_attr("prefix", p);
-        }
-        if let Some(n) = asn_ref.name.as_deref() {
-            ev = ev.with_attr("handle", n);
-        }
-        if let Some(d) = asn_ref.description.as_deref() {
-            ev = ev.with_attr("name", d);
-        }
-        if let Some(c) = asn_ref.country_code.as_deref() {
-            ev = ev.with_attr("country", c);
-        }
+        let ev = Evidence::new("bgpview", format!("ASN announcing {ip}"))
+            .with_attr("asn_number", &asn_num_str)
+            .with_opt_attr("prefix", prefix.prefix.as_deref())
+            .with_opt_attr("handle", asn_ref.name.as_deref())
+            .with_opt_attr("name", asn_ref.description.as_deref())
+            .with_opt_attr("country", asn_ref.country_code.as_deref());
         e.add_evidence(ev);
         result.push(e);
     }

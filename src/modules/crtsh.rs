@@ -1,8 +1,3 @@
-//! crt.sh certificate transparency. Free, no key required.
-//!
-//! Returns subdomain entities discovered via CT log entries for the parent
-//! domain. Each entry includes the issuer name and not-before timestamp.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::collections::HashSet;

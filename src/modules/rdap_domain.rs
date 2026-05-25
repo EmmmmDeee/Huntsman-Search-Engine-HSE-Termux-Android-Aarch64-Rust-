@@ -1,16 +1,3 @@
-//! RDAP — Registration Data Access Protocol for domains. Free, no key.
-//!
-//! Endpoint: `https://rdap.org/domain/{domain}`
-//!
-//! Complements `whois` with structured registry data: status flags,
-//! events (registration / expiration / last-changed), nameservers,
-//! and contact roles. The rdap.org redirector resolves the right
-//! bootstrap registry for any TLD, so we don't need to maintain our
-//! own bootstrap table.
-//!
-//! Per project invariants we surface contact role names (`registrant`,
-//! `administrative`, etc.) but never raw contact PII (email/phone/postal).
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -64,9 +51,7 @@ struct SecureDns {
     delegation_signed: Option<bool>,
 }
 
-/// Replace each run of ASCII whitespace with a single `-` so RDAP's
-/// human-readable status phrases ("client transfer prohibited") fit
-/// the project's whitespace-free tag convention.
+/// Collapse whitespace runs into `-` and lowercase for tag-safe slugs.
 fn slugify(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_dash = false;
@@ -97,9 +82,6 @@ impl Module for RdapDomain {
     }
 
     fn priority(&self) -> u8 {
-        // One step below whois (32) so whois — the canonical record
-        // holder — runs first; rdap fills structured gaps after.
-        // (Engine sorts highest-priority-first.)
         31
     }
 
@@ -117,14 +99,7 @@ impl Module for RdapDomain {
             return Ok(ModuleResult::new());
         }
 
-        // urlencode the path segment defensively: TargetKind::Domain
-        // values are already DNS-label-shape per validation, but
-        // encoding makes us robust to upstream changes and consistent
-        // with the rest of the module set.
         let url = format!("https://rdap.org/domain/{}", urlencode(domain));
-        // ctx.http carries a 3 s default timeout (MODULE_TIMEOUT_MS),
-        // shorter than this module's declared 15 s budget; an explicit
-        // per-request timeout matches the budget we publish.
         let resp = ctx
             .http
             .get(&url)
@@ -136,7 +111,6 @@ impl Module for RdapDomain {
 
         let status = resp.status();
         if status.as_u16() == 404 {
-            // Unregistered or not-in-rdap-bootstrap — clean no-result.
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
@@ -153,23 +127,16 @@ impl Module for RdapDomain {
 
         let mut entity = Entity::new(EntityKind::Domain, domain, 0.88, &ctx.scan_id);
         entity.tag("rdap");
-        let mut ev = Evidence::new("rdap_domain", format!("RDAP record for {domain}"));
+        let mut ev = Evidence::new("rdap_domain", format!("RDAP record for {domain}"))
+            .with_opt_attr("handle", body.handle.as_deref());
 
-        if let Some(h) = body.handle.as_deref() {
-            ev = ev.with_attr("handle", h);
-        }
         if !body.status.is_empty() {
             ev = ev.with_attr("status", body.status.join(","));
             for s in &body.status {
-                // RDAP status values are human phrases ("client transfer
-                // prohibited"); slugify so tags match the codebase's
-                // whitespace-free convention.
                 entity.tag(format!("status:{}", slugify(s)));
             }
         }
-        // RDAP commonly carries multiple events with the same action
-        // (e.g. two `transfer` events from successive registrar moves).
-        // Group dates by action so each appears in evidence.
+
         let mut events_by_action: std::collections::BTreeMap<&str, Vec<&str>> =
             std::collections::BTreeMap::new();
         for e in &body.events {
@@ -178,11 +145,9 @@ impl Module for RdapDomain {
             }
         }
         for (action, dates) in events_by_action {
-            // Slugify the action so attr keys stay whitespace-free
-            // (RDAP eventAction values like "last changed" and
-            // "registrar expiration" contain spaces).
             ev = ev.with_attr(format!("event_{}", slugify(action)), dates.join(","));
         }
+
         if !body.entities.is_empty() {
             let roles: std::collections::BTreeSet<&str> = body
                 .entities
@@ -196,6 +161,7 @@ impl Module for RdapDomain {
                 );
             }
         }
+
         if let Some(sd) = &body.secure_dns
             && let Some(signed) = sd.delegation_signed
         {
@@ -206,6 +172,7 @@ impl Module for RdapDomain {
             });
             ev = ev.with_attr("dnssec_signed", signed.to_string());
         }
+
         let ns_names: Vec<&str> = body
             .nameservers
             .iter()
@@ -219,17 +186,9 @@ impl Module for RdapDomain {
         let mut result = ModuleResult::new();
         result.push(entity);
 
-        // One Domain entity per nameserver — complements whois `whois-ns`.
-        // Cap at the first 16; heavyweight TLDs / anycast registries can
-        // list many NS plus glue records and we don't want one module
-        // call to fan out into hundreds of entities.
         const MAX_NS: usize = 16;
         for n in body.nameservers.into_iter().take(MAX_NS) {
             let Some(name) = n.name else { continue };
-            // Entity::new normalises EntityKind::Domain (trim, lowercase,
-            // strip trailing dot) per src/core/entity.rs — no need to
-            // pre-normalise here. We only guard the empty/whitespace
-            // case which normalise() preserves as empty.
             if name.trim().is_empty() {
                 continue;
             }

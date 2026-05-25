@@ -1,44 +1,11 @@
-//! Shared HTTP client builder. Rustls-only — no native TLS, no openssl,
-//! no native deps at all.
-//!
-//! No client-level total timeout is set: the engine wraps every
-//! `Module::process()` call in `tokio::time::timeout(...)` (see
-//! `src/core/engine/dispatch.rs`), capped at whichever of the user
-//! override (`ScanOptions::module_timeout_ms`) or each module's
-//! `max_timeout_ms()` is larger. A blanket client-level cap of
-//! `MODULE_TIMEOUT_MS = 3 s` previously short-circuited every module
-//! that declared a larger budget (whois 8 s, wigle 12 s, and other
-//! multi-stage network modules) — at least one module has an explicit
-//! unit test asserting `max_timeout_ms() > MODULE_TIMEOUT_MS`,
-//! proving that the override was expected to apply.
-//!
-//! A short `connect_timeout` is still set so that attempts to reach
-//! firewalled or otherwise-unresponsive hosts fail fast and free up
-//! the engine's concurrency slot, instead of consuming the module's
-//! full budget waiting on the OS-level TCP connect.
-
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 
 use crate::core::error::{Error, Result};
 
-/// Fail-fast TCP connect budget. Independent of each module's total
-/// `max_timeout_ms()`. Five seconds is generous on slow mobile links
-/// while still preventing a wedged peer from holding a concurrency
-/// slot for the module's entire (often double-digit) total budget.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Build a fresh reqwest client. Cheap to call per scan.
-///
-/// User-Agent uses the conventional `name/version (+url)` form. Bare
-/// short UAs like `HSE/0.8.0` are frequently rejected by anti-bot WAFs
-/// (HudsonRock's cavalier API among them — observed returning HTTP 400
-/// on Termux). The `+https://` contact link is the format recommended
-/// by RFC 7231 §5.5.3 and accepted by most rate-limiters.
-///
-/// No client-level total timeout — see module docstring. A short
-/// `connect_timeout` is set so unreachable hosts fail fast.
 pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
@@ -54,15 +21,6 @@ pub fn build_client() -> reqwest::Client {
         .expect("reqwest client build failed")
 }
 
-/// Read up to 200 characters of a non-success response body, trim, and
-/// return a single-line string safe to embed in an error message.
-///
-/// Returns `"<empty>"` when the body is empty, `"<unreadable>"` if the
-/// body couldn't be decoded. Consumes the response.
-///
-/// Use this everywhere a module returns `Error::module(name, "HTTP …")`
-/// so the user sees the upstream's actual error payload rather than a
-/// bare status code.
 pub async fn error_snippet(resp: reqwest::Response) -> String {
     match resp.text().await {
         Ok(body) => {
@@ -70,8 +28,6 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
             if trimmed.is_empty() {
                 "<empty>".to_string()
             } else {
-                // Collapse newlines so the snippet stays a single log line,
-                // then truncate at 200 chars to keep events compact.
                 trimmed
                     .replace(['\n', '\r'], " ")
                     .chars()
@@ -83,19 +39,6 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
     }
 }
 
-/// GET `url` and deserialise the JSON body as `T`. Errors on any
-/// non-2xx, including 404.
-///
-/// Use from modules whose upstream never returns 404-as-"no result"
-/// — e.g. `ip-api.com` always returns 200 with a `status` field;
-/// `crt.sh` always returns 200 with a (possibly empty) JSON array.
-/// For modules where 404 means "not found, no findings" (HudsonRock,
-/// Gravatar, AlienVault OTX, XposedOrNot, BGPView), use
-/// [`fetch_json_or_404`] instead.
-///
-/// The `module` parameter is the stable module name string — embedded
-/// in every error so the operator sees which module failed without
-/// reading SSE event metadata.
 pub async fn fetch_json<T: DeserializeOwned>(
     client: &reqwest::Client,
     module: &'static str,
@@ -124,14 +67,8 @@ pub async fn fetch_json<T: DeserializeOwned>(
     }
 }
 
-/// Like [`fetch_json`] but maps `404 Not Found` to `Ok(None)` — the
-/// idiomatic "upstream says we don't know about this target" signal.
-/// Every other non-2xx still becomes an `Error::module(...)` so 429
-/// rate-limits and 5xx outages stay visible.
-///
-/// Use from modules whose upstream uses 404 as a positive "clean" /
-/// "not in our dataset" signal (HudsonRock, Gravatar, AlienVault OTX,
-/// XposedOrNot, BGPView).
+/// Maps HTTP 404 to `Ok(None)` for upstreams that use 404 as a "not in
+/// our dataset" signal. Other non-2xx statuses remain errors.
 pub async fn fetch_json_or_404<T: DeserializeOwned>(
     client: &reqwest::Client,
     module: &'static str,
@@ -159,14 +96,6 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
     }
 }
 
-/// Percent-encode a single URL path or query-string component using the
-/// `application/x-www-form-urlencoded` serialiser. Equivalent to:
-///
-/// ```ignore
-/// url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
-/// ```
-///
-/// but extracted because five modules had this verbatim helper repeated.
 pub fn urlencode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }

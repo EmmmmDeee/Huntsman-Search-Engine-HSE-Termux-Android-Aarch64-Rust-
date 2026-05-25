@@ -1,15 +1,3 @@
-//! Correlator — rule-based post-scan analysis.
-//!
-//! Runs after all modules complete (engine hook). Loads the entities the
-//! scan produced and evaluates a fixed set of declarative rules. Each
-//! firing rule produces a [`Correlation`] record persisted alongside the
-//! scan and emitted on the event bus as
-//! [`EventKind::CorrelationFound`](crate::core::event::EventKind::CorrelationFound).
-//!
-//! Rules are deterministic — no LLMs, no fuzzy matching. They reflect
-//! invariants the v0.4 module set can actually exhibit. Adding a new rule
-//! is a 10-line addition to [`evaluate_rules`].
-
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -22,8 +10,6 @@ use crate::core::{
 };
 use crate::storage::store::Store;
 
-// ─── Severity ────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -34,12 +20,6 @@ pub enum Severity {
 }
 
 impl Severity {
-    /// Canonical, lowercase, stable identifier. This is the form serialised to
-    /// JSON (via `#[serde(rename_all = "lowercase")]`), persisted in the
-    /// SQLite `correlations.severity` column, and matched in the
-    /// `correlations_for_scan` ORDER BY expression. Use this everywhere a
-    /// machine-readable severity string is required — the [`Display`] impl
-    /// produces an uppercase form for human-facing tables.
     pub fn as_canonical(&self) -> &'static str {
         match self {
             Self::Low => "low",
@@ -61,12 +41,6 @@ impl std::fmt::Display for Severity {
     }
 }
 
-// ─── Correlation ─────────────────────────────────────────────────────────────
-
-/// A single firing of a correlation rule.
-///
-/// Persisted in the `correlations` table; surfaced via CLI table output,
-/// the HTTP API (`GET /api/v1/scans/{id}/correlations`), and the SPA.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Correlation {
     pub rule_id: String,
@@ -100,8 +74,6 @@ impl Correlation {
     }
 }
 
-// ─── Correlator ──────────────────────────────────────────────────────────────
-
 pub struct Correlator {
     store: Arc<Store>,
 }
@@ -111,7 +83,6 @@ impl Correlator {
         Self { store }
     }
 
-    /// Load entities for `scan_id`, evaluate every rule, persist firings.
     pub fn run(&self, scan_id: &str) -> Result<Vec<Correlation>> {
         let entities = self.store.entities_for_scan(scan_id)?;
         if entities.is_empty() {
@@ -125,11 +96,6 @@ impl Correlator {
         Ok(firings)
     }
 }
-
-// ─── Rules ───────────────────────────────────────────────────────────────────
-//
-// Adding a rule = append one function call to `evaluate_rules` returning
-// `Vec<Correlation>`. Each rule is pure and side-effect-free.
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     let now = unix_now();
@@ -152,15 +118,8 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     out
 }
 
-/// `AU-001` — same email appears in ≥2 distinct breach-tagged sources.
-///
-/// "Breach source" = any evidence whose `source` is in the breach-modules
-/// allowlist below. Active with the current free-module set:
-/// `hudsonrock` (stealer logs) + `xposed_or_not` (named-breach lookup)
-/// → 2 sources, rule fires Critical when both confirm the same email.
-/// Threshold stays at 2 (lowered from the spec's 3) to keep the rule
-/// alive on free-only configurations; it can be restored to 3 once paid
-/// breach modules (`hibp`, `dehashed`, `oathnet_pro`) land.
+/// Threshold at 2 (not 3) so the rule fires on free-only configurations
+/// (hudsonrock + xposed_or_not). Restore to 3 once paid breach modules land.
 fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     const BREACH_SOURCES: &[&str] = &[
         "hudsonrock",
@@ -200,8 +159,6 @@ fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<
     out
 }
 
-/// `AU-002` — identity cluster: at least one Email, Username, **and** Phone
-/// were collected in the same scan, suggesting a coherent identity surface.
 fn rule_au_002_identity_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     let emails: Vec<&Entity> = entities
         .iter()
@@ -240,10 +197,7 @@ fn rule_au_002_identity_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> 
     }]
 }
 
-/// `AU-003` — any entity has `corroboration ≥ 3`, i.e. three or more
-/// independent sources reported the same fact. Threshold lowered from the
-/// spec's 5 → 3 so v0.4's 5-module set can actually fire it for popular
-/// domains (e.g. dns_resolver + crtsh + hudsonrock on the same name).
+/// Threshold at 3 (not 5) so v0.4's module set can actually fire it.
 fn rule_au_003_high_corroboration(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     entities
         .iter()
@@ -266,12 +220,8 @@ fn rule_au_003_high_corroboration(entities: &[Entity], scan_id: &str, ts: u64) -
         .collect()
 }
 
-/// `AU-010` — Infrastructure consensus: a single Domain or IpAddress has
-/// evidence from ≥3 distinct module sources. Differs from `AU-003` in that
-/// it counts module diversity at the **evidence** level rather than the
-/// `corroboration` field (which only increments on merge). Catches the
-/// "same entity discovered independently by infrastructure modules"
-/// pattern that the v0.3+ expansion engine produces.
+/// Differs from AU-003: counts evidence-level source diversity, not the
+/// `corroboration` field (which only increments on merge).
 fn rule_au_010_infra_consensus(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     let mut out = Vec::new();
     for e in entities
@@ -302,9 +252,6 @@ fn rule_au_010_infra_consensus(entities: &[Entity], scan_id: &str, ts: u64) -> V
     out
 }
 
-/// `AU-004` — Malicious infrastructure: any Domain or IpAddress carries
-/// a `malicious` tag (set by `urlhaus`) — the highest-confidence signal
-/// the malware-blocklist modules emit. One firing per offending entity.
 fn rule_au_004_malicious_infrastructure(
     entities: &[Entity],
     scan_id: &str,
@@ -334,9 +281,6 @@ fn rule_au_004_malicious_infrastructure(
         .collect()
 }
 
-/// `AU-005` — Anonymous-network exit: IpAddress tagged `tor-exit`,
-/// `tor`, `anonymous-network` or `anonymous-vpn`. Together these cover
-/// the `tor_exit_check`, `criminal_ip` and `ipqs` modules.
 fn rule_au_005_anonymous_network(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     const ANON_TAGS: &[&str] = &["tor-exit", "tor", "anonymous-network", "anonymous-vpn"];
     entities
@@ -362,13 +306,9 @@ fn rule_au_005_anonymous_network(entities: &[Entity], scan_id: &str, ts: u64) ->
         .collect()
 }
 
-/// `AU-006` — Proxy / VPN fronting: IpAddress tagged `proxy` or `vpn`,
-/// excluding any IP that's also classified as an anonymous-network
-/// exit (Tor / anonymous-network / anonymous-vpn — those fire AU-005).
-/// Source set: `criminal_ip` + `ipqs`.
+/// Excludes IPs that also match AU-005 anonymous-network tags.
 fn rule_au_006_proxy_vpn(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
-    // Same vocabulary as AU-005's ANON_TAGS — keep them in sync so the
-    // exclusion stays complete if the anon set grows.
+    // Keep in sync with AU-005's ANON_TAGS.
     const ANON_TAGS: &[&str] = &["tor-exit", "tor", "anonymous-network", "anonymous-vpn"];
     entities
         .iter()
@@ -397,9 +337,6 @@ fn rule_au_006_proxy_vpn(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Cor
         .collect()
 }
 
-/// `AU-007` — High-risk reputation: IpAddress tagged with any of
-/// `high-risk`, `high-risk-inbound`, `high-risk-outbound`, `recent-abuse`,
-/// or `scanner`. Emitted by `ipqs` and `criminal_ip`.
 fn rule_au_007_high_risk_reputation(
     entities: &[Entity],
     scan_id: &str,
@@ -435,9 +372,6 @@ fn rule_au_007_high_risk_reputation(
         .collect()
 }
 
-/// `AU-008` — Exposed service: any Domain or IpAddress tagged
-/// `vulnerable` (shodan), `ssh-exposed` (leakix), or `leak` (leakix).
-/// One firing per offending entity.
 fn rule_au_008_exposed_service(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     const EXPOSURE_TAGS: &[&str] = &["vulnerable", "ssh-exposed", "leak"];
     entities
@@ -468,9 +402,6 @@ fn rule_au_008_exposed_service(entities: &[Entity], scan_id: &str, ts: u64) -> V
         .collect()
 }
 
-/// `AU-009` — Stealer-log compromise: Email entity carrying the
-/// `stealer-log` tag set by `hudsonrock`. Distinct from AU-001 because
-/// it fires on a single (but highly specific) source.
 fn rule_au_009_stealer_log(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     entities
         .iter()
@@ -487,13 +418,8 @@ fn rule_au_009_stealer_log(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<C
         .collect()
 }
 
-/// `AU-011` — Cross-platform username footprint: a Username entity
-/// confirmed on three or more services.
-///
-/// `username_search` records the platform list in its summary
-/// Username entity's evidence (attrs `platforms_count` + `platforms`),
-/// not as `platform:*` tags on the Username — those tags live on the
-/// per-platform Url entities. We read the attrs to match real data.
+/// Reads `platforms_count`/`platforms` attrs from evidence rows (not tags)
+/// because `username_search` puts platform info in evidence attrs.
 fn rule_au_011_cross_platform_username(
     entities: &[Entity],
     scan_id: &str,
@@ -503,10 +429,6 @@ fn rule_au_011_cross_platform_username(
         .iter()
         .filter(|e| e.kind == EntityKind::Username)
         .filter_map(|e| {
-            // Inspect every evidence row attached to this Username for a
-            // platforms_count + platforms pair. Take the maximum count
-            // across rows so an entity merged from multiple scans still
-            // fires correctly.
             let mut max_count: u64 = 0;
             let mut best_list: Option<&str> = None;
             for ev in &e.evidence {
@@ -541,15 +463,6 @@ fn rule_au_011_cross_platform_username(
         .collect()
 }
 
-/// `AU-012` — Identity-linked site: a Url or Domain tagged
-/// `personal-site` co-occurs with a Username in the same scan. The tag
-/// is emitted by `github_user` on the blog field of a profile, which
-/// is an `EntityKind::Url`; we also accept `EntityKind::Domain` so any
-/// future module that publishes a domain-level personal-site tag
-/// composes correctly.
-///
-/// "Linked" here means co-occurrence in the same scan, not a verified
-/// ownership relationship — the description reflects that.
 fn rule_au_012_identity_linked_domain(
     entities: &[Entity],
     scan_id: &str,
@@ -589,22 +502,13 @@ fn rule_au_012_identity_linked_domain(
         .collect()
 }
 
-/// `AU-013` — Local-network discovery: two or more entities carry tags
-/// indicating they were observed on the operator's own LAN
-/// (`local-arp`, `local-interface`, `wifi-ap`). Useful for warning that
-/// the scan included a passive sweep of the host's adjacent network.
 fn rule_au_013_local_network_discovery(
     entities: &[Entity],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
     const LAN_TAGS: &[&str] = &["local-arp", "local-interface", "wifi-ap"];
-    // Defensive entity-kind guard: today every emitter of these tags is
-    // an IpAddress/MacAddress (arp_scan, net_interfaces, wifi_scan),
-    // but a future module that tags a Username or Email with one of
-    // these strings (by collision) shouldn't accidentally fire the
-    // local-network correlation. Restrict to the entity kinds that
-    // actually correspond to "host on this LAN".
+    // Restrict to IpAddress/MacAddress to avoid false positives from tag collisions.
     let hits: Vec<&Entity> = entities
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::IpAddress | EntityKind::MacAddress))
@@ -627,12 +531,6 @@ fn rule_au_013_local_network_discovery(
     }]
 }
 
-/// `AU-014` — Geolocation cluster: a Coordinates entity is corroborated
-/// by two or more distinct geo sources. The Coordinates-producing
-/// modules currently are `gps_fix` (tags `geoint`), `wigle` (tags
-/// `wifi-observed`) and `ip_geo` (tags `geoint`). `cell_survey` tags
-/// `cell-tower` on `DeviceId` entities (cell-tower IDs), not on
-/// Coordinates, so it isn't part of this rule's vocabulary.
 fn rule_au_014_geo_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     const GEO_TAGS: &[&str] = &["geoint", "wifi-observed"];
     entities
@@ -640,9 +538,6 @@ fn rule_au_014_geo_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<C
         .filter(|e| e.kind == EntityKind::Coordinates)
         .filter_map(|e| {
             let hits: Vec<&str> = GEO_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
-            // Also count distinct evidence sources — the canonical
-            // multi-source cluster looks like (wigle + gps_fix + ip_geo)
-            // all writing to the same Coordinates value.
             let sources: HashSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
             if hits.len() >= 2 || sources.len() >= 2 {
                 Some(Correlation {
@@ -665,21 +560,9 @@ fn rule_au_014_geo_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<C
         .collect()
 }
 
-/// `AU-015` — Threat-intel hit: any entity tagged `threat-intel`.
-/// Sources include `alienvault_otx` and `threatfox` (and any future
-/// curated-IOC feed that opts into the tag). Severity High because
-/// these feeds are hand-curated.
 fn rule_au_015_threat_intel_hit(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
-    // Module names whose evidence rows are authoritative for the
-    // `threat-intel` tag. Restricted to known TI sources to avoid
-    // misattributing the tag to non-TI evidence merged onto the same
-    // entity — e.g. a Domain enriched by both `alienvault_otx` (TI)
-    // and `whois` (registry data, not TI) must not be described as
-    // "present in alienvault_otx + whois".
-    //
-    // Adding a new TI module = appending one entry here. The fallback
-    // below preserves a sensible description for any future TI module
-    // that hasn't been wired into this list yet.
+    // Only count evidence from known TI modules to avoid misattributing
+    // the tag to non-TI evidence merged onto the same entity.
     const TI_SOURCES: &[&str] = &["alienvault_otx", "threatfox"];
 
     entities
@@ -719,8 +602,6 @@ fn rule_au_015_threat_intel_hit(entities: &[Entity], scan_id: &str, ts: u64) -> 
         })
         .collect()
 }
-
-// ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -1,18 +1,3 @@
-//! DNS CAA records. Free, no key.
-//!
-//! Endpoint: shared Cloudflare resolver.
-//!
-//! Certification Authority Authorization (RFC 8659) advertises which
-//! Certificate Authorities are allowed to issue certificates for a
-//! domain. Operationally useful for two reasons:
-//!
-//!   1. Missing CAA = any public CA can issue → weaker policy posture.
-//!   2. Present CAA pins issuers — useful for spotting unexpected
-//!      issuers in `crtsh` results.
-//!
-//! Emits one Evidence row on the originating Domain summarising the
-//! tag/value pairs (`issue`, `issuewild`, `iodef`).
-
 use async_trait::async_trait;
 
 use crate::core::{
@@ -37,7 +22,6 @@ impl Module for CaaRecords {
     }
 
     fn priority(&self) -> u8 {
-        // Same band as dns_resolver — cheap DNS lookup.
         29
     }
 
@@ -54,8 +38,6 @@ impl Module for CaaRecords {
 
         let lookup = match resolver.lookup(domain, RecordType::CAA).await {
             Ok(l) => l,
-            // NXDOMAIN / no CAA / network error → no findings. The vast
-            // majority of domains don't publish CAA; that's not an error.
             Err(_) => return Ok(ModuleResult::new()),
         };
 
@@ -64,16 +46,9 @@ impl Module for CaaRecords {
         let mut iodefs: Vec<String> = Vec::new();
 
         for record in lookup.answers() {
-            // hickory 0.26 exposes CAA via the generic RData::CAA variant.
             let RData::CAA(caa) = &record.data else {
                 continue;
             };
-            // CAA `value` is the literal bytes after the tag — for `issue`
-            // and `issuewild` it's an ASCII issuer-domain (possibly with
-            // semicolon-delimited parameters), for `iodef` it's a URL.
-            //
-            // RFC 8659 §4.1.1 specifies tags are case-insensitive, so
-            // normalise before matching.
             let value = String::from_utf8_lossy(&caa.value).into_owned();
             match caa.tag.to_ascii_lowercase().as_str() {
                 "issue" => issuers.push(value),

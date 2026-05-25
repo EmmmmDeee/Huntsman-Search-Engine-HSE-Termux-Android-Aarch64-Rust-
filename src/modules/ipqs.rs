@@ -1,14 +1,3 @@
-//! IPQualityScore (IPQS) reputation lookup. Key-gated; free tier available.
-//!
-//! Three endpoints sharing the same URL shape and key dispatch:
-//!   * IP:    `GET /api/json/ip/{key}/{ip}`
-//!   * Email: `GET /api/json/email/{key}/{email}`
-//!   * Phone: `GET /api/json/phone/{key}/{phone}`
-//!
-//! Each returns a `fraud_score` (0–100) plus type-specific signals.
-//! We tag risky outputs (`high-risk`, `proxy`, `vpn`, `tor`, `disposable`,
-//! `recent_abuse`) and embed the raw score in evidence for triage.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -30,7 +19,6 @@ struct Common {
     fraud_score: Option<i32>,
     #[serde(default)]
     recent_abuse: Option<bool>,
-    // IP-specific
     #[serde(default)]
     proxy: Option<bool>,
     #[serde(default)]
@@ -47,7 +35,6 @@ struct Common {
     country_code: Option<String>,
     #[serde(default)]
     asn: Option<i64>,
-    // Email-specific
     #[serde(default)]
     valid: Option<bool>,
     #[serde(default)]
@@ -60,7 +47,6 @@ struct Common {
     leaked: Option<bool>,
     #[serde(default)]
     first_seen: Option<FirstSeen>,
-    // Phone-specific
     #[serde(default)]
     line_type: Option<String>,
     #[serde(default)]
@@ -135,73 +121,39 @@ impl Module for IpQs {
         } else if score >= 50 {
             entity.tag("elevated-risk");
         }
-        if body.proxy == Some(true) {
-            entity.tag("proxy");
-        }
-        if body.vpn == Some(true) {
-            entity.tag("vpn");
-        }
-        if body.tor == Some(true) {
-            entity.tag("tor");
-        }
-        if body.is_crawler == Some(true) {
-            entity.tag("crawler");
-        }
-        if body.disposable == Some(true) {
-            entity.tag("disposable");
-        }
-        if body.leaked == Some(true) {
-            entity.tag("leaked");
-        }
-        if body.recent_abuse == Some(true) {
-            entity.tag("recent-abuse");
-        }
+        entity.tag_opt(body.proxy, "proxy");
+        entity.tag_opt(body.vpn, "vpn");
+        entity.tag_opt(body.tor, "tor");
+        entity.tag_opt(body.is_crawler, "crawler");
+        entity.tag_opt(body.disposable, "disposable");
+        entity.tag_opt(body.leaked, "leaked");
+        entity.tag_opt(body.recent_abuse, "recent-abuse");
         if let Some(c) = body.country_code.as_deref() {
             entity.tag(format!("country:{}", c.to_uppercase()));
         }
 
-        let mut ev = Evidence::new(
-            "ipqs",
-            format!("IPQS {endpoint} reputation for {value} (fraud_score={score})"),
-        )
-        .with_attr("endpoint", endpoint)
-        .with_attr("fraud_score", score.to_string());
-        if let Some(v) = body.isp.as_deref() {
-            ev = ev.with_attr("isp", v);
-        }
-        if let Some(v) = body.organization.as_deref() {
-            ev = ev.with_attr("organization", v);
-        }
-        if let Some(v) = body.asn {
-            ev = ev.with_attr("asn", v.to_string());
-        }
-        if let Some(v) = body.country_code.as_deref() {
-            ev = ev.with_attr("country", v);
-        }
-        if let Some(v) = body.deliverability.as_deref() {
-            ev = ev.with_attr("deliverability", v);
-        }
-        if let Some(v) = body.smtp_score {
-            ev = ev.with_attr("smtp_score", v.to_string());
-        }
-        if let Some(v) = body.line_type.as_deref() {
-            ev = ev.with_attr("line_type", v);
-        }
-        if let Some(v) = body.carrier.as_deref() {
-            ev = ev.with_attr("carrier", v);
-        }
-        if let Some(v) = body.valid {
-            ev = ev.with_attr("valid", v.to_string());
-        }
-        if let Some(v) = body.active {
-            ev = ev.with_attr("active", v.to_string());
-        }
-        if let Some(fs) = body.first_seen.as_ref()
-            && let Some(h) = fs.human.as_deref()
-        {
-            ev = ev.with_attr("first_seen", h);
-        }
-        entity.add_evidence(ev);
+        entity.add_evidence(
+            Evidence::new(
+                "ipqs",
+                format!("IPQS {endpoint} reputation for {value} (fraud_score={score})"),
+            )
+            .with_attr("endpoint", endpoint)
+            .with_attr("fraud_score", score.to_string())
+            .with_opt_attr("isp", body.isp.as_deref())
+            .with_opt_attr("organization", body.organization.as_deref())
+            .with_opt_attr("asn", body.asn.map(|v| v.to_string()))
+            .with_opt_attr("country", body.country_code.as_deref())
+            .with_opt_attr("deliverability", body.deliverability.as_deref())
+            .with_opt_attr("smtp_score", body.smtp_score.map(|v| v.to_string()))
+            .with_opt_attr("line_type", body.line_type.as_deref())
+            .with_opt_attr("carrier", body.carrier.as_deref())
+            .with_opt_attr("valid", body.valid.map(|v| v.to_string()))
+            .with_opt_attr("active", body.active.map(|v| v.to_string()))
+            .with_opt_attr(
+                "first_seen",
+                body.first_seen.as_ref().and_then(|fs| fs.human.clone()),
+            ),
+        );
         let mut result = ModuleResult::new();
         result.push(entity);
         Ok(result)

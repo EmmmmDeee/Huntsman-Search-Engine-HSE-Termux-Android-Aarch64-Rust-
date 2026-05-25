@@ -1,18 +1,3 @@
-//! Reverse geocoding via OpenStreetMap Nominatim — free, no API key.
-//!
-//! Accepts Coordinates targets (lat,lon) and converts them to
-//! human-readable address data via the Nominatim reverse geocoding API.
-//! Produces an Address entity with full location detail.
-//!
-//! This bridges the gap between geolocation modules (ip_geo, gps_fix)
-//! that produce Coordinates entities and human-readable intelligence.
-//! During expansion with depth > 0, Coordinates from ip_geo feed into
-//! this module to produce Address entities with country, state, city,
-//! street, and postal code.
-//!
-//! Nominatim usage policy: max 1 request per second, must include
-//! a valid User-Agent identifying the application.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -97,7 +82,6 @@ impl Module for ReverseGeocode {
             .map_err(|e| Error::module("reverse_geocode", e.to_string()))?;
 
         let mut result = ModuleResult::new();
-
         let display = data.display_name.as_deref().unwrap_or("-");
 
         let mut entity = Entity::new(EntityKind::Address, display, 0.72, &ctx.scan_id);
@@ -120,21 +104,17 @@ impl Module for ReverseGeocode {
                 .or(addr.village.as_deref())
                 .or(addr.municipality.as_deref());
 
-            if let Some(c) = city {
-                ev = ev.with_attr("city", c);
-            }
-            if let Some(s) = addr.state.as_deref() {
-                ev = ev.with_attr("state", s);
-            }
-            if let Some(c) = addr.country.as_deref() {
-                ev = ev.with_attr("country", c);
-            }
+            ev = ev
+                .with_opt_attr("city", city)
+                .with_opt_attr("state", addr.state.as_deref())
+                .with_opt_attr("country", addr.country.as_deref())
+                .with_opt_attr("postcode", addr.postcode.as_deref())
+                .with_opt_attr("suburb", addr.suburb.as_deref())
+                .with_opt_attr("county", addr.county.as_deref());
+
             if let Some(cc) = addr.country_code.as_deref() {
                 ev = ev.with_attr("country_code", cc.to_uppercase());
                 entity.tag(format!("country:{}", cc.to_uppercase()));
-            }
-            if let Some(p) = addr.postcode.as_deref() {
-                ev = ev.with_attr("postcode", p);
             }
             if let Some(r) = addr.road.as_deref() {
                 let street = match addr.house_number.as_deref() {
@@ -142,12 +122,6 @@ impl Module for ReverseGeocode {
                     None => r.to_string(),
                 };
                 ev = ev.with_attr("street", street);
-            }
-            if let Some(sub) = addr.suburb.as_deref() {
-                ev = ev.with_attr("suburb", sub);
-            }
-            if let Some(county) = addr.county.as_deref() {
-                ev = ev.with_attr("county", county);
             }
         }
 

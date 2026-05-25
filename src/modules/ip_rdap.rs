@@ -1,15 +1,3 @@
-//! RDAP (Registry Data Access Protocol) lookup for an IP.
-//!
-//! Endpoint: `https://rdap.arin.net/registry/ip/{ip}`. ARIN handles the
-//! 307-redirect to the matching RIR (RIPE / APNIC / LACNIC / AFRINIC)
-//! when the IP isn't in ARIN's space. `reqwest` follows redirects by
-//! default so the caller sees the final RIR response transparently.
-//!
-//! Surfaces the assignment record: handle, network name, country,
-//! parent prefix, allocation/last-changed dates. Complements `whois`
-//! and `bgpview` — those give holder + announcing-ASN respectively;
-//! RDAP gives the *registry* view including normalised dates.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -82,7 +70,6 @@ impl Module for IpRdap {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // ARIN's redirect to a non-US RIR can add ~1 s to the round-trip.
         8_000
     }
 
@@ -121,35 +108,16 @@ impl Module for IpRdap {
             entity.tag(format!("country:{}", c.to_uppercase()));
         }
 
-        let mut ev = Evidence::new("ip_rdap", format!("RDAP allocation record for {ip}"));
-        if let Some(h) = body.handle.as_deref() {
-            ev = ev.with_attr("handle", h);
-        }
-        if let Some(n) = body.name.as_deref() {
-            ev = ev.with_attr("name", n);
-        }
-        if let Some(c) = body.country.as_deref() {
-            ev = ev.with_attr("country", c);
-        }
-        if let Some(c) = cidr.as_deref() {
-            ev = ev.with_attr("prefix", c);
-        }
-        if let Some(v) = body.ip_version.as_deref() {
-            ev = ev.with_attr("ip_version", v);
-        }
-        if let Some(p) = body.parent_handle.as_deref() {
-            ev = ev.with_attr("parent_handle", p);
-        }
+        let mut ev = Evidence::new("ip_rdap", format!("RDAP allocation record for {ip}"))
+            .with_opt_attr("handle", body.handle.as_deref())
+            .with_opt_attr("name", body.name.as_deref())
+            .with_opt_attr("country", body.country.as_deref())
+            .with_opt_attr("prefix", cidr.as_deref())
+            .with_opt_attr("ip_version", body.ip_version.as_deref())
+            .with_opt_attr("parent_handle", body.parent_handle.as_deref());
         for evt in &body.events {
-            // Common eventAction values: "registration", "last changed",
-            // "last reregistration", "expiration", "deletion".
             if let Some(d) = evt.date.as_deref() {
-                // Reuse a single buffer for the key to avoid repeated allocations.
-                let mut key = String::with_capacity(7 + evt.action.len()); // "event:" + action
-                key.push_str("event:");
-                for c in evt.action.chars() {
-                    key.push(if c == ' ' { '_' } else { c });
-                }
+                let key: String = format!("event:{}", evt.action.replace(' ', "_"));
                 ev = ev.with_attr(key, d);
             }
         }

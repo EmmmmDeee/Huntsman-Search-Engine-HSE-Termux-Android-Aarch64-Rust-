@@ -1,11 +1,3 @@
-//! Wi-Fi access-point scanner — invokes `termux-wifi-scaninfo` (Termux:API
-//! package). Each visible AP becomes a `MacAddress` entity tagged `wifi-ap`
-//! with SSID / frequency / signal in evidence.
-//!
-//! Off-device, or with `termux-api` uninstalled, the binary is absent and
-//! the module no-ops via the [`termux_cmd`](crate::util::termux::termux_cmd)
-//! helper — no `module_error` event.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 

@@ -1,32 +1,3 @@
-//! Unified web crawler — supersedes SpiderFoot 4.0's sfp_spider + sfp_pageinfo
-//! + sfp_webframework + sfp_webserver in a single async BFS crawler.
-//!
-//! Capabilities (all executed in one `process()` call):
-//!   1. **Recursive BFS crawl** — async concurrent page fetching within the
-//!      target domain, bounded by depth (3) and page count (60). Respects
-//!      robots.txt `Disallow` rules and filters binary file extensions.
-//!   2. **Link discovery** — extracts internal links (same domain), external
-//!      links (other domains), and subdomain links. Each discovered subdomain
-//!      becomes a Domain entity for expansion.
-//!   3. **Content extraction** — emails, phones, and usernames found in page
-//!      bodies are emitted as entities with source provenance.
-//!   4. **Page classification** — login forms, admin panels, file upload
-//!      forms, and password fields are detected and tagged.
-//!   5. **Framework fingerprinting** — detects 25+ web frameworks and
-//!      technologies from HTML content (WordPress, React, Angular, Vue,
-//!      jQuery, Bootstrap, Next.js, Django, Laravel, Rails, etc.).
-//!   6. **Security header audit** — checks for HSTS, CSP, X-Frame-Options,
-//!      X-Content-Type-Options, Permissions-Policy from the seed response.
-//!
-//! Design principles:
-//!   - Zero additional dependencies — uses reqwest (already in Cargo.toml)
-//!     and string-based extraction (same approach as SpiderFoot's regex).
-//!   - Bounded memory — visited set is capped, page bodies are processed
-//!     and discarded (not accumulated).
-//!   - Termux-friendly — 4 concurrent requests, 200ms inter-request delay,
-//!     64 KB body cap per page. Total wall-time stays under 60s for typical
-//!     sites.
-
 use std::collections::{HashSet, VecDeque};
 
 use async_trait::async_trait;
@@ -585,7 +556,6 @@ fn audit_security_headers(
 }
 
 fn build_entities(domain: &str, _base_host: &str, scan_id: &str, state: &mut CrawlState) {
-    // Main domain entity with crawl summary
     let mut entity = Entity::new(EntityKind::Domain, domain, 0.90, scan_id);
     entity.tag(tags::WEB);
     entity.tag(tags::CRAWLED);
@@ -597,16 +567,13 @@ fn build_entities(domain: &str, _base_host: &str, scan_id: &str, state: &mut Cra
         entity.tag(format!("page:{pt}"));
     }
 
-    // Security header tags
     let missing_headers: Vec<&str> = state
         .security_headers
         .iter()
         .filter(|(_, present)| !present)
         .map(|(name, _)| *name)
         .collect();
-    if !missing_headers.is_empty() {
-        entity.tag(tags::MISSING_SECURITY_HEADERS);
-    }
+    entity.tag_if(!missing_headers.is_empty(), tags::MISSING_SECURITY_HEADERS);
 
     let mut ev = Evidence::new(
         "web_crawler",
@@ -653,7 +620,6 @@ fn build_entities(domain: &str, _base_host: &str, scan_id: &str, state: &mut Cra
     entity.add_evidence(ev);
     state.result.push(entity);
 
-    // Subdomain entities — feed back into expansion
     for sub in &state.subdomains {
         let mut e = Entity::new(EntityKind::Domain, sub.as_str(), 0.82, scan_id);
         e.tag(tags::WEB);
@@ -668,7 +634,6 @@ fn build_entities(domain: &str, _base_host: &str, scan_id: &str, state: &mut Cra
         state.result.push(e);
     }
 
-    // External domain entities
     for ext in &state.external_domains {
         let mut e = Entity::new(EntityKind::Domain, ext.as_str(), 0.50, scan_id);
         e.tag(tags::EXTERNAL);
@@ -682,7 +647,6 @@ fn build_entities(domain: &str, _base_host: &str, scan_id: &str, state: &mut Cra
         state.result.push(e);
     }
 
-    // Email entities
     for email in &state.emails {
         let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.75, scan_id);
         e.tag(tags::WEB_SCRAPED);
@@ -693,7 +657,6 @@ fn build_entities(domain: &str, _base_host: &str, scan_id: &str, state: &mut Cra
         state.result.push(e);
     }
 
-    // Phone entities
     for phone in &state.phones {
         let mut e = Entity::new(EntityKind::Phone, phone.as_str(), 0.65, scan_id);
         e.tag(tags::WEB_SCRAPED);

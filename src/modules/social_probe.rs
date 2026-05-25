@@ -1,16 +1,3 @@
-//! Direct social profile probing — free, zero API keys.
-//!
-//! For a Username target, sends HEAD/GET requests to known profile URL
-//! patterns on 20+ platforms. A 200 response confirms the profile exists;
-//! 404 confirms it doesn't. Each confirmed profile becomes a Url entity
-//! with the platform tagged.
-//!
-//! For a FullName target, probes people-search directories that use
-//! name-in-URL patterns (PeeKYou, Facebook public directory, etc.).
-//!
-//! Uses curl subprocess for maximum compatibility — social platforms
-//! often block non-browser TLS fingerprints.
-
 use async_trait::async_trait;
 
 use crate::core::{
@@ -256,7 +243,6 @@ impl Module for SocialProbe {
                 );
                 result.push(entity);
 
-                // Also extract the domain for infrastructure expansion
                 if let Some(host) = url::Url::parse(&url)
                     .ok()
                     .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
@@ -278,13 +264,10 @@ impl Module for SocialProbe {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
 
-        // Add summary to the target entity
         if found_count > 0 || checked_count > 0 {
             let mut summary = target.to_entity(0.82, &ctx.scan_id);
             summary.tag("social-probed");
-            if found_count >= 3 {
-                summary.tag("multi-platform");
-            }
+            summary.tag_if(found_count >= 3, "multi-platform");
             found_platforms.sort_unstable();
             summary.add_evidence(
                 Evidence::new(

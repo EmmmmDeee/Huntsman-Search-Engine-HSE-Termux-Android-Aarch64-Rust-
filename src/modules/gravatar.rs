@@ -1,18 +1,6 @@
-//! Gravatar profile check. Free, no key, no rate-limit billing.
-//!
-//! Gravatar identifies users by the MD5 hash of their lowercased,
-//! trimmed email address. A request to
-//! `https://www.gravatar.com/{hash}.json` returns the public profile
-//! if the user signed up, 404 otherwise.
-//!
-//! When found, emits the Email entity tagged `gravatar` with profile
-//! attributes (display name, location, urls). When not found, no
-//! entity is emitted (a 404 isn't a finding).
-
 use async_trait::async_trait;
 use md5::{Digest, Md5};
 use serde::Deserialize;
-// `md-5` is the maintained successor crate; the import path is `md5`.
 
 use crate::core::{
     entity::Evidence,
@@ -93,10 +81,7 @@ impl Module for Gravatar {
 
         let url = format!("https://www.gravatar.com/{hash}.json");
 
-        // Intentionally manual rather than using `util::http::fetch_json_or_404`:
-        // Gravatar's placeholder profiles return 200 + non-JSON body, and
-        // the helper would surface that as a `module_error`. The
-        // silent-treat-as-empty behaviour below is the documented contract.
+        // Gravatar placeholders return 200 + non-JSON; can't use fetch_json_or_404.
         let resp = ctx
             .http
             .get(&url)
@@ -106,7 +91,6 @@ impl Module for Gravatar {
 
         let status = resp.status();
         if status.as_u16() == 404 {
-            // No Gravatar profile — not a finding.
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
@@ -118,7 +102,6 @@ impl Module for Gravatar {
 
         let data: ProfileResp = match resp.json().await {
             Ok(d) => d,
-            // Placeholder profile → no findings (not a module error).
             Err(_) => return Ok(ModuleResult::new()),
         };
 
@@ -128,48 +111,40 @@ impl Module for Gravatar {
 
         let mut entity = target.to_entity(0.88, &ctx.scan_id);
         entity.tag("gravatar");
-        let mut ev = Evidence::new("gravatar", format!("Gravatar profile for {normalised}"))
-            .with_attr("md5", &hash)
-            .with_attr("profile_url", format!("https://www.gravatar.com/{hash}"));
-        if let Some(d) = entry.display_name.as_deref() {
-            ev = ev.with_attr("display_name", d);
-        }
-        if let Some(u) = entry.preferred_username.as_deref() {
-            ev = ev.with_attr("preferred_username", u);
-        }
-        if let Some(n) = entry.name.and_then(|n| n.formatted) {
-            ev = ev.with_attr("name", n);
-        }
-        if let Some(loc) = entry.location.as_deref() {
-            ev = ev.with_attr("location", loc);
-        }
-        if let Some(bio) = entry.about_me.as_deref() {
-            ev = ev.with_attr("bio", bio);
-        }
-        if let Some(avatar) = entry
-            .photos
-            .as_ref()
-            .and_then(|p| p.first())
-            .and_then(|p| p.value.as_deref())
-        {
-            ev = ev.with_attr("avatar_url", avatar);
-        }
-        if !entry.urls.is_empty() {
-            let mut urls_iter = entry.urls.iter().filter_map(|u| {
+        let urls_joined: Option<String> = {
+            let mut iter = entry.urls.iter().filter_map(|u| {
                 let v = u.value.as_deref()?;
                 let t = u.title.as_deref().unwrap_or("link");
                 Some(format!("{t}: {v}"))
             });
-            if let Some(first) = urls_iter.next() {
+            iter.next().map(|first| {
                 let mut joined = first;
-                for item in urls_iter {
+                for item in iter {
                     joined.push_str(" | ");
                     joined.push_str(&item);
                 }
-                ev = ev.with_attr("urls", joined);
-            }
-        }
-        entity.add_evidence(ev);
+                joined
+            })
+        };
+        entity.add_evidence(
+            Evidence::new("gravatar", format!("Gravatar profile for {normalised}"))
+                .with_attr("md5", &hash)
+                .with_attr("profile_url", format!("https://www.gravatar.com/{hash}"))
+                .with_opt_attr("display_name", entry.display_name.as_deref())
+                .with_opt_attr("preferred_username", entry.preferred_username.as_deref())
+                .with_opt_attr("name", entry.name.and_then(|n| n.formatted))
+                .with_opt_attr("location", entry.location.as_deref())
+                .with_opt_attr("bio", entry.about_me.as_deref())
+                .with_opt_attr(
+                    "avatar_url",
+                    entry
+                        .photos
+                        .as_ref()
+                        .and_then(|p| p.first())
+                        .and_then(|p| p.value.clone()),
+                )
+                .with_opt_attr("urls", urls_joined),
+        );
 
         let mut result = ModuleResult::new();
         result.push(entity);

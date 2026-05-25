@@ -1,5 +1,3 @@
-//! Scan request, target, status, and per-scan customisation options.
-
 use serde::{Deserialize, Serialize};
 
 use crate::core::entity::{EntityKind, unix_now};
@@ -19,11 +17,6 @@ pub enum TargetKind {
 }
 
 impl TargetKind {
-    /// Map an entity kind to a target kind, so an entity produced by one
-    /// module can become the input target for another module.
-    ///
-    /// Returns `None` for entity kinds that have no natural scan target
-    /// (organisations, MACs, raw URLs, credentials, etc.).
     pub fn from_entity_kind(kind: &EntityKind) -> Option<Self> {
         match kind {
             EntityKind::Email => Some(Self::Email),
@@ -46,7 +39,6 @@ impl TargetKind {
         }
     }
 
-    /// The matching entity kind for normalisation purposes. Always defined.
     pub fn to_entity_kind(self) -> EntityKind {
         match self {
             Self::Email => EntityKind::Email,
@@ -61,17 +53,6 @@ impl TargetKind {
         }
     }
 
-    /// Canonical lowercase snake_case identifier — matches the
-    /// serde-serialised form (`#[serde(rename_all = "snake_case")]`).
-    ///
-    /// Used at every site that needs a machine-readable target-kind
-    /// string (storage column, event payload, scan-id input). Per-scan
-    /// IDs are *not* deterministic across re-scans of the same target —
-    /// `util::uid::scan_id()` mixes `unix_now()` so each invocation
-    /// produces a fresh id. The invariant this method enforces is the
-    /// narrower one: CLI and HTTP API feed the same canonical string
-    /// into the hash, so a given run produces the same id regardless of
-    /// which interface launched the scan.
     pub fn canonical_str(&self) -> &'static str {
         match self {
             Self::Email => "email",
@@ -101,8 +82,6 @@ impl Target {
         }
     }
 
-    /// Create an entity pre-filled with the target's kind and value.
-    /// Shorthand for `Entity::new(target.kind.to_entity_kind(), &target.value, confidence, scan_id)`.
     pub fn to_entity(&self, confidence: f64, scan_id: &str) -> crate::core::entity::Entity {
         crate::core::entity::Entity::new(
             self.kind.to_entity_kind(),
@@ -112,14 +91,8 @@ impl Target {
         )
     }
 
-    /// Light shape-check for the user-supplied value, applied at the
-    /// API boundary so a clearly-bogus scan request fails fast with a
-    /// useful 400 rather than queueing a scan that no module accepts.
-    ///
-    /// This is intentionally lax — it rejects only the cases where the
-    /// shape is *definitely* wrong (empty value, "email" that's missing
-    /// the `@`, IP that doesn't parse). Modules still perform their own
-    /// stricter validation as needed.
+    /// Intentionally lax shape-check: rejects only clearly-wrong inputs.
+    /// Modules perform their own stricter validation as needed.
     pub fn validate(&self) -> std::result::Result<(), &'static str> {
         let v = self.value.trim();
         if v.is_empty() {
@@ -185,7 +158,6 @@ impl Target {
                     return Err("longitude must be in [-180, 180]");
                 }
             }
-            // Free-form text kinds: only the universal checks above apply.
             TargetKind::Username | TargetKind::FullName | TargetKind::Address => {}
         }
         Ok(())
@@ -199,10 +171,6 @@ pub enum ScanStatus {
     Running,
     Complete,
     Failed,
-    /// Operator-initiated cancellation (issue #23). Distinct from
-    /// `Failed` because the scan didn't error — it was told to stop.
-    /// Any entities + correlations produced before the cancel are
-    /// persisted as for a `Complete` scan.
     Aborted,
 }
 
@@ -259,67 +227,42 @@ pub struct ScanRequest {
     pub options: ScanOptions,
 }
 
-/// Per-scan customisation. All fields optional; defaults preserve plain-scan
-/// behaviour. The engine respects every field at dispatch time.
-///
-/// Adding a knob = add a field here; CLI/API/UI surface it as needed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanOptions {
-    /// Allowlist of module names. None = run every module that accepts the target.
     pub modules: Option<Vec<String>>,
 
-    /// Modules to exclude after allowlist filtering.
     #[serde(default)]
     pub exclude_modules: Vec<String>,
 
-    /// Delay between module dispatches, in milliseconds. 0 = no throttle.
     #[serde(default)]
     pub throttle_ms: u64,
 
-    /// Concurrent module cap. 0 = sequential (default for v0.1).
-    /// Reserved for v0.3+ parallel dispatcher.
     #[serde(default)]
     pub max_concurrent: usize,
 
-    /// Per-module timeout override (ms). None = `MODULE_TIMEOUT_MS`.
     pub module_timeout_ms: Option<u64>,
 
-    /// Drop entities whose base `confidence` is below this. None = no filter.
     pub min_confidence: Option<f64>,
 
-    /// Skip modules whose `cost()` is `KeyGated` or `Paid`.
     #[serde(default)]
     pub free_only: bool,
 
-    /// Skip modules where `is_passive()` returns false.
     #[serde(default)]
     pub passive_only: bool,
 
-    // ── Autonomous expansion (v0.2+) ────────────────────────────────────────
-    /// Recursive expansion depth. 0 = no expansion (single round, v0.1 behaviour).
-    /// Each round picks high-confidence entities from prior rounds, converts
-    /// them to scan targets, and runs all accepting modules on them.
     #[serde(default)]
     pub depth: u32,
 
-    /// Only expand entities whose `c_effective()` is at least this. Default 0.75
-    /// (Verified tier) — keeps expansion focused on the data the engine itself
-    /// rates as solid. Stronger filter than `min_confidence`, which gates the
-    /// base confidence at first encounter.
     #[serde(default = "default_min_expand_confidence")]
     pub min_expand_confidence: f64,
 
-    /// Hard cap on total entities. Stops expansion once reached. `None` = no cap.
     pub max_entities: Option<usize>,
 
-    /// Hard cap on total wall-time, in seconds. Stops expansion once exceeded. `None` = no cap.
     pub max_wall_time_secs: Option<u64>,
 
-    /// User-assigned labels for campaign tracking (e.g., "apt-29", "q2-audit").
     #[serde(default)]
     pub scan_tags: Vec<String>,
 
-    /// Freeform notes / investigation context.
     #[serde(default)]
     pub notes: Option<String>,
 }

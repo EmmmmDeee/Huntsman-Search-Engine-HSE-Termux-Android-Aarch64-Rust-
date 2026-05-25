@@ -1,10 +1,3 @@
-//! CLI: scan / modules / doctor / serve / live / provision / set-key.
-//!
-//! Surfaces every `ScanOptions` field as a flag so each scan is fully
-//! customisable before launch. `serve` boots the HTTP server + SPA;
-//! `live` re-runs the same scan on a fixed interval (v0.5+). See
-//! `docs/USAGE.md` for the full reference.
-
 mod provision;
 
 use std::sync::Arc;
@@ -40,8 +33,6 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
-// Scan has many fields (intentional — full ScanOptions surface as CLI flags).
-// Boxing every field is uglier than the size disparity warrants.
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// Run a single scan and print the entities found.
@@ -301,9 +292,6 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     let rx = bus.subscribe();
     let scanner_clone = scanner.clone();
     let target_lid = live_id.clone();
-    // Yield (json_line, is_terminator) tuples so the consumer loop checks
-    // the structured EventKind variant rather than substring-matching the
-    // serialised JSON. Saves us if the wire format ever changes.
     let mut stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
         Ok(event)
             if event.scan_id == target_lid
@@ -317,7 +305,6 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         _ => None,
     });
 
-    // Stream events until Ctrl-C OR the session naturally completes.
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -347,10 +334,6 @@ async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
 
     let (store, bus, engine) = build_runtime(1024)?;
     let live = LiveScanner::new(Arc::clone(&engine), bus.clone());
-    // Build the HTTP client ONCE per server lifetime — its internal
-    // connection pool, DNS cache, and TLS session cache then survive
-    // across scans, which materially reduces wall-time on Termux where
-    // every TLS handshake is expensive over a cellular link.
     let http = build_client();
     let state = Arc::new(AppState {
         store,
@@ -374,9 +357,6 @@ async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
     }
     tracing::info!("  Ctrl-C to stop");
 
-    // `into_make_service_with_connect_info::<SocketAddr>()` lets handlers
-    // extract the peer address via `ConnectInfo<SocketAddr>` — required
-    // for the loopback gate on `settings_keys_put`.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -389,7 +369,6 @@ async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
     Ok(())
 }
 
-/// Wait for SIGINT (Ctrl-C) or SIGTERM. Returns when either arrives.
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -453,8 +432,6 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
         notes: None,
     };
 
-    // Use the parsed TargetKind's canonical form, not the raw user input,
-    // so `--kind ip` and `--kind ipaddress` produce the same scan_id.
     let sid = scan_id(target_kind.canonical_str(), &cmd.value);
     let (store, bus, engine) = build_runtime(64)?;
 
@@ -464,9 +441,6 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
         bus,
         http: build_client(),
         keys: keys::load(),
-        // CLI scans don't have an external cancel surface; the user
-        // hits Ctrl-C which kills the process outright. A
-        // default-constructed handle never fires.
         cancel: crate::core::cancel::CancelHandle::new(),
     };
 
@@ -663,16 +637,10 @@ fn cost_label(c: ModuleCost) -> &'static str {
     }
 }
 
-/// Parse `--modules foo,bar,baz` (or `--exclude`) into a trimmed Vec.
-/// `None` input stays `None`; empty entries are kept (caller's problem).
 fn split_csv(s: Option<String>) -> Option<Vec<String>> {
     s.map(|s| s.split(',').map(|m| m.trim().to_string()).collect())
 }
 
-/// Boot the bits every command needs: store, broadcast bus, engine.
-/// `bus_capacity` is the broadcast channel buffer — small for one-shot
-/// `scan`, large for `serve`/`live` where it has to absorb many parallel
-/// subscribers.
 fn build_runtime(
     bus_capacity: usize,
 ) -> Result<(Arc<Store>, crate::core::event::EventBus, Arc<ScanEngine>)> {

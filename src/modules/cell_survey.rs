@@ -1,10 +1,3 @@
-//! Cellular tower survey — invokes `termux-telephony-cellinfo`.
-//!
-//! Each registered cell becomes a `DeviceId` entity tagged `cell-tower`
-//! with an opaque `<mcc>-<mnc>-<lac|tac>-<cid>` identifier. Signal
-//! strength, radio type (LTE/GSM/UMTS/NR), and ASU level are recorded
-//! as evidence. Off-device → no-op via the termux_cmd helper.
-
 use std::borrow::Cow;
 
 use async_trait::async_trait;
@@ -105,8 +98,7 @@ fn parse_cells(stdout: &[u8], scan_id: &str) -> ModuleResult {
     result
 }
 
-/// `mcc`/`mnc` come as `"505"` on some Android versions and `505` on others.
-/// Normalise to string; missing → empty.
+/// Android returns mcc/mnc as either string or number depending on version.
 fn json_to_str(v: &Option<serde_json::Value>) -> Cow<'_, str> {
     match v {
         Some(serde_json::Value::String(s)) => Cow::Borrowed(s.as_str()),

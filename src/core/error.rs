@@ -1,6 +1,3 @@
-//! Crate-wide error type. Modules raise `Error::module(name, msg)` for
-//! API-specific failures; everything else uses `From` conversions.
-
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -31,7 +28,6 @@ pub enum Error {
 }
 
 impl Error {
-    /// Convenience constructor for module-specific errors.
     pub fn module(module: impl Into<String>, message: impl Into<String>) -> Self {
         Self::Module {
             module: module.into(),

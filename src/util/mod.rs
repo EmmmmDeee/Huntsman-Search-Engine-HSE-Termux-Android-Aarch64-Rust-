@@ -1,5 +1,3 @@
-//! Utilities: HTTP client, DNS resolver, key loading, UID generation, Termux helpers.
-
 pub mod curl;
 pub mod dns;
 pub mod freq;

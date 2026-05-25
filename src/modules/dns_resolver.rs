@@ -1,21 +1,3 @@
-//! DNS resolver via Cloudflare. Pulls A / AAAA / MX / NS / SOA / TXT
-//! in parallel and emits one entity per record type:
-//!
-//! * A     → IpAddress (per IPv4)
-//! * AAAA  → IpAddress (per IPv6)
-//! * MX    → Domain    (per mailserver, tagged `mx`)
-//! * NS    → Domain    (per nameserver, tagged `ns`)
-//! * SOA   → Domain    (one summary, with primary NS + admin email)
-//! * TXT   → Domain    (enriched parent, evidence holds all TXT values)
-//!
-//! Lookups run concurrently via `tokio::join!` — the module wall-time
-//! is roughly the slowest single lookup rather than the sum. Missing
-//! record types are silently skipped (most domains don't publish all
-//! six).
-//!
-//! Uses `hickory-resolver` 0.26 — see `RUSTSEC-2026-0119` for the
-//! O(n²) name-compression fix that motivated the 0.24 → 0.26 bump.
-
 use async_trait::async_trait;
 use hickory_resolver::proto::rr::RData;
 
@@ -60,7 +42,6 @@ impl Module for DnsResolver {
             resolver.txt_lookup(domain),
         );
 
-        // A + AAAA — iterate the underlying records so we can read TTL.
         if let Ok(lookup) = ips {
             for record in lookup.as_lookup().answers() {
                 let (ip_str, record_type, ip_version) = match &record.data {
@@ -81,7 +62,6 @@ impl Module for DnsResolver {
             }
         }
 
-        // MX records
         if let Ok(lookup) = mxs {
             for record in lookup.answers() {
                 let RData::MX(mx) = &record.data else {
@@ -104,7 +84,6 @@ impl Module for DnsResolver {
             }
         }
 
-        // NS records — authoritative nameservers
         if let Ok(lookup) = nss {
             for record in lookup.answers() {
                 let RData::NS(ns) = &record.data else {
@@ -126,9 +105,6 @@ impl Module for DnsResolver {
             }
         }
 
-        // SOA — Start-of-Authority. Surfaces the zone's primary NS and
-        // the admin email (encoded as a hostname with `.` instead of `@`
-        // in the local-part separator per RFC 1035 §3.3.13).
         if let Ok(lookup) = soa
             && let Some(dns_record) = lookup
                 .answers()
@@ -138,8 +114,6 @@ impl Module for DnsResolver {
             let RData::SOA(ref soa_data) = dns_record.data else {
                 unreachable!();
             };
-            // SOA fields are public in hickory-proto 0.26 — direct access
-            // rather than getters.
             let mname = soa_data.mname.to_ascii();
             let mname = mname.trim_end_matches('.');
             let rname_raw = soa_data.rname.to_ascii();
@@ -162,8 +136,6 @@ impl Module for DnsResolver {
             e.add_evidence(ev);
             result.push(e);
 
-            // Also emit the admin contact as a discrete Email entity
-            // when present — it's a real OSINT signal.
             if admin_email.contains('@') {
                 let mut em = Entity::new(EntityKind::Email, &admin_email, 0.70, &ctx.scan_id);
                 em.tag("dns-admin");
@@ -176,7 +148,6 @@ impl Module for DnsResolver {
             }
         }
 
-        // TXT records → enrich parent
         if let Ok(lookup) = txts {
             let mut min_ttl: Option<u32> = None;
             let txts: Vec<String> = lookup
@@ -192,8 +163,6 @@ impl Module for DnsResolver {
                 .collect();
             if !txts.is_empty() {
                 let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
-                // Common TXT-record signals worth surfacing as tags so
-                // the SPA can highlight them.
                 for t in &txts {
                     let b = t.as_bytes();
                     if b.len() >= 6 && b[..6].eq_ignore_ascii_case(b"v=spf1") {
@@ -210,14 +179,12 @@ impl Module for DnsResolver {
                         dom.tag("ms-verified");
                     }
                 }
-                let mut txt_ev =
+                dom.add_evidence(
                     Evidence::new("dns_resolver", format!("{} TXT records", txts.len()))
                         .with_attr("txt_records", txts.join(" | "))
-                        .with_attr("txt_count", txts.len().to_string());
-                if let Some(ttl) = min_ttl {
-                    txt_ev = txt_ev.with_attr("ttl_secs", ttl.to_string());
-                }
-                dom.add_evidence(txt_ev);
+                        .with_attr("txt_count", txts.len().to_string())
+                        .with_opt_attr("ttl_secs", min_ttl.map(|t| t.to_string())),
+                );
                 result.push(dom);
             }
         }
@@ -226,14 +193,11 @@ impl Module for DnsResolver {
     }
 }
 
-/// SOA RNAME field is encoded as `local-part.domain` (no `@` allowed in
-/// DNS labels). Decode by replacing the first unescaped `.` with `@`.
-/// Returns empty string when the input doesn't look like an email.
+/// Decode SOA RNAME (`local-part.domain`) into an email address (RFC 1035 section 3.3.13).
 fn soa_rname_to_email(rname: &str) -> String {
     if rname.is_empty() || !rname.contains('.') {
         return String::new();
     }
-    // Find the first non-escaped dot.
     let bytes = rname.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -243,7 +207,6 @@ fn soa_rname_to_email(rname: &str) -> String {
         }
         if bytes[i] == b'.' {
             let (local, rest) = rname.split_at(i);
-            // rest still starts with '.'; skip it.
             let domain = &rest[1..];
             if local.is_empty() || domain.is_empty() {
                 return String::new();

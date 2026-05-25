@@ -1,24 +1,3 @@
-//! Scan engine — module dispatcher + autonomous expansion (v0.2+) + parallel
-//! dispatch (v0.8+).
-//!
-//! Each scan has two phases:
-//!   1. Seed dispatch — every accepting module runs against the seed target.
-//!   2. Expansion (when `ScanOptions::depth > 0`) — entities produced so far
-//!      with `c_effective() ≥ min_expand_confidence` are converted to new
-//!      targets and re-dispatched, up to `depth` rounds. Already-visited
-//!      (kind, normalised-value) pairs are skipped, so cycles terminate
-//!      naturally. Budgets (`max_entities`, `max_wall_time_secs`) short-circuit
-//!      if exceeded.
-//!
-//! Dispatch mode is selected by `ScanOptions::max_concurrent`:
-//!   * `0` (default) → sequential, byte-identical to v0.1–v0.7 behaviour.
-//!     Best for low-power Termux devices where serialising modules avoids
-//!     I/O contention.
-//!   * `N > 0` → up to N modules in flight concurrently via
-//!     `tokio::sync::Semaphore`. Wall-time roughly divides by
-//!     `min(N, n_accepting_modules)`. Event ordering across concurrent
-//!     modules is interleaved; SSE consumers handle this transparently.
-
 mod dispatch;
 
 use std::collections::{HashMap, HashSet};
@@ -42,15 +21,10 @@ pub struct ScanEngine {
     bus: EventBus,
 }
 
-/// Reason an expansion round stopped before depth was exhausted.
 enum StopReason {
     NoMoreCandidates,
     MaxEntities(usize),
     MaxWallTime(u64),
-    /// Operator-initiated cancellation via the `CancelHandle` plumbed
-    /// through `ModuleContext`. Distinct from the budget stops so the
-    /// `ExpansionStop` event reads "cancelled" rather than "budget
-    /// exceeded" — the SPA / log consumers can colour it differently.
     Cancelled,
 }
 
@@ -65,27 +39,14 @@ impl StopReason {
     }
 }
 
-/// Persist an event to `store` and broadcast it on `bus`. Free function so
-/// spawned tasks (which capture cloned `store` + `bus` rather than `&self`)
-/// can call the same code path as `ScanEngine::emit`.
-///
-/// Persist FIRST so a slow broadcast subscriber can't lose us a log entry,
-/// then broadcast for any live SSE subscribers. Both writes are
-/// best-effort — store-write errors don't abort the scan, broadcast
-/// errors just mean nobody is currently subscribed.
+/// Free function so spawned tasks (which capture cloned `store` + `bus`
+/// rather than `&self`) can use the same emit path as `ScanEngine::emit`.
 pub(crate) fn emit_event(store: &Store, bus: &EventBus, scan_id: &str, kind: EventKind) {
     let event = Event::new(scan_id, kind);
-    // Persist-first so live SSE subscribers can't have an event that
-    // history-fetch never sees. The DB write is best-effort: surface
-    // failures via tracing so an empty Scan Log tab is at least
-    // diagnosable, but don't abort the scan if SQLite is wedged.
+    // Persist first so SSE subscribers can't see events that history-fetch misses.
     if let Err(e) = store.insert_event(&event) {
         warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
     }
-    // `send` returns Err when there are zero active subscribers. This is
-    // normal during early startup (before any SSE client connects), so
-    // log at trace level — just enough to diagnose "events never reach
-    // the UI" without spamming production logs.
     if bus.send(event).is_err() {
         tracing::trace!(scan_id, "broadcast dropped (no subscribers)");
     }
@@ -101,9 +62,6 @@ impl ScanEngine {
         }
     }
 
-    /// Persist + broadcast one event for `scan_id`. The canonical
-    /// emit path for engine-side events; see `emit_event` for the free
-    /// function used inside spawned dispatch tasks.
     fn emit(&self, scan_id: &str, kind: EventKind) {
         emit_event(&self.store, &self.bus, scan_id, kind);
     }
@@ -116,7 +74,6 @@ impl ScanEngine {
         &self.bus
     }
 
-    /// Run a scan to completion, including any expansion rounds.
     pub async fn run(&self, mut scan: Scan, target: Target, ctx: ModuleContext) -> Result<Scan> {
         scan.status = ScanStatus::Running;
         self.store.upsert_scan(&scan)?;
@@ -154,7 +111,6 @@ impl ScanEngine {
         self.finalise_scan(&mut scan, entity_map, &ctx)
     }
 
-    /// Persist entities, run the correlator, and mark the scan terminal.
     fn finalise_scan(
         &self,
         scan: &mut Scan,
@@ -229,7 +185,6 @@ impl ScanEngine {
         }
     }
 
-    /// Drive the expansion loop. Returns the stop reason for diagnostics.
     async fn run_expansion(
         &self,
         scan_id: &str,
@@ -240,8 +195,6 @@ impl ScanEngine {
         visited: &mut HashSet<(TargetKind, String)>,
     ) -> StopReason {
         for depth in 1..=opts.depth {
-            // Cancellation gate at round entry — between rounds is the
-            // cheapest place to exit because nothing new has spawned.
             if ctx.cancel.is_cancelled() {
                 let stop = StopReason::Cancelled;
                 let _ = self.bus.send(Event::new(
@@ -252,9 +205,6 @@ impl ScanEngine {
                 ));
                 return stop;
             }
-            // Snapshot the entity set at round start — entities discovered
-            // during this round will be expansion candidates in the next round,
-            // not this one.
             let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
 
             let mut next: Vec<Target> = Vec::new();
@@ -316,8 +266,6 @@ impl ScanEngine {
                     .dispatch_target(scan_id, nt, ctx, opts, entity_map)
                     .await
                 {
-                    // Per-target dispatch errors are already surfaced as
-                    // ModuleError events; we keep going through the round.
                     warn!(scan_id, error = %e, "dispatch_target failed (continuing)");
                 }
             }
@@ -326,9 +274,6 @@ impl ScanEngine {
     }
 }
 
-/// Visit-key for the expansion visited-set. Normalises the value the same
-/// way `Entity::new` does, so the seed target matches entities that point
-/// back at it.
 fn visit_key(target: &Target) -> (TargetKind, String) {
     let entity_kind = target.kind.to_entity_kind();
     let normalised = normalise(&entity_kind, &target.value);

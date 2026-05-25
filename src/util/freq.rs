@@ -1,14 +1,5 @@
-//! Frequency-counting utility. Replaces the repeated BTreeMap + sort +
-//! truncate + format pattern found across breach/threat-intel modules.
-
 use std::collections::BTreeMap;
 
-/// Count items by key, sort descending by frequency, take the top N,
-/// and format as `"key1×count1, key2×count2, ..."`.
-///
-/// Used by dehashed, oathnet_pro, intelx, leakix, wigle, and any future
-/// module that summarises a response into a "top databases" or "top
-/// categories" evidence attribute.
 pub fn top_n<'a>(items: impl Iterator<Item = &'a str>, n: usize) -> String {
     let mut counts: BTreeMap<&str, u32> = BTreeMap::new();
     for item in items {

@@ -1,7 +1,3 @@
-//! Shared OathNet API client — used by both oathnet_pro module and
-//! search_engines enrichment pass. Lives in util/ so any module can
-//! call it without violating the "no inter-module imports" invariant.
-
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -46,8 +42,6 @@ struct SearchData {
     items: Vec<Value>,
 }
 
-/// Search a specific OathNet surface (breach, stealer, etc.) by field.
-/// Returns the raw item array on success, empty vec on 404/clean miss.
 pub async fn search(
     key: &str,
     path: &str,
@@ -82,7 +76,6 @@ pub async fn search(
     Ok(sd.items)
 }
 
-/// OSINT lookup (holehe, ip-info, discord, steam, etc.)
 pub async fn osint(key: &str, path: &str, param: &str, value: &str) -> Result<Value> {
     let encoded = crate::util::http::urlencode(value);
     let url = format!("{}{}?{}={}", base_url(), path, param, encoded);
@@ -95,7 +88,6 @@ pub async fn osint(key: &str, path: &str, param: &str, value: &str) -> Result<Va
     Ok(env.data.unwrap_or(Value::Null))
 }
 
-/// Extract a string field from a JSON Value.
 pub fn val_str(item: &Value, key: &str) -> Option<String> {
     item.get(key)
         .and_then(|v| v.as_str())
@@ -103,12 +95,10 @@ pub fn val_str(item: &Value, key: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Extract the first non-empty string from multiple candidate fields.
 pub fn val_str_or(item: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|k| val_str(item, k))
 }
 
-/// Count top N database names by frequency.
 pub fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for item in items {
@@ -121,7 +111,6 @@ pub fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {
     sorted.into_iter().take(n).map(|(k, _)| k).collect()
 }
 
-/// API endpoint path constants.
 pub mod paths {
     pub const BREACH: &str = "/service/v2/breach/search";
     pub const STEALER: &str = "/service/v2/stealer/search";
@@ -135,9 +124,6 @@ pub mod paths {
     pub const VICTIMS: &str = "/service/v2/victims/search";
 }
 
-/// Harvest API service credentials from OathNet stealer data.
-/// Searches for credentials associated with OSINT service domains
-/// and returns them as (service, username, password, url) tuples.
 pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, String)> {
     let services = [
         "shodan.io",

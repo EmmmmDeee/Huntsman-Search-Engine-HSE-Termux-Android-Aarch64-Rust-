@@ -1,10 +1,3 @@
-//! Raw whois protocol (TCP port 43). Free, no key, no root.
-//!
-//! Most TLDs delegate via referral — we follow one hop to the authoritative
-//! whois server, then parse the response for registrar / dates / registrant
-//! email. The parser is line-prefix based, robust across the half-dozen
-//! mostly-but-not-quite-RFC-3912 dialects in the wild.
-
 use async_trait::async_trait;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -37,9 +30,6 @@ impl Module for Whois {
         32
     }
 
-    /// IANA query + one referral follow-up, each capped at
-    /// `QUERY_TIMEOUT_MS = 4000`. Worst case 2 × 4 s = 8 s; round up
-    /// to give the response read some headroom past connect timeout.
     fn max_timeout_ms(&self) -> u64 {
         10_000
     }
@@ -49,12 +39,10 @@ impl Module for Whois {
     }
 
     async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
-        // 1) Ask IANA who's authoritative for this name.
         let raw = query(IANA_WHOIS, &target.value)
             .await
             .map_err(|e| Error::module("whois", e.to_string()))?;
 
-        // 2) If IANA's response references another whois server, follow once.
         let response = match find_referral(&raw) {
             Some(server) => {
                 let target_server = format!("{server}:43");
@@ -63,7 +51,6 @@ impl Module for Whois {
             None => raw,
         };
 
-        // 3) Parse the response into the fields we surface.
         let registrar = field(&response, &["Registrar:", "Sponsoring Registrar:"]);
         let registrar_iana = field(&response, &["Registrar IANA ID:", "Registrar IANA Number:"]);
         let registrar_url = field(&response, &["Registrar URL:", "Registrar Website:"]);
@@ -119,7 +106,6 @@ impl Module for Whois {
         let statuses = all_fields(&response, &["Domain Status:", "status:"]);
         let dnssec = field(&response, &["DNSSEC:", "dnssec:"]);
 
-        // No actionable data parsed — skip the entity to avoid noise.
         if registrar.is_none() && created.is_none() && nameservers.is_empty() && statuses.is_empty()
         {
             return Ok(ModuleResult::new());
@@ -127,9 +113,6 @@ impl Module for Whois {
 
         let mut entity = target.to_entity(0.85, &_ctx.scan_id);
 
-        // Status flags become tags so the SPA can highlight them. These
-        // are the most operationally interesting: lock states, hold flags,
-        // pending transfers, etc.
         for status in &statuses {
             let lower = status.to_lowercase();
             for flag in [
@@ -164,63 +147,34 @@ impl Module for Whois {
             entity.tag("dnssec:signed");
         }
 
-        let mut ev = Evidence::new("whois", format!("WHOIS for {}", target.value));
-        if let Some(v) = &registrar {
-            ev = ev.with_attr("registrar", v);
-        }
-        if let Some(v) = &registrar_iana {
-            ev = ev.with_attr("registrar_iana_id", v);
-        }
-        if let Some(v) = &registrar_url {
-            ev = ev.with_attr("registrar_url", v);
-        }
-        if let Some(v) = &created {
-            ev = ev.with_attr("created", v);
-        }
-        if let Some(v) = &updated {
-            ev = ev.with_attr("updated", v);
-        }
-        if let Some(v) = &expires {
-            ev = ev.with_attr("expires", v);
-        }
+        let mut ev = Evidence::new("whois", format!("WHOIS for {}", target.value))
+            .with_opt_attr("registrar", registrar.as_deref())
+            .with_opt_attr("registrar_iana_id", registrar_iana.as_deref())
+            .with_opt_attr("registrar_url", registrar_url.as_deref())
+            .with_opt_attr("created", created.as_deref())
+            .with_opt_attr("updated", updated.as_deref())
+            .with_opt_attr("expires", expires.as_deref());
         if !nameservers.is_empty() {
             ev = ev.with_attr("name_servers", nameservers.join(", "));
         }
         if !statuses.is_empty() {
             ev = ev.with_attr("statuses", statuses.join(", "));
         }
-        if let Some(v) = &dnssec {
-            ev = ev.with_attr("dnssec", v);
-        }
-        if let Some(v) = &registrant_org {
-            ev = ev.with_attr("registrant_org", v);
-        }
-        if let Some(v) = &registrant_country {
-            ev = ev.with_attr("registrant_country", v);
-        }
-        if let Some(v) = &registrant_state {
-            ev = ev.with_attr("registrant_state", v);
-        }
-        if let Some(v) = &registrant_email {
-            ev = ev.with_attr("registrant_email", v);
-        }
-        if let Some(v) = &admin_email {
-            ev = ev.with_attr("admin_email", v);
-        }
-        if let Some(v) = &tech_email {
-            ev = ev.with_attr("tech_email", v);
-        }
-        if let Some(v) = &abuse_email {
-            ev = ev.with_attr("abuse_email", v);
-        }
+        ev = ev
+            .with_opt_attr("dnssec", dnssec.as_deref())
+            .with_opt_attr("registrant_org", registrant_org.as_deref())
+            .with_opt_attr("registrant_country", registrant_country.as_deref())
+            .with_opt_attr("registrant_state", registrant_state.as_deref())
+            .with_opt_attr("registrant_email", registrant_email.as_deref())
+            .with_opt_attr("admin_email", admin_email.as_deref())
+            .with_opt_attr("tech_email", tech_email.as_deref())
+            .with_opt_attr("abuse_email", abuse_email.as_deref());
 
         entity.add_evidence(ev);
 
         let mut result = ModuleResult::new();
         result.push(entity);
 
-        // Surface contact emails as discrete Email entities so they fan
-        // out as scan targets in autonomous-expansion mode.
         for (email, role) in [
             (&registrant_email, "registrant"),
             (&admin_email, "admin"),
@@ -242,8 +196,6 @@ impl Module for Whois {
             }
         }
 
-        // Surface nameservers as Domain entities too so DNS chaining
-        // picks them up at depth>=1.
         for ns in &nameservers {
             let host = ns.trim_end_matches('.').to_lowercase();
             if host.is_empty() {
@@ -273,9 +225,6 @@ async fn query(server: &str, q: &str) -> std::io::Result<String> {
     query_line.push_str("\r\n");
     stream.write_all(query_line.as_bytes()).await?;
     let mut buf = String::with_capacity(4096);
-    // Cap the read at 64 KiB so a malicious or misconfigured whois server
-    // can't OOM the engine by streaming forever. Real WHOIS responses are
-    // ≪ 64 KiB (typically 2–8 KiB).
     timeout(
         Duration::from_millis(QUERY_TIMEOUT_MS),
         (&mut stream).take(65_536).read_to_string(&mut buf),
@@ -286,10 +235,7 @@ async fn query(server: &str, q: &str) -> std::io::Result<String> {
 
 fn find_referral(text: &str) -> Option<String> {
     for line in text.lines() {
-        // Use the zero-alloc helper for consistency with field() /
-        // all_fields() below. The previous per-line `to_lowercase()`
-        // allocation here contradicted the v0.5 "zero allocation" promise.
-        if (starts_with_ascii_ci(line, "whois:") || starts_with_ascii_ci(line, "refer:"))
+            if (starts_with_ascii_ci(line, "whois:") || starts_with_ascii_ci(line, "refer:"))
             && let Some((_, rest)) = line.split_once(':')
         {
             let v = rest.trim().to_string();
@@ -301,9 +247,6 @@ fn find_referral(text: &str) -> Option<String> {
     None
 }
 
-/// True if `line`'s leading bytes match `key` ignoring ASCII case. Avoids the
-/// per-line `to_lowercase()` allocation a `lower.starts_with(&lkey)` check
-/// would force (WHOIS keys are pure ASCII).
 fn starts_with_ascii_ci(line: &str, key: &str) -> bool {
     line.len() >= key.len() && line.as_bytes()[..key.len()].eq_ignore_ascii_case(key.as_bytes())
 }

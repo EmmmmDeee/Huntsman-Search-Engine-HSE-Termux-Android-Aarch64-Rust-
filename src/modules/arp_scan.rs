@@ -1,13 +1,3 @@
-//! ARP table reader — parses `/proc/net/arp` on Linux/Android. No root,
-//! no termux-api binary needed, no network traffic — passive sensor.
-//!
-//! On a non-Linux host (macOS dev box, etc.) the file doesn't exist and
-//! the module no-ops with an empty `ModuleResult`.
-//!
-//! Accepts any target — the ARP table is environmental and doesn't depend
-//! on what's being scanned. Exclude with `--exclude arp_scan` if you don't
-//! want local-network entities mixed into your scan results.
-
 use async_trait::async_trait;
 
 use crate::core::{
@@ -39,7 +29,6 @@ impl Module for ArpScan {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // not Linux, no /proc — no-op
         let Ok(content) = tokio::fs::read_to_string("/proc/net/arp").await else {
             return Ok(ModuleResult::new());
         };
@@ -47,12 +36,7 @@ impl Module for ArpScan {
     }
 }
 
-/// Parses the ARP table format. First line is the header; data rows have
-/// columns: IP, HW type, Flags, MAC, Mask, Device. Rows with the placeholder
-/// MAC `00:00:00:00:00:00` are incomplete (no resolution yet) and skipped.
 fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
-    // Pre-allocate: each valid row yields 2 entities (IP + MAC).
-    // Subtract 1 for the header line.
     let line_count = content.lines().count().saturating_sub(1);
     let mut result = ModuleResult {
         entities: Vec::with_capacity(line_count.saturating_mul(2)),
@@ -78,15 +62,14 @@ fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
 
         let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, 0.95, scan_id);
         ip_entity.tag("local-arp");
-        let mut ip_ev = Evidence::new("arp_scan", format!("ARP entry on {dev}"))
-            .with_attr("mac", mac)
-            .with_attr("interface", dev)
-            .with_attr("hw_type", hw_type)
-            .with_attr("flags", flags);
-        if let Some(v) = vendor {
-            ip_ev = ip_ev.with_attr("vendor", v);
-        }
-        ip_entity.add_evidence(ip_ev);
+        ip_entity.add_evidence(
+            Evidence::new("arp_scan", format!("ARP entry on {dev}"))
+                .with_attr("mac", mac)
+                .with_attr("interface", dev)
+                .with_attr("hw_type", hw_type)
+                .with_attr("flags", flags)
+                .with_opt_attr("vendor", vendor),
+        );
         result.push(ip_entity);
 
         let mut mac_entity = Entity::new(EntityKind::MacAddress, mac, 0.95, scan_id);
@@ -94,15 +77,14 @@ fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
         if let Some(v) = vendor {
             mac_entity.tag(format!("vendor:{}", v.to_lowercase().replace(' ', "-")));
         }
-        let mut mac_ev = Evidence::new("arp_scan", format!("ARP: {ip} via {dev}"))
-            .with_attr("ip", ip)
-            .with_attr("interface", dev)
-            .with_attr("hw_type", hw_type)
-            .with_attr("flags", flags);
-        if let Some(v) = vendor {
-            mac_ev = mac_ev.with_attr("vendor", v);
-        }
-        mac_entity.add_evidence(mac_ev);
+        mac_entity.add_evidence(
+            Evidence::new("arp_scan", format!("ARP: {ip} via {dev}"))
+                .with_attr("ip", ip)
+                .with_attr("interface", dev)
+                .with_attr("hw_type", hw_type)
+                .with_attr("flags", flags)
+                .with_opt_attr("vendor", vendor),
+        );
         result.push(mac_entity);
     }
 

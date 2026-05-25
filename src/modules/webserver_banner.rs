@@ -1,17 +1,3 @@
-//! HTTP server fingerprint via a single HEAD request.
-//!
-//! Captures the response headers that reliably identify the running
-//! stack — `Server`, `X-Powered-By`, `X-Generator`, etc. — plus the
-//! security-posture headers (`X-Frame-Options`, `Content-Security-Policy`,
-//! `Strict-Transport-Security`, `X-AspNet-Version`).
-//!
-//! Tries HTTPS first, falls back to plain HTTP. Even 4xx/5xx responses
-//! leak useful headers so we only abort if the host refuses both
-//! schemes outright.
-//!
-//! Tagged outputs (`nginx`, `apache`, `iis`, `cloudflare`, `wordpress`)
-//! let the Browse tab filter on stack family.
-
 use async_trait::async_trait;
 
 use crate::core::{
@@ -23,8 +9,6 @@ use crate::core::{
 
 pub struct WebserverBanner;
 
-/// Headers we surface as evidence. Lower-case because `reqwest`
-/// canonicalises header names that way internally.
 const FINGERPRINT_HEADERS: &[&str] = &[
     "server",
     "x-powered-by",
@@ -60,8 +44,6 @@ impl Module for WebserverBanner {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // Two HEAD attempts (HTTPS → HTTP fallback). Each on a fresh
-        // socket if the connection pool is empty.
         6_000
     }
 
@@ -132,36 +114,16 @@ fn apply_stack_tags(e: &mut Entity, headers: &[(String, String)]) {
         }
     }
     let names: Vec<&str> = headers.iter().map(|(n, _)| n.as_str()).collect();
-    if blob.contains("nginx") {
-        e.tag("nginx");
-    }
-    if blob.contains("apache") {
-        e.tag("apache");
-    }
-    if blob.contains("microsoft-iis") || blob.contains("iis/") {
-        e.tag("iis");
-    }
-    if blob.contains("cloudflare") || names.contains(&"cf-ray") {
-        e.tag("cloudflare");
-    }
-    if names.contains(&"x-amz-cf-id") {
-        e.tag("aws-cloudfront");
-    }
-    if names.contains(&"x-served-by") || names.contains(&"x-cache") {
-        e.tag("fastly");
-    }
-    if blob.contains("wordpress") {
-        e.tag("wordpress");
-    }
-    if blob.contains("drupal") {
-        e.tag("drupal");
-    }
-    if blob.contains("php") {
-        e.tag("php");
-    }
-    if blob.contains("aspnet") || names.contains(&"x-aspnet-version") {
-        e.tag("aspnet");
-    }
+    e.tag_if(blob.contains("nginx"), "nginx");
+    e.tag_if(blob.contains("apache"), "apache");
+    e.tag_if(blob.contains("microsoft-iis") || blob.contains("iis/"), "iis");
+    e.tag_if(blob.contains("cloudflare") || names.contains(&"cf-ray"), "cloudflare");
+    e.tag_if(names.contains(&"x-amz-cf-id"), "aws-cloudfront");
+    e.tag_if(names.contains(&"x-served-by") || names.contains(&"x-cache"), "fastly");
+    e.tag_if(blob.contains("wordpress"), "wordpress");
+    e.tag_if(blob.contains("drupal"), "drupal");
+    e.tag_if(blob.contains("php"), "php");
+    e.tag_if(blob.contains("aspnet") || names.contains(&"x-aspnet-version"), "aspnet");
 }
 
 #[cfg(test)]

@@ -1,14 +1,3 @@
-//! HudsonRock free stealer-log lookup. Public endpoint, no API key required.
-//!
-//! Endpoints:
-//!   /api/json/v2/osint-tools/search-by-login?username=<email_or_username>
-//!   /api/json/v2/osint-tools/search-by-domain?domain=<domain>
-//!
-//! Security: stealer credentials are NEVER stored in evidence — only the
-//! aggregate compromise metadata (machine name, OS, date, malware family,
-//! credential count). Passwords, session cookies, and raw credential
-//! content are intentionally never read from the response.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -42,19 +31,8 @@ struct Stealer {
     credentials: Vec<serde_json::Value>,
 }
 
-/// Base confidence for stealer-log hits. Stealer logs are high-fidelity
-/// (actual malware exfiltration, not compilations), so the baseline is
-/// higher than database breaches. Recent compromises get boosted further
-/// by `freshness_boost`.
 const BASE_CONFIDENCE: f64 = 0.85;
-
-/// Boost confidence to this value when the compromise date is within
-/// 90 days. Per Recorded Future's 2025 report, 53% of credentials are
-/// indexed within one week — a recent date means the exposure is likely
-/// still live.
 const FRESH_CONFIDENCE: f64 = 0.92;
-
-/// Number of days within which a compromise is considered "fresh".
 const FRESHNESS_WINDOW_DAYS: u64 = 90;
 
 #[async_trait]
@@ -120,43 +98,38 @@ impl Module for HudsonRock {
                 seen_hosts.insert(h);
             }
 
-            let mut ev = Evidence::new(
-                "hudsonrock",
-                format!("Stealer log: {cred_count} credentials on compromised machine"),
-            )
-            .with_attr(
-                "computer_name",
-                stealer.computer_name.as_deref().unwrap_or("-"),
-            )
-            .with_attr(
-                "operating_system",
-                stealer.operating_system.as_deref().unwrap_or("-"),
-            )
-            .with_attr(
-                "date_compromised",
-                stealer.date_compromised.as_deref().unwrap_or("-"),
-            )
-            .with_attr("stealer_family", family)
-            .with_attr(
-                "malware_path",
-                stealer.malware_path.as_deref().unwrap_or("-"),
-            )
-            .with_attr("credential_count", cred_count.to_string());
-            if let Some(uploaded) = stealer.date_uploaded.as_deref() {
-                ev = ev.with_attr("date_uploaded", uploaded);
-            }
-            if let Some(ip) = stealer.ip.as_deref() {
-                ev = ev.with_attr("victim_ip", ip);
-            }
-            entity.add_evidence(ev);
+            entity.add_evidence(
+                Evidence::new(
+                    "hudsonrock",
+                    format!("Stealer log: {cred_count} credentials on compromised machine"),
+                )
+                .with_attr(
+                    "computer_name",
+                    stealer.computer_name.as_deref().unwrap_or("-"),
+                )
+                .with_attr(
+                    "operating_system",
+                    stealer.operating_system.as_deref().unwrap_or("-"),
+                )
+                .with_attr(
+                    "date_compromised",
+                    stealer.date_compromised.as_deref().unwrap_or("-"),
+                )
+                .with_attr("stealer_family", family)
+                .with_attr(
+                    "malware_path",
+                    stealer.malware_path.as_deref().unwrap_or("-"),
+                )
+                .with_attr("credential_count", cred_count.to_string())
+                .with_opt_attr("date_uploaded", stealer.date_uploaded.as_deref())
+                .with_opt_attr("victim_ip", stealer.ip.as_deref()),
+            );
         }
 
         for family in &seen_families {
             entity.tag(format!("stealer:{}", family.to_lowercase()));
         }
-        if seen_hosts.len() >= 2 {
-            entity.tag(tags::MULTI_DEVICE);
-        }
+        entity.tag_if(seen_hosts.len() >= 2, tags::MULTI_DEVICE);
         entity.tag(format!("stealer-count:{}", data.stealers.len()));
 
         let mut result = ModuleResult::new();

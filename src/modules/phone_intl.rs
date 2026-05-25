@@ -1,17 +1,3 @@
-//! Offline international phone-number parser.
-//!
-//! Closes the `TargetKind::Phone` coverage gap. Splits a phone string
-//! into its E.164 country-code prefix and national number, looks up
-//! the country in an embedded table, and emits one Phone entity tagged
-//! with the country / region. No network calls — this is purely a
-//! syntactic and lookup step that runs in < 1 ms.
-//!
-//! Not a full libphonenumber replacement: doesn't validate the
-//! national-number length against per-country rules, doesn't detect
-//! carriers, doesn't know about mobile-vs-landline. For OSINT
-//! triage it's enough — "is this number plausible, and which country
-//! does it belong to" answers most pre-scan questions.
-
 use async_trait::async_trait;
 
 use crate::core::{
@@ -25,12 +11,8 @@ pub struct PhoneIntl;
 
 /// (E.164 country-code prefix, ISO 3166-1 alpha-2, English name).
 /// Sorted longest-prefix-first so 1-242 (Bahamas) matches before 1
-/// (NANP, USA/Canada). Only the entries with unambiguous country
-/// boundaries are listed — the NANP shares +1 across 25+ countries,
-/// so a bare +1 maps to "NANP (US/CA)" and the caller is expected to
-/// add a regex disambiguator for finer detail later.
+/// (NANP, USA/Canada).
 const COUNTRIES: &[(&str, &str, &str)] = &[
-    // Multi-digit codes first (longest-prefix-first).
     ("1242", "BS", "Bahamas"),
     ("1246", "BB", "Barbados"),
     ("1264", "AI", "Anguilla"),
@@ -57,7 +39,6 @@ const COUNTRIES: &[(&str, &str, &str)] = &[
     ("1869", "KN", "Saint Kitts and Nevis"),
     ("1876", "JM", "Jamaica"),
     ("1939", "PR", "Puerto Rico"),
-    // Three-digit codes
     ("212", "MA", "Morocco"),
     ("213", "DZ", "Algeria"),
     ("216", "TN", "Tunisia"),
@@ -81,7 +62,7 @@ const COUNTRIES: &[(&str, &str, &str)] = &[
     ("236", "CF", "Central African Republic"),
     ("237", "CM", "Cameroon"),
     ("238", "CV", "Cape Verde"),
-    ("239", "ST", "São Tomé and Príncipe"),
+    ("239", "ST", "S\u{00e3}o Tom\u{00e9} and Pr\u{00ed}ncipe"),
     ("240", "GQ", "Equatorial Guinea"),
     ("241", "GA", "Gabon"),
     ("242", "CG", "Republic of the Congo"),
@@ -101,7 +82,7 @@ const COUNTRIES: &[(&str, &str, &str)] = &[
     ("258", "MZ", "Mozambique"),
     ("260", "ZM", "Zambia"),
     ("261", "MG", "Madagascar"),
-    ("262", "RE", "Réunion / Mayotte"),
+    ("262", "RE", "R\u{00e9}union / Mayotte"),
     ("263", "ZW", "Zimbabwe"),
     ("264", "NA", "Namibia"),
     ("265", "MW", "Malawi"),
@@ -163,7 +144,7 @@ const COUNTRIES: &[(&str, &str, &str)] = &[
     ("596", "MQ", "Martinique"),
     ("597", "SR", "Suriname"),
     ("598", "UY", "Uruguay"),
-    ("599", "CW", "Curaçao"),
+    ("599", "CW", "Cura\u{00e7}ao"),
     ("670", "TL", "Timor-Leste"),
     ("672", "NF", "Norfolk Island"),
     ("673", "BN", "Brunei"),
@@ -215,7 +196,6 @@ const COUNTRIES: &[(&str, &str, &str)] = &[
     ("995", "GE", "Georgia"),
     ("996", "KG", "Kyrgyzstan"),
     ("998", "UZ", "Uzbekistan"),
-    // Two-digit codes
     ("20", "EG", "Egypt"),
     ("27", "ZA", "South Africa"),
     ("30", "GR", "Greece"),
@@ -260,7 +240,6 @@ const COUNTRIES: &[(&str, &str, &str)] = &[
     ("94", "LK", "Sri Lanka"),
     ("95", "MM", "Myanmar"),
     ("98", "IR", "Iran"),
-    // Single-digit
     ("7", "RU", "Russia / Kazakhstan (NANP)"),
     ("1", "US", "NANP (US / Canada)"),
 ];
@@ -276,14 +255,10 @@ impl Module for PhoneIntl {
     }
 
     fn priority(&self) -> u8 {
-        // Highest among Phone-accepting modules so it runs before any
-        // future paid carrier-lookup modules — country code is the
-        // gate for whether those should fire at all.
         140
     }
 
     fn is_passive(&self) -> bool {
-        // Pure local computation — no network.
         true
     }
 
@@ -292,11 +267,9 @@ impl Module for PhoneIntl {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // Strip every char except digits (drop +, spaces, dashes, parens).
         let mut digits = String::with_capacity(target.value.len());
         digits.extend(target.value.chars().filter(|c| c.is_ascii_digit()));
         if digits.len() < 7 || digits.len() > 15 {
-            // E.164 mandates 7–15 digits total (incl. country code).
             return Ok(ModuleResult::new());
         }
 
@@ -305,8 +278,6 @@ impl Module for PhoneIntl {
         };
 
         let national = &digits[prefix.len()..];
-
-        // Re-emit canonical E.164 form so downstream entities dedupe.
         let canonical = format!("+{digits}");
         let mut entity = Entity::new(EntityKind::Phone, &canonical, 0.85, &ctx.scan_id);
         entity.tag("e164");
@@ -326,7 +297,6 @@ impl Module for PhoneIntl {
     }
 }
 
-/// Longest-prefix match against `COUNTRIES`. Returns `(prefix, iso, name)`.
 fn match_country(digits: &str) -> Option<(&'static str, &'static str, &'static str)> {
     for (prefix, iso, name) in COUNTRIES {
         if digits.starts_with(prefix) {

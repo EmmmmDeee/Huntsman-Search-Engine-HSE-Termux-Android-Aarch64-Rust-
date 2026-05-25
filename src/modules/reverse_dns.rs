@@ -1,11 +1,3 @@
-//! Reverse-DNS lookup. Free, no key.
-//!
-//! Accepts `IpAddress`, queries PTR records via Cloudflare's resolver,
-//! and emits one Domain entity per PTR result tagged `ptr`. The PTR
-//! record is the only standardised mechanism for going from an IP back
-//! to a hostname — strong evidence for AU-010 (infrastructure consensus)
-//! when the same IP is later confirmed by `whois` and `dns_resolver`.
-
 use async_trait::async_trait;
 use std::net::IpAddr;
 
@@ -32,8 +24,6 @@ impl Module for ReverseDns {
     }
 
     fn priority(&self) -> u8 {
-        // Same band as dns_resolver — runs alongside the forward lookup
-        // so the SPA shows them as a pair.
         29
     }
 
@@ -50,8 +40,6 @@ impl Module for ReverseDns {
         let resolver = shared_resolver();
         let lookup = match resolver.reverse_lookup(ip).await {
             Ok(l) => l,
-            // NXDOMAIN / no PTR / network error → no findings rather than
-            // module error. The vast majority of public IPs lack PTRs.
             Err(_) => return Ok(ModuleResult::new()),
         };
 

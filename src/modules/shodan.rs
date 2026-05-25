@@ -1,13 +1,3 @@
-//! Shodan host record — paid premium internet-scan database.
-//!
-//! Endpoint: `GET https://api.shodan.io/shodan/host/{ip}?key={KEY}`
-//! Auth:     query-string `key=…` (Shodan API quirk).
-//!
-//! Returns the running services, open ports, CPEs, known CVEs, hostnames,
-//! ASN/ISP/org, OS, and last-update timestamp for an IP. We summarise:
-//! open-port list (capped at 20), vuln count + top-10 CVE IDs, org/isp/asn/
-//! country, OS, last-update. Each PTR hostname becomes a `Domain` entity.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -89,35 +79,20 @@ impl Module for Shodan {
         let mut result = ModuleResult::new();
         let mut entity = target.to_entity(0.90, &ctx.scan_id);
         entity.tag("shodan");
-        if !body.vulns.is_empty() {
-            entity.tag("vulnerable");
-        }
+        entity.tag_if(!body.vulns.is_empty(), "vulnerable");
         if let Some(c) = body.country_code.as_deref() {
             entity.tag(format!("country:{}", c.to_uppercase()));
         }
 
-        let mut ev = Evidence::new("shodan", format!("Shodan host record for {ip}"));
-        if let Some(o) = body.org.as_deref() {
-            ev = ev.with_attr("org", o);
-        }
-        if let Some(i) = body.isp.as_deref() {
-            ev = ev.with_attr("isp", i);
-        }
-        if let Some(a) = body.asn.as_deref() {
-            ev = ev.with_attr("asn", a);
-        }
-        if let Some(c) = body.country_name.as_deref() {
-            ev = ev.with_attr("country", c);
-        }
-        if let Some(c) = body.country_code.as_deref() {
-            ev = ev.with_attr("country_code", c);
-        }
-        if let Some(o) = body.os.as_deref() {
-            ev = ev.with_attr("os", o);
-        }
-        if let Some(t) = body.last_update.as_deref() {
-            ev = ev.with_attr("last_update", t);
-        }
+        let ev = Evidence::new("shodan", format!("Shodan host record for {ip}"))
+            .with_opt_attr("org", body.org.as_deref())
+            .with_opt_attr("isp", body.isp.as_deref())
+            .with_opt_attr("asn", body.asn.as_deref())
+            .with_opt_attr("country", body.country_name.as_deref())
+            .with_opt_attr("country_code", body.country_code.as_deref())
+            .with_opt_attr("os", body.os.as_deref())
+            .with_opt_attr("last_update", body.last_update.as_deref());
+        let mut ev = ev;
         if !body.ports.is_empty() {
             let mut ports = body.ports;
             ports.sort_unstable();
@@ -149,8 +124,6 @@ impl Module for Shodan {
         entity.add_evidence(ev);
         result.push(entity);
 
-        // Each PTR hostname becomes a Domain entity so downstream
-        // domain modules pick it up during expansion.
         for host in body.hostnames {
             if host.is_empty() {
                 continue;

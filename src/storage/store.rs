@@ -1,10 +1,3 @@
-//! SQLite WAL store. v0.7 introduces the `entity_observations` junction
-//! table — every (entity_uid, scan_id) pair the engine has seen is
-//! recorded, so `entities_for_scan` returns every entity any given scan
-//! observed regardless of which scan currently "owns" the
-//! `entities.scan_id` column. This replaces the v0.2 last-scan-wins
-//! semantics that hid entities from older scans after a re-scan.
-
 use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
@@ -67,7 +60,6 @@ impl Store {
                 UNIQUE(scan_id, rule_id, description)
             );
 
-            -- v0.7+ — junction table tracking every (entity, scan) observation.
             CREATE TABLE IF NOT EXISTS entity_observations (
                 entity_uid  TEXT NOT NULL,
                 scan_id     TEXT NOT NULL,
@@ -75,12 +67,6 @@ impl Store {
                 PRIMARY KEY (entity_uid, scan_id)
             );
 
-            -- v0.10+ — persistent event log. Every event the engine
-            -- broadcasts is also written here, so the Scan Log tab can
-            -- replay the full timeline for completed scans (issue #24).
-            -- `id` is auto-increment so the natural ORDER BY id matches
-            -- emission order. data_json holds the serde-serialised
-            -- EventKind variant so future kinds don't need a schema bump.
             CREATE TABLE IF NOT EXISTS events (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 scan_id     TEXT NOT NULL,
@@ -99,9 +85,7 @@ impl Store {
             ",
         )?;
 
-        // Back-fill observations for pre-v0.7 databases. Cheap one-time op:
-        // every existing entity gets one observation against its current
-        // `entities.scan_id`. Idempotent (INSERT OR IGNORE on the PK).
+        // Back-fill observations for pre-v0.7 databases (idempotent).
         conn.execute_batch(
             "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
              SELECT uid, scan_id, observed_at FROM entities;",
@@ -111,8 +95,6 @@ impl Store {
             conn: Mutex::new(conn),
         })
     }
-
-    // ── Scans ────────────────────────────────────────────────────────────────
 
     pub fn upsert_scan(&self, scan: &Scan) -> Result<()> {
         let json = serde_json::to_string(scan)?;
@@ -154,8 +136,6 @@ impl Store {
     }
 
     pub fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
-        // Collect raw JSON under the lock; deserialise after release so a
-        // long parse doesn't block concurrent writers.
         let raw: Vec<String> = {
             let conn = self.conn.lock();
             let mut stmt = conn
@@ -169,17 +149,6 @@ impl Store {
             .collect())
     }
 
-    // ── Entities + observations ──────────────────────────────────────────────
-
-    /// Upsert an entity and record an observation in the junction table.
-    ///
-    /// Behaviour vs v0.2–v0.6:
-    /// * `entities.scan_id` is still updated last-scan-wins (the column
-    ///   is kept for backward compatibility with older code paths that
-    ///   read it directly, but `entities_for_scan` no longer uses it).
-    /// * `entity_observations` records every (uid, scan_id) pair, so a
-    ///   re-scan against the same target now leaves the entity visible
-    ///   in BOTH the old and new scan's `entities_for_scan` listing.
     pub fn upsert_entity(&self, entity: &Entity) -> Result<()> {
         let json = serde_json::to_string(entity)?;
         let conn = self.conn.lock();
@@ -204,9 +173,6 @@ impl Store {
                 json,
             ],
         )?;
-        // Junction row. Idempotent on (entity_uid, scan_id) — if the same
-        // scan dispatches the same entity twice we keep the earliest
-        // observation timestamp.
         tx.execute(
             "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
              VALUES(?1, ?2, ?3)",
@@ -216,9 +182,6 @@ impl Store {
         Ok(())
     }
 
-    /// All entities observed by `scan_id` — joins through the junction
-    /// table, so this returns rows even if some other later scan rewrote
-    /// `entities.scan_id`.
     pub fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
@@ -238,7 +201,6 @@ impl Store {
             .collect())
     }
 
-    /// Every `scan_id` that observed this entity (newest first).
     pub fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
@@ -250,8 +212,6 @@ impl Store {
         Ok(rows.flatten().collect())
     }
 
-    /// Total distinct scans that observed an entity. Cheap aggregate for
-    /// the SPA / API to expose "seen in N scans" without pulling the full list.
     pub fn observation_count(&self, entity_uid: &str) -> Result<usize> {
         let conn = self.conn.lock();
         let mut stmt =
@@ -260,8 +220,6 @@ impl Store {
         Ok(n.max(0) as usize)
     }
 
-    /// Filtered entity query. All filter params are optional — omit to
-    /// match all. Runs a single SQL query with dynamic WHERE clauses.
     pub fn entities_filtered(
         &self,
         scan_id: &str,
@@ -308,7 +266,6 @@ impl Store {
             .collect())
     }
 
-    /// Entity facets: count by kind for a scan. Returns (kind, count) pairs.
     pub fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
@@ -323,7 +280,6 @@ impl Store {
         Ok(rows.flatten().collect())
     }
 
-    /// Look up a single entity by UID across all scans.
     pub fn get_entity(&self, uid: &str) -> Result<Option<Entity>> {
         let json: Option<String> = {
             let conn = self.conn.lock();
@@ -336,8 +292,6 @@ impl Store {
             .map_err(Into::into)
     }
 
-    /// Global entity search across all scans. Returns up to `limit` entities
-    /// whose value contains the search term (case-insensitive via LIKE).
     pub fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<Entity>> {
         let pattern = format!("%{query}%");
         let raw: Vec<String> = {
@@ -355,11 +309,6 @@ impl Store {
             .collect())
     }
 
-    // ── Correlations (v0.4+) ─────────────────────────────────────────────────
-
-    /// Insert a correlation, ignoring duplicates on
-    /// `(scan_id, rule_id, description)` — re-running the correlator on the
-    /// same scan is idempotent.
     pub fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
         let json = serde_json::to_string(c)?;
         let uids = serde_json::to_string(&c.entity_uids)?;
@@ -371,8 +320,6 @@ impl Store {
             params![
                 c.scan_id,
                 c.rule_id,
-                // canonical lowercase matches the ORDER BY expression below
-                // and serde's serialised form — keep these three in sync.
                 c.severity.as_canonical(),
                 c.description,
                 uids,
@@ -383,25 +330,14 @@ impl Store {
         Ok(())
     }
 
-    /// Cascade-delete a scan and its dependent rows: correlations,
-    /// entity_observations, and any entity rows that are no longer
-    /// observed by any other scan after the cascade.
-    ///
-    /// Returns `false` (and performs no writes) when no scan with that
-    /// id exists — the orphan-purge step runs only after a real scan
-    /// row has been deleted, so calling `delete_scan` with a stale id
-    /// can never affect unrelated entities.
+    /// Returns `false` when no scan with that id exists. The orphan-purge
+    /// only runs after a real scan row has been deleted, so a stale id
+    /// cannot affect unrelated entities.
     pub fn delete_scan(&self, scan_id: &str) -> Result<bool> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
-        // Existence-first: if there's no scan with this id, return
-        // early without touching correlations / observations / entities.
-        // Without this guard, a delete on a nonexistent id would still
-        // run the global orphan-purge below, which is a footgun.
         let n = tx.execute("DELETE FROM scans WHERE id = ?1", params![scan_id])?;
         if n == 0 {
-            // Rolling back is moot (we wrote nothing) but explicit is
-            // clearer than dropping the unused transaction.
             if let Err(e) = tx.rollback() {
                 tracing::warn!(error = %e, "rollback failed during delete_scan");
             }
@@ -415,11 +351,6 @@ impl Store {
             "DELETE FROM entity_observations WHERE scan_id = ?1",
             params![scan_id],
         )?;
-        // Cascade event log rows so deleting a scan also drops its
-        // persisted timeline. Without this the `events` table grows
-        // monotonically across delete cycles and a future scan that
-        // happens to be assigned the same id would inherit the old
-        // scan's `events.history`.
         tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
         tx.execute(
             "DELETE FROM entities
@@ -431,8 +362,6 @@ impl Store {
     }
 
     pub fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>> {
-        // Sort by severity desc (Critical > High > Medium > Low) using a CASE
-        // because SQLite text comparison alone won't order them correctly.
         let raw: Vec<String> = {
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(
@@ -454,26 +383,7 @@ impl Store {
             .collect())
     }
 
-    // ── Event log (v0.10+) ───────────────────────────────────────────────
-
-    /// Append an event row. Called from `ScanEngine::emit` alongside the
-    /// broadcast send so a completed scan's timeline survives the bus
-    /// closing. Errors are logged but not propagated by the caller — a
-    /// missing event row should never abort a scan.
-    ///
-    /// Despite the surrounding `upsert_*` naming convention this is an
-    /// append-only INSERT: each call creates a fresh row with a new
-    /// auto-increment `id`. There is no natural key to deduplicate on.
     pub fn insert_event(&self, event: &Event) -> Result<()> {
-        // `event_type` is the snake_case discriminant of the EventKind
-        // variant. A direct `match` is cheaper than the previous
-        // `serde_json::to_value(...).get("type")` round-trip (which
-        // serialised the entire payload — including potentially-large
-        // `EntityFound { entity }` / `CorrelationFound { correlation }`
-        // variants — just to extract a single string), and the
-        // exhaustive match catches new variants at compile time so a
-        // future EventKind addition can't silently fall through to
-        // `"unknown"`.
         let event_type = match &event.kind {
             EventKind::ScanStart { .. } => "scan_start",
             EventKind::ModuleStart { .. } => "module_start",
@@ -500,9 +410,6 @@ impl Store {
         Ok(())
     }
 
-    /// Return every event recorded for `scan_id` in emission order.
-    /// `Vec` rather than streaming because the GUI fetches the whole
-    /// log in one HTTP call.
     pub fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();

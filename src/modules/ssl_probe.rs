@@ -1,17 +1,3 @@
-//! SSL/TLS certificate probe — free, zero API keys.
-//!
-//! Connects to port 443 of a Domain target and extracts certificate
-//! metadata: issuer, subject, validity dates, Subject Alternative Names
-//! (SANs), serial number, and signature algorithm.
-//!
-//! SAN discovery is the key OSINT value: a certificate's SAN list
-//! reveals every domain the cert covers, often including internal
-//! subdomains, staging environments, and related brands that aren't
-//! visible via DNS or CT logs. Each discovered SAN that is a subdomain
-//! of the target is emitted as a Domain entity for expansion.
-//!
-//! Uses reqwest's TLS layer (rustls) — no additional dependencies.
-
 use async_trait::async_trait;
 
 use crate::core::{
@@ -129,9 +115,7 @@ fn parse_certificate(
             }
         }
 
-        if san_count > 10 {
-            entity.tag("multi-san");
-        }
+        entity.tag_if(san_count > 10, "multi-san");
     }
 
     if let Some(issuer) = extract_field_from_der(der, &[0x55, 0x04, 0x03], true) {

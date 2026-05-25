@@ -1,9 +1,3 @@
-//! Currently-connected Wi-Fi info — invokes `termux-wifi-connectioninfo`.
-//! Yields both the connected AP (MacAddress, tagged `wifi-connected`) and
-//! the device's local IP on that network (IpAddress, tagged `local-wifi`).
-//!
-//! Off-device behaviour: termux-api binary missing → no-op (no error).
-
 use async_trait::async_trait;
 use serde::Deserialize;
 

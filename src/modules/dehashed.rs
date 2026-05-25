@@ -1,14 +1,3 @@
-//! DeHashed breach search. Paid; requires `HUNTSMAN_DEHASHED_USER`
-//! (account email) + `HUNTSMAN_DEHASHED_KEY` (API key).
-//!
-//! Endpoint: `GET https://api.dehashed.com/search?query={selector}:{value}`
-//! Auth:     HTTP Basic (`user:key`)
-//!
-//! Per the project's no-credentials-in-evidence invariant, we deliberately
-//! do NOT deserialise password / hashed_password / passwords fields and
-//! never surface them. Only aggregate metadata escapes: total entries,
-//! top databases, indexed timestamp range.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -32,8 +21,7 @@ struct DehashedResp {
     total: Option<u64>,
 }
 
-/// Aggregate-safe field set — `password`, `hashed_password`, etc. are
-/// deliberately omitted so we can't even accidentally surface them.
+/// Password fields deliberately omitted to prevent accidental credential exposure.
 #[derive(Deserialize)]
 struct Entry {
     #[serde(default)]
@@ -122,7 +110,6 @@ impl Module for DeHashed {
         entity.tag(tags::BREACH);
         entity.tag("dehashed");
 
-        // Top databases by frequency (capped at 5).
         let top = crate::util::freq::top_n(
             entries
                 .iter()
@@ -142,12 +129,9 @@ impl Module for DeHashed {
         }
         let earliest = entries.iter().filter_map(|e| e.created_at.as_deref()).min();
         let latest = entries.iter().filter_map(|e| e.created_at.as_deref()).max();
-        if let Some(e) = earliest {
-            ev = ev.with_attr("earliest_record", e);
-        }
-        if let Some(l) = latest {
-            ev = ev.with_attr("latest_record", l);
-        }
+        ev = ev
+            .with_opt_attr("earliest_record", earliest)
+            .with_opt_attr("latest_record", latest);
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();
         result.push(entity);

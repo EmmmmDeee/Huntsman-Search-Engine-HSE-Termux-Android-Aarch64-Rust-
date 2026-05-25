@@ -1,26 +1,3 @@
-//! DNS blocklist (DNSBL) checker — free, zero API keys, pure DNS.
-//!
-//! Checks an IP against well-known DNS-based blocklists by performing
-//! A-record lookups on `<reversed-ip>.<dnsbl-zone>`. A positive result
-//! (any A record returned) means the IP is listed. Each blocklist
-//! lookup is an independent DNS query — no HTTP, no rate limits, no
-//! authentication.
-//!
-//! Blocklist sources:
-//!   - zen.spamhaus.org    — spam/botnet/exploit (most authoritative)
-//!   - bl.spamcop.net      — spam sources reported by users
-//!   - dnsbl.sorbs.net     — open relays, proxies, spam
-//!   - b.barracudacentral  — barracuda's spam/threat list
-//!   - cbl.abuseat.org     — composite blocklist (bots/trojans)
-//!   - dnsbl-1.uceprotect  — single-IP listings
-//!   - psbl.surriel.com    — passive spam blocklist
-//!   - all.s5h.net         — aggregated blocklist
-//!
-//! Entity production:
-//!   - IpAddress entity tagged `blocklisted` with listing count and
-//!     specific lists in evidence. Feeds AU-008 correlator rule for
-//!     cross-referencing with domain hosting.
-
 use async_trait::async_trait;
 
 use crate::core::{
@@ -109,9 +86,7 @@ impl Module for DnsBlocklist {
             );
         } else {
             entity.tag("blocklisted");
-            if listed_on.len() >= 3 {
-                entity.tag("high-risk");
-            }
+            entity.tag_if(listed_on.len() >= 3, "high-risk");
             listed_on.sort_unstable();
             entity.add_evidence(
                 Evidence::new(

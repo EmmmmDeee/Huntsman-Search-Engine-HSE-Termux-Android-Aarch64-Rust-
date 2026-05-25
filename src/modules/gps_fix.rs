@@ -1,9 +1,3 @@
-//! Single-shot GPS / network-location fix via `termux-location`.
-//!
-//! Uses `-p network -r once` for a fast (<5s) fix without needing
-//! GPS hardware to be active. If the user has only GPS available the
-//! command silently returns nothing and the module no-ops.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -44,10 +38,7 @@ impl Module for GpsFix {
         true
     }
 
-    /// termux-location network provider typically returns in 1–5 s but
-    /// can take 15 s indoors. The crate-wide 3 s ceiling killed it
-    /// every time (`WARN timeout module="gps_fix"` reproduced live on
-    /// Termux 0.118.x). Bump to 20 s for headroom.
+    /// Bumped from default because termux-location can take 15s indoors.
     fn max_timeout_ms(&self) -> u64 {
         20_000
     }
@@ -57,9 +48,6 @@ impl Module for GpsFix {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // Network provider is much faster than GPS (~1s vs minutes) and works
-        // indoors. A 15s ceiling keeps the engine snappy even when the device
-        // is genuinely unable to acquire a fix.
         let Some(stdout) =
             termux_cmd("termux-location", &["-p", "network", "-r", "once"], 15_000).await
         else {
@@ -76,8 +64,6 @@ fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
     };
 
     let provider = fix.provider.as_deref().unwrap_or("network");
-    // GPS provider gets higher confidence (cm-scale accuracy possible);
-    // network provider is m-scale at best.
     let confidence = if provider == "gps" { 0.90 } else { 0.65 };
     let coords = format!("{:.7},{:.7}", fix.latitude, fix.longitude);
 

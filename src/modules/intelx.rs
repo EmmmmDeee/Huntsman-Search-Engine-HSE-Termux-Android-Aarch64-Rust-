@@ -1,15 +1,3 @@
-//! Intelligence X selector search. Paid; async two-phase API.
-//!
-//! Phase 1: `POST https://2.intelx.io/intelligent/search` (header `x-key`)
-//!          with a JSON body specifying the search term.
-//! Phase 2: `GET  https://2.intelx.io/intelligent/search/result?id=<id>&limit=10&statistics=0`
-//!          polled until status==0 (complete) or our internal timeout.
-//!
-//! IntelX returns "selectors" (matched indicators) and references to
-//! the source materials. We surface the selector count + per-bucket
-//! breakdown; per project invariant we do NOT pull the raw document
-//! bodies (those frequently contain credentials).
-
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -30,14 +18,12 @@ const KEY_ENV: &str = "HUNTSMAN_INTELX_KEY";
 struct StartResp {
     #[serde(default)]
     id: Option<String>,
-    /// 0 = success, 1 = invalid term, 2 = max concurrent searches reached.
     #[serde(default)]
     status: Option<i32>,
 }
 
 #[derive(Deserialize)]
 struct ResultResp {
-    /// 0 = complete, 1 = no results, 2 = partial, 3 = error.
     #[serde(default)]
     status: Option<i32>,
     #[serde(default)]
@@ -56,7 +42,6 @@ struct Record {
 
 pub struct IntelX;
 
-/// Map IntelX media type codes to human-readable labels.
 fn media_label(code: i32) -> Option<&'static str> {
     match code {
         0 => Some("pastes"),
@@ -94,7 +79,6 @@ impl Module for IntelX {
         )
     }
     fn max_timeout_ms(&self) -> u64 {
-        // Up to one start + a few poll iterations.
         25_000
     }
 
@@ -105,7 +89,6 @@ impl Module for IntelX {
             return Ok(ModuleResult::new());
         }
 
-        // Phase 1 — start the search.
         let body = json!({
             "term": value,
             "buckets": [],
@@ -140,14 +123,13 @@ impl Module for IntelX {
             .map_err(|e| Error::module("intelx", e.to_string()))?;
         let search_id = match (start.id, start.status) {
             (Some(id), Some(0)) | (Some(id), None) if !id.is_empty() => id,
-            (_, Some(1)) => return Ok(ModuleResult::new()), // invalid term
+            (_, Some(1)) => return Ok(ModuleResult::new()),
             (_, Some(2)) => {
                 return Err(Error::module("intelx", "max concurrent searches reached"));
             }
             _ => return Ok(ModuleResult::new()),
         };
 
-        // Phase 2 — poll for completion. Up to 5 attempts, 1.5 s apart.
         let result_url = format!(
             "https://2.intelx.io/intelligent/search/result?id={search_id}&limit=50&statistics=0"
         );
@@ -170,7 +152,6 @@ impl Module for IntelX {
                 Err(_) => continue,
             };
             last_records = r.records;
-            // status 0 = complete, 1 = no results.
             if matches!(r.status, Some(0) | Some(1)) {
                 break;
             }
@@ -207,31 +188,30 @@ impl Module for IntelX {
 
         let latest = last_records.iter().filter_map(|r| r.date.as_deref()).max();
 
-        let mut ev = Evidence::new(
-            "intelx",
-            format!(
-                "IntelX: {} selector record(s) for {value}",
-                last_records.len()
-            ),
-        )
-        .with_attr("records", last_records.len().to_string())
-        .with_attr("search_id", search_id);
-        if !top.is_empty() {
-            ev = ev.with_attr("top_buckets", top);
-        }
-        // Map media type codes to human-readable labels.
-        let media_labels: std::collections::BTreeSet<&str> = media_counts
+        let media_labels: Vec<&str> = media_counts
             .keys()
             .filter_map(|code| media_label(*code))
             .collect();
-        if !media_labels.is_empty() {
-            let types_joined: Vec<&str> = media_labels.into_iter().collect();
-            ev = ev.with_attr("media_types", types_joined.join(", "));
-        }
-        if let Some(d) = latest {
-            ev = ev.with_attr("latest_record", d);
-        }
-        entity.add_evidence(ev);
+        let media_types = if media_labels.is_empty() {
+            None
+        } else {
+            Some(media_labels.join(", "))
+        };
+
+        entity.add_evidence(
+            Evidence::new(
+                "intelx",
+                format!(
+                    "IntelX: {} selector record(s) for {value}",
+                    last_records.len()
+                ),
+            )
+            .with_attr("records", last_records.len().to_string())
+            .with_attr("search_id", search_id)
+            .with_opt_attr("top_buckets", if top.is_empty() { None } else { Some(top) })
+            .with_opt_attr("media_types", media_types)
+            .with_opt_attr("latest_record", latest.map(String::from)),
+        );
 
         let mut result = ModuleResult::new();
         result.push(entity);

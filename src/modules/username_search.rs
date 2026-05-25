@@ -1,22 +1,3 @@
-//! Maigret / Sherlock-style username enumeration across 150+ sites.
-//!
-//! Fans out parallel HTTP probes against a curated database of public
-//! profile sites to discover which ones host a profile for the given
-//! username. Each site has a known existence-detection rule (status
-//! code + optional body marker) and a category tag so downstream
-//! correlators and the SPA can group results by type (social, dev,
-//! gaming, music, etc.).
-//!
-//! For every site where the username exists, emits one `Url` entity
-//! tagged `social-profile` + `cat:<category>` with the platform name
-//! in evidence. Also emits one `Username` entity (re-affirming the
-//! seed) tagged with the count of platforms found so downstream
-//! correlators / the SPA can highlight cross-platform identities.
-//!
-//! No API keys. Probes time out fast; offline / WAF-blocked sites
-//! just don't contribute. The site database is compiled into the
-//! binary so the release artifact stays self-contained.
-
 use async_trait::async_trait;
 use futures::future::join_all;
 use std::time::Duration;
@@ -31,20 +12,11 @@ use crate::util::http::urlencode;
 
 pub struct UsernameSearch;
 
-/// One site to probe. Kept inline (rather than loaded from a JSON file)
-/// so the binary stays self-contained and the list is reviewable in PR.
 struct Site {
-    /// Display name.
     name: &'static str,
-    /// `{}` is replaced with the urlencoded username.
     url: &'static str,
-    /// HTTP request method. Most sites accept GET; some return cleaner
-    /// status codes for HEAD.
     method: Method,
-    /// How to interpret the response.
     detect: Detect,
-    /// Maigret-style category: social, dev, gaming, music, video,
-    /// photo, forum, blog, dating, business, crypto, messaging, other.
     cat: &'static str,
 }
 
@@ -66,12 +38,6 @@ enum Detect {
     StatusAndNotBody(u16, &'static str),
 }
 
-/// Maigret-scale site database. Curated from the Maigret, Sherlock,
-/// and WhatsMyName projects. Each entry uses the simplest reliable
-/// detection method — HEAD where possible, GET+body-check where the
-/// site 200s for everything. Categories follow Maigret conventions.
-///
-/// Order is irrelevant; all probes run concurrently.
 macro_rules! s {
     ($name:expr, $url:expr, H, $status:expr, $cat:expr) => {
         Site {
@@ -112,7 +78,6 @@ macro_rules! s {
 }
 
 const SITES: &[Site] = &[
-    // ── Social Media ────────────────────────────────────────────────
     s!("X/Twitter", "https://x.com/{}", H, 200, "social"),
     s!(
         "Instagram",
@@ -164,7 +129,6 @@ const SITES: &[Site] = &[
         "snapchat",
         "social"
     ),
-    // ── Messaging ──────────────────────────────────────────────────
     s!(
         "Telegram",
         "https://t.me/{}",
@@ -174,7 +138,6 @@ const SITES: &[Site] = &[
         "messaging"
     ),
     s!("Signal", "https://signal.me/#p/{}", H, 200, "messaging"),
-    // ── Developer / Code ───────────────────────────────────────────
     s!("GitHub", "https://github.com/{}", H, 200, "dev"),
     s!("GitLab", "https://gitlab.com/{}", H, 200, "dev"),
     s!("Bitbucket", "https://bitbucket.org/{}/", H, 200, "dev"),
@@ -227,7 +190,6 @@ const SITES: &[Site] = &[
     s!("Observable", "https://observablehq.com/@{}", H, 200, "dev"),
     s!("CodeSandbox", "https://codesandbox.io/u/{}", H, 200, "dev"),
     s!("WakaTime", "https://wakatime.com/@{}", H, 200, "dev"),
-    // ── Tech / Forums / Q&A ────────────────────────────────────────
     s!(
         "Hacker News",
         "https://news.ycombinator.com/user?id={}",
@@ -280,7 +242,6 @@ const SITES: &[Site] = &[
         200,
         "forum"
     ),
-    // ── Professional / Business ────────────────────────────────────
     s!("Keybase", "https://keybase.io/{}", H, 200, "business"),
     s!(
         "Crunchbase",
@@ -300,7 +261,6 @@ const SITES: &[Site] = &[
     s!("Fiverr", "https://www.fiverr.com/{}", H, 200, "business"),
     s!("Trello", "https://trello.com/{}", H, 200, "business"),
     s!("Notion", "https://notion.so/{}", H, 200, "business"),
-    // ── Gaming ─────────────────────────────────────────────────────
     s!(
         "Steam",
         "https://steamcommunity.com/id/{}/",
@@ -378,7 +338,6 @@ const SITES: &[Site] = &[
         200,
         "gaming"
     ),
-    // ── Music ──────────────────────────────────────────────────────
     s!(
         "SoundCloud",
         "https://soundcloud.com/{}",
@@ -398,7 +357,6 @@ const SITES: &[Site] = &[
         200,
         "music"
     ),
-    // ── Photo / Art ────────────────────────────────────────────────
     s!(
         "Flickr",
         "https://www.flickr.com/people/{}/",
@@ -427,7 +385,6 @@ const SITES: &[Site] = &[
     s!("Unsplash", "https://unsplash.com/@{}", H, 200, "photo"),
     s!("VSCO", "https://vsco.co/{}/gallery", H, 200, "photo"),
     s!("Imgur", "https://imgur.com/user/{}/about", H, 200, "photo"),
-    // ── Video ──────────────────────────────────────────────────────
     s!("YouTube", "https://www.youtube.com/@{}", H, 200, "video"),
     s!("Vimeo", "https://vimeo.com/{}", H, 200, "video"),
     s!(
@@ -446,7 +403,6 @@ const SITES: &[Site] = &[
         "video"
     ),
     s!("Odysee", "https://odysee.com/@{}", H, 200, "video"),
-    // ── Dating ─────────────────────────────────────────────────────
     s!(
         "OkCupid",
         "https://www.okcupid.com/profile/{}",
@@ -455,7 +411,6 @@ const SITES: &[Site] = &[
         "dating"
     ),
     s!("Badoo", "https://badoo.com/profile/{}", H, 200, "dating"),
-    // ── Crypto / Finance ───────────────────────────────────────────
     s!(
         "Keybase Crypto",
         "https://keybase.io/{}/sigs",
@@ -465,7 +420,6 @@ const SITES: &[Site] = &[
     ),
     s!("OpenSea", "https://opensea.io/{}", H, 200, "crypto"),
     s!("Rarible", "https://rarible.com/{}", H, 200, "crypto"),
-    // ── Education / Learning ───────────────────────────────────────
     s!(
         "Duolingo",
         "https://www.duolingo.com/profile/{}",
@@ -487,7 +441,6 @@ const SITES: &[Site] = &[
         200,
         "education"
     ),
-    // ── Pastebin / Sharing ─────────────────────────────────────────
     s!(
         "Pastebin",
         "https://pastebin.com/u/{}",
@@ -503,7 +456,6 @@ const SITES: &[Site] = &[
         200,
         "sharing"
     ),
-    // ── Crowdfunding / Support ─────────────────────────────────────
     s!(
         "Patreon",
         "https://www.patreon.com/{}",
@@ -533,7 +485,6 @@ const SITES: &[Site] = &[
         200,
         "crowdfunding"
     ),
-    // ── Travel / Food ──────────────────────────────────────────────
     s!(
         "TripAdvisor",
         "https://www.tripadvisor.com/Profile/{}",
@@ -541,7 +492,6 @@ const SITES: &[Site] = &[
         200,
         "travel"
     ),
-    // ── News / Media ───────────────────────────────────────────────
     s!("Letterboxd", "https://letterboxd.com/{}", H, 200, "media"),
     s!(
         "Goodreads",
@@ -551,7 +501,6 @@ const SITES: &[Site] = &[
         "media"
     ),
     s!("Trakt.tv", "https://trakt.tv/users/{}", H, 200, "media"),
-    // ── Misc / Other ───────────────────────────────────────────────
     s!(
         "Gravatar (alt)",
         "https://en.gravatar.com/{}",
@@ -584,11 +533,8 @@ const SITES: &[Site] = &[
         200,
         "other"
     ),
-    // ══════════════════════════════════════════════════════════════════
     // Maigret-complete additions — every site from Maigret's data.json
     // that isn't already above and uses a detection method we support.
-    // ══════════════════════════════════════════════════════════════════
-    // ── Social (Maigret) ───────────────────────────────────────────
     s!(
         "Facebook",
         "https://www.facebook.com/{}",
@@ -608,7 +554,6 @@ const SITES: &[Site] = &[
     s!("OK.ru", "https://ok.ru/{}", H, 200, "social"),
     s!("Myspace", "https://myspace.com/{}", H, 200, "social"),
     s!("Naver Blog", "https://blog.naver.com/{}", H, 200, "social"),
-    // ── Messaging (Maigret) ────────────────────────────────────────
     s!("Slack", "https://{}.slack.com", H, 200, "messaging"),
     s!(
         "Discord",
@@ -617,7 +562,6 @@ const SITES: &[Site] = &[
         200,
         "messaging"
     ),
-    // ── Developer (Maigret) ────────────────────────────────────────
     s!("Scratch", "https://scratch.mit.edu/users/{}", H, 200, "dev"),
     s!(
         "StackOverflow",
@@ -656,7 +600,6 @@ const SITES: &[Site] = &[
         200,
         "dev"
     ),
-    // ── Professional (Maigret) ─────────────────────────────────────
     s!(
         "Xing",
         "https://www.xing.com/profile/{}",
@@ -696,7 +639,6 @@ const SITES: &[Site] = &[
         "displayName",
         "business"
     ),
-    // ── E-commerce (Maigret) ───────────────────────────────────────
     s!(
         "Ebay",
         "https://www.ebay.com/usr/{}",
@@ -714,7 +656,6 @@ const SITES: &[Site] = &[
         "authorName",
         "business"
     ),
-    // ── Blogging (Maigret) ─────────────────────────────────────────
     s!("Blogger", "https://{}.blogspot.com", H, 200, "blog"),
     s!("WordPress", "https://{}.wordpress.com/", H, 200, "blog"),
     s!("LiveJournal", "https://{}.livejournal.com", H, 200, "blog"),
@@ -735,7 +676,6 @@ const SITES: &[Site] = &[
         "THROW_NOT_FOUND_EXCEPTION",
         "blog"
     ),
-    // ── Music (Maigret) ────────────────────────────────────────────
     s!(
         "Spotify",
         "https://open.spotify.com/user/{}",
@@ -743,7 +683,6 @@ const SITES: &[Site] = &[
         200,
         "music"
     ),
-    // ── Photo/Design (Maigret) ─────────────────────────────────────
     s!(
         "Freepik",
         "https://www.freepik.com/author/{}",
@@ -773,7 +712,6 @@ const SITES: &[Site] = &[
         "collectionName",
         "photo"
     ),
-    // ── Video (Maigret) ────────────────────────────────────────────
     s!(
         "Giphy",
         "https://giphy.com/channel/{}",
@@ -782,7 +720,6 @@ const SITES: &[Site] = &[
         "404 Not Found",
         "video"
     ),
-    // ── Crowdfunding (Maigret) ─────────────────────────────────────
     s!(
         "Kickstarter",
         "https://www.kickstarter.com/profile/{}",
@@ -805,7 +742,6 @@ const SITES: &[Site] = &[
         "first_name",
         "crowdfunding"
     ),
-    // ── Forums (Maigret) ───────────────────────────────────────────
     s!(
         "OpenStreetMap",
         "https://www.openstreetmap.org/user/{}",
@@ -844,7 +780,6 @@ const SITES: &[Site] = &[
         200,
         "forum"
     ),
-    // ── Media/Publishing (Maigret) ─────────────────────────────────
     s!(
         "Issuu",
         "https://issuu.com/{}",
@@ -861,7 +796,6 @@ const SITES: &[Site] = &[
         "yp-grid-mag-container",
         "media"
     ),
-    // ── East-Asian/CIS (Maigret) ───────────────────────────────────
     s!(
         "Weibo",
         "https://weibo.com/{}",
@@ -886,7 +820,6 @@ const SITES: &[Site] = &[
         200,
         "social"
     ),
-    // ── Yandex (Maigret) ───────────────────────────────────────────
     s!(
         "Yandex.Market",
         "https://market.yandex.ru/user/{}",
@@ -909,7 +842,6 @@ const SITES: &[Site] = &[
         "Отзывы и оценки",
         "other"
     ),
-    // ── Gaming (Maigret) ───────────────────────────────────────────
     s!(
         "Steam Group",
         "https://steamcommunity.com/groups/{}",
@@ -918,7 +850,6 @@ const SITES: &[Site] = &[
         "No group could be retrieved",
         "gaming"
     ),
-    // ── Fandom wikis (Maigret) ─────────────────────────────────────
     s!(
         "Fandom User",
         "https://www.fandom.com/u/{}",
@@ -934,7 +865,6 @@ const SITES: &[Site] = &[
         "\"userid\"",
         "forum"
     ),
-    // ── Travel (Maigret) ───────────────────────────────────────────
     s!(
         "LonelyPlanet",
         "https://www.lonelyplanet.com/profile/{}",
@@ -949,7 +879,6 @@ const SITES: &[Site] = &[
         200,
         "travel"
     ),
-    // ── Shopping/reviews (Maigret) ─────────────────────────────────
     s!(
         "Google Play Dev",
         "https://play.google.com/store/apps/developer?id={}",
@@ -966,7 +895,6 @@ const SITES: &[Site] = &[
     ),
     s!("Envato", "https://codecanyon.net/user/{}", H, 200, "other"),
     s!("Bit.ly", "https://bit.ly/{}", H, 200, "other"),
-    // ── Education (Maigret) ────────────────────────────────────────
     s!(
         "Udemy",
         "https://www.udemy.com/user/{}",
@@ -989,7 +917,6 @@ const SITES: &[Site] = &[
         "class=\"gs_a\"",
         "education"
     ),
-    // ── Misc (Maigret) ─────────────────────────────────────────────
     s!(
         "Weforum",
         "https://www.weforum.org/people/{}",
@@ -997,11 +924,8 @@ const SITES: &[Site] = &[
         200,
         "other"
     ),
-    // ══════════════════════════════════════════════════════════════════
     // Sherlock project additions — every status_code site from
     // sherlock_project/resources/data.json not already in the database.
-    // ══════════════════════════════════════════════════════════════════
-    // ── Social / People (Sherlock) ──────────────────────────────────
     s!("9GAG", "https://www.9gag.com/u/{}", H, 200, "social"),
     s!("AllMyLinks", "https://allmylinks.com/{}", H, 200, "social"),
     s!("CashApp", "https://cash.app/${}", H, 200, "social"),
@@ -1029,7 +953,6 @@ const SITES: &[Site] = &[
         "social"
     ),
     s!("Pixelfed", "https://pixelfed.social/{}", H, 200, "social"),
-    // ── Dev / Tech (Sherlock) ──────────────────────────────────────
     s!("Asciinema", "https://asciinema.org/~{}", H, 200, "dev"),
     s!("AtCoder", "https://atcoder.jp/users/{}", H, 200, "dev"),
     s!(
@@ -1117,7 +1040,6 @@ const SITES: &[Site] = &[
         200,
         "dev"
     ),
-    // ── Gaming (Sherlock) ──────────────────────────────────────────
     s!(
         "BoardGameGeek",
         "https://boardgamegeek.com/user/{}",
@@ -1197,7 +1119,6 @@ const SITES: &[Site] = &[
         200,
         "gaming"
     ),
-    // ── Music / Media (Sherlock) ───────────────────────────────────
     s!(
         "Discogs",
         "https://www.discogs.com/user/{}",
@@ -1235,7 +1156,6 @@ const SITES: &[Site] = &[
         "music"
     ),
     s!("TRAKTRAIN", "https://traktrain.com/{}", H, 200, "music"),
-    // ── Photo / Art (Sherlock) ─────────────────────────────────────
     s!("Blipfoto", "https://www.blipfoto.com/{}", H, 200, "photo"),
     s!(
         "ColourLovers",
@@ -1282,7 +1202,6 @@ const SITES: &[Site] = &[
         200,
         "photo"
     ),
-    // ── Professional (Sherlock) ────────────────────────────────────
     s!("Carrd", "https://{}.carrd.co", H, 200, "business"),
     s!("Houzz", "https://www.houzz.com/user/{}", H, 200, "business"),
     s!("HubPages", "https://hubpages.com/@{}", H, 200, "business"),
@@ -1322,7 +1241,6 @@ const SITES: &[Site] = &[
         200,
         "business"
     ),
-    // ── Education (Sherlock) ───────────────────────────────────────
     s!(
         "Codecademy",
         "https://www.codecademy.com/profiles/{}",
@@ -1358,7 +1276,6 @@ const SITES: &[Site] = &[
         200,
         "education"
     ),
-    // ── Regional (Sherlock) ────────────────────────────────────────
     s!(
         "Habr (RU)",
         "https://habr.com/ru/users/{}/",
@@ -1396,7 +1313,6 @@ const SITES: &[Site] = &[
         200,
         "forum"
     ),
-    // ── Forum / Community (Sherlock) ───────────────────────────────
     s!(
         "Ask Fedora",
         "https://discussion.fedoraproject.org/u/{}",
@@ -1453,7 +1369,6 @@ const SITES: &[Site] = &[
         200,
         "forum"
     ),
-    // ── Video / Streaming (Sherlock) ───────────────────────────────
     s!(
         "Twitch Tracker",
         "https://twitchtracker.com/{}",
@@ -1468,7 +1383,6 @@ const SITES: &[Site] = &[
         200,
         "other"
     ),
-    // ── Fitness / Sports ───────────────────────────────────────────
     s!(
         "Geocaching",
         "https://www.geocaching.com/p/default.aspx?u={}",
@@ -1476,9 +1390,7 @@ const SITES: &[Site] = &[
         200,
         "travel"
     ),
-    // ── Messaging (Sherlock) ───────────────────────────────────────
     s!("Kik", "https://ws2.kik.com/user/{}", H, 200, "messaging"),
-    // ── Shopping / Marketplace (Sherlock) ──────────────────────────
     s!(
         "Pinkbike",
         "https://www.pinkbike.com/u/{}/",
@@ -1493,7 +1405,6 @@ const SITES: &[Site] = &[
         200,
         "other"
     ),
-    // ── Crypto (Sherlock) ──────────────────────────────────────────
     s!(
         "CryptoHack",
         "https://cryptohack.org/user/{}",
@@ -1508,7 +1419,6 @@ const SITES: &[Site] = &[
         200,
         "crypto"
     ),
-    // ── News / Reading ─────────────────────────────────────────────
     s!(
         "Wordnik",
         "https://www.wordnik.com/users/{}",
@@ -1523,7 +1433,6 @@ const SITES: &[Site] = &[
         200,
         "media"
     ),
-    // ── Message-detection Sherlock sites (using body markers) ──────
     s!(
         "DeviantArt (alt)",
         "https://www.deviantart.com/{}",
@@ -1580,11 +1489,8 @@ const SITES: &[Site] = &[
         "not be found",
         "forum"
     ),
-    // ══════════════════════════════════════════════════════════════════
     // People-centric additions — social media, dating, and messaging
     // are FAR more valuable for identity OSINT than dev platforms.
-    // ══════════════════════════════════════════════════════════════════
-    // ── Dating / Relationships (HIGH people-centric value) ─────────
     s!("Tinder", "https://tinder.com/@{}", H, 200, "dating"),
     s!("Bumble", "https://bumble.com/profile/{}", H, 200, "dating"),
     s!(
@@ -1604,7 +1510,6 @@ const SITES: &[Site] = &[
         200,
         "dating"
     ),
-    // ── Social Media (people-centric core) ─────────────────────────
     s!(
         "Facebook (alt)",
         "https://www.facebook.com/{}",
@@ -1641,7 +1546,6 @@ const SITES: &[Site] = &[
         "social"
     ),
     s!("Gettr", "https://gettr.com/user/{}", H, 200, "social"),
-    // ── Messaging / Communication ──────────────────────────────────
     s!("WhatsApp", "https://wa.me/{}", H, 200, "messaging"),
     s!(
         "Skype",
@@ -1665,7 +1569,6 @@ const SITES: &[Site] = &[
         200,
         "messaging"
     ),
-    // ── Lifestyle / Fitness / Social ───────────────────────────────
     s!(
         "Strava (social)",
         "https://www.strava.com/athletes/{}",
@@ -1688,7 +1591,6 @@ const SITES: &[Site] = &[
         200,
         "social"
     ),
-    // ── Classified / Marketplace (people-centric) ──────────────────
     s!("Depop", "https://www.depop.com/{}", H, 200, "social"),
     s!(
         "Poshmark",
@@ -1704,7 +1606,6 @@ const SITES: &[Site] = &[
         200,
         "social"
     ),
-    // ── Family / Parenting ─────────────────────────────────────────
     s!(
         "BabyCenter",
         "https://www.babycenter.com/profile/{}",
@@ -1721,9 +1622,6 @@ impl Module for UsernameSearch {
     }
 
     fn priority(&self) -> u8 {
-        // Higher than email_to_username (95) so it dispatches first when
-        // a Username target is the seed — gives the user visible progress
-        // immediately rather than waiting for derivation modules.
         110
     }
 
@@ -1732,7 +1630,6 @@ impl Module for UsernameSearch {
     }
 
     fn is_passive(&self) -> bool {
-        // Reaches external sites — not passive in the OSINT-mode sense.
         false
     }
 
@@ -1747,9 +1644,6 @@ impl Module for UsernameSearch {
         }
 
         let encoded = urlencode(username);
-        // Per-site timeout deliberately tight: with 30 sites and a 3 s
-        // engine ceiling we'd otherwise blow the per-module budget.
-        // 2.5 s per site is generous for HEAD/GET against a CDN edge.
         let per_site_timeout = Duration::from_millis(2_500);
 
         let probes = SITES.iter().map(|site| {
@@ -1831,39 +1725,26 @@ impl Module for UsernameSearch {
             }
         }
 
-        // Re-emit the seed username with a corroboration-style summary so
-        // the SPA's Entities table shows a single "N platforms" row for
-        // the username itself, alongside the per-platform Url entities.
         if !found_names.is_empty() {
             let mut summary = Entity::new(EntityKind::Username, username, 0.95, &ctx.scan_id);
             summary.tag("multi-platform");
 
-            // Tag each category that had at least one hit.
             for cat in category_counts.keys() {
                 summary.tag(format!("cat:{cat}"));
             }
 
-            // People-centric intelligence tags: flag high-value
-            // categories that reveal personal lifestyle/identity
-            // exposure. These are MORE valuable for OSINT than dev
-            // platform presence (which is professional, not personal).
             let social_count = category_counts.get("social").copied().unwrap_or(0);
             let dating_count = category_counts.get("dating").copied().unwrap_or(0);
             let messaging_count = category_counts.get("messaging").copied().unwrap_or(0);
             let gaming_count = category_counts.get("gaming").copied().unwrap_or(0);
 
-            if social_count >= 3 {
-                summary.tag("strong-social-presence");
-            }
-            if dating_count > 0 {
-                summary.tag("dating-profile-exposed");
-            }
-            if messaging_count > 0 {
-                summary.tag("messaging-identity");
-            }
-            if social_count + dating_count + messaging_count + gaming_count >= 5 {
-                summary.tag("high-personal-exposure");
-            }
+            summary.tag_if(social_count >= 3, "strong-social-presence");
+            summary.tag_if(dating_count > 0, "dating-profile-exposed");
+            summary.tag_if(messaging_count > 0, "messaging-identity");
+            summary.tag_if(
+                social_count + dating_count + messaging_count + gaming_count >= 5,
+                "high-personal-exposure",
+            );
 
             let cat_summary: Vec<String> = category_counts
                 .iter()
@@ -1898,8 +1779,6 @@ enum ProbeResult {
     Error,
 }
 
-/// Pair the future's outcome with the site name + category for the
-/// consumer loop — avoids cloning the &'static strs into the async block.
 trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
     fn then_with_site(
         self,

@@ -1,5 +1,3 @@
-//! Derive plausible Username entities from an Email's local part. No network.
-
 use async_trait::async_trait;
 use std::collections::HashSet;
 
@@ -45,7 +43,6 @@ impl Module for EmailToUsername {
 
         let mut candidates: HashSet<String> = HashSet::with_capacity(8);
 
-        // Strip +tag suffix → also feeds the splitter below.
         let detagged = if let Some(pos) = local.find('+') {
             let s = local[..pos].to_string();
             candidates.insert(s.clone());
@@ -55,13 +52,11 @@ impl Module for EmailToUsername {
         };
         candidates.insert(local);
 
-        // Strip trailing digits (john42 → john)
         let stripped = detagged.trim_end_matches(|c: char| c.is_ascii_digit());
         if stripped.len() > 2 {
             candidates.insert(stripped.to_string());
         }
 
-        // Collapse separators (john.doe → johndoe)
         let collapsed: String = detagged
             .chars()
             .filter(char::is_ascii_alphanumeric)
@@ -70,8 +65,6 @@ impl Module for EmailToUsername {
             candidates.insert(collapsed);
         }
 
-        // Split on separators (john.doe → john, doe). Apply to the de-tagged
-        // version so "+work" doesn't get treated as part of a username token.
         for part in detagged.split(['.', '_', '-']) {
             if part.len() > 2 {
                 candidates.insert(part.to_string());

@@ -149,6 +149,13 @@ impl Evidence {
         self.attributes.insert(key.into(), value.into());
         self
     }
+
+    pub fn with_opt_attr(self, key: impl Into<String>, value: Option<impl Into<String>>) -> Self {
+        match value {
+            Some(v) => self.with_attr(key, v),
+            None => self,
+        }
+    }
 }
 
 // ─── Entity ───────────────────────────────────────────────────────────────────
@@ -271,6 +278,18 @@ impl Entity {
 
     pub fn has_tag(&self, t: &str) -> bool {
         self.tags.iter().any(|x| x == t)
+    }
+
+    pub fn tag_if(&mut self, cond: bool, t: impl Into<String>) {
+        if cond {
+            self.tag(t);
+        }
+    }
+
+    pub fn tag_opt(&mut self, opt: Option<bool>, t: impl Into<String>) {
+        if opt == Some(true) {
+            self.tag(t);
+        }
     }
 
     // ── GREATEST-semantics merge ─────────────────────────────────────────────

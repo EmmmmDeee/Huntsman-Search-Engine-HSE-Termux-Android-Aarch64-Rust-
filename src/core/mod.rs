@@ -1,8 +1,3 @@
-//! Core types: entity, scan, event, module trait, engine.
-//!
-//! Nothing in `core` imports from `modules/` — modules depend on core, never
-//! the other way around. This keeps the engine module-agnostic.
-
 pub mod cancel;
 pub mod correlator;
 pub mod engine;

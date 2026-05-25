@@ -1,43 +1,3 @@
-//! Multi-engine search scraping — 13 search engines, zero API keys.
-//!
-//! Queries Yahoo, Bing, AOL, DuckDuckGo, Google, Brave, Mojeek,
-//! Startpage, Yandex, Ecosia, Qwant, Dogpile, and Swisscows with
-//! OSINT dork queries and extracts entities from result URLs and
-//! snippets.
-//!
-//! Engine selection rationale:
-//!   - Yahoo/AOL: Bing-powered, most reliable from datacenter IPs,
-//!     /RU= redirect URL decoding
-//!   - Bing: <cite> tag extraction, reliable from datacenter IPs
-//!   - DuckDuckGo HTML: no JS, `uddg` redirect decoded
-//!   - Google: /url?q= redirect extraction (requires JS since 2025,
-//!     best from residential IPs)
-//!   - Brave: independent index, direct href extraction
-//!   - Mojeek: independent index, CAPTCHA-resistant
-//!   - Startpage: Google-sourced, POST endpoint with session warming
-//!   - Yandex: independent Russian index (SmartCaptcha from DC IPs,
-//!     works from residential)
-//!   - Ecosia: Bing-powered, tree-planting search engine
-//!   - Qwant: European privacy engine (lite endpoint)
-//!   - Dogpile: Meta-aggregator (System1), aggregates multiple engines
-//!   - Swisscows: Swiss privacy engine, Bing-powered
-//!
-//! Blocked engines are harmless — detected and skipped in <1s via
-//! the interstitial/CAPTCHA detector (checks for anomaly-modal,
-//! unusual traffic, consent walls, DataDome, SmartCaptcha, etc.).
-//!
-//! Dork query strategy per target type:
-//!   - Domain: site: subdomain discovery, email harvesting, document
-//!     discovery (filetype:pdf/doc/xls), login/admin exposure
-//!   - Email: quoted mention search, paste-site exposure, social pivots
-//!   - Username: social platform dorks (github, linkedin, twitter, reddit)
-//!   - FullName: professional profile + document discovery
-//!
-//! Entity production:
-//!   - Domain (subdomains at 0.70, external at 0.45) → triggers 15+ modules
-//!   - Email (from snippet text at 0.60) → triggers breach + identity stack
-//!   - Phone (from snippet text at 0.55) → triggers numverify, phone_intl
-
 use std::collections::HashSet;
 
 use async_trait::async_trait;
@@ -100,12 +60,8 @@ impl Module for SearchEngines {
 
         let mut all_results: Vec<SearchResult> = Vec::new();
 
-        // Track engines that failed on the first query so we skip them
-        // on subsequent queries — avoids burning the entire timeout
-        // budget on engines that are down/blocked for this session.
         let mut dead_engines: HashSet<&str> = HashSet::new();
 
-        // ── Primary pass: run all queries against live engines ─────
         for (qi, query) in queries.iter().enumerate() {
             if ctx.cancel.is_cancelled() {
                 break;
@@ -134,13 +90,9 @@ impl Module for SearchEngines {
             }
         }
 
-        // ── Secondary pivot: re-search discovered usernames + variants
-        //    on reliable engines for cross-platform linkage ────────────
         if !ctx.cancel.is_cancelled() {
             let mut pivots = extract_username_pivots(&all_results, target);
 
-            // Generate username variants for the strongest pivots
-            // (separator swaps, trailing digits, truncations)
             let base_pivots: Vec<String> = pivots.clone();
             for base in &base_pivots {
                 let raw = base.trim_matches('"');
@@ -179,7 +131,6 @@ impl Module for SearchEngines {
 
         let mut module_result = build_entities(target, &ctx.scan_id, &all_results);
 
-        // ── API enrichment pass: batch-query OathNet for high-confidence
         //    discovered entities. Only fires when the API key is configured
         //    and we have entities worth enriching. Maximises value from
         //    free results before spending API credits. ──────────────────
@@ -191,31 +142,16 @@ impl Module for SearchEngines {
     }
 }
 
-// ─── Engine definitions ─────────────────────────────────────────────────────
 
 struct EngineSpec {
     name: &'static str,
     build_url: fn(&str) -> String,
     build_post: Option<fn(&str) -> String>,
-    /// Preferred User-Agent class for this engine.
     ua: &'static str,
-    /// Fallback User-Agent to retry when the primary UA gets blocked.
     ua_alt: &'static str,
 }
 
-// All 13 engines are always tried. Blocked engines are detected and
-// skipped in <1s via the interstitial detector in fetch_and_parse.
-// Yahoo/Bing are most reliable from datacenter IPs. DDG/Google/Brave
-// work best from residential IPs (Termux). AOL is Yahoo-powered (same
-// /RU= format). Mojeek has an independent index.
-//
-// New engines (2026): Startpage (POST, Google-sourced), Yandex
-// (independent Russian index), Ecosia (Bing-powered), Qwant (European
-// privacy engine), Dogpile (System1 meta-aggregator), Swisscows
-// (Swiss Bing-powered). These may be CAPTCHA-blocked from datacenter
-// IPs but work from Termux residential connections.
 const ENGINES: &[EngineSpec] = &[
-    // ── Original 7 engines ──────────────────────────────────────────
     EngineSpec {
         name: "yahoo",
         build_url: |q| {
@@ -295,7 +231,6 @@ const ENGINES: &[EngineSpec] = &[
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_MOBILE,
     },
-    // ── New engines (2026) ──────────────────────────────────────────
     EngineSpec {
         name: "startpage",
         build_url: |_q| "https://www.startpage.com/sp/search".to_string(),
@@ -370,7 +305,6 @@ const ENGINES: &[EngineSpec] = &[
     },
 ];
 
-// ─── API enrichment: OathNet via shared util::oathnet client ────────────────
 
 async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
     let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
@@ -693,17 +627,11 @@ fn build_queries(target: &Target) -> Vec<String> {
     }
 }
 
-// ─── Username variant generation ────────────────────────────────────────────
 
-/// Generate common username variants from a base handle. OSINT best
-/// practice: people reuse patterns like underscore/dot swaps, trailing
-/// digits, first-initial+lastname. This dramatically increases cross-
-/// platform discovery.
 fn generate_username_variants(base: &str) -> Vec<String> {
     let lower = base.to_lowercase();
     let mut variants = Vec::with_capacity(8);
 
-    // Separator swaps: jerome-despal ↔ jerome_despal ↔ jerome.despal ↔ jeromedespal
     if lower.contains('_') || lower.contains('-') || lower.contains('.') {
         let no_sep: String = lower
             .chars()
@@ -719,13 +647,11 @@ fn generate_username_variants(base: &str) -> Vec<String> {
         }
     }
 
-    // Trailing digit variants: jdespal → jdespal1, jdespal2
     if !lower.ends_with(|c: char| c.is_ascii_digit()) && lower.len() >= 4 {
         variants.push(format!("{lower}1"));
         variants.push(format!("{lower}2"));
     }
 
-    // Truncation: jdespal → jdespa (off-by-one typos / platform limits)
     if lower.len() >= 5 {
         variants.push(lower[..lower.len() - 1].to_string());
     }
@@ -733,9 +659,6 @@ fn generate_username_variants(base: &str) -> Vec<String> {
     variants
 }
 
-/// Extract family members from search results: people who share the
-/// target's last name but have a different first name. These are high-
-/// value geolocation and identity leads (same household, same address).
 fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(String, String)> {
     if !matches!(target.kind, TargetKind::FullName | TargetKind::Email) {
         return Vec::new();
@@ -799,11 +722,7 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
     found
 }
 
-// ─── Secondary pivot: extract usernames from discovered URLs ────────────────
 
-/// Extract potential username pivots from search results. Social
-/// profile URLs contain usernames in their path that can be used
-/// as secondary search seeds to find cross-platform identity links.
 fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<String> {
     let social_hosts = [
         "facebook.com",
@@ -870,20 +789,13 @@ fn extract_path_username(url: &str) -> Option<String> {
     }
 }
 
-// ─── Fetch + parse ──────────────────────────────────────────────────────────
 
-/// Outcome of a single fetch attempt. Distinguishes "engine responded
-/// but was blocked" (worth retrying with alt UA) from "engine is
-/// unreachable" (retrying wastes the timeout budget).
 enum FetchOutcome {
     Body(String),
     Blocked,
     Unreachable,
 }
 
-/// Attempt to fetch search results, retrying once with an alternate
-/// User-Agent only when the engine responded but was blocked — never
-/// when the engine is completely unreachable (saves ~10s per dead engine).
 async fn fetch_and_parse(
     url: &str,
     engine: &EngineSpec,
@@ -920,8 +832,6 @@ async fn try_fetch(url: &str, ua: &str, post_body: Option<&str>) -> FetchOutcome
         crate::util::curl::fetch_with_ua(url, 8_000, ua).await
     };
 
-    // If direct fetch failed, try through the HUNTSMAN_SEARCH_PROXY env
-    // or fall back to the proxy pool (populated by util::proxy::harvest)
     let body = match body {
         Some(b) if b.len() >= 500 => Some(b),
         _ => {
@@ -951,7 +861,6 @@ async fn try_fetch(url: &str, ua: &str, post_body: Option<&str>) -> FetchOutcome
     FetchOutcome::Body(body)
 }
 
-/// Detect CAPTCHA/interstitial pages that contain no real results.
 fn is_captcha_page(body: &str) -> bool {
     let lower = body.to_lowercase();
     lower.contains("anomaly-modal")
@@ -970,7 +879,6 @@ fn parse_results(html: &str, engine: &'static str, query: &str) -> Vec<SearchRes
     let mut results = Vec::new();
     let mut seen_urls: HashSet<String> = HashSet::new();
 
-    // Primary: extract from href= attributes (works for Yahoo/DDG/Brave)
     for href in HrefIter::new(html) {
         if results.len() >= MAX_RESULTS_PER_ENGINE {
             break;
@@ -990,7 +898,6 @@ fn parse_results(html: &str, engine: &'static str, query: &str) -> Vec<SearchRes
         );
     }
 
-    // Secondary: extract from <cite> tags (Bing puts display URLs here)
     for cite_url in CiteIter::new(html) {
         if results.len() >= MAX_RESULTS_PER_ENGINE {
             break;
@@ -1011,7 +918,6 @@ fn parse_results(html: &str, engine: &'static str, query: &str) -> Vec<SearchRes
         );
     }
 
-    // Tertiary: extract from Google /url?q= redirect links
     for google_url in GoogleUrlIter::new(html) {
         if results.len() >= MAX_RESULTS_PER_ENGINE {
             break;
@@ -1039,7 +945,6 @@ fn add_result(
     seen: &mut HashSet<String>,
     results: &mut Vec<SearchResult>,
 ) {
-    // URL-decode percent-encoded URLs (from Google /url?q=, Yahoo /RU=, etc.)
     let decoded = url::form_urlencoded::parse(url.as_bytes())
         .next()
         .map(|(k, _)| k.into_owned())
@@ -1057,7 +962,6 @@ fn add_result(
     if is_tracking_url(url) {
         return;
     }
-    // Deduplicate by domain+path (strip query/fragment for dedup only)
     let dedup_key = canonicalize_url(url);
     if !seen.insert(dedup_key) {
         return;
@@ -1080,7 +984,6 @@ fn add_result(
     });
 }
 
-/// Extracts URLs from `<cite>` tags (Bing's result format).
 struct CiteIter<'a> {
     remaining: &'a str,
 }
@@ -1102,8 +1005,6 @@ impl<'a> Iterator for CiteIter<'a> {
             let end = self.remaining.find("</cite>")?;
             let content = &self.remaining[..end];
             self.remaining = &self.remaining[end + 7..];
-            // Bing cite format: "https://example.com › path › ..."
-            // Extract the domain part before the first " ›"
             let clean = content.split(" ›").next().unwrap_or(content).trim();
             if clean.contains('.') && clean.len() > 4 && !clean.contains('<') {
                 return Some(clean);
@@ -1112,7 +1013,6 @@ impl<'a> Iterator for CiteIter<'a> {
     }
 }
 
-/// Extracts URLs from Google's `/url?q=<encoded>&sa=` redirect pattern.
 struct GoogleUrlIter<'a> {
     remaining: &'a str,
 }
@@ -1142,8 +1042,6 @@ impl<'a> Iterator for GoogleUrlIter<'a> {
     }
 }
 
-/// Decode common HTML entities in href values. Search engines
-/// (especially DDG) emit `&amp;` instead of `&` inside href attrs.
 fn decode_html_entities(s: &str) -> String {
     s.replace("&amp;", "&")
         .replace("&lt;", "<")
@@ -1152,21 +1050,17 @@ fn decode_html_entities(s: &str) -> String {
         .replace("&#39;", "'")
 }
 
-/// Resolve an href into a clean URL, decoding engine-specific redirects.
 fn resolve_href(href: &str) -> Option<String> {
     let href = &decode_html_entities(href);
 
-    // DuckDuckGo wraps URLs: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&rut=...
     if href.contains("uddg=") {
         return extract_url_param(href, "uddg=");
     }
 
-    // Yandex wraps URLs: //yandex.com/clck/jsredir?...&url=https%3A%2F%2Fexample.com&...
     if href.contains("yandex.com/clck") && href.contains("url=") {
         return extract_url_param(href, "url=");
     }
 
-    // Yahoo wraps URLs: /RU=https%3a%2f%2fexample.com/RK=.../RS=...
     if href.contains("/RU=") {
         return href
             .split("/RU=")
@@ -1185,12 +1079,10 @@ fn resolve_href(href: &str) -> Option<String> {
             });
     }
 
-    // Protocol-relative
     if href.starts_with("//") {
         return Some(format!("https:{href}"));
     }
 
-    // Absolute HTTP(S)
     if href.starts_with("http://") || href.starts_with("https://") {
         return Some(href.to_string());
     }
@@ -1210,7 +1102,6 @@ fn extract_url_param(href: &str, param: &str) -> Option<String> {
         })
 }
 
-// ─── HTML iteration ─────────────────────────────────────────────────────────
 
 struct HrefIter<'a> {
     remaining: &'a str,
@@ -1253,7 +1144,6 @@ impl<'a> Iterator for HrefIter<'a> {
     }
 }
 
-// ─── URL helpers ────────────────────────────────────────────────────────────
 
 fn extract_host(url: &str) -> String {
     url::Url::parse(url)
@@ -1319,9 +1209,6 @@ fn is_engine_domain(host: &str) -> bool {
         .any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }
 
-/// Domains that are generic infrastructure / unrelated to any target.
-/// These appear in search result pages from engine chrome, ads, or
-/// generic navigation links, never as OSINT-relevant findings.
 fn is_generic_domain(domain: &str) -> bool {
     const GENERIC: &[&str] = &[
         "amazonaws.com",
@@ -1522,9 +1409,6 @@ fn is_navigation_path(s: &str) -> bool {
         || CONTAINS.iter().any(|n| s.contains(n))
 }
 
-/// Extract the meaningful search terms from a target value.
-/// For email: uses the local part (before @). For names: each word.
-/// Filters to ≥3 chars and lowercases. Used by every relevance gate.
 fn target_terms(target: &Target) -> Vec<String> {
     let seed = match target.kind {
         TargetKind::Email => target.value.split('@').next().unwrap_or(""),
@@ -1537,7 +1421,6 @@ fn target_terms(target: &Target) -> Vec<String> {
         .collect()
 }
 
-/// Check whether a URL's path contains any target term (≥4 chars).
 fn url_matches_target(url: &str, terms: &[String]) -> bool {
     let path = url::Url::parse(url)
         .ok()
@@ -1552,15 +1435,6 @@ fn url_matches_target(url: &str, terms: &[String]) -> bool {
         .any(|w| path.contains(w.as_str()))
 }
 
-/// Score how strongly a discovered username is connected to the target.
-/// Uses multiple independent signals — a username that shares no terms
-/// with the seed can still be validated through co-occurrence, people-
-/// search provenance, or search-engine contextual linking.
-///
-/// Returns (score, confidence):
-///   score ≥ 3 → strong: 0.55 confidence (PROBABLE tier)
-///   score 1-2 → weak:   0.30 confidence (CANDIDATE tier)
-///   score 0   → drop:   not emitted
 fn score_username(
     username: &str,
     host: &str,
@@ -1569,7 +1443,6 @@ fn score_username(
 ) -> (u8, f64) {
     let mut score: u8 = 0;
 
-    // Signal 1: direct term overlap (strongest)
     let parts: Vec<String> = username
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
@@ -1584,9 +1457,6 @@ fn score_username(
         score += 3;
     }
 
-    // Signal 2: people-search provenance — the site specialises in
-    // linking identities, so any username it connects to the target
-    // has high implicit credibility
     let people_search = [
         "peekyou.com",
         "spokeo.com",
@@ -1602,9 +1472,6 @@ fn score_username(
         score += 3;
     }
 
-    // Signal 3: co-occurrence — a target term (≥4 chars) appears
-    // in the same snippet/title as this username, meaning the search
-    // engine's result page explicitly associates both
     let text = format!("{} {}", result.title, result.snippet).to_lowercase();
     if terms
         .iter()
@@ -1614,9 +1481,6 @@ fn score_username(
         score += 2;
     }
 
-    // Signal 4: platform-targeted query — the query used site:
-    // for this exact platform, meaning the engine specifically
-    // matched the target to this profile on this platform
     let ql = result.query.to_lowercase();
     let host_base = host
         .trim_start_matches("www.")
@@ -1626,10 +1490,6 @@ fn score_username(
         score += 1;
     }
 
-    // Signal 5: semantic similarity — the username is structurally
-    // similar to a target term even without exact substring match.
-    // "jaydes" ↔ "jdespal" have partial bigram overlap. Threshold
-    // 0.25 catches abbreviations and character-transposed aliases.
     if score == 0 {
         let seed = match terms.first() {
             Some(s) => s.as_str(),
@@ -1758,7 +1618,6 @@ fn strip_tags(html: &str, max_len: usize) -> String {
     out.trim().to_string()
 }
 
-// ─── Entity building ────────────────────────────────────────────────────────
 
 fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> ModuleResult {
     let mut result = ModuleResult::new();
@@ -1768,10 +1627,6 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
 
     let terms = target_terms(target);
 
-    // Pre-scan: count how many independent engines confirmed each URL.
-    // Multi-engine corroboration boosts entity confidence because
-    // different engines have different indexes — an independent match
-    // is strong evidence of relevance.
     let mut url_engine_count: std::collections::HashMap<String, HashSet<&str>> =
         std::collections::HashMap::new();
     for r in results {
@@ -1791,7 +1646,6 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
     let engines_hit: HashSet<&str> = results.iter().map(|r| r.engine).collect();
     let queries_run: HashSet<&str> = results.iter().map(|r| r.query.as_str()).collect();
 
-    // Parent entity with search metadata
     let mut parent = target.to_entity(0.82, scan_id);
     parent.tag("search-enriched");
     let mut engines_list: Vec<&str> = engines_hit.iter().copied().collect();
@@ -1848,7 +1702,6 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             result.push(e);
         }
 
-        // Extract emails from title + snippet text
         let combined_text = format!("{} {}", r.title, r.snippet);
         for email in extract_emails_from_text(&combined_text) {
             if seen_emails.insert(email.clone()) {
@@ -1895,7 +1748,6 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             }
         }
 
-        // Extract ABN/ACN numbers from snippet text
         for (num, kind_label) in extract_abn_acn_from_text(&combined_text) {
             if seen_domains.insert(format!("@abn:{num}")) {
                 let mut e = Entity::new(EntityKind::AbnAcn, &num, 0.65, scan_id);
@@ -1921,7 +1773,6 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             }
         }
 
-        // Extract organisation names from snippet text
         for org in extract_organisations_from_text(&combined_text, &terms) {
             let org_key = org.to_lowercase();
             if seen_domains.insert(format!("@org:{org_key}")) {
@@ -1932,7 +1783,6 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             }
         }
 
-        // Extract addresses from snippet text (geolocation pivot)
         for addr in extract_addresses_from_text(&combined_text) {
             if seen_domains.insert(format!("@addr:{}", addr.to_lowercase())) {
                 let mut e = Entity::new(EntityKind::Address, &addr, 0.40, scan_id);

@@ -1,19 +1,3 @@
-//! GitHub user profile lookup. Free, no key (uses the public REST API).
-//!
-//! Endpoint: `GET https://api.github.com/users/{login}`.
-//!
-//! Public profile data: real name (if exposed), public email (if
-//! exposed and explicitly published), company, location, blog, bio,
-//! public-repo / follower / following counts, account creation date.
-//!
-//! Emits one Email entity *only when* the user has explicitly published
-//! one on their profile (GitHub's privacy default is to hide it). When
-//! present, that link is high-value — it confirms an
-//! account-to-real-email mapping.
-//!
-//! Rate-limited at 60 req/hour for unauthenticated use; on 403/429 we
-//! surface a module_error so the user sees the cap was hit.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -66,9 +50,7 @@ impl Module for GithubUser {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let login = target.value.trim();
-        // GitHub login rules: alphanumeric and hyphens, max 39 chars,
-        // not starting/ending with a hyphen. Saves a wasted HTTP round-
-        // trip for non-conforming inputs.
+        // Reject non-conforming logins to avoid a wasted HTTP round-trip.
         if login.is_empty()
             || login.len() > 39
             || !login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
@@ -106,10 +88,17 @@ impl Module for GithubUser {
 
         let mut result = ModuleResult::new();
 
-        // Username entity with GitHub profile metadata.
         let mut u_entity = Entity::new(EntityKind::Username, &user.login, 0.95, &ctx.scan_id);
         u_entity.tag("github");
-        let mut ev = Evidence::new("github_user", format!("GitHub profile @{}", user.login))
+        if let Some(l) = user.location.as_deref() {
+            u_entity.tag_if(!l.trim().is_empty(), "has-location");
+        }
+        if let Some(ref tw) = user.twitter_username {
+            if !tw.is_empty() {
+                u_entity.tag(format!("twitter:{tw}"));
+            }
+        }
+        let ev = Evidence::new("github_user", format!("GitHub profile @{}", user.login))
             .with_attr("github_id", user.id.to_string())
             .with_attr(
                 "profile_url",
@@ -117,54 +106,26 @@ impl Module for GithubUser {
                     || format!("https://github.com/{}", user.login),
                     String::from,
                 ),
+            )
+            .with_opt_attr("name", user.name.as_deref())
+            .with_opt_attr("company", user.company.as_deref())
+            .with_opt_attr("location", user.location.as_deref())
+            .with_opt_attr("blog", user.blog.as_deref().filter(|b| !b.is_empty()))
+            .with_opt_attr("bio", user.bio.as_deref().filter(|b| !b.is_empty()))
+            .with_opt_attr("created_at", user.created_at.as_deref())
+            .with_opt_attr("public_repos", user.public_repos.map(|n| n.to_string()))
+            .with_opt_attr("public_gists", user.public_gists.map(|n| n.to_string()))
+            .with_opt_attr("followers", user.followers.map(|n| n.to_string()))
+            .with_opt_attr("following", user.following.map(|n| n.to_string()))
+            .with_opt_attr(
+                "twitter",
+                user.twitter_username
+                    .as_deref()
+                    .filter(|tw| !tw.is_empty()),
             );
-        if let Some(n) = user.name.as_deref() {
-            ev = ev.with_attr("name", n);
-        }
-        if let Some(c) = user.company.as_deref() {
-            ev = ev.with_attr("company", c);
-        }
-        if let Some(l) = user.location.as_deref() {
-            ev = ev.with_attr("location", l);
-            if !l.trim().is_empty() {
-                u_entity.tag("has-location");
-            }
-        }
-        if let Some(b) = user.blog.as_deref()
-            && !b.is_empty()
-        {
-            ev = ev.with_attr("blog", b);
-        }
-        if let Some(b) = user.bio.as_deref()
-            && !b.is_empty()
-        {
-            ev = ev.with_attr("bio", b);
-        }
-        if let Some(c) = user.created_at.as_deref() {
-            ev = ev.with_attr("created_at", c);
-        }
-        if let Some(n) = user.public_repos {
-            ev = ev.with_attr("public_repos", n.to_string());
-        }
-        if let Some(n) = user.public_gists {
-            ev = ev.with_attr("public_gists", n.to_string());
-        }
-        if let Some(n) = user.followers {
-            ev = ev.with_attr("followers", n.to_string());
-        }
-        if let Some(n) = user.following {
-            ev = ev.with_attr("following", n.to_string());
-        }
-        if let Some(ref tw) = user.twitter_username
-            && !tw.is_empty()
-        {
-            ev = ev.with_attr("twitter", tw);
-            u_entity.tag(format!("twitter:{tw}"));
-        }
         u_entity.add_evidence(ev);
         result.push(u_entity);
 
-        // Real name → Person entity, when present.
         if let Some(name) = user.name.as_deref()
             && !name.trim().is_empty()
         {
@@ -181,7 +142,6 @@ impl Module for GithubUser {
             result.push(p);
         }
 
-        // Public email → Email entity, when explicitly published.
         if let Some(email) = user.email.as_deref()
             && email.contains('@')
         {
@@ -198,12 +158,9 @@ impl Module for GithubUser {
             result.push(e);
         }
 
-        // Blog URL → Url entity, when present.
         if let Some(blog) = user.blog.as_deref()
             && !blog.trim().is_empty()
         {
-            // GitHub stores the blog as a free-form string; only emit if
-            // it looks like a URL (must start with a scheme to count).
             let blog = blog.trim();
             if blog.starts_with("http://") || blog.starts_with("https://") {
                 let mut u = Entity::new(EntityKind::Url, blog, 0.80, &ctx.scan_id);

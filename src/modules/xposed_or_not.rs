@@ -1,23 +1,3 @@
-//! XposedOrNot breach lookup — free public email-to-breach-list service.
-//!
-//! Endpoint: `https://api.xposedornot.com/v1/check-email/<email>`.
-//! Returns the list of named breaches the email appears in (company names
-//! like "MyFitnessPal", "Quizlet", etc.) — **not credentials**. Confirms
-//! breach exposure without ever transmitting a password through our process.
-//!
-//! Breach analytics: when the check-email endpoint returns hits, the module
-//! also calls `/v1/breach-analytics` to enrich with risk metrics, exposed
-//! data types, and paste exposure counts. This second call is best-effort —
-//! if it fails the basic breach list is still returned.
-//!
-//! Why a second breach source matters: the `AU-001` correlator rule
-//! (multi-source breach corroboration, severity Critical) was wired up
-//! in v0.4 but had been dormant — only `hudsonrock` was registered as a
-//! breach source. With this module, the rule activates whenever
-//! HudsonRock and XposedOrNot both flag the same email, so
-//! `hse scan --kind email --value <breached>` can surface a Critical
-//! correlation without any paid keys.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -32,16 +12,12 @@ use crate::util::http::{fetch_json_or_404, urlencode};
 
 pub struct XposedOrNot;
 
-/// XposedOrNot's response shape. Successful lookups return one of:
-///   { "breaches": [["MyFitnessPal", "Quizlet", ...]] }  — exposed
-///   { "Error": "Not found" }                            — clean
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct XonResp {
     breaches: Option<Vec<Vec<String>>>,
 }
 
-/// Breach analytics response (`/v1/breach-analytics?email=`).
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct AnalyticsResp {
@@ -80,7 +56,6 @@ struct PastesSummary {
     cnt: Option<u64>,
 }
 
-/// High-profile breach names that warrant individual tagging.
 const NOTABLE_BREACHES: &[&str] = &[
     "linkedin",
     "adobe",
@@ -182,9 +157,7 @@ fn build_result(
         }
     }
 
-    if count >= 5 {
-        entity.tag(tags::HIGH_EXPOSURE);
-    }
+    entity.tag_if(count >= 5, tags::HIGH_EXPOSURE);
 
     let joined = breaches.join(", ");
     let mut ev = Evidence::new("xposed_or_not", format!("Found in {count} breach(es)"))
@@ -224,7 +197,6 @@ fn build_result(
                 ev = ev.with_attr("password_risk", "true");
             }
 
-            // Surface per-breach summaries with description and record counts.
             let mut breach_summaries: Vec<String> = Vec::new();
             let mut descriptions: Vec<String> = Vec::new();
             for d in details {
@@ -233,7 +205,6 @@ fn build_result(
                     _ => continue,
                 };
 
-                // Build summary like "LinkedIn (2012, 117M records): Emails;Passwords"
                 let year = d
                     .xposed_date
                     .as_deref()
@@ -271,7 +242,6 @@ fn build_result(
                 };
                 breach_summaries.push(summary);
 
-                // Surface xposure_desc when present and non-empty.
                 if let Some(desc) = d.xposure_desc.as_deref() {
                     let desc = desc.trim();
                     if !desc.is_empty() {
