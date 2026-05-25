@@ -543,3 +543,52 @@ async fn live_create_rejects_invalid_target() {
     let json = body_json(resp).await;
     assert!(json["error"].as_str().unwrap().contains("invalid target"));
 }
+
+// ── Entities filter ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_entities_filter_returns_entities() {
+    let (app, scan_id) = create_scan("filter").await;
+    let resp = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{scan_id}/entities/filter?kind=email"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert!(json["entities"].is_array());
+}
+
+// ── Live list (empty) ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn live_list_returns_empty_initially() {
+    let app = test_app("live_list");
+    let resp = app.oneshot(get("/api/v1/live")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert!(json["sessions"].is_array());
+    assert_eq!(json["count"].as_u64().unwrap(), 0);
+}
+
+// ── Live get not found ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn live_get_not_found() {
+    let app = test_app("live_get_nf");
+    let resp = app.oneshot(get("/api/v1/live/nonexistent")).await.unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+// ── Live stop not found ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn live_stop_not_found() {
+    let app = test_app("live_stop_nf");
+    let resp = app
+        .oneshot(delete("/api/v1/live/nonexistent"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
