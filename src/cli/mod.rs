@@ -522,18 +522,18 @@ fn print_full_report(
         .unwrap_or(0)
         .saturating_sub(scan.started_at);
 
-    eprintln!("\n{}", "═".repeat(90));
-    eprintln!("  HUNTSMAN SEARCH ENGINE — INTELLIGENCE REPORT");
-    eprintln!("{}", "═".repeat(90));
-    eprintln!("  Target:   {} ({})", target_value, target_kind);
-    eprintln!(
+    println!("\n{}", "═".repeat(90));
+    println!("  HUNTSMAN SEARCH ENGINE — INTELLIGENCE REPORT");
+    println!("{}", "═".repeat(90));
+    println!("  Target:   {} ({})", target_value, target_kind);
+    println!(
         "  Status:   {} | Duration: {}s | Entities: {} | Correlations: {}",
         scan.status.as_str(),
         dur,
         entities.len(),
         correlations.len()
     );
-    eprintln!("{}", "═".repeat(90));
+    println!("{}", "═".repeat(90));
 
     // Group entities by kind
     let mut by_kind: BTreeMap<String, Vec<&crate::core::entity::Entity>> = BTreeMap::new();
@@ -542,11 +542,11 @@ fn print_full_report(
     }
 
     // Print summary
-    eprintln!("\n  ┌─ ENTITY SUMMARY ─────────────────────────────────────────────");
+    println!("\n  ┌─ ENTITY SUMMARY ─────────────────────────────────────────────");
     for (kind, group) in &by_kind {
-        eprintln!("  │  {:15} {:>4} found", kind, group.len());
+        println!("  │  {:15} {:>4} found", kind, group.len());
     }
-    eprintln!(
+    println!(
         "  └────────────────────────────────────────────────────── total: {}\n",
         entities.len()
     );
@@ -557,16 +557,16 @@ fn print_full_report(
         .filter(|c| c.severity.as_canonical() == "high" || c.severity.as_canonical() == "critical")
         .collect();
     if !high_corr.is_empty() {
-        eprintln!("  ┌─ HIGH/CRITICAL ALERTS ──────────────────────────────────────");
+        println!("  ┌─ HIGH/CRITICAL ALERTS ──────────────────────────────────────");
         for c in &high_corr {
-            eprintln!(
+            println!(
                 "  │  [{}] {} — {}",
                 c.rule_id,
                 c.severity.as_canonical().to_uppercase(),
                 c.description
             );
         }
-        eprintln!("  └───────────────────────────────────────────────────────────────\n");
+        println!("  └───────────────────────────────────────────────────────────────\n");
     }
 
     // Print each entity kind section with full evidence
@@ -591,7 +591,7 @@ fn print_full_report(
             Some(g) => g,
             None => continue,
         };
-        eprintln!(
+        println!(
             "  ╔═ {} ({}) ═══════════════════════════════════════════════",
             kind_name.to_uppercase(),
             group.len()
@@ -599,59 +599,59 @@ fn print_full_report(
         for (i, e) in group.iter().enumerate() {
             let srcs: Vec<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
             let unique_srcs: std::collections::BTreeSet<&str> = srcs.into_iter().collect();
-            eprintln!("  ║");
-            eprintln!("  ║  [{}] {}", i + 1, e.value);
-            eprintln!(
+            println!("  ║");
+            println!("  ║  [{}] {}", i + 1, e.value);
+            println!(
                 "  ║      Confidence: {:.3} | Corroboration: {} | Sources: {}",
                 e.confidence,
                 e.corroboration,
                 unique_srcs.into_iter().collect::<Vec<_>>().join(", ")
             );
             if !e.tags.is_empty() {
-                eprintln!("  ║      Tags: {}", e.tags.join(", "));
+                println!("  ║      Tags: {}", e.tags.join(", "));
             }
             for ev in &e.evidence {
-                eprintln!("  ║      ├── [{}] {}", ev.source, ev.summary);
+                println!("  ║      ├── [{}] {}", ev.source, ev.summary);
                 for (k, v) in &ev.attributes {
                     if k == "raw" {
-                        eprintln!("  ║      │   {}: <{} bytes>", k, v.len());
+                        println!("  ║      │   {}: <{} bytes>", k, v.len());
                     } else {
                         let display = if v.len() > 200 { &v[..200] } else { v.as_str() };
-                        eprintln!("  ║      │   {}: {}", k, display);
+                        println!("  ║      │   {}: {}", k, display);
                     }
                 }
             }
         }
-        eprintln!("  ╚═══════════════════════════════════════════════════════════════\n");
+        println!("  ╚═══════════════════════════════════════════════════════════════\n");
     }
 
     // Print all correlations
     if !correlations.is_empty() {
-        eprintln!(
+        println!(
             "  ┌─ ALL CORRELATIONS ({}) ────────────────────────────────────",
             correlations.len()
         );
         for (i, c) in correlations.iter().enumerate() {
-            eprintln!(
+            println!(
                 "  │  [{}] {} — {} [{}]",
                 i + 1,
                 c.rule_id,
                 c.rule_name,
                 c.severity.as_canonical().to_uppercase()
             );
-            eprintln!("  │      {}", c.description);
+            println!("  │      {}", c.description);
         }
-        eprintln!("  └───────────────────────────────────────────────────────────────");
+        println!("  └───────────────────────────────────────────────────────────────");
     }
 
-    eprintln!("\n{}", "═".repeat(90));
-    eprintln!(
+    println!("\n{}", "═".repeat(90));
+    println!(
         "  SCAN COMPLETE: {} entities, {} correlations, {}s",
         entities.len(),
         correlations.len(),
         dur
     );
-    eprintln!("{}\n", "═".repeat(90));
+    println!("{}\n", "═".repeat(90));
 }
 
 async fn cmd_provision(env_only: bool, verify_only: bool, dry_run: bool) -> Result<()> {
