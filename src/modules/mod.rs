@@ -18,6 +18,7 @@ pub mod dns_brute;
 pub mod dns_resolver;
 pub mod email_to_domain;
 pub mod email_to_username;
+pub mod forward_geocode;
 pub mod github_user;
 pub mod gps_fix;
 pub mod gravatar;
@@ -95,6 +96,9 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // Coordinates entities from ip_geo/gps_fix into Address entities
         // with country, state, city, street. Free, no API key.
         Arc::new(reverse_geocode::ReverseGeocode),
+        // Forward geocoding — Address text to GPS coordinates via
+        // OSM Nominatim. Closes the geo loop: Address → Coordinates.
+        Arc::new(forward_geocode::ForwardGeocode),
         // Tor exit-relay membership check (free, single fetch cached).
         Arc::new(tor_exit_check::TorExitCheck),
         // DNS blocklist (DNSBL) checker — pure DNS queries against 8
