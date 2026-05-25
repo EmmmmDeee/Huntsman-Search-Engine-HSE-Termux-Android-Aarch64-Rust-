@@ -115,6 +115,9 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     out.extend(rule_au_013_local_network_discovery(entities, scan_id, now));
     out.extend(rule_au_014_geo_cluster(entities, scan_id, now));
     out.extend(rule_au_015_threat_intel_hit(entities, scan_id, now));
+    out.extend(rule_au_016_credential_cluster(entities, scan_id, now));
+    out.extend(rule_au_017_ransomware_and_breach(entities, scan_id, now));
+    out.extend(rule_au_018_stealer_family_spread(entities, scan_id, now));
     out
 }
 
@@ -405,12 +408,12 @@ fn rule_au_008_exposed_service(entities: &[Entity], scan_id: &str, ts: u64) -> V
 fn rule_au_009_stealer_log(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Email && e.has_tag("stealer-log"))
+        .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Username | EntityKind::Phone | EntityKind::Domain) && e.has_tag("stealer-log"))
         .map(|e| Correlation {
             rule_id: "AU-009".into(),
             rule_name: "Stealer-log compromise".into(),
             severity: Severity::High,
-            description: format!("Email {} observed in info-stealer log dumps", e.value),
+            description: format!("{} {} observed in info-stealer log dumps", e.kind, e.value),
             entity_uids: vec![e.uid.clone()],
             scan_id: scan_id.into(),
             ts,
@@ -599,6 +602,79 @@ fn rule_au_015_threat_intel_hit(entities: &[Entity], scan_id: &str, ts: u64) -> 
                 scan_id: scan_id.into(),
                 ts,
             }
+        })
+        .collect()
+}
+
+fn rule_au_016_credential_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let creds: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Credential && e.has_tag("stealer-log"))
+        .collect();
+    if creds.len() < 3 {
+        return Vec::new();
+    }
+    vec![Correlation::new(
+        "AU-016",
+        "Compromised credential cluster",
+        Severity::Critical,
+        format!(
+            "{} stolen credentials found in stealer logs — indicates systemic device compromise",
+            creds.len()
+        ),
+        creds.iter().map(|e| e.uid.clone()).collect(),
+        scan_id,
+        ts,
+    )]
+}
+
+fn rule_au_017_ransomware_and_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain && e.has_tag("ransomware-victim") && e.has_tag("breach"))
+        .map(|e| Correlation::new(
+            "AU-017",
+            "Ransomware victim with breached employees",
+            Severity::Critical,
+            format!(
+                "Domain '{}' is both a ransomware victim and has employees in breach databases",
+                e.value
+            ),
+            vec![e.uid.clone()],
+            scan_id,
+            ts,
+        ))
+        .collect()
+}
+
+fn rule_au_018_stealer_family_spread(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let mut family_entities: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for e in entities {
+        for tag in &e.tags {
+            if let Some(family) = tag.strip_prefix("stealer:") {
+                family_entities
+                    .entry(family.to_string())
+                    .or_default()
+                    .push(e.uid.clone());
+            }
+        }
+    }
+    family_entities
+        .into_iter()
+        .filter(|(_, uids)| uids.len() >= 2)
+        .map(|(family, uids)| {
+            let count = uids.len();
+            Correlation::new(
+                "AU-018",
+                "Stealer family spread",
+                Severity::High,
+                format!(
+                    "Stealer family '{family}' compromised {count} identities — indicates coordinated malware campaign"
+                ),
+                uids,
+                scan_id,
+                ts,
+            )
         })
         .collect()
 }
@@ -949,6 +1025,53 @@ mod tests {
         let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
         assert_eq!(r.len(), 1);
         assert!(r[0].description.contains("curated threat-intel feed"));
+    }
+
+    #[test]
+    fn au009_fires_on_username_with_stealer_log() {
+        let e = tagged(EntityKind::Username, "alice", &["stealer-log"]);
+        let r = rule_au_009_stealer_log(&[e], "s", 0);
+        assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn au016_fires_on_three_credentials() {
+        let entities = vec![
+            tagged(EntityKind::Credential, "u1@http://a.com", &["stealer-log"]),
+            tagged(EntityKind::Credential, "u2@http://b.com", &["stealer-log"]),
+            tagged(EntityKind::Credential, "u3@http://c.com", &["stealer-log"]),
+        ];
+        let r = rule_au_016_credential_cluster(&entities, "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn au016_no_fire_on_two_credentials() {
+        let entities = vec![
+            tagged(EntityKind::Credential, "u1@http://a.com", &["stealer-log"]),
+            tagged(EntityKind::Credential, "u2@http://b.com", &["stealer-log"]),
+        ];
+        assert!(rule_au_016_credential_cluster(&entities, "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au017_fires_on_ransomware_plus_breach() {
+        let e = tagged(EntityKind::Domain, "victim.com", &["ransomware-victim", "breach"]);
+        let r = rule_au_017_ransomware_and_breach(&[e], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn au018_fires_on_stealer_family_spread() {
+        let entities = vec![
+            tagged(EntityKind::Email, "a@b.com", &["stealer:redline"]),
+            tagged(EntityKind::Username, "alice", &["stealer:redline"]),
+        ];
+        let r = rule_au_018_stealer_family_spread(&entities, "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].severity, Severity::High);
     }
 
     #[test]

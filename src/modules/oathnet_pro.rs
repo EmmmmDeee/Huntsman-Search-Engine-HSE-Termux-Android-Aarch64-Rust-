@@ -132,6 +132,18 @@ impl Module for OathnetPro {
                     extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
                 }
 
+                // Aggregate stealer statistics
+                let mut unique_urls: HashSet<String> = HashSet::new();
+                let mut families: HashSet<String> = HashSet::new();
+                for item in &stealer_items {
+                    if let Some(url) = val_str(item, "url_str") {
+                        unique_urls.insert(url);
+                    }
+                    if let Some(f) = val_str_or(item, &["stealer_family", "malware", "stealer"]) {
+                        families.insert(f.to_lowercase());
+                    }
+                }
+
                 // Tag the target entity with stealer-log for correlator AU-009
                 for e in &mut result.entities {
                     if e.value.to_lowercase() == target.value.to_lowercase()
@@ -143,7 +155,16 @@ impl Module for OathnetPro {
                                 "oathnet_pro",
                                 format!("{stl_count} stealer log entries"),
                             )
-                            .with_attr("stealer_hits", stl_count.to_string()),
+                            .with_attr("stealer_hits", stl_count.to_string())
+                            .with_attr("unique_compromised_services", unique_urls.len().to_string())
+                            .with_opt_attr(
+                                "stealer_families",
+                                if families.is_empty() {
+                                    None
+                                } else {
+                                    Some(families.into_iter().collect::<Vec<_>>().join(", "))
+                                },
+                            ),
                         );
                         break;
                     }
@@ -152,11 +173,55 @@ impl Module for OathnetPro {
         }
 
         // Phase 3: ransomware victims (domain targets)
+        let mut victim_hits = Vec::new();
         if target.kind == TargetKind::Domain && !ctx.cancel.is_cancelled() {
             if let Ok(victims) =
                 oathnet::search(key, paths::VICTIMS, "domain", &target.value, 20).await
             {
+                victim_hits = victims.clone();
                 extract_victims(&victims, &target.value, &ctx.scan_id, &mut seen, &mut result);
+            }
+        }
+
+        // Phase 3b: search victim domain employees in stealer/breach data
+        if !ctx.cancel.is_cancelled() && !victim_hits.is_empty() {
+            let common_prefixes = ["info", "admin", "contact", "support", "hr", "security"];
+            for prefix in &common_prefixes {
+                if ctx.cancel.is_cancelled() {
+                    break;
+                }
+                let employee_email = format!("{prefix}@{}", target.value);
+                if let Ok(emp_items) = oathnet::search(
+                    key,
+                    paths::STEALER,
+                    "email",
+                    &employee_email,
+                    5,
+                )
+                .await
+                {
+                    if !emp_items.is_empty()
+                        && seen.insert(employee_email.to_lowercase())
+                    {
+                        let mut e =
+                            Entity::new(EntityKind::Email, &employee_email, 0.55, &ctx.scan_id);
+                        e.tag(tags::BREACH);
+                        e.tag("oathnet-pro");
+                        e.tag(tags::STEALER_LOG);
+                        e.tag("employee-credential");
+                        e.add_evidence(
+                            Evidence::new(
+                                "oathnet_pro",
+                                format!(
+                                    "{} stealer record(s) for employee {employee_email}",
+                                    emp_items.len()
+                                ),
+                            )
+                            .with_attr("stealer_hits", emp_items.len().to_string()),
+                        );
+                        result.push(e);
+                    }
+                }
             }
         }
 
@@ -479,6 +544,35 @@ fn extract_stealer_entities(
         }
     }
 
+    // Username entities from stealer logs
+    if let Some(uname) = val_str(item, "username")
+        && uname.len() >= 3
+        && seen.insert(format!("@stealer-uname:{}", uname.to_lowercase()))
+    {
+        let mut e = Entity::new(EntityKind::Username, &uname, 0.55, scan_id);
+        e.tag("oathnet-pro");
+        e.tag(tags::STEALER_LOG);
+        e.tag("credential-exposed");
+        e.add_evidence(ev.clone());
+        result.push(e);
+    }
+
+    // IP entities from stealer victim machine
+    if let Some(ip) = val_str_or(item, &["ip", "victim_ip"])
+        && ip.len() >= 7
+        && seen.insert(format!("@stealer-ip:{ip}"))
+    {
+        let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.50, scan_id);
+        e.tag("oathnet-pro");
+        e.tag(tags::STEALER_LOG);
+        e.tag("victim-machine");
+        e.add_evidence(
+            Evidence::new("oathnet_pro", format!("Victim machine IP from stealer log: {ip}"))
+                .with_attr("source", "stealer"),
+        );
+        result.push(e);
+    }
+
     if let Some(domains) = item.get("domain").and_then(|v| v.as_array()) {
         for d in domains {
             if let Some(dom) = d.as_str()
@@ -491,6 +585,29 @@ fn extract_stealer_entities(
                 e.add_evidence(
                     Evidence::new("oathnet_pro", format!("Stealer credential for {dom}"))
                         .with_attr("source", "stealer"),
+                );
+                result.push(e);
+            }
+        }
+    }
+
+    // Domain entities extracted from stealer URL
+    if let Some(url_str) = val_str(item, "url_str")
+        && url_str.starts_with("http")
+    {
+        if let Ok(parsed) = url::Url::parse(&url_str)
+            && let Some(host) = parsed.host_str()
+        {
+            let domain = host.to_lowercase();
+            if domain.contains('.') && seen.insert(format!("@stealer-domain:{domain}")) {
+                let mut e = Entity::new(EntityKind::Domain, &domain, 0.50, scan_id);
+                e.tag("oathnet-pro");
+                e.tag(tags::STEALER_LOG);
+                e.tag("compromised-service");
+                e.add_evidence(
+                    Evidence::new("oathnet_pro", format!("Credentials stolen from {domain}"))
+                        .with_attr("source", "stealer")
+                        .with_attr("stolen_url", &url_str),
                 );
                 result.push(e);
             }
@@ -523,6 +640,15 @@ fn extract_stealer_entities(
             e.tag(tags::STEALER_LOG);
             e.add_evidence(ev);
             result.push(e);
+        }
+    }
+
+    // Stealer family tagging
+    if let Some(family) = val_str_or(item, &["stealer_family", "malware", "stealer"]) {
+        if let Some(last_email) = result.entities.iter_mut().rev()
+            .find(|e| e.kind == EntityKind::Email && e.has_tag(tags::STEALER_LOG))
+        {
+            last_email.tag(&format!("stealer:{}", family.to_lowercase()));
         }
     }
 }

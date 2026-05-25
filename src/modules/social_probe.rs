@@ -284,6 +284,37 @@ impl Module for SocialProbe {
             result.push(summary);
         }
 
+        // Stealer-log enrichment for confirmed usernames
+        let oathnet_key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+        if !ctx.cancel.is_cancelled() && !result.is_empty() {
+            if let Ok(items) = crate::util::oathnet::search(
+                oathnet_key,
+                crate::util::oathnet::paths::STEALER,
+                "username",
+                &target.value,
+                10,
+            ).await {
+                if !items.is_empty() {
+                    for e in &mut result.entities {
+                        if e.kind == EntityKind::Username
+                            && e.value.to_lowercase() == target.value.to_lowercase()
+                        {
+                            e.tag(crate::core::tags::STEALER_LOG);
+                            e.tag(crate::core::tags::CREDENTIAL_EXPOSED);
+                            e.add_evidence(
+                                Evidence::new(
+                                    "social_probe:oathnet",
+                                    format!("{} stealer log(s) for username {}", items.len(), target.value),
+                                )
+                                .with_attr("stealer_hits", items.len().to_string()),
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(result)
     }
 }

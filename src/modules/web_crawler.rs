@@ -181,6 +181,69 @@ impl Module for WebCrawler {
         }
 
         build_entities(&domain, &base_host, &ctx.scan_id, &mut state);
+
+        // Stealer-log cross-reference for the crawled domain
+        let oathnet_key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+        if !ctx.cancel.is_cancelled() {
+            if let Ok(stealer_items) = crate::util::oathnet::search(
+                oathnet_key,
+                crate::util::oathnet::paths::STEALER,
+                "domain",
+                &target.value,
+                20,
+            ).await {
+                if !stealer_items.is_empty() {
+                    // Tag the parent domain entity
+                    for e in &mut state.result.entities {
+                        if e.kind == EntityKind::Domain
+                            && e.value.to_lowercase() == target.value.to_lowercase()
+                        {
+                            e.tag(tags::STEALER_LOG);
+                            e.tag(tags::COMPROMISED_SERVICE);
+                            e.add_evidence(
+                                Evidence::new(
+                                    "web_crawler:oathnet",
+                                    format!("{} stolen credential(s) reference {}", stealer_items.len(), target.value),
+                                )
+                                .with_attr("stealer_hits", stealer_items.len().to_string()),
+                            );
+                            break;
+                        }
+                    }
+
+                    // Extract emails from stealer records
+                    for item in stealer_items.iter().take(10) {
+                        if let Some(emails) = item.get("email").and_then(|v| v.as_array()) {
+                            for email_val in emails.iter().take(3) {
+                                if let Some(email) = email_val.as_str()
+                                    && email.contains('@')
+                                    && email.len() >= 5
+                                {
+                                    let mut e = Entity::new(
+                                        EntityKind::Email,
+                                        email,
+                                        0.55,
+                                        &ctx.scan_id,
+                                    );
+                                    e.tag(tags::BREACH);
+                                    e.tag(tags::STEALER_LOG);
+                                    e.tag("oathnet-enriched");
+                                    e.add_evidence(
+                                        Evidence::new(
+                                            "web_crawler:oathnet",
+                                            format!("Credential stolen from {}", target.value),
+                                        )
+                                        .with_attr("source", "stealer"),
+                                    );
+                                    state.result.push(e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(state.result)
     }
 }

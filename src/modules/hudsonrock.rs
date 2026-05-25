@@ -132,6 +132,67 @@ impl Module for HudsonRock {
         entity.tag_if(seen_hosts.len() >= 2, tags::MULTI_DEVICE);
         entity.tag(format!("stealer-count:{}", data.stealers.len()));
 
+        let mut result = ModuleResult::new();
+
+        // Extract victim IPs as separate IpAddress entities
+        let mut seen_ips: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for stealer in &data.stealers {
+            if let Some(ip) = stealer.ip.as_deref()
+                && ip.len() >= 7
+                && seen_ips.insert(ip.to_string())
+            {
+                let mut ip_entity = crate::core::entity::Entity::new(
+                    crate::core::entity::EntityKind::IpAddress,
+                    ip,
+                    0.55,
+                    &ctx.scan_id,
+                );
+                ip_entity.tag(tags::STEALER_LOG);
+                ip_entity.tag(tags::VICTIM_MACHINE);
+                ip_entity.add_evidence(
+                    Evidence::new("hudsonrock", format!("Victim machine IP from stealer log"))
+                        .with_attr("source", "stealer")
+                        .with_opt_attr("computer_name", stealer.computer_name.as_deref())
+                        .with_opt_attr("os", stealer.operating_system.as_deref())
+                        .with_opt_attr("stealer_family", stealer.stealer_family.as_deref()),
+                );
+                result.push(ip_entity);
+            }
+        }
+
+        // Extract compromised service URLs from credential data
+        let mut seen_cred_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for stealer in &data.stealers {
+            for cred in &stealer.credentials {
+                if let Some(url) = cred.get("url").and_then(|v| v.as_str())
+                    && url.starts_with("http")
+                    && seen_cred_urls.insert(url.to_lowercase())
+                {
+                    if let Ok(parsed) = url::Url::parse(url)
+                        && let Some(host) = parsed.host_str()
+                    {
+                        let domain = host.to_lowercase();
+                        if domain.contains('.') && seen_cred_urls.insert(format!("@dom:{domain}")) {
+                            let mut d = crate::core::entity::Entity::new(
+                                crate::core::entity::EntityKind::Domain,
+                                &domain,
+                                0.50,
+                                &ctx.scan_id,
+                            );
+                            d.tag(tags::STEALER_LOG);
+                            d.tag(tags::COMPROMISED_SERVICE);
+                            d.add_evidence(
+                                Evidence::new("hudsonrock", format!("Stolen credential for {domain}"))
+                                    .with_attr("source", "stealer")
+                                    .with_attr("credential_url", url),
+                            );
+                            result.push(d);
+                        }
+                    }
+                }
+            }
+        }
+
         // OathNet stealer cross-reference for deeper breach intel
         let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
         if !ctx.cancel.is_cancelled() {
@@ -210,7 +271,6 @@ impl Module for HudsonRock {
             }
         }
 
-        let mut result = ModuleResult::new();
         result.push(entity);
         Ok(result)
     }
