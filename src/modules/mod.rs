@@ -31,6 +31,7 @@ pub mod numverify;
 pub mod oathnet_pro;
 pub mod phone_intl;
 pub mod reverse_dns;
+pub mod reverse_geocode;
 pub mod search_engines;
 pub mod securitytrails;
 pub mod shodan;
@@ -85,6 +86,10 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // RDAP registry view of an IP (complements whois + bgpview).
         Arc::new(ip_rdap::IpRdap),
         Arc::new(ip_geo::IpGeo),
+        // Reverse geocoding via OpenStreetMap Nominatim — converts
+        // Coordinates entities from ip_geo/gps_fix into Address entities
+        // with country, state, city, street. Free, no API key.
+        Arc::new(reverse_geocode::ReverseGeocode),
         // Tor exit-relay membership check (free, single fetch cached).
         Arc::new(tor_exit_check::TorExitCheck),
         // DNS blocklist (DNSBL) checker — pure DNS queries against 8

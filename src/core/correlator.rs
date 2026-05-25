@@ -149,7 +149,9 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     out.extend(rule_au_006_breach_weak_infra(&idx, scan_id, now));
     out.extend(rule_au_007_shared_hosting(&idx.infra, scan_id, now));
     out.extend(rule_au_008_blocklisted_infra(&idx.infra, scan_id, now));
+    out.extend(rule_au_009_cross_platform_identity(idx.all, scan_id, now));
     out.extend(rule_au_010_infra_consensus(&idx.infra, scan_id, now));
+    out.extend(rule_au_011_geolocation_convergence(idx.all, scan_id, now));
     out
 }
 
@@ -471,6 +473,40 @@ fn rule_au_008_blocklisted_infra(infra: &[&Entity], scan_id: &str, ts: u64) -> V
     out
 }
 
+/// `AU-009` — Cross-platform identity convergence: a Username entity has
+/// evidence from ≥3 distinct module sources. This indicates the same
+/// username is confirmed on multiple platforms (e.g., github_user,
+/// username_search, search_engines) — strong identity signal.
+fn rule_au_009_cross_platform_identity(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Username))
+        .filter_map(|e| {
+            let sources: HashSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
+            if sources.len() >= 3 {
+                let mut names: Vec<&str> = sources.into_iter().collect();
+                names.sort_unstable();
+                Some(Correlation {
+                    rule_id: "AU-009".into(),
+                    rule_name: "Cross-platform identity".into(),
+                    severity: Severity::Medium,
+                    description: format!(
+                        "Username '{}' confirmed on {} platforms: {}",
+                        e.value,
+                        names.len(),
+                        names.join(", ")
+                    ),
+                    entity_uids: vec![e.uid.clone()],
+                    scan_id: scan_id.into(),
+                    ts,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// `AU-010` — Infrastructure consensus: a single Domain or IpAddress has
 /// evidence from ≥3 distinct module sources. Differs from `AU-003` in that
 /// it counts module diversity at the **evidence** level rather than the
@@ -503,6 +539,53 @@ fn rule_au_010_infra_consensus(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec
         }
     }
     out
+}
+
+/// `AU-011` — Geolocation convergence: multiple entities in the scan
+/// report the same country code via their tags (e.g., `country:US`).
+/// When ≥3 entities from different modules agree on a country, it's
+/// a strong signal about the target's geographic nexus. Combines
+/// signals from ip_geo, whois, ip_rdap, reverse_geocode.
+fn rule_au_011_geolocation_convergence(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let mut country_sources: std::collections::HashMap<String, HashSet<&str>> =
+        std::collections::HashMap::new();
+    let mut country_uids: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+
+    for e in entities {
+        for tag in &e.tags {
+            if let Some(cc) = tag.strip_prefix("country:") {
+                let sources: HashSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
+                let entry = country_sources.entry(cc.to_string()).or_default();
+                entry.extend(sources);
+                country_uids.entry(cc.to_string()).or_default().push(e.uid.clone());
+            }
+        }
+    }
+
+    country_sources
+        .into_iter()
+        .filter(|(_, sources)| sources.len() >= 3)
+        .map(|(cc, sources)| {
+            let mut src_list: Vec<&str> = sources.into_iter().collect();
+            src_list.sort_unstable();
+            let uids = country_uids.remove(&cc).unwrap_or_default();
+            Correlation {
+                rule_id: "AU-011".into(),
+                rule_name: "Geolocation convergence".into(),
+                severity: Severity::Low,
+                description: format!(
+                    "Country {} confirmed by {} independent sources: {}",
+                    cc,
+                    src_list.len(),
+                    src_list.join(", ")
+                ),
+                entity_uids: uids,
+                scan_id: scan_id.into(),
+                ts,
+            }
+        })
+        .collect()
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

@@ -121,6 +121,9 @@ impl Module for GithubUser {
         }
         if let Some(l) = user.location.as_deref() {
             ev = ev.with_attr("location", l);
+            if !l.trim().is_empty() {
+                u_entity.tag("has-location");
+            }
         }
         if let Some(b) = user.blog.as_deref()
             && !b.is_empty()
