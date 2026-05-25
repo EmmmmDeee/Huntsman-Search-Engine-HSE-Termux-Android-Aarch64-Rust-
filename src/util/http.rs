@@ -170,3 +170,48 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
 pub fn urlencode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_client_succeeds() {
+        let _c = build_client();
+    }
+
+    #[test]
+    fn urlencode_plain_passthrough() {
+        assert_eq!(urlencode("hello"), "hello");
+    }
+
+    #[test]
+    fn urlencode_spaces_become_plus() {
+        assert_eq!(urlencode("hello world"), "hello+world");
+    }
+
+    #[test]
+    fn urlencode_special_chars() {
+        assert_eq!(urlencode("a@b.com"), "a%40b.com");
+    }
+
+    #[test]
+    fn urlencode_unicode() {
+        let encoded = urlencode("café");
+        assert!(encoded.contains("%"));
+        assert!(!encoded.contains("é"));
+    }
+
+    #[test]
+    fn urlencode_empty() {
+        assert_eq!(urlencode(""), "");
+    }
+
+    #[test]
+    fn urlencode_slashes_and_ampersands() {
+        let encoded = urlencode("a/b&c=d");
+        assert!(encoded.contains("%2F"));
+        assert!(encoded.contains("%26"));
+        assert!(encoded.contains("%3D"));
+    }
+}

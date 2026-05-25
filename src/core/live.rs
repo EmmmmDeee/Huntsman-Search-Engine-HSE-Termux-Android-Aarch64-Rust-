@@ -427,4 +427,37 @@ mod tests {
         assert_eq!(req.live.interval_secs, crate::LIVE_DEFAULT_INTERVAL_SECS);
         assert!(req.live.iterations.is_none());
     }
+
+    #[test]
+    fn live_status_serde_round_trip() {
+        for (variant, expected) in [
+            (LiveStatus::Running, "\"running\""),
+            (LiveStatus::Completed, "\"completed\""),
+            (LiveStatus::Stopped, "\"stopped\""),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, expected);
+            let back: LiveStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+        }
+    }
+
+    #[test]
+    fn live_session_serde_round_trip() {
+        let session = LiveSession {
+            id: "live-abc123".into(),
+            target: Target::new(TargetKind::Email, "x@y.com"),
+            scan_options: ScanOptions::default(),
+            live_options: LiveOptions::default(),
+            status: LiveStatus::Running,
+            started_at: 1700000000,
+            last_iteration_at: None,
+            iteration: 0,
+            scan_ids: std::collections::HashSet::new(),
+        };
+        let json = serde_json::to_string(&session).unwrap();
+        let back: LiveSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "live-abc123");
+        assert_eq!(back.status, LiveStatus::Running);
+    }
 }
