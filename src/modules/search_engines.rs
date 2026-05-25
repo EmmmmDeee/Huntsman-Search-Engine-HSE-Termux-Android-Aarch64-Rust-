@@ -919,6 +919,25 @@ async fn try_fetch(url: &str, ua: &str, post_body: Option<&str>) -> FetchOutcome
     } else {
         crate::util::curl::fetch_with_ua(url, 8_000, ua).await
     };
+
+    // If direct fetch failed, try through the HUNTSMAN_SEARCH_PROXY env
+    // or fall back to the proxy pool (populated by util::proxy::harvest)
+    let body = match body {
+        Some(b) if b.len() >= 500 => Some(b),
+        _ => {
+            if let Ok(proxy) = std::env::var("HUNTSMAN_SEARCH_PROXY")
+                && !proxy.is_empty()
+            {
+                return match crate::util::curl::fetch_via_proxy(url, 8_000, ua, &proxy).await {
+                    Some(b) if b.len() >= 500 && !is_captcha_page(&b) => FetchOutcome::Body(b),
+                    Some(_) => FetchOutcome::Blocked,
+                    None => FetchOutcome::Unreachable,
+                };
+            }
+            body
+        }
+    };
+
     let body = match body {
         Some(b) => b,
         None => return FetchOutcome::Unreachable,
