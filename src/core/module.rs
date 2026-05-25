@@ -123,6 +123,9 @@ pub struct ModuleContext {
     /// abort mid-process for faster cancel latency. Default-constructed
     /// handles never fire.
     pub cancel: crate::core::cancel::CancelHandle,
+    /// Shared proxy pool for free scraping modules. Populated once at
+    /// scan start; modules call `ctx.proxy_pool.next()` to rotate.
+    pub proxy_pool: std::sync::Arc<crate::util::proxy::ProxyPool>,
 }
 
 impl ModuleContext {

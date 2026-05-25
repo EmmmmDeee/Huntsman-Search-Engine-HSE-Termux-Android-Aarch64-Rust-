@@ -360,6 +360,7 @@ async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
         http,
         allow_key_write,
         cancellations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+        proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
     });
 
     let app = router(state, &bind);
@@ -468,6 +469,7 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
         // hits Ctrl-C which kills the process outright. A
         // default-constructed handle never fires.
         cancel: crate::core::cancel::CancelHandle::new(),
+        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
 
     let scan = engine.run(scan, target, ctx).await?;

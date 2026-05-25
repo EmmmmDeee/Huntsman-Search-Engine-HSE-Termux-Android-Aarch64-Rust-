@@ -287,15 +287,8 @@ async fn session_loop(
             bus: inner.bus.clone(),
             http: http.clone(),
             keys: loaded_keys.clone(),
-            // Plumb the SAME live-session cancel handle into the engine
-            // so `DELETE /api/v1/live/{id}` aborts the in-flight
-            // iteration at the next module boundary (the iteration's
-            // scan completes with `ScanStatus::Aborted` and partial
-            // entities are preserved exactly as for one-shot scans).
-            // Without this share-rather-than-replace, stop() only
-            // affected the outer loop and the iteration had to run to
-            // its full expansion depth before stopping.
             cancel: cancel.clone(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         };
 
         if let Err(e) = inner.engine.run(scan, target.clone(), ctx).await {

@@ -71,6 +71,7 @@ fn spawn_scan(state: &Arc<AppState>, scan: Scan, target: Target) {
         http: state.http.clone(),
         keys: keys::load(),
         cancel,
+        proxy_pool: std::sync::Arc::clone(&state.proxy_pool),
     };
     let engine = Arc::clone(&state.engine);
     tokio::spawn(async move {
