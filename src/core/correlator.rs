@@ -146,6 +146,8 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     out.extend(rule_au_003_high_corroboration(idx.all, scan_id, now));
     out.extend(rule_au_004_stealer_recency(idx.all, scan_id, now));
     out.extend(rule_au_005_multi_device_stealer(idx.all, scan_id, now));
+    out.extend(rule_au_006_breach_weak_infra(&idx, scan_id, now));
+    out.extend(rule_au_007_shared_hosting(&idx.infra, scan_id, now));
     out.extend(rule_au_010_infra_consensus(&idx.infra, scan_id, now));
     out
 }
@@ -355,6 +357,89 @@ fn parse_date_approx(s: &str) -> Option<u64> {
     Some(days_approx * 86400)
 }
 
+/// `AU-006` — Breach + weak infrastructure: an email is confirmed in a
+/// breach AND its domain (present in the same scan) has the
+/// `missing-security-headers` tag from the web_crawler / webserver_banner
+/// module. This cross-module correlation signals that the organisation
+/// behind the breached email also has weak web security posture —
+/// a compounding risk factor.
+fn rule_au_006_breach_weak_infra(idx: &EntityIndex<'_>, scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let weak_domains: HashSet<&str> = idx
+        .infra
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Domain) && e.has_tag(tags::MISSING_SECURITY_HEADERS))
+        .map(|e| e.value.as_str())
+        .collect();
+    if weak_domains.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for e in &idx.emails {
+        if !e.has_tag(tags::BREACH) {
+            continue;
+        }
+        let email_domain = e.value.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
+        if weak_domains.contains(email_domain) {
+            out.push(Correlation {
+                rule_id: "AU-006".into(),
+                rule_name: "Breach + weak infrastructure".into(),
+                severity: Severity::High,
+                description: format!(
+                    "Breached email {} on domain {} which lacks security headers",
+                    e.value, email_domain
+                ),
+                entity_uids: vec![e.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+            });
+        }
+    }
+    out
+}
+
+/// `AU-007` — Shared hosting: multiple domains in the scan resolve to the
+/// same IP address. Detected by finding IpAddress entities with evidence
+/// from ≥2 distinct parent domains. Co-hosting is a signal for shared
+/// infrastructure risk — a compromise of one tenant may affect others.
+fn rule_au_007_shared_hosting(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let mut ip_domains: std::collections::HashMap<&str, HashSet<&str>> =
+        std::collections::HashMap::new();
+    for e in infra.iter().filter(|e| matches!(e.kind, EntityKind::IpAddress)) {
+        let domains: HashSet<&str> = e
+            .evidence
+            .iter()
+            .filter_map(|ev| ev.attributes.get("domain").or(ev.attributes.get("parent_domain")))
+            .map(String::as_str)
+            .collect();
+        if domains.len() >= 2 {
+            ip_domains.insert(e.value.as_str(), domains);
+        }
+    }
+
+    ip_domains
+        .into_iter()
+        .map(|(ip, domains)| {
+            let mut domain_list: Vec<&str> = domains.into_iter().collect();
+            domain_list.sort_unstable();
+            Correlation {
+                rule_id: "AU-007".into(),
+                rule_name: "Shared hosting".into(),
+                severity: Severity::Low,
+                description: format!(
+                    "IP {} hosts {} domains: {}",
+                    ip,
+                    domain_list.len(),
+                    domain_list.join(", ")
+                ),
+                entity_uids: vec![],
+                scan_id: scan_id.into(),
+                ts,
+            }
+        })
+        .collect()
+}
+
 /// `AU-010` — Infrastructure consensus: a single Domain or IpAddress has
 /// evidence from ≥3 distinct module sources. Differs from `AU-003` in that
 /// it counts module diversity at the **evidence** level rather than the
@@ -561,6 +646,51 @@ mod tests {
             Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"),
         );
         assert!(rule_au_005_multi_device_stealer(&[e], "s", now).is_empty());
+    }
+
+    #[test]
+    fn au006_fires_on_breach_with_weak_infra() {
+        let mut breached = email("user@weak.com", &["hudsonrock"]);
+        breached.tag(tags::BREACH);
+        let mut dom = Entity::new(EntityKind::Domain, "weak.com", 0.9, "s");
+        dom.tag(tags::MISSING_SECURITY_HEADERS);
+        dom.add_evidence(Evidence::new("web_crawler", "test"));
+        let entities = vec![breached, dom];
+        let idx = EntityIndex::build(&entities);
+        let r = rule_au_006_breach_weak_infra(&idx, "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-006");
+        assert_eq!(r[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn au006_no_fire_without_breach_tag() {
+        let clean = email("user@weak.com", &["hudsonrock"]);
+        let mut dom = Entity::new(EntityKind::Domain, "weak.com", 0.9, "s");
+        dom.tag(tags::MISSING_SECURITY_HEADERS);
+        dom.add_evidence(Evidence::new("web_crawler", "test"));
+        let entities = vec![clean, dom];
+        let idx = EntityIndex::build(&entities);
+        assert!(rule_au_006_breach_weak_infra(&idx, "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au007_fires_on_shared_ip() {
+        let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "s");
+        ip.add_evidence(Evidence::new("dns_resolver", "A record").with_attr("domain", "a.com"));
+        ip.add_evidence(Evidence::new("dns_resolver", "A record").with_attr("domain", "b.com"));
+        let r = rule_au_007_shared_hosting(&[&ip], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-007");
+        assert!(r[0].description.contains("a.com"));
+        assert!(r[0].description.contains("b.com"));
+    }
+
+    #[test]
+    fn au007_no_fire_single_domain() {
+        let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "s");
+        ip.add_evidence(Evidence::new("dns_resolver", "A record").with_attr("domain", "only.com"));
+        assert!(rule_au_007_shared_hosting(&[&ip], "s", 0).is_empty());
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub mod crtsh;
 pub mod dehashed;
 pub mod dns_brute;
 pub mod dns_resolver;
+pub mod email_to_domain;
 pub mod email_to_username;
 pub mod github_user;
 pub mod gps_fix;
@@ -90,6 +91,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // audit. Supersedes SpiderFoot's sfp_spider + sfp_pageinfo +
         // sfp_webframework + sfp_webserver in a single async module.
         Arc::new(web_crawler::WebCrawler),
+        Arc::new(email_to_domain::EmailToDomain),
         Arc::new(email_to_username::EmailToUsername),
         // Username / identity expansion (sherlock/Maigret-style)
         Arc::new(username_search::UsernameSearch),
