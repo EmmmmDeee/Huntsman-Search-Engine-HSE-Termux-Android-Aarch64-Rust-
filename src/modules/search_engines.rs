@@ -151,6 +151,15 @@ const ENGINES: &[EngineSpec] = &[
         },
     },
     EngineSpec {
+        name: "google",
+        build_url: |q| {
+            format!(
+                "https://www.google.com/search?q={}&num=20",
+                crate::util::http::urlencode(q)
+            )
+        },
+    },
+    EngineSpec {
         name: "brave",
         build_url: |q| {
             format!(
@@ -285,6 +294,22 @@ fn parse_results(html: &str, engine: &'static str, query: &str) -> Vec<SearchRes
         );
     }
 
+    // Tertiary: extract from Google /url?q= redirect links
+    for google_url in GoogleUrlIter::new(html) {
+        if results.len() >= MAX_RESULTS_PER_ENGINE {
+            break;
+        }
+        add_result(
+            google_url,
+            html,
+            google_url,
+            engine,
+            query,
+            &mut seen_urls,
+            &mut results,
+        );
+    }
+
     results
 }
 
@@ -297,6 +322,17 @@ fn add_result(
     seen: &mut HashSet<String>,
     results: &mut Vec<SearchResult>,
 ) {
+    // URL-decode percent-encoded URLs (from Google /url?q=, Yahoo /RU=, etc.)
+    let decoded = url::form_urlencoded::parse(url.as_bytes())
+        .next()
+        .map(|(k, _)| k.into_owned())
+        .unwrap_or_else(|| url.to_string());
+    let url = if decoded.starts_with("http") {
+        &decoded
+    } else {
+        return;
+    };
+
     let host = extract_host(url);
     if host.is_empty() || is_engine_domain(&host) {
         return;
@@ -304,14 +340,15 @@ fn add_result(
     if is_tracking_url(url) {
         return;
     }
-    let canonical = canonicalize_url(url);
-    if !seen.insert(canonical.clone()) {
+    // Deduplicate by domain+path (strip query/fragment for dedup only)
+    let dedup_key = canonicalize_url(url);
+    if !seen.insert(dedup_key) {
         return;
     }
     let title = extract_surrounding_text(html, anchor, 200);
     let snippet = extract_snippet_near(html, anchor, 400);
     results.push(SearchResult {
-        url: canonical,
+        url: url.to_string(),
         title,
         snippet,
         engine,
@@ -346,6 +383,36 @@ impl<'a> Iterator for CiteIter<'a> {
             let clean = content.split(" ›").next().unwrap_or(content).trim();
             if clean.contains('.') && clean.len() > 4 && !clean.contains('<') {
                 return Some(clean);
+            }
+        }
+    }
+}
+
+/// Extracts URLs from Google's `/url?q=<encoded>&sa=` redirect pattern.
+struct GoogleUrlIter<'a> {
+    remaining: &'a str,
+}
+
+impl<'a> GoogleUrlIter<'a> {
+    fn new(html: &'a str) -> Self {
+        Self { remaining: html }
+    }
+}
+
+impl<'a> Iterator for GoogleUrlIter<'a> {
+    type Item = &'a str;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let idx = self.remaining.find("/url?q=")?;
+            self.remaining = &self.remaining[idx + 7..];
+            let end = self
+                .remaining
+                .find('&')
+                .or_else(|| self.remaining.find('"'))?;
+            let encoded = &self.remaining[..end];
+            self.remaining = &self.remaining[end..];
+            if encoded.starts_with("http") && !encoded.contains("google.") {
+                return Some(encoded);
             }
         }
     }
@@ -470,6 +537,12 @@ const ENGINE_DOMAINS: &[&str] = &[
     "aol.com",
     "search.aol.com",
     "oath.com",
+    "gstatic.com",
+    "googleapis.com",
+    "googleusercontent.com",
+    "schema.org",
+    "w3.org",
+    "imgs.search.brave.com",
 ];
 
 fn is_engine_domain(host: &str) -> bool {
@@ -480,13 +553,14 @@ fn is_engine_domain(host: &str) -> bool {
 
 fn is_tracking_url(url: &str) -> bool {
     let lower = url.to_lowercase();
-    lower.contains("/redirect")
-        || lower.contains("r.search.yahoo")
+    lower.contains("r.search.yahoo.com")
         || lower.contains("duckduckgo.com/y.js")
-        || lower.contains("/url?")
         || lower.contains("clickserve")
         || lower.contains("ad.doubleclick")
         || lower.contains("googleads")
+        || lower.contains("r.bing.com")
+        || lower.contains("th.bing.com")
+        || lower.contains("cc.bingj.com")
 }
 
 fn canonicalize_url(url: &str) -> String {
@@ -951,9 +1025,10 @@ mod tests {
     #[test]
     fn tracking_url_detection() {
         assert!(is_tracking_url("https://r.search.yahoo.com/cbcl/something"));
-        assert!(is_tracking_url("https://example.com/redirect?url=x"));
+        assert!(is_tracking_url("https://r.bing.com/rb/something"));
         assert!(is_tracking_url("https://ad.doubleclick.net/thing"));
         assert!(!is_tracking_url("https://example.com/page"));
+        assert!(!is_tracking_url("https://example.com/redirect?url=x"));
     }
 
     #[test]
