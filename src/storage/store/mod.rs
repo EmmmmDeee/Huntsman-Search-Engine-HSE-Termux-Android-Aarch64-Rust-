@@ -6,11 +6,7 @@ mod events;
 use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
-use crate::core::{
-    correlator::Correlation,
-    error::Result,
-    scan::Scan,
-};
+use crate::core::{correlator::Correlation, error::Result, scan::Scan};
 
 pub struct Store {
     conn: Mutex<Connection>,

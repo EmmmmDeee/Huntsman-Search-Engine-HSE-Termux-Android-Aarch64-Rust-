@@ -76,10 +76,7 @@ pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
-pub async fn scan_get(
-    State(s): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
+pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
     match s.store.get_scan(&id) {
         Ok(Some(scan)) => (
             StatusCode::OK,

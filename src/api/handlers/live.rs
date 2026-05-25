@@ -36,10 +36,7 @@ pub async fn live_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     ok_list("sessions", s.live.list())
 }
 
-pub async fn live_get(
-    State(s): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
+pub async fn live_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
     match s.live.get(&id) {
         Some(session) => (
             StatusCode::OK,

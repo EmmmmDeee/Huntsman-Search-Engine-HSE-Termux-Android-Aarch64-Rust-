@@ -25,19 +25,16 @@ use serde_json::{Value, json};
 use tokio_stream::{StreamExt as _, wrappers::BroadcastStream};
 
 use super::AppState;
-use crate::core::{
-    module::ModuleContext,
-    scan::Target,
-};
+use crate::core::{module::ModuleContext, scan::Target};
 use crate::util::keys;
 
 // ─── Re-exports (stable public surface for routes.rs) ──────────────────────
 
 pub use live::{live_create, live_events_sse, live_get, live_list, live_stop};
 pub use scan::{
-    scan_cancel, scan_correlations, scan_create, scan_delete, scan_entities,
-    scan_entities_csv, scan_entities_facets, scan_entities_filter, scan_events_history,
-    scan_get, scan_list, scan_report_json, scan_rerun,
+    scan_cancel, scan_correlations, scan_create, scan_delete, scan_entities, scan_entities_csv,
+    scan_entities_facets, scan_entities_filter, scan_events_history, scan_get, scan_list,
+    scan_report_json, scan_rerun,
 };
 pub use settings::{settings_keys_get, settings_keys_put};
 
