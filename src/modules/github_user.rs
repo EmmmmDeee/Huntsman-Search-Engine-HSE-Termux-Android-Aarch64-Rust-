@@ -60,7 +60,6 @@ impl Module for GithubUser {
         108
     }
 
-
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Username)
     }

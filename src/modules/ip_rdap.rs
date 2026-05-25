@@ -77,7 +77,6 @@ impl Module for IpRdap {
         27
     }
 
-
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)
     }

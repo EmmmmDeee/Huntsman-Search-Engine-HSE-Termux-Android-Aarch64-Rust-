@@ -8,6 +8,7 @@
 pub mod alienvault_otx;
 pub mod arp_scan;
 pub mod bgpview;
+pub mod caa_records;
 pub mod cell_survey;
 pub mod criminal_ip;
 pub mod crtsh;
@@ -30,13 +31,16 @@ pub mod net_interfaces;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod phone_intl;
+pub mod rdap_domain;
 pub mod reverse_dns;
 pub mod reverse_geocode;
 pub mod search_engines;
 pub mod securitytrails;
 pub mod shodan;
+pub mod shodan_internetdb;
 pub mod social_probe;
 pub mod ssl_probe;
+pub mod threatfox;
 pub mod tor_exit_check;
 pub mod urlhaus;
 pub mod username_search;
@@ -99,6 +103,11 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // SSL/TLS certificate probe — extracts SANs, issuer, validity.
         // SAN discovery reveals subdomains not visible via DNS/CT. Free.
         Arc::new(ssl_probe::SslProbe),
+        // Free OSINT modules from PR #34 (re-implemented against current main).
+        Arc::new(shodan_internetdb::ShodanInternetDb),
+        Arc::new(caa_records::CaaRecords),
+        Arc::new(threatfox::ThreatFox),
+        Arc::new(rdap_domain::RdapDomain),
         // Multi-engine search scraping (13 engines: Yahoo, Bing, AOL,
         // DuckDuckGo, Google, Brave, Mojeek, Startpage, Yandex, Ecosia,
         // Qwant, Dogpile, Swisscows) — discovers subdomains, linked

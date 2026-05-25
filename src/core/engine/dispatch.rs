@@ -169,6 +169,10 @@ impl ScanEngine {
             if ctx.cancel.is_cancelled() {
                 return Ok(());
             }
+            // Budget gate: stop dispatching when max_entities is reached.
+            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
+                return Ok(());
+            }
             let name = module.name();
 
             if !module.accepts(target) {
@@ -252,6 +256,9 @@ impl ScanEngine {
             // results still flow through finalise_module_result so
             // partial work isn't lost (issue #23).
             if ctx.cancel.is_cancelled() {
+                break;
+            }
+            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
                 break;
             }
             let name = module.name();
