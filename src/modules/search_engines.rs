@@ -196,13 +196,24 @@ fn build_queries(target: &Target) -> Vec<String> {
 
 // ─── Fetch + parse ──────────────────────────────────────────────────────────
 
+const BROWSER_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36";
+
 async fn fetch_and_parse(
-    http: &reqwest::Client,
+    _http: &reqwest::Client,
     url: &str,
     engine: &'static str,
     query: &str,
 ) -> Option<Vec<SearchResult>> {
-    let resp = http.get(url).send().await.ok()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent(BROWSER_UA)
+        .build()
+        .ok()?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .ok()?;
     if !resp.status().is_success() {
         return None;
     }
@@ -259,13 +270,21 @@ fn parse_results(html: &str, engine: &'static str, query: &str) -> Vec<SearchRes
 fn resolve_href(href: &str) -> Option<String> {
     // DuckDuckGo wraps URLs: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&rut=...
     if href.contains("uddg=") {
-        return href.split("uddg=")
+        return extract_url_param(href, "uddg=");
+    }
+
+    // Yahoo wraps URLs: /RU=https%3a%2f%2fexample.com/RK=.../RS=...
+    if href.contains("/RU=") {
+        return href.split("/RU=")
             .nth(1)
-            .and_then(|rest| rest.split('&').next())
-            .map(|encoded| url::form_urlencoded::parse(encoded.as_bytes())
-                .next()
-                .map(|(k, _)| k.into_owned())
-                .unwrap_or_else(|| encoded.to_string()));
+            .and_then(|rest| rest.split("/R").next())
+            .and_then(|encoded| {
+                let decoded: String = url::form_urlencoded::parse(encoded.as_bytes())
+                    .next()
+                    .map(|(k, _)| k.into_owned())
+                    .unwrap_or_else(|| encoded.to_string());
+                if decoded.starts_with("http") { Some(decoded) } else { None }
+            });
     }
 
     // Protocol-relative
@@ -279,6 +298,18 @@ fn resolve_href(href: &str) -> Option<String> {
     }
 
     None
+}
+
+fn extract_url_param(href: &str, param: &str) -> Option<String> {
+    href.split(param)
+        .nth(1)
+        .and_then(|rest| rest.split('&').next())
+        .map(|encoded| {
+            url::form_urlencoded::parse(encoded.as_bytes())
+                .next()
+                .map(|(k, _)| k.into_owned())
+                .unwrap_or_else(|| encoded.to_string())
+        })
 }
 
 // ─── HTML iteration ─────────────────────────────────────────────────────────
@@ -682,6 +713,13 @@ mod tests {
         let href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage&rut=abc123";
         let resolved = resolve_href(href);
         assert_eq!(resolved.as_deref(), Some("https://example.com/page"));
+    }
+
+    #[test]
+    fn resolve_href_decodes_yahoo_ru() {
+        let href = "https://r.search.yahoo.com/_ylt=Awr/RV=2/RE=123/RO=10/RU=https%3a%2f%2fsoundcloud.com%2fjerome-despal/RK=2/RS=abc123-";
+        let resolved = resolve_href(href);
+        assert_eq!(resolved.as_deref(), Some("https://soundcloud.com/jerome-despal"));
     }
 
     #[test]
