@@ -24,6 +24,13 @@ pub async fn live_create(
     Json(req): Json<crate::core::live::LiveRequest>,
 ) -> impl IntoResponse {
     let target = Target::new(req.kind, req.value);
+    if let Err(msg) = target.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("invalid target: {msg}") })),
+        )
+            .into_response();
+    }
     let live_id = s.live.start(target, req.options, req.live);
     (
         StatusCode::ACCEPTED,

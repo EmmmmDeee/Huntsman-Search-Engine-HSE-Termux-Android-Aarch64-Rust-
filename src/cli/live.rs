@@ -64,6 +64,10 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
             let line = serde_json::to_string(&event.kind).unwrap_or_default();
             Some((line, is_terminator))
         }
+        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+            eprintln!("warning: event stream lagged, {n} event(s) dropped");
+            None
+        }
         _ => None,
     });
 

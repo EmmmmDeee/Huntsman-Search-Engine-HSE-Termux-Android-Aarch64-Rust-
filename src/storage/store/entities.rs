@@ -8,26 +8,40 @@ use super::Store;
 
 impl Store {
     pub fn upsert_entity(&self, entity: &Entity) -> Result<()> {
-        let json = serde_json::to_string(entity)?;
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
+
+        let mut merged = entity.clone();
+        {
+            let mut stmt = tx.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![entity.uid])?;
+            if let Some(row) = rows.next()? {
+                let existing_json: String = row.get(0)?;
+                if let Ok(existing) = serde_json::from_str::<Entity>(&existing_json) {
+                    merged = existing;
+                    merged.merge(entity.clone());
+                }
+            }
+        }
+
+        let json = serde_json::to_string(&merged)?;
         tx.execute(
             "INSERT INTO entities(uid, scan_id, kind, value, confidence, corroboration, observed_at, data_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(uid) DO UPDATE SET
                scan_id       = excluded.scan_id,
-               confidence    = MAX(confidence, excluded.confidence),
-               corroboration = corroboration + excluded.corroboration,
-               observed_at   = MAX(observed_at, excluded.observed_at),
+               confidence    = excluded.confidence,
+               corroboration = excluded.corroboration,
+               observed_at   = excluded.observed_at,
                data_json     = excluded.data_json",
             params![
-                entity.uid,
-                entity.scan_id,
-                entity.kind.to_string(),
-                entity.value,
-                entity.confidence,
-                entity.corroboration as i64,
-                entity.observed_at as i64,
+                merged.uid,
+                merged.scan_id,
+                merged.kind.to_string(),
+                merged.value,
+                merged.confidence,
+                merged.corroboration as i64,
+                merged.observed_at as i64,
                 json,
             ],
         )?;
@@ -433,6 +447,48 @@ mod tests {
 
         let results = store.search_entities("zzzz_no_match_xyzzy_42", 10).unwrap();
         assert!(results.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn upsert_entity_cross_scan_merge_preserves_evidence_and_tags() {
+        use crate::core::entity::Evidence;
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "scan-a");
+        insert_scan(&store, "scan-b");
+
+        let mut e_a = Entity::new(EntityKind::Email, "shared@example.com", 0.6, "scan-a");
+        e_a.add_evidence(Evidence::new("module_a", "found in source A"));
+        e_a.tag("tag-a");
+        store.upsert_entity(&e_a).unwrap();
+
+        let mut e_b = Entity::new(EntityKind::Email, "shared@example.com", 0.9, "scan-b");
+        e_b.add_evidence(Evidence::new("module_b", "found in source B"));
+        e_b.tag("tag-b");
+        store.upsert_entity(&e_b).unwrap();
+
+        let merged = store.get_entity(&e_a.uid).unwrap().unwrap();
+        assert!(
+            (merged.confidence - 0.9).abs() < 1e-9,
+            "confidence should be max(0.6, 0.9) = 0.9, got {}",
+            merged.confidence
+        );
+        assert_eq!(merged.corroboration, 2, "corroboration should accumulate");
+
+        let sources: Vec<&str> = merged.evidence.iter().map(|e| e.source.as_str()).collect();
+        assert!(
+            sources.contains(&"module_a"),
+            "evidence from scan-a must survive merge: {sources:?}"
+        );
+        assert!(
+            sources.contains(&"module_b"),
+            "evidence from scan-b must survive merge: {sources:?}"
+        );
+
+        assert!(merged.has_tag("tag-a"), "tag-a must survive merge");
+        assert!(merged.has_tag("tag-b"), "tag-b must survive merge");
 
         let _ = std::fs::remove_file(&path);
     }

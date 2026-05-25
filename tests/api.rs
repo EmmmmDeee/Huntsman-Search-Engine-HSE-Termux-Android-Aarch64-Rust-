@@ -253,8 +253,6 @@ async fn scan_get_not_found() {
 #[tokio::test]
 async fn scan_delete_returns_ok() {
     let (app, scan_id) = create_scan("scan_del").await;
-    // Brief pause so the store has committed the scan row.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let resp = app
         .oneshot(delete(&format!("/api/v1/scans/{scan_id}")))
         .await
