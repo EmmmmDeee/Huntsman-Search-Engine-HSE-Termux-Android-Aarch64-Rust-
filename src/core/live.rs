@@ -97,10 +97,15 @@ impl LiveScanner {
         }
     }
 
-    pub fn start(&self, target: Target, scan_options: ScanOptions, live: LiveOptions) -> String {
+    pub fn start(
+        &self,
+        target: Target,
+        scan_options: ScanOptions,
+        live: LiveOptions,
+    ) -> Option<String> {
         const MAX_SESSIONS: usize = 100;
         if self.inner.sessions.read().len() >= MAX_SESSIONS {
-            return String::new();
+            return None;
         }
 
         let live_id = new_live_id(&target);
@@ -140,7 +145,7 @@ impl LiveScanner {
         });
 
         info!(live_id = %live_id, "live session started");
-        live_id
+        Some(live_id)
     }
 
     pub fn stop(&self, live_id: &str) -> bool {

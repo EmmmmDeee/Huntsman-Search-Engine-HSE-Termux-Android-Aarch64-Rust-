@@ -751,14 +751,16 @@ async fn live_session_runs_two_iterations_and_completes() {
     let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone(), Arc::clone(&store));
 
     let target = Target::new(TargetKind::Email, "live@example.com");
-    let live_id = scanner.start(
-        target,
-        ScanOptions::default(),
-        LiveOptions {
-            interval_secs: 1,
-            iterations: Some(2),
-        },
-    );
+    let live_id = scanner
+        .start(
+            target,
+            ScanOptions::default(),
+            LiveOptions {
+                interval_secs: 1,
+                iterations: Some(2),
+            },
+        )
+        .expect("should start live session");
 
     // Wait for completion (2 iterations × 1s interval + processing time).
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -786,14 +788,16 @@ async fn live_session_stops_on_explicit_cancel() {
     let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone(), Arc::clone(&store));
 
     let target = Target::new(TargetKind::Email, "cancel-live@example.com");
-    let live_id = scanner.start(
-        target,
-        ScanOptions::default(),
-        LiveOptions {
-            interval_secs: 30,
-            iterations: None,
-        },
-    );
+    let live_id = scanner
+        .start(
+            target,
+            ScanOptions::default(),
+            LiveOptions {
+                interval_secs: 30,
+                iterations: None,
+            },
+        )
+        .expect("should start live session");
 
     // Let the first iteration start, then stop.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;

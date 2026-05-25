@@ -525,14 +525,13 @@ pub async fn live_create(
     Json(req): Json<crate::core::live::LiveRequest>,
 ) -> impl IntoResponse {
     let target = Target::new(req.kind, req.value);
-    let live_id = s.live.start(target, req.options, req.live);
-    if live_id.is_empty() {
+    let Some(live_id) = s.live.start(target, req.options, req.live) else {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(json!({ "error": "too many live sessions" })),
         )
             .into_response();
-    }
+    };
     (
         StatusCode::ACCEPTED,
         Json(json!({ "live_id": live_id, "status": "running" })),

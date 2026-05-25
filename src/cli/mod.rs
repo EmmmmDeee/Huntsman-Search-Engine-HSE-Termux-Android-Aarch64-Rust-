@@ -286,7 +286,9 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     let (store, bus, engine) = build_runtime(1024)?;
     let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone(), Arc::clone(&store));
 
-    let live_id = scanner.start(target, scan_options, live_options);
+    let Some(live_id) = scanner.start(target, scan_options, live_options) else {
+        return Err(Error::Other("too many concurrent live sessions".into()));
+    };
     eprintln!("live session {live_id} — Ctrl-C to stop");
 
     let rx = bus.subscribe();

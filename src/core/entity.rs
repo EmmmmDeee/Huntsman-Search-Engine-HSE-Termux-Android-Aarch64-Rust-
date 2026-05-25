@@ -409,10 +409,7 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             }
             out
         }
-        EntityKind::Credential | EntityKind::Password => {
-            let trimmed = value.trim();
-            trimmed.to_lowercase()
-        }
+        EntityKind::Credential | EntityKind::Password => value.trim().to_string(),
         _ => value.trim().to_string(),
     }
 }

@@ -59,13 +59,31 @@ pub fn append_key(
         Err(_) => return,
     };
 
-    let mut file = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        Ok(f) => f,
-        Err(_) => return,
+    let mut file = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o600)
+                .open(&path)
+            {
+                Ok(f) => f,
+                Err(_) => return,
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                Ok(f) => f,
+                Err(_) => return,
+            }
+        }
     };
 
     let _ = writeln!(file, "{line}");

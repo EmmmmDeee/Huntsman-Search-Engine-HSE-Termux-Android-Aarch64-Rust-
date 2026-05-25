@@ -95,8 +95,10 @@ impl ModuleContext {
         self.store.entities_by_kind(kind, limit).unwrap_or_default()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn cache_response(
         &self,
+        module: &str,
         endpoint: &str,
         query_key: &str,
         query_value: &str,
@@ -105,7 +107,7 @@ impl ModuleContext {
         ttl_hours: u32,
     ) {
         let _ = self.store.cache_api_response(
-            "oathnet_pro",
+            module,
             endpoint,
             query_key,
             query_value,
