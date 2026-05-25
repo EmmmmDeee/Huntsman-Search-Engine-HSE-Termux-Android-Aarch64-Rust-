@@ -449,6 +449,8 @@ async fn cmd_scan(cmd: ScanCmd) -> Result<()> {
         min_expand_confidence: cmd.min_expand_confidence,
         max_entities: cmd.max_entities,
         max_wall_time_secs: cmd.max_wall_time_secs,
+        scan_tags: Vec::new(),
+        notes: None,
     };
 
     // Use the parsed TargetKind's canonical form, not the raw user input,

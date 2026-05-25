@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -48,6 +48,10 @@ impl Module for AlienVaultOtx {
         "alienvault_otx"
     }
 
+    fn description(&self) -> &'static str {
+        "OTX pulse threat intelligence for IPs and domains"
+    }
+
     fn priority(&self) -> u8 {
         78
     }
@@ -57,9 +61,9 @@ impl Module for AlienVaultOtx {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let (itype, kind) = match target.kind {
-            TargetKind::IpAddress => ("IPv4", EntityKind::IpAddress),
-            TargetKind::Domain => ("domain", EntityKind::Domain),
+        let itype = match target.kind {
+            TargetKind::IpAddress => "IPv4",
+            TargetKind::Domain => "domain",
             _ => return Ok(ModuleResult::new()),
         };
 
@@ -86,7 +90,7 @@ impl Module for AlienVaultOtx {
             return Ok(ModuleResult::new());
         }
 
-        let mut entity = Entity::new(kind, &target.value, 0.72, &ctx.scan_id);
+        let mut entity = target.to_entity(0.72, &ctx.scan_id);
         entity.tag("threat-intel");
 
         // Surface up to 5 pulse names + tag aggregate so the evidence is
@@ -99,11 +103,14 @@ impl Module for AlienVaultOtx {
             .filter_map(|p| p.name.as_deref())
             .take(5)
             .collect();
-        let mut all_tags: Vec<&str> = pulse_info
-            .pulses
-            .iter()
-            .flat_map(|p| p.tags.iter().map(String::as_str))
-            .collect();
+        let tag_count_estimate: usize = pulse_info.pulses.iter().map(|p| p.tags.len()).sum();
+        let mut all_tags: Vec<&str> = Vec::with_capacity(tag_count_estimate);
+        all_tags.extend(
+            pulse_info
+                .pulses
+                .iter()
+                .flat_map(|p| p.tags.iter().map(String::as_str)),
+        );
         all_tags.sort_unstable();
         all_tags.dedup();
         // Hard cap to keep the evidence row compact for the SPA.

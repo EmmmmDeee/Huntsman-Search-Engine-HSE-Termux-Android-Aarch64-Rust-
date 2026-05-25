@@ -12,8 +12,10 @@ pub mod cell_survey;
 pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
+pub mod dns_blocklist;
 pub mod dns_brute;
 pub mod dns_resolver;
+pub mod email_to_domain;
 pub mod email_to_username;
 pub mod github_user;
 pub mod gps_fix;
@@ -29,12 +31,17 @@ pub mod numverify;
 pub mod oathnet_pro;
 pub mod phone_intl;
 pub mod reverse_dns;
+pub mod reverse_geocode;
+pub mod search_engines;
 pub mod securitytrails;
 pub mod shodan;
+pub mod social_probe;
+pub mod ssl_probe;
 pub mod tor_exit_check;
 pub mod urlhaus;
 pub mod username_search;
 pub mod wayback;
+pub mod web_crawler;
 pub mod webserver_banner;
 pub mod whois;
 pub mod wifi_connect;
@@ -80,11 +87,34 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // RDAP registry view of an IP (complements whois + bgpview).
         Arc::new(ip_rdap::IpRdap),
         Arc::new(ip_geo::IpGeo),
+        // Reverse geocoding via OpenStreetMap Nominatim — converts
+        // Coordinates entities from ip_geo/gps_fix into Address entities
+        // with country, state, city, street. Free, no API key.
+        Arc::new(reverse_geocode::ReverseGeocode),
         // Tor exit-relay membership check (free, single fetch cached).
         Arc::new(tor_exit_check::TorExitCheck),
+        // DNS blocklist (DNSBL) checker — pure DNS queries against 8
+        // blocklists (Spamhaus, SpamCop, SORBS, etc.). Zero API keys.
+        Arc::new(dns_blocklist::DnsBlocklist),
+        // SSL/TLS certificate probe — extracts SANs, issuer, validity.
+        // SAN discovery reveals subdomains not visible via DNS/CT. Free.
+        Arc::new(ssl_probe::SslProbe),
+        // Multi-engine search scraping (DuckDuckGo, Brave, Startpage,
+        // Mojeek, Yahoo) — discovers subdomains, linked domains, emails
+        // from search result URLs and snippets. Zero API keys.
+        Arc::new(search_engines::SearchEngines),
         // Web stack fingerprint via HEAD on the domain's homepage.
         Arc::new(webserver_banner::WebserverBanner),
+        // Recursive BFS web crawler — link discovery, content extraction,
+        // framework fingerprinting, page classification, security header
+        // audit. Supersedes SpiderFoot's sfp_spider + sfp_pageinfo +
+        // sfp_webframework + sfp_webserver in a single async module.
+        Arc::new(web_crawler::WebCrawler),
+        Arc::new(email_to_domain::EmailToDomain),
         Arc::new(email_to_username::EmailToUsername),
+        // Direct social profile probing — HEAD/GET 20+ platforms to
+        // confirm profile existence. Uses curl for TLS compatibility.
+        Arc::new(social_probe::SocialProbe),
         // Username / identity expansion (sherlock/Maigret-style)
         Arc::new(username_search::UsernameSearch),
         Arc::new(github_user::GithubUser),

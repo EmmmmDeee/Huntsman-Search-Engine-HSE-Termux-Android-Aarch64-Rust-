@@ -16,11 +16,12 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::freq::top_n;
 use crate::util::http::{fetch_json, urlencode};
 
 pub struct Wayback;
@@ -35,6 +36,10 @@ struct Row(Vec<String>);
 impl Module for Wayback {
     fn name(&self) -> &'static str {
         "wayback"
+    }
+
+    fn description(&self) -> &'static str {
+        "Internet Archive Wayback Machine history lookup"
     }
 
     fn priority(&self) -> u8 {
@@ -61,21 +66,29 @@ impl Module for Wayback {
 
         let rows: Vec<Row> = fetch_json(&ctx.http, "wayback", &url).await?;
 
-        // First row is the column header; ignore it.
-        let data: Vec<&Row> = rows.iter().skip(1).collect();
-        if data.is_empty() {
+        // First row is the column header; skip it. Avoid collecting into
+        // an intermediate Vec — we only need the count and bookend timestamps.
+        if rows.len() <= 1 {
             // Domain not archived — not necessarily suspicious (private
             // sites are routinely excluded), just no findings.
             return Ok(ModuleResult::new());
         }
 
-        let count = data.len();
-        // CDX rows come timestamp-sorted ascending. First row = earliest
-        // snapshot, last row = most recent.
-        let first_ts = data.first().and_then(|r| r.0.first()).cloned();
-        let last_ts = data.last().and_then(|r| r.0.first()).cloned();
+        let count = rows.len() - 1; // exclude header row
+        // CDX rows come timestamp-sorted ascending. Second row = earliest
+        // snapshot (first is header), last row = most recent.
+        let first_ts = rows.get(1).and_then(|r| r.0.first());
+        let last_ts = rows.last().and_then(|r| r.0.first());
 
-        let mut entity = Entity::new(EntityKind::Domain, &domain, 0.80, &ctx.scan_id);
+        // Collect status codes from data rows (index 1 in each row,
+        // since fl=timestamp,statuscode).
+        let status_codes: Vec<&str> = rows[1..]
+            .iter()
+            .filter_map(|r| r.0.get(1).map(|s| s.as_str()))
+            .collect();
+        let status_dist = top_n(status_codes.iter().copied(), 10);
+
+        let mut entity = target.to_entity(0.80, &ctx.scan_id);
         entity.tag("archived");
         let mut ev = Evidence::new(
             "wayback",
@@ -83,15 +96,18 @@ impl Module for Wayback {
         )
         .with_attr("snapshot_count", count.to_string())
         .with_attr("cdx_query_limit", "1000");
-        if let Some(t) = first_ts.as_deref() {
+        if let Some(t) = first_ts {
             ev = ev
-                .with_attr("first_seen", t)
+                .with_attr("first_seen", t.as_str())
                 .with_attr("first_seen_iso", iso_from_cdx(t));
         }
-        if let Some(t) = last_ts.as_deref() {
+        if let Some(t) = last_ts {
             ev = ev
-                .with_attr("last_seen", t)
+                .with_attr("last_seen", t.as_str())
                 .with_attr("last_seen_iso", iso_from_cdx(t));
+        }
+        if !status_dist.is_empty() {
+            ev = ev.with_attr("status_distribution", &status_dist);
         }
         entity.add_evidence(ev);
 

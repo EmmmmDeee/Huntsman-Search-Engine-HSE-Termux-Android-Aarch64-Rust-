@@ -19,6 +19,7 @@ use tracing::debug;
 use crate::core::{
     entity::{Entity, EntityKind, unix_now},
     error::Result,
+    tags,
 };
 use crate::storage::store::Store;
 
@@ -109,13 +110,54 @@ impl Correlator {
 // Adding a rule = append one function call to `evaluate_rules` returning
 // `Vec<Correlation>`. Each rule is pure and side-effect-free.
 
+struct EntityIndex<'a> {
+    emails: Vec<&'a Entity>,
+    usernames: Vec<&'a Entity>,
+    phones: Vec<&'a Entity>,
+    infra: Vec<&'a Entity>,
+    all: &'a [Entity],
+}
+
+impl<'a> EntityIndex<'a> {
+    fn build(entities: &'a [Entity]) -> Self {
+        let mut emails = Vec::new();
+        let mut usernames = Vec::new();
+        let mut phones = Vec::new();
+        let mut infra = Vec::new();
+        for e in entities {
+            match &e.kind {
+                EntityKind::Email => emails.push(e),
+                EntityKind::Username => usernames.push(e),
+                EntityKind::Phone => phones.push(e),
+                EntityKind::Domain | EntityKind::IpAddress => infra.push(e),
+                _ => {}
+            }
+        }
+        Self {
+            emails,
+            usernames,
+            phones,
+            infra,
+            all: entities,
+        }
+    }
+}
+
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     let now = unix_now();
+    let idx = EntityIndex::build(entities);
     let mut out = Vec::new();
-    out.extend(rule_au_001_multi_breach(entities, scan_id, now));
-    out.extend(rule_au_002_identity_cluster(entities, scan_id, now));
-    out.extend(rule_au_003_high_corroboration(entities, scan_id, now));
-    out.extend(rule_au_010_infra_consensus(entities, scan_id, now));
+    out.extend(rule_au_001_multi_breach(&idx.emails, scan_id, now));
+    out.extend(rule_au_002_identity_cluster(&idx, scan_id, now));
+    out.extend(rule_au_003_high_corroboration(idx.all, scan_id, now));
+    out.extend(rule_au_004_stealer_recency(idx.all, scan_id, now));
+    out.extend(rule_au_005_multi_device_stealer(idx.all, scan_id, now));
+    out.extend(rule_au_006_breach_weak_infra(&idx, scan_id, now));
+    out.extend(rule_au_007_shared_hosting(&idx.infra, scan_id, now));
+    out.extend(rule_au_008_blocklisted_infra(&idx.infra, scan_id, now));
+    out.extend(rule_au_009_cross_platform_identity(idx.all, scan_id, now));
+    out.extend(rule_au_010_infra_consensus(&idx.infra, scan_id, now));
+    out.extend(rule_au_011_geolocation_convergence(idx.all, scan_id, now));
     out
 }
 
@@ -128,7 +170,7 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 /// Threshold stays at 2 (lowered from the spec's 3) to keep the rule
 /// alive on free-only configurations; it can be restored to 3 once paid
 /// breach modules (`hibp`, `dehashed`, `oathnet_pro`) land.
-fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+fn rule_au_001_multi_breach(emails: &[&Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     const BREACH_SOURCES: &[&str] = &[
         "hudsonrock",
         "xposed_or_not",
@@ -136,22 +178,29 @@ fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<
         "dehashed",
         "hibp",
         "oathnet_pro",
+        "leakix",
     ];
     let mut out = Vec::new();
-    for e in entities.iter().filter(|e| e.kind == EntityKind::Email) {
+    for e in emails {
         let sources: HashSet<&str> = e
             .evidence
             .iter()
             .filter(|ev| BREACH_SOURCES.contains(&ev.source.as_str()))
             .map(|ev| ev.source.as_str())
             .collect();
-        if sources.len() >= 2 {
+        let n = sources.len();
+        if n >= 2 {
             let mut names: Vec<&str> = sources.into_iter().collect();
             names.sort_unstable();
+            let severity = if n >= 3 {
+                Severity::Critical
+            } else {
+                Severity::High
+            };
             out.push(Correlation {
                 rule_id: "AU-001".into(),
                 rule_name: "Multi-source breach corroboration".into(),
-                severity: Severity::Critical,
+                severity,
                 description: format!(
                     "{} found in {} breach sources: {}",
                     e.value,
@@ -169,19 +218,10 @@ fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<
 
 /// `AU-002` — identity cluster: at least one Email, Username, **and** Phone
 /// were collected in the same scan, suggesting a coherent identity surface.
-fn rule_au_002_identity_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
-    let emails: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Email)
-        .collect();
-    let usernames: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Username)
-        .collect();
-    let phones: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Phone)
-        .collect();
+fn rule_au_002_identity_cluster(idx: &EntityIndex<'_>, scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let emails = &idx.emails;
+    let usernames = &idx.usernames;
+    let phones = &idx.phones;
 
     if emails.is_empty() || usernames.is_empty() || phones.is_empty() {
         return Vec::new();
@@ -233,18 +273,276 @@ fn rule_au_003_high_corroboration(entities: &[Entity], scan_id: &str, ts: u64) -
         .collect()
 }
 
+/// `AU-004` — Active stealer campaign: an entity has stealer-log evidence
+/// where `date_compromised` is within the last 30 days. This signals an
+/// actively compromised endpoint — the credentials may still be in use
+/// by threat actors. Per Recorded Future's 2025 report, 53% of stolen
+/// credentials are indexed within one week of exfiltration.
+fn rule_au_004_stealer_recency(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    const RECENCY_SECS: u64 = 30 * 86400;
+    let cutoff = ts.saturating_sub(RECENCY_SECS);
+
+    let mut out = Vec::new();
+    for e in entities.iter().filter(|e| e.has_tag(tags::STEALER_LOG)) {
+        let recent_dates: Vec<&str> = e
+            .evidence
+            .iter()
+            .filter(|ev| ev.source == "hudsonrock")
+            .filter_map(|ev| ev.attributes.get("date_compromised").map(String::as_str))
+            .filter(|d| *d != "-")
+            .collect();
+
+        let any_recent = recent_dates
+            .iter()
+            .any(|d| parse_date_approx(d).is_some_and(|epoch| epoch >= cutoff));
+
+        if any_recent {
+            out.push(Correlation {
+                rule_id: "AU-004".into(),
+                rule_name: "Active stealer campaign".into(),
+                severity: Severity::High,
+                description: format!(
+                    "{} '{}' has stealer-log compromise within last 30 days — credentials may be live",
+                    e.kind, e.value
+                ),
+                entity_uids: vec![e.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+            });
+        }
+    }
+    out
+}
+
+/// `AU-005` — Multi-device stealer: an entity has stealer-log evidence
+/// from ≥2 distinct `computer_name` values. This indicates the same
+/// identity is compromised on multiple endpoints — either the user
+/// reuses credentials across devices, or a campaign has swept multiple
+/// machines in the same organisation.
+fn rule_au_005_multi_device_stealer(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    for e in entities.iter().filter(|e| e.has_tag(tags::STEALER_LOG)) {
+        let hosts: HashSet<&str> = e
+            .evidence
+            .iter()
+            .filter(|ev| ev.source == "hudsonrock")
+            .filter_map(|ev| ev.attributes.get("computer_name").map(String::as_str))
+            .filter(|h| *h != "-" && !h.is_empty())
+            .collect();
+
+        if hosts.len() >= 2 {
+            let mut host_list: Vec<&str> = hosts.into_iter().collect();
+            host_list.sort_unstable();
+            out.push(Correlation {
+                rule_id: "AU-005".into(),
+                rule_name: "Multi-device stealer compromise".into(),
+                severity: Severity::Critical,
+                description: format!(
+                    "{} '{}' compromised on {} distinct devices: {}",
+                    e.kind,
+                    e.value,
+                    host_list.len(),
+                    host_list.join(", ")
+                ),
+                entity_uids: vec![e.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+            });
+        }
+    }
+    out
+}
+
+fn parse_date_approx(s: &str) -> Option<u64> {
+    let date_part = s.split('T').next()?;
+    let mut parts = date_part.split('-');
+    let year: u64 = parts.next()?.parse().ok()?;
+    let month: u64 = parts.next()?.parse().ok()?;
+    let day: u64 = parts.next()?.parse().ok()?;
+    if year < 2000 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let days_approx = (year - 1970) * 365 + (month - 1) * 30 + day;
+    Some(days_approx * 86400)
+}
+
+/// `AU-006` — Breach + weak infrastructure: an email is confirmed in a
+/// breach AND its domain (present in the same scan) has the
+/// `missing-security-headers` tag from the web_crawler / webserver_banner
+/// module. This cross-module correlation signals that the organisation
+/// behind the breached email also has weak web security posture —
+/// a compounding risk factor.
+fn rule_au_006_breach_weak_infra(
+    idx: &EntityIndex<'_>,
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let weak_domains: HashSet<&str> = idx
+        .infra
+        .iter()
+        .filter(|e| {
+            matches!(e.kind, EntityKind::Domain) && e.has_tag(tags::MISSING_SECURITY_HEADERS)
+        })
+        .map(|e| e.value.as_str())
+        .collect();
+    if weak_domains.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for e in &idx.emails {
+        if !e.has_tag(tags::BREACH) {
+            continue;
+        }
+        let email_domain = e.value.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
+        if weak_domains.contains(email_domain) {
+            out.push(Correlation {
+                rule_id: "AU-006".into(),
+                rule_name: "Breach + weak infrastructure".into(),
+                severity: Severity::High,
+                description: format!(
+                    "Breached email {} on domain {} which lacks security headers",
+                    e.value, email_domain
+                ),
+                entity_uids: vec![e.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+            });
+        }
+    }
+    out
+}
+
+/// `AU-007` — Shared hosting: multiple domains in the scan resolve to the
+/// same IP address. Detected by finding IpAddress entities with evidence
+/// from ≥2 distinct parent domains. Co-hosting is a signal for shared
+/// infrastructure risk — a compromise of one tenant may affect others.
+fn rule_au_007_shared_hosting(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let mut ip_domains: std::collections::HashMap<&str, HashSet<&str>> =
+        std::collections::HashMap::new();
+    for e in infra
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::IpAddress))
+    {
+        let domains: HashSet<&str> = e
+            .evidence
+            .iter()
+            .filter_map(|ev| {
+                ev.attributes
+                    .get("domain")
+                    .or(ev.attributes.get("parent_domain"))
+            })
+            .map(String::as_str)
+            .collect();
+        if domains.len() >= 2 {
+            ip_domains.insert(e.value.as_str(), domains);
+        }
+    }
+
+    ip_domains
+        .into_iter()
+        .map(|(ip, domains)| {
+            let mut domain_list: Vec<&str> = domains.into_iter().collect();
+            domain_list.sort_unstable();
+            Correlation {
+                rule_id: "AU-007".into(),
+                rule_name: "Shared hosting".into(),
+                severity: Severity::Low,
+                description: format!(
+                    "IP {} hosts {} domains: {}",
+                    ip,
+                    domain_list.len(),
+                    domain_list.join(", ")
+                ),
+                entity_uids: vec![],
+                scan_id: scan_id.into(),
+                ts,
+            }
+        })
+        .collect()
+}
+
+/// `AU-008` — Blocklisted infrastructure: an IP in the scan has been
+/// flagged by the `dns_blocklist` module (tag `blocklisted`). This
+/// is a free, zero-API signal that the IP appears on DNS-based spam/
+/// malware/botnet blocklists.
+fn rule_au_008_blocklisted_infra(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    for e in infra
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::IpAddress) && e.has_tag("blocklisted"))
+    {
+        let lists = e
+            .evidence
+            .iter()
+            .filter(|ev| ev.source == "dns_blocklist")
+            .filter_map(|ev| ev.attributes.get("listed_on").map(String::as_str))
+            .next()
+            .unwrap_or("unknown");
+        out.push(Correlation {
+            rule_id: "AU-008".into(),
+            rule_name: "Blocklisted infrastructure".into(),
+            severity: Severity::High,
+            description: format!("IP {} appears on DNS blocklists: {}", e.value, lists),
+            entity_uids: vec![e.uid.clone()],
+            scan_id: scan_id.into(),
+            ts,
+        });
+    }
+    out
+}
+
+/// `AU-009` — Cross-platform identity convergence: a Username entity has
+/// evidence from ≥3 distinct module sources. This indicates the same
+/// username is confirmed on multiple platforms (e.g., github_user,
+/// username_search, search_engines) — strong identity signal.
+fn rule_au_009_cross_platform_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Username))
+        .filter_map(|e| {
+            let sources: HashSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
+            if sources.len() >= 3 {
+                let mut names: Vec<&str> = sources.into_iter().collect();
+                names.sort_unstable();
+                Some(Correlation {
+                    rule_id: "AU-009".into(),
+                    rule_name: "Cross-platform identity".into(),
+                    severity: Severity::Medium,
+                    description: format!(
+                        "Username '{}' confirmed on {} platforms: {}",
+                        e.value,
+                        names.len(),
+                        names.join(", ")
+                    ),
+                    entity_uids: vec![e.uid.clone()],
+                    scan_id: scan_id.into(),
+                    ts,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// `AU-010` — Infrastructure consensus: a single Domain or IpAddress has
 /// evidence from ≥3 distinct module sources. Differs from `AU-003` in that
 /// it counts module diversity at the **evidence** level rather than the
 /// `corroboration` field (which only increments on merge). Catches the
 /// "same entity discovered independently by infrastructure modules"
 /// pattern that the v0.3+ expansion engine produces.
-fn rule_au_010_infra_consensus(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+fn rule_au_010_infra_consensus(infra: &[&Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
     let mut out = Vec::new();
-    for e in entities
-        .iter()
-        .filter(|e| matches!(e.kind, EntityKind::Domain | EntityKind::IpAddress))
-    {
+    for e in infra {
         let sources: HashSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
         if sources.len() >= 3 {
             let mut names: Vec<&str> = sources.into_iter().collect();
@@ -269,12 +567,68 @@ fn rule_au_010_infra_consensus(entities: &[Entity], scan_id: &str, ts: u64) -> V
     out
 }
 
+/// `AU-011` — Geolocation convergence: multiple entities in the scan
+/// report the same country code via their tags (e.g., `country:US`).
+/// When ≥3 entities from different modules agree on a country, it's
+/// a strong signal about the target's geographic nexus. Combines
+/// signals from ip_geo, whois, ip_rdap, reverse_geocode.
+fn rule_au_011_geolocation_convergence(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut country_sources: std::collections::HashMap<String, HashSet<&str>> =
+        std::collections::HashMap::new();
+    let mut country_uids: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+
+    for e in entities {
+        for tag in &e.tags {
+            if let Some(cc) = tag.strip_prefix("country:") {
+                let sources: HashSet<&str> =
+                    e.evidence.iter().map(|ev| ev.source.as_str()).collect();
+                let entry = country_sources.entry(cc.to_string()).or_default();
+                entry.extend(sources);
+                country_uids
+                    .entry(cc.to_string())
+                    .or_default()
+                    .push(e.uid.clone());
+            }
+        }
+    }
+
+    country_sources
+        .into_iter()
+        .filter(|(_, sources)| sources.len() >= 3)
+        .map(|(cc, sources)| {
+            let mut src_list: Vec<&str> = sources.into_iter().collect();
+            src_list.sort_unstable();
+            let uids = country_uids.remove(&cc).unwrap_or_default();
+            Correlation {
+                rule_id: "AU-011".into(),
+                rule_name: "Geolocation convergence".into(),
+                severity: Severity::Low,
+                description: format!(
+                    "Country {} confirmed by {} independent sources: {}",
+                    cc,
+                    src_list.len(),
+                    src_list.join(", ")
+                ),
+                entity_uids: uids,
+                scan_id: scan_id.into(),
+                ts,
+            }
+        })
+        .collect()
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::tags;
 
     fn email(value: &str, sources: &[&str]) -> Entity {
         let mut e = Entity::new(EntityKind::Email, value, 0.9, "scan-test");
@@ -293,24 +647,32 @@ mod tests {
     }
 
     #[test]
-    fn au001_fires_at_two_breach_sources() {
+    fn au001_fires_at_two_breach_sources_as_high() {
         let e = email("x@y.com", &["hudsonrock", "breach_directory"]);
-        let r = rule_au_001_multi_breach(&[e], "s1", 0);
+        let r = rule_au_001_multi_breach(&[&e], "s1", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].rule_id, "AU-001");
+        assert_eq!(r[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn au001_fires_at_three_breach_sources_as_critical() {
+        let e = email("x@y.com", &["hudsonrock", "xposed_or_not", "dehashed"]);
+        let r = rule_au_001_multi_breach(&[&e], "s1", 0);
+        assert_eq!(r.len(), 1);
         assert_eq!(r[0].severity, Severity::Critical);
     }
 
     #[test]
     fn au001_no_fire_at_one_source() {
         let e = email("x@y.com", &["hudsonrock"]);
-        assert!(rule_au_001_multi_breach(&[e], "s1", 0).is_empty());
+        assert!(rule_au_001_multi_breach(&[&e], "s1", 0).is_empty());
     }
 
     #[test]
     fn au001_ignores_non_breach_sources() {
         let e = email("x@y.com", &["crtsh", "dns_resolver"]);
-        assert!(rule_au_001_multi_breach(&[e], "s1", 0).is_empty());
+        assert!(rule_au_001_multi_breach(&[&e], "s1", 0).is_empty());
     }
 
     #[test]
@@ -320,7 +682,8 @@ mod tests {
             Entity::new(EntityKind::Username, "xuser", 0.8, "s"),
             Entity::new(EntityKind::Phone, "+61400000000", 0.8, "s"),
         ];
-        let r = rule_au_002_identity_cluster(&entities, "s", 0);
+        let idx = EntityIndex::build(&entities);
+        let r = rule_au_002_identity_cluster(&idx, "s", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].rule_id, "AU-002");
         assert_eq!(r[0].entity_uids.len(), 3);
@@ -333,7 +696,8 @@ mod tests {
             Entity::new(EntityKind::Username, "xuser", 0.8, "s"),
             // no Phone
         ];
-        assert!(rule_au_002_identity_cluster(&entities, "s", 0).is_empty());
+        let idx = EntityIndex::build(&entities);
+        assert!(rule_au_002_identity_cluster(&idx, "s", 0).is_empty());
     }
 
     #[test]
@@ -355,7 +719,7 @@ mod tests {
     #[test]
     fn au010_fires_at_three_sources_on_domain() {
         let e = domain("x.com", &["crtsh", "dns_resolver", "hudsonrock"]);
-        let r = rule_au_010_infra_consensus(&[e], "s", 0);
+        let r = rule_au_010_infra_consensus(&[&e], "s", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].rule_id, "AU-010");
     }
@@ -363,13 +727,110 @@ mod tests {
     #[test]
     fn au010_no_fire_at_two_sources() {
         let e = domain("x.com", &["crtsh", "dns_resolver"]);
-        assert!(rule_au_010_infra_consensus(&[e], "s", 0).is_empty());
+        assert!(rule_au_010_infra_consensus(&[&e], "s", 0).is_empty());
     }
 
     #[test]
     fn au010_ignores_non_infrastructure_kinds() {
-        let e = email("x@y.com", &["a", "b", "c"]);
-        assert!(rule_au_010_infra_consensus(&[e], "s", 0).is_empty());
+        let entities = vec![email("x@y.com", &["a", "b", "c"])];
+        let idx = EntityIndex::build(&entities);
+        assert!(idx.infra.is_empty());
+        assert!(rule_au_010_infra_consensus(&idx.infra, "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au004_fires_on_recent_stealer() {
+        let now = unix_now();
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+        e.tag(tags::STEALER_LOG);
+        e.add_evidence(
+            Evidence::new("hudsonrock", "test")
+                .with_attr("date_compromised", "2026-05-20T00:00:00Z"),
+        );
+        let r = rule_au_004_stealer_recency(&[e], "s", now);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-004");
+        assert_eq!(r[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn au004_no_fire_on_old_stealer() {
+        let now = unix_now();
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+        e.tag(tags::STEALER_LOG);
+        e.add_evidence(
+            Evidence::new("hudsonrock", "test")
+                .with_attr("date_compromised", "2020-01-01T00:00:00Z"),
+        );
+        assert!(rule_au_004_stealer_recency(&[e], "s", now).is_empty());
+    }
+
+    #[test]
+    fn au005_fires_on_multi_device() {
+        let now = unix_now();
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+        e.tag(tags::STEALER_LOG);
+        e.add_evidence(Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"));
+        e.add_evidence(Evidence::new("hudsonrock", "test").with_attr("computer_name", "LAPTOP-B"));
+        let r = rule_au_005_multi_device_stealer(&[e], "s", now);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-005");
+        assert_eq!(r[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn au005_no_fire_single_device() {
+        let now = unix_now();
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+        e.tag(tags::STEALER_LOG);
+        e.add_evidence(Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"));
+        e.add_evidence(Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"));
+        assert!(rule_au_005_multi_device_stealer(&[e], "s", now).is_empty());
+    }
+
+    #[test]
+    fn au006_fires_on_breach_with_weak_infra() {
+        let mut breached = email("user@weak.com", &["hudsonrock"]);
+        breached.tag(tags::BREACH);
+        let mut dom = Entity::new(EntityKind::Domain, "weak.com", 0.9, "s");
+        dom.tag(tags::MISSING_SECURITY_HEADERS);
+        dom.add_evidence(Evidence::new("web_crawler", "test"));
+        let entities = vec![breached, dom];
+        let idx = EntityIndex::build(&entities);
+        let r = rule_au_006_breach_weak_infra(&idx, "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-006");
+        assert_eq!(r[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn au006_no_fire_without_breach_tag() {
+        let clean = email("user@weak.com", &["hudsonrock"]);
+        let mut dom = Entity::new(EntityKind::Domain, "weak.com", 0.9, "s");
+        dom.tag(tags::MISSING_SECURITY_HEADERS);
+        dom.add_evidence(Evidence::new("web_crawler", "test"));
+        let entities = vec![clean, dom];
+        let idx = EntityIndex::build(&entities);
+        assert!(rule_au_006_breach_weak_infra(&idx, "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au007_fires_on_shared_ip() {
+        let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "s");
+        ip.add_evidence(Evidence::new("dns_resolver", "A record").with_attr("domain", "a.com"));
+        ip.add_evidence(Evidence::new("dns_resolver", "A record").with_attr("domain", "b.com"));
+        let r = rule_au_007_shared_hosting(&[&ip], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-007");
+        assert!(r[0].description.contains("a.com"));
+        assert!(r[0].description.contains("b.com"));
+    }
+
+    #[test]
+    fn au007_no_fire_single_domain() {
+        let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "s");
+        ip.add_evidence(Evidence::new("dns_resolver", "A record").with_attr("domain", "only.com"));
+        assert!(rule_au_007_shared_hosting(&[&ip], "s", 0).is_empty());
     }
 
     #[test]

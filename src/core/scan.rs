@@ -101,6 +101,17 @@ impl Target {
         }
     }
 
+    /// Create an entity pre-filled with the target's kind and value.
+    /// Shorthand for `Entity::new(target.kind.to_entity_kind(), &target.value, confidence, scan_id)`.
+    pub fn to_entity(&self, confidence: f64, scan_id: &str) -> crate::core::entity::Entity {
+        crate::core::entity::Entity::new(
+            self.kind.to_entity_kind(),
+            &self.value,
+            confidence,
+            scan_id,
+        )
+    }
+
     /// Light shape-check for the user-supplied value, applied at the
     /// API boundary so a clearly-bogus scan request fails fast with a
     /// useful 400 rather than queueing a scan that no module accepts.
@@ -193,6 +204,18 @@ pub enum ScanStatus {
     /// Any entities + correlations produced before the cancel are
     /// persisted as for a `Complete` scan.
     Aborted,
+}
+
+impl ScanStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Complete => "complete",
+            Self::Failed => "failed",
+            Self::Aborted => "aborted",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,6 +314,14 @@ pub struct ScanOptions {
 
     /// Hard cap on total wall-time, in seconds. Stops expansion once exceeded. `None` = no cap.
     pub max_wall_time_secs: Option<u64>,
+
+    /// User-assigned labels for campaign tracking (e.g., "apt-29", "q2-audit").
+    #[serde(default)]
+    pub scan_tags: Vec<String>,
+
+    /// Freeform notes / investigation context.
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 impl Default for ScanOptions {
@@ -308,6 +339,8 @@ impl Default for ScanOptions {
             min_expand_confidence: default_min_expand_confidence(),
             max_entities: None,
             max_wall_time_secs: None,
+            scan_tags: Vec::new(),
+            notes: None,
         }
     }
 }

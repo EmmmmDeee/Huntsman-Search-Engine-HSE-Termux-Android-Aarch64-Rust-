@@ -231,6 +231,8 @@ async fn session_loop(
 ) {
     let interval = Duration::from_secs(live.interval_secs.max(1));
     let max_iter = live.iterations;
+    let http = build_client();
+    let loaded_keys = keys::load();
 
     let _ = inner.bus.send(Event::new(
         &live_id,
@@ -283,8 +285,8 @@ async fn session_loop(
         let ctx = ModuleContext {
             scan_id: sid.clone(),
             bus: inner.bus.clone(),
-            http: build_client(),
-            keys: keys::load(),
+            http: http.clone(),
+            keys: loaded_keys.clone(),
             // Plumb the SAME live-session cancel handle into the engine
             // so `DELETE /api/v1/live/{id}` aborts the in-flight
             // iteration at the next module boundary (the iteration's

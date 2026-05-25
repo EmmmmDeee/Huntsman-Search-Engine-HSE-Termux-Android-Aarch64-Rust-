@@ -45,7 +45,12 @@ async fn fetch_exit_set(http: &reqwest::Client) -> Option<HashSet<String>> {
     .ok()
     .flatten()?;
 
-    let mut set = HashSet::new();
+    // Typical exit list has ~1000-2000 entries; pre-count to avoid rehashing.
+    let estimated = body_res
+        .lines()
+        .filter(|l| l.starts_with("ExitAddress "))
+        .count();
+    let mut set = HashSet::with_capacity(estimated);
     for line in body_res.lines() {
         if let Some(rest) = line.strip_prefix("ExitAddress ")
             && let Some(ip) = rest.split_whitespace().next()
@@ -77,6 +82,10 @@ pub struct TorExitCheck;
 impl Module for TorExitCheck {
     fn name(&self) -> &'static str {
         "tor_exit_check"
+    }
+
+    fn description(&self) -> &'static str {
+        "Tor exit relay membership verification"
     }
 
     fn priority(&self) -> u8 {

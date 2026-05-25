@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -56,10 +56,25 @@ struct Record {
 
 pub struct IntelX;
 
+/// Map IntelX media type codes to human-readable labels.
+fn media_label(code: i32) -> Option<&'static str> {
+    match code {
+        0 => Some("pastes"),
+        1 => Some("darknet"),
+        2 => Some("breach"),
+        3 => Some("general"),
+        5 => Some("leaks"),
+        _ => None,
+    }
+}
+
 #[async_trait]
 impl Module for IntelX {
     fn name(&self) -> &'static str {
         "intelx"
+    }
+    fn description(&self) -> &'static str {
+        "Intelligence X selector search across breach data"
     }
     fn priority(&self) -> u8 {
         116
@@ -135,7 +150,7 @@ impl Module for IntelX {
         let result_url = format!(
             "https://2.intelx.io/intelligent/search/result?id={search_id}&limit=50&statistics=0"
         );
-        let mut last_records: Vec<Record> = Vec::new();
+        let mut last_records: Vec<Record> = Vec::with_capacity(50);
         for _ in 0..5 {
             tokio::time::sleep(Duration::from_millis(1_500)).await;
             let resp = ctx
@@ -164,32 +179,24 @@ impl Module for IntelX {
             return Ok(ModuleResult::new());
         }
 
-        let kind = match target.kind {
-            TargetKind::Email => EntityKind::Email,
-            TargetKind::Username => EntityKind::Username,
-            TargetKind::Phone => EntityKind::Phone,
-            TargetKind::Domain => EntityKind::Domain,
-            TargetKind::IpAddress => EntityKind::IpAddress,
-            _ => unreachable!(),
-        };
-        let mut entity = Entity::new(kind, value, 0.86, &ctx.scan_id);
+        let mut entity = target.to_entity(0.86, &ctx.scan_id);
         entity.tag("intelx");
         entity.tag("indicator");
 
-        let mut bucket_counts: std::collections::BTreeMap<String, u32> =
+        let mut bucket_counts: std::collections::BTreeMap<&str, u32> =
             std::collections::BTreeMap::new();
         let mut media_counts: std::collections::BTreeMap<i32, u32> =
             std::collections::BTreeMap::new();
         for r in &last_records {
             if let Some(b) = r.bucket.as_deref() {
-                *bucket_counts.entry(b.to_string()).or_insert(0) += 1;
+                *bucket_counts.entry(b).or_insert(0) += 1;
             }
             if let Some(m) = r.media {
                 *media_counts.entry(m).or_insert(0) += 1;
             }
         }
-        let mut top_buckets: Vec<(String, u32)> = bucket_counts.into_iter().collect();
-        top_buckets.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let mut top_buckets: Vec<(&str, u32)> = bucket_counts.into_iter().collect();
+        top_buckets.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
         let top = top_buckets
             .iter()
             .take(5)
@@ -210,6 +217,15 @@ impl Module for IntelX {
         .with_attr("search_id", search_id);
         if !top.is_empty() {
             ev = ev.with_attr("top_buckets", top);
+        }
+        // Map media type codes to human-readable labels.
+        let media_labels: std::collections::BTreeSet<&str> = media_counts
+            .keys()
+            .filter_map(|code| media_label(*code))
+            .collect();
+        if !media_labels.is_empty() {
+            let types_joined: Vec<&str> = media_labels.into_iter().collect();
+            ev = ev.with_attr("media_types", types_joined.join(", "));
         }
         if let Some(d) = latest {
             ev = ev.with_attr("latest_record", d);

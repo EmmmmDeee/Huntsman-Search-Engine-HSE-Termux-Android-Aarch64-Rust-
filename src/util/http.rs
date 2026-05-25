@@ -15,9 +15,21 @@ use crate::core::error::{Error, Result};
 /// (HudsonRock's cavalier API among them — observed returning HTTP 400
 /// on Termux). The `+https://` contact link is the format recommended
 /// by RFC 7231 §5.5.3 and accepted by most rate-limiters.
+///
+/// # Panics
+///
+/// Panics (via `.expect()`) if the reqwest builder fails. This is
+/// intentional: the builder uses only hard-coded, known-good settings
+/// (timeouts, pool sizes, a static user-agent) so failure indicates a
+/// broken build environment, not a runtime condition worth recovering
+/// from. The panic fires at startup before any scan work begins.
 pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_millis(MODULE_TIMEOUT_MS))
+        .connect_timeout(Duration::from_secs(5))
+        .pool_max_idle_per_host(5)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .tcp_keepalive(Duration::from_secs(15))
         .user_agent(concat!(
             "huntsman-search-engine/",
             env!("CARGO_PKG_VERSION"),
@@ -74,21 +86,27 @@ pub async fn fetch_json<T: DeserializeOwned>(
     module: &'static str,
     url: &str,
 ) -> Result<T> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| Error::module(module, e.to_string()))?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(Error::module(
-            module,
-            format!("HTTP {status}: {}", error_snippet(resp).await),
-        ));
+    match client.get(url).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if !status.is_success() {
+                return Err(Error::module(
+                    module,
+                    format!("HTTP {status}: {}", error_snippet(resp).await),
+                ));
+            }
+            resp.json::<T>()
+                .await
+                .map_err(|e| Error::module(module, e.to_string()))
+        }
+        Err(_) => match super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await {
+            Some(data) => Ok(data),
+            None => Err(Error::module(
+                module,
+                format!("request failed for {url} (reqwest + curl)"),
+            )),
+        },
     }
-    resp.json::<T>()
-        .await
-        .map_err(|e| Error::module(module, e.to_string()))
 }
 
 /// Like [`fetch_json`] but maps `404 Not Found` to `Ok(None)` — the
@@ -104,26 +122,26 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
     module: &'static str,
     url: &str,
 ) -> Result<Option<T>> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| Error::module(module, e.to_string()))?;
-    let status = resp.status();
-    if status.as_u16() == 404 {
-        return Ok(None);
+    match client.get(url).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.as_u16() == 404 {
+                return Ok(None);
+            }
+            if !status.is_success() {
+                return Err(Error::module(
+                    module,
+                    format!("HTTP {status}: {}", error_snippet(resp).await),
+                ));
+            }
+            let data = resp
+                .json::<T>()
+                .await
+                .map_err(|e| Error::module(module, e.to_string()))?;
+            Ok(Some(data))
+        }
+        Err(_) => Ok(super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await),
     }
-    if !status.is_success() {
-        return Err(Error::module(
-            module,
-            format!("HTTP {status}: {}", error_snippet(resp).await),
-        ));
-    }
-    let data = resp
-        .json::<T>()
-        .await
-        .map_err(|e| Error::module(module, e.to_string()))?;
-    Ok(Some(data))
 }
 
 /// Percent-encode a single URL path or query-string component using the

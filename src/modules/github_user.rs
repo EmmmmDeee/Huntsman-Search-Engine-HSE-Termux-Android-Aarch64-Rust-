@@ -37,7 +37,9 @@ struct GhUser {
     company: Option<String>,
     location: Option<String>,
     bio: Option<String>,
+    twitter_username: Option<String>,
     public_repos: Option<u64>,
+    public_gists: Option<u64>,
     followers: Option<u64>,
     following: Option<u64>,
     created_at: Option<String>,
@@ -48,6 +50,10 @@ struct GhUser {
 impl Module for GithubUser {
     fn name(&self) -> &'static str {
         "github_user"
+    }
+
+    fn description(&self) -> &'static str {
+        "GitHub profile, repos, and social metadata lookup"
     }
 
     fn priority(&self) -> u8 {
@@ -107,9 +113,10 @@ impl Module for GithubUser {
             .with_attr("github_id", user.id.to_string())
             .with_attr(
                 "profile_url",
-                user.html_url
-                    .clone()
-                    .unwrap_or_else(|| format!("https://github.com/{}", user.login)),
+                user.html_url.as_deref().map_or_else(
+                    || format!("https://github.com/{}", user.login),
+                    String::from,
+                ),
             );
         if let Some(n) = user.name.as_deref() {
             ev = ev.with_attr("name", n);
@@ -119,6 +126,9 @@ impl Module for GithubUser {
         }
         if let Some(l) = user.location.as_deref() {
             ev = ev.with_attr("location", l);
+            if !l.trim().is_empty() {
+                u_entity.tag("has-location");
+            }
         }
         if let Some(b) = user.blog.as_deref()
             && !b.is_empty()
@@ -136,11 +146,20 @@ impl Module for GithubUser {
         if let Some(n) = user.public_repos {
             ev = ev.with_attr("public_repos", n.to_string());
         }
+        if let Some(n) = user.public_gists {
+            ev = ev.with_attr("public_gists", n.to_string());
+        }
         if let Some(n) = user.followers {
             ev = ev.with_attr("followers", n.to_string());
         }
         if let Some(n) = user.following {
             ev = ev.with_attr("following", n.to_string());
+        }
+        if let Some(ref tw) = user.twitter_username
+            && !tw.is_empty()
+        {
+            ev = ev.with_attr("twitter", tw);
+            u_entity.tag(format!("twitter:{tw}"));
         }
         u_entity.add_evidence(ev);
         result.push(u_entity);
@@ -197,6 +216,26 @@ impl Module for GithubUser {
                     .with_attr("github_login", &user.login),
                 );
                 result.push(u);
+
+                if let Ok(parsed) = url::Url::parse(blog)
+                    && let Some(host) = parsed.host_str()
+                {
+                    let domain = host.to_lowercase();
+                    if domain.contains('.') && domain != "github.com" && domain != "github.io" {
+                        let mut d = Entity::new(EntityKind::Domain, &domain, 0.72, &ctx.scan_id);
+                        d.tag("derived");
+                        d.tag("personal-site");
+                        d.add_evidence(
+                            Evidence::new(
+                                "github_user",
+                                format!("Blog domain from @{}", user.login),
+                            )
+                            .with_attr("blog_url", blog)
+                            .with_attr("github_login", &user.login),
+                        );
+                        result.push(d);
+                    }
+                }
             }
         }
 

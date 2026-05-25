@@ -29,6 +29,10 @@ impl Module for Whois {
         "whois"
     }
 
+    fn description(&self) -> &'static str {
+        "WHOIS registration data and contact extraction"
+    }
+
     fn priority(&self) -> u8 {
         32
     }
@@ -121,12 +125,7 @@ impl Module for Whois {
             return Ok(ModuleResult::new());
         }
 
-        let kind = match target.kind {
-            TargetKind::IpAddress => EntityKind::IpAddress,
-            _ => EntityKind::Domain,
-        };
-
-        let mut entity = Entity::new(kind, &target.value, 0.85, &_ctx.scan_id);
+        let mut entity = target.to_entity(0.85, &_ctx.scan_id);
 
         // Status flags become tags so the SPA can highlight them. These
         // are the most operationally interesting: lock states, hold flags,
@@ -269,8 +268,11 @@ async fn query(server: &str, q: &str) -> std::io::Result<String> {
         TcpStream::connect(server),
     )
     .await??;
-    stream.write_all(format!("{q}\r\n").as_bytes()).await?;
-    let mut buf = String::new();
+    let mut query_line = String::with_capacity(q.len() + 2);
+    query_line.push_str(q);
+    query_line.push_str("\r\n");
+    stream.write_all(query_line.as_bytes()).await?;
+    let mut buf = String::with_capacity(4096);
     // Cap the read at 64 KiB so a malicious or misconfigured whois server
     // can't OOM the engine by streaming forever. Real WHOIS responses are
     // ≪ 64 KiB (typically 2–8 KiB).

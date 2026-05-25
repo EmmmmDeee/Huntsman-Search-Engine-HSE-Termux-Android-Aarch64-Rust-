@@ -27,6 +27,10 @@ impl Module for ReverseDns {
         "reverse_dns"
     }
 
+    fn description(&self) -> &'static str {
+        "PTR record lookup for IP to hostname mapping"
+    }
+
     fn priority(&self) -> u8 {
         // Same band as dns_resolver — runs alongside the forward lookup
         // so the SPA shows them as a pair.
@@ -56,17 +60,18 @@ impl Module for ReverseDns {
             let RData::PTR(ptr) = &record.data else {
                 continue;
             };
-            let host = ptr.0.to_ascii();
-            let host = host.trim_end_matches('.').to_string();
+            let host_raw = ptr.0.to_ascii();
+            let host = host_raw.trim_end_matches('.');
             if host.is_empty() {
                 continue;
             }
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
-            e.tag("ptr");
+            let mut e = Entity::new(EntityKind::Domain, host, 0.85, &ctx.scan_id);
+            e.tag(crate::core::tags::PTR);
             e.add_evidence(
                 Evidence::new("reverse_dns", format!("PTR record for {ip}"))
                     .with_attr("record_type", "PTR")
-                    .with_attr("ip", target.value.as_str()),
+                    .with_attr("ip", target.value.as_str())
+                    .with_attr("ttl_secs", record.ttl.to_string()),
             );
             result.push(e);
         }

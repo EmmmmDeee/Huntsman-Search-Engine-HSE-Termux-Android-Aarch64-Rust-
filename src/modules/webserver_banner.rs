@@ -15,7 +15,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::{Entity, Evidence},
     error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -45,6 +45,10 @@ const FINGERPRINT_HEADERS: &[&str] = &[
 impl Module for WebserverBanner {
     fn name(&self) -> &'static str {
         "webserver_banner"
+    }
+
+    fn description(&self) -> &'static str {
+        "HTTP header fingerprinting and tech stack detection"
     }
 
     fn priority(&self) -> u8 {
@@ -78,8 +82,8 @@ impl Module for WebserverBanner {
                 continue;
             }
 
-            let mut entity = Entity::new(EntityKind::Domain, domain, 0.85, &ctx.scan_id);
-            entity.tag("web");
+            let mut entity = target.to_entity(0.85, &ctx.scan_id);
+            entity.tag(crate::core::tags::WEB);
             apply_stack_tags(&mut entity, &captured);
 
             let mut ev = Evidence::new(
@@ -105,7 +109,7 @@ impl Module for WebserverBanner {
 }
 
 fn capture_headers(h: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
+    let mut out: Vec<(String, String)> = Vec::with_capacity(FINGERPRINT_HEADERS.len());
     for name in FINGERPRINT_HEADERS {
         if let Some(v) = h.get(*name)
             && let Ok(s) = v.to_str()
@@ -118,12 +122,16 @@ fn capture_headers(h: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
 }
 
 fn apply_stack_tags(e: &mut Entity, headers: &[(String, String)]) {
-    let blob = headers
-        .iter()
-        .map(|(_, v)| v.to_lowercase())
-        .collect::<Vec<_>>()
-        .join("|");
-    let names = headers.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>();
+    let mut blob = String::with_capacity(headers.iter().map(|(_, v)| v.len() + 1).sum());
+    for (i, (_, v)) in headers.iter().enumerate() {
+        if i > 0 {
+            blob.push('|');
+        }
+        for c in v.chars() {
+            blob.push(c.to_ascii_lowercase());
+        }
+    }
+    let names: Vec<&str> = headers.iter().map(|(n, _)| n.as_str()).collect();
     if blob.contains("nginx") {
         e.tag("nginx");
     }
@@ -159,6 +167,7 @@ fn apply_stack_tags(e: &mut Entity, headers: &[(String, String)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::entity::EntityKind;
 
     #[test]
     fn accepts_only_domain() {

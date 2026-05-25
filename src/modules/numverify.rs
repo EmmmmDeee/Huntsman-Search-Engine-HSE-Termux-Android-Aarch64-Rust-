@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::Result,
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -53,6 +53,9 @@ impl Module for Numverify {
     fn name(&self) -> &'static str {
         "numverify"
     }
+    fn description(&self) -> &'static str {
+        "Phone number validation and carrier lookup"
+    }
     fn priority(&self) -> u8 {
         90
     }
@@ -68,11 +71,13 @@ impl Module for Numverify {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = ctx.key(KEY_ENV)?;
-        let phone: String = target
-            .value
-            .chars()
-            .filter(|c| c.is_ascii_digit() || *c == '+')
-            .collect();
+        let mut phone = String::with_capacity(target.value.len());
+        phone.extend(
+            target
+                .value
+                .chars()
+                .filter(|c| c.is_ascii_digit() || *c == '+'),
+        );
         if phone.is_empty() {
             return Ok(ModuleResult::new());
         }
@@ -105,7 +110,7 @@ impl Module for Numverify {
         if body.valid != Some(true) {
             return Ok(ModuleResult::new());
         }
-        let mut entity = Entity::new(EntityKind::Phone, &target.value, 0.92, &ctx.scan_id);
+        let mut entity = target.to_entity(0.92, &ctx.scan_id);
         entity.tag("numverify");
         entity.tag("validated");
         entity.tag(format!("transport:{transport}"));

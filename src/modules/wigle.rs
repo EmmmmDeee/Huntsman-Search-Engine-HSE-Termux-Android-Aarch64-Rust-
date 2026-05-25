@@ -54,6 +54,9 @@ impl Module for Wigle {
     fn name(&self) -> &'static str {
         "wigle"
     }
+    fn description(&self) -> &'static str {
+        "WiGLE wireless network geolocation database"
+    }
     fn priority(&self) -> u8 {
         70
     }
@@ -134,21 +137,12 @@ impl Module for Wigle {
         entity.tag("wifi-observed");
 
         // Aggregate encryption types.
-        let mut enc_counts: std::collections::BTreeMap<String, u32> =
-            std::collections::BTreeMap::new();
-        for n in &body.results {
-            if let Some(e) = n.encryption.as_deref() {
-                *enc_counts.entry(e.to_string()).or_insert(0) += 1;
-            }
-        }
-        let mut ranked: Vec<(String, u32)> = enc_counts.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let top_encryption = ranked
+        let enc_types: Vec<String> = body
+            .results
             .iter()
-            .take(5)
-            .map(|(e, n)| format!("{e}×{n}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+            .filter_map(|n| n.encryption.clone())
+            .collect();
+        let top_encryption = crate::util::freq::top_n(enc_types.iter().map(String::as_str), 5);
 
         let most_recent = body
             .results

@@ -35,6 +35,10 @@ impl Module for DnsResolver {
         "dns_resolver"
     }
 
+    fn description(&self) -> &'static str {
+        "DNS A/AAAA/MX/NS/SOA/TXT record resolution"
+    }
+
     fn priority(&self) -> u8 {
         30
     }
@@ -56,16 +60,22 @@ impl Module for DnsResolver {
             resolver.txt_lookup(domain),
         );
 
-        // A + AAAA (lookup_ip returns both v4 and v6)
+        // A + AAAA — iterate the underlying records so we can read TTL.
         if let Ok(lookup) = ips {
-            for ip in lookup.iter() {
-                let record_type = if ip.is_ipv4() { "A" } else { "AAAA" };
-                let mut e = Entity::new(EntityKind::IpAddress, ip.to_string(), 0.95, &ctx.scan_id);
-                e.tag(if ip.is_ipv4() { "ipv4" } else { "ipv6" });
+            for record in lookup.as_lookup().answers() {
+                let (ip_str, record_type, ip_version) = match &record.data {
+                    RData::A(a) => (a.0.to_string(), "A", "4"),
+                    RData::AAAA(aaaa) => (aaaa.0.to_string(), "AAAA", "6"),
+                    _ => continue,
+                };
+                let mut e = Entity::new(EntityKind::IpAddress, &ip_str, 0.95, &ctx.scan_id);
+                e.tag(if record_type == "A" { "ipv4" } else { "ipv6" });
                 e.add_evidence(
                     Evidence::new("dns_resolver", format!("{record_type} record for {domain}"))
                         .with_attr("record_type", record_type)
-                        .with_attr("domain", domain),
+                        .with_attr("domain", domain)
+                        .with_attr("ttl_secs", record.ttl.to_string())
+                        .with_attr("ip_version", ip_version),
                 );
                 result.push(e);
             }
@@ -86,7 +96,8 @@ impl Module for DnsResolver {
                         Evidence::new("dns_resolver", format!("MX record for {domain}"))
                             .with_attr("record_type", "MX")
                             .with_attr("priority", mx.preference.to_string())
-                            .with_attr("parent_domain", domain),
+                            .with_attr("parent_domain", domain)
+                            .with_attr("ttl_secs", record.ttl.to_string()),
                     );
                     result.push(e);
                 }
@@ -107,7 +118,8 @@ impl Module for DnsResolver {
                     e.add_evidence(
                         Evidence::new("dns_resolver", format!("NS record for {domain}"))
                             .with_attr("record_type", "NS")
-                            .with_attr("parent_domain", domain),
+                            .with_attr("parent_domain", domain)
+                            .with_attr("ttl_secs", record.ttl.to_string()),
                     );
                     result.push(e);
                 }
@@ -118,16 +130,19 @@ impl Module for DnsResolver {
         // the admin email (encoded as a hostname with `.` instead of `@`
         // in the local-part separator per RFC 1035 §3.3.13).
         if let Ok(lookup) = soa
-            && let Some(record) = lookup.answers().iter().find_map(|r| match &r.data {
-                RData::SOA(soa) => Some(soa),
-                _ => None,
-            })
+            && let Some(dns_record) = lookup
+                .answers()
+                .iter()
+                .find(|r| matches!(&r.data, RData::SOA(_)))
         {
+            let RData::SOA(ref soa_data) = dns_record.data else {
+                unreachable!();
+            };
             // SOA fields are public in hickory-proto 0.26 — direct access
             // rather than getters.
-            let mname = record.mname.to_ascii();
+            let mname = soa_data.mname.to_ascii();
             let mname = mname.trim_end_matches('.');
-            let rname_raw = record.rname.to_ascii();
+            let rname_raw = soa_data.rname.to_ascii();
             let admin_email = soa_rname_to_email(rname_raw.trim_end_matches('.'));
 
             let mut e = Entity::new(EntityKind::Domain, domain, 0.92, &ctx.scan_id);
@@ -135,11 +150,12 @@ impl Module for DnsResolver {
             let mut ev = Evidence::new("dns_resolver", format!("SOA record for {domain}"))
                 .with_attr("record_type", "SOA")
                 .with_attr("primary_ns", mname)
-                .with_attr("serial", record.serial.to_string())
-                .with_attr("refresh_secs", record.refresh.to_string())
-                .with_attr("retry_secs", record.retry.to_string())
-                .with_attr("expire_secs", record.expire.to_string())
-                .with_attr("minimum_ttl_secs", record.minimum.to_string());
+                .with_attr("serial", soa_data.serial.to_string())
+                .with_attr("refresh_secs", soa_data.refresh.to_string())
+                .with_attr("retry_secs", soa_data.retry.to_string())
+                .with_attr("expire_secs", soa_data.expire.to_string())
+                .with_attr("minimum_ttl_secs", soa_data.minimum.to_string())
+                .with_attr("ttl_secs", dns_record.ttl.to_string());
             if !admin_email.is_empty() {
                 ev = ev.with_attr("admin_email", &admin_email);
             }
@@ -162,11 +178,15 @@ impl Module for DnsResolver {
 
         // TXT records → enrich parent
         if let Ok(lookup) = txts {
+            let mut min_ttl: Option<u32> = None;
             let txts: Vec<String> = lookup
                 .answers()
                 .iter()
                 .filter_map(|r| match &r.data {
-                    RData::TXT(txt) => Some(txt.to_string()),
+                    RData::TXT(txt) => {
+                        min_ttl = Some(min_ttl.map_or(r.ttl, |prev| prev.min(r.ttl)));
+                        Some(txt.to_string())
+                    }
                     _ => None,
                 })
                 .collect();
@@ -174,30 +194,30 @@ impl Module for DnsResolver {
                 let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
                 // Common TXT-record signals worth surfacing as tags so
                 // the SPA can highlight them.
-                let lower: Vec<String> = txts.iter().map(|s| s.to_lowercase()).collect();
-                if lower.iter().any(|t| t.starts_with("v=spf1")) {
-                    dom.tag("spf");
+                for t in &txts {
+                    let b = t.as_bytes();
+                    if b.len() >= 6 && b[..6].eq_ignore_ascii_case(b"v=spf1") {
+                        dom.tag("spf");
+                    } else if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"v=dkim1") {
+                        dom.tag("dkim");
+                    } else if b.len() >= 8 && b[..8].eq_ignore_ascii_case(b"v=dmarc1") {
+                        dom.tag("dmarc");
+                    } else if b.len() >= 24
+                        && b[..24].eq_ignore_ascii_case(b"google-site-verification")
+                    {
+                        dom.tag("google-verified");
+                    } else if b.len() >= 3 && b[..3].eq_ignore_ascii_case(b"ms=") {
+                        dom.tag("ms-verified");
+                    }
                 }
-                if lower.iter().any(|t| t.starts_with("v=dkim1")) {
-                    dom.tag("dkim");
-                }
-                if lower.iter().any(|t| t.starts_with("v=dmarc1")) {
-                    dom.tag("dmarc");
-                }
-                if lower
-                    .iter()
-                    .any(|t| t.starts_with("google-site-verification"))
-                {
-                    dom.tag("google-verified");
-                }
-                if lower.iter().any(|t| t.starts_with("ms=")) {
-                    dom.tag("ms-verified");
-                }
-                dom.add_evidence(
+                let mut txt_ev =
                     Evidence::new("dns_resolver", format!("{} TXT records", txts.len()))
                         .with_attr("txt_records", txts.join(" | "))
-                        .with_attr("txt_count", txts.len().to_string()),
-                );
+                        .with_attr("txt_count", txts.len().to_string());
+                if let Some(ttl) = min_ttl {
+                    txt_ev = txt_ev.with_attr("ttl_secs", ttl.to_string());
+                }
+                dom.add_evidence(txt_ev);
                 result.push(dom);
             }
         }

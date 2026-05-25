@@ -15,7 +15,7 @@ use serde::Deserialize;
 // `md-5` is the maintained successor crate; the import path is `md5`.
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -41,6 +41,10 @@ struct ProfileEntry {
     urls: Vec<UrlEntry>,
     #[serde(rename = "currentLocation")]
     location: Option<String>,
+    #[serde(rename = "aboutMe")]
+    about_me: Option<String>,
+    #[serde(default)]
+    photos: Option<Vec<PhotoEntry>>,
 }
 
 #[derive(Deserialize)]
@@ -54,10 +58,19 @@ struct UrlEntry {
     title: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct PhotoEntry {
+    value: Option<String>,
+}
+
 #[async_trait]
 impl Module for Gravatar {
     fn name(&self) -> &'static str {
         "gravatar"
+    }
+
+    fn description(&self) -> &'static str {
+        "Gravatar profile lookup by email hash"
     }
 
     fn priority(&self) -> u8 {
@@ -113,7 +126,7 @@ impl Module for Gravatar {
             return Ok(ModuleResult::new());
         };
 
-        let mut entity = Entity::new(EntityKind::Email, &normalised, 0.88, &ctx.scan_id);
+        let mut entity = target.to_entity(0.88, &ctx.scan_id);
         entity.tag("gravatar");
         let mut ev = Evidence::new("gravatar", format!("Gravatar profile for {normalised}"))
             .with_attr("md5", &hash)
@@ -130,18 +143,30 @@ impl Module for Gravatar {
         if let Some(loc) = entry.location.as_deref() {
             ev = ev.with_attr("location", loc);
         }
+        if let Some(bio) = entry.about_me.as_deref() {
+            ev = ev.with_attr("bio", bio);
+        }
+        if let Some(avatar) = entry
+            .photos
+            .as_ref()
+            .and_then(|p| p.first())
+            .and_then(|p| p.value.as_deref())
+        {
+            ev = ev.with_attr("avatar_url", avatar);
+        }
         if !entry.urls.is_empty() {
-            let joined: Vec<String> = entry
-                .urls
-                .iter()
-                .filter_map(|u| {
-                    let v = u.value.as_deref()?;
-                    let t = u.title.as_deref().unwrap_or("link");
-                    Some(format!("{t}: {v}"))
-                })
-                .collect();
-            if !joined.is_empty() {
-                ev = ev.with_attr("urls", joined.join(" | "));
+            let mut urls_iter = entry.urls.iter().filter_map(|u| {
+                let v = u.value.as_deref()?;
+                let t = u.title.as_deref().unwrap_or("link");
+                Some(format!("{t}: {v}"))
+            });
+            if let Some(first) = urls_iter.next() {
+                let mut joined = first;
+                for item in urls_iter {
+                    joined.push_str(" | ");
+                    joined.push_str(&item);
+                }
+                ev = ev.with_attr("urls", joined);
             }
         }
         entity.add_evidence(ev);

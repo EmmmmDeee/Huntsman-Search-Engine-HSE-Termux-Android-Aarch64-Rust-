@@ -69,6 +69,10 @@ impl Module for IpRdap {
         "ip_rdap"
     }
 
+    fn description(&self) -> &'static str {
+        "RDAP registry allocation record for IP addresses"
+    }
+
     fn priority(&self) -> u8 {
         27
     }
@@ -140,7 +144,12 @@ impl Module for IpRdap {
             // Common eventAction values: "registration", "last changed",
             // "last reregistration", "expiration", "deletion".
             if let Some(d) = evt.date.as_deref() {
-                let key = format!("event:{}", evt.action.replace(' ', "_"));
+                // Reuse a single buffer for the key to avoid repeated allocations.
+                let mut key = String::with_capacity(7 + evt.action.len()); // "event:" + action
+                key.push_str("event:");
+                for c in evt.action.chars() {
+                    key.push(if c == ' ' { '_' } else { c });
+                }
                 ev = ev.with_attr(key, d);
             }
         }

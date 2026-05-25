@@ -82,7 +82,13 @@ pub(crate) fn emit_event(store: &Store, bus: &EventBus, scan_id: &str, kind: Eve
     if let Err(e) = store.insert_event(&event) {
         warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
     }
-    let _ = bus.send(event);
+    // `send` returns Err when there are zero active subscribers. This is
+    // normal during early startup (before any SSE client connects), so
+    // log at trace level — just enough to diagnose "events never reach
+    // the UI" without spamming production logs.
+    if bus.send(event).is_err() {
+        tracing::trace!(scan_id, "broadcast dropped (no subscribers)");
+    }
 }
 
 impl ScanEngine {
@@ -125,15 +131,13 @@ impl ScanEngine {
 
         let opts = scan.options.clone();
         let started = Instant::now();
-        let mut entity_map: HashMap<String, Entity> = HashMap::new();
+        let mut entity_map: HashMap<String, Entity> = HashMap::with_capacity(64);
         let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
 
-        // Round 0 — seed.
         visited.insert(visit_key(&target));
         self.dispatch_target(&scan.id, &target, &ctx, &opts, &mut entity_map)
             .await?;
 
-        // Rounds 1..=depth — autonomous expansion.
         if opts.depth > 0 {
             let _ = self
                 .run_expansion(
@@ -147,23 +151,30 @@ impl ScanEngine {
                 .await;
         }
 
-        // Persist & complete. If either step fails, mark the scan Failed
-        // (rather than leaving it Running forever) and still emit a
-        // terminal ScanComplete-with-zero so SSE consumers don't hang.
+        self.finalise_scan(&mut scan, entity_map, &ctx)
+    }
+
+    /// Persist entities, run the correlator, and mark the scan terminal.
+    fn finalise_scan(
+        &self,
+        scan: &mut Scan,
+        entity_map: HashMap<String, Entity>,
+        ctx: &ModuleContext,
+    ) -> Result<Scan> {
         let entity_count = entity_map.len();
+
         let persist_err: Option<String> = entity_map
             .into_values()
             .find_map(|entity| self.store.upsert_entity(&entity).err())
             .map(|e| e.to_string());
 
         if let Some(err) = persist_err {
-            warn!(scan_id = %scan.id, error = %err, "entity persist failed; marking scan failed");
+            warn!(scan_id = %scan.id, error = %err, "entity persist failed");
             scan.status = ScanStatus::Failed;
             scan.entity_count = 0;
             scan.error = Some(err);
             scan.finished_at = Some(crate::core::entity::unix_now());
-            // Best-effort upsert; if even this fails there's nothing more to do.
-            let _ = self.store.upsert_scan(&scan);
+            let _ = self.store.upsert_scan(scan);
             self.emit(
                 &scan.id,
                 EventKind::ScanComplete {
@@ -171,15 +182,9 @@ impl ScanEngine {
                     entity_count: 0,
                 },
             );
-            return Ok(scan);
+            return Ok(scan.clone());
         }
 
-        // If the operator cancelled mid-flight, mark Aborted rather
-        // than Complete. The dispatcher + expansion loop both stopped
-        // honouring `ctx.cancel`, so any entities the in-flight
-        // modules emitted up to the cancel point are still in
-        // `entity_map` — we persist them as for a normal run and just
-        // change the terminal label.
         scan.status = if ctx.cancel.is_cancelled() {
             ScanStatus::Aborted
         } else {
@@ -187,31 +192,9 @@ impl ScanEngine {
         };
         scan.entity_count = entity_count;
         scan.finished_at = Some(crate::core::entity::unix_now());
-        self.store.upsert_scan(&scan)?;
+        self.store.upsert_scan(scan)?;
 
-        // Post-scan correlator (v0.4+). Runs synchronously after entities
-        // are persisted — it reads from the store, not the in-memory map,
-        // so the upsert above must complete first. Errors don't fail the
-        // scan; correlations are an enrichment, not a correctness invariant.
-        match crate::core::correlator::Correlator::new(Arc::clone(&self.store)).run(&scan.id) {
-            Ok(firings) => {
-                for c in &firings {
-                    self.emit(
-                        &scan.id,
-                        EventKind::CorrelationFound {
-                            correlation: c.clone(),
-                        },
-                    );
-                }
-                self.emit(
-                    &scan.id,
-                    EventKind::CorrelationsDone {
-                        count: firings.len(),
-                    },
-                );
-            }
-            Err(e) => warn!(scan_id = %scan.id, error = %e, "correlator failed"),
-        }
+        self.run_correlator(&scan.id);
 
         self.emit(
             &scan.id,
@@ -221,7 +204,29 @@ impl ScanEngine {
             },
         );
 
-        Ok(scan)
+        Ok(scan.clone())
+    }
+
+    fn run_correlator(&self, scan_id: &str) {
+        match crate::core::correlator::Correlator::new(Arc::clone(&self.store)).run(scan_id) {
+            Ok(firings) => {
+                for c in &firings {
+                    self.emit(
+                        scan_id,
+                        EventKind::CorrelationFound {
+                            correlation: c.clone(),
+                        },
+                    );
+                }
+                self.emit(
+                    scan_id,
+                    EventKind::CorrelationsDone {
+                        count: firings.len(),
+                    },
+                );
+            }
+            Err(e) => warn!(scan_id, error = %e, "correlator failed"),
+        }
     }
 
     /// Drive the expansion loop. Returns the stop reason for diagnostics.

@@ -5,6 +5,8 @@
 //! strength, radio type (LTE/GSM/UMTS/NR), and ASU level are recorded
 //! as evidence. Off-device → no-op via the termux_cmd helper.
 
+use std::borrow::Cow;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -39,6 +41,9 @@ impl Module for CellSurvey {
     fn name(&self) -> &'static str {
         "cell_survey"
     }
+    fn description(&self) -> &'static str {
+        "Termux cellular tower survey for device geolocation"
+    }
     fn priority(&self) -> u8 {
         62
     }
@@ -63,7 +68,9 @@ fn parse_cells(stdout: &[u8], scan_id: &str) -> ModuleResult {
         Err(_) => return ModuleResult::new(),
     };
 
-    let mut result = ModuleResult::new();
+    let mut result = ModuleResult {
+        entities: Vec::with_capacity(cells.len()),
+    };
     for cell in &cells {
         let mcc = json_to_str(&cell.mcc);
         let mnc = json_to_str(&cell.mnc);
@@ -82,8 +89,8 @@ fn parse_cells(stdout: &[u8], scan_id: &str) -> ModuleResult {
         e.add_evidence(
             Evidence::new("cell_survey", format!("Cell tower {ctype} {tower_id}"))
                 .with_attr("type", ctype)
-                .with_attr("mcc", &mcc)
-                .with_attr("mnc", &mnc)
+                .with_attr("mcc", mcc.as_ref())
+                .with_attr("mnc", mnc.as_ref())
                 .with_attr("lac_tac", lac.to_string())
                 .with_attr("cid", cid.to_string())
                 .with_attr("pci", cell.pci.unwrap_or(0).to_string())
@@ -99,11 +106,11 @@ fn parse_cells(stdout: &[u8], scan_id: &str) -> ModuleResult {
 
 /// `mcc`/`mnc` come as `"505"` on some Android versions and `505` on others.
 /// Normalise to string; missing → empty.
-fn json_to_str(v: &Option<serde_json::Value>) -> String {
+fn json_to_str(v: &Option<serde_json::Value>) -> Cow<'_, str> {
     match v {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
-        _ => String::new(),
+        Some(serde_json::Value::String(s)) => Cow::Borrowed(s.as_str()),
+        Some(serde_json::Value::Number(n)) => Cow::Owned(n.to_string()),
+        _ => Cow::Borrowed(""),
     }
 }
 
@@ -147,5 +154,106 @@ mod tests {
     fn malformed_json_no_ops() {
         let r = parse_cells(b"{", "test");
         assert_eq!(r.entities.len(), 0);
+    }
+
+    #[test]
+    fn module_name_and_priority() {
+        assert_eq!(CellSurvey.name(), "cell_survey");
+        assert_eq!(CellSurvey.priority(), 62);
+    }
+
+    #[test]
+    fn entity_tags_include_cell_tower_and_radio_type() {
+        let json = br#"[
+            {"type":"lte","registered":true,"cid":5678,"tac":1234,
+             "mcc":"310","mnc":"260","dbm":-85,"asu":25,"level":3,"pci":42}
+        ]"#;
+        let r = parse_cells(json, "scan-x");
+        assert_eq!(r.entities.len(), 1);
+        let e = &r.entities[0];
+        assert_eq!(e.kind, EntityKind::DeviceId);
+        assert_eq!(e.value, "310-260-1234-5678");
+        assert!((e.confidence - 0.80).abs() < 1e-6);
+        assert!(e.has_tag("cell-tower"));
+        assert!(e.has_tag("radio:lte"));
+        assert_eq!(e.scan_id, "scan-x");
+    }
+
+    #[test]
+    fn evidence_attributes_populated() {
+        let json = br#"[
+            {"type":"gsm","registered":false,"cid":100,"lac":200,
+             "mcc":"505","mnc":"01","dbm":-95,"asu":8,"level":1,"pci":0}
+        ]"#;
+        let r = parse_cells(json, "test");
+        let ev = &r.entities[0].evidence[0];
+        assert_eq!(ev.source, "cell_survey");
+        assert_eq!(ev.attributes.get("type").unwrap(), "gsm");
+        assert_eq!(ev.attributes.get("mcc").unwrap(), "505");
+        assert_eq!(ev.attributes.get("mnc").unwrap(), "01");
+        assert_eq!(ev.attributes.get("lac_tac").unwrap(), "200");
+        assert_eq!(ev.attributes.get("cid").unwrap(), "100");
+        assert_eq!(ev.attributes.get("dbm").unwrap(), "-95");
+        assert_eq!(ev.attributes.get("asu").unwrap(), "8");
+        assert_eq!(ev.attributes.get("level").unwrap(), "1");
+        assert_eq!(ev.attributes.get("registered").unwrap(), "false");
+    }
+
+    #[test]
+    fn lac_falls_back_to_tac_for_lte() {
+        // LTE cells use "tac" (Tracking Area Code) instead of "lac"
+        let json = br#"[{"type":"lte","cid":999,"tac":555,"mcc":"310","mnc":"410"}]"#;
+        let r = parse_cells(json, "test");
+        assert_eq!(r.entities[0].value, "310-410-555-999");
+    }
+
+    #[test]
+    fn lac_preferred_over_tac_when_both_present() {
+        let json = br#"[{"type":"gsm","cid":1,"lac":10,"tac":20,"mcc":"505","mnc":"01"}]"#;
+        let r = parse_cells(json, "test");
+        // lac.or(tac) means lac wins when present
+        assert_eq!(r.entities[0].value, "505-01-10-1");
+    }
+
+    #[test]
+    fn skips_cell_with_zero_cid() {
+        let json = br#"[{"type":"lte","cid":0,"tac":123,"mcc":"310","mnc":"260"}]"#;
+        let r = parse_cells(json, "test");
+        assert_eq!(r.entities.len(), 0);
+    }
+
+    #[test]
+    fn empty_json_array() {
+        let r = parse_cells(b"[]", "test");
+        assert_eq!(r.entities.len(), 0);
+    }
+
+    #[test]
+    fn json_to_str_handles_all_variants() {
+        use std::borrow::Cow;
+
+        // String value
+        let s = Some(serde_json::Value::String("505".into()));
+        assert_eq!(json_to_str(&s), Cow::Borrowed("505"));
+
+        // Number value
+        let n = Some(serde_json::json!(310));
+        assert_eq!(json_to_str(&n).as_ref(), "310");
+
+        // Null value
+        let null = Some(serde_json::Value::Null);
+        assert_eq!(json_to_str(&null), Cow::Borrowed(""));
+
+        // None
+        assert_eq!(json_to_str(&None), Cow::Borrowed(""));
+    }
+
+    #[test]
+    fn missing_type_defaults_to_unknown() {
+        let json = br#"[{"cid":42,"lac":7,"mcc":"001","mnc":"01"}]"#;
+        let r = parse_cells(json, "test");
+        assert_eq!(r.entities.len(), 1);
+        assert!(r.entities[0].has_tag("radio:unknown"));
+        assert!(r.entities[0].evidence[0].summary.contains("unknown"));
     }
 }

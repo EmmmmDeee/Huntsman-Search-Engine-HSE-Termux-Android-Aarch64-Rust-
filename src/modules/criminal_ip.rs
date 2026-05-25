@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -102,6 +102,9 @@ impl Module for CriminalIp {
     fn name(&self) -> &'static str {
         "criminal_ip"
     }
+    fn description(&self) -> &'static str {
+        "IP risk scoring and threat classification"
+    }
     fn priority(&self) -> u8 {
         103
     }
@@ -144,7 +147,7 @@ impl Module for CriminalIp {
             return Ok(ModuleResult::new());
         }
 
-        let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.88, &ctx.scan_id);
+        let mut entity = target.to_entity(0.88, &ctx.scan_id);
         entity.tag("criminal_ip");
         if let Some(s) = &body.score {
             if let Some(i) = s.inbound.as_deref()
@@ -218,6 +221,32 @@ impl Module for CriminalIp {
         }
         if let Some(v) = body.vulnerability.and_then(|v| v.count) {
             ev = ev.with_attr("vuln_count", v.to_string());
+        }
+        if let Some(is) = &body.issues {
+            if is.is_vpn == Some(true) {
+                ev = ev.with_attr("is_vpn", "true");
+            }
+            if is.is_proxy == Some(true) {
+                ev = ev.with_attr("is_proxy", "true");
+            }
+            if is.is_tor == Some(true) {
+                ev = ev.with_attr("is_tor", "true");
+            }
+            if is.is_hosting == Some(true) {
+                ev = ev.with_attr("is_hosting", "true");
+            }
+            if is.is_anonymous_vpn == Some(true) {
+                ev = ev.with_attr("is_anonymous_vpn", "true");
+            }
+            if is.is_cloud == Some(true) {
+                ev = ev.with_attr("is_cloud", "true");
+            }
+            if is.is_scanner == Some(true) {
+                ev = ev.with_attr("is_scanner", "true");
+            }
+            if is.is_dark_web == Some(true) {
+                ev = ev.with_attr("is_dark_web", "true");
+            }
         }
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();

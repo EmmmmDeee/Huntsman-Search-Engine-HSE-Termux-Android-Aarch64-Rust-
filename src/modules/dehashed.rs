@@ -13,10 +13,11 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
+    entity::Evidence,
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 use crate::util::http::{error_snippet, urlencode};
 
@@ -39,6 +40,8 @@ struct Entry {
     database_name: Option<String>,
     #[serde(default)]
     obtained_from: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
 }
 
 pub struct DeHashed;
@@ -47,6 +50,9 @@ pub struct DeHashed;
 impl Module for DeHashed {
     fn name(&self) -> &'static str {
         "dehashed"
+    }
+    fn description(&self) -> &'static str {
+        "Breach record search across leaked databases"
     }
     fn priority(&self) -> u8 {
         118
@@ -111,33 +117,17 @@ impl Module for DeHashed {
             return Ok(ModuleResult::new());
         }
 
-        let kind = match target.kind {
-            TargetKind::Email => EntityKind::Email,
-            TargetKind::Username => EntityKind::Username,
-            TargetKind::Phone => EntityKind::Phone,
-            TargetKind::IpAddress => EntityKind::IpAddress,
-            TargetKind::Domain => EntityKind::Domain,
-            _ => unreachable!(),
-        };
-        let mut entity = Entity::new(kind, value, 0.88, &ctx.scan_id);
-        entity.tag("breach");
+        let mut entity = target.to_entity(0.88, &ctx.scan_id);
+        entity.tag(tags::BREACH);
         entity.tag("dehashed");
 
         // Top databases by frequency (capped at 5).
-        let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
-        for e in &entries {
-            if let Some(db) = e.database_name.as_deref().or(e.obtained_from.as_deref()) {
-                *counts.entry(db.to_string()).or_insert(0) += 1;
-            }
-        }
-        let mut ranked: Vec<(String, u32)> = counts.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let top = ranked
-            .iter()
-            .take(5)
-            .map(|(db, n)| format!("{db}×{n}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let top = crate::util::freq::top_n(
+            entries
+                .iter()
+                .filter_map(|e| e.database_name.as_deref().or(e.obtained_from.as_deref())),
+            5,
+        );
 
         let mut ev = Evidence::new(
             "dehashed",
@@ -148,6 +138,14 @@ impl Module for DeHashed {
         .with_attr("selector", selector);
         if !top.is_empty() {
             ev = ev.with_attr("top_databases", top);
+        }
+        let earliest = entries.iter().filter_map(|e| e.created_at.as_deref()).min();
+        let latest = entries.iter().filter_map(|e| e.created_at.as_deref()).max();
+        if let Some(e) = earliest {
+            ev = ev.with_attr("earliest_record", e);
+        }
+        if let Some(l) = latest {
+            ev = ev.with_attr("latest_record", l);
         }
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();

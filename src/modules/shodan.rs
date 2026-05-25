@@ -16,6 +16,7 @@ use crate::core::{
     error::Result,
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 use crate::util::http::{fetch_json_or_404, urlencode};
 
@@ -52,6 +53,9 @@ impl Module for Shodan {
     fn name(&self) -> &'static str {
         "shodan"
     }
+    fn description(&self) -> &'static str {
+        "Internet-wide service scan data for IP addresses"
+    }
     fn priority(&self) -> u8 {
         105
     }
@@ -82,7 +86,7 @@ impl Module for Shodan {
         };
 
         let mut result = ModuleResult::new();
-        let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.90, &ctx.scan_id);
+        let mut entity = target.to_entity(0.90, &ctx.scan_id);
         entity.tag("shodan");
         if !body.vulns.is_empty() {
             entity.tag("vulnerable");
@@ -104,6 +108,9 @@ impl Module for Shodan {
         if let Some(c) = body.country_name.as_deref() {
             ev = ev.with_attr("country", c);
         }
+        if let Some(c) = body.country_code.as_deref() {
+            ev = ev.with_attr("country_code", c);
+        }
         if let Some(o) = body.os.as_deref() {
             ev = ev.with_attr("os", o);
         }
@@ -111,7 +118,7 @@ impl Module for Shodan {
             ev = ev.with_attr("last_update", t);
         }
         if !body.ports.is_empty() {
-            let mut ports = body.ports.clone();
+            let mut ports = body.ports;
             ports.sort_unstable();
             ev = ev
                 .with_attr("port_count", ports.len().to_string())
@@ -133,7 +140,7 @@ impl Module for Shodan {
                     body.vulns
                         .iter()
                         .take(10)
-                        .cloned()
+                        .map(String::as_str)
                         .collect::<Vec<_>>()
                         .join(","),
                 );
@@ -149,7 +156,7 @@ impl Module for Shodan {
             }
             let mut d = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
             d.tag("shodan");
-            d.tag("ptr");
+            d.tag(tags::PTR);
             d.add_evidence(
                 Evidence::new("shodan", format!("Hostname known for {ip}")).with_attr("ip", ip),
             );

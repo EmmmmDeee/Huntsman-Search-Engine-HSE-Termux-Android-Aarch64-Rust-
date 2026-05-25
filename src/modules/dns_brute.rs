@@ -105,6 +105,10 @@ impl Module for DnsBrute {
         "dns_brute"
     }
 
+    fn description(&self) -> &'static str {
+        "Subdomain enumeration via common-name dictionary"
+    }
+
     fn priority(&self) -> u8 {
         22
     }
@@ -132,24 +136,33 @@ impl Module for DnsBrute {
         for sub in SUBDOMAINS {
             // Skip if the sub-label happens to already be part of the
             // input domain (defensive — avoids generating `www.www.x.com`).
-            if parent.starts_with(&format!("{sub}.")) {
+            if parent.starts_with(sub) && parent.as_bytes().get(sub.len()) == Some(&b'.') {
                 continue;
             }
-            let host = format!("{sub}.{parent}");
+            let mut host = String::with_capacity(sub.len() + 1 + parent.len());
+            host.push_str(sub);
+            host.push('.');
+            host.push_str(&parent);
             let sem = Arc::clone(&sem);
             set.spawn(async move {
                 let _permit = sem.acquire_owned().await.ok()?;
-                if resolver.lookup_ip(host.as_str()).await.is_ok() {
-                    Some(host)
-                } else {
-                    None
+                match resolver.lookup_ip(host.as_str()).await {
+                    Ok(lookup) => {
+                        let ips: Vec<String> = lookup.iter().map(|ip| ip.to_string()).collect();
+                        let count = ips.len();
+                        let joined = ips.join(", ");
+                        Some((host, joined, count))
+                    }
+                    Err(_) => None,
                 }
             });
         }
 
         let mut result = ModuleResult::new();
-        while let Some(joined) = set.join_next().await {
-            let Ok(Some(host)) = joined else { continue };
+        while let Some(join_result) = set.join_next().await {
+            let Ok(Some((host, ips_joined, count))) = join_result else {
+                continue;
+            };
             let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
             e.tag("subdomain");
             e.tag("dns-brute");
@@ -160,7 +173,9 @@ impl Module for DnsBrute {
                 )
                 .with_attr("parent_domain", &parent)
                 .with_attr("method", "common-name-dictionary")
-                .with_attr("dictionary_size", SUBDOMAINS.len().to_string()),
+                .with_attr("dictionary_size", SUBDOMAINS.len().to_string())
+                .with_attr("resolved_ips", &ips_joined)
+                .with_attr("ip_count", count.to_string()),
             );
             result.push(e);
         }

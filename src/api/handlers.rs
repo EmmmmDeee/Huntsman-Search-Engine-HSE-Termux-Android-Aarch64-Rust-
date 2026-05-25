@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc
 
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::StatusCode,
     response::{
         IntoResponse,
@@ -91,24 +91,31 @@ pub async fn health() -> Json<Value> {
 /// by status, total entities across all scans, and module count. The
 /// SPA's home page consumes this for the stat-card row.
 pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    let scans = s.store.list_scans(10_000).unwrap_or_default();
-    let mut by_status: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let scans = match s.store.list_scans(10_000) {
+        Ok(scans) => scans,
+        Err(e) => return internal_error(&e),
+    };
+    let mut by_status: std::collections::BTreeMap<&'static str, u64> =
+        std::collections::BTreeMap::new();
     let mut total_entities = 0u64;
     for scan in &scans {
-        let key = format!("{:?}", scan.status).to_lowercase();
-        *by_status.entry(key).or_insert(0) += 1;
+        *by_status.entry(scan.status.as_str()).or_insert(0) += 1;
         total_entities += scan.entity_count as u64;
     }
     let modules = s.engine.modules().len();
     let live_sessions = s.live.list().len();
-    Json(json!({
-        "scans_total": scans.len(),
-        "scans_by_status": by_status,
-        "entities_total": total_entities,
-        "modules": modules,
-        "live_sessions": live_sessions,
-        "version": crate::VERSION,
-    }))
+    (
+        StatusCode::OK,
+        Json(json!({
+            "scans_total": scans.len(),
+            "scans_by_status": by_status,
+            "entities_total": total_entities,
+            "modules": modules,
+            "live_sessions": live_sessions,
+            "version": crate::VERSION,
+        })),
+    )
+        .into_response()
 }
 
 pub async fn version() -> Json<Value> {
@@ -149,11 +156,12 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
                 .map(|k| k.canonical_str())
                 .collect();
             json!({
-                "name":     m.name(),
-                "priority": m.priority(),
-                "cost":     cost,
-                "passive":  m.is_passive(),
-                "accepts":  accepts,
+                "name":        m.name(),
+                "description": m.description(),
+                "priority":    m.priority(),
+                "cost":        cost,
+                "passive":     m.is_passive(),
+                "accepts":     accepts,
             })
         })
         .collect();
@@ -241,7 +249,10 @@ pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     match s.store.get_scan(&id) {
         Ok(Some(scan)) => (
             StatusCode::OK,
-            Json(serde_json::to_value(&scan).unwrap_or_else(|_| json!({}))),
+            Json(serde_json::to_value(&scan).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to serialize scan to JSON value");
+                json!({})
+            })),
         )
             .into_response(),
         Ok(None) => not_found(),
@@ -254,6 +265,91 @@ pub async fn scan_entities(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match s.store.entities_for_scan(&id) {
+        Ok(entities) => ok_list("entities", entities),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `GET /api/v1/scans/{id}/entities/filter?kind=email&min_confidence=0.75&q=acme`
+pub async fn scan_entities_filter(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let kind = params.get("kind").map(String::as_str);
+    let min_conf = params
+        .get("min_confidence")
+        .and_then(|v| v.parse::<f64>().ok());
+    let q = params.get("q").map(String::as_str);
+    match s.store.entities_filtered(&id, kind, min_conf, q) {
+        Ok(entities) => ok_list("entities", entities),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `GET /api/v1/scans/{id}/entities/facets` — entity counts by kind.
+pub async fn scan_entities_facets(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.entity_facets(&id) {
+        Ok(facets) => {
+            let items: Vec<serde_json::Value> = facets
+                .iter()
+                .map(|(kind, count)| serde_json::json!({ "kind": kind, "count": count }))
+                .collect();
+            let n = items.len();
+            Json(serde_json::json!({ "facets": items, "count": n })).into_response()
+        }
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `GET /api/v1/entities/{uid}` — cross-scan entity detail.
+pub async fn entity_get(
+    State(s): State<Arc<AppState>>,
+    Path(uid): Path<String>,
+) -> impl IntoResponse {
+    match s.store.get_entity(&uid) {
+        Ok(Some(entity)) => {
+            let scan_ids = s.store.scan_ids_for_entity(&uid).unwrap_or_default();
+            let obs_count = s.store.observation_count(&uid).unwrap_or(0);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "entity": entity,
+                    "scan_ids": scan_ids,
+                    "observation_count": obs_count,
+                })),
+            )
+                .into_response()
+        }
+        Ok(None) => not_found(),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `GET /api/v1/search?q=value&limit=50` — global entity search.
+pub async fn search_entities(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let query = match params.get("q") {
+        Some(q) if !q.trim().is_empty() => q.trim(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "missing or empty 'q' parameter"})),
+            )
+                .into_response();
+        }
+    };
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50)
+        .min(200);
+    match s.store.search_entities(query, limit) {
         Ok(entities) => ok_list("entities", entities),
         Err(e) => internal_error(&e),
     }
@@ -406,8 +502,14 @@ pub async fn scan_report_json(
         Ok(None) => return not_found(),
         Err(e) => return internal_error(&e),
     };
-    let entities = s.store.entities_for_scan(&id).unwrap_or_default();
-    let correlations = s.store.correlations_for_scan(&id).unwrap_or_default();
+    let entities = match s.store.entities_for_scan(&id) {
+        Ok(entities) => entities,
+        Err(e) => return internal_error(&e),
+    };
+    let correlations = match s.store.correlations_for_scan(&id) {
+        Ok(correlations) => correlations,
+        Err(e) => return internal_error(&e),
+    };
 
     let report = json!({
         "scan": scan,
@@ -422,7 +524,10 @@ pub async fn scan_report_json(
         "hse-report-{}.json",
         id.chars().take(12).collect::<String>()
     );
-    let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into());
+    let body = serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
+        "{}".into()
+    });
     let disposition = format!("attachment; filename=\"{filename}\"");
     let mut resp = (StatusCode::OK, body).into_response();
     let headers = resp.headers_mut();
@@ -467,7 +572,10 @@ pub async fn live_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     match s.live.get(&id) {
         Some(session) => (
             StatusCode::OK,
-            Json(serde_json::to_value(&session).unwrap_or_else(|_| json!({}))),
+            Json(serde_json::to_value(&session).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to serialize live session to JSON value");
+                json!({})
+            })),
         )
             .into_response(),
         None => not_found(),
