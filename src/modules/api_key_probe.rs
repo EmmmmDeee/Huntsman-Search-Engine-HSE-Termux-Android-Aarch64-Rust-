@@ -249,13 +249,16 @@ fn probes() -> Vec<Probe> {
             category: "infrastructure",
             env_var: "HUNTSMAN_CENSYS_KEY",
             url_builder: |_key| {
-                ("https://search.censys.io/api/v2/hosts/search?q=8.8.8.8&per_page=1".into(),
-                 vec![("Authorization", String::new())])
+                // Censys uses HTTP Basic Auth with API_ID:API_SECRET
+                // The key value should be "id:secret" format
+                ("https://search.censys.io/api/v2/hosts/1.1.1.1".into(),
+                 vec![("_basic_auth", String::new())])
             },
             parse_info: |v| {
                 let mut out = Vec::new();
-                if let Some(s) = v.get("status").and_then(|v| v.as_str()) {
-                    out.push(("status".into(), s.to_string()));
+                if let Some(ip) = v.get("ip").and_then(|v| v.as_str()) {
+                    out.push(("status".into(), "authenticated".into()));
+                    out.push(("test_ip".into(), ip.to_string()));
                 }
                 out
             },
@@ -284,13 +287,18 @@ fn probes() -> Vec<Probe> {
             category: "threat_intel",
             env_var: "HUNTSMAN_GREYNOISE_KEY",
             url_builder: |_key| {
-                ("https://api.greynoise.io/v3/community/8.8.8.8".into(),
+                // Use the paid v3 IP endpoint — community endpoint works
+                // without auth and would cause false positives
+                ("https://api.greynoise.io/v3/ip/8.8.8.8".into(),
                  vec![("key", String::new())])
             },
             parse_info: |v| {
                 let mut out = Vec::new();
-                if v.get("ip").is_some() {
+                if v.get("ip").is_some() && v.get("seen").is_some() {
                     out.push(("status".into(), "authenticated".into()));
+                    if let Some(c) = v.get("classification").and_then(|v| v.as_str()) {
+                        out.push(("classification".into(), c.to_string()));
+                    }
                 }
                 out
             },
@@ -485,7 +493,13 @@ async fn probe_endpoint(
     let mut cmd = tokio::process::Command::new("curl");
     cmd.args(["-s", "--max-time", &secs]);
 
+    let mut used_basic_auth = false;
     for (name, _placeholder) in headers {
+        if *name == "_basic_auth" {
+            cmd.args(["-u", key]);
+            used_basic_auth = true;
+            continue;
+        }
         let val = if *name == "Authorization" {
             format!("Basic {key}")
         } else {
@@ -494,6 +508,7 @@ async fn probe_endpoint(
         let h = format!("{name}: {val}");
         cmd.args(["-H", &h]);
     }
+    let _ = used_basic_auth;
 
     cmd.args(["-H", "Accept: application/json"]);
     cmd.args(["--", url]);
@@ -520,13 +535,26 @@ async fn probe_endpoint(
 
 fn is_error_response(v: &Value) -> bool {
     if let Some(code) = v.get("status_code").and_then(|c| c.as_u64())
-        && (code == 401 || code == 403)
+        && (code == 401 || code == 403 || code == 429)
     {
         return true;
     }
     if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
         let lower = err.to_lowercase();
-        if lower.contains("invalid") || lower.contains("unauthorized") || lower.contains("denied") || lower.contains("forbidden") {
+        if lower.contains("invalid") || lower.contains("unauthorized")
+            || lower.contains("denied") || lower.contains("forbidden")
+            || lower.contains("authentication")
+        {
+            return true;
+        }
+    }
+    if let Some(msg) = v.get("message").and_then(|m| m.as_str()) {
+        let lower = msg.to_lowercase();
+        if lower.contains("authentication error")
+            || lower.contains("invalid api key")
+            || lower.contains("api key required")
+            || lower.contains("rate limit")
+        {
             return true;
         }
     }

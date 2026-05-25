@@ -138,6 +138,8 @@ pub mod paths {
 /// Harvest API service credentials from OathNet stealer data.
 /// Searches for credentials associated with OSINT service domains
 /// and returns them as (service, username, password, url) tuples.
+/// Filters results to entries whose URL actually matches the target
+/// service domain — avoids false associations from generic stealer logs.
 pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, String)> {
     let services = [
         "shodan.io",
@@ -151,19 +153,40 @@ pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, Stri
         "ipqualityscore.com",
         "leakix.net",
         "haveibeenpwned.com",
+        "censys.io",
+        "binaryedge.io",
+        "greynoise.io",
+        "fullhunt.io",
+        "urlscan.io",
+        "abuseipdb.com",
+        "serpapi.com",
     ];
 
     let mut creds = Vec::new();
+    let mut seen_users: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for service in &services {
-        if let Ok(items) = search(key, paths::STEALER, "q", service, 3).await {
+        if let Ok(items) = search(key, paths::STEALER, "q", service, 10).await {
+            let svc_base = service.split('.').next().unwrap_or(service);
             for item in &items {
                 let url = val_str(item, "url").unwrap_or_default();
                 let user = val_str(item, "username").unwrap_or_default();
                 let pw = val_str(item, "password").unwrap_or_default();
-                if !user.is_empty() && !pw.is_empty() {
-                    creds.push((service.to_string(), user, pw, url));
-                    break;
+                if user.is_empty() || pw.is_empty() {
+                    continue;
                 }
+                let url_lower = url.to_lowercase();
+                let url_matches = url_lower.contains(service)
+                    || url_lower.contains(svc_base);
+                if !url_matches {
+                    continue;
+                }
+                let dedup_key = format!("{service}:{user}");
+                if seen_users.contains(&dedup_key) {
+                    continue;
+                }
+                seen_users.insert(dedup_key);
+                creds.push((service.to_string(), user, pw, url));
             }
         }
     }
