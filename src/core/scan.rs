@@ -13,6 +13,7 @@ pub enum TargetKind {
     FullName,
     IpAddress,
     Domain,
+    Url,
     Asn,
     Coordinates,
     Address,
@@ -35,11 +36,11 @@ impl TargetKind {
             EntityKind::Asn => Some(Self::Asn),
             EntityKind::Coordinates => Some(Self::Coordinates),
             EntityKind::Address => Some(Self::Address),
+            EntityKind::Url => Some(Self::Url),
             EntityKind::Organisation
             | EntityKind::AbnAcn
             | EntityKind::MacAddress
             | EntityKind::DeviceId
-            | EntityKind::Url
             | EntityKind::Credential
             | EntityKind::Password
             | EntityKind::Other(_) => None,
@@ -55,6 +56,7 @@ impl TargetKind {
             Self::FullName => EntityKind::Person,
             Self::IpAddress => EntityKind::IpAddress,
             Self::Domain => EntityKind::Domain,
+            Self::Url => EntityKind::Url,
             Self::Asn => EntityKind::Asn,
             Self::Coordinates => EntityKind::Coordinates,
             Self::Address => EntityKind::Address,
@@ -80,6 +82,7 @@ impl TargetKind {
             Self::FullName => "full_name",
             Self::IpAddress => "ip_address",
             Self::Domain => "domain",
+            Self::Url => "url",
             Self::Asn => "asn",
             Self::Coordinates => "coordinates",
             Self::Address => "address",
@@ -183,6 +186,14 @@ impl Target {
                 }
                 if !(-180.0..=180.0).contains(&lon) {
                     return Err("longitude must be in [-180, 180]");
+                }
+            }
+            TargetKind::Url => {
+                if !(v.starts_with("http://") || v.starts_with("https://")) {
+                    return Err("URL must start with http:// or https://");
+                }
+                if v.len() < 10 {
+                    return Err("URL too short");
                 }
             }
             // Free-form text kinds: only the universal checks above apply.
@@ -373,6 +384,7 @@ mod tests {
             TargetKind::FullName,
             TargetKind::IpAddress,
             TargetKind::Domain,
+            TargetKind::Url,
             TargetKind::Asn,
             TargetKind::Coordinates,
             TargetKind::Address,
@@ -518,6 +530,30 @@ mod tests {
         ); // lon out of range
         assert!(
             Target::new(TargetKind::Coordinates, "not-coords")
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn validate_url() {
+        assert!(
+            Target::new(TargetKind::Url, "https://example.com/path")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::Url, "http://x.com")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::Url, "ftp://nope.com")
+                .validate()
+                .is_err()
+        );
+        assert!(
+            Target::new(TargetKind::Url, "not-a-url")
                 .validate()
                 .is_err()
         );

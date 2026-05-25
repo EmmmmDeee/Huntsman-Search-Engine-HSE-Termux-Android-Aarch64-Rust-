@@ -383,6 +383,37 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             }
             out
         }
+        EntityKind::Url => {
+            let trimmed = value.trim();
+            let lower = trimmed.to_lowercase();
+            let (scheme, rest) = if lower.starts_with("https://") {
+                ("https", &trimmed[8..])
+            } else if lower.starts_with("http://") {
+                ("http", &trimmed[7..])
+            } else {
+                return trimmed.to_string();
+            };
+            let no_frag = rest.split('#').next().unwrap_or(rest);
+            let (host_and_path, query) = match no_frag.split_once('?') {
+                Some((hp, q)) => (hp, Some(q)),
+                None => (no_frag, None),
+            };
+            let (host, path) = host_and_path.split_once('/').unwrap_or((host_and_path, ""));
+            let host_lower: String = host.chars().flat_map(|c| c.to_lowercase()).collect();
+            let path_trimmed = path.trim_end_matches('/');
+            let mut out = if path_trimmed.is_empty() {
+                format!("{scheme}://{host_lower}")
+            } else {
+                format!("{scheme}://{host_lower}/{path_trimmed}")
+            };
+            if let Some(q) = query
+                && !q.is_empty()
+            {
+                out.push('?');
+                out.push_str(q);
+            }
+            out
+        }
         _ => value.trim().to_string(),
     }
 }
@@ -534,6 +565,22 @@ mod tests {
         assert_eq!(
             normalise(&EntityKind::Domain, "example.com."),
             "example.com"
+        );
+    }
+
+    #[test]
+    fn normalise_url_lowercases_host_strips_fragment() {
+        assert_eq!(
+            normalise(&EntityKind::Url, "HTTPS://GitHub.Com/user/repo#readme"),
+            "https://github.com/user/repo"
+        );
+        assert_eq!(
+            normalise(&EntityKind::Url, "https://X.COM/Profile/"),
+            "https://x.com/Profile"
+        );
+        assert_eq!(
+            normalise(&EntityKind::Url, "http://example.com/search?q=test"),
+            "http://example.com/search?q=test"
         );
     }
 
