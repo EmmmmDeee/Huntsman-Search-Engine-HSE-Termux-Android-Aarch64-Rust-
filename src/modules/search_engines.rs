@@ -55,7 +55,7 @@ impl Module for SearchEngines {
     }
 
     fn description(&self) -> &'static str {
-        "Multi-engine OSINT dork search across 5 engines"
+        "Multi-engine OSINT dork search across 7 engines"
     }
 
     fn priority(&self) -> u8 {
@@ -113,10 +113,11 @@ struct EngineSpec {
     build_url: fn(&str) -> String,
 }
 
-// Engines ordered by reliability: Yahoo/Bing are most reliable from
-// datacenter IPs. DDG/Google/Brave work from residential IPs (Termux)
-// but get CAPTCHA'd from datacenters. All are tried; blocked ones
-// are skipped in <1s via the interstitial detector in fetch_and_parse.
+// All 7 engines are always tried. Blocked engines are detected and
+// skipped in <1s via the interstitial detector in fetch_and_parse.
+// Yahoo/Bing are most reliable from datacenter IPs. DDG/Google/Brave
+// work best from residential IPs (Termux). AOL is Yahoo-powered (same
+// /RU= format). Mojeek has an independent index.
 const ENGINES: &[EngineSpec] = &[
     EngineSpec {
         name: "yahoo",
@@ -132,6 +133,15 @@ const ENGINES: &[EngineSpec] = &[
         build_url: |q| {
             format!(
                 "https://www.bing.com/search?q={}&count=30",
+                crate::util::http::urlencode(q)
+            )
+        },
+    },
+    EngineSpec {
+        name: "aol",
+        build_url: |q| {
+            format!(
+                "https://search.aol.com/aol/search?q={}",
                 crate::util::http::urlencode(q)
             )
         },
@@ -159,6 +169,15 @@ const ENGINES: &[EngineSpec] = &[
         build_url: |q| {
             format!(
                 "https://search.brave.com/search?q={}",
+                crate::util::http::urlencode(q)
+            )
+        },
+    },
+    EngineSpec {
+        name: "mojeek",
+        build_url: |q| {
+            format!(
+                "https://www.mojeek.com/search?q={}",
                 crate::util::http::urlencode(q)
             )
         },
