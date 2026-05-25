@@ -45,6 +45,7 @@ impl Module for SearchEngines {
                 | TargetKind::Username
                 | TargetKind::FullName
                 | TargetKind::Phone
+                | TargetKind::IpAddress
         )
     }
 
@@ -610,6 +611,14 @@ fn build_queries(target: &Target) -> Vec<String> {
             }
             q
         }
+        TargetKind::IpAddress => vec![
+            format!("\"{v}\""),
+            format!(
+                "\"{v}\" site:shodan.io OR site:censys.io \
+                 OR site:abuseipdb.com OR site:virustotal.com"
+            ),
+            format!("\"{v}\" abuse OR hosting OR provider OR ISP"),
+        ],
         _ => Vec::new(),
     }
 }
@@ -2353,14 +2362,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_domain_email_username_fullname_phone() {
+    fn accepts_domain_email_username_fullname_phone_ip() {
         let m = SearchEngines;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x")));
         assert!(m.accepts(&Target::new(TargetKind::Email, "x")));
         assert!(m.accepts(&Target::new(TargetKind::Username, "x")));
         assert!(m.accepts(&Target::new(TargetKind::FullName, "x")));
         assert!(m.accepts(&Target::new(TargetKind::Phone, "x")));
-        assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "x")));
+        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
     }
 
     #[test]

@@ -91,7 +91,7 @@ impl Module for NameToUsername {
             if candidate.len() < 3 || candidate.len() > 30 {
                 continue;
             }
-            let mut entity = Entity::new(EntityKind::Username, candidate, 0.55, &ctx.scan_id);
+            let mut entity = Entity::new(EntityKind::Username, candidate, 0.76, &ctx.scan_id);
             entity.tag("derived");
             entity.tag("name-derived");
             entity.add_evidence(

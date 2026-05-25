@@ -57,13 +57,13 @@ impl Module for HudsonRock {
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,
-            TargetKind::Email | TargetKind::Username | TargetKind::Domain
+            TargetKind::Email | TargetKind::Username | TargetKind::Domain | TargetKind::Phone
         )
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let url = match target.kind {
-            TargetKind::Email | TargetKind::Username => format!(
+            TargetKind::Email | TargetKind::Username | TargetKind::Phone => format!(
                 "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-login?username={}",
                 urlencode(&target.value)
             ),
@@ -325,6 +325,7 @@ impl Module for HudsonRock {
                 TargetKind::Email => "email",
                 TargetKind::Username => "username",
                 TargetKind::Domain => "domain",
+                TargetKind::Phone => "phone",
                 _ => "",
             };
             if !oathnet_field.is_empty()
@@ -455,6 +456,7 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::Email, "x")));
         assert!(m.accepts(&Target::new(TargetKind::Username, "x")));
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x")));
+        assert!(m.accepts(&Target::new(TargetKind::Phone, "+1234567890")));
         assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
     }
 

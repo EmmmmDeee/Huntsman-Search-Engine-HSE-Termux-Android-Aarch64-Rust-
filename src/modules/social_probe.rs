@@ -186,7 +186,10 @@ impl Module for SocialProbe {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Username | TargetKind::FullName)
+        matches!(
+            t.kind,
+            TargetKind::Username | TargetKind::FullName | TargetKind::Email
+        )
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -195,6 +198,16 @@ impl Module for SocialProbe {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let value = target.value.trim();
+        let value = match target.kind {
+            TargetKind::Email => {
+                let local = value.split('@').next().unwrap_or(value);
+                if local.is_empty() {
+                    return Ok(ModuleResult::new());
+                }
+                local
+            }
+            _ => value,
+        };
         if value.is_empty() {
             return Ok(ModuleResult::new());
         }
@@ -205,7 +218,7 @@ impl Module for SocialProbe {
         let mut found_platforms: Vec<&str> = Vec::new();
 
         let platforms = match target.kind {
-            TargetKind::Username => USERNAME_PLATFORMS,
+            TargetKind::Username | TargetKind::Email => USERNAME_PLATFORMS,
             TargetKind::FullName => NAME_PLATFORMS,
             _ => return Ok(result),
         };
@@ -403,7 +416,7 @@ mod tests {
         let m = SocialProbe;
         assert!(m.accepts(&Target::new(TargetKind::Username, "test")));
         assert!(m.accepts(&Target::new(TargetKind::FullName, "Test User")));
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y")));
+        assert!(m.accepts(&Target::new(TargetKind::Email, "x@y")));
         assert!(!m.accepts(&Target::new(TargetKind::Domain, "x.com")));
     }
 
