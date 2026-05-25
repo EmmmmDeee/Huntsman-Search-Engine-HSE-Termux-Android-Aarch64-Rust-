@@ -134,19 +134,36 @@ impl Module for SearchEngines {
             }
         }
 
-        // ── Secondary pivot: extract usernames from result URLs and
-        //    re-search on the top-3 most reliable engines ────────────
+        // ── Secondary pivot: re-search discovered usernames + variants
+        //    on reliable engines for cross-platform linkage ────────────
         if !ctx.cancel.is_cancelled() {
-            let pivots = extract_username_pivots(&all_results, target);
+            let mut pivots = extract_username_pivots(&all_results, target);
+
+            // Generate username variants for the strongest pivots
+            // (separator swaps, trailing digits, truncations)
+            let base_pivots: Vec<String> = pivots.clone();
+            for base in &base_pivots {
+                let raw = base.trim_matches('"');
+                for variant in generate_username_variants(raw) {
+                    let vq = format!("\"{variant}\"");
+                    if !pivots.contains(&vq) {
+                        pivots.push(vq);
+                    }
+                }
+            }
+
             if !pivots.is_empty() {
                 let reliable = [&ENGINES[0], &ENGINES[1], &ENGINES[5]]; // yahoo, bing, brave
-                for pivot_query in pivots.iter().take(3) {
+                for pivot_query in pivots.iter().take(6) {
                     if ctx.cancel.is_cancelled() {
                         break;
                     }
                     for engine in &reliable {
                         if ctx.cancel.is_cancelled() {
                             break;
+                        }
+                        if dead_engines.contains(engine.name) {
+                            continue;
                         }
                         let url = (engine.build_url)(pivot_query);
                         if let Some(mut results) =
@@ -671,6 +688,109 @@ fn build_queries(target: &Target) -> Vec<String> {
         TargetKind::Phone => vec![format!("\"{v}\"")],
         _ => Vec::new(),
     }
+}
+
+// ─── Username variant generation ────────────────────────────────────────────
+
+/// Generate common username variants from a base handle. OSINT best
+/// practice: people reuse patterns like underscore/dot swaps, trailing
+/// digits, first-initial+lastname. This dramatically increases cross-
+/// platform discovery.
+fn generate_username_variants(base: &str) -> Vec<String> {
+    let lower = base.to_lowercase();
+    let mut variants = Vec::with_capacity(8);
+
+    // Separator swaps: jerome-despal ↔ jerome_despal ↔ jerome.despal ↔ jeromedespal
+    if lower.contains('_') || lower.contains('-') || lower.contains('.') {
+        let no_sep: String = lower
+            .chars()
+            .filter(|c| *c != '_' && *c != '-' && *c != '.')
+            .collect();
+        let with_under = lower.replace(['-', '.'], "_");
+        let with_dash = lower.replace(['_', '.'], "-");
+        let with_dot = lower.replace(['_', '-'], ".");
+        for v in [no_sep, with_under, with_dash, with_dot] {
+            if v != lower && v.len() >= 3 {
+                variants.push(v);
+            }
+        }
+    }
+
+    // Trailing digit variants: jdespal → jdespal1, jdespal2
+    if !lower.ends_with(|c: char| c.is_ascii_digit()) && lower.len() >= 4 {
+        variants.push(format!("{lower}1"));
+        variants.push(format!("{lower}2"));
+    }
+
+    // Truncation: jdespal → jdespa (off-by-one typos / platform limits)
+    if lower.len() >= 5 {
+        variants.push(lower[..lower.len() - 1].to_string());
+    }
+
+    variants
+}
+
+/// Extract family members from search results: people who share the
+/// target's last name but have a different first name. These are high-
+/// value geolocation and identity leads (same household, same address).
+fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(String, String)> {
+    if !matches!(target.kind, TargetKind::FullName | TargetKind::Email) {
+        return Vec::new();
+    }
+    let parts: Vec<&str> = target.value.split_whitespace().collect();
+    let lastname = match target.kind {
+        TargetKind::FullName if parts.len() >= 2 => parts.last().unwrap().to_lowercase(),
+        TargetKind::Email => {
+            let local = target.value.split('@').next().unwrap_or("");
+            if local.len() >= 5 {
+                local[1..].to_lowercase()
+            } else {
+                return Vec::new();
+            }
+        }
+        _ => return Vec::new(),
+    };
+
+    if lastname.len() < 4 {
+        return Vec::new();
+    }
+
+    let mut found = Vec::new();
+    let mut seen = HashSet::new();
+    let target_lower = target.value.to_lowercase();
+
+    for r in results {
+        // Strip HTML artifacts before scanning for names
+        let raw = format!("{} {}", r.title, r.snippet);
+        let text = strip_tags(&raw, raw.len());
+        let lower = text.to_lowercase();
+        let words: Vec<&str> = lower.split_whitespace().collect();
+        for window in words.windows(2) {
+            let first = window[0].trim_matches(|c: char| !c.is_alphanumeric());
+            let last = window[1].trim_matches(|c: char| !c.is_alphanumeric());
+            if last != lastname || first.len() < 3 || first.len() > 15 {
+                continue;
+            }
+            if !first.chars().all(|c| c.is_ascii_alphabetic()) {
+                continue;
+            }
+            if target_lower.contains(first) {
+                continue;
+            }
+            if !seen.insert(first.to_string()) {
+                continue;
+            }
+            let name = format!(
+                "{}{} {}{}",
+                first[..1].to_uppercase(),
+                &first[1..],
+                lastname[..1].to_uppercase(),
+                &lastname[1..]
+            );
+            found.push((name, r.url.clone()));
+        }
+    }
+    found
 }
 
 // ─── Secondary pivot: extract usernames from discovered URLs ────────────────
@@ -1282,6 +1402,8 @@ fn is_navigation_path(s: &str) -> bool {
         "topics",
         "tpm",
         "trends",
+        "user",
+        "users",
         "video",
         "videos",
         "watch",
@@ -1797,6 +1919,27 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                     result.push(e);
                 }
             }
+        }
+    }
+
+    // Extract family members: people sharing the target's last name
+    // found in search results (e.g., "Jeanette Despal" when target is
+    // "Jerome Despal"). These are high-value geolocation leads.
+    let family = extract_family_names(results, target);
+    for (name, source_url) in &family {
+        let key = format!("@person:{}", name.to_lowercase());
+        if seen_domains.insert(key) {
+            let mut e = Entity::new(EntityKind::Person, name, 0.45, scan_id);
+            e.tag("search-discovered");
+            e.tag("family-member");
+            e.add_evidence(
+                Evidence::new(
+                    "search_engines",
+                    format!("Shares surname with target — {source_url}"),
+                )
+                .with_attr("url", source_url),
+            );
+            result.push(e);
         }
     }
 
@@ -2797,5 +2940,37 @@ mod tests {
         ));
         assert!(is_tracking_url("https://www.ecosia.org/newtab/v2"));
         assert!(!is_tracking_url("https://example.com/page"));
+    }
+
+    #[test]
+    fn username_variant_generation() {
+        let v = generate_username_variants("jerome_despal");
+        assert!(v.contains(&"jeromedespal".to_string()));
+        assert!(v.contains(&"jerome-despal".to_string()));
+        assert!(v.contains(&"jerome.despal".to_string()));
+    }
+
+    #[test]
+    fn username_variant_trailing_digit() {
+        let v = generate_username_variants("jdespal");
+        assert!(v.contains(&"jdespal1".to_string()));
+        assert!(v.contains(&"jdespal2".to_string()));
+        assert!(v.contains(&"jdespa".to_string()));
+    }
+
+    #[test]
+    fn family_name_extraction() {
+        let results = vec![SearchResult {
+            url: "https://linkedin.com/in/jeanette-despal".into(),
+            title: "Jeanette Despal - Manager at SCAN Health Plan".into(),
+            snippet: "jeanette despal works at SCAN Health Plan in Long Beach".into(),
+            engine: "bing",
+            query: "\"Jerome Despal\"".into(),
+        }];
+        let target = Target::new(TargetKind::FullName, "Jerome Despal");
+        let family = extract_family_names(&results, &target);
+        assert!(!family.is_empty());
+        assert!(family[0].0.contains("Jeanette"));
+        assert!(family[0].0.contains("Despal"));
     }
 }
