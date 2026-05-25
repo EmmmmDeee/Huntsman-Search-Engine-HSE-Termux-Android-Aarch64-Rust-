@@ -396,6 +396,20 @@ pub fn unix_now() -> u64 {
         .as_secs()
 }
 
+/// Generate a unique scan ID: `hex(SHA-256("<kind>:<value>:<unix_now>"))`.
+///
+/// NOT deterministic across calls for the same target — the timestamp
+/// is mixed in so each invocation produces a fresh id.
+pub fn scan_id(kind: &str, value: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(kind.as_bytes());
+    h.update(b":");
+    h.update(value.as_bytes());
+    h.update(b":");
+    h.update(unix_now().to_be_bytes());
+    hex::encode(h.finalize())
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

@@ -14,8 +14,8 @@ use tracing::info;
 
 use super::{internal_error, not_found, ok_list, spawn_scan};
 use crate::api::AppState;
+use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target};
-use crate::util::uid::scan_id;
 
 pub async fn scan_create(
     State(s): State<Arc<AppState>>,

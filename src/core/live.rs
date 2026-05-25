@@ -38,17 +38,6 @@ use crate::core::{
     scan::{Scan, ScanOptions, Target},
 };
 
-fn make_scan_id(kind: &str, value: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(kind.as_bytes());
-    h.update(b":");
-    h.update(value.as_bytes());
-    h.update(b":");
-    h.update(unix_now().to_be_bytes());
-    hex::encode(h.finalize())
-}
-
 /// User-tunable knobs for a live session, on top of [`ScanOptions`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveOptions {
@@ -275,7 +264,7 @@ async fn session_loop(
         // Spawn a fresh scan for this iteration. scan_id() mixes unix_now()
         // so back-to-back ticks get distinct ids. Canonical snake_case form
         // matches CLI/API scan_id derivation.
-        let sid = make_scan_id(target.kind.canonical_str(), &target.value);
+        let sid = crate::core::entity::scan_id(target.kind.canonical_str(), &target.value);
 
         // Register the scan_id with the session BEFORE running, so the SSE
         // handler can forward its events the moment they fire.

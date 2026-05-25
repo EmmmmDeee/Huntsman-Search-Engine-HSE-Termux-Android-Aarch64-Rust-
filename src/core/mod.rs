@@ -18,7 +18,7 @@ pub mod tags;
 pub use cancel::CancelHandle;
 pub use correlator::{Correlation, Correlator, Severity};
 pub use engine::ScanEngine;
-pub use entity::{Classification, Entity, EntityKind, Evidence, unix_now};
+pub use entity::{Classification, Entity, EntityKind, Evidence, scan_id, unix_now};
 pub use error::{Error, Result};
 pub use event::{Event, EventBus, EventKind};
 pub use live::{LiveOptions, LiveRequest, LiveScanner, LiveSession, LiveStatus};
