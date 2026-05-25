@@ -35,6 +35,7 @@ pub mod tor_exit_check;
 pub mod urlhaus;
 pub mod username_search;
 pub mod wayback;
+pub mod web_crawler;
 pub mod webserver_banner;
 pub mod whois;
 pub mod wifi_connect;
@@ -84,6 +85,11 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(tor_exit_check::TorExitCheck),
         // Web stack fingerprint via HEAD on the domain's homepage.
         Arc::new(webserver_banner::WebserverBanner),
+        // Recursive BFS web crawler — link discovery, content extraction,
+        // framework fingerprinting, page classification, security header
+        // audit. Supersedes SpiderFoot's sfp_spider + sfp_pageinfo +
+        // sfp_webframework + sfp_webserver in a single async module.
+        Arc::new(web_crawler::WebCrawler),
         Arc::new(email_to_username::EmailToUsername),
         // Username / identity expansion (sherlock/Maigret-style)
         Arc::new(username_search::UsernameSearch),
