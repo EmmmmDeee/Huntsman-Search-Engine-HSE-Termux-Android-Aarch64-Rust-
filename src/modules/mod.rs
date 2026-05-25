@@ -31,6 +31,8 @@ pub mod ip_geo;
 pub mod ip_rdap;
 pub mod ipinfo;
 pub mod ipqs;
+pub mod ipstack;
+pub mod leakcheck;
 pub mod leakix;
 pub mod name_to_email;
 pub mod net_interfaces;
@@ -38,6 +40,7 @@ pub mod nominatim;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod phone_intl;
+pub mod pulsedive;
 pub mod rdap_domain;
 pub mod reverse_dns;
 pub mod securitytrails;
@@ -132,6 +135,11 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // ── IP abuse / threat intel ──
         Arc::new(abuseipdb::AbuseIpDb),
         Arc::new(greynoise::GreyNoise),
+        Arc::new(pulsedive::Pulsedive),
+        // ── Additional breach sources ──
+        Arc::new(leakcheck::LeakCheck),
+        // ── Additional geolocation ──
+        Arc::new(ipstack::IpStack),
         // ── Attack surface discovery ──
         Arc::new(fullhunt::FullHunt),
         // Termux sensors (v0.6+). Accept any target, is_passive=true.
