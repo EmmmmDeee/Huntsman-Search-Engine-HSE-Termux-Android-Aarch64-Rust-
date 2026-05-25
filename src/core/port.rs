@@ -28,14 +28,30 @@ pub trait StoragePort: Send + Sync {
     // ── Scans ──────────────────────────────────────────────────────────────
     fn upsert_scan(&self, scan: &Scan) -> Result<()>;
     fn get_scan(&self, id: &str) -> Result<Option<Scan>>;
+    fn list_scans(&self, limit: usize) -> Result<Vec<Scan>>;
+    fn delete_scan(&self, scan_id: &str) -> Result<bool>;
 
     // ── Entities ───────────────────────────────────────────────────────────
     fn upsert_entity(&self, entity: &Entity) -> Result<()>;
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>>;
+    fn entities_filtered(
+        &self,
+        scan_id: &str,
+        kind: Option<&str>,
+        min_confidence: Option<f64>,
+        value_contains: Option<&str>,
+    ) -> Result<Vec<Entity>>;
+    fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>>;
+    fn get_entity(&self, uid: &str) -> Result<Option<Entity>>;
+    fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<Entity>>;
+    fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>>;
+    fn observation_count(&self, entity_uid: &str) -> Result<usize>;
 
     // ── Correlations ───────────────────────────────────────────────────────
     fn upsert_correlation(&self, c: &Correlation) -> Result<()>;
+    fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>>;
 
     // ── Events ─────────────────────────────────────────────────────────────
     fn insert_event(&self, event: &Event) -> Result<()>;
+    fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>>;
 }

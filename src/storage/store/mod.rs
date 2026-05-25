@@ -234,6 +234,14 @@ impl crate::core::port::StoragePort for Store {
         Store::get_scan(self, id)
     }
 
+    fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
+        Store::list_scans(self, limit)
+    }
+
+    fn delete_scan(&self, scan_id: &str) -> Result<bool> {
+        Store::delete_scan(self, scan_id)
+    }
+
     fn upsert_entity(&self, entity: &crate::core::entity::Entity) -> Result<()> {
         Store::upsert_entity(self, entity)
     }
@@ -242,12 +250,60 @@ impl crate::core::port::StoragePort for Store {
         Store::entities_for_scan(self, scan_id)
     }
 
+    fn entities_filtered(
+        &self,
+        scan_id: &str,
+        kind: Option<&str>,
+        min_confidence: Option<f64>,
+        value_contains: Option<&str>,
+    ) -> Result<Vec<crate::core::entity::Entity>> {
+        Store::entities_filtered(self, scan_id, kind, min_confidence, value_contains)
+    }
+
+    fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {
+        Store::entity_facets(self, scan_id)
+    }
+
+    fn get_entity(&self, uid: &str) -> Result<Option<crate::core::entity::Entity>> {
+        Store::get_entity(self, uid)
+    }
+
+    fn search_entities(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::core::entity::Entity>> {
+        Store::search_entities(self, query, limit)
+    }
+
+    fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>> {
+        Store::scan_ids_for_entity(self, entity_uid)
+    }
+
+    fn observation_count(&self, entity_uid: &str) -> Result<usize> {
+        Store::observation_count(self, entity_uid)
+    }
+
     fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
         Store::upsert_correlation(self, c)
     }
 
+    fn correlations_for_scan(
+        &self,
+        scan_id: &str,
+    ) -> Result<Vec<Correlation>> {
+        Store::correlations_for_scan(self, scan_id)
+    }
+
     fn insert_event(&self, event: &crate::core::event::Event) -> Result<()> {
         Store::insert_event(self, event)
+    }
+
+    fn events_for_scan(
+        &self,
+        scan_id: &str,
+    ) -> Result<Vec<crate::core::event::Event>> {
+        Store::events_for_scan(self, scan_id)
     }
 }
 
