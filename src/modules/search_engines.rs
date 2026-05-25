@@ -432,6 +432,7 @@ fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<Str
         "medium.com",
     ];
 
+    let terms = target_terms(target);
     let mut seen = HashSet::new();
     let target_lower = target.value.to_lowercase();
     let mut pivots = Vec::new();
@@ -449,6 +450,7 @@ fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<Str
             if lower.len() >= 3
                 && lower != target_lower
                 && !is_navigation_path(&lower)
+                && username_relevant_to_target(&lower, &terms)
                 && seen.insert(lower.clone())
             {
                 pivots.push(format!("\"{username}\""));
@@ -868,12 +870,64 @@ const ENGINE_DOMAINS: &[&str] = &[
     "syndicatedsearch.goog",
     "microsoftonline.com",
     "msn.com",
+    // Engine-adjacent infrastructure that appears in their chrome
+    "teleguard.com",
+    "shdw.me",
+    "unpkg.com",
+    "torproject.org",
+    "mastodon.social",
+    "discord.com",
+    "apple.com",
+    "play.google.com",
+    "apps.apple.com",
+    "itunes.apple.com",
+    "microsoft.com",
+    "support.microsoft.com",
 ];
 
 fn is_engine_domain(host: &str) -> bool {
     ENGINE_DOMAINS
         .iter()
         .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+}
+
+/// Domains that are generic infrastructure / unrelated to any target.
+/// These appear in search result pages from engine chrome, ads, or
+/// generic navigation links, never as OSINT-relevant findings.
+fn is_generic_domain(domain: &str) -> bool {
+    const GENERIC: &[&str] = &[
+        "amazonaws.com",
+        "androidpolice.com",
+        "britannica.com",
+        "builtin.com",
+        "christiantoday.com",
+        "cloudflare.com",
+        "co.za",
+        "contactout.com",
+        "dol.gov",
+        "dpd.com",
+        "emailsherlock.com",
+        "f6s.com",
+        "fitfit.fitness",
+        "forbes.com",
+        "gardenweb.com",
+        "hexomatic.com",
+        "hunter.io",
+        "littlecaesars.com",
+        "mapquest.com",
+        "martindale.com",
+        "nolo.com",
+        "office.com",
+        "outlook.com",
+        "reversecontact.com",
+        "stvincentipa.com",
+        "tomba.io",
+        "usps.com",
+        "wikihow.com",
+        "windowsreport.com",
+        "zoominfo.com",
+    ];
+    GENERIC.contains(&domain)
 }
 
 fn is_tracking_url(url: &str) -> bool {
@@ -979,7 +1033,23 @@ fn is_navigation_path(s: &str) -> bool {
         || CONTAINS.iter().any(|n| s.contains(n))
 }
 
-fn url_matches_target(url: &str, target: &Target) -> bool {
+/// Extract the meaningful search terms from a target value.
+/// For email: uses the local part (before @). For names: each word.
+/// Filters to ≥3 chars and lowercases. Used by every relevance gate.
+fn target_terms(target: &Target) -> Vec<String> {
+    let seed = match target.kind {
+        TargetKind::Email => target.value.split('@').next().unwrap_or(""),
+        _ => &target.value,
+    };
+    seed.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .map(String::from)
+        .collect()
+}
+
+/// Check whether a URL's path contains any target term (≥4 chars).
+fn url_matches_target(url: &str, terms: &[String]) -> bool {
     let path = url::Url::parse(url)
         .ok()
         .map(|u| u.path().to_lowercase())
@@ -987,14 +1057,27 @@ fn url_matches_target(url: &str, target: &Target) -> bool {
     if path.len() < 4 {
         return false;
     }
-    let seed = match target.kind {
-        TargetKind::Email => target.value.split('@').next().unwrap_or(""),
-        _ => &target.value,
-    };
-    seed.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
+    terms
+        .iter()
         .filter(|w| w.len() >= 4)
-        .any(|word| path.contains(word))
+        .any(|w| path.contains(w.as_str()))
+}
+
+/// Check whether a discovered username shares at least one meaningful
+/// term with the target. Prevents emitting unrelated social profiles
+/// that just happened to appear in search results.
+fn username_relevant_to_target(username: &str, terms: &[String]) -> bool {
+    let parts: Vec<String> = username
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .map(String::from)
+        .collect();
+    terms.iter().any(|t| {
+        parts
+            .iter()
+            .any(|p| p == t || p.contains(t.as_str()) || t.contains(p.as_str()))
+    })
 }
 
 fn canonicalize_url(url: &str) -> String {
@@ -1097,6 +1180,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
         return result;
     }
 
+    let terms = target_terms(target);
     let mut seen_domains: HashSet<String> = HashSet::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
     let mut seen_phones: HashSet<String> = HashSet::new();
@@ -1149,6 +1233,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             e.add_evidence(build_search_evidence(r));
             result.push(e);
         } else if target_domain.as_ref().is_none_or(|td| domain != *td)
+            && !is_generic_domain(&domain)
             && seen_domains.insert(domain.clone())
         {
             let mut e = Entity::new(EntityKind::Domain, &domain, 0.45, scan_id);
@@ -1228,28 +1313,16 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             }
         }
 
-        // Emit Url entities for high-value pages: people-search profiles
-        // and pages whose URL path contains target-related terms.
-        let is_people_search = [
-            "peekyou.com",
-            "spokeo.com",
-            "nuwber.com",
-            "whitepages.com",
-            "fastpeoplesearch.com",
-            "thatsthem.com",
-            "idcrawl.com",
-        ]
-        .iter()
-        .any(|ps| host.ends_with(ps));
-        let url_has_target = url_matches_target(&r.url, target);
-        if (url_has_target || is_people_search)
+        // Emit Url entities only for pages whose URL path contains a
+        // target-derived term. People-search homepages (spokeo.com/,
+        // whitepages.com/people-search) are excluded unless the path
+        // also contains a target term — only specific profile pages
+        // like peekyou.com/jerome_despal pass.
+        if url_matches_target(&r.url, &terms)
             && seen_domains.insert(format!("@url:{}", canonicalize_url(&r.url)))
         {
             let mut e = Entity::new(EntityKind::Url, &r.url, 0.50, scan_id);
             e.tag("search-discovered");
-            if is_people_search {
-                e.tag("people-search");
-            }
             e.add_evidence(build_search_evidence(r));
             result.push(e);
         }
@@ -1278,6 +1351,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             if is_social
                 && lower_user.len() >= 3
                 && !is_navigation_path(&lower_user)
+                && username_relevant_to_target(&lower_user, &terms)
                 && seen_domains.insert(format!("@username:{lower_user}"))
             {
                 let mut e = Entity::new(EntityKind::Username, &lower_user, 0.55, scan_id);
@@ -1308,6 +1382,34 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             }
         }
     }
+
+    // Sort entities in a structured order suitable for both human
+    // review and LLM consumption: parent entity first (it has the
+    // highest confidence), then by kind priority (identity entities
+    // first, infrastructure last), then by descending confidence,
+    // then alphabetically by value within each tier.
+    result.entities.sort_by(|a, b| {
+        fn kind_rank(k: &EntityKind) -> u8 {
+            match k {
+                EntityKind::Person => 0,
+                EntityKind::Email => 1,
+                EntityKind::Username => 2,
+                EntityKind::Phone => 3,
+                EntityKind::Address => 4,
+                EntityKind::Url => 5,
+                EntityKind::Domain => 6,
+                _ => 7,
+            }
+        }
+        kind_rank(&a.kind)
+            .cmp(&kind_rank(&b.kind))
+            .then(
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(a.value.cmp(&b.value))
+    });
 
     result
 }
@@ -1590,10 +1692,7 @@ mod tests {
         let q = build_queries(&t);
         assert!(q.len() >= 2);
         assert!(q[0].contains("\"user@acme.com\""));
-        assert!(
-            q.iter()
-                .any(|qr| qr.contains("pastebin.com") || qr.contains("github.com"))
-        );
+        assert!(q.iter().any(|qr| qr.contains("github.com")));
     }
 
     #[test]
@@ -1927,6 +2026,59 @@ mod tests {
             q.iter()
                 .any(|qr| qr.contains("address") || qr.contains("location"))
         );
+    }
+
+    #[test]
+    fn username_relevance_filtering() {
+        let terms = vec!["jerome".into(), "despal".into()];
+        assert!(username_relevant_to_target("jerome-despal", &terms));
+        assert!(username_relevant_to_target("jerome_despal", &terms));
+        assert!(username_relevant_to_target("despal", &terms));
+        assert!(username_relevant_to_target("jeromepolin", &terms));
+        assert!(!username_relevant_to_target("web.mc", &terms));
+        assert!(!username_relevant_to_target("grilme99", &terms));
+        assert!(!username_relevant_to_target("jenellelevans", &terms));
+    }
+
+    #[test]
+    fn url_relevance_filtering() {
+        let terms = vec!["jerome".into(), "despal".into()];
+        assert!(url_matches_target(
+            "https://soundcloud.com/jerome-despal",
+            &terms
+        ));
+        assert!(url_matches_target(
+            "https://www.peekyou.com/jerome_despal",
+            &terms
+        ));
+        assert!(!url_matches_target("https://www.spokeo.com/", &terms));
+        assert!(!url_matches_target(
+            "https://www.whitepages.com/people-search",
+            &terms
+        ));
+    }
+
+    #[test]
+    fn generic_domain_filtering() {
+        assert!(is_generic_domain("wikihow.com"));
+        assert!(is_generic_domain("windowsreport.com"));
+        assert!(is_generic_domain("office.com"));
+        assert!(!is_generic_domain("soundcloud.com"));
+        assert!(!is_generic_domain("peekyou.com"));
+    }
+
+    #[test]
+    fn target_terms_extraction() {
+        let t = Target::new(TargetKind::Email, "jdespal@gmail.com");
+        let terms = target_terms(&t);
+        assert!(terms.contains(&"jdespal".to_string()));
+        assert!(!terms.contains(&"gmail".to_string()));
+        assert!(!terms.contains(&"com".to_string()));
+
+        let t2 = Target::new(TargetKind::FullName, "Jerome Despal");
+        let terms2 = target_terms(&t2);
+        assert!(terms2.contains(&"jerome".to_string()));
+        assert!(terms2.contains(&"despal".to_string()));
     }
 
     #[test]
