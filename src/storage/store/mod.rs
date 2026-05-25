@@ -225,6 +225,32 @@ impl Store {
     }
 }
 
+impl crate::core::port::StoragePort for Store {
+    fn upsert_scan(&self, scan: &Scan) -> Result<()> {
+        Store::upsert_scan(self, scan)
+    }
+
+    fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
+        Store::get_scan(self, id)
+    }
+
+    fn upsert_entity(&self, entity: &crate::core::entity::Entity) -> Result<()> {
+        Store::upsert_entity(self, entity)
+    }
+
+    fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<crate::core::entity::Entity>> {
+        Store::entities_for_scan(self, scan_id)
+    }
+
+    fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
+        Store::upsert_correlation(self, c)
+    }
+
+    fn insert_event(&self, event: &crate::core::event::Event) -> Result<()> {
+        Store::insert_event(self, event)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
