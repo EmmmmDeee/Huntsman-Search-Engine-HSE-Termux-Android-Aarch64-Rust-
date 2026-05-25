@@ -231,6 +231,14 @@ impl Module for HudsonRock {
                                 .with_attr("url", cred_url)
                                 .with_opt_attr("stealer_family", stealer.stealer_family.as_deref()),
                         );
+                        if !cred_pass.is_empty() {
+                            crate::util::keyledger::append_key(
+                                cred_url.split('/').nth(2).unwrap_or("unknown").trim_start_matches("www."),
+                                cred_user, cred_pass, cred_url,
+                                "hudsonrock", &ctx.scan_id, "credential",
+                                &["stealer-log".into()],
+                            );
+                        }
                         result.push(ce);
                     }
                 }

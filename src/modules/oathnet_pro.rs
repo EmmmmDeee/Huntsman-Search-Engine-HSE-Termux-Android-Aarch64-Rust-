@@ -409,6 +409,13 @@ impl Module for OathnetPro {
                             .with_attr("source", "stealer")
                             .with_attr("hits", relevant.len().to_string()),
                         );
+                        crate::util::keyledger::append_key(
+                            svc_tag,
+                            &format!("credential@{}", target.value),
+                            "", "",
+                            "oathnet_pro", &ctx.scan_id, "api_key",
+                            &[format!("service:{svc_tag}"), "api-key-exposed".into()],
+                        );
                         result.push(e);
                     }
                 }
@@ -440,6 +447,11 @@ impl Module for OathnetPro {
                         .with_attr("credential_password", password)
                         .with_attr("credential_url", url)
                         .with_attr("source", "stealer-harvest"),
+                    );
+                    crate::util::keyledger::append_key(
+                        service, username, password, url,
+                        "oathnet_pro", &ctx.scan_id, "api_key",
+                        &[format!("service:{service}"), "stealer-harvest".into()],
                     );
                     result.push(e);
 
@@ -1343,6 +1355,14 @@ fn extract_stealer_entities(
             e.tag("oathnet-pro");
             e.tag(tags::STEALER_LOG);
             e.add_evidence(ev);
+            let svc = url_str.split('/').nth(2).unwrap_or("unknown").trim_start_matches("www.");
+            if let Some(pw) = val_str(item, "password") {
+                crate::util::keyledger::append_key(
+                    svc, &uname, &pw, &url_str,
+                    "oathnet_pro", scan_id, "credential",
+                    &["stealer-log".into(), format!("service:{svc}")],
+                );
+            }
             result.push(e);
         }
     }

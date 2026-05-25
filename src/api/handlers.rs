@@ -654,6 +654,32 @@ pub async fn api_cache_stats(State(s): State<Arc<AppState>>) -> impl IntoRespons
     }
 }
 
+pub async fn keys_ledger(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let entries = crate::util::keyledger::read_ledger();
+    let service_filter = params.get("service").map(String::as_str);
+    let filtered: Vec<&serde_json::Value> = if let Some(svc) = service_filter {
+        entries
+            .iter()
+            .filter(|e| {
+                e.get("service")
+                    .and_then(|v| v.as_str())
+                    .map_or(false, |s| s == svc)
+            })
+            .collect()
+    } else {
+        entries.iter().collect()
+    };
+    let n = filtered.len();
+    Json(serde_json::json!({
+        "keys": filtered,
+        "count": n,
+        "ledger_path": crate::util::keyledger::ledger_file_path(),
+    }))
+    .into_response()
+}
+
 pub async fn settings_keys_get(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     use std::path::PathBuf;
     let path = keys::env_path();

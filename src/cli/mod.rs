@@ -610,6 +610,10 @@ fn cmd_doctor() -> Result<()> {
         println!("  (none set; all free modules still work)");
     }
 
+    println!("\nDiscovered Credentials Ledger:");
+    println!("  path:    {}", crate::util::keyledger::ledger_file_path());
+    println!("  entries: {}", crate::util::keyledger::ledger_count());
+
     Ok(())
 }
 
