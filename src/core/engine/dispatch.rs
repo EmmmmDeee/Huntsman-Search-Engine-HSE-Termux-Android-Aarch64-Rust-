@@ -353,7 +353,7 @@ impl ScanEngine {
 mod tests {
     use super::*;
     use crate::core::module::ModuleCost;
-    use crate::core::scan::{ScanOptions, Target, TargetKind};
+    use crate::core::scan::{ScanOptions, Target};
 
     struct StubModule {
         name: &'static str,
