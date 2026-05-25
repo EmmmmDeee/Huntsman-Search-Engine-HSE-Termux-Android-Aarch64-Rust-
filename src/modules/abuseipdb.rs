@@ -72,10 +72,9 @@ impl Module for AbuseIpDb {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = ctx.key(KEY_ENV)?;
-        let ip = target.value.trim();
-        if ip.is_empty() {
+        let Some(ip) = target.trimmed() else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let url = format!(
             "https://api.abuseipdb.com/api/v2/check?ipAddress={}&maxAgeInDays=90",
@@ -124,30 +123,20 @@ impl Module for AbuseIpDb {
             entity.tag("whitelisted");
         }
         if let Some(cc) = data.country_code.as_deref() {
-            entity.tag(format!("country:{}", cc.to_uppercase()));
+            entity.tag_country(cc);
         }
 
-        let mut ev = Evidence::new("abuseipdb", format!("AbuseIPDB: {ip} score={score}"))
-            .with_attr("abuse_score", score.to_string());
-
-        if let Some(r) = data.total_reports {
-            ev = ev.with_attr("total_reports", r.to_string());
-        }
-        if let Some(v) = data.country_code.as_deref() {
-            ev = ev.with_attr("country", v);
-        }
-        if let Some(v) = data.isp.as_deref() {
-            ev = ev.with_attr("isp", v);
-        }
-        if let Some(v) = data.domain.as_deref() {
-            ev = ev.with_attr("domain", v);
-        }
-        if let Some(v) = data.usage_type.as_deref() {
-            ev = ev.with_attr("usage_type", v);
-        }
-        if let Some(v) = data.last_reported.as_deref() {
-            ev = ev.with_attr("last_reported", v);
-        }
+        let ev = Evidence::new("abuseipdb", format!("AbuseIPDB: {ip} score={score}"))
+            .with_attr("abuse_score", score.to_string())
+            .opt_attr(
+                "total_reports",
+                data.total_reports.map(|r| r.to_string()).as_deref(),
+            )
+            .opt_attr("country", data.country_code.as_deref())
+            .opt_attr("isp", data.isp.as_deref())
+            .opt_attr("domain", data.domain.as_deref())
+            .opt_attr("usage_type", data.usage_type.as_deref())
+            .opt_attr("last_reported", data.last_reported.as_deref());
 
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();

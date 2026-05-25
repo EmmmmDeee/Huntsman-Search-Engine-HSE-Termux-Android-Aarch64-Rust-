@@ -58,10 +58,9 @@ impl Module for GreyNoise {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let ip = target.value.trim();
-        if ip.is_empty() {
+        let Some(ip) = target.trimmed() else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let url = format!("https://api.greynoise.io/v3/community/{ip}");
         let mut req = ctx.http.get(&url).header("Accept", "application/json");

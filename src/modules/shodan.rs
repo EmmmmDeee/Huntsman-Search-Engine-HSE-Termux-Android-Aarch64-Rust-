@@ -67,7 +67,9 @@ impl Module for Shodan {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = ctx.key(KEY_ENV)?;
-        let ip = target.value.trim();
+        let Some(ip) = target.trimmed() else {
+            return Ok(ModuleResult::new());
+        };
         if ip.is_empty() {
             return Ok(ModuleResult::new());
         }

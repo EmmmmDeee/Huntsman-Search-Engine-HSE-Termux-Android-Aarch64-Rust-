@@ -101,6 +101,15 @@ impl Target {
         }
     }
 
+    /// Return the target value trimmed of leading/trailing whitespace,
+    /// or `None` if the result is empty. Eliminates the repeated
+    /// 3-line `let v = target.value.trim(); if v.is_empty() { return
+    /// Ok(ModuleResult::new()); }` boilerplate across 30+ modules.
+    pub fn trimmed(&self) -> Option<&str> {
+        let v = self.value.trim();
+        if v.is_empty() { None } else { Some(v) }
+    }
+
     /// Light shape-check for the user-supplied value, applied at the
     /// API boundary so a clearly-bogus scan request fails fast with a
     /// useful 400 rather than queueing a scan that no module accepts.

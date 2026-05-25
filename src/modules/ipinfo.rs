@@ -88,10 +88,9 @@ impl Module for IpInfo {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let ip = target.value.trim();
-        if ip.is_empty() {
+        let Some(ip) = target.trimmed() else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let url = format!("https://ipinfo.io/{ip}/json");
         let mut req = ctx.http.get(&url).header("Accept", "application/json");
@@ -129,7 +128,7 @@ impl Module for IpInfo {
         entity.tag("ipinfo");
 
         if let Some(c) = body.country.as_deref() {
-            entity.tag(format!("country:{}", c.to_uppercase()));
+            entity.tag_country(c);
         }
 
         if let Some(priv_data) = &body.privacy {
@@ -150,36 +149,24 @@ impl Module for IpInfo {
             }
         }
 
-        let mut ev = Evidence::new("ipinfo", format!("ipinfo.io enrichment for {ip}"));
-        if let Some(v) = body.hostname.as_deref() {
-            ev = ev.with_attr("hostname", v);
-        }
-        if let Some(v) = body.city.as_deref() {
-            ev = ev.with_attr("city", v);
-        }
-        if let Some(v) = body.region.as_deref() {
-            ev = ev.with_attr("region", v);
-        }
-        if let Some(v) = body.country.as_deref() {
-            ev = ev.with_attr("country", v);
-        }
-        if let Some(v) = body.org.as_deref() {
-            ev = ev.with_attr("org", v);
-        }
-        if let Some(v) = body.postal.as_deref() {
-            ev = ev.with_attr("postal", v);
-        }
-        if let Some(v) = body.timezone.as_deref() {
-            ev = ev.with_attr("timezone", v);
-        }
-        if let Some(c) = &body.company {
-            if let Some(n) = c.name.as_deref() {
-                ev = ev.with_attr("company", n);
-            }
-            if let Some(t) = c.company_type.as_deref() {
-                ev = ev.with_attr("company_type", t);
-            }
-        }
+        let ev = Evidence::new("ipinfo", format!("ipinfo.io enrichment for {ip}"))
+            .opt_attr("hostname", body.hostname.as_deref())
+            .opt_attr("city", body.city.as_deref())
+            .opt_attr("region", body.region.as_deref())
+            .opt_attr("country", body.country.as_deref())
+            .opt_attr("org", body.org.as_deref())
+            .opt_attr("postal", body.postal.as_deref())
+            .opt_attr("timezone", body.timezone.as_deref())
+            .opt_attr(
+                "company",
+                body.company.as_ref().and_then(|c| c.name.as_deref()),
+            )
+            .opt_attr(
+                "company_type",
+                body.company
+                    .as_ref()
+                    .and_then(|c| c.company_type.as_deref()),
+            );
         entity.add_evidence(ev);
         result.push(entity);
 

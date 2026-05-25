@@ -82,7 +82,9 @@ impl Module for Nominatim {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let value = target.value.trim();
+        let Some(value) = target.trimmed() else {
+            return Ok(ModuleResult::new());
+        };
         if value.is_empty() {
             return Ok(ModuleResult::new());
         }

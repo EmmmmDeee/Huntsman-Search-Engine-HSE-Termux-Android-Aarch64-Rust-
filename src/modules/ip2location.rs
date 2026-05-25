@@ -75,10 +75,9 @@ impl Module for Ip2Location {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let ip = target.value.trim();
-        if ip.is_empty() {
+        let Some(ip) = target.trimmed() else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let key_param = ctx
             .key_opt("HUNTSMAN_IP2LOCATION_KEY")
@@ -113,7 +112,7 @@ impl Module for Ip2Location {
         entity.tag("ip2location");
 
         if let Some(cc) = body.country_code.as_deref() {
-            entity.tag(format!("country:{}", cc.to_uppercase()));
+            entity.tag_country(cc);
         }
         if body.is_proxy == Some(true) {
             entity.tag("proxy");
@@ -127,31 +126,17 @@ impl Module for Ip2Location {
             }
         }
 
-        let mut ev = Evidence::new(
+        let ev = Evidence::new(
             "ip2location",
             format!("ip2location.io geolocation for {ip}"),
-        );
-        if let Some(v) = body.country_name.as_deref() {
-            ev = ev.with_attr("country", v);
-        }
-        if let Some(v) = body.region_name.as_deref() {
-            ev = ev.with_attr("region", v);
-        }
-        if let Some(v) = body.city_name.as_deref() {
-            ev = ev.with_attr("city", v);
-        }
-        if let Some(v) = body.isp.as_deref() {
-            ev = ev.with_attr("isp", v);
-        }
-        if let Some(v) = body.as_name.as_deref() {
-            ev = ev.with_attr("as_name", v);
-        }
-        if let Some(v) = body.usage_type.as_deref() {
-            ev = ev.with_attr("usage_type", v);
-        }
-        if let Some(v) = body.time_zone.as_deref() {
-            ev = ev.with_attr("timezone", v);
-        }
+        )
+        .opt_attr("country", body.country_name.as_deref())
+        .opt_attr("region", body.region_name.as_deref())
+        .opt_attr("city", body.city_name.as_deref())
+        .opt_attr("isp", body.isp.as_deref())
+        .opt_attr("as_name", body.as_name.as_deref())
+        .opt_attr("usage_type", body.usage_type.as_deref())
+        .opt_attr("timezone", body.time_zone.as_deref());
         entity.add_evidence(ev);
         result.push(entity);
 

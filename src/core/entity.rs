@@ -131,6 +131,16 @@ impl Evidence {
         self.attributes.insert(key.into(), value.into());
         self
     }
+
+    /// Like `with_attr` but only inserts when `value` is `Some`. Eliminates
+    /// the repeated `if let Some(v) = x { ev = ev.with_attr(k, v); }` pattern
+    /// that appears 90+ times across IP/breach/reputation modules.
+    pub fn opt_attr(self, key: &str, value: Option<&str>) -> Self {
+        match value {
+            Some(v) => self.with_attr(key, v),
+            None => self,
+        }
+    }
 }
 
 // ─── Entity ───────────────────────────────────────────────────────────────────
@@ -253,6 +263,12 @@ impl Entity {
 
     pub fn has_tag(&self, t: &str) -> bool {
         self.tags.iter().any(|x| x == t)
+    }
+
+    /// Convenience: `entity.tag(format!("country:{}", code.to_uppercase()))`.
+    /// Used by 10+ geo/IP modules to tag an entity with its ISO country code.
+    pub fn tag_country(&mut self, code: &str) {
+        self.tag(format!("country:{}", code.to_uppercase()));
     }
 
     // ── GREATEST-semantics merge ─────────────────────────────────────────────
