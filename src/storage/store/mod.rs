@@ -580,16 +580,31 @@ mod tests {
         insert_scan(&store, "sev-scan");
 
         let c_low = Correlation::new(
-            "R-LOW", "Low rule", Severity::Low,
-            "low finding".into(), vec!["u1".into()], "sev-scan", 100,
+            "R-LOW",
+            "Low rule",
+            Severity::Low,
+            "low finding".into(),
+            vec!["u1".into()],
+            "sev-scan",
+            100,
         );
         let c_crit = Correlation::new(
-            "R-CRIT", "Critical rule", Severity::Critical,
-            "critical finding".into(), vec!["u2".into()], "sev-scan", 200,
+            "R-CRIT",
+            "Critical rule",
+            Severity::Critical,
+            "critical finding".into(),
+            vec!["u2".into()],
+            "sev-scan",
+            200,
         );
         let c_high = Correlation::new(
-            "R-HIGH", "High rule", Severity::High,
-            "high finding".into(), vec!["u3".into()], "sev-scan", 300,
+            "R-HIGH",
+            "High rule",
+            Severity::High,
+            "high finding".into(),
+            vec!["u3".into()],
+            "sev-scan",
+            300,
         );
 
         // insert in non-severity order
@@ -614,8 +629,13 @@ mod tests {
         insert_scan(&store, "dup-scan");
 
         let c = Correlation::new(
-            "AU-001", "Test rule", Severity::High,
-            "test desc".into(), vec!["uid1".into()], "dup-scan", 12345,
+            "AU-001",
+            "Test rule",
+            Severity::High,
+            "test desc".into(),
+            vec!["uid1".into()],
+            "dup-scan",
+            12345,
         );
         store.upsert_correlation(&c).unwrap();
         store.upsert_correlation(&c).unwrap();

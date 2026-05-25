@@ -71,7 +71,11 @@ fn test_app(suffix: &str) -> axum::Router {
     let store = Arc::new(Store::open(&path).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
-    let engine = Arc::new(ScanEngine::new(modules, Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>, bus.clone()));
+    let engine = Arc::new(ScanEngine::new(
+        modules,
+        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
+        bus.clone(),
+    ));
     let live = LiveScanner::new(Arc::clone(&engine), bus.clone());
     let state = Arc::new(AppState {
         store,
@@ -95,10 +99,7 @@ async fn body_json(resp: axum::response::Response) -> Value {
 
 /// Shorthand: build a GET request.
 fn get(uri: &str) -> Request<Body> {
-    Request::builder()
-        .uri(uri)
-        .body(Body::empty())
-        .unwrap()
+    Request::builder().uri(uri).body(Body::empty()).unwrap()
 }
 
 /// Shorthand: build a POST request with a JSON body.
@@ -169,7 +170,9 @@ async fn modules_list_returns_array() {
     let resp = app.oneshot(get("/api/v1/modules")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
-    let modules = json["modules"].as_array().expect("modules must be an array");
+    let modules = json["modules"]
+        .as_array()
+        .expect("modules must be an array");
     assert!(!modules.is_empty());
     assert!(
         json["count"].as_u64().unwrap() >= 1,
@@ -183,10 +186,7 @@ async fn modules_list_returns_array() {
 async fn scan_create_accepts_valid_request() {
     let app = test_app("scan_create");
     let body = r#"{"kind":"email","value":"test@example.com","options":{}}"#;
-    let resp = app
-        .oneshot(post_json("/api/v1/scans", body))
-        .await
-        .unwrap();
+    let resp = app.oneshot(post_json("/api/v1/scans", body)).await.unwrap();
     assert_eq!(resp.status(), 202);
     let json = body_json(resp).await;
     assert!(
@@ -202,10 +202,7 @@ async fn scan_create_accepts_valid_request() {
 async fn scan_create_rejects_invalid_target() {
     let app = test_app("scan_bad");
     let body = r#"{"kind":"email","value":"not-an-email","options":{}}"#;
-    let resp = app
-        .oneshot(post_json("/api/v1/scans", body))
-        .await
-        .unwrap();
+    let resp = app.oneshot(post_json("/api/v1/scans", body)).await.unwrap();
     assert_eq!(resp.status(), 400);
     let json = body_json(resp).await;
     assert!(json.get("error").is_some(), "response must contain error");
@@ -242,10 +239,7 @@ async fn scan_get_returns_scan() {
 #[tokio::test]
 async fn scan_get_not_found() {
     let app = test_app("scan_nf");
-    let resp = app
-        .oneshot(get("/api/v1/scans/nonexistent"))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get("/api/v1/scans/nonexistent")).await.unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -314,10 +308,7 @@ async fn scan_correlations_empty() {
 #[tokio::test]
 async fn api_not_found_returns_json() {
     let app = test_app("api_nf");
-    let resp = app
-        .oneshot(get("/api/v1/nonexistent"))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get("/api/v1/nonexistent")).await.unwrap();
     assert_eq!(resp.status(), 404);
     let json = body_json(resp).await;
     assert!(
@@ -364,14 +355,8 @@ async fn stats_returns_counts() {
         json.get("scans_total").is_some(),
         "stats must include scans_total"
     );
-    assert!(
-        json.get("modules").is_some(),
-        "stats must include modules"
-    );
-    assert!(
-        json.get("version").is_some(),
-        "stats must include version"
-    );
+    assert!(json.get("modules").is_some(), "stats must include modules");
+    assert!(json.get("version").is_some(), "stats must include version");
 }
 
 // ── 16. Settings keys GET ─────────────────────────────────────────────────
@@ -379,10 +364,7 @@ async fn stats_returns_counts() {
 #[tokio::test]
 async fn settings_keys_get_lists_keys() {
     let app = test_app("keys_get");
-    let resp = app
-        .oneshot(get("/api/v1/settings/keys"))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get("/api/v1/settings/keys")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     assert!(

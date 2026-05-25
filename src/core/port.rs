@@ -21,11 +21,7 @@
 //! 4. Remove all direct `Store` imports from `core/`.
 
 use crate::core::{
-    correlator::Correlation,
-    entity::Entity,
-    error::Result,
-    event::Event,
-    scan::Scan,
+    correlator::Correlation, entity::Entity, error::Result, event::Event, scan::Scan,
 };
 
 pub trait StoragePort: Send + Sync {

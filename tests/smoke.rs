@@ -750,7 +750,11 @@ async fn live_session_runs_two_iterations_and_completes() {
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
-    let engine = Arc::new(ScanEngine::new(modules, Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>, bus.clone()));
+    let engine = Arc::new(ScanEngine::new(
+        modules,
+        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
+        bus.clone(),
+    ));
     let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
 
     let target = Target::new(TargetKind::Email, "live@example.com");
@@ -785,7 +789,11 @@ async fn live_session_stops_on_explicit_cancel() {
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
-    let engine = Arc::new(ScanEngine::new(modules, Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>, bus.clone()));
+    let engine = Arc::new(ScanEngine::new(
+        modules,
+        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
+        bus.clone(),
+    ));
     let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
 
     let target = Target::new(TargetKind::Email, "cancel-live@example.com");

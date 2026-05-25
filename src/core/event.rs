@@ -108,10 +108,13 @@ mod tests {
     #[test]
     fn event_new_sets_scan_id_and_ts() {
         let before = unix_now();
-        let evt = Event::new("scan-42", EventKind::ScanComplete {
-            scan_id: "scan-42".into(),
-            entity_count: 0,
-        });
+        let evt = Event::new(
+            "scan-42",
+            EventKind::ScanComplete {
+                scan_id: "scan-42".into(),
+                entity_count: 0,
+            },
+        );
         let after = unix_now();
 
         assert_eq!(evt.scan_id, "scan-42");
@@ -131,7 +134,10 @@ mod tests {
 
         let back: EventKind = serde_json::from_str(&json).unwrap();
         match back {
-            EventKind::ScanStart { target_kind, target_value } => {
+            EventKind::ScanStart {
+                target_kind,
+                target_value,
+            } => {
                 assert_eq!(target_kind, "email");
                 assert_eq!(target_value, "a@b.com");
             }
@@ -182,7 +188,10 @@ mod tests {
         let json = serde_json::to_string(&kind).unwrap();
         let back: EventKind = serde_json::from_str(&json).unwrap();
         match back {
-            EventKind::ScanComplete { scan_id, entity_count } => {
+            EventKind::ScanComplete {
+                scan_id,
+                entity_count,
+            } => {
                 assert_eq!(scan_id, "scan-99");
                 assert_eq!(entity_count, 42);
             }
@@ -194,10 +203,13 @@ mod tests {
 
     #[test]
     fn full_event_json_round_trip() {
-        let evt = Event::new("scan-7", EventKind::ModuleDone {
-            module: "shodan".into(),
-            found: 3,
-        });
+        let evt = Event::new(
+            "scan-7",
+            EventKind::ModuleDone {
+                module: "shodan".into(),
+                found: 3,
+            },
+        );
         let json = serde_json::to_string(&evt).unwrap();
         let back: Event = serde_json::from_str(&json).unwrap();
 

@@ -431,9 +431,7 @@ mod tests {
         let e = Entity::new(EntityKind::Email, "x@y.com", 0.8, "empty-scan");
         store.upsert_entity(&e).unwrap();
 
-        let results = store
-            .search_entities("zzzz_no_match_xyzzy_42", 10)
-            .unwrap();
+        let results = store.search_entities("zzzz_no_match_xyzzy_42", 10).unwrap();
         assert!(results.is_empty());
 
         let _ = std::fs::remove_file(&path);

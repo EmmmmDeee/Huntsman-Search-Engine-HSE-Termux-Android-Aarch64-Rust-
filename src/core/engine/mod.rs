@@ -92,7 +92,11 @@ pub(crate) fn emit_event(store: &dyn StoragePort, bus: &EventBus, scan_id: &str,
 }
 
 impl ScanEngine {
-    pub fn new(mut modules: Vec<Arc<dyn Module>>, store: Arc<dyn StoragePort>, bus: EventBus) -> Self {
+    pub fn new(
+        mut modules: Vec<Arc<dyn Module>>,
+        store: Arc<dyn StoragePort>,
+        bus: EventBus,
+    ) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
         Self {
             modules,

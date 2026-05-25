@@ -80,8 +80,7 @@ mod tests {
         let handle = CancelHandle::new();
         let handle_clone = handle.clone();
 
-        let _guard =
-            CancelRegistryGuard::install(Arc::clone(&registry), "scan-2".into(), handle);
+        let _guard = CancelRegistryGuard::install(Arc::clone(&registry), "scan-2".into(), handle);
 
         let stored = registry.lock().get("scan-2").cloned().unwrap();
         stored.cancel();
@@ -95,10 +94,8 @@ mod tests {
         let h1 = CancelHandle::new();
         let h2 = CancelHandle::new();
 
-        let guard1 =
-            CancelRegistryGuard::install(Arc::clone(&registry), "s1".into(), h1.clone());
-        let _guard2 =
-            CancelRegistryGuard::install(Arc::clone(&registry), "s2".into(), h2.clone());
+        let guard1 = CancelRegistryGuard::install(Arc::clone(&registry), "s1".into(), h1.clone());
+        let _guard2 = CancelRegistryGuard::install(Arc::clone(&registry), "s2".into(), h2.clone());
 
         assert_eq!(registry.lock().len(), 2);
 
