@@ -141,10 +141,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/scans/{id}/cancel", post(handlers::scan_cancel))
         .route("/scans/{id}/entities", get(handlers::scan_entities))
         .route("/scans/{id}/entities.csv", get(handlers::scan_entities_csv))
-        .route(
-            "/scans/{id}/report.json",
-            get(handlers::scan_report_json),
-        )
+        .route("/scans/{id}/report.json", get(handlers::scan_report_json))
         .route("/scans/{id}/correlations", get(handlers::scan_correlations))
         .route("/scans/{id}/events", get(handlers::scan_events_sse))
         .route(
