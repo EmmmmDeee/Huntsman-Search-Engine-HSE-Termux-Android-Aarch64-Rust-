@@ -143,6 +143,8 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     out.extend(rule_au_001_multi_breach(&idx.emails, scan_id, now));
     out.extend(rule_au_002_identity_cluster(&idx, scan_id, now));
     out.extend(rule_au_003_high_corroboration(idx.all, scan_id, now));
+    out.extend(rule_au_004_stealer_recency(idx.all, scan_id, now));
+    out.extend(rule_au_005_multi_device_stealer(idx.all, scan_id, now));
     out.extend(rule_au_010_infra_consensus(&idx.infra, scan_id, now));
     out
 }
@@ -164,6 +166,7 @@ fn rule_au_001_multi_breach(emails: &[&Entity], scan_id: &str, ts: u64) -> Vec<C
         "dehashed",
         "hibp",
         "oathnet_pro",
+        "leakix",
     ];
     let mut out = Vec::new();
     for e in emails {
@@ -173,13 +176,19 @@ fn rule_au_001_multi_breach(emails: &[&Entity], scan_id: &str, ts: u64) -> Vec<C
             .filter(|ev| BREACH_SOURCES.contains(&ev.source.as_str()))
             .map(|ev| ev.source.as_str())
             .collect();
-        if sources.len() >= 2 {
+        let n = sources.len();
+        if n >= 2 {
             let mut names: Vec<&str> = sources.into_iter().collect();
             names.sort_unstable();
+            let severity = if n >= 3 {
+                Severity::Critical
+            } else {
+                Severity::High
+            };
             out.push(Correlation {
                 rule_id: "AU-001".into(),
                 rule_name: "Multi-source breach corroboration".into(),
-                severity: Severity::Critical,
+                severity,
                 description: format!(
                     "{} found in {} breach sources: {}",
                     e.value,
@@ -252,6 +261,99 @@ fn rule_au_003_high_corroboration(entities: &[Entity], scan_id: &str, ts: u64) -
         .collect()
 }
 
+/// `AU-004` — Active stealer campaign: an entity has stealer-log evidence
+/// where `date_compromised` is within the last 30 days. This signals an
+/// actively compromised endpoint — the credentials may still be in use
+/// by threat actors. Per Recorded Future's 2025 report, 53% of stolen
+/// credentials are indexed within one week of exfiltration.
+fn rule_au_004_stealer_recency(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    const RECENCY_SECS: u64 = 30 * 86400;
+    let cutoff = ts.saturating_sub(RECENCY_SECS);
+
+    let mut out = Vec::new();
+    for e in entities.iter().filter(|e| e.has_tag("stealer-log")) {
+        let recent_dates: Vec<&str> = e
+            .evidence
+            .iter()
+            .filter(|ev| ev.source == "hudsonrock")
+            .filter_map(|ev| ev.attributes.get("date_compromised").map(String::as_str))
+            .filter(|d| *d != "-")
+            .collect();
+
+        let any_recent = recent_dates.iter().any(|d| {
+            parse_date_approx(d).is_some_and(|epoch| epoch >= cutoff)
+        });
+
+        if any_recent {
+            out.push(Correlation {
+                rule_id: "AU-004".into(),
+                rule_name: "Active stealer campaign".into(),
+                severity: Severity::High,
+                description: format!(
+                    "{} '{}' has stealer-log compromise within last 30 days — credentials may be live",
+                    e.kind, e.value
+                ),
+                entity_uids: vec![e.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+            });
+        }
+    }
+    out
+}
+
+/// `AU-005` — Multi-device stealer: an entity has stealer-log evidence
+/// from ≥2 distinct `computer_name` values. This indicates the same
+/// identity is compromised on multiple endpoints — either the user
+/// reuses credentials across devices, or a campaign has swept multiple
+/// machines in the same organisation.
+fn rule_au_005_multi_device_stealer(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    for e in entities.iter().filter(|e| e.has_tag("stealer-log")) {
+        let hosts: HashSet<&str> = e
+            .evidence
+            .iter()
+            .filter(|ev| ev.source == "hudsonrock")
+            .filter_map(|ev| ev.attributes.get("computer_name").map(String::as_str))
+            .filter(|h| *h != "-" && !h.is_empty())
+            .collect();
+
+        if hosts.len() >= 2 {
+            let mut host_list: Vec<&str> = hosts.into_iter().collect();
+            host_list.sort_unstable();
+            out.push(Correlation {
+                rule_id: "AU-005".into(),
+                rule_name: "Multi-device stealer compromise".into(),
+                severity: Severity::Critical,
+                description: format!(
+                    "{} '{}' compromised on {} distinct devices: {}",
+                    e.kind,
+                    e.value,
+                    host_list.len(),
+                    host_list.join(", ")
+                ),
+                entity_uids: vec![e.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+            });
+        }
+    }
+    out
+}
+
+fn parse_date_approx(s: &str) -> Option<u64> {
+    let date_part = s.split('T').next()?;
+    let mut parts = date_part.split('-');
+    let year: u64 = parts.next()?.parse().ok()?;
+    let month: u64 = parts.next()?.parse().ok()?;
+    let day: u64 = parts.next()?.parse().ok()?;
+    if year < 2000 || month < 1 || month > 12 || day < 1 || day > 31 {
+        return None;
+    }
+    let days_approx = (year - 1970) * 365 + (month - 1) * 30 + day;
+    Some(days_approx * 86400)
+}
+
 /// `AU-010` — Infrastructure consensus: a single Domain or IpAddress has
 /// evidence from ≥3 distinct module sources. Differs from `AU-003` in that
 /// it counts module diversity at the **evidence** level rather than the
@@ -310,11 +412,19 @@ mod tests {
     }
 
     #[test]
-    fn au001_fires_at_two_breach_sources() {
+    fn au001_fires_at_two_breach_sources_as_high() {
         let e = email("x@y.com", &["hudsonrock", "breach_directory"]);
         let r = rule_au_001_multi_breach(&[&e], "s1", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].rule_id, "AU-001");
+        assert_eq!(r[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn au001_fires_at_three_breach_sources_as_critical() {
+        let e = email("x@y.com", &["hudsonrock", "xposed_or_not", "dehashed"]);
+        let r = rule_au_001_multi_breach(&[&e], "s1", 0);
+        assert_eq!(r.len(), 1);
         assert_eq!(r[0].severity, Severity::Critical);
     }
 
@@ -391,6 +501,64 @@ mod tests {
         let idx = EntityIndex::build(&entities);
         assert!(idx.infra.is_empty());
         assert!(rule_au_010_infra_consensus(&idx.infra, "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au004_fires_on_recent_stealer() {
+        let now = unix_now();
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+        e.tag("stealer-log");
+        e.add_evidence(
+            Evidence::new("hudsonrock", "test")
+                .with_attr("date_compromised", "2026-05-20T00:00:00Z"),
+        );
+        let r = rule_au_004_stealer_recency(&[e], "s", now);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-004");
+        assert_eq!(r[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn au004_no_fire_on_old_stealer() {
+        let now = unix_now();
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+        e.tag("stealer-log");
+        e.add_evidence(
+            Evidence::new("hudsonrock", "test")
+                .with_attr("date_compromised", "2020-01-01T00:00:00Z"),
+        );
+        assert!(rule_au_004_stealer_recency(&[e], "s", now).is_empty());
+    }
+
+    #[test]
+    fn au005_fires_on_multi_device() {
+        let now = unix_now();
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+        e.tag("stealer-log");
+        e.add_evidence(
+            Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"),
+        );
+        e.add_evidence(
+            Evidence::new("hudsonrock", "test").with_attr("computer_name", "LAPTOP-B"),
+        );
+        let r = rule_au_005_multi_device_stealer(&[e], "s", now);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-005");
+        assert_eq!(r[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn au005_no_fire_single_device() {
+        let now = unix_now();
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+        e.tag("stealer-log");
+        e.add_evidence(
+            Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"),
+        );
+        e.add_evidence(
+            Evidence::new("hudsonrock", "test").with_attr("computer_name", "DESKTOP-A"),
+        );
+        assert!(rule_au_005_multi_device_stealer(&[e], "s", now).is_empty());
     }
 
     #[test]
