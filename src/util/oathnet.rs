@@ -88,6 +88,23 @@ pub async fn osint(key: &str, path: &str, param: &str, value: &str) -> Result<Va
     Ok(env.data.unwrap_or(Value::Null))
 }
 
+pub async fn osint_opt(key: &str, path: &str, param: &str, value: &str) -> Result<Option<Value>> {
+    let encoded = crate::util::http::urlencode(value);
+    let url = format!("{}{}?{}={}", base_url(), path, param, encoded);
+    let body = match curl_get(&url, key).await {
+        Ok(b) => b,
+        Err(_) => return Ok(None),
+    };
+    let env: Envelope = match serde_json::from_str(&body) {
+        Ok(e) => e,
+        Err(_) => return Ok(None),
+    };
+    if !env.success {
+        return Ok(None);
+    }
+    Ok(env.data)
+}
+
 pub fn val_str(item: &Value, key: &str) -> Option<String> {
     item.get(key)
         .and_then(|v| v.as_str())
@@ -97,6 +114,27 @@ pub fn val_str(item: &Value, key: &str) -> Option<String> {
 
 pub fn val_str_or(item: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|k| val_str(item, k))
+}
+
+pub fn val_i64(item: &Value, key: &str) -> Option<i64> {
+    item.get(key).and_then(|v| v.as_i64())
+}
+
+pub fn val_bool(item: &Value, key: &str) -> Option<bool> {
+    item.get(key).and_then(|v| v.as_bool())
+}
+
+pub fn val_array_strings(item: &Value, key: &str) -> Vec<String> {
+    item.get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {
@@ -122,6 +160,8 @@ pub mod paths {
     pub const XBOX: &str = "/service/xbox";
     pub const ROBLOX: &str = "/service/roblox-userinfo";
     pub const VICTIMS: &str = "/service/v2/victims/search";
+    pub const MAIGRET: &str = "/service/maigret";
+    pub const PHONE_LOOKUP: &str = "/service/phone-lookup";
 }
 
 pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, String)> {
