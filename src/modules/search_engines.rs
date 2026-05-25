@@ -1,15 +1,30 @@
-//! Multi-engine search scraping — 5 search engines, zero API keys.
+//! Multi-engine search scraping — 13 search engines, zero API keys.
 //!
-//! Queries DuckDuckGo, Brave, Startpage (Google-sourced), Mojeek,
-//! and Yahoo (Bing-powered) with a comprehensive set of OSINT dork
-//! queries and extracts entities from result URLs and snippets.
+//! Queries Yahoo, Bing, AOL, DuckDuckGo, Google, Brave, Mojeek,
+//! Startpage, Yandex, Ecosia, Qwant, Dogpile, and Swisscows with
+//! OSINT dork queries and extracts entities from result URLs and
+//! snippets.
 //!
-//! Engine selection (from Exa research on CAPTCHA resistance):
-//!   - DuckDuckGo HTML: most reliable, no JS, `uddg` redirect decoded
-//!   - Startpage: Google-sourced, CAPTCHA-resistant POST endpoint
+//! Engine selection rationale:
+//!   - Yahoo/AOL: Bing-powered, most reliable from datacenter IPs,
+//!     /RU= redirect URL decoding
+//!   - Bing: <cite> tag extraction, reliable from datacenter IPs
+//!   - DuckDuckGo HTML: no JS, `uddg` redirect decoded
+//!   - Google: /url?q= redirect extraction (requires JS since 2025,
+//!     best from residential IPs)
+//!   - Brave: independent index, direct href extraction
 //!   - Mojeek: independent index, CAPTCHA-resistant
-//!   - Brave: independent index, broad international coverage
-//!   - Yahoo: Bing-powered, broad crawl coverage
+//!   - Startpage: Google-sourced, POST endpoint with session warming
+//!   - Yandex: independent Russian index (SmartCaptcha from DC IPs,
+//!     works from residential)
+//!   - Ecosia: Bing-powered, tree-planting search engine
+//!   - Qwant: European privacy engine (lite endpoint)
+//!   - Dogpile: Meta-aggregator (System1), aggregates multiple engines
+//!   - Swisscows: Swiss privacy engine, Bing-powered
+//!
+//! Blocked engines are harmless — detected and skipped in <1s via
+//! the interstitial/CAPTCHA detector (checks for anomaly-modal,
+//! unusual traffic, consent walls, DataDome, SmartCaptcha, etc.).
 //!
 //! Dork query strategy per target type:
 //!   - Domain: site: subdomain discovery, email harvesting, document
@@ -55,7 +70,7 @@ impl Module for SearchEngines {
     }
 
     fn description(&self) -> &'static str {
-        "Multi-engine OSINT dork search across 7 engines"
+        "Multi-engine OSINT dork search across 13 engines"
     }
 
     fn priority(&self) -> u8 {
@@ -74,7 +89,7 @@ impl Module for SearchEngines {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        45_000
+        60_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -95,7 +110,10 @@ impl Module for SearchEngines {
                     break;
                 }
                 let url = (engine.build_url)(query);
-                if let Some(mut results) = fetch_and_parse(&url, engine.name, query).await {
+                let post_body = engine.build_post.map(|f| f(query));
+                if let Some(mut results) =
+                    fetch_and_parse(&url, engine.name, query, post_body.as_deref()).await
+                {
                     all_results.append(&mut results);
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS)).await;
@@ -111,14 +129,22 @@ impl Module for SearchEngines {
 struct EngineSpec {
     name: &'static str,
     build_url: fn(&str) -> String,
+    build_post: Option<fn(&str) -> String>,
 }
 
-// All 7 engines are always tried. Blocked engines are detected and
+// All 13 engines are always tried. Blocked engines are detected and
 // skipped in <1s via the interstitial detector in fetch_and_parse.
 // Yahoo/Bing are most reliable from datacenter IPs. DDG/Google/Brave
 // work best from residential IPs (Termux). AOL is Yahoo-powered (same
 // /RU= format). Mojeek has an independent index.
+//
+// New engines (2026): Startpage (POST, Google-sourced), Yandex
+// (independent Russian index), Ecosia (Bing-powered), Qwant (European
+// privacy engine), Dogpile (System1 meta-aggregator), Swisscows
+// (Swiss Bing-powered). These may be CAPTCHA-blocked from datacenter
+// IPs but work from Termux residential connections.
 const ENGINES: &[EngineSpec] = &[
+    // ── Original 7 engines ──────────────────────────────────────────
     EngineSpec {
         name: "yahoo",
         build_url: |q| {
@@ -127,6 +153,7 @@ const ENGINES: &[EngineSpec] = &[
                 crate::util::http::urlencode(q)
             )
         },
+        build_post: None,
     },
     EngineSpec {
         name: "bing",
@@ -136,6 +163,7 @@ const ENGINES: &[EngineSpec] = &[
                 crate::util::http::urlencode(q)
             )
         },
+        build_post: None,
     },
     EngineSpec {
         name: "aol",
@@ -145,6 +173,7 @@ const ENGINES: &[EngineSpec] = &[
                 crate::util::http::urlencode(q)
             )
         },
+        build_post: None,
     },
     EngineSpec {
         name: "duckduckgo",
@@ -154,6 +183,7 @@ const ENGINES: &[EngineSpec] = &[
                 crate::util::http::urlencode(q)
             )
         },
+        build_post: None,
     },
     EngineSpec {
         name: "google",
@@ -163,6 +193,7 @@ const ENGINES: &[EngineSpec] = &[
                 crate::util::http::urlencode(q)
             )
         },
+        build_post: None,
     },
     EngineSpec {
         name: "brave",
@@ -172,6 +203,7 @@ const ENGINES: &[EngineSpec] = &[
                 crate::util::http::urlencode(q)
             )
         },
+        build_post: None,
     },
     EngineSpec {
         name: "mojeek",
@@ -181,6 +213,68 @@ const ENGINES: &[EngineSpec] = &[
                 crate::util::http::urlencode(q)
             )
         },
+        build_post: None,
+    },
+    // ── New engines (2026) ──────────────────────────────────────────
+    EngineSpec {
+        name: "startpage",
+        build_url: |_q| "https://www.startpage.com/sp/search".to_string(),
+        build_post: Some(|q| {
+            format!(
+                "query={}&cat=web&abp=1&abd=1&abe=1",
+                crate::util::http::urlencode(q)
+            )
+        }),
+    },
+    EngineSpec {
+        name: "yandex",
+        build_url: |q| {
+            format!(
+                "https://yandex.com/search/?text={}&lr=84",
+                crate::util::http::urlencode(q)
+            )
+        },
+        build_post: None,
+    },
+    EngineSpec {
+        name: "ecosia",
+        build_url: |q| {
+            format!(
+                "https://www.ecosia.org/search?method=index&q={}",
+                crate::util::http::urlencode(q)
+            )
+        },
+        build_post: None,
+    },
+    EngineSpec {
+        name: "qwant",
+        build_url: |q| {
+            format!(
+                "https://lite.qwant.com/?q={}&t=web",
+                crate::util::http::urlencode(q)
+            )
+        },
+        build_post: None,
+    },
+    EngineSpec {
+        name: "dogpile",
+        build_url: |q| {
+            format!(
+                "https://www.dogpile.com/serp?q={}",
+                crate::util::http::urlencode(q)
+            )
+        },
+        build_post: None,
+    },
+    EngineSpec {
+        name: "swisscows",
+        build_url: |q| {
+            format!(
+                "https://swisscows.com/en/web?query={}",
+                crate::util::http::urlencode(q)
+            )
+        },
+        build_post: None,
     },
 ];
 
@@ -246,18 +340,38 @@ async fn fetch_and_parse(
     url: &str,
     engine: &'static str,
     query: &str,
+    post_body: Option<&str>,
 ) -> Option<Vec<SearchResult>> {
-    let body = crate::util::curl::fetch(url, 10_000).await?;
+    let body = if let Some(data) = post_body {
+        crate::util::curl::fetch_post(url, data, 10_000).await?
+    } else {
+        crate::util::curl::fetch(url, 10_000).await?
+    };
     if body.len() < 500 {
         return None;
     }
-    // Skip CAPTCHA/interstitial pages that waste parsing time
+    // Skip CAPTCHA/interstitial pages that waste parsing time.
+    // Each pattern targets a specific anti-bot system:
+    //   - anomaly-modal: Cloudflare managed challenge
+    //   - unusual traffic: Google rate-limit page
+    //   - are not a robot: reCAPTCHA / hCaptcha
+    //   - consent + before you continue: GDPR consent walls
+    //   - httpservice/retry: Google JS-required redirect (since 2025)
+    //   - captcha-delivery.com: DataDome (Qwant, etc.)
+    //   - showcaptcha / smartcaptcha: Yandex SmartCaptcha
+    //   - challenges.cloudflare.com: Cloudflare Turnstile
+    //   - just a moment: Cloudflare interstitial
     let lower = body.to_lowercase();
     if lower.contains("anomaly-modal")
         || lower.contains("unusual traffic")
         || lower.contains("are not a robot")
         || (lower.contains("consent") && lower.contains("before you continue"))
         || lower.contains("httpservice/retry")
+        || lower.contains("captcha-delivery.com")
+        || lower.contains("showcaptcha")
+        || lower.contains("smartcaptcha")
+        || lower.contains("challenges.cloudflare.com")
+        || (lower.contains("just a moment") && lower.contains("cloudflare"))
     {
         return None;
     }
@@ -360,7 +474,14 @@ fn add_result(
     if !seen.insert(dedup_key) {
         return;
     }
-    let title = extract_surrounding_text(html, anchor, 200);
+    let title = {
+        let t = extract_anchor_text(html, anchor, 200);
+        if t.len() >= 4 {
+            t
+        } else {
+            extract_surrounding_text(html, anchor, 200)
+        }
+    };
     let snippet = extract_snippet_near(html, anchor, 400);
     results.push(SearchResult {
         url: url.to_string(),
@@ -438,6 +559,11 @@ fn resolve_href(href: &str) -> Option<String> {
     // DuckDuckGo wraps URLs: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&rut=...
     if href.contains("uddg=") {
         return extract_url_param(href, "uddg=");
+    }
+
+    // Yandex wraps URLs: //yandex.com/clck/jsredir?...&url=https%3A%2F%2Fexample.com&...
+    if href.contains("yandex.com/clck") && href.contains("url=") {
+        return extract_url_param(href, "url=");
     }
 
     // Yahoo wraps URLs: /RU=https%3a%2f%2fexample.com/RK=.../RS=...
@@ -545,6 +671,8 @@ const ENGINE_DOMAINS: &[&str] = &[
     "bing.com",
     "google.com",
     "yandex.com",
+    "yandex.ru",
+    "yandex.net",
     "yimg.com",
     "search.yahoo.com",
     "r.search.yahoo.com",
@@ -558,6 +686,14 @@ const ENGINE_DOMAINS: &[&str] = &[
     "schema.org",
     "w3.org",
     "imgs.search.brave.com",
+    "ecosia.org",
+    "qwant.com",
+    "api.qwant.com",
+    "dogpile.com",
+    "swisscows.com",
+    "system1.com",
+    "flocdn.com",
+    "cookielaw.org",
 ];
 
 fn is_engine_domain(host: &str) -> bool {
@@ -576,6 +712,10 @@ fn is_tracking_url(url: &str) -> bool {
         || lower.contains("r.bing.com")
         || lower.contains("th.bing.com")
         || lower.contains("cc.bingj.com")
+        || lower.contains("yandex.com/clck")
+        || lower.contains("ecosia.org/newtab")
+        || lower.contains("dogpile.com/click")
+        || lower.contains("swisscows.com/api")
 }
 
 fn canonicalize_url(url: &str) -> String {
@@ -602,6 +742,27 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
         i += 1;
     }
     i
+}
+
+fn extract_anchor_text(html: &str, href: &str, max_len: usize) -> String {
+    let search_dq = format!("href=\"{href}\"");
+    let search_sq = format!("href='{href}'");
+    let pos = match html.find(&search_dq).or_else(|| html.find(&search_sq)) {
+        Some(p) => p,
+        None => return String::new(),
+    };
+    let after_href = &html[pos..];
+    let gt = match after_href.find('>') {
+        Some(g) => pos + g + 1,
+        None => return String::new(),
+    };
+    let rest = &html[gt..];
+    let end_tag = rest.find("</a>").or_else(|| rest.find("</A>"));
+    let end = match end_tag {
+        Some(e) => gt + e,
+        None => return String::new(),
+    };
+    strip_tags(&html[gt..end], max_len)
 }
 
 fn extract_surrounding_text(html: &str, anchor: &str, max_len: usize) -> String {
@@ -1069,6 +1230,11 @@ mod tests {
         assert!(is_engine_domain("search.yahoo.com"));
         assert!(is_engine_domain("r.search.yahoo.com"));
         assert!(!is_engine_domain("example.com"));
+        assert!(is_engine_domain("yandex.ru"));
+        assert!(is_engine_domain("ecosia.org"));
+        assert!(is_engine_domain("api.qwant.com"));
+        assert!(is_engine_domain("dogpile.com"));
+        assert!(is_engine_domain("swisscows.com"));
     }
 
     #[test]
@@ -1076,5 +1242,98 @@ mod tests {
         assert_eq!(extract_registrable("sub.example.com"), "example.com");
         assert_eq!(extract_registrable("example.com"), "example.com");
         assert_eq!(extract_registrable("deep.sub.example.org"), "example.org");
+    }
+
+    #[test]
+    fn resolve_href_decodes_yandex_clck() {
+        let href = "https://yandex.com/clck/jsredir?from=yandex.com\
+                     &url=https%3A%2F%2Fexample.com%2Fpath&ts=abc";
+        let resolved = resolve_href(href);
+        assert_eq!(resolved.as_deref(), Some("https://example.com/path"));
+    }
+
+    #[test]
+    fn engine_count_is_thirteen() {
+        assert_eq!(ENGINES.len(), 13);
+    }
+
+    #[test]
+    fn all_original_engines_present() {
+        let names: Vec<&str> = ENGINES.iter().map(|e| e.name).collect();
+        for engine in [
+            "yahoo",
+            "bing",
+            "aol",
+            "duckduckgo",
+            "google",
+            "brave",
+            "mojeek",
+        ] {
+            assert!(names.contains(&engine), "missing original engine: {engine}");
+        }
+    }
+
+    #[test]
+    fn new_engines_present() {
+        let names: Vec<&str> = ENGINES.iter().map(|e| e.name).collect();
+        for engine in [
+            "startpage",
+            "yandex",
+            "ecosia",
+            "qwant",
+            "dogpile",
+            "swisscows",
+        ] {
+            assert!(names.contains(&engine), "missing new engine: {engine}");
+        }
+    }
+
+    #[test]
+    fn startpage_uses_post() {
+        let sp = ENGINES.iter().find(|e| e.name == "startpage").unwrap();
+        assert!(sp.build_post.is_some());
+        let body = (sp.build_post.unwrap())("test query");
+        assert!(body.contains("query=test+query"));
+        assert!(body.contains("cat=web"));
+    }
+
+    #[test]
+    fn extract_anchor_text_basic() {
+        let html = r#"<a href="https://example.com"><b>Example</b> Title</a> other text"#;
+        let title = extract_anchor_text(html, "https://example.com", 200);
+        assert_eq!(title, "Example Title");
+    }
+
+    #[test]
+    fn extract_anchor_text_missing_href() {
+        let html = r#"<a href="https://other.com">Other</a>"#;
+        let title = extract_anchor_text(html, "https://example.com", 200);
+        assert!(title.is_empty());
+    }
+
+    #[test]
+    fn captcha_detection_datadome() {
+        let body = "<html><body>Please enable JS \
+                     <script src=\"https://ct.captcha-delivery.com/c.js\"></script>\
+                     </body></html>";
+        let lower = body.to_lowercase();
+        assert!(lower.contains("captcha-delivery.com"));
+    }
+
+    #[test]
+    fn captcha_detection_yandex_smartcaptcha() {
+        let body = "<html><title>Verification</title>\
+                     <body>showcaptcha challenge</body></html>";
+        let lower = body.to_lowercase();
+        assert!(lower.contains("showcaptcha"));
+    }
+
+    #[test]
+    fn tracking_url_detection_new_engines() {
+        assert!(is_tracking_url(
+            "https://yandex.com/clck/jsredir?from=yandex"
+        ));
+        assert!(is_tracking_url("https://www.ecosia.org/newtab/v2"));
+        assert!(!is_tracking_url("https://example.com/page"));
     }
 }

@@ -42,6 +42,44 @@ pub async fn fetch(url: &str, timeout_ms: u64) -> Option<String> {
     String::from_utf8(output.stdout).ok()
 }
 
+/// POST form data to a URL via curl subprocess. Returns the response body
+/// on success, None on any error (timeout, non-zero exit, missing curl).
+pub async fn fetch_post(url: &str, data: &str, timeout_ms: u64) -> Option<String> {
+    let secs = (timeout_ms / 1000).max(3).to_string();
+    let fut = Command::new("curl")
+        .args([
+            "-s",
+            "--max-time",
+            &secs,
+            "-A",
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
+            "-H",
+            "Accept: text/html,application/xhtml+xml,application/json",
+            "-H",
+            "Accept-Language: en-US,en;q=0.9",
+            "-H",
+            "Content-Type: application/x-www-form-urlencoded",
+            "-d",
+            data,
+            "-L",
+            "--",
+            url,
+        ])
+        .kill_on_drop(true)
+        .output();
+
+    let output = timeout(Duration::from_millis(timeout_ms + 2000), fut)
+        .await
+        .ok()?
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8(output.stdout).ok()
+}
+
 /// Fetch JSON from a URL via curl, deserialise as T.
 pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u64) -> Option<T> {
     let body = fetch(url, timeout_ms).await?;
