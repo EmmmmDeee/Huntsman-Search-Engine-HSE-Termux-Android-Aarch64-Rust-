@@ -90,6 +90,13 @@ pub struct ServiceDef {
     pub category: &'static str,
     pub test_url: &'static str,
     pub key_header: KeyPlacement,
+    pub rate_limit_reset_secs: u64,
+}
+
+pub fn rate_limit_reset(service: &str) -> u64 {
+    find_service(service)
+        .map(|d| d.rate_limit_reset_secs)
+        .unwrap_or(3600)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +115,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "infrastructure",
             test_url: "https://api.shodan.io/api-info?key=",
             key_header: KeyPlacement::QueryParam("key"),
+            rate_limit_reset_secs: 300,
         },
         ServiceDef {
             name: "intelx",
@@ -115,6 +123,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "breach",
             test_url: "https://2.intelx.io/authenticate/info",
             key_header: KeyPlacement::Header("x-key"),
+            rate_limit_reset_secs: 60,
         },
         ServiceDef {
             name: "securitytrails",
@@ -122,6 +131,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "infrastructure",
             test_url: "https://api.securitytrails.com/v1/ping",
             key_header: KeyPlacement::Header("APIKEY"),
+            rate_limit_reset_secs: 60,
         },
         ServiceDef {
             name: "leakix",
@@ -129,6 +139,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "breach",
             test_url: "https://leakix.net/api/subdomains/example.com",
             key_header: KeyPlacement::Header("api-key"),
+            rate_limit_reset_secs: 60,
         },
         ServiceDef {
             name: "ipqs",
@@ -136,6 +147,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "threat_intel",
             test_url: "https://ipqualityscore.com/api/json/account/",
             key_header: KeyPlacement::QueryParam("key"),
+            rate_limit_reset_secs: 60,
         },
         ServiceDef {
             name: "numverify",
@@ -143,6 +155,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "identity",
             test_url: "https://apilayer.net/api/validate?number=14158586273&access_key=",
             key_header: KeyPlacement::QueryParam("access_key"),
+            rate_limit_reset_secs: 60,
         },
         ServiceDef {
             name: "criminal_ip",
@@ -150,6 +163,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "threat_intel",
             test_url: "https://api.criminalip.io/v1/user/me",
             key_header: KeyPlacement::Header("x-api-key"),
+            rate_limit_reset_secs: 60,
         },
         ServiceDef {
             name: "virustotal",
@@ -157,6 +171,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "threat_intel",
             test_url: "https://www.virustotal.com/api/v3/urls",
             key_header: KeyPlacement::Header("x-apikey"),
+            rate_limit_reset_secs: 15,
         },
         ServiceDef {
             name: "wigle",
@@ -164,6 +179,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "geoint",
             test_url: "https://api.wigle.net/api/v2/profile/user",
             key_header: KeyPlacement::Header("Authorization"),
+            rate_limit_reset_secs: 60,
         },
         ServiceDef {
             name: "hunter",
@@ -171,6 +187,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "identity",
             test_url: "https://api.hunter.io/v2/account?api_key=",
             key_header: KeyPlacement::QueryParam("api_key"),
+            rate_limit_reset_secs: 4,
         },
         ServiceDef {
             name: "hibp",
@@ -178,6 +195,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "breach",
             test_url: "https://haveibeenpwned.com/api/v3/breaches",
             key_header: KeyPlacement::Header("hibp-api-key"),
+            rate_limit_reset_secs: 6,
         },
         ServiceDef {
             name: "dehashed",
@@ -185,6 +203,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "breach",
             test_url: "https://api.dehashed.com/search?query=email:test@example.com&size=1",
             key_header: KeyPlacement::BasicAuth,
+            rate_limit_reset_secs: 60,
         },
         ServiceDef {
             name: "threatfox",
@@ -192,6 +211,7 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "threat_intel",
             test_url: "https://threatfox-api.abuse.ch/api/v1/",
             key_header: KeyPlacement::Header("API-KEY"),
+            rate_limit_reset_secs: 60,
         },
     ]
 }
@@ -276,8 +296,9 @@ impl KeyPool {
         {
             entry.status = status;
             if status == KeyStatus::RateLimited {
+                let reset = rate_limit_reset(service);
                 entry.rate_limit_reset =
-                    Some(crate::core::entity::unix_now() + 3600);
+                    Some(crate::core::entity::unix_now() + reset);
             }
         }
     }

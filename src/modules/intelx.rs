@@ -129,6 +129,10 @@ impl Module for IntelX {
             .map_err(|e| Error::module("intelx", e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
+            let code = status.as_u16();
+            if code == 429 || code == 401 || code == 403 {
+                ctx.report_key_exhausted("intelx", key, code);
+            }
             return Err(Error::module(
                 "intelx",
                 format!("HTTP {status} on start: {}", error_snippet(resp).await),
@@ -162,7 +166,12 @@ impl Module for IntelX {
                 .send()
                 .await
                 .map_err(|e| Error::module("intelx", e.to_string()))?;
-            if !resp.status().is_success() {
+            let poll_status = resp.status();
+            if !poll_status.is_success() {
+                let code = poll_status.as_u16();
+                if code == 429 || code == 401 || code == 403 {
+                    ctx.report_key_exhausted("intelx", key, code);
+                }
                 continue;
             }
             let r: ResultResp = match resp.json().await {

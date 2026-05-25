@@ -116,6 +116,10 @@ impl Module for ThreatFox {
             .map_err(|e| Error::module("threatfox", e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
+            let code = status.as_u16();
+            if code == 429 || code == 401 || code == 403 {
+                ctx.report_key_exhausted("threatfox", key, code);
+            }
             return Err(Error::module(
                 "threatfox",
                 format!("HTTP {status}: {}", error_snippet(resp).await),
@@ -134,6 +138,10 @@ impl Module for ThreatFox {
         match parsed.query_status.as_str() {
             "ok" => {}
             "no_result" => return Ok(ModuleResult::new()),
+            "rate_limited" => {
+                ctx.report_key_exhausted("threatfox", key, 429);
+                return Err(Error::module("threatfox", "query_status=rate_limited".to_string()));
+            }
             other => {
                 return Err(Error::module("threatfox", format!("query_status={other}")));
             }

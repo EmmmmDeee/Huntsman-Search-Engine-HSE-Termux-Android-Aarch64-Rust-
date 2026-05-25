@@ -142,6 +142,19 @@ impl ModuleContext {
     pub fn key_opt(&self, name: &str) -> Option<&str> {
         self.keys.get(name).map(String::as_str)
     }
+
+    /// Report that a key received a rate-limit (429) or auth failure (401/403).
+    /// Marks the key in the global pool so subsequent scans rotate to the next one.
+    pub fn report_key_exhausted(&self, service: &str, key_value: &str, status: u16) {
+        let pool = crate::util::key_pool::global_pool();
+        let key_status = if status == 429 {
+            crate::util::key_pool::KeyStatus::RateLimited
+        } else {
+            crate::util::key_pool::KeyStatus::Invalid
+        };
+        pool.mark_status(service, key_value, key_status);
+        let _ = crate::util::key_pool::save_pool(&pool);
+    }
 }
 
 #[derive(Debug, Default)]

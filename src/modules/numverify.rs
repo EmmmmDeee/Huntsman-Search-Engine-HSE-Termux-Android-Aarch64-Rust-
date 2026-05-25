@@ -14,11 +14,11 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::Evidence,
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{fetch_json_or_404, urlencode};
+use crate::util::http::{error_snippet, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_NUMVERIFY_KEY";
 
@@ -93,16 +93,43 @@ impl Module for Numverify {
         // HTTPS first. If the call fails outright (free-tier rejection,
         // TLS refusal), fall back to HTTP and remember the transport
         // we ended up using.
+        //
+        // Helper closure: send a GET, check for key-exhaustion status
+        // codes, and return the parsed body (or None on 404).
+        let try_url = |url: String| async move {
+            let resp = ctx
+                .http
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| Error::module("numverify", e.to_string()))?;
+            let status = resp.status();
+            if status.as_u16() == 404 {
+                return Ok(None);
+            }
+            if !status.is_success() {
+                let code = status.as_u16();
+                if code == 429 || code == 401 || code == 403 {
+                    ctx.report_key_exhausted("numverify", key, code);
+                }
+                return Err(Error::module(
+                    "numverify",
+                    format!("HTTP {status}: {}", error_snippet(resp).await),
+                ));
+            }
+            let data: Resp = resp
+                .json()
+                .await
+                .map_err(|e| Error::module("numverify", e.to_string()))?;
+            Ok(Some(data))
+        };
         let https = format!("https://apilayer.net{qs}");
         let (body_opt, transport): (Option<Resp>, &'static str) =
-            match fetch_json_or_404(&ctx.http, "numverify", &https).await {
+            match try_url(https).await {
                 Ok(b) => (b, "https"),
                 Err(_) => {
                     let http = format!("http://apilayer.net{qs}");
-                    (
-                        fetch_json_or_404(&ctx.http, "numverify", &http).await?,
-                        "http",
-                    )
+                    (try_url(http).await?, "http")
                 }
             };
         let Some(body) = body_opt else {
