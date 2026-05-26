@@ -210,15 +210,19 @@ impl Module for SearchEngines {
         }
 
         // Deduplicate results by canonical URL before entity extraction.
-        // Multiple engines returning the same page shouldn't inflate counts.
         let all_results = dedup_results(all_results);
 
         let mut module_result = build_entities(target, &ctx.scan_id, &all_results);
 
+        // ── Recursive entity recycler: re-search high-confidence
+        //    discovered entities for geolocation and cross-linking ─────
+        if !ctx.cancel.is_cancelled() {
+            recycle_entities(ctx, &mut module_result, &dead_engines, &all_results).await;
+        }
+
         // ── API enrichment pass: batch-query OathNet for high-confidence
         //    discovered entities. Only fires when the API key is configured
-        //    and we have entities worth enriching. Maximises value from
-        //    free results before spending API credits. ──────────────────
+        //    and we have entities worth enriching. ──────────────────
         if !ctx.cancel.is_cancelled() {
             enrich_via_oathnet(ctx, &mut module_result).await;
         }
@@ -453,6 +457,169 @@ const ENGINES: &[EngineSpec] = &[
         ua_alt: crate::util::curl::UA_FIREFOX,
     },
 ];
+
+// ─── Recursive entity recycler ─────────────────────────────────────────────
+//
+// After the primary search pass produces entities, the recycler takes
+// the highest-confidence discoveries and re-searches them on reliable
+// engines to find geolocation cross-links. This catches the common
+// OSINT pattern where an email → username → address chain only becomes
+// visible when you search for the intermediate entity.
+
+async fn recycle_entities(
+    ctx: &ModuleContext,
+    result: &mut ModuleResult,
+    dead_engines: &HashSet<&str>,
+    _primary_results: &[SearchResult],
+) {
+    let reliable = [&ENGINES[0], &ENGINES[1], &ENGINES[5]]; // yahoo, bing, brave
+
+    let mut recycle_queries: Vec<String> = Vec::new();
+    let mut seen_queries: HashSet<String> = HashSet::new();
+
+    for entity in &result.entities {
+        if entity.confidence < 0.50 {
+            continue;
+        }
+        let q = match entity.kind {
+            EntityKind::Email => {
+                let local = entity.value.split('@').next().unwrap_or("");
+                if local.len() >= 3 {
+                    Some(format!("\"{local}\" address OR location OR suburb OR city"))
+                } else {
+                    None
+                }
+            }
+            EntityKind::Username if entity.value.len() >= 3 => {
+                Some(format!("\"{}\" address OR location OR city", entity.value))
+            }
+            EntityKind::Person => Some(format!("\"{}\" address OR email OR phone", entity.value)),
+            EntityKind::Address if entity.confidence >= 0.40 => Some(format!(
+                "\"{}\" name OR resident OR owner OR phone",
+                entity.value
+            )),
+            EntityKind::Phone => Some(format!("\"{}\" name OR address OR owner", entity.value)),
+            _ => None,
+        };
+        if let Some(query) = q
+            && seen_queries.insert(query.clone())
+        {
+            recycle_queries.push(query);
+        }
+    }
+
+    if recycle_queries.is_empty() {
+        return;
+    }
+
+    let scan_id = result
+        .entities
+        .first()
+        .map(|e| e.scan_id.clone())
+        .unwrap_or_default();
+
+    let mut recycled_results: Vec<SearchResult> = Vec::new();
+
+    for query in recycle_queries.iter().take(8) {
+        if ctx.cancel.is_cancelled() {
+            break;
+        }
+        for engine in &reliable {
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+            if dead_engines.contains(engine.name) {
+                continue;
+            }
+            let url = (engine.build_url)(query);
+            if let Some(mut results) = fetch_and_parse(&url, engine, query, None).await {
+                recycled_results.append(&mut results);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS)).await;
+        }
+    }
+
+    if recycled_results.is_empty() {
+        return;
+    }
+
+    let recycled_results = dedup_results(recycled_results);
+    let mut seen_addrs: HashSet<String> = HashSet::new();
+    let mut seen_emails: HashSet<String> = HashSet::new();
+    let mut seen_phones: HashSet<String> = HashSet::new();
+
+    // Collect existing entity values to avoid duplicates
+    for e in &result.entities {
+        match e.kind {
+            EntityKind::Address => {
+                seen_addrs.insert(e.value.to_lowercase());
+            }
+            EntityKind::Email => {
+                seen_emails.insert(e.value.to_lowercase());
+            }
+            EntityKind::Phone => {
+                seen_phones.insert(e.value.clone());
+            }
+            _ => {}
+        }
+    }
+
+    for r in &recycled_results {
+        let combined = format!("{} {}", r.title, r.snippet);
+
+        for addr in extract_addresses_from_text(&combined) {
+            if seen_addrs.insert(addr.to_lowercase()) {
+                let mut e = Entity::new(EntityKind::Address, &addr, 0.45, &scan_id);
+                e.tag("search-discovered");
+                e.tag("recycled");
+                e.add_evidence(
+                    Evidence::new(
+                        "search_engines",
+                        format!("[{}] Address from recycled search — {}", r.engine, r.url),
+                    )
+                    .with_attr("url", &r.url)
+                    .with_attr("engine", r.engine)
+                    .with_attr("recycle_query", &r.query),
+                );
+                result.push(e);
+            }
+        }
+
+        for email in extract_emails_from_text(&combined) {
+            if seen_emails.insert(email.clone()) {
+                let mut e = Entity::new(EntityKind::Email, &email, 0.55, &scan_id);
+                e.tag("search-discovered");
+                e.tag("recycled");
+                e.add_evidence(
+                    Evidence::new(
+                        "search_engines",
+                        format!("[{}] Email from recycled search — {}", r.engine, r.url),
+                    )
+                    .with_attr("url", &r.url)
+                    .with_attr("engine", r.engine),
+                );
+                result.push(e);
+            }
+        }
+
+        for phone in extract_phones_from_text(&combined) {
+            if seen_phones.insert(phone.clone()) {
+                let mut e = Entity::new(EntityKind::Phone, &phone, 0.50, &scan_id);
+                e.tag("search-discovered");
+                e.tag("recycled");
+                e.add_evidence(
+                    Evidence::new(
+                        "search_engines",
+                        format!("[{}] Phone from recycled search — {}", r.engine, r.url),
+                    )
+                    .with_attr("url", &r.url)
+                    .with_attr("engine", r.engine),
+                );
+                result.push(e);
+            }
+        }
+    }
+}
 
 // ─── API enrichment: OathNet via shared util::oathnet client ────────────────
 
@@ -2546,8 +2713,9 @@ fn extract_addresses_from_text(text: &str) -> Vec<String> {
         }
     }
 
-    // Second pass: find "City, Australia" patterns with major AU cities
-    const AU_CITIES: &[&str] = &[
+    // Second pass: AU city + state context detection
+    const AU_PLACES: &[&str] = &[
+        // Capital cities
         "Brisbane",
         "Sydney",
         "Melbourne",
@@ -2556,32 +2724,156 @@ fn extract_addresses_from_text(text: &str) -> Vec<String> {
         "Canberra",
         "Hobart",
         "Darwin",
+        // Major regional
         "Gold Coast",
         "Newcastle",
         "Wollongong",
         "Geelong",
+        "Sunshine Coast",
+        "Central Coast",
+        // Queensland suburbs/cities
         "Cairns",
         "Townsville",
         "Toowoomba",
+        "Rockhampton",
+        "Mackay",
+        "Bundaberg",
+        "Hervey Bay",
+        "Gladstone",
+        "Mount Isa",
         "Nundah",
         "Redcliffe",
         "Caboolture",
-        "Long Beach",
+        "Chermside",
+        "Aspley",
+        "Sandgate",
+        "Shorncliffe",
+        "Deagon",
+        "Bracken Ridge",
+        "Strathpine",
+        "Petrie",
+        "Kallangur",
+        "Narangba",
+        "Morayfield",
+        "Burpengary",
+        "North Lakes",
+        "Fortitude Valley",
+        "New Farm",
+        "Teneriffe",
+        "Woolloongabba",
+        "South Brisbane",
+        "West End",
+        "Kangaroo Point",
+        "Spring Hill",
+        "Paddington",
+        "Milton",
+        "Toowong",
+        "Indooroopilly",
+        "St Lucia",
+        "Taringa",
+        "Logan",
+        "Ipswich",
+        "Springfield",
+        "Beenleigh",
+        "Capalaba",
+        "Cleveland",
+        "Wynnum",
+        "Manly",
+        "Surfers Paradise",
+        "Broadbeach",
+        "Robina",
+        "Nerang",
+        "Coolangatta",
+        "Tweed Heads",
+        // NSW
+        "Parramatta",
+        "Blacktown",
+        "Penrith",
+        "Liverpool",
+        "Bondi",
+        "Manly",
+        "Cronulla",
+        "Bankstown",
+        // VIC
+        "St Kilda",
+        "Richmond",
+        "Fitzroy",
+        "Collingwood",
+        "South Yarra",
+        "Prahran",
+        "Carlton",
+        "Brunswick",
     ];
-    for city in AU_CITIES {
-        if let Some(pos) = text.find(city) {
-            let after = &text[pos + city.len()..];
-            let context = after.chars().take(40).collect::<String>().to_lowercase();
-            if context.contains("australia")
-                || context.contains("qld")
-                || context.contains("nsw")
-                || context.contains("vic")
-                || context.contains("queensland")
-                || context.contains("new south wales")
+
+    for place in AU_PLACES {
+        let lower = text.to_lowercase();
+        let place_lower = place.to_lowercase();
+        if let Some(pos) = lower.find(&place_lower) {
+            let after = &lower[pos + place_lower.len()..];
+            let context: String = after.chars().take(60).collect();
+            let before_start = pos.saturating_sub(60);
+            let before: String = lower[before_start..pos].chars().collect();
+            let combined = format!("{before} {context}");
+            if combined.contains("australia")
+                || combined.contains("qld")
+                || combined.contains("nsw")
+                || combined.contains("vic")
+                || combined.contains("queensland")
+                || combined.contains("new south wales")
+                || combined.contains("victoria")
             {
-                let addr = format!("{city}, Australia");
-                if !addrs.iter().any(|a| a.contains(city)) {
+                let state_tag = if combined.contains("qld") || combined.contains("queensland") {
+                    "QLD"
+                } else if combined.contains("nsw") || combined.contains("new south wales") {
+                    "NSW"
+                } else if combined.contains("vic") || combined.contains("victoria") {
+                    "VIC"
+                } else {
+                    "Australia"
+                };
+                let addr = format!("{place}, {state_tag}");
+                let addr_lower = addr.to_lowercase();
+                if !addrs.iter().any(|a| a.to_lowercase() == addr_lower) {
                     addrs.push(addr);
+                }
+            }
+        }
+    }
+
+    // Third pass: Australian postcodes (4 digits after a place name)
+    let postcode_re_like = |s: &str| -> Option<String> {
+        let bytes = s.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+        while i + 3 < len {
+            if bytes[i].is_ascii_digit()
+                && bytes[i + 1].is_ascii_digit()
+                && bytes[i + 2].is_ascii_digit()
+                && bytes[i + 3].is_ascii_digit()
+                && (i + 4 >= len || !bytes[i + 4].is_ascii_digit())
+                && (i == 0 || !bytes[i - 1].is_ascii_digit())
+            {
+                let pc = &s[i..i + 4];
+                let first = pc.as_bytes()[0];
+                // AU postcodes: 2xxx (NSW/ACT), 3xxx (VIC), 4xxx (QLD),
+                // 5xxx (SA), 6xxx (WA), 7xxx (TAS), 08xx (NT)
+                if (b'2'..=b'7').contains(&first) {
+                    return Some(pc.to_string());
+                }
+            }
+            i += 1;
+        }
+        None
+    };
+
+    for r in &addrs.clone() {
+        let after_idx = text.find(r.as_str()).unwrap_or(0) + r.len();
+        if after_idx < text.len() {
+            let snippet = &text[after_idx..text.len().min(after_idx + 20)];
+            if let Some(pc) = postcode_re_like(snippet) {
+                let with_pc = format!("{r} {pc}");
+                if !addrs.contains(&with_pc) {
+                    addrs.push(with_pc);
                 }
             }
         }
@@ -2865,6 +3157,62 @@ mod tests {
         assert!(q.len() >= 2);
         assert!(q[0].contains("-33.86"));
         assert!(q[0].contains("151.20"));
+    }
+
+    #[test]
+    fn address_extractor_finds_city_state_pattern() {
+        let text = "Jordan lives in Nundah, Queensland with his family";
+        let addrs = extract_addresses_from_text(text);
+        assert!(
+            addrs
+                .iter()
+                .any(|a| a.contains("Nundah") && a.contains("Queensland")),
+            "should find Nundah, Queensland: {:?}",
+            addrs
+        );
+    }
+
+    #[test]
+    fn address_extractor_finds_qld_suburb_with_context() {
+        let text = "Originally from Redcliffe QLD, now living in Caboolture";
+        let addrs = extract_addresses_from_text(text);
+        assert!(
+            addrs.iter().any(|a| a.contains("Redcliffe")),
+            "should find Redcliffe with QLD context: {:?}",
+            addrs
+        );
+    }
+
+    #[test]
+    fn address_extractor_finds_brisbane_with_australia() {
+        let text = "Based in Brisbane, Australia. Working at ACME Corp.";
+        let addrs = extract_addresses_from_text(text);
+        assert!(
+            !addrs.is_empty(),
+            "should find Brisbane with Australia context"
+        );
+    }
+
+    #[test]
+    fn address_extractor_finds_au_postcode() {
+        let text = "Lives at Nundah, Queensland 4012";
+        let addrs = extract_addresses_from_text(text);
+        assert!(
+            addrs.iter().any(|a| a.contains("4012")),
+            "should extract 4-digit AU postcode: {:?}",
+            addrs
+        );
+    }
+
+    #[test]
+    fn address_extractor_ignores_non_au_4digit() {
+        let text = "Error code 1234 in the system at Houston, Texas";
+        let addrs = extract_addresses_from_text(text);
+        assert!(
+            !addrs.iter().any(|a| a.contains("1234")),
+            "should not extract non-AU 4-digit number as postcode: {:?}",
+            addrs
+        );
     }
 
     #[test]
