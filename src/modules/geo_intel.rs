@@ -142,6 +142,9 @@ impl Module for GeoIntel {
                 | TargetKind::Username
                 | TargetKind::Phone
                 | TargetKind::Domain
+                | TargetKind::Url
+                | TargetKind::FullName
+                | TargetKind::Organisation
         )
     }
 
@@ -152,10 +155,22 @@ impl Module for GeoIntel {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         match target.kind {
             TargetKind::IpAddress => process_ip(target, ctx).await,
-            TargetKind::Email | TargetKind::Username | TargetKind::Domain => {
-                process_identity(target, ctx).await
-            }
+            TargetKind::Email
+            | TargetKind::Username
+            | TargetKind::Domain
+            | TargetKind::FullName
+            | TargetKind::Organisation => process_identity(target, ctx).await,
             TargetKind::Phone => process_phone(target, ctx).await,
+            TargetKind::Url => {
+                // Extract domain from URL and run the domain identity path
+                if let Some(host) = target.value.split("//").nth(1) {
+                    let domain = host.split('/').next().unwrap_or(host);
+                    let domain_target = Target::new(TargetKind::Domain, domain);
+                    process_identity(&domain_target, ctx).await
+                } else {
+                    Ok(ModuleResult::new())
+                }
+            }
             _ => Ok(ModuleResult::new()),
         }
     }
@@ -295,6 +310,8 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
         TargetKind::Email => "email",
         TargetKind::Username => "username",
         TargetKind::Domain => "domain",
+        TargetKind::FullName => "full_name",
+        TargetKind::Organisation => "domain",
         _ => return Ok(result),
     };
 
@@ -1015,6 +1032,9 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::Username, "alice")));
         assert!(m.accepts(&Target::new(TargetKind::Phone, "+61400000000")));
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
+        assert!(m.accepts(&Target::new(TargetKind::Url, "https://example.com")));
+        assert!(m.accepts(&Target::new(TargetKind::FullName, "John Doe")));
+        assert!(m.accepts(&Target::new(TargetKind::Organisation, "Acme Corp")));
     }
 
     #[test]
