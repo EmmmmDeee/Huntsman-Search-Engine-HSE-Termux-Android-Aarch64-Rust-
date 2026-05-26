@@ -133,4 +133,6 @@ pub struct AppState {
     /// In-flight scan cancellation handles, keyed by scan_id. See
     /// `CancelRegistry` doc.
     pub cancellations: CancelRegistry,
+    /// Shared proxy pool for free scraping modules.
+    pub proxy_pool: Arc<crate::util::proxy::ProxyPool>,
 }

@@ -296,6 +296,7 @@ async fn session_loop(
             // affected the outer loop and the iteration had to run to
             // its full expansion depth before stopping.
             cancel: cancel.clone(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         };
 
         if let Err(e) = inner.engine.run(scan, target.clone(), ctx).await {

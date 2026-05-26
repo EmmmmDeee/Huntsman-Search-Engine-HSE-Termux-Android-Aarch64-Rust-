@@ -90,6 +90,7 @@ fn test_app(suffix: &str) -> axum::Router {
         http: reqwest::Client::new(),
         allow_key_write: false,
         cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+        proxy_pool: Default::default(),
     });
     router(state, "127.0.0.1:8080")
 }

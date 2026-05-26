@@ -96,6 +96,10 @@ impl Module for LeakIx {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
+            let code = status.as_u16();
+            if code == 429 || code == 401 || code == 403 {
+                ctx.report_key_exhausted("leakix", key, code);
+            }
             return Err(Error::module(
                 "leakix",
                 format!("HTTP {status}: {}", error_snippet(resp).await),

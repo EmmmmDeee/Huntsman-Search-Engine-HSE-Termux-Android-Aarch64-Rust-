@@ -113,9 +113,14 @@ impl super::ScanEngine {
 /// Returns `Some(reason)` if `module` should be skipped under `opts`.
 /// `accepts(target)` is intentionally NOT checked here — that case skips
 /// silently with no `ModuleSkipped` event, the others all emit one.
-pub(super) fn module_skip_reason(module: &dyn Module, opts: &ScanOptions) -> Option<&'static str> {
+pub(super) fn module_skip_reason(
+    module: &dyn Module,
+    opts: &ScanOptions,
+    is_expansion: bool,
+) -> Option<&'static str> {
     let name = module.name();
-    if let Some(allow) = &opts.modules
+    if !is_expansion
+        && let Some(allow) = &opts.modules
         && !allow.iter().any(|n| n == name)
     {
         return Some("not in allowlist");
@@ -142,12 +147,13 @@ impl ScanEngine {
         ctx: &ModuleContext,
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
+        is_expansion: bool,
     ) -> Result<()> {
         if opts.max_concurrent == 0 {
-            self.dispatch_target_sequential(scan_id, target, ctx, opts, entity_map)
+            self.dispatch_target_sequential(scan_id, target, ctx, opts, entity_map, is_expansion)
                 .await
         } else {
-            self.dispatch_target_concurrent(scan_id, target, ctx, opts, entity_map)
+            self.dispatch_target_concurrent(scan_id, target, ctx, opts, entity_map, is_expansion)
                 .await
         }
     }
@@ -161,6 +167,7 @@ impl ScanEngine {
         ctx: &ModuleContext,
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
+        is_expansion: bool,
     ) -> Result<()> {
         for module in &self.modules {
             // Cancellation gate at the top of the per-module loop — the
@@ -178,7 +185,7 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) = module_skip_reason(&**module, opts) {
+            if let Some(reason) = module_skip_reason(&**module, opts, is_expansion) {
                 self.emit(
                     scan_id,
                     EventKind::ModuleSkipped {
@@ -243,6 +250,7 @@ impl ScanEngine {
         ctx: &ModuleContext,
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
+        is_expansion: bool,
     ) -> Result<()> {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
@@ -266,7 +274,7 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) = module_skip_reason(&**module, opts) {
+            if let Some(reason) = module_skip_reason(&**module, opts, is_expansion) {
                 self.emit(
                     scan_id,
                     EventKind::ModuleSkipped {
@@ -415,7 +423,7 @@ mod tests {
     fn skip_reason_none_for_default_opts() {
         let m = free_active();
         let opts = ScanOptions::default();
-        assert!(module_skip_reason(&m, &opts).is_none());
+        assert!(module_skip_reason(&m, &opts, false).is_none());
     }
 
     #[test]
@@ -425,7 +433,10 @@ mod tests {
             modules: Some(vec!["other_module".into()]),
             ..Default::default()
         };
-        assert_eq!(module_skip_reason(&m, &opts), Some("not in allowlist"));
+        assert_eq!(
+            module_skip_reason(&m, &opts, false),
+            Some("not in allowlist")
+        );
     }
 
     #[test]
@@ -435,7 +446,7 @@ mod tests {
             modules: Some(vec!["test_free".into()]),
             ..Default::default()
         };
-        assert!(module_skip_reason(&m, &opts).is_none());
+        assert!(module_skip_reason(&m, &opts, false).is_none());
     }
 
     #[test]
@@ -445,7 +456,7 @@ mod tests {
             exclude_modules: vec!["test_free".into()],
             ..Default::default()
         };
-        assert_eq!(module_skip_reason(&m, &opts), Some("excluded"));
+        assert_eq!(module_skip_reason(&m, &opts, false), Some("excluded"));
     }
 
     #[test]
@@ -455,7 +466,10 @@ mod tests {
             free_only: true,
             ..Default::default()
         };
-        assert_eq!(module_skip_reason(&m, &opts), Some("requires key/payment"));
+        assert_eq!(
+            module_skip_reason(&m, &opts, false),
+            Some("requires key/payment")
+        );
     }
 
     #[test]
@@ -465,7 +479,7 @@ mod tests {
             free_only: true,
             ..Default::default()
         };
-        assert!(module_skip_reason(&m, &opts).is_none());
+        assert!(module_skip_reason(&m, &opts, false).is_none());
     }
 
     #[test]
@@ -475,7 +489,7 @@ mod tests {
             passive_only: true,
             ..Default::default()
         };
-        assert_eq!(module_skip_reason(&m, &opts), Some("not passive"));
+        assert_eq!(module_skip_reason(&m, &opts, false), Some("not passive"));
     }
 
     #[test]
@@ -485,7 +499,7 @@ mod tests {
             passive_only: true,
             ..Default::default()
         };
-        assert!(module_skip_reason(&m, &opts).is_none());
+        assert!(module_skip_reason(&m, &opts, false).is_none());
     }
 
     #[test]
@@ -496,6 +510,6 @@ mod tests {
             exclude_modules: vec!["test_free".into()],
             ..Default::default()
         };
-        assert_eq!(module_skip_reason(&m, &opts), Some("excluded"));
+        assert_eq!(module_skip_reason(&m, &opts, false), Some("excluded"));
     }
 }

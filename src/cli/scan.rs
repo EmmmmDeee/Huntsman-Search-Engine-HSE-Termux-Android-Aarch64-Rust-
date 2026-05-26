@@ -59,6 +59,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         http: build_client(),
         keys: keys::load(),
         cancel: crate::core::cancel::CancelHandle::new(),
+        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
 
     let scan = engine.run(scan, target, ctx).await?;

@@ -85,6 +85,8 @@ impl Module for SearchEngines {
                 | TargetKind::Username
                 | TargetKind::FullName
                 | TargetKind::Phone
+                | TargetKind::IpAddress
+                | TargetKind::Organisation
         )
     }
 
@@ -431,6 +433,33 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
             apply_breach_evidence(result, uname, &hits, &scan_id);
         }
     }
+
+    // Store any API credentials found in stealer results.
+    // Uses "domain" field (verified precise) extracted from email domains.
+    let mut queried_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for email in &emails {
+        if ctx.cancel.is_cancelled() {
+            break;
+        }
+        if let Some(domain) = email.split('@').nth(1) {
+            if !queried_domains.insert(domain.to_lowercase()) {
+                continue;
+            }
+            if let Ok(items) = crate::util::oathnet::search(
+                key,
+                crate::util::oathnet::paths::STEALER,
+                "domain",
+                domain,
+                10,
+            )
+            .await
+            {
+                for item in &items {
+                    crate::modules::oathnet_pro::store_api_credential_from_item(item);
+                }
+            }
+        }
+    }
 }
 
 fn apply_breach_evidence(
@@ -686,6 +715,29 @@ fn build_queries(target: &Target) -> Vec<String> {
                      OR site:whocalledme.com OR site:reversephonelookup.com"
                 ));
                 q.push(format!("\"{v}\" name OR address OR owner"));
+            }
+            q
+        }
+        TargetKind::IpAddress => vec![
+            format!("\"{v}\""),
+            format!("\"{v}\" hostname OR server OR domain"),
+            format!("\"{v}\" site:shodan.io OR site:censys.io OR site:zoomeye.org"),
+            format!("\"{v}\" location OR city OR country OR ISP"),
+        ],
+        TargetKind::Organisation => {
+            let mut q = vec![
+                format!("\"{v}\""),
+                format!("\"{v}\" ABN OR ACN OR \"business number\" OR director"),
+                format!(
+                    "\"{v}\" site:abr.business.gov.au OR site:asic.gov.au \
+                     OR site:opencorporates.com"
+                ),
+                format!("\"{v}\" address OR location OR headquarters"),
+                format!("\"{v}\" email OR contact OR phone"),
+            ];
+            let lower = v.to_lowercase();
+            if !lower.contains("pty") && !lower.contains("ltd") {
+                q.push(format!("\"{v}\" \"Pty Ltd\" OR \"Limited\" OR \"Inc\""));
             }
             q
         }
@@ -2564,14 +2616,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_domain_email_username_fullname_phone() {
+    fn accepts_all_supported_kinds() {
         let m = SearchEngines;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x")));
         assert!(m.accepts(&Target::new(TargetKind::Email, "x")));
         assert!(m.accepts(&Target::new(TargetKind::Username, "x")));
         assert!(m.accepts(&Target::new(TargetKind::FullName, "x")));
         assert!(m.accepts(&Target::new(TargetKind::Phone, "x")));
-        assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "x")));
+        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "x")));
+        assert!(m.accepts(&Target::new(TargetKind::Organisation, "x")));
+        assert!(!m.accepts(&Target::new(TargetKind::Asn, "x")));
     }
 
     #[test]
@@ -2624,6 +2678,28 @@ mod tests {
         assert!(
             q.iter()
                 .any(|qr| qr.contains("peekyou.com") || qr.contains("nuwber.com"))
+        );
+    }
+
+    #[test]
+    fn build_queries_ip_produces_infra_dorks() {
+        let t = Target::new(TargetKind::IpAddress, "8.8.8.8");
+        let q = build_queries(&t);
+        assert_eq!(q.len(), 4);
+        assert!(q[0].contains("\"8.8.8.8\""));
+        assert!(q.iter().any(|qr| qr.contains("shodan.io")));
+    }
+
+    #[test]
+    fn build_queries_org_produces_business_dorks() {
+        let t = Target::new(TargetKind::Organisation, "BHP Group");
+        let q = build_queries(&t);
+        assert!(q.len() >= 5);
+        assert!(q[0].contains("\"BHP Group\""));
+        assert!(q.iter().any(|qr| qr.contains("ABN") || qr.contains("ACN")));
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("abr.business.gov.au") || qr.contains("opencorporates"))
         );
     }
 

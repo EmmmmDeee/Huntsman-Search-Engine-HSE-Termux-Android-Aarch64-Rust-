@@ -4,6 +4,7 @@ pub mod curl;
 pub mod dns;
 pub mod freq;
 pub mod http;
+pub mod key_pool;
 pub mod keys;
 pub mod oathnet;
 pub mod proxy;

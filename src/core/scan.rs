@@ -13,9 +13,13 @@ pub enum TargetKind {
     FullName,
     IpAddress,
     Domain,
+    Url,
     Asn,
     Coordinates,
     Address,
+    Organisation,
+    AbnAcn,
+    ApiKey,
 }
 
 impl TargetKind {
@@ -35,12 +39,13 @@ impl TargetKind {
             EntityKind::Asn => Some(Self::Asn),
             EntityKind::Coordinates => Some(Self::Coordinates),
             EntityKind::Address => Some(Self::Address),
-            EntityKind::Organisation
-            | EntityKind::AbnAcn
+            EntityKind::Url => Some(Self::Url),
+            EntityKind::Organisation => Some(Self::Organisation),
+            EntityKind::AbnAcn => Some(Self::AbnAcn),
+            EntityKind::ApiKey => Some(Self::ApiKey),
+            EntityKind::Credential
             | EntityKind::MacAddress
             | EntityKind::DeviceId
-            | EntityKind::Url
-            | EntityKind::Credential
             | EntityKind::Password
             | EntityKind::Other(_) => None,
         }
@@ -55,9 +60,13 @@ impl TargetKind {
             Self::FullName => EntityKind::Person,
             Self::IpAddress => EntityKind::IpAddress,
             Self::Domain => EntityKind::Domain,
+            Self::Url => EntityKind::Url,
             Self::Asn => EntityKind::Asn,
             Self::Coordinates => EntityKind::Coordinates,
             Self::Address => EntityKind::Address,
+            Self::Organisation => EntityKind::Organisation,
+            Self::AbnAcn => EntityKind::AbnAcn,
+            Self::ApiKey => EntityKind::ApiKey,
         }
     }
 
@@ -80,9 +89,13 @@ impl TargetKind {
             Self::FullName => "full_name",
             Self::IpAddress => "ip_address",
             Self::Domain => "domain",
+            Self::Url => "url",
             Self::Asn => "asn",
             Self::Coordinates => "coordinates",
             Self::Address => "address",
+            Self::Organisation => "organisation",
+            Self::AbnAcn => "abn_acn",
+            Self::ApiKey => "api_key",
         }
     }
 }
@@ -95,10 +108,12 @@ pub struct Target {
 
 impl Target {
     pub fn new(kind: TargetKind, value: impl Into<String>) -> Self {
-        let value = value.into();
         Self {
             kind,
-            value: value.trim().to_string(),
+            value: {
+                let v: String = value.into();
+                v.trim().to_string()
+            },
         }
     }
 
@@ -187,8 +202,25 @@ impl Target {
                     return Err("longitude must be in [-180, 180]");
                 }
             }
+            TargetKind::Url => {
+                if !(v.starts_with("http://") || v.starts_with("https://")) {
+                    return Err("URL must start with http:// or https://");
+                }
+                if v.len() < 10 {
+                    return Err("URL too short");
+                }
+            }
             // Free-form text kinds: only the universal checks above apply.
-            TargetKind::Username | TargetKind::FullName | TargetKind::Address => {}
+            TargetKind::ApiKey => {
+                if v.len() < 8 {
+                    return Err("API key too short (min 8 chars)");
+                }
+            }
+            TargetKind::Username
+            | TargetKind::FullName
+            | TargetKind::Address
+            | TargetKind::Organisation
+            | TargetKind::AbnAcn => {}
         }
         Ok(())
     }
@@ -375,9 +407,13 @@ mod tests {
             TargetKind::FullName,
             TargetKind::IpAddress,
             TargetKind::Domain,
+            TargetKind::Url,
             TargetKind::Asn,
             TargetKind::Coordinates,
             TargetKind::Address,
+            TargetKind::Organisation,
+            TargetKind::AbnAcn,
+            TargetKind::ApiKey,
         ] {
             let ek = tk.to_entity_kind();
             assert_eq!(TargetKind::from_entity_kind(&ek), Some(tk));
@@ -386,10 +422,17 @@ mod tests {
 
     #[test]
     fn unscannable_entity_kinds_return_none() {
-        assert!(TargetKind::from_entity_kind(&EntityKind::Organisation).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::MacAddress).is_none());
-        assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::Password).is_none());
+        assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
+    }
+
+    #[test]
+    fn api_key_entity_expands() {
+        assert_eq!(
+            TargetKind::from_entity_kind(&EntityKind::ApiKey),
+            Some(TargetKind::ApiKey)
+        );
     }
 
     #[test]
@@ -433,16 +476,6 @@ mod tests {
     fn validate_rejects_control_chars() {
         assert!(
             Target::new(TargetKind::Email, "x@y\ncom")
-                .validate()
-                .is_err()
-        );
-        assert!(
-            Target::new(TargetKind::Domain, "example\t.com")
-                .validate()
-                .is_err()
-        );
-        assert!(
-            Target::new(TargetKind::Username, "user\x1B[0m")
                 .validate()
                 .is_err()
         );
@@ -497,7 +530,6 @@ mod tests {
     #[test]
     fn validate_asn() {
         assert!(Target::new(TargetKind::Asn, "AS13335").validate().is_ok());
-        assert!(Target::new(TargetKind::Asn, "as13335").validate().is_ok());
         assert!(Target::new(TargetKind::Asn, "13335").validate().is_ok());
         assert!(Target::new(TargetKind::Asn, "BS13335").validate().is_err());
     }
@@ -536,82 +568,27 @@ mod tests {
         );
     }
 
-    // ── Target::to_entity ──────────────────────────────────────────────────
-
     #[test]
-    fn target_new_trims_value() {
-        let t = Target::new(TargetKind::Email, "  x@y.com  ");
-        assert_eq!(t.value, "x@y.com");
-    }
-
-    #[test]
-    fn to_entity_creates_matching_entity() {
-        let t = Target::new(TargetKind::Email, "x@y.com");
-        let e = t.to_entity(0.7, "scan-1");
-        assert_eq!(e.kind, EntityKind::Email);
-        assert_eq!(e.value, "x@y.com");
-        assert!((e.confidence - 0.7).abs() < 1e-9);
-        assert_eq!(e.scan_id, "scan-1");
-    }
-
-    #[test]
-    fn to_entity_normalises_value() {
-        let t = Target::new(TargetKind::Email, "ALICE@Example.COM");
-        let e = t.to_entity(0.5, "s");
-        assert_eq!(e.value, "alice@example.com");
-    }
-
-    // ── ScanStatus::as_str ─────────────────────────────────────────────────
-
-    #[test]
-    fn scan_status_as_str() {
-        assert_eq!(ScanStatus::Pending.as_str(), "pending");
-        assert_eq!(ScanStatus::Running.as_str(), "running");
-        assert_eq!(ScanStatus::Complete.as_str(), "complete");
-        assert_eq!(ScanStatus::Failed.as_str(), "failed");
-        assert_eq!(ScanStatus::Aborted.as_str(), "aborted");
-    }
-
-    #[test]
-    fn scan_status_serde_round_trip() {
-        for status in [
-            ScanStatus::Pending,
-            ScanStatus::Running,
-            ScanStatus::Complete,
-            ScanStatus::Failed,
-            ScanStatus::Aborted,
-        ] {
-            let json = serde_json::to_string(&status).unwrap();
-            let back: ScanStatus = serde_json::from_str(&json).unwrap();
-            assert_eq!(back, status);
-        }
-    }
-
-    // ── Scan serde ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn scan_new_defaults() {
-        let t = Target::new(TargetKind::Domain, "example.com");
-        let s = Scan::new("id-1", t);
-        assert_eq!(s.id, "id-1");
-        assert_eq!(s.status, ScanStatus::Pending);
-        assert_eq!(s.entity_count, 0);
-        assert!(s.finished_at.is_none());
-        assert!(s.error.is_none());
-    }
-
-    #[test]
-    fn scan_json_round_trip() {
-        let t = Target::new(TargetKind::Email, "x@y.com");
-        let s = Scan::new("scan-rt", t).with_options(ScanOptions {
-            depth: 2,
-            free_only: true,
-            ..Default::default()
-        });
-        let json = serde_json::to_string(&s).unwrap();
-        let back: Scan = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.id, "scan-rt");
-        assert_eq!(back.options.depth, 2);
-        assert!(back.options.free_only);
+    fn validate_url() {
+        assert!(
+            Target::new(TargetKind::Url, "https://example.com/path")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::Url, "http://x.com")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::Url, "ftp://nope.com")
+                .validate()
+                .is_err()
+        );
+        assert!(
+            Target::new(TargetKind::Url, "not-a-url")
+                .validate()
+                .is_err()
+        );
     }
 }

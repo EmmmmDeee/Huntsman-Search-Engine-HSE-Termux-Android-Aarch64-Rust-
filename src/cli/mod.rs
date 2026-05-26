@@ -1,4 +1,4 @@
-//! CLI: scan / modules / doctor / serve / live / provision / set-key.
+//! CLI: scan / modules / doctor / serve / live / provision / set-key / keys.
 //!
 //! Surfaces every `ScanOptions` field as a flag so each scan is fully
 //! customisable before launch. `serve` boots the HTTP server + SPA;
@@ -151,6 +151,11 @@ pub enum Command {
         #[arg(long)]
         allow_key_write: bool,
     },
+    /// Manage the multi-key pool (add, list, validate, remove, status).
+    Keys {
+        #[command(subcommand)]
+        action: KeysAction,
+    },
     /// Run a target continuously, re-scanning on an interval. Streams events
     /// to stdout as compact JSON until Ctrl-C or `--iterations` is exhausted.
     Live {
@@ -179,6 +184,41 @@ pub enum Command {
         #[arg(short, long)]
         modules: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum KeysAction {
+    /// Add a key to the pool for a service.
+    Add {
+        /// Service name (shodan, intelx, dehashed, wigle, etc.)
+        service: String,
+        /// The API key value.
+        key: String,
+        /// Optional notes (e.g. "free tier", "expires 2026-12").
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// List all keys in the pool.
+    List {
+        /// Filter by service name.
+        service: Option<String>,
+    },
+    /// Validate keys against live endpoints.
+    Validate {
+        /// Validate only this service. Omit to validate all.
+        service: Option<String>,
+    },
+    /// Remove a key from the pool.
+    Remove {
+        /// Service name.
+        service: String,
+        /// Key value to remove.
+        key: String,
+    },
+    /// Show pool status summary.
+    Status,
+    /// List supported service names and their categories.
+    Services,
 }
 
 pub async fn run() -> Result<()> {
@@ -235,6 +275,7 @@ pub async fn run() -> Result<()> {
             dry_run,
         } => cmd_provision(env_only, verify_only, dry_run).await,
         Command::SetKey { name, value } => cmd_set_key(name, value),
+        Command::Keys { action } => cmd_keys(action).await,
         Command::Serve {
             bind,
             allow_key_write,
@@ -289,6 +330,193 @@ fn cmd_set_key(name: String, value: String) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_keys(action: KeysAction) -> Result<()> {
+    use crate::util::key_pool::{self, KeyEntry, KeyStatus};
+
+    let pool = key_pool::global_pool();
+
+    match action {
+        KeysAction::Add {
+            service,
+            key,
+            notes,
+        } => {
+            if key_pool::find_service(&service).is_none() {
+                let names: Vec<&str> = key_pool::service_defs().iter().map(|s| s.name).collect();
+                println!("Unknown service '{service}'. Known: {}", names.join(", "));
+                println!("Adding anyway — key will be stored but not auto-validated.");
+            }
+            let mut entry = KeyEntry::new(&key);
+            entry.notes = notes;
+            if pool.add(&service, entry) {
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
+                println!(
+                    "Added key to '{service}' pool ({} total)",
+                    pool.service_count(&service)
+                );
+            } else {
+                println!("Key already exists in '{service}' pool.");
+            }
+        }
+
+        KeysAction::List { service } => {
+            let snap = pool.snapshot();
+            let services: Vec<(&String, &Vec<KeyEntry>)> = if let Some(ref s) = service {
+                let lower = s.to_lowercase();
+                snap.services.iter().filter(|(k, _)| **k == lower).collect()
+            } else {
+                snap.services.iter().collect()
+            };
+
+            if services.is_empty() {
+                println!("No keys in pool.");
+                return Ok(());
+            }
+
+            for (svc, entries) in &services {
+                println!("\n[{svc}] ({} keys)", entries.len());
+                for (i, e) in entries.iter().enumerate() {
+                    let masked = if e.value.len() > 8 {
+                        format!("{}…{}", &e.value[..4], &e.value[e.value.len() - 4..])
+                    } else {
+                        e.value.clone()
+                    };
+                    let notes = e.notes.as_deref().unwrap_or("");
+                    println!(
+                        "  {}: {} [{}] uses={} {}",
+                        i + 1,
+                        masked,
+                        e.status.as_str(),
+                        e.use_count,
+                        notes
+                    );
+                }
+            }
+        }
+
+        KeysAction::Validate { service } => {
+            let snap = pool.snapshot();
+            let targets: Vec<(String, Vec<KeyEntry>)> = if let Some(ref s) = service {
+                let lower = s.to_lowercase();
+                snap.services
+                    .into_iter()
+                    .filter(|(k, _)| *k == lower)
+                    .collect()
+            } else {
+                snap.services.into_iter().collect()
+            };
+
+            if targets.is_empty() {
+                println!("No keys to validate.");
+                return Ok(());
+            }
+
+            let mut validated = 0u32;
+            let mut active = 0u32;
+            for (svc, entries) in &targets {
+                for entry in entries {
+                    print!(
+                        "  {svc}: testing {}… ",
+                        &entry.value[..entry.value.len().min(8)]
+                    );
+                    match key_pool::validate_key(svc, &entry.value).await {
+                        Some(true) => {
+                            pool.mark_validated(svc, &entry.value, true);
+                            println!("ACTIVE");
+                            active += 1;
+                        }
+                        Some(false) => {
+                            pool.mark_validated(svc, &entry.value, false);
+                            println!("INVALID");
+                        }
+                        None => {
+                            println!("UNKNOWN (no validator for service)");
+                        }
+                    }
+                    validated += 1;
+                }
+            }
+            key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
+            println!("\nValidated {validated} keys: {active} active.");
+        }
+
+        KeysAction::Remove { service, key } => {
+            if pool.remove(&service, &key) {
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
+                println!("Removed key from '{service}' pool.");
+            } else {
+                println!("Key not found in '{service}' pool.");
+            }
+        }
+
+        KeysAction::Status => {
+            let snap = pool.snapshot();
+            if snap.services.is_empty() {
+                println!("Key pool is empty. Use `hse keys add <service> <key>` to add keys.");
+                println!("\nPool file: {}", key_pool::pool_path().display());
+                return Ok(());
+            }
+
+            println!(
+                "{:<20} {:>5} {:>6} {:>7} {:>8}  CATEGORY",
+                "SERVICE", "TOTAL", "ACTIVE", "INVALID", "USED"
+            );
+            println!("{}", "-".repeat(65));
+
+            let mut sorted: Vec<_> = snap.services.iter().collect();
+            sorted.sort_by_key(|(a, _)| *a);
+
+            for (svc, entries) in &sorted {
+                let active = entries.iter().filter(|e| e.is_usable()).count();
+                let invalid = entries
+                    .iter()
+                    .filter(|e| e.status == KeyStatus::Invalid)
+                    .count();
+                let total_uses: u64 = entries.iter().map(|e| e.use_count).sum();
+                let cat = key_pool::find_service(svc)
+                    .map(|d| d.category)
+                    .unwrap_or("custom");
+                println!(
+                    "{:<20} {:>5} {:>6} {:>7} {:>8}  {cat}",
+                    svc,
+                    entries.len(),
+                    active,
+                    invalid,
+                    total_uses
+                );
+            }
+            println!(
+                "\nTotal: {} keys ({} active) across {} services",
+                pool.total_keys(),
+                pool.total_active(),
+                snap.services.len()
+            );
+            println!("Pool file: {}", key_pool::pool_path().display());
+        }
+
+        KeysAction::Services => {
+            let defs = key_pool::service_defs();
+            println!(
+                "{:<18} {:<14} {:<26} ENV VAR",
+                "SERVICE", "CATEGORY", "TEST ENDPOINT"
+            );
+            println!("{}", "-".repeat(85));
+            for d in &defs {
+                let short_url = if d.test_url.len() > 25 {
+                    format!("{}…", &d.test_url[..24])
+                } else {
+                    d.test_url.to_string()
+                };
+                println!(
+                    "{:<18} {:<14} {:<26} {}",
+                    d.name, d.category, short_url, d.env_var
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_modules() -> Result<()> {
     let mut mods = registry();
     mods.sort_by_key(|m| std::cmp::Reverse(m.priority()));
@@ -304,11 +532,15 @@ fn cmd_modules() -> Result<()> {
         ("username", TargetKind::Username),
         ("phone", TargetKind::Phone),
         ("domain", TargetKind::Domain),
+        ("url", TargetKind::Url),
         ("ip", TargetKind::IpAddress),
         ("asn", TargetKind::Asn),
         ("name", TargetKind::FullName),
         ("coords", TargetKind::Coordinates),
         ("address", TargetKind::Address),
+        ("org", TargetKind::Organisation),
+        ("abn", TargetKind::AbnAcn),
+        ("apikey", TargetKind::ApiKey),
     ];
 
     for m in &mods {
@@ -386,11 +618,15 @@ pub fn parse_target_kind(s: &str) -> Result<TargetKind> {
         "fullname" | "name" => Ok(TargetKind::FullName),
         "ipaddress" | "ip" => Ok(TargetKind::IpAddress),
         "domain" => Ok(TargetKind::Domain),
+        "url" => Ok(TargetKind::Url),
         "asn" => Ok(TargetKind::Asn),
         "coordinates" | "coords" => Ok(TargetKind::Coordinates),
         "address" => Ok(TargetKind::Address),
+        "organisation" | "org" => Ok(TargetKind::Organisation),
+        "abn" | "acn" | "abn_acn" => Ok(TargetKind::AbnAcn),
+        "apikey" | "api_key" | "key" => Ok(TargetKind::ApiKey),
         other => Err(Error::InvalidTarget(format!(
-            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, asn, coords, address"
+            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, url, asn, coords, address, org, abn, apikey"
         ))),
     }
 }

@@ -144,6 +144,33 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u
     serde_json::from_str(&body).ok()
 }
 
+/// Fetch with proxy fallback: direct → HUNTSMAN_PROXY env → pool rotation.
+/// Returns the response body, or None if all paths fail. Modules that
+/// want free proxy rotation call this instead of plain `fetch`.
+pub async fn fetch_pooled(
+    url: &str,
+    timeout_ms: u64,
+    ua: &str,
+    pool: &super::proxy::ProxyPool,
+) -> Option<String> {
+    if let Some(body) = fetch_with_ua(url, timeout_ms, ua).await
+        && !body.is_empty()
+    {
+        return Some(body);
+    }
+    if let Ok(proxy) = std::env::var("HUNTSMAN_PROXY")
+        && !proxy.is_empty()
+        && let Some(body) = fetch_via_proxy(url, timeout_ms, ua, &proxy).await
+    {
+        return Some(body);
+    }
+    if let Some(proxy) = pool.next() {
+        fetch_via_proxy(url, timeout_ms, ua, &proxy.url()).await
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

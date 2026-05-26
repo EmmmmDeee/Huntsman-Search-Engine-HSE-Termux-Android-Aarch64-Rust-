@@ -123,6 +123,9 @@ pub struct ModuleContext {
     /// abort mid-process for faster cancel latency. Default-constructed
     /// handles never fire.
     pub cancel: crate::core::cancel::CancelHandle,
+    /// Shared proxy pool for free scraping modules. Populated once at
+    /// scan start; modules call `ctx.proxy_pool.next()` to rotate.
+    pub proxy_pool: std::sync::Arc<crate::util::proxy::ProxyPool>,
 }
 
 impl ModuleContext {
@@ -138,6 +141,19 @@ impl ModuleContext {
     /// Fetch an optional key — None if absent (no error).
     pub fn key_opt(&self, name: &str) -> Option<&str> {
         self.keys.get(name).map(String::as_str)
+    }
+
+    /// Report that a key received a rate-limit (429) or auth failure (401/403).
+    /// Marks the key in the global pool so subsequent scans rotate to the next one.
+    pub fn report_key_exhausted(&self, service: &str, key_value: &str, status: u16) {
+        let pool = crate::util::key_pool::global_pool();
+        let key_status = if status == 429 {
+            crate::util::key_pool::KeyStatus::RateLimited
+        } else {
+            crate::util::key_pool::KeyStatus::Invalid
+        };
+        pool.mark_status(service, key_value, key_status);
+        let _ = crate::util::key_pool::save_pool(&pool);
     }
 }
 
@@ -187,6 +203,7 @@ mod tests {
             http: reqwest::Client::new(),
             keys,
             cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: Default::default(),
         }
     }
 
