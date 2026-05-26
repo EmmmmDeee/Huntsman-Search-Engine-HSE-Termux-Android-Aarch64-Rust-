@@ -19,6 +19,17 @@ use crate::util::oathnet::{self, paths, val_str, val_str_or};
 
 pub struct OathnetPro;
 
+fn truncate_safe(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 #[async_trait]
 impl Module for OathnetPro {
     fn name(&self) -> &'static str {
@@ -876,7 +887,7 @@ fn extract_api_keys_from_item(
         if let Some(val) = val_str(item, field)
             && let Some((service, key_val)) = identify_api_key(&val)
         {
-            let dedup = format!("@apikey:{service}:{}", &key_val[..key_val.len().min(16)]);
+            let dedup = format!("@apikey:{service}:{}", truncate_safe(key_val, 16));
             if !seen.insert(dedup) {
                 continue;
             }
@@ -898,7 +909,7 @@ fn extract_api_keys_from_item(
                     ),
                 )
                 .with_attr("service", service)
-                .with_attr("key_prefix", &key_val[..key_val.len().min(8)])
+                .with_attr("key_prefix", truncate_safe(key_val, 8))
                 .with_attr("key_length", key_val.len().to_string()),
             );
             result.push(entity);
@@ -918,7 +929,7 @@ fn extract_api_keys_from_item(
     if let Some(user) = val_str(item, "username")
         && let Some((service, key_val)) = identify_api_key(&user)
     {
-        let dedup = format!("@apikey:{service}:{}", &key_val[..key_val.len().min(16)]);
+        let dedup = format!("@apikey:{service}:{}", truncate_safe(key_val, 16));
         if seen.insert(dedup) {
             let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.75, scan_id);
             entity.tag("api-key");
@@ -1064,8 +1075,8 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
                 let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
                 entry.notes = Some(format!(
                     "OathNet password-match [{service}]: user={} url={}",
-                    &user[..user.len().min(25)],
-                    &url[..url.len().min(50)]
+                    &truncate_safe(&user, 25),
+                    &truncate_safe(&url, 50)
                 ));
                 pool.add(service, entry);
                 pool.add(
@@ -1124,7 +1135,7 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
                 let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
                 entry.notes = Some(format!(
                     "OathNet field-capture [{field_name}->{label}]: url={}",
-                    &url[..url.len().min(50)]
+                    &truncate_safe(&url, 50)
                 ));
                 pool.add(label, entry);
                 stored += 1;
@@ -1142,7 +1153,7 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
                 for field in ["password", "password_hash", "username"] {
                     if let Some(val) = val_str(item, field)
                         && let Some((svc, key_val)) = identify_api_key(&val)
-                        && seen.insert(format!("br:{svc}:{}", &key_val[..key_val.len().min(12)]))
+                        && seen.insert(format!("br:{svc}:{}", truncate_safe(key_val, 12)))
                     {
                         let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
                         entry.notes = Some(format!(
@@ -1200,8 +1211,8 @@ fn store_unique_stealer_keys(
             entry.notes = Some(format!(
                 "OathNet stealer [{}]: user={} url={}",
                 service,
-                &user[..user.len().min(30)],
-                &url[..url.len().min(60)]
+                &truncate_safe(&user, 30),
+                &truncate_safe(&url, 60)
             ));
             if pool.add(service, entry) {
                 stored += 1;
@@ -1250,8 +1261,8 @@ fn store_api_credential(item: &Value) {
     let mut entry = crate::util::key_pool::KeyEntry::new(&password);
     entry.notes = Some(format!(
         "OathNet stealer: user={} url={}",
-        &username[..username.len().min(30)],
-        &url[..url.len().min(60)]
+        &truncate_safe(&username, 30),
+        &truncate_safe(&url, 60)
     ));
     if pool.add(service, entry) {
         let _ = crate::util::key_pool::save_pool(&pool);
