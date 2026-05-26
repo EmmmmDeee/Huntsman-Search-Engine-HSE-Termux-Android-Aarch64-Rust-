@@ -20,7 +20,7 @@ use huntsman_search_engine::{
         module::{Module, ModuleContext, ModuleResult},
         scan::{Target, TargetKind},
     },
-    storage::store::Store,
+    storage::Store,
 };
 
 // ── Synthetic module (mirrors tests/smoke.rs) ─────────────────────────────

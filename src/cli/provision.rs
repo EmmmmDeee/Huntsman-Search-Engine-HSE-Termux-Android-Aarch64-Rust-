@@ -26,7 +26,7 @@ use crate::core::{
     module::ModuleContext,
     scan::{Scan, ScanOptions, Target, TargetKind},
 };
-use crate::storage::store::Store;
+use crate::storage::Store;
 use crate::util::{http::build_client, keys, uid::scan_id};
 
 /// Canonical env-file template, embedded at compile time. Edit

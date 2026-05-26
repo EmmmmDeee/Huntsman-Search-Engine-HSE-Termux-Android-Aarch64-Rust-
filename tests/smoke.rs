@@ -12,7 +12,7 @@ use huntsman_search_engine::{
         module::{Module, ModuleContext, ModuleResult},
         scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
     },
-    storage::store::Store,
+    storage::Store,
     util::{http::build_client, uid::scan_id},
 };
 

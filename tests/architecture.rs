@@ -42,7 +42,7 @@ fn scan_dir(dir: &Path, patterns: &[&str], violations: &mut Vec<String>) {
 #[test]
 fn core_does_not_import_storage_directly() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
-    let v = scan_for_violations(&dir, &["storage::store::Store", "crate::storage"]);
+    let v = scan_for_violations(&dir, &["storage::Store", "crate::storage"]);
     assert!(
         v.is_empty(),
         "core/ must not import storage/ directly — use StoragePort.\nViolations:\n{}",

@@ -21,7 +21,7 @@ use crate::{
     },
     default_db_path, is_termux,
     modules::registry,
-    storage::store::Store,
+    storage::Store,
     util::{http::build_client, keys, uid::scan_id},
 };
 

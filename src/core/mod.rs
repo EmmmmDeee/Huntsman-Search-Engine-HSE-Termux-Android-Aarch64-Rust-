@@ -453,7 +453,7 @@ pub mod port {
                 n
             );
             let _ = std::fs::remove_file(&path);
-            Arc::new(crate::storage::store::Store::open(&path).unwrap())
+            Arc::new(crate::storage::Store::open(&path).unwrap())
         }
 
         #[test]
