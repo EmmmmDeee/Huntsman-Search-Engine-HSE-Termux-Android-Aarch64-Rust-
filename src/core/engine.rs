@@ -297,6 +297,7 @@ impl ScanEngine {
             // Snapshot the entity set at round start — entities discovered
             // during this round will be expansion candidates in the next round,
             // not this one.
+            let has_paid = ctx.keys.contains_key("HUNTSMAN_OATHNET_KEY");
             let mut next: Vec<Target> = Vec::new();
             for entity in entity_map.values() {
                 if entity.c_effective() < opts.min_expand_confidence {
@@ -311,6 +312,15 @@ impl ScanEngine {
                     next.push(new_target);
                 }
             }
+
+            // Sort expansion candidates by geo NPV (descending) so the
+            // highest-value seeds expand first. This maximises geolocation
+            // yield within budget constraints.
+            next.sort_by(|a, b| {
+                crate::core::scan::geo_npv(b.kind, has_paid)
+                    .partial_cmp(&crate::core::scan::geo_npv(a.kind, has_paid))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
 
             if next.is_empty() {
                 let stop = StopReason::NoMoreCandidates;

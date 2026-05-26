@@ -492,6 +492,73 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
     (depth, min_conf)
 }
 
+/// Net Present Value score for a seed type. Higher = more valuable as a
+/// starting point for recursive OSINT expansion. Based on empirical
+/// expected-value analysis of entity yield across expansion rounds.
+///
+/// Used by the engine to prioritise expansion candidates when multiple
+/// entities are available — higher-NPV seeds expand first.
+pub fn seed_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
+    match kind {
+        TargetKind::Email => {
+            if has_paid_keys {
+                332.4
+            } else {
+                18.4
+            }
+        }
+        TargetKind::Domain => 89.8,
+        TargetKind::FullName => 70.5,
+        TargetKind::IpAddress => 17.9,
+        TargetKind::Username => 15.8,
+        TargetKind::Phone => {
+            if has_paid_keys {
+                13.5
+            } else {
+                2.6
+            }
+        }
+        TargetKind::Asn => 10.2,
+        TargetKind::ApiKey => 9.7,
+        TargetKind::Url => 9.4,
+        TargetKind::Organisation => 4.9,
+        TargetKind::AbnAcn => 4.9,
+        TargetKind::Coordinates => 1.9,
+        TargetKind::Address => 1.6,
+    }
+}
+
+/// Geo-specific NPV: expected Coordinates + Address entity yield.
+pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
+    match kind {
+        TargetKind::Email => {
+            if has_paid_keys {
+                48.2
+            } else {
+                8.7
+            }
+        }
+        TargetKind::Domain => 22.1,
+        TargetKind::FullName => 15.3,
+        TargetKind::IpAddress => 12.4,
+        TargetKind::Phone => {
+            if has_paid_keys {
+                9.8
+            } else {
+                1.8
+            }
+        }
+        TargetKind::Asn => 7.1,
+        TargetKind::Username => 6.3,
+        TargetKind::Url => 4.2,
+        TargetKind::ApiKey => 3.8,
+        TargetKind::AbnAcn => 2.5,
+        TargetKind::Organisation => 2.1,
+        TargetKind::Coordinates => 1.9,
+        TargetKind::Address => 1.6,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
