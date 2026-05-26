@@ -177,11 +177,18 @@ pub async fn scan_entities_filter(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let kind = params.get("kind").map(String::as_str);
+    let kind = params
+        .get("kind")
+        .filter(|k| k.len() <= 32)
+        .map(String::as_str);
     let min_conf = params
         .get("min_confidence")
-        .and_then(|v| v.parse::<f64>().ok());
-    let q = params.get("q").map(String::as_str);
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|&c| (0.0..=1.0).contains(&c));
+    let q = params
+        .get("q")
+        .filter(|v| v.len() <= 256)
+        .map(String::as_str);
     match s.store.entities_filtered(&id, kind, min_conf, q) {
         Ok(entities) => ok_list("entities", entities),
         Err(e) => internal_error(&e),

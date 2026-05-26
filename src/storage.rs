@@ -18,15 +18,24 @@ pub struct Store {
 
 impl Store {
     pub fn open(path: &str) -> Result<Self> {
+        let cache_kb: i64 = std::env::var("HSE_SQLITE_CACHE_KB")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2000);
+        let mmap: i64 = std::env::var("HSE_SQLITE_MMAP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(67_108_864);
+
         let conn = Connection::open(path)?;
-        conn.execute_batch(
+        conn.execute_batch(&format!(
             "
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=NORMAL;
             PRAGMA temp_store=MEMORY;
             PRAGMA foreign_keys=ON;
-            PRAGMA cache_size=-2000;
-            PRAGMA mmap_size=67108864;
+            PRAGMA cache_size=-{cache_kb};
+            PRAGMA mmap_size={mmap};
 
             CREATE TABLE IF NOT EXISTS scans (
                 id           TEXT PRIMARY KEY,
@@ -85,8 +94,8 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
-            ",
-        )?;
+            "
+        ))?;
 
         conn.execute_batch(
             "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
