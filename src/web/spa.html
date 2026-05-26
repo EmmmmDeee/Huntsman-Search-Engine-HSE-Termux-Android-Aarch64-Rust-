@@ -20,8 +20,14 @@
        in spiderfoot-style.css upstream — these rules are deliberately
        narrow. */
     body { background-color: #fff; }
-    .navbar-brand b { color: #059CD7; font-weight: 600; }
-    .navbar-brand small { color: #888; font-weight: 400; font-size: 11px; margin-left: 6px; }
+    .navbar-inverse { background-color: #222; border-color: #080808; }
+    .navbar-inverse .navbar-brand { color: #ddd; }
+    .navbar-inverse .navbar-nav > li > a { color: #ccc; }
+    .navbar-inverse .navbar-nav > li > a:hover { color: #fff; }
+    .navbar-inverse .navbar-nav > .active > a,
+    .navbar-inverse .navbar-nav > .active > a:hover { background-color: #080808; color: #fff; }
+    .navbar-brand b { color: #07aef1; font-weight: 600; }
+    .navbar-brand small { color: #999; font-weight: 400; font-size: 11px; margin-left: 6px; }
     .stat-card { background:#f7f7f7; border:1px solid #e3e3e3; border-radius:4px;
                  padding:10px 14px; margin-bottom:10px; }
     .stat-card .lab { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:.04em; }
@@ -137,10 +143,8 @@
     .empty-state p{font-size:13px;max-width:480px;margin:0 auto 12px;line-height:1.5}
     /* Dark mode (Spiderfoot-compatible — toggled via #theme-toggler) */
     body.dark-theme{background:#1a1a1a;color:#ddd}
-    body.dark-theme .navbar-default{background:#222;border-color:#333}
-    body.dark-theme .navbar-default .navbar-brand,
-    body.dark-theme .navbar-default .navbar-nav>li>a{color:#ddd}
-    body.dark-theme .navbar-default .navbar-nav>.active>a{background:#333}
+    body.dark-theme .navbar-inverse{background:#111;border-color:#000}
+    body.dark-theme .navbar-inverse .navbar-nav>.active>a{background:#000}
     body.dark-theme .panel{background:#222;border-color:#333}
     body.dark-theme .panel-default>.panel-heading{background:#2a2a2a;border-color:#333;color:#ddd}
     body.dark-theme .table-striped>tbody>tr:nth-of-type(odd){background:#252525}
@@ -158,19 +162,20 @@
 </head>
 <body>
 
-<nav class="navbar navbar-default navbar-fixed-top">
+<nav class="navbar navbar-inverse navbar-fixed-top">
   <div class="container-fluid">
     <div class="navbar-header">
       <button type="button" class="navbar-toggle collapsed" data-toggle="collapse"
               data-target="#main-navbar-collapse" aria-expanded="false">
         <span class="icon-bar"></span><span class="icon-bar"></span><span class="icon-bar"></span>
       </button>
-      <a class="navbar-brand brand-logo" href="#/scans">
+      <a class="navbar-brand brand-logo" href="#/dash">
         <span class="brand-logo-text">Huntsman <b>·</b> Search Engine <small>v<span id="ver">?</span></small></span>
       </a>
     </div>
     <div class="collapse navbar-collapse" id="main-navbar-collapse">
       <ul class="nav navbar-nav">
+        <li id="nav-dash"   ><a href="#/dash"   ><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Dashboard</a></li>
         <li id="nav-newscan"><a href="#/newscan"><i class="glyphicon glyphicon-screenshot"></i>&nbsp;New Scan</a></li>
         <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
         <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a></li>
@@ -371,18 +376,19 @@ const API = {
 
 /* ─── Router (hash-based, mirrors SpiderFoot's path semantics) ─── */
 function parseHash(){
-  const raw = (location.hash||'#/scans').replace(/^#/,'');
+  const raw = (location.hash||'#/dash').replace(/^#/,'');
   const [path, qs] = raw.split('?');
   const segs = path.split('/').filter(Boolean);
   const query = {};
   (qs||'').split('&').filter(Boolean).forEach(p=>{
     const [k,v] = p.split('='); query[decodeURIComponent(k)] = decodeURIComponent(v||'');
   });
-  if (segs.length===0 || segs[0]==='scans') return {name:'scans', params:{}, query};
+  if (segs.length===0 || segs[0]==='dash' || segs[0]==='dashboard') return {name:'dash', params:{}, query};
+  if (segs[0]==='scans')                    return {name:'scans', params:{}, query};
   if (segs[0]==='newscan')                  return {name:'newscan', params:{}, query};
   if (segs[0]==='opts'||segs[0]==='settings') return {name:'opts', params:{}, query};
   if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
-  return {name:'scans', params:{}, query};
+  return {name:'dash', params:{}, query};
 }
 function nav(href){ location.hash = href; }
 window.addEventListener('hashchange', ()=>render());
@@ -392,12 +398,13 @@ async function render(){
   closeSse();
   S.route = parseHash();
   $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
-  const navMap = {scans:'nav-scans', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans'};
+  const navMap = {dash:'nav-dash', scans:'nav-scans', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
   const v = $('#view');
   v.innerHTML = '<div class="empty-state"><h3>Loading…</h3></div>';
   try {
+    if (S.route.name==='dash')     return await renderDash(v);
     if (S.route.name==='scans')    return await renderScans(v);
     if (S.route.name==='newscan')  return await renderNewScan(v);
     if (S.route.name==='scaninfo') return await renderScanInfo(v);
@@ -406,6 +413,80 @@ async function render(){
     v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
                    <button class="btn btn-default btn-sm" style="margin-left:12px" onclick="render()">Retry</button></div>`;
   }
+}
+
+/* ═══════════ Page: DASHBOARD (#/dash) ═══════════ */
+async function renderDash(v){
+  const [stats, mods] = await Promise.all([API.stats(), API.modules()]);
+  const s = stats;
+  const byStatus = s.scans_by_status || {};
+  v.innerHTML = `
+    <div class="page-header" style="margin-top:0;border-bottom:1px solid #eee;padding-bottom:8px">
+      <h3 style="margin:0"><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Dashboard</h3>
+    </div>
+    <div class="row">
+      <div class="col-md-3 col-sm-6">
+        <div class="stat-card">
+          <div class="lab">Total Scans</div>
+          <div class="val">${s.scans_total||0}</div>
+        </div>
+      </div>
+      <div class="col-md-3 col-sm-6">
+        <div class="stat-card">
+          <div class="lab">Total Entities</div>
+          <div class="val">${s.entities_total||0}</div>
+        </div>
+      </div>
+      <div class="col-md-3 col-sm-6">
+        <div class="stat-card">
+          <div class="lab">Modules Loaded</div>
+          <div class="val">${s.modules||0}</div>
+        </div>
+      </div>
+      <div class="col-md-3 col-sm-6">
+        <div class="stat-card">
+          <div class="lab">Live Sessions</div>
+          <div class="val">${s.live_sessions||0}</div>
+        </div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div class="col-md-4">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>Scan Status</b></div>
+          <div class="panel-body">
+            <table class="table table-condensed" style="margin-bottom:0">
+              ${Object.entries(byStatus).map(([k,n])=>`<tr><td>${statusPill(k)}</td><td class="text-right"><b>${n}</b></td></tr>`).join('')}
+              ${Object.keys(byStatus).length===0?'<tr><td colspan="2" class="text-center text-muted">No scans yet</td></tr>':''}
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>Quick Actions</b></div>
+          <div class="panel-body">
+            <a href="#/newscan" class="btn btn-danger btn-block"><i class="glyphicon glyphicon-plus"></i>&nbsp;New Scan</a>
+            <a href="#/scans" class="btn btn-default btn-block" style="margin-top:6px"><i class="glyphicon glyphicon-list"></i>&nbsp;View Scans</a>
+            <a href="#/opts" class="btn btn-default btn-block" style="margin-top:6px"><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>System</b></div>
+          <div class="panel-body">
+            <table class="table table-condensed" style="margin-bottom:0">
+              <tr><td>Version</td><td class="text-right"><code>v${esc(s.version||'?')}</code></td></tr>
+              <tr><td>Modules</td><td class="text-right"><b>${mods.count||0}</b></td></tr>
+              <tr><td>Free modules</td><td class="text-right">${(mods.modules||[]).filter(m=>m.cost==='free').length}</td></tr>
+              <tr><td>Key-gated</td><td class="text-right">${(mods.modules||[]).filter(m=>m.cost==='key_gated').length}</td></tr>
+              <tr><td>Paid</td><td class="text-right">${(mods.modules||[]).filter(m=>m.cost==='paid').length}</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>`;
 }
 
 /* ═══════════ Page: SCANLIST (#/scans) ═══════════ */
