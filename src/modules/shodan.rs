@@ -85,7 +85,7 @@ impl Module for Shodan {
     }
 
     fn cost(&self) -> ModuleCost {
-        ModuleCost::Paid
+        ModuleCost::Free
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)
@@ -363,8 +363,8 @@ mod tests {
     }
 
     #[test]
-    fn cost_is_paid() {
-        assert!(matches!(Shodan.cost(), ModuleCost::Paid));
+    fn cost_is_free() {
+        assert!(matches!(Shodan.cost(), ModuleCost::Free));
     }
 
     // ── Tests carried from shodan_internetdb.rs ──────────────────────

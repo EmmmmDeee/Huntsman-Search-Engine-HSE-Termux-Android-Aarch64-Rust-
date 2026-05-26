@@ -127,7 +127,7 @@ impl Module for ContactEnrich {
     }
 
     fn cost(&self) -> ModuleCost {
-        ModuleCost::KeyGated
+        ModuleCost::Free
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -171,6 +171,9 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     // Numverify accepts both formats; strip leading '+' since their
     // examples use E.164 without it.
     let q = phone.trim_start_matches('+');
+    if q.is_empty() {
+        return Ok(ModuleResult::new());
+    }
     let qs = format!(
         "/api/validate?access_key={}&number={}",
         urlencode(key),
@@ -194,7 +197,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         if !status.is_success() {
             let code = status.as_u16();
             if code == 429 || code == 401 || code == 403 {
-                ctx.report_key_exhausted("contact_enrich", key, code);
+                ctx.report_key_exhausted("numverify", key, code);
             }
             return Err(Error::module(
                 "contact_enrich",
@@ -390,8 +393,8 @@ mod tests {
     }
 
     #[test]
-    fn cost_is_key_gated() {
-        assert!(matches!(ContactEnrich.cost(), ModuleCost::KeyGated));
+    fn cost_is_free() {
+        assert!(matches!(ContactEnrich.cost(), ModuleCost::Free));
     }
 
     #[test]

@@ -259,12 +259,12 @@ impl ScanEngine {
             // cheapest place to exit because nothing new has spawned.
             if ctx.cancel.is_cancelled() {
                 let stop = StopReason::Cancelled;
-                let _ = self.bus.send(Event::new(
+                self.emit(
                     scan_id,
                     EventKind::ExpansionStop {
                         reason: stop.label(),
                     },
-                ));
+                );
                 return stop;
             }
             // Snapshot the entity set at round start — entities discovered
@@ -308,12 +308,12 @@ impl ScanEngine {
             for nt in &next {
                 if ctx.cancel.is_cancelled() {
                     let stop = StopReason::Cancelled;
-                    let _ = self.bus.send(Event::new(
+                    self.emit(
                         scan_id,
                         EventKind::ExpansionStop {
                             reason: stop.label(),
                         },
-                    ));
+                    );
                     return stop;
                 }
                 if let Some(stop) = budget_check(opts, started, entity_map.len()) {
