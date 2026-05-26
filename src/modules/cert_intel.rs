@@ -35,6 +35,8 @@ struct CrtEntry {
 
 // ── Module ─────────────────────────────────────────────────────────
 
+const SRC: &str = "cert_intel";
+
 pub struct CertIntel;
 
 #[async_trait]
@@ -118,7 +120,7 @@ impl Module for CertIntel {
             let mut entity = target.to_entity(0.88, &ctx.scan_id);
             entity.tag("tls");
 
-            let mut ev = Evidence::new("cert_intel", format!("TLS certificate for {domain}"))
+            let mut ev = Evidence::new(SRC, format!("TLS certificate for {domain}"))
                 .with_attr("port", "443");
 
             let tls_info = resp.extensions().get::<reqwest::tls::TlsInfo>();

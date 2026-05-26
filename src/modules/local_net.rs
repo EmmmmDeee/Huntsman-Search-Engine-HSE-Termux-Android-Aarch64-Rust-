@@ -17,6 +17,8 @@ use crate::core::{
     scan::Target,
 };
 
+const SRC: &str = "local_net";
+
 pub struct LocalNet;
 
 #[async_trait]
@@ -63,14 +65,13 @@ impl Module for LocalNet {
 
                 let state = tokio::fs::read_to_string(dir.join("operstate"))
                     .await
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_else(|_| "unknown".into());
+                    .map_or_else(|_| "unknown".into(), |s| s.trim().to_string());
 
                 let iface = iface_os.to_string_lossy();
                 let mut e = Entity::new(EntityKind::MacAddress, &mac, 0.95, &ctx.scan_id);
                 e.tag("local-interface");
                 e.add_evidence(
-                    Evidence::new("local_net", format!("Local interface {iface} ({state})"))
+                    Evidence::new(SRC, format!("Local interface {iface} ({state})"))
                         .with_attr("interface", iface.as_ref())
                         .with_attr("operstate", &state),
                 );
@@ -111,7 +112,7 @@ fn parse_arp(content: &str, scan_id: &str, result: &mut ModuleResult) {
 
         let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, 0.95, scan_id);
         ip_entity.tag("local-arp");
-        let mut ip_ev = Evidence::new("local_net", format!("ARP entry on {dev}"))
+        let mut ip_ev = Evidence::new(SRC, format!("ARP entry on {dev}"))
             .with_attr("mac", mac)
             .with_attr("interface", dev)
             .with_attr("hw_type", hw_type)
@@ -127,7 +128,7 @@ fn parse_arp(content: &str, scan_id: &str, result: &mut ModuleResult) {
         if let Some(v) = vendor {
             mac_entity.tag(format!("vendor:{}", v.to_lowercase().replace(' ', "-")));
         }
-        let mut mac_ev = Evidence::new("local_net", format!("ARP: {ip} via {dev}"))
+        let mut mac_ev = Evidence::new(SRC, format!("ARP: {ip} via {dev}"))
             .with_attr("ip", ip)
             .with_attr("interface", dev)
             .with_attr("hw_type", hw_type)

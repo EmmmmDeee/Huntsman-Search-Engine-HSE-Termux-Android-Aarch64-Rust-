@@ -29,6 +29,8 @@ use crate::util::termux::termux_cmd;
 
 const OPENCELLID_KEY_ENV: &str = "HUNTSMAN_OPENCELLID_KEY";
 
+const SRC: &str = "cell_intel";
+
 pub struct CellIntel;
 
 #[derive(Deserialize)]
@@ -117,7 +119,7 @@ impl Module for CellIntel {
             dev.tag("cell-tower");
             dev.tag(format!("radio:{ctype}"));
             dev.add_evidence(
-                Evidence::new("cell_intel", format!("Cell tower {ctype} {tower_id}"))
+                Evidence::new(SRC, format!("Cell tower {ctype} {tower_id}"))
                     .with_attr("type", ctype)
                     .with_attr("mcc", mcc.as_ref())
                     .with_attr("mnc", mnc.as_ref())
@@ -362,7 +364,7 @@ fn parse_cells_survey(stdout: &[u8], scan_id: &str) -> ModuleResult {
         e.tag("cell-tower");
         e.tag(format!("radio:{ctype}"));
         e.add_evidence(
-            Evidence::new("cell_intel", format!("Cell tower {ctype} {tower_id}"))
+            Evidence::new(SRC, format!("Cell tower {ctype} {tower_id}"))
                 .with_attr("type", ctype)
                 .with_attr("mcc", mcc.as_ref())
                 .with_attr("mnc", mnc.as_ref())

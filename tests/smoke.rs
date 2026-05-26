@@ -677,7 +677,11 @@ async fn max_concurrent_zero_uses_sequential_path() {
     let (engine, _store, sid, target, ctx) =
         setup(modules, "sequential_zero", TargetKind::Email, "x@y.com");
 
-    let scan = Scan::new(sid.clone(), target.clone()); // default opts → max_concurrent = 0
+    let opts = ScanOptions {
+        max_concurrent: 0,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
     let _ = engine.run(scan, target, ctx).await.unwrap();
 
     let observed = peak.load(std::sync::atomic::Ordering::SeqCst);

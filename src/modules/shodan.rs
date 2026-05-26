@@ -70,6 +70,8 @@ struct InternetDbResp {
 
 // ── Module impl ──────────────────────────────────────────────────────
 
+const SRC: &str = "shodan";
+
 pub struct Shodan;
 
 #[async_trait]
@@ -163,7 +165,7 @@ impl Shodan {
         let ports_csv = ports_sorted
             .iter()
             .take(MAX_PORTS)
-            .map(|p| p.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
         let mut ev = Evidence::new(
@@ -179,13 +181,23 @@ impl Shodan {
         .with_attr("port_count", body.ports.len().to_string());
 
         if !body.vulns.is_empty() {
-            let v: Vec<&str> = body.vulns.iter().take(16).map(|s| s.as_str()).collect();
+            let v: Vec<&str> = body
+                .vulns
+                .iter()
+                .take(16)
+                .map(std::string::String::as_str)
+                .collect();
             ev = ev
                 .with_attr("vulns", v.join(","))
                 .with_attr("vuln_count", body.vulns.len().to_string());
         }
         if !body.cpes.is_empty() {
-            let c: Vec<&str> = body.cpes.iter().take(8).map(|s| s.as_str()).collect();
+            let c: Vec<&str> = body
+                .cpes
+                .iter()
+                .take(8)
+                .map(std::string::String::as_str)
+                .collect();
             ev = ev.with_attr("cpes", c.join(","));
         }
         if !body.tags.is_empty() {
@@ -274,7 +286,7 @@ impl Shodan {
             entity.tag(format!("country:{}", c.to_uppercase()));
         }
 
-        let mut ev = Evidence::new("shodan", format!("Shodan host record for {ip}"));
+        let mut ev = Evidence::new(SRC, format!("Shodan host record for {ip}"));
         if let Some(o) = body.org.as_deref() {
             ev = ev.with_attr("org", o);
         }
@@ -336,7 +348,7 @@ impl Shodan {
             d.tag("shodan");
             d.tag(tags::PTR);
             d.add_evidence(
-                Evidence::new("shodan", format!("Hostname known for {ip}")).with_attr("ip", ip),
+                Evidence::new(SRC, format!("Hostname known for {ip}")).with_attr("ip", ip),
             );
             result.push(d);
         }

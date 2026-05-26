@@ -18,6 +18,8 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
+const SRC: &str = "abn_lookup";
+
 pub struct AbnLookup;
 
 const KEY_ENV: &str = "HUNTSMAN_ABR_GUID";
@@ -63,7 +65,7 @@ impl Module for AbnLookup {
 
         match target.kind {
             TargetKind::AbnAcn => {
-                let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+                let digits: String = value.chars().filter(char::is_ascii_digit).collect();
                 if digits.len() == 11 {
                     if let Some(data) = fetch_abn(guid, &digits).await {
                         parse_abn_result(&data, &ctx.scan_id, &mut result);
@@ -143,7 +145,7 @@ fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleResult) {
         org.tag("active");
     }
 
-    let mut ev = Evidence::new("abn_lookup", format!("ABR: {entity_name} (ABN {abn})"))
+    let mut ev = Evidence::new(SRC, format!("ABR: {entity_name} (ABN {abn})"))
         .with_attr("abn", &abn)
         .with_attr("entity_type", &entity_type)
         .with_attr("status", &status);
@@ -230,7 +232,10 @@ fn parse_name_results(data: &Value, query: &str, scan_id: &str, result: &mut Mod
         let name_type = str_field(entry, "NameType").unwrap_or_default();
         let state = str_field(entry, "State").unwrap_or_default();
         let postcode = str_field(entry, "Postcode").unwrap_or_default();
-        let score = entry.get("Score").and_then(|v| v.as_u64()).unwrap_or(0);
+        let score = entry
+            .get("Score")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
 
         if name.is_empty() || abn.is_empty() {
             continue;
@@ -279,7 +284,7 @@ fn parse_name_results(data: &Value, query: &str, scan_id: &str, result: &mut Mod
             };
             let mut addr_entity = Entity::new(EntityKind::Address, &addr, 0.65, scan_id);
             addr_entity.tag("abr");
-            addr_entity.add_evidence(Evidence::new("abn_lookup", format!("Location for {name}")));
+            addr_entity.add_evidence(Evidence::new(SRC, format!("Location for {name}")));
             result.push(addr_entity);
         }
     }
@@ -289,7 +294,7 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
     v.get(key)
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 #[cfg(test)]

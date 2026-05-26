@@ -51,6 +51,16 @@ enum StopReason {
     Cancelled,
 }
 
+/// Accumulator for per-scan module execution statistics.
+/// Created in `run()`, threaded through the dispatch chain, and applied
+/// to the `Scan` record in `finalise_scan`.
+#[derive(Debug, Default)]
+pub(crate) struct ModuleStats {
+    pub run: usize,
+    pub errored: usize,
+    pub timed_out: usize,
+}
+
 impl StopReason {
     fn label(&self) -> String {
         match self {
@@ -133,10 +143,19 @@ impl ScanEngine {
         let mut entity_map: HashMap<String, Entity> =
             HashMap::with_capacity(opts.max_entities.unwrap_or(256).min(4096));
         let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
+        let mut stats = ModuleStats::default();
 
         visited.insert(visit_key(&target));
-        self.dispatch_target(&scan.id, &target, &ctx, &opts, &mut entity_map, false)
-            .await?;
+        self.dispatch_target(
+            &scan.id,
+            &target,
+            &ctx,
+            &opts,
+            &mut entity_map,
+            false,
+            &mut stats,
+        )
+        .await?;
 
         if opts.depth > 0 {
             let _ = self
@@ -147,11 +166,12 @@ impl ScanEngine {
                     started,
                     &mut entity_map,
                     &mut visited,
+                    &mut stats,
                 )
                 .await;
         }
 
-        self.finalise_scan(&mut scan, entity_map, &ctx)
+        self.finalise_scan(&mut scan, entity_map, &ctx, stats)
     }
 
     /// Persist entities, run the correlator, and mark the scan terminal.
@@ -160,6 +180,7 @@ impl ScanEngine {
         scan: &mut Scan,
         entity_map: HashMap<String, Entity>,
         ctx: &ModuleContext,
+        stats: ModuleStats,
     ) -> Result<Scan> {
         let total = entity_map.len();
         let mut persisted = 0usize;
@@ -177,6 +198,10 @@ impl ScanEngine {
         }
         let entity_count = persisted;
         let failed = total - persisted;
+
+        scan.modules_run = stats.run;
+        scan.modules_errored = stats.errored;
+        scan.modules_timed_out = stats.timed_out;
 
         if persisted == 0 && first_err.is_some() {
             scan.status = ScanStatus::Failed;
@@ -245,6 +270,7 @@ impl ScanEngine {
     }
 
     /// Drive the expansion loop. Returns the stop reason for diagnostics.
+    #[allow(clippy::too_many_arguments)]
     async fn run_expansion(
         &self,
         scan_id: &str,
@@ -253,6 +279,7 @@ impl ScanEngine {
         started: Instant,
         entity_map: &mut HashMap<String, Entity>,
         visited: &mut HashSet<(TargetKind, String)>,
+        stats: &mut ModuleStats,
     ) -> StopReason {
         for depth in 1..=opts.depth {
             // Cancellation gate at round entry — between rounds is the
@@ -270,6 +297,7 @@ impl ScanEngine {
             // Snapshot the entity set at round start — entities discovered
             // during this round will be expansion candidates in the next round,
             // not this one.
+            let has_paid = ctx.keys.contains_key("HUNTSMAN_OATHNET_KEY");
             let mut next: Vec<Target> = Vec::new();
             for entity in entity_map.values() {
                 if entity.c_effective() < opts.min_expand_confidence {
@@ -284,6 +312,15 @@ impl ScanEngine {
                     next.push(new_target);
                 }
             }
+
+            // Sort expansion candidates by geo NPV (descending) so the
+            // highest-value seeds expand first. This maximises geolocation
+            // yield within budget constraints.
+            next.sort_by(|a, b| {
+                crate::core::scan::geo_npv(b.kind, has_paid)
+                    .partial_cmp(&crate::core::scan::geo_npv(a.kind, has_paid))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
 
             if next.is_empty() {
                 let stop = StopReason::NoMoreCandidates;
@@ -326,7 +363,7 @@ impl ScanEngine {
                     return stop;
                 }
                 if let Err(e) = self
-                    .dispatch_target(scan_id, nt, ctx, opts, entity_map, true)
+                    .dispatch_target(scan_id, nt, ctx, opts, entity_map, true, stats)
                     .await
                 {
                     // Per-target dispatch errors are already surfaced as
@@ -406,9 +443,12 @@ impl ScanEngine {
         min_confidence: Option<f64>,
         entity_map: &mut HashMap<String, Entity>,
         result: TimeoutResult,
+        stats: &mut ModuleStats,
     ) {
+        stats.run += 1;
         match result {
             Err(_) => {
+                stats.timed_out += 1;
                 warn!(module = name, "timeout");
                 self.emit(
                     scan_id,
@@ -419,6 +459,7 @@ impl ScanEngine {
                 );
             }
             Ok(Err(e)) => {
+                stats.errored += 1;
                 warn!(module = name, error = %e, "module error");
                 self.emit(
                     scan_id,
@@ -466,6 +507,7 @@ impl ScanEngine {
 
     /// Dispatch every accepting module against `target`. Picks the
     /// sequential or concurrent codepath based on `opts.max_concurrent`.
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_target(
         &self,
         scan_id: &str,
@@ -474,18 +516,36 @@ impl ScanEngine {
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
         is_expansion: bool,
+        stats: &mut ModuleStats,
     ) -> Result<()> {
         if opts.max_concurrent == 0 {
-            self.dispatch_target_sequential(scan_id, target, ctx, opts, entity_map, is_expansion)
-                .await
+            self.dispatch_target_sequential(
+                scan_id,
+                target,
+                ctx,
+                opts,
+                entity_map,
+                is_expansion,
+                stats,
+            )
+            .await
         } else {
-            self.dispatch_target_concurrent(scan_id, target, ctx, opts, entity_map, is_expansion)
-                .await
+            self.dispatch_target_concurrent(
+                scan_id,
+                target,
+                ctx,
+                opts,
+                entity_map,
+                is_expansion,
+                stats,
+            )
+            .await
         }
     }
 
     /// v0.1 sequential dispatcher. Kept unchanged so the default scan
     /// behaviour (max_concurrent == 0) is byte-identical to pre-v0.8.
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_target_sequential(
         &self,
         scan_id: &str,
@@ -494,6 +554,7 @@ impl ScanEngine {
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
         is_expansion: bool,
+        stats: &mut ModuleStats,
     ) -> Result<()> {
         for module in &self.modules {
             // Cancellation gate at the top of the per-module loop — the
@@ -535,7 +596,14 @@ impl ScanEngine {
             )
             .await;
 
-            self.finalise_module_result(scan_id, name, opts.min_confidence, entity_map, result);
+            self.finalise_module_result(
+                scan_id,
+                name,
+                opts.min_confidence,
+                entity_map,
+                result,
+                stats,
+            );
 
             // Re-check the cancel flag before the throttle sleep so an
             // operator cancel between modules doesn't pay the full
@@ -564,6 +632,7 @@ impl ScanEngine {
     /// can interleave with each other and with `EntityFound` events from
     /// faster modules. SSE consumers handle this fine (each event is
     /// self-describing); CLI tracing logs will look interleaved.
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_target_concurrent(
         &self,
         scan_id: &str,
@@ -572,6 +641,7 @@ impl ScanEngine {
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
         is_expansion: bool,
+        stats: &mut ModuleStats,
     ) -> Result<()> {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
@@ -670,6 +740,7 @@ impl ScanEngine {
                 opts.min_confidence,
                 entity_map,
                 outcome.result,
+                stats,
             );
         }
         Ok(())
@@ -699,6 +770,14 @@ fn module_skip_reason(
     }
     if opts.passive_only && !module.is_passive() {
         return Some("not passive");
+    }
+    // Skip "any-target" passive modules on expansion — device sensors
+    // produce the same local data regardless of the expansion target.
+    // Passive modules that accept specific target kinds (email_parse,
+    // phone_intl, abn_lookup) still run since their output varies.
+    const SENSOR_MODULES: &[&str] = &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
+    if is_expansion && module.is_passive() && SENSOR_MODULES.contains(&name) {
+        return Some("sensor (already ran on seed round)");
     }
     None
 }

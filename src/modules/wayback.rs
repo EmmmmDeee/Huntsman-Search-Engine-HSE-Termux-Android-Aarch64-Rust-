@@ -84,7 +84,7 @@ impl Module for Wayback {
         // since fl=timestamp,statuscode).
         let status_codes: Vec<&str> = rows[1..]
             .iter()
-            .filter_map(|r| r.0.get(1).map(|s| s.as_str()))
+            .filter_map(|r| r.0.get(1).map(std::string::String::as_str))
             .collect();
         let status_dist = top_n(status_codes.iter().copied(), 10);
 

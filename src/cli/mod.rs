@@ -7,6 +7,7 @@
 
 mod provision;
 
+use std::io::IsTerminal;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -77,9 +78,19 @@ pub enum Command {
         /// entities back as new scan targets, up to N rounds deep.
         #[arg(short, long, default_value_t = 0)]
         depth: u32,
-        /// Only expand entities whose C_eff is at least this. Default 0.75
-        /// (Verified tier) — strong filter to keep expansion focused.
-        #[arg(long, default_value_t = 0.75)]
+        /// Shorthand for deep recursive expansion: sets depth=5,
+        /// min_expand_confidence=0.50, max_concurrent=4. Overridden by
+        /// explicit --depth / --min-expand-confidence / --max-concurrent.
+        #[arg(short = 'R', long)]
+        recursive: bool,
+        /// Automatically select optimal expansion depth based on seed type
+        /// and available API keys. Uses expected-value analysis to determine
+        /// the depth where marginal yield justifies the cost.
+        #[arg(short = 'A', long)]
+        auto: bool,
+        /// Only expand entities whose C_eff is at least this. Default 0.50
+        /// (Probable tier and above). Set 0.75 for strict Verified-only expansion.
+        #[arg(long, default_value_t = 0.50)]
         min_expand_confidence: f64,
         /// Hard cap on total entities. Stops expansion when reached.
         #[arg(long)]
@@ -87,10 +98,9 @@ pub enum Command {
         /// Hard cap on total wall-time in seconds. Stops expansion when exceeded.
         #[arg(long)]
         max_wall_time: Option<u64>,
-        /// Modules to run in parallel per round (v0.8+). 0 = sequential
-        /// (default). Higher values cut wall-time on modules that are
-        /// I/O-bound — most useful with `--depth` for big expansion rounds.
-        #[arg(long, default_value_t = 0)]
+        /// Modules to run in parallel per round. Default 4. Set 0 for
+        /// sequential dispatch (v0.1 behaviour, best on low-power devices).
+        #[arg(long, default_value_t = 4)]
         max_concurrent: usize,
         /// Output format: table | json.
         #[arg(short, long, default_value = "table")]
@@ -181,6 +191,30 @@ pub enum Command {
         #[arg(short, long)]
         modules: Option<String>,
     },
+    /// Radar mode: continuous Termux signal sweep → automatic pivoting.
+    ///
+    /// Sweeps device sensors (GPS, WiFi, cell towers, ARP, network interfaces)
+    /// on a fast interval. Each newly discovered entity (coordinates, BSSIDs,
+    /// IPs, cell tower IDs) is automatically fed into the full OSINT pivot
+    /// pipeline at the configured depth. Only NEW discoveries trigger pivots —
+    /// previously seen entities are skipped.
+    ///
+    /// Think of it as an intermittent radar that detects signals and
+    /// automatically enriches them through all available modules.
+    Radar {
+        /// Seconds between sensor sweeps. Default 10.
+        #[arg(short, long, default_value_t = 10)]
+        interval: u64,
+        /// Expansion depth for each discovered entity. Default 2.
+        #[arg(short, long, default_value_t = 2)]
+        depth: u32,
+        /// Stop after this many sweeps. Omit for infinite (Ctrl-C to stop).
+        #[arg(long)]
+        sweeps: Option<u32>,
+        /// Skip paid modules when pivoting.
+        #[arg(long)]
+        free_only: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -239,6 +273,8 @@ pub async fn run() -> Result<()> {
             passive_only,
             timeout,
             depth,
+            recursive,
+            auto,
             min_expand_confidence,
             max_entities,
             max_wall_time,
@@ -256,6 +292,8 @@ pub async fn run() -> Result<()> {
                 passive_only,
                 module_timeout_ms: timeout,
                 depth,
+                recursive,
+                auto,
                 min_expand_confidence,
                 max_entities,
                 max_wall_time_secs: max_wall_time,
@@ -299,6 +337,12 @@ pub async fn run() -> Result<()> {
             })
             .await
         }
+        Command::Radar {
+            interval,
+            depth,
+            sweeps,
+            free_only,
+        } => cmd_radar(interval, depth, sweeps, free_only).await,
     }
 }
 
@@ -470,9 +514,7 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
                     .filter(|e| e.status == KeyStatus::Invalid)
                     .count();
                 let total_uses: u64 = entries.iter().map(|e| e.use_count).sum();
-                let cat = key_pool::find_service(svc)
-                    .map(|d| d.category)
-                    .unwrap_or("custom");
+                let cat = key_pool::find_service(svc).map_or("custom", |d| d.category);
                 println!(
                     "{:<20} {:>5} {:>6} {:>7} {:>8}  {cat}",
                     svc,
@@ -622,8 +664,9 @@ pub fn parse_target_kind(s: &str) -> Result<TargetKind> {
         "organisation" | "org" => Ok(TargetKind::Organisation),
         "abn" | "acn" | "abn_acn" => Ok(TargetKind::AbnAcn),
         "apikey" | "api_key" | "key" => Ok(TargetKind::ApiKey),
+        "mac" | "bssid" | "mac_address" => Ok(TargetKind::MacAddress),
         other => Err(Error::InvalidTarget(format!(
-            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, url, asn, coords, address, org, abn, apikey"
+            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, url, asn, coords, address, org, abn, apikey, mac"
         ))),
     }
 }
@@ -651,6 +694,38 @@ fn build_runtime(
     let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
     let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
     Ok((store, bus, engine))
+}
+
+fn use_color() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    std::io::stdout().is_terminal()
+}
+
+fn color_confidence(c_eff: f64, text: &str, color: bool) -> String {
+    if !color {
+        return text.to_string();
+    }
+    if c_eff >= 0.75 {
+        format!("\x1b[32m{text}\x1b[0m")
+    } else if c_eff >= 0.40 {
+        format!("\x1b[33m{text}\x1b[0m")
+    } else {
+        format!("\x1b[31m{text}\x1b[0m")
+    }
+}
+
+fn color_severity(severity: &str, color: bool) -> String {
+    if !color {
+        return severity.to_string();
+    }
+    match severity.trim() {
+        "critical" => format!("\x1b[1;31m{severity}\x1b[0m"),
+        "high" => format!("\x1b[31m{severity}\x1b[0m"),
+        "medium" => format!("\x1b[33m{severity}\x1b[0m"),
+        _ => format!("\x1b[2m{severity}\x1b[0m"),
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -839,6 +914,8 @@ struct ScanCmd {
     pub passive_only: bool,
     pub module_timeout_ms: Option<u64>,
     pub depth: u32,
+    pub recursive: bool,
+    pub auto: bool,
     pub min_expand_confidence: f64,
     pub max_entities: Option<usize>,
     pub max_wall_time_secs: Option<u64>,
@@ -850,17 +927,35 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let target_kind = parse_target_kind(&cmd.kind)?;
     let target = Target::new(target_kind, cmd.value.clone());
 
+    let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth == 0 {
+        let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
+        let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
+        eprintln!(
+            "auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={})",
+            has_paid
+        );
+        (auto_depth, auto_conf, cmd.max_concurrent.max(4))
+    } else if cmd.recursive && cmd.depth == 0 {
+        (
+            7,
+            cmd.min_expand_confidence.min(0.40),
+            cmd.max_concurrent.max(4),
+        )
+    } else {
+        (cmd.depth, cmd.min_expand_confidence, cmd.max_concurrent)
+    };
+
     let options = ScanOptions {
         modules: split_csv(cmd.modules),
         exclude_modules: split_csv(cmd.exclude).unwrap_or_default(),
         throttle_ms: cmd.throttle_ms,
-        max_concurrent: cmd.max_concurrent,
+        max_concurrent,
         module_timeout_ms: cmd.module_timeout_ms,
         min_confidence: cmd.min_confidence,
         free_only: cmd.free_only,
         passive_only: cmd.passive_only,
-        depth: cmd.depth,
-        min_expand_confidence: cmd.min_expand_confidence,
+        depth,
+        min_expand_confidence,
         max_entities: cmd.max_entities,
         max_wall_time_secs: cmd.max_wall_time_secs,
         scan_tags: Vec::new(),
@@ -894,28 +989,37 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             }))?
         );
     } else {
+        let color = use_color();
         println!(
-            "\nScan {} — {} entities for {}={}\n",
+            "\nScan {} — {} entities for {}={}",
             &sid[..8],
             entities.len(),
             cmd.kind,
             cmd.value
         );
-        println!(
-            "{:<16} {:<46} {:>6} {:>6}  CLASS",
-            "KIND", "VALUE", "CONF", "C_EFF"
-        );
-        println!("{}", "-".repeat(86));
-        for e in &entities {
-            let val = truncate(&e.value, 46);
+        if scan.modules_run > 0 {
             println!(
-                "{:<16} {:<46} {:>6.3} {:>6.3}  {}",
-                e.kind.to_string(),
-                val,
-                e.confidence,
-                e.c_effective(),
-                e.classify()
+                "  modules: {} run, {} errored, {} timed out\n",
+                scan.modules_run, scan.modules_errored, scan.modules_timed_out
             );
+        } else {
+            println!();
+        }
+        println!(
+            "{:<16} {:<42} {:>6} {:>6}  {:<10} SRCS",
+            "KIND", "VALUE", "CONF", "C_EFF", "CLASS"
+        );
+        println!("{}", "-".repeat(90));
+        for e in &entities {
+            let val = truncate(&e.value, 42);
+            let c_eff = e.c_effective();
+            let class = e.classify();
+            let sources = e.evidence.len();
+            let row = format!(
+                "{:<16} {:<42} {:>6.3} {:>6.3}  {:<10} {}",
+                e.kind, val, e.confidence, c_eff, class, sources
+            );
+            println!("{}", color_confidence(c_eff, &row, color));
         }
         if !correlations.is_empty() {
             println!("\n{} correlations:\n", correlations.len());
@@ -925,16 +1029,183 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             );
             println!("{}", "-".repeat(86));
             for c in &correlations {
+                let sev_padded = format!("{:<10}", c.severity);
+                let sev_colored = color_severity(&sev_padded, color);
                 println!(
-                    "{:<10} {:<10} {:<40} {}",
+                    "{:<10} {} {:<40} {}",
                     c.rule_id,
-                    c.severity.to_string(),
+                    sev_colored,
                     truncate(&c.rule_name, 40),
                     c.description
                 );
             }
         }
     }
+    Ok(())
+}
+
+// ─── Radar command ───────────────────────────────────────────────────────────
+
+const SENSOR_MODULES: &[&str] = &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
+
+async fn cmd_radar(interval: u64, depth: u32, sweeps: Option<u32>, free_only: bool) -> Result<()> {
+    use std::collections::HashSet;
+
+    let color = use_color();
+    eprintln!(
+        "{}",
+        color_confidence(
+            0.85,
+            &format!("HSE radar — sweep every {interval}s, depth={depth}, Ctrl-C to stop"),
+            color
+        )
+    );
+
+    let (store, bus, engine) = build_runtime(1024)?;
+    let mut seen_entities: HashSet<String> = HashSet::new();
+    let mut sweep_num = 0u32;
+
+    loop {
+        sweep_num += 1;
+        if let Some(max) = sweeps
+            && sweep_num > max
+        {
+            break;
+        }
+
+        eprintln!(
+            "\n{}",
+            color_confidence(0.85, &format!("── sweep {sweep_num} ──"), color)
+        );
+
+        // Phase 1: Sensor sweep (passive modules only, any target, depth=0)
+        let sweep_sid = scan_id("radar", &format!("sweep-{sweep_num}"));
+        let sweep_target = Target::new(crate::core::scan::TargetKind::Domain, "radar.local");
+        let sweep_opts = ScanOptions {
+            modules: Some(SENSOR_MODULES.iter().map(|s| (*s).to_string()).collect()),
+            passive_only: true,
+            depth: 0,
+            max_concurrent: 4,
+            ..Default::default()
+        };
+        let sweep_scan =
+            Scan::new(sweep_sid.clone(), sweep_target.clone()).with_options(sweep_opts);
+        let sweep_ctx = ModuleContext {
+            scan_id: sweep_sid.clone(),
+            bus: bus.clone(),
+            http: crate::util::http::build_client(),
+            keys: keys::load(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
+        };
+
+        let sweep_result = engine.run(sweep_scan, sweep_target, sweep_ctx).await?;
+        let sweep_entities = store.entities_for_scan(&sweep_sid)?;
+
+        // Phase 2: Identify NEW entities (not seen in previous sweeps)
+        let mut new_targets: Vec<(crate::core::scan::TargetKind, String)> = Vec::new();
+        for entity in &sweep_entities {
+            if seen_entities.insert(entity.uid.clone())
+                && let Some(tk) = crate::core::scan::TargetKind::from_entity_kind(&entity.kind)
+            {
+                eprintln!(
+                    "  {} new: {} = {}",
+                    color_confidence(0.85, "◉", color),
+                    entity.kind,
+                    entity.value
+                );
+                new_targets.push((tk, entity.value.clone()));
+            }
+        }
+
+        if new_targets.is_empty() {
+            eprintln!(
+                "  {} no new signals ({} entities, {} known)",
+                color_confidence(0.3, "○", color),
+                sweep_result.entity_count,
+                seen_entities.len()
+            );
+        } else {
+            eprintln!(
+                "  {} {} new signal(s) → pivoting at depth {depth}",
+                color_confidence(0.85, "▶", color),
+                new_targets.len()
+            );
+
+            // Phase 3: Pivot on each new discovery through the full pipeline
+            for (tk, value) in &new_targets {
+                let pivot_sid = scan_id(tk.canonical_str(), value);
+                let pivot_target = Target::new(*tk, value.clone());
+                let pivot_opts = ScanOptions {
+                    depth,
+                    free_only,
+                    max_concurrent: 4,
+                    min_expand_confidence: 0.50,
+                    ..Default::default()
+                };
+                let pivot_scan =
+                    Scan::new(pivot_sid.clone(), pivot_target.clone()).with_options(pivot_opts);
+                let pivot_ctx = ModuleContext {
+                    scan_id: pivot_sid.clone(),
+                    bus: bus.clone(),
+                    http: crate::util::http::build_client(),
+                    keys: keys::load(),
+                    cancel: crate::core::cancel::CancelHandle::new(),
+                    proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
+                };
+
+                let result = engine.run(pivot_scan, pivot_target, pivot_ctx).await?;
+                let pivot_entities = store.entities_for_scan(&pivot_sid)?;
+
+                // Add pivot results to seen set
+                for e in &pivot_entities {
+                    seen_entities.insert(e.uid.clone());
+                }
+
+                eprintln!(
+                    "    {} {}={} → {} entities ({}run/{}err/{}to)",
+                    color_confidence(0.7, "↳", color),
+                    tk.canonical_str(),
+                    truncate(value, 30),
+                    result.entity_count,
+                    result.modules_run,
+                    result.modules_errored,
+                    result.modules_timed_out,
+                );
+
+                // Stream key findings to stdout as JSON
+                for e in &pivot_entities {
+                    if e.c_effective() >= 0.50 {
+                        let json = serde_json::json!({
+                            "sweep": sweep_num,
+                            "kind": e.kind.to_string(),
+                            "value": e.value,
+                            "confidence": e.confidence,
+                            "c_eff": e.c_effective(),
+                            "sources": e.evidence.len(),
+                            "tags": e.tags,
+                        });
+                        println!("{}", serde_json::to_string(&json).unwrap_or_default());
+                    }
+                }
+            }
+        }
+
+        // Wait for next sweep
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nradar stopped");
+                break;
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {}
+        }
+    }
+
+    eprintln!(
+        "\n{} sweeps, {} unique entities discovered",
+        sweep_num.min(sweeps.unwrap_or(sweep_num)),
+        seen_entities.len()
+    );
     Ok(())
 }
 

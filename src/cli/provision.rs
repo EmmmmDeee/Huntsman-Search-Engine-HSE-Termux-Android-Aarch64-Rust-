@@ -293,8 +293,7 @@ pub async fn cmd_provision_verify() -> Result<()> {
     // assertion only makes sense when the key is genuinely absent.
     let oathnet_real = loaded
         .get("HUNTSMAN_OATHNET_KEY")
-        .map(|v| !is_placeholder(v) && !v.is_empty())
-        .unwrap_or(false);
+        .is_some_and(|v| !is_placeholder(v) && !v.is_empty());
     if oathnet_real {
         println!("    missing-key:    HUNTSMAN_OATHNET_KEY populated — sub-test skipped");
     } else {

@@ -95,6 +95,8 @@ struct VulnBlock {
     count: Option<i64>,
 }
 
+const SRC: &str = "criminal_ip";
+
 pub struct CriminalIp;
 
 #[async_trait]
@@ -198,7 +200,7 @@ impl Module for CriminalIp {
             entity.tag(format!("country:{}", c.to_uppercase()));
         }
 
-        let mut ev = Evidence::new("criminal_ip", format!("Criminal IP report for {ip}"));
+        let mut ev = Evidence::new(SRC, format!("Criminal IP report for {ip}"));
         if let Some(s) = body.score.as_ref() {
             if let Some(i) = s.inbound.as_deref() {
                 ev = ev.with_attr("inbound_risk", i);

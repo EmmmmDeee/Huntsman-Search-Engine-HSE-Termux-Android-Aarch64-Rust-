@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn urlencode_unicode() {
         let encoded = urlencode("café");
-        assert!(encoded.contains("%"));
+        assert!(encoded.contains('%'));
         assert!(!encoded.contains("é"));
     }
 

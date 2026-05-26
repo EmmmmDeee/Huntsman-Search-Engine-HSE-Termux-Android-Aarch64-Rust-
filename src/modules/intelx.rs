@@ -199,7 +199,7 @@ impl Module for IntelX {
             .await
             .map_err(|e| Error::module("intelx", e.to_string()))?;
         let search_id = match (start.id, start.status) {
-            (Some(id), Some(0)) | (Some(id), None) if !id.is_empty() => id,
+            (Some(id), Some(0) | None) if !id.is_empty() => id,
             (_, Some(1)) => return Ok(ModuleResult::new()), // invalid term
             (_, Some(2)) => {
                 return Err(Error::module("intelx", "max concurrent searches reached"));
@@ -241,7 +241,7 @@ impl Module for IntelX {
             };
             all_records.extend(r.records);
             // Terminal states only: 2 = finished, 3 = none available.
-            if matches!(r.status, Some(2) | Some(3)) {
+            if matches!(r.status, Some(2 | 3)) {
                 finished = true;
                 break;
             }

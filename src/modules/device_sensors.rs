@@ -17,6 +17,8 @@ use crate::core::{
 };
 use crate::util::termux::termux_cmd;
 
+const SRC: &str = "device_sensors";
+
 pub struct DeviceSensors;
 
 // ── WiFi deserialization ────────────────────────────────────────────────
@@ -117,7 +119,7 @@ fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
         let mut e = Entity::new(EntityKind::MacAddress, bssid.as_str(), 0.95, scan_id);
         e.tag("wifi-connected");
         e.add_evidence(
-            Evidence::new("device_sensors", format!("Connected to: {ssid}"))
+            Evidence::new(SRC, format!("Connected to: {ssid}"))
                 .with_attr("ssid", ssid)
                 .with_attr("frequency_mhz", info.frequency_mhz.unwrap_or(0).to_string())
                 .with_attr("rssi_dbm", info.rssi.unwrap_or(0).to_string())
@@ -139,8 +141,7 @@ fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
     {
         let mut e = Entity::new(EntityKind::IpAddress, ip.as_str(), 0.90, scan_id);
         e.tag("local-wifi");
-        let mut ip_ev =
-            Evidence::new("device_sensors", format!("Local IP on {ssid}")).with_attr("ssid", ssid);
+        let mut ip_ev = Evidence::new(SRC, format!("Local IP on {ssid}")).with_attr("ssid", ssid);
         if let Some(ref bssid) = info.bssid {
             ip_ev = ip_ev.with_attr("bssid", bssid.as_str());
         }
@@ -180,7 +181,7 @@ fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
     e.tag("geoint");
     e.tag(format!("provider:{provider}"));
     e.add_evidence(
-        Evidence::new("device_sensors", format!("Location fix via {provider}"))
+        Evidence::new(SRC, format!("Location fix via {provider}"))
             .with_attr("latitude", fix.latitude.to_string())
             .with_attr("longitude", fix.longitude.to_string())
             .with_attr("altitude", fix.altitude.unwrap_or(0.0).to_string())
@@ -299,7 +300,7 @@ mod tests {
         let json = br#"{"latitude":-27.469824123,"longitude":153.025198765,
             "provider":"network"}"#;
         let r = parse_fix(json, "test");
-        assert_eq!(r.entities[0].value, "-27.4698241,153.0251988");
+        assert_eq!(r.entities[0].value, "-27.469824,153.025199");
     }
 
     #[test]
@@ -369,6 +370,6 @@ mod tests {
     fn negative_coordinates_handled() {
         let json = br#"{"latitude":-33.8688,"longitude":151.2093,"provider":"network"}"#;
         let r = parse_fix(json, "test");
-        assert_eq!(r.entities[0].value, "-33.8688000,151.2093000");
+        assert_eq!(r.entities[0].value, "-33.868800,151.209300");
     }
 }

@@ -100,7 +100,7 @@ pub fn val_str(item: &Value, key: &str) -> Option<String> {
     item.get(key)
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// Extract the first non-empty string from multiple candidate fields.

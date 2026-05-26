@@ -54,6 +54,8 @@ use crate::core::{
 use crate::util::http::fetch_json;
 use crate::util::oathnet::{self, paths, val_str};
 
+const SRC: &str = "geo_intel";
+
 pub struct GeoIntel;
 
 // ─── ipapi.co response ─────────────────────────────────────────────────────
@@ -140,6 +142,9 @@ impl Module for GeoIntel {
                 | TargetKind::Username
                 | TargetKind::Phone
                 | TargetKind::Domain
+                | TargetKind::Url
+                | TargetKind::FullName
+                | TargetKind::Organisation
         )
     }
 
@@ -150,10 +155,22 @@ impl Module for GeoIntel {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         match target.kind {
             TargetKind::IpAddress => process_ip(target, ctx).await,
-            TargetKind::Email | TargetKind::Username | TargetKind::Domain => {
-                process_identity(target, ctx).await
-            }
+            TargetKind::Email
+            | TargetKind::Username
+            | TargetKind::Domain
+            | TargetKind::FullName
+            | TargetKind::Organisation => process_identity(target, ctx).await,
             TargetKind::Phone => process_phone(target, ctx).await,
+            TargetKind::Url => {
+                // Extract domain from URL and run the domain identity path
+                if let Some(host) = target.value.split("//").nth(1) {
+                    let domain = host.split('/').next().unwrap_or(host);
+                    let domain_target = Target::new(TargetKind::Domain, domain);
+                    process_identity(&domain_target, ctx).await
+                } else {
+                    Ok(ModuleResult::new())
+                }
+            }
             _ => Ok(ModuleResult::new()),
         }
     }
@@ -293,6 +310,8 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
         TargetKind::Email => "email",
         TargetKind::Username => "username",
         TargetKind::Domain => "domain",
+        TargetKind::FullName => "full_name",
+        TargetKind::Organisation => "domain",
         _ => return Ok(result),
     };
 
@@ -467,7 +486,7 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
         {
             let coords = format!("{lat:.4},{lon:.4}");
             if seen.insert(format!("@tz-geo:{coords}")) {
-                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.20, &ctx.scan_id);
+                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.52, &ctx.scan_id);
                 e.tag("geoint");
                 e.tag("timezone-inferred");
                 e.tag("coarse");
@@ -499,7 +518,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     if let Some((country, cc, lat, lon)) = phone_prefix_to_country(phone) {
         let coords = format!("{lat:.4},{lon:.4}");
         if seen.insert(format!("@phone-geo:{coords}")) {
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.20, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.52, &ctx.scan_id);
             e.tag("geoint");
             e.tag("phone-prefix");
             e.tag("coarse");
@@ -589,9 +608,8 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
                             Entity::new(EntityKind::Coordinates, &coords, 0.50, &ctx.scan_id);
                         e.tag("geoint");
                         e.tag("breach-ip");
-                        let mut ev =
-                            Evidence::new("geo_intel", format!("Phone breach IP {ip} → {coords}"))
-                                .with_attr("ip", ip);
+                        let mut ev = Evidence::new(SRC, format!("Phone breach IP {ip} → {coords}"))
+                            .with_attr("ip", ip);
                         for (k, v) in &ev_attrs {
                             ev = ev.with_attr(k, v);
                         }
@@ -646,8 +664,8 @@ fn extract_oathnet_ip_geo(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    let lat = data.get("lat").and_then(|v| v.as_f64());
-    let lon = data.get("lon").and_then(|v| v.as_f64());
+    let lat = data.get("lat").and_then(serde_json::Value::as_f64);
+    let lon = data.get("lon").and_then(serde_json::Value::as_f64);
 
     if let (Some(lat), Some(lon)) = (lat, lon) {
         if lat == 0.0 && lon == 0.0 {
@@ -1014,6 +1032,9 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::Username, "alice")));
         assert!(m.accepts(&Target::new(TargetKind::Phone, "+61400000000")));
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
+        assert!(m.accepts(&Target::new(TargetKind::Url, "https://example.com")));
+        assert!(m.accepts(&Target::new(TargetKind::FullName, "John Doe")));
+        assert!(m.accepts(&Target::new(TargetKind::Organisation, "Acme Corp")));
     }
 
     #[test]

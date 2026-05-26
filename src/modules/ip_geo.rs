@@ -14,6 +14,8 @@ use crate::core::{
 };
 use crate::util::http::fetch_json;
 
+const SRC: &str = "ip_geo";
+
 pub struct IpGeo;
 
 #[derive(Deserialize)]
@@ -80,7 +82,16 @@ impl Module for IpGeo {
 
         if let (Some(lat), Some(lon)) = (data.lat, data.lon) {
             let coords = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.70, &ctx.scan_id);
+            // Confidence scaled by IP type: hosting/proxy locations are
+            // datacenter-level (low geo value), mobile IPs are cell-tower-level.
+            let base_conf = if data.hosting == Some(true) || data.proxy == Some(true) {
+                0.45
+            } else if data.mobile == Some(true) {
+                0.60
+            } else {
+                0.70
+            };
+            let mut e = Entity::new(EntityKind::Coordinates, &coords, base_conf, &ctx.scan_id);
             e.tag("geoint");
             if let Some(cc) = data.country_code.as_deref() {
                 e.tag(format!("country:{}", cc.to_uppercase()));
@@ -94,7 +105,7 @@ impl Module for IpGeo {
             if data.mobile == Some(true) {
                 e.tag("mobile");
             }
-            let mut ev = Evidence::new("ip_geo", format!("IP geolocation for {}", target.value))
+            let mut ev = Evidence::new(SRC, format!("IP geolocation for {}", target.value))
                 .with_attr("country", data.country.as_deref().unwrap_or("-"))
                 .with_attr("region", data.region_name.as_deref().unwrap_or("-"))
                 .with_attr("city", data.city.as_deref().unwrap_or("-"))
@@ -131,7 +142,7 @@ impl Module for IpGeo {
 
         if let Some(org) = &data.org {
             let mut e = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
-            let mut ev = Evidence::new("ip_geo", format!("IP org for {}", target.value))
+            let mut ev = Evidence::new(SRC, format!("IP org for {}", target.value))
                 .with_attr("asn", data.asn.as_deref().unwrap_or("-"));
             if let Some(isp) = data.isp.as_deref() {
                 ev = ev.with_attr("isp", isp);

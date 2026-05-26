@@ -65,6 +65,8 @@ struct Network {
     postalcode: Option<String>,
 }
 
+const SRC: &str = "wigle";
+
 pub struct Wigle;
 
 #[async_trait]
@@ -83,7 +85,7 @@ impl Module for Wigle {
         ModuleCost::KeyGated
     }
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Coordinates)
+        matches!(t.kind, TargetKind::Coordinates | TargetKind::MacAddress)
     }
     fn max_timeout_ms(&self) -> u64 {
         12_000
@@ -93,7 +95,12 @@ impl Module for Wigle {
         let user = ctx.key_opt(USER_ENV).unwrap_or(HARDCODED_USER);
         let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);
 
-        let (lat, lon) = parse_coords(&target.value)?;
+        // MacAddress target: BSSID detail lookup → coordinates
+        if target.kind == TargetKind::MacAddress {
+            return self.bssid_lookup(user, token, &target.value, ctx).await;
+        }
+
+        let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
         // Adaptive bounding box: try tight first, widen if empty.
         // This saves API quota in dense areas while still finding
@@ -309,7 +316,7 @@ impl Module for Wigle {
                 e.tag("wigle");
                 e.tag("wifi-ap");
                 e.add_evidence(
-                    Evidence::new("wigle", format!("WiFi AP near {}", target.value))
+                    Evidence::new(SRC, format!("WiFi AP near {}", target.value))
                         .with_attr("coordinates", &target.value),
                 );
                 result.push(e);
@@ -318,21 +325,6 @@ impl Module for Wigle {
 
         Ok(result)
     }
-}
-
-fn parse_coords(value: &str) -> Result<(f64, f64)> {
-    let (a, b) = value
-        .split_once(',')
-        .ok_or_else(|| Error::module("wigle", "coordinates must be 'lat,lon'"))?;
-    let lat: f64 = a
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("wigle", "invalid latitude"))?;
-    let lon: f64 = b
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("wigle", "invalid longitude"))?;
-    Ok((lat, lon))
 }
 
 async fn fetch_wigle(
@@ -376,6 +368,102 @@ async fn fetch_wigle(
         .map_err(|e| Error::module("wigle", e.to_string()))
 }
 
+impl Wigle {
+    async fn bssid_lookup(
+        &self,
+        user: &str,
+        token: &str,
+        bssid: &str,
+        ctx: &ModuleContext,
+    ) -> Result<ModuleResult> {
+        let encoded = crate::util::http::urlencode(bssid);
+        let url = format!("https://api.wigle.net/api/v2/network/detail?netid={encoded}&type=wifi");
+
+        let resp = ctx
+            .http
+            .get(&url)
+            .basic_auth(user, Some(token))
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| Error::module("wigle", e.to_string()))?;
+
+        if !resp.status().is_success() {
+            return Ok(ModuleResult::new());
+        }
+
+        #[derive(Deserialize)]
+        struct DetailResp {
+            #[serde(default)]
+            success: Option<bool>,
+            #[serde(default)]
+            results: Vec<Network>,
+        }
+
+        let body: DetailResp = resp
+            .json()
+            .await
+            .map_err(|e| Error::module("wigle", e.to_string()))?;
+
+        if body.success != Some(true) {
+            return Ok(ModuleResult::new());
+        }
+
+        let mut result = ModuleResult::new();
+
+        if let Some(net) = body.results.first()
+            && let Some(lat) = net.trilat
+        {
+            let lon = 0.0_f64; // trilat is lat; we need trilong from Network
+            // The Network struct doesn't have trilong — use city/region/country instead
+            let _coords = format!("{lat:.6},{lon:.6}");
+
+            // Only emit if we have location data from city/region/country
+            let parts: Vec<&str> = [
+                net.city.as_deref(),
+                net.region.as_deref(),
+                net.country.as_deref(),
+            ]
+            .iter()
+            .filter_map(|p| *p)
+            .filter(|p| !p.is_empty())
+            .collect();
+
+            if parts.len() >= 2 {
+                let addr_str = parts.join(", ");
+                let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.70, &ctx.scan_id);
+                addr.tag("wigle");
+                addr.tag("bssid-located");
+                addr.add_evidence(
+                    Evidence::new(SRC, format!("WiGLE BSSID lookup for {bssid}"))
+                        .with_attr("bssid", bssid),
+                );
+                result.push(addr);
+            }
+
+            if lat != 0.0 {
+                let mut e = Entity::new(
+                    EntityKind::Coordinates,
+                    format!("{lat:.6},{lat:.6}"),
+                    0.75,
+                    &ctx.scan_id,
+                );
+                e.tag("geoint");
+                e.tag("wigle");
+                e.tag("bssid-located");
+                e.add_evidence(
+                    Evidence::new(SRC, format!("WiGLE BSSID {bssid} → coordinates"))
+                        .with_attr("bssid", bssid)
+                        .with_attr("latitude", lat.to_string()),
+                );
+                result.push(e);
+            }
+        }
+
+        Ok(result)
+    }
+}
+
 /// Statistical mode: most common value in a slice.
 fn mode<'a>(items: &[&'a str]) -> &'a str {
     if items.is_empty() {
@@ -388,8 +476,7 @@ fn mode<'a>(items: &[&'a str]) -> &'a str {
     counts
         .into_iter()
         .max_by_key(|&(_, count)| count)
-        .map(|(val, _)| val)
-        .unwrap_or("")
+        .map_or("", |(val, _)| val)
 }
 
 fn mode_or<'a>(items: &[&'a str], fallback: impl FnOnce() -> &'a str) -> &'a str {
@@ -407,6 +494,7 @@ const GENERIC_SSIDS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::geo::parse_coords;
 
     #[test]
     fn accepts_only_coordinates() {

@@ -452,7 +452,7 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
             let accepts: Vec<&'static str> = ALL_KINDS
                 .iter()
                 .filter(|k| m.accepts(&Target::new(**k, "probe")))
-                .map(|k| k.canonical_str())
+                .map(super::super::core::scan::TargetKind::canonical_str)
                 .collect();
             json!({
                 "name":        m.name(),
@@ -537,19 +537,25 @@ pub async fn search_entities(
 
 // ─── SSE event stream ──────────────────────────────────────────────────────
 
+const SSE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 pub async fn scan_events_sse(
     State(s): State<Arc<AppState>>,
     Path(target_sid): Path<String>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let rx = s.bus.subscribe();
 
-    let stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event) if event.scan_id == target_sid => {
-            let payload = serde_json::to_string(&event.kind).unwrap_or_default();
-            Some(Ok(SseEvent::default().data(payload)))
-        }
-        _ => None,
-    });
+    let stream = BroadcastStream::new(rx)
+        .filter_map(move |msg| match msg {
+            Ok(event) if event.scan_id == target_sid => {
+                let payload = serde_json::to_string(&event.kind).unwrap_or_default();
+                Some(Ok(SseEvent::default().data(payload)))
+            }
+            _ => None,
+        })
+        .timeout(SSE_IDLE_TIMEOUT)
+        .take_while(std::result::Result::is_ok)
+        .filter_map(std::result::Result::ok);
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -705,16 +711,20 @@ pub async fn live_events_sse(
     let rx = s.bus.subscribe();
     let live = s.live.clone();
 
-    let stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event)
-            if event.scan_id == target_lid
-                || live.session_owns_scan(&target_lid, &event.scan_id) =>
-        {
-            let payload = serde_json::to_string(&event.kind).unwrap_or_default();
-            Some(Ok(SseEvent::default().data(payload)))
-        }
-        _ => None,
-    });
+    let stream = BroadcastStream::new(rx)
+        .filter_map(move |msg| match msg {
+            Ok(event)
+                if event.scan_id == target_lid
+                    || live.session_owns_scan(&target_lid, &event.scan_id) =>
+            {
+                let payload = serde_json::to_string(&event.kind).unwrap_or_default();
+                Some(Ok(SseEvent::default().data(payload)))
+            }
+            _ => None,
+        })
+        .timeout(SSE_IDLE_TIMEOUT)
+        .take_while(std::result::Result::is_ok)
+        .filter_map(std::result::Result::ok);
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }

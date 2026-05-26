@@ -61,6 +61,8 @@ struct NominatimAddr {
 
 // ── Module ──────────────────────────────────────────────────────────
 
+const SRC: &str = "geocode";
+
 pub struct Geocode;
 
 #[async_trait]
@@ -136,9 +138,9 @@ impl Geocode {
             && let (Ok(lat), Ok(lon)) = (lat_str.parse::<f64>(), lon_str.parse::<f64>())
         {
             let coords = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.60, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.65, &ctx.scan_id);
             e.tag("geocoded");
-            let mut ev = Evidence::new("geocode", format!("Geocoded \"{addr}\" \u{2192} {coords}"))
+            let mut ev = Evidence::new(SRC, format!("Geocoded \"{addr}\" \u{2192} {coords}"))
                 .with_attr("input_address", addr)
                 .with_attr("latitude", lat_str)
                 .with_attr("longitude", lon_str);
@@ -158,7 +160,7 @@ impl Geocode {
     // ── Reverse geocode: Coordinates → Address ──────────────────────
 
     async fn reverse(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let (lat, lon) = parse_coords(&target.value)?;
+        let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
         let url = format!(
             "https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
@@ -185,11 +187,11 @@ impl Geocode {
 
         let display = data.display_name.as_deref().unwrap_or("-");
 
-        let mut entity = Entity::new(EntityKind::Address, display, 0.72, &ctx.scan_id);
+        let mut entity = Entity::new(EntityKind::Address, display, 0.65, &ctx.scan_id);
         entity.tag("geoint");
         entity.tag("reverse-geocoded");
 
-        let mut ev = Evidence::new("geocode", format!("Reverse geocode for {lat},{lon}"))
+        let mut ev = Evidence::new(SRC, format!("Reverse geocode for {lat},{lon}"))
             .with_attr("latitude", lat.to_string())
             .with_attr("longitude", lon.to_string())
             .with_attr("source", "OpenStreetMap Nominatim");
@@ -241,26 +243,12 @@ impl Geocode {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-fn parse_coords(value: &str) -> Result<(f64, f64)> {
-    let (lat_s, lon_s) = value
-        .split_once(',')
-        .ok_or_else(|| Error::module("geocode", "expected lat,lon"))?;
-    let lat: f64 = lat_s
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("geocode", "invalid latitude"))?;
-    let lon: f64 = lon_s
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("geocode", "invalid longitude"))?;
-    Ok((lat, lon))
-}
-
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::geo::parse_coords;
 
     // -- acceptance tests (from forward_geocode) -------------------------
 

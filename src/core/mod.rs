@@ -25,6 +25,34 @@ pub mod tags {
     pub const PASSWORD_AT_RISK: &str = "password-at-risk";
     pub const MULTI_DEVICE: &str = "multi-device";
     pub const MISSING_SECURITY_HEADERS: &str = "missing-security-headers";
+
+    // Geolocation
+    pub const GEOINT: &str = "geoint";
+    pub const GEOLOCATION_LEAD: &str = "geolocation-lead";
+    pub const COARSE: &str = "coarse";
+
+    // Device / local
+    pub const WIFI_AP: &str = "wifi-ap";
+    pub const CELL_TOWER: &str = "cell-tower";
+    pub const LOCAL_ARP: &str = "local-arp";
+    pub const LOCAL_INTERFACE: &str = "local-interface";
+
+    // Reputation / threat
+    pub const THREAT_INTEL: &str = "threat-intel";
+    pub const MALICIOUS: &str = "malicious";
+    pub const TOR_EXIT: &str = "tor-exit";
+    pub const PROXY: &str = "proxy";
+    pub const VPN: &str = "vpn";
+    pub const VULNERABLE: &str = "vulnerable";
+
+    // Identity
+    pub const DERIVED: &str = "derived";
+    pub const SOCIAL_PROFILE: &str = "social-profile";
+    pub const CANDIDATE: &str = "candidate";
+
+    // Discovery method
+    pub const SEARCH_DISCOVERED: &str = "search-discovered";
+    pub const BREACH_DERIVED: &str = "breach-derived";
 }
 
 pub mod cancel {

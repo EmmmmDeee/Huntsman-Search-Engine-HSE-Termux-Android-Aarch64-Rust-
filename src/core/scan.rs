@@ -19,6 +19,7 @@ pub enum TargetKind {
     Address,
     Organisation,
     AbnAcn,
+    MacAddress,
     ApiKey,
 }
 
@@ -43,8 +44,8 @@ impl TargetKind {
             EntityKind::Organisation => Some(Self::Organisation),
             EntityKind::AbnAcn => Some(Self::AbnAcn),
             EntityKind::ApiKey => Some(Self::ApiKey),
+            EntityKind::MacAddress => Some(Self::MacAddress),
             EntityKind::Credential
-            | EntityKind::MacAddress
             | EntityKind::DeviceId
             | EntityKind::Password
             | EntityKind::Other(_) => None,
@@ -67,6 +68,7 @@ impl TargetKind {
             Self::Organisation => EntityKind::Organisation,
             Self::AbnAcn => EntityKind::AbnAcn,
             Self::ApiKey => EntityKind::ApiKey,
+            Self::MacAddress => EntityKind::MacAddress,
         }
     }
 
@@ -96,6 +98,7 @@ impl TargetKind {
             Self::Organisation => "organisation",
             Self::AbnAcn => "abn_acn",
             Self::ApiKey => "api_key",
+            Self::MacAddress => "mac_address",
         }
     }
 }
@@ -144,7 +147,7 @@ impl Target {
         if v.len() > 1024 {
             return Err("value too long (>1024 chars)");
         }
-        if v.chars().any(|c| c.is_control()) {
+        if v.chars().any(char::is_control) {
             return Err("value contains control characters");
         }
         match self.kind {
@@ -180,7 +183,7 @@ impl Target {
                 }
             }
             TargetKind::Phone => {
-                let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+                let digits: String = v.chars().filter(char::is_ascii_digit).collect();
                 if digits.len() < 6 {
                     return Err("phone needs at least 6 digits");
                 }
@@ -220,7 +223,8 @@ impl Target {
             | TargetKind::FullName
             | TargetKind::Address
             | TargetKind::Organisation
-            | TargetKind::AbnAcn => {}
+            | TargetKind::AbnAcn
+            | TargetKind::MacAddress => {}
         }
         Ok(())
     }
@@ -262,6 +266,12 @@ pub struct Scan {
     pub entity_count: usize,
     pub error: Option<String>,
     #[serde(default)]
+    pub modules_run: usize,
+    #[serde(default)]
+    pub modules_errored: usize,
+    #[serde(default)]
+    pub modules_timed_out: usize,
+    #[serde(default)]
     pub options: ScanOptions,
 }
 
@@ -275,6 +285,9 @@ impl Scan {
             finished_at: None,
             entity_count: 0,
             error: None,
+            modules_run: 0,
+            modules_errored: 0,
+            modules_timed_out: 0,
             options: ScanOptions::default(),
         }
     }
@@ -364,7 +377,7 @@ impl Default for ScanOptions {
             modules: None,
             exclude_modules: Vec::new(),
             throttle_ms: 0,
-            max_concurrent: 0,
+            max_concurrent: 4,
             module_timeout_ms: None,
             min_confidence: None,
             free_only: false,
@@ -380,7 +393,179 @@ impl Default for ScanOptions {
 }
 
 fn default_min_expand_confidence() -> f64 {
-    0.75
+    0.50
+}
+
+/// Compute the geo-maximising expansion depth for a given seed type and
+/// API tier. Generous with depth — geolocation is paramount. Prioritises
+/// free API paths to amplify pivot economy before spending paid queries.
+///
+/// Returns (depth, min_expand_confidence) tuple.
+pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
+    // Geolocation chain: Seed → IP/Domain → IP → Coords → Address → Coords
+    // Every identity seed needs at least 3 hops to reach refined geo.
+    // With paid keys, 5 hops catches OathNet → IP → geo → geocode → refine.
+    let depth = match kind {
+        // Identity seeds have the richest expansion graph:
+        //   R0: breach/search → IPs, domains, usernames, phones, addresses
+        //   R1: dns_intel on domains → more IPs; ip_geo on IPs → coords
+        //   R2: geocode on coords → addresses; username_search → profiles
+        //   R3: web_crawler on domains → emails; shodan → ports
+        //   R4: OathNet on discovered emails → more breach data → geo
+        TargetKind::Email | TargetKind::Username | TargetKind::FullName => {
+            if has_paid_keys {
+                5
+            } else {
+                4
+            }
+        }
+
+        // Domain seeds produce IPs at R0, geo at R1, addresses at R2,
+        // discovered emails at R2-3 feed back into identity expansion.
+        TargetKind::Domain => {
+            if has_paid_keys {
+                5
+            } else {
+                4
+            }
+        }
+
+        // IP seeds get geo at R0, reverse DNS domains at R0, those domains
+        // expand through the full domain pipeline at R1-R3.
+        TargetKind::IpAddress => {
+            if has_paid_keys {
+                4
+            } else {
+                3
+            }
+        }
+
+        // URL: extract domain at R0, then full domain pipeline.
+        TargetKind::Url => {
+            if has_paid_keys {
+                4
+            } else {
+                3
+            }
+        }
+
+        // Phone: geo_intel at R0 → coords + breach IPs. R1 geocodes.
+        // R2 expands breach IPs → domains. R3 catches remaining.
+        TargetKind::Phone => {
+            if has_paid_keys {
+                4
+            } else {
+                3
+            }
+        }
+
+        // ASN: ip_registry → IPs at R0. Full IP pipeline from R1.
+        TargetKind::Asn => {
+            if has_paid_keys {
+                4
+            } else {
+                3
+            }
+        }
+
+        // Coords/Address: already geo. R1 refines (geocode opposite
+        // direction). R2 expands wigle WiFi intelligence.
+        TargetKind::Coordinates | TargetKind::Address => 2,
+
+        // Organisation/ABN: abn_lookup → addresses. Then geocode pipeline.
+        TargetKind::Organisation | TargetKind::AbnAcn => {
+            if has_paid_keys {
+                3
+            } else {
+                2
+            }
+        }
+
+        // ApiKey: service domain → full domain pipeline.
+        TargetKind::ApiKey => 3,
+
+        // MacAddress: WiGLE BSSID → Coordinates → Address. High geo value.
+        TargetKind::MacAddress => 2,
+    };
+
+    // Lower confidence threshold to catch more geo-relevant entities:
+    // - Breach IPs at 0.50-0.60 are valuable geo seeds
+    // - Phone prefix coords at 0.52 need to expand through geocode
+    // - Social profile URLs at 0.55 lead to domains → IPs → geo
+    // With paid keys, go even lower since OathNet data is high-quality
+    // despite conservative confidence scoring.
+    let min_conf = if has_paid_keys { 0.40 } else { 0.45 };
+
+    (depth, min_conf)
+}
+
+/// Net Present Value score for a seed type. Higher = more valuable as a
+/// starting point for recursive OSINT expansion. Based on empirical
+/// expected-value analysis of entity yield across expansion rounds.
+///
+/// Used by the engine to prioritise expansion candidates when multiple
+/// entities are available — higher-NPV seeds expand first.
+pub fn seed_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
+    match kind {
+        TargetKind::Email => {
+            if has_paid_keys {
+                332.4
+            } else {
+                18.4
+            }
+        }
+        TargetKind::Domain => 89.8,
+        TargetKind::FullName => 70.5,
+        TargetKind::IpAddress => 17.9,
+        TargetKind::Username => 15.8,
+        TargetKind::Phone => {
+            if has_paid_keys {
+                13.5
+            } else {
+                2.6
+            }
+        }
+        TargetKind::Asn => 10.2,
+        TargetKind::ApiKey => 9.7,
+        TargetKind::Url => 9.4,
+        TargetKind::Organisation => 4.9,
+        TargetKind::AbnAcn => 4.9,
+        TargetKind::MacAddress => 8.5,
+        TargetKind::Coordinates => 1.9,
+        TargetKind::Address => 1.6,
+    }
+}
+
+/// Geo-specific NPV: expected Coordinates + Address entity yield.
+pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
+    match kind {
+        TargetKind::Email => {
+            if has_paid_keys {
+                48.2
+            } else {
+                8.7
+            }
+        }
+        TargetKind::Domain => 22.1,
+        TargetKind::FullName => 15.3,
+        TargetKind::IpAddress => 12.4,
+        TargetKind::Phone => {
+            if has_paid_keys {
+                9.8
+            } else {
+                1.8
+            }
+        }
+        TargetKind::Asn => 7.1,
+        TargetKind::Username => 6.3,
+        TargetKind::Url => 4.2,
+        TargetKind::ApiKey => 3.8,
+        TargetKind::MacAddress => 7.5,
+        TargetKind::AbnAcn => 2.5,
+        TargetKind::Organisation => 2.1,
+        TargetKind::Coordinates => 1.9,
+        TargetKind::Address => 1.6,
+    }
 }
 
 #[cfg(test)]
@@ -395,7 +580,8 @@ mod tests {
         assert!(!o.free_only);
         assert!(!o.passive_only);
         assert_eq!(o.depth, 0);
-        assert!((o.min_expand_confidence - 0.75).abs() < 1e-9);
+        assert!((o.min_expand_confidence - 0.50).abs() < 1e-9);
+        assert_eq!(o.max_concurrent, 4);
     }
 
     #[test]
@@ -422,9 +608,16 @@ mod tests {
 
     #[test]
     fn unscannable_entity_kinds_return_none() {
-        assert!(TargetKind::from_entity_kind(&EntityKind::MacAddress).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::Password).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
+    }
+
+    #[test]
+    fn mac_address_entity_expands() {
+        assert_eq!(
+            TargetKind::from_entity_kind(&EntityKind::MacAddress),
+            Some(TargetKind::MacAddress)
+        );
     }
 
     #[test]

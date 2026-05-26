@@ -8,6 +8,7 @@
 pub mod abn_lookup;
 pub mod api_key_probe;
 pub mod cell_intel;
+pub mod censys;
 pub mod cert_intel;
 pub mod contact_enrich;
 pub mod criminal_ip;
@@ -18,6 +19,7 @@ pub mod email_parse;
 pub mod geo_intel;
 pub mod geocode;
 pub mod github_user;
+pub mod greynoise;
 pub mod hudsonrock;
 pub mod intelx;
 pub mod ip_geo;
@@ -36,6 +38,7 @@ pub mod shodan;
 pub mod social_probe;
 pub mod threatfox;
 pub mod urlhaus;
+pub mod urlscan;
 pub mod username_search;
 pub mod wayback;
 pub mod web_crawler;
@@ -58,6 +61,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(oathnet_pro::OathnetPro),
         Arc::new(urlhaus::UrlHaus),
         Arc::new(shodan::Shodan),
+        Arc::new(censys::Censys),
+        Arc::new(greynoise::GreyNoise),
         Arc::new(dehashed::DeHashed),
         Arc::new(intelx::IntelX),
         Arc::new(securitytrails::SecurityTrails),
@@ -79,6 +84,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(search_engines::SearchEngines),
         Arc::new(webserver_banner::WebserverBanner),
         Arc::new(web_crawler::WebCrawler),
+        Arc::new(urlscan::UrlScan),
         Arc::new(email_parse::EmailParse),
         Arc::new(social_probe::SocialProbe),
         Arc::new(username_search::UsernameSearch),

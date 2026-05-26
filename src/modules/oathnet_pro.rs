@@ -17,18 +17,9 @@ use crate::core::{
 };
 use crate::util::oathnet::{self, paths, val_str, val_str_or};
 
-pub struct OathnetPro;
+const SRC: &str = "oathnet_pro";
 
-fn truncate_safe(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
+pub struct OathnetPro;
 
 #[async_trait]
 impl Module for OathnetPro {
@@ -203,8 +194,7 @@ impl Module for OathnetPro {
                     );
                     e.tag("oathnet-pro");
                     e.tag("discord");
-                    let mut ev =
-                        Evidence::new("oathnet_pro", format!("Discord lookup for {uname}"));
+                    let mut ev = Evidence::new(SRC, format!("Discord lookup for {uname}"));
                     if let Some(n) = data.get("username").and_then(|v| v.as_str()) {
                         ev = ev.with_attr("discord_username", n);
                     }
@@ -268,7 +258,7 @@ impl Module for OathnetPro {
 
 fn breach_evidence(item: &Value) -> Evidence {
     let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
-    let mut ev = Evidence::new("oathnet_pro", format!("Breach on {db}")).with_attr("dbname", &db);
+    let mut ev = Evidence::new(SRC, format!("Breach on {db}")).with_attr("dbname", &db);
     for (field, attr) in [
         ("country", "country"),
         ("gender", "gender"),
@@ -474,8 +464,7 @@ fn extract_stealer_entities(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    let mut ev = Evidence::new("oathnet_pro", "Stealer log entry".to_string())
-        .with_attr("source", "stealer");
+    let mut ev = Evidence::new(SRC, "Stealer log entry".to_string()).with_attr("source", "stealer");
     if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
         ev = ev.with_attr("url", &url);
     }
@@ -515,7 +504,7 @@ fn extract_stealer_entities(
                 e.tag("oathnet-pro");
                 e.tag("stealer");
                 e.add_evidence(
-                    Evidence::new("oathnet_pro", format!("Stealer credential for {dom}"))
+                    Evidence::new(SRC, format!("Stealer credential for {dom}"))
                         .with_attr("source", "stealer"),
                 );
                 result.push(e);
@@ -558,8 +547,7 @@ fn extract_holehe(data: Value, email: &str, scan_id: &str, result: &mut ModuleRe
 }
 
 fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResult) {
-    let mut ev =
-        Evidence::new("oathnet_pro", format!("IP info for {ip}")).with_attr("source", "ip-info");
+    let mut ev = Evidence::new(SRC, format!("IP info for {ip}")).with_attr("source", "ip-info");
     for (field, attr) in [
         ("city", "city"),
         ("regionName", "region"),
@@ -580,8 +568,8 @@ fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResu
         }
     }
 
-    let lat = data.get("lat").and_then(|v| v.as_f64());
-    let lon = data.get("lon").and_then(|v| v.as_f64());
+    let lat = data.get("lat").and_then(serde_json::Value::as_f64);
+    let lon = data.get("lon").and_then(serde_json::Value::as_f64);
     if let (Some(lat), Some(lon)) = (lat, lon) {
         let coords = format!("{lat},{lon}");
         let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.65, scan_id);
@@ -644,7 +632,7 @@ fn extract_victim_entities(
                 let mut e = Entity::new(EntityKind::IpAddress, ip, 0.50, scan_id);
                 e.tag("oathnet-pro");
                 e.tag("victim-device");
-                e.add_evidence(Evidence::new("oathnet_pro", "IP from compromised device"));
+                e.add_evidence(Evidence::new(SRC, "IP from compromised device"));
                 result.push(e);
             }
         }
@@ -887,7 +875,10 @@ fn extract_api_keys_from_item(
         if let Some(val) = val_str(item, field)
             && let Some((service, key_val)) = identify_api_key(&val)
         {
-            let dedup = format!("@apikey:{service}:{}", truncate_safe(key_val, 16));
+            let dedup = format!(
+                "@apikey:{service}:{}",
+                crate::util::str_util::truncate_safe(key_val, 16)
+            );
             if !seen.insert(dedup) {
                 continue;
             }
@@ -909,7 +900,10 @@ fn extract_api_keys_from_item(
                     ),
                 )
                 .with_attr("service", service)
-                .with_attr("key_prefix", truncate_safe(key_val, 8))
+                .with_attr(
+                    "key_prefix",
+                    crate::util::str_util::truncate_safe(key_val, 8),
+                )
                 .with_attr("key_length", key_val.len().to_string()),
             );
             result.push(entity);
@@ -929,7 +923,10 @@ fn extract_api_keys_from_item(
     if let Some(user) = val_str(item, "username")
         && let Some((service, key_val)) = identify_api_key(&user)
     {
-        let dedup = format!("@apikey:{service}:{}", truncate_safe(key_val, 16));
+        let dedup = format!(
+            "@apikey:{service}:{}",
+            crate::util::str_util::truncate_safe(key_val, 16)
+        );
         if seen.insert(dedup) {
             let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.75, scan_id);
             entity.tag("api-key");
@@ -1075,8 +1072,8 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
                 let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
                 entry.notes = Some(format!(
                     "OathNet password-match [{service}]: user={} url={}",
-                    &truncate_safe(&user, 25),
-                    &truncate_safe(&url, 50)
+                    &crate::util::str_util::truncate_safe(&user, 25),
+                    &crate::util::str_util::truncate_safe(&url, 50)
                 ));
                 pool.add(service, entry);
                 pool.add(
@@ -1135,7 +1132,7 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
                 let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
                 entry.notes = Some(format!(
                     "OathNet field-capture [{field_name}->{label}]: url={}",
-                    &truncate_safe(&url, 50)
+                    &crate::util::str_util::truncate_safe(&url, 50)
                 ));
                 pool.add(label, entry);
                 stored += 1;
@@ -1153,7 +1150,10 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
                 for field in ["password", "password_hash", "username"] {
                     if let Some(val) = val_str(item, field)
                         && let Some((svc, key_val)) = identify_api_key(&val)
-                        && seen.insert(format!("br:{svc}:{}", truncate_safe(key_val, 12)))
+                        && seen.insert(format!(
+                            "br:{svc}:{}",
+                            crate::util::str_util::truncate_safe(key_val, 12)
+                        ))
                     {
                         let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
                         entry.notes = Some(format!(
@@ -1198,7 +1198,7 @@ fn store_unique_stealer_keys(
             .map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str())
-                    .map(|s| s.to_lowercase())
+                    .map(str::to_lowercase)
                     .collect()
             })
             .unwrap_or_default();
@@ -1211,8 +1211,8 @@ fn store_unique_stealer_keys(
             entry.notes = Some(format!(
                 "OathNet stealer [{}]: user={} url={}",
                 service,
-                &truncate_safe(&user, 30),
-                &truncate_safe(&url, 60)
+                &crate::util::str_util::truncate_safe(&user, 30),
+                &crate::util::str_util::truncate_safe(&url, 60)
             ));
             if pool.add(service, entry) {
                 stored += 1;
@@ -1261,14 +1261,14 @@ fn store_api_credential(item: &Value) {
     let mut entry = crate::util::key_pool::KeyEntry::new(&password);
     entry.notes = Some(format!(
         "OathNet stealer: user={} url={}",
-        &truncate_safe(&username, 30),
-        &truncate_safe(&url, 60)
+        &crate::util::str_util::truncate_safe(&username, 30),
+        &crate::util::str_util::truncate_safe(&url, 60)
     ));
     if pool.add(service, entry) {
         let _ = crate::util::key_pool::save_pool(&pool);
     }
 
-    let user_entry = crate::util::key_pool::KeyEntry::new(format!("{}:{}", username, password));
+    let user_entry = crate::util::key_pool::KeyEntry::new(format!("{username}:{password}"));
     pool.add(&format!("{service}_login"), user_entry);
     let _ = crate::util::key_pool::save_pool(&pool);
 }

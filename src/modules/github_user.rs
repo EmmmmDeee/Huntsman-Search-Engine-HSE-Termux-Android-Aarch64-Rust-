@@ -25,6 +25,8 @@ use crate::core::{
 };
 use crate::util::http::error_snippet;
 
+const SRC: &str = "github_user";
+
 pub struct GithubUser;
 
 #[derive(Deserialize)]
@@ -109,7 +111,7 @@ impl Module for GithubUser {
         // Username entity with GitHub profile metadata.
         let mut u_entity = Entity::new(EntityKind::Username, &user.login, 0.95, &ctx.scan_id);
         u_entity.tag("github");
-        let mut ev = Evidence::new("github_user", format!("GitHub profile @{}", user.login))
+        let mut ev = Evidence::new(SRC, format!("GitHub profile @{}", user.login))
             .with_attr("github_id", user.id.to_string())
             .with_attr(
                 "profile_url",

@@ -18,6 +18,8 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
+const SRC: &str = "whois";
+
 pub struct Whois;
 
 const IANA_WHOIS: &str = "whois.iana.org:43";
@@ -164,7 +166,7 @@ impl Module for Whois {
             entity.tag("dnssec:signed");
         }
 
-        let mut ev = Evidence::new("whois", format!("WHOIS for {}", target.value));
+        let mut ev = Evidence::new(SRC, format!("WHOIS for {}", target.value));
         if let Some(v) = &registrar {
             ev = ev.with_attr("registrar", v);
         }
@@ -252,7 +254,7 @@ impl Module for Whois {
             let mut e = Entity::new(EntityKind::Domain, &host, 0.82, &_ctx.scan_id);
             e.tag("whois-ns");
             e.add_evidence(
-                Evidence::new("whois", format!("Nameserver for {}", target.value))
+                Evidence::new(SRC, format!("Nameserver for {}", target.value))
                     .with_attr("parent_target", target.value.as_str()),
             );
             result.push(e);
