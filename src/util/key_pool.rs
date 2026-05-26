@@ -466,7 +466,15 @@ pub fn load_pool() -> KeyPool {
     match std::fs::read_to_string(&path) {
         Ok(content) => match serde_json::from_str::<PoolData>(&content) {
             Ok(data) => KeyPool::from_data(data),
-            Err(_) => KeyPool::new(),
+            Err(e) => {
+                tracing::warn!(
+                    "key pool at {} is corrupted ({e}); backing up and starting fresh",
+                    path.display()
+                );
+                let backup = path.with_extension("json.bak");
+                let _ = std::fs::rename(&path, &backup);
+                KeyPool::new()
+            }
         },
         Err(_) => KeyPool::new(),
     }

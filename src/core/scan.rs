@@ -262,6 +262,12 @@ pub struct Scan {
     pub entity_count: usize,
     pub error: Option<String>,
     #[serde(default)]
+    pub modules_run: usize,
+    #[serde(default)]
+    pub modules_errored: usize,
+    #[serde(default)]
+    pub modules_timed_out: usize,
+    #[serde(default)]
     pub options: ScanOptions,
 }
 
@@ -275,6 +281,9 @@ impl Scan {
             finished_at: None,
             entity_count: 0,
             error: None,
+            modules_run: 0,
+            modules_errored: 0,
+            modules_timed_out: 0,
             options: ScanOptions::default(),
         }
     }
