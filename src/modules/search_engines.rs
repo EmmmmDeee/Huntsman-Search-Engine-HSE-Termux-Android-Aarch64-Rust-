@@ -50,6 +50,8 @@ use crate::core::{
     tags,
 };
 
+const SRC: &str = "search_engines";
+
 pub struct SearchEngines;
 
 const MAX_RESULTS_PER_ENGINE: usize = 20;
@@ -2534,7 +2536,7 @@ fn build_search_evidence(r: &SearchResult) -> Evidence {
         format!("[{}] {}", r.engine, r.url)
     };
 
-    let mut ev = Evidence::new("search_engines", summary)
+    let mut ev = Evidence::new(SRC, summary)
         .with_attr("url", &r.url)
         .with_attr("engine", r.engine)
         .with_attr("query", &r.query);

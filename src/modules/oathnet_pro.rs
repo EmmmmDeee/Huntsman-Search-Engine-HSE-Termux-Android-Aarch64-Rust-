@@ -17,6 +17,8 @@ use crate::core::{
 };
 use crate::util::oathnet::{self, paths, val_str, val_str_or};
 
+const SRC: &str = "oathnet_pro";
+
 pub struct OathnetPro;
 
 #[async_trait]
@@ -192,8 +194,7 @@ impl Module for OathnetPro {
                     );
                     e.tag("oathnet-pro");
                     e.tag("discord");
-                    let mut ev =
-                        Evidence::new("oathnet_pro", format!("Discord lookup for {uname}"));
+                    let mut ev = Evidence::new(SRC, format!("Discord lookup for {uname}"));
                     if let Some(n) = data.get("username").and_then(|v| v.as_str()) {
                         ev = ev.with_attr("discord_username", n);
                     }
@@ -257,7 +258,7 @@ impl Module for OathnetPro {
 
 fn breach_evidence(item: &Value) -> Evidence {
     let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
-    let mut ev = Evidence::new("oathnet_pro", format!("Breach on {db}")).with_attr("dbname", &db);
+    let mut ev = Evidence::new(SRC, format!("Breach on {db}")).with_attr("dbname", &db);
     for (field, attr) in [
         ("country", "country"),
         ("gender", "gender"),
@@ -463,8 +464,7 @@ fn extract_stealer_entities(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    let mut ev = Evidence::new("oathnet_pro", "Stealer log entry".to_string())
-        .with_attr("source", "stealer");
+    let mut ev = Evidence::new(SRC, "Stealer log entry".to_string()).with_attr("source", "stealer");
     if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
         ev = ev.with_attr("url", &url);
     }
@@ -504,7 +504,7 @@ fn extract_stealer_entities(
                 e.tag("oathnet-pro");
                 e.tag("stealer");
                 e.add_evidence(
-                    Evidence::new("oathnet_pro", format!("Stealer credential for {dom}"))
+                    Evidence::new(SRC, format!("Stealer credential for {dom}"))
                         .with_attr("source", "stealer"),
                 );
                 result.push(e);
@@ -547,8 +547,7 @@ fn extract_holehe(data: Value, email: &str, scan_id: &str, result: &mut ModuleRe
 }
 
 fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResult) {
-    let mut ev =
-        Evidence::new("oathnet_pro", format!("IP info for {ip}")).with_attr("source", "ip-info");
+    let mut ev = Evidence::new(SRC, format!("IP info for {ip}")).with_attr("source", "ip-info");
     for (field, attr) in [
         ("city", "city"),
         ("regionName", "region"),
@@ -633,7 +632,7 @@ fn extract_victim_entities(
                 let mut e = Entity::new(EntityKind::IpAddress, ip, 0.50, scan_id);
                 e.tag("oathnet-pro");
                 e.tag("victim-device");
-                e.add_evidence(Evidence::new("oathnet_pro", "IP from compromised device"));
+                e.add_evidence(Evidence::new(SRC, "IP from compromised device"));
                 result.push(e);
             }
         }

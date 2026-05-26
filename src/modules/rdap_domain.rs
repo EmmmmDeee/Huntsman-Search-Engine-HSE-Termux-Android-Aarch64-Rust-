@@ -84,6 +84,8 @@ fn slugify(s: &str) -> String {
     out
 }
 
+const SRC: &str = "rdap_domain";
+
 pub struct RdapDomain;
 
 #[async_trait]
@@ -153,7 +155,7 @@ impl Module for RdapDomain {
 
         let mut entity = Entity::new(EntityKind::Domain, domain, 0.88, &ctx.scan_id);
         entity.tag("rdap");
-        let mut ev = Evidence::new("rdap_domain", format!("RDAP record for {domain}"));
+        let mut ev = Evidence::new(SRC, format!("RDAP record for {domain}"));
 
         if let Some(h) = body.handle.as_deref() {
             ev = ev.with_attr("handle", h);
@@ -237,7 +239,7 @@ impl Module for RdapDomain {
             ns.tag("rdap-ns");
             ns.tag("ns");
             ns.add_evidence(
-                Evidence::new("rdap_domain", format!("RDAP nameserver for {domain}"))
+                Evidence::new(SRC, format!("RDAP nameserver for {domain}"))
                     .with_attr("parent", domain),
             );
             result.push(ns);

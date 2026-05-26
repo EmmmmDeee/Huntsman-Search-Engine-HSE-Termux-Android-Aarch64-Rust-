@@ -61,6 +61,8 @@ struct NominatimAddr {
 
 // ── Module ──────────────────────────────────────────────────────────
 
+const SRC: &str = "geocode";
+
 pub struct Geocode;
 
 #[async_trait]
@@ -138,7 +140,7 @@ impl Geocode {
             let coords = format!("{lat:.6},{lon:.6}");
             let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.60, &ctx.scan_id);
             e.tag("geocoded");
-            let mut ev = Evidence::new("geocode", format!("Geocoded \"{addr}\" \u{2192} {coords}"))
+            let mut ev = Evidence::new(SRC, format!("Geocoded \"{addr}\" \u{2192} {coords}"))
                 .with_attr("input_address", addr)
                 .with_attr("latitude", lat_str)
                 .with_attr("longitude", lon_str);
@@ -189,7 +191,7 @@ impl Geocode {
         entity.tag("geoint");
         entity.tag("reverse-geocoded");
 
-        let mut ev = Evidence::new("geocode", format!("Reverse geocode for {lat},{lon}"))
+        let mut ev = Evidence::new(SRC, format!("Reverse geocode for {lat},{lon}"))
             .with_attr("latitude", lat.to_string())
             .with_attr("longitude", lon.to_string())
             .with_attr("source", "OpenStreetMap Nominatim");

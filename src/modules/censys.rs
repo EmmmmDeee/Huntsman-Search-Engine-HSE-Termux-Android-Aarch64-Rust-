@@ -71,6 +71,8 @@ struct Coordinates {
 
 // ── Module impl ─────────────────────────────────────────────────────
 
+const SRC: &str = "censys";
+
 pub struct Censys;
 
 #[async_trait]
@@ -237,7 +239,7 @@ impl Module for Censys {
                 geo.tag(format!("country:{}", cc.to_uppercase()));
             }
 
-            let mut ev = Evidence::new("censys", format!("Censys geolocation for {ip}"))
+            let mut ev = Evidence::new(SRC, format!("Censys geolocation for {ip}"))
                 .with_attr("latitude", lat.to_string())
                 .with_attr("longitude", lon.to_string())
                 .with_attr("source", "censys");

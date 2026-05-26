@@ -30,6 +30,8 @@ use crate::core::{
 };
 use crate::util::http::{fetch_json_or_404, urlencode};
 
+const SRC: &str = "xposed_or_not";
+
 pub struct XposedOrNot;
 
 /// XposedOrNot's response shape. Successful lookups return one of:
@@ -187,7 +189,7 @@ fn build_result(
     }
 
     let joined = breaches.join(", ");
-    let mut ev = Evidence::new("xposed_or_not", format!("Found in {count} breach(es)"))
+    let mut ev = Evidence::new(SRC, format!("Found in {count} breach(es)"))
         .with_attr("count", count.to_string())
         .with_attr("breaches", joined);
 

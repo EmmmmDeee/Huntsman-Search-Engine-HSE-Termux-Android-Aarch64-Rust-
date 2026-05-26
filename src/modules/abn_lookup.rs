@@ -18,6 +18,8 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
+const SRC: &str = "abn_lookup";
+
 pub struct AbnLookup;
 
 const KEY_ENV: &str = "HUNTSMAN_ABR_GUID";
@@ -143,7 +145,7 @@ fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleResult) {
         org.tag("active");
     }
 
-    let mut ev = Evidence::new("abn_lookup", format!("ABR: {entity_name} (ABN {abn})"))
+    let mut ev = Evidence::new(SRC, format!("ABR: {entity_name} (ABN {abn})"))
         .with_attr("abn", &abn)
         .with_attr("entity_type", &entity_type)
         .with_attr("status", &status);
@@ -282,7 +284,7 @@ fn parse_name_results(data: &Value, query: &str, scan_id: &str, result: &mut Mod
             };
             let mut addr_entity = Entity::new(EntityKind::Address, &addr, 0.65, scan_id);
             addr_entity.tag("abr");
-            addr_entity.add_evidence(Evidence::new("abn_lookup", format!("Location for {name}")));
+            addr_entity.add_evidence(Evidence::new(SRC, format!("Location for {name}")));
             result.push(addr_entity);
         }
     }

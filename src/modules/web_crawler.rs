@@ -40,6 +40,8 @@ use crate::core::{
     tags,
 };
 
+const SRC: &str = "web_crawler";
+
 pub struct WebCrawler;
 
 const MAX_PAGES: usize = 60;
@@ -763,7 +765,7 @@ fn build_entities(
         let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.75, scan_id);
         e.tag(tags::WEB_SCRAPED);
         e.add_evidence(
-            Evidence::new("web_crawler", format!("Email found on {domain}"))
+            Evidence::new(SRC, format!("Email found on {domain}"))
                 .with_attr("source_domain", domain),
         );
         state.result.push(e);
@@ -774,7 +776,7 @@ fn build_entities(
         let mut e = Entity::new(EntityKind::Phone, phone.as_str(), 0.65, scan_id);
         e.tag(tags::WEB_SCRAPED);
         e.add_evidence(
-            Evidence::new("web_crawler", format!("Phone found on {domain}"))
+            Evidence::new(SRC, format!("Phone found on {domain}"))
                 .with_attr("source_domain", domain),
         );
         state.result.push(e);

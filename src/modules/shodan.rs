@@ -70,6 +70,8 @@ struct InternetDbResp {
 
 // ── Module impl ──────────────────────────────────────────────────────
 
+const SRC: &str = "shodan";
+
 pub struct Shodan;
 
 #[async_trait]
@@ -284,7 +286,7 @@ impl Shodan {
             entity.tag(format!("country:{}", c.to_uppercase()));
         }
 
-        let mut ev = Evidence::new("shodan", format!("Shodan host record for {ip}"));
+        let mut ev = Evidence::new(SRC, format!("Shodan host record for {ip}"));
         if let Some(o) = body.org.as_deref() {
             ev = ev.with_attr("org", o);
         }
@@ -346,7 +348,7 @@ impl Shodan {
             d.tag("shodan");
             d.tag(tags::PTR);
             d.add_evidence(
-                Evidence::new("shodan", format!("Hostname known for {ip}")).with_attr("ip", ip),
+                Evidence::new(SRC, format!("Hostname known for {ip}")).with_attr("ip", ip),
             );
             result.push(d);
         }

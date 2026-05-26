@@ -54,6 +54,8 @@ use crate::core::{
 use crate::util::http::fetch_json;
 use crate::util::oathnet::{self, paths, val_str};
 
+const SRC: &str = "geo_intel";
+
 pub struct GeoIntel;
 
 // ─── ipapi.co response ─────────────────────────────────────────────────────
@@ -589,9 +591,8 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
                             Entity::new(EntityKind::Coordinates, &coords, 0.50, &ctx.scan_id);
                         e.tag("geoint");
                         e.tag("breach-ip");
-                        let mut ev =
-                            Evidence::new("geo_intel", format!("Phone breach IP {ip} → {coords}"))
-                                .with_attr("ip", ip);
+                        let mut ev = Evidence::new(SRC, format!("Phone breach IP {ip} → {coords}"))
+                            .with_attr("ip", ip);
                         for (k, v) in &ev_attrs {
                             ev = ev.with_attr(k, v);
                         }

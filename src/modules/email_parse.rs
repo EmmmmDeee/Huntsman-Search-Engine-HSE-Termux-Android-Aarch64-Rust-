@@ -29,6 +29,8 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
+const SRC: &str = "email_parse";
+
 pub struct EmailParse;
 
 #[async_trait]
@@ -121,7 +123,7 @@ impl Module for EmailParse {
                         Entity::new(EntityKind::Username, &candidate, 0.45, &ctx.scan_id);
                     entity.tag("derived");
                     entity.add_evidence(
-                        Evidence::new("email_parse", format!("Derived from {}", target.value))
+                        Evidence::new(SRC, format!("Derived from {}", target.value))
                             .with_attr("source_email", &target.value)
                             .with_attr("derivation", "local_part"),
                     );

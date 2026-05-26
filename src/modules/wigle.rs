@@ -65,6 +65,8 @@ struct Network {
     postalcode: Option<String>,
 }
 
+const SRC: &str = "wigle";
+
 pub struct Wigle;
 
 #[async_trait]
@@ -309,7 +311,7 @@ impl Module for Wigle {
                 e.tag("wigle");
                 e.tag("wifi-ap");
                 e.add_evidence(
-                    Evidence::new("wigle", format!("WiFi AP near {}", target.value))
+                    Evidence::new(SRC, format!("WiFi AP near {}", target.value))
                         .with_attr("coordinates", &target.value),
                 );
                 result.push(e);

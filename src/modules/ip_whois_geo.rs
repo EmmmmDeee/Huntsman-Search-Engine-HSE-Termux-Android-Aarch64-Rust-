@@ -20,6 +20,8 @@ use crate::core::{
 };
 use crate::util::http::fetch_json;
 
+const SRC: &str = "ip_whois_geo";
+
 pub struct IpWhois;
 
 #[derive(Deserialize)]
@@ -171,7 +173,7 @@ impl Module for IpWhois {
             && !org.is_empty()
         {
             let mut e = Entity::new(EntityKind::Organisation, org, 0.60, &ctx.scan_id);
-            let mut ev = Evidence::new("ip_whois_geo", format!("IP org for {}", target.value));
+            let mut ev = Evidence::new(SRC, format!("IP org for {}", target.value));
             if let Some(asn) = conn.asn_num {
                 ev = ev.with_attr("asn", format!("AS{asn}"));
             }

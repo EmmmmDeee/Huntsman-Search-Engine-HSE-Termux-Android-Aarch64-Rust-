@@ -21,6 +21,8 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
+const SRC: &str = "phone_intl";
+
 pub struct PhoneIntl;
 
 /// (E.164 country-code prefix, ISO 3166-1 alpha-2, English name).
@@ -312,7 +314,7 @@ impl Module for PhoneIntl {
         entity.tag("e164");
         entity.tag(format!("country:{iso}"));
         entity.add_evidence(
-            Evidence::new("phone_intl", format!("Phone {canonical} → {name}"))
+            Evidence::new(SRC, format!("Phone {canonical} → {name}"))
                 .with_attr("country_code", prefix)
                 .with_attr("country_iso", iso)
                 .with_attr("country_name", name)

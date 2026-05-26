@@ -51,6 +51,8 @@ pub(crate) struct CommunityResp {
 
 // ── Module ────────────────────────────────────────────────────────
 
+const SRC: &str = "greynoise";
+
 pub struct GreyNoise;
 
 #[async_trait]
@@ -119,7 +121,7 @@ impl Module for GreyNoise {
             data.noise, data.riot
         );
 
-        let mut ev = Evidence::new("greynoise", summary)
+        let mut ev = Evidence::new(SRC, summary)
             .with_attr("classification", classification)
             .with_attr("noise", data.noise.to_string())
             .with_attr("riot", data.riot.to_string());
