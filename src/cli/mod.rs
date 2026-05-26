@@ -78,6 +78,11 @@ pub enum Command {
         /// entities back as new scan targets, up to N rounds deep.
         #[arg(short, long, default_value_t = 0)]
         depth: u32,
+        /// Shorthand for deep recursive expansion: sets depth=5,
+        /// min_expand_confidence=0.50, max_concurrent=4. Overridden by
+        /// explicit --depth / --min-expand-confidence / --max-concurrent.
+        #[arg(short = 'R', long)]
+        recursive: bool,
         /// Only expand entities whose C_eff is at least this. Default 0.75
         /// (Verified tier) — strong filter to keep expansion focused.
         #[arg(long, default_value_t = 0.75)]
@@ -240,6 +245,7 @@ pub async fn run() -> Result<()> {
             passive_only,
             timeout,
             depth,
+            recursive,
             min_expand_confidence,
             max_entities,
             max_wall_time,
@@ -257,6 +263,7 @@ pub async fn run() -> Result<()> {
                 passive_only,
                 module_timeout_ms: timeout,
                 depth,
+                recursive,
                 min_expand_confidence,
                 max_entities,
                 max_wall_time_secs: max_wall_time,
@@ -872,6 +879,7 @@ struct ScanCmd {
     pub passive_only: bool,
     pub module_timeout_ms: Option<u64>,
     pub depth: u32,
+    pub recursive: bool,
     pub min_expand_confidence: f64,
     pub max_entities: Option<usize>,
     pub max_wall_time_secs: Option<u64>,
@@ -883,17 +891,27 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let target_kind = parse_target_kind(&cmd.kind)?;
     let target = Target::new(target_kind, cmd.value.clone());
 
+    let (depth, min_expand_confidence, max_concurrent) = if cmd.recursive && cmd.depth == 0 {
+        (
+            5,
+            cmd.min_expand_confidence.min(0.50),
+            cmd.max_concurrent.max(4),
+        )
+    } else {
+        (cmd.depth, cmd.min_expand_confidence, cmd.max_concurrent)
+    };
+
     let options = ScanOptions {
         modules: split_csv(cmd.modules),
         exclude_modules: split_csv(cmd.exclude).unwrap_or_default(),
         throttle_ms: cmd.throttle_ms,
-        max_concurrent: cmd.max_concurrent,
+        max_concurrent,
         module_timeout_ms: cmd.module_timeout_ms,
         min_confidence: cmd.min_confidence,
         free_only: cmd.free_only,
         passive_only: cmd.passive_only,
-        depth: cmd.depth,
-        min_expand_confidence: cmd.min_expand_confidence,
+        depth,
+        min_expand_confidence,
         max_entities: cmd.max_entities,
         max_wall_time_secs: cmd.max_wall_time_secs,
         scan_tags: Vec::new(),
