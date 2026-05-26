@@ -20,7 +20,7 @@ use huntsman_search_engine::{
         module::{Module, ModuleContext, ModuleResult},
         scan::{Target, TargetKind},
     },
-    storage::store::Store,
+    storage::Store,
 };
 
 // ── Synthetic module (mirrors tests/smoke.rs) ─────────────────────────────
@@ -91,6 +91,9 @@ fn test_app(suffix: &str) -> axum::Router {
         allow_key_write: false,
         cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         proxy_pool: Default::default(),
+        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
+            huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
+        )),
     });
     router(state, "127.0.0.1:8080")
 }

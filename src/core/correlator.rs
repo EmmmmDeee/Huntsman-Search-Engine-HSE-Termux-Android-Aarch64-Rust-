@@ -1,34 +1,148 @@
-//! Correlation rules — rule-based post-scan analysis.
-//!
-//! Each rule function receives the entity set and scan_id, returns
-//! zero or more `Correlation` firings. Rules are deterministic —
-//! no LLMs, no fuzzy matching. Adding a new rule is a 10-line
-//! function plus one line in `evaluate_rules`.
+// Correlator — rule-based post-scan analysis.
+//
+// Runs after all modules complete (engine hook). Loads the entities the
+// scan produced and evaluates a fixed set of declarative rules. Each
+// firing rule produces a [`Correlation`] record persisted alongside the
+// scan and emitted on the event bus.
+
+// Correlation rules — rule-based post-scan analysis.
+//
+// Each rule function receives the entity set and scan_id, returns
+// zero or more `Correlation` firings. Rules are deterministic —
+// no LLMs, no fuzzy matching. Adding a new rule is a 10-line
+// function plus one line in `evaluate_rules`.
 
 use std::collections::HashSet;
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use crate::core::entity::{Entity, EntityKind};
+use crate::core::error::Result;
+use crate::core::port::StoragePort;
 
-use super::{Correlation, Severity};
+// ─── Severity ──────────────────────────────────────────────────────────────
 
-pub(super) fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl Severity {
+    pub fn as_canonical(&self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+impl std::fmt::Display for Severity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Low => write!(f, "LOW"),
+            Self::Medium => write!(f, "MEDIUM"),
+            Self::High => write!(f, "HIGH"),
+            Self::Critical => write!(f, "CRITICAL"),
+        }
+    }
+}
+
+// ─── Correlation ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Correlation {
+    pub rule_id: String,
+    pub rule_name: String,
+    pub severity: Severity,
+    pub description: String,
+    pub entity_uids: Vec<String>,
+    pub scan_id: String,
+    pub ts: u64,
+}
+
+impl Correlation {
+    pub(crate) fn new(
+        rule_id: &str,
+        rule_name: &str,
+        severity: Severity,
+        description: String,
+        entity_uids: Vec<String>,
+        scan_id: &str,
+        ts: u64,
+    ) -> Self {
+        Self {
+            rule_id: rule_id.into(),
+            rule_name: rule_name.into(),
+            severity,
+            description,
+            entity_uids,
+            scan_id: scan_id.into(),
+            ts,
+        }
+    }
+}
+
+// ─── Correlator ────────────────────────────────────────────────────────────
+
+pub struct Correlator {
+    store: Arc<dyn StoragePort>,
+}
+
+impl Correlator {
+    pub fn new(store: Arc<dyn StoragePort>) -> Self {
+        Self { store }
+    }
+
+    pub fn run(&self, scan_id: &str) -> Result<Vec<Correlation>> {
+        let entities = self.store.entities_for_scan(scan_id)?;
+        if entities.is_empty() {
+            return Ok(Vec::new());
+        }
+        let firings = evaluate_rules(&entities, scan_id);
+        for c in &firings {
+            self.store.upsert_correlation(c)?;
+        }
+        debug!(scan_id, fired = firings.len(), "correlator done");
+        Ok(firings)
+    }
+}
+
+// ─── Rules ─────────────────────────────────────────────────────────────────
+
+type RuleFn = fn(&[Entity], &str, u64) -> Vec<Correlation>;
+
+const RULES: &[RuleFn] = &[
+    rule_au_001_multi_breach,
+    rule_au_002_identity_cluster,
+    rule_au_003_high_corroboration,
+    rule_au_004_malicious_infrastructure,
+    rule_au_005_anonymous_network,
+    rule_au_006_proxy_vpn,
+    rule_au_007_high_risk_reputation,
+    rule_au_008_exposed_service,
+    rule_au_009_stealer_log,
+    rule_au_010_infra_consensus,
+    rule_au_011_cross_platform_username,
+    rule_au_012_identity_linked_domain,
+    rule_au_013_local_network_discovery,
+    rule_au_014_geo_cluster,
+    rule_au_015_threat_intel_hit,
+];
+
+fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     let now = crate::core::entity::unix_now();
     let mut out = Vec::new();
-    out.extend(rule_au_001_multi_breach(entities, scan_id, now));
-    out.extend(rule_au_002_identity_cluster(entities, scan_id, now));
-    out.extend(rule_au_003_high_corroboration(entities, scan_id, now));
-    out.extend(rule_au_004_malicious_infrastructure(entities, scan_id, now));
-    out.extend(rule_au_005_anonymous_network(entities, scan_id, now));
-    out.extend(rule_au_006_proxy_vpn(entities, scan_id, now));
-    out.extend(rule_au_007_high_risk_reputation(entities, scan_id, now));
-    out.extend(rule_au_008_exposed_service(entities, scan_id, now));
-    out.extend(rule_au_009_stealer_log(entities, scan_id, now));
-    out.extend(rule_au_010_infra_consensus(entities, scan_id, now));
-    out.extend(rule_au_011_cross_platform_username(entities, scan_id, now));
-    out.extend(rule_au_012_identity_linked_domain(entities, scan_id, now));
-    out.extend(rule_au_013_local_network_discovery(entities, scan_id, now));
-    out.extend(rule_au_014_geo_cluster(entities, scan_id, now));
-    out.extend(rule_au_015_threat_intel_hit(entities, scan_id, now));
+    for rule in RULES {
+        out.extend(rule(entities, scan_id, now));
+    }
     out
 }
 
@@ -465,7 +579,7 @@ fn rule_au_014_geo_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<C
 }
 
 fn rule_au_015_threat_intel_hit(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
-    const TI_SOURCES: &[&str] = &["alienvault_otx", "threatfox"];
+    const TI_SOURCES: &[&str] = &["ip_reputation", "threatfox"];
 
     entities
         .iter()
@@ -510,6 +624,104 @@ mod tests {
     use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
+    // ── Severity::as_canonical ──────────────────────────────────────────
+
+    #[test]
+    fn as_canonical_returns_lowercase() {
+        assert_eq!(Severity::Low.as_canonical(), "low");
+        assert_eq!(Severity::Medium.as_canonical(), "medium");
+        assert_eq!(Severity::High.as_canonical(), "high");
+        assert_eq!(Severity::Critical.as_canonical(), "critical");
+    }
+
+    // ── Severity Display ────────────────────────────────────────────────
+
+    #[test]
+    fn display_returns_uppercase() {
+        assert_eq!(Severity::Low.to_string(), "LOW");
+        assert_eq!(Severity::Medium.to_string(), "MEDIUM");
+        assert_eq!(Severity::High.to_string(), "HIGH");
+        assert_eq!(Severity::Critical.to_string(), "CRITICAL");
+    }
+
+    // ── Severity ordering ───────────────────────────────────────────────
+
+    #[test]
+    fn severity_ordering() {
+        assert!(Severity::Low < Severity::Medium);
+        assert!(Severity::Medium < Severity::High);
+        assert!(Severity::High < Severity::Critical);
+    }
+
+    // ── Severity serde ──────────────────────────────────────────────────
+
+    #[test]
+    fn severity_json_round_trip() {
+        for (variant, expected_str) in [
+            (Severity::Low, "\"low\""),
+            (Severity::Medium, "\"medium\""),
+            (Severity::High, "\"high\""),
+            (Severity::Critical, "\"critical\""),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, expected_str);
+            let back: Severity = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+        }
+    }
+
+    // ── Correlation::new ────────────────────────────────────────────────
+
+    #[test]
+    fn correlation_new_sets_all_fields() {
+        let uids = vec!["uid-a".to_string(), "uid-b".to_string()];
+        let c = Correlation::new(
+            "R001",
+            "test rule",
+            Severity::High,
+            "something suspicious".to_string(),
+            uids.clone(),
+            "scan-1",
+            1700000000,
+        );
+
+        assert_eq!(c.rule_id, "R001");
+        assert_eq!(c.rule_name, "test rule");
+        assert_eq!(c.severity, Severity::High);
+        assert_eq!(c.description, "something suspicious");
+        assert_eq!(c.entity_uids, uids);
+        assert_eq!(c.scan_id, "scan-1");
+        assert_eq!(c.ts, 1700000000);
+    }
+
+    // ── Correlation serde round-trip ────────────────────────────────────
+
+    #[test]
+    fn correlation_json_round_trip() {
+        let original = Correlation::new(
+            "R002",
+            "exposed creds",
+            Severity::Critical,
+            "credentials found in breach db".to_string(),
+            vec!["uid-x".to_string()],
+            "scan-99",
+            1700000001,
+        );
+
+        let json = serde_json::to_string(&original).unwrap();
+        let back: Correlation = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(back.rule_id, original.rule_id);
+        assert_eq!(back.rule_name, original.rule_name);
+        assert_eq!(back.severity, original.severity);
+        assert_eq!(back.description, original.description);
+        assert_eq!(back.entity_uids, original.entity_uids);
+        assert_eq!(back.scan_id, original.scan_id);
+        assert_eq!(back.ts, original.ts);
+    }
+
+    // ── Rule test helpers ───────────────────────────────────────────────
+
     fn email(value: &str, sources: &[&str]) -> Entity {
         let mut e = Entity::new(EntityKind::Email, value, 0.9, "scan-test");
         for src in sources {
@@ -545,6 +757,8 @@ mod tests {
         e
     }
 
+    // ── AU-001 ──────────────────────────────────────────────────────────
+
     #[test]
     fn au001_fires_at_two_breach_sources() {
         let e = email("x@y.com", &["hudsonrock", "breach_directory"]);
@@ -565,6 +779,8 @@ mod tests {
         let e = email("x@y.com", &["crtsh", "dns_resolver"]);
         assert!(rule_au_001_multi_breach(&[e], "s1", 0).is_empty());
     }
+
+    // ── AU-002 ──────────────────────────────────────────────────────────
 
     #[test]
     fn au002_fires_with_all_three_kinds() {
@@ -588,6 +804,8 @@ mod tests {
         assert!(rule_au_002_identity_cluster(&entities, "s", 0).is_empty());
     }
 
+    // ── AU-003 ──────────────────────────────────────────────────────────
+
     #[test]
     fn au003_fires_at_corroboration_three() {
         let mut e = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
@@ -604,6 +822,8 @@ mod tests {
         assert!(rule_au_003_high_corroboration(&[e], "s", 0).is_empty());
     }
 
+    // ── AU-004 ──────────────────────────────────────────────────────────
+
     #[test]
     fn au004_fires_on_malicious_domain() {
         let e = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
@@ -618,6 +838,8 @@ mod tests {
         assert!(rule_au_004_malicious_infrastructure(&[e], "s", 0).is_empty());
     }
 
+    // ── AU-005 ──────────────────────────────────────────────────────────
+
     #[test]
     fn au005_fires_on_tor_exit() {
         let e = tagged(EntityKind::IpAddress, "1.1.1.1", &["tor-exit"]);
@@ -625,6 +847,8 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].severity, Severity::High);
     }
+
+    // ── AU-006 ──────────────────────────────────────────────────────────
 
     #[test]
     fn au006_fires_on_vpn_but_not_tor() {
@@ -649,6 +873,8 @@ mod tests {
         assert!(rule_au_006_proxy_vpn(&[anon_vpn], "s", 0).is_empty());
     }
 
+    // ── AU-007 ──────────────────────────────────────────────────────────
+
     #[test]
     fn au007_fires_on_high_risk() {
         let e = tagged(EntityKind::IpAddress, "4.4.4.4", &["high-risk", "scanner"]);
@@ -656,6 +882,8 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].severity, Severity::High);
     }
+
+    // ── AU-008 ──────────────────────────────────────────────────────────
 
     #[test]
     fn au008_fires_on_vulnerable_tag() {
@@ -665,6 +893,8 @@ mod tests {
         assert_eq!(r[0].rule_id, "AU-008");
     }
 
+    // ── AU-009 ──────────────────────────────────────────────────────────
+
     #[test]
     fn au009_fires_on_stealer_log() {
         let e = tagged(EntityKind::Email, "x@y.com", &["stealer-log"]);
@@ -672,6 +902,8 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].severity, Severity::High);
     }
+
+    // ── AU-010 ──────────────────────────────────────────────────────────
 
     #[test]
     fn au010_fires_at_three_sources_on_domain() {
@@ -693,6 +925,8 @@ mod tests {
         assert!(rule_au_010_infra_consensus(&[e], "s", 0).is_empty());
     }
 
+    // ── AU-011 ──────────────────────────────────────────────────────────
+
     #[test]
     fn au011_fires_on_three_platforms() {
         let e = username_summary("alice", 3, "github, reddit, twitter");
@@ -707,6 +941,8 @@ mod tests {
         let e = username_summary("alice", 2, "github, reddit");
         assert!(rule_au_011_cross_platform_username(&[e], "s", 0).is_empty());
     }
+
+    // ── AU-012 ──────────────────────────────────────────────────────────
 
     #[test]
     fn au012_fires_when_username_and_personal_site_url_present() {
@@ -744,6 +980,8 @@ mod tests {
         assert!(rule_au_012_identity_linked_domain(&entities, "s", 0).is_empty());
     }
 
+    // ── AU-013 ──────────────────────────────────────────────────────────
+
     #[test]
     fn au013_fires_on_two_lan_entities() {
         let entities = vec![
@@ -760,14 +998,18 @@ mod tests {
         assert!(rule_au_013_local_network_discovery(&entities, "s", 0).is_empty());
     }
 
+    // ── AU-014 ──────────────────────────────────────────────────────────
+
     #[test]
     fn au014_fires_on_two_geo_sources() {
         let mut e = Entity::new(EntityKind::Coordinates, "0,0", 0.9, "s");
         e.add_evidence(Evidence::new("wigle", "test"));
-        e.add_evidence(Evidence::new("gps_fix", "test"));
+        e.add_evidence(Evidence::new("device_sensors", "test"));
         let r = rule_au_014_geo_cluster(&[e], "s", 0);
         assert_eq!(r.len(), 1);
     }
+
+    // ── AU-015 ──────────────────────────────────────────────────────────
 
     #[test]
     fn au015_fires_on_threat_intel_tag() {
@@ -796,12 +1038,12 @@ mod tests {
     fn au015_attribution_excludes_non_ti_evidence() {
         let mut e = Entity::new(EntityKind::Domain, "bad.example", 0.9, "s");
         e.tag("threat-intel");
-        e.add_evidence(Evidence::new("alienvault_otx", "ti-hit"));
+        e.add_evidence(Evidence::new("ip_reputation", "ti-hit"));
         e.add_evidence(Evidence::new("whois", "registry-data"));
         e.add_evidence(Evidence::new("dns_resolver", "a-record"));
         let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
         assert_eq!(r.len(), 1);
-        assert!(r[0].description.contains("alienvault_otx"));
+        assert!(r[0].description.contains("ip_reputation"));
         assert!(!r[0].description.contains("whois"));
         assert!(!r[0].description.contains("dns_resolver"));
     }
@@ -813,6 +1055,8 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert!(r[0].description.contains("curated threat-intel feed"));
     }
+
+    // ── Cross-cutting ───────────────────────────────────────────────────
 
     #[test]
     fn severity_orders_correctly() {

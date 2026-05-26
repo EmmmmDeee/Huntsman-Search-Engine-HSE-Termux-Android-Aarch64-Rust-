@@ -138,9 +138,30 @@ impl LiveScanner {
         }
     }
 
+    /// Maximum concurrent live sessions to prevent resource exhaustion.
+    const MAX_SESSIONS: usize = 10;
+
     /// Spawn a new live session. Returns the new `live_id`. Sessions run
     /// detached on the tokio runtime; cancellation is via [`stop`](Self::stop).
     pub fn start(&self, target: Target, scan_options: ScanOptions, live: LiveOptions) -> String {
+        {
+            let sessions = self.inner.sessions.read();
+            let active = sessions
+                .values()
+                .filter(|s| s.status == LiveStatus::Running)
+                .count();
+            if active >= Self::MAX_SESSIONS {
+                let oldest_id = sessions
+                    .values()
+                    .filter(|s| s.status == LiveStatus::Running)
+                    .min_by_key(|s| s.started_at)
+                    .map(|s| s.id.clone());
+                if let Some(id) = oldest_id {
+                    drop(sessions);
+                    self.stop(&id);
+                }
+            }
+        }
         let live_id = new_live_id(&target);
         let session = LiveSession {
             id: live_id.clone(),

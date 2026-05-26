@@ -42,7 +42,7 @@ fn scan_dir(dir: &Path, patterns: &[&str], violations: &mut Vec<String>) {
 #[test]
 fn core_does_not_import_storage_directly() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
-    let v = scan_for_violations(&dir, &["storage::store::Store", "crate::storage"]);
+    let v = scan_for_violations(&dir, &["storage::Store", "crate::storage"]);
     assert!(
         v.is_empty(),
         "core/ must not import storage/ directly — use StoragePort.\nViolations:\n{}",
@@ -112,8 +112,8 @@ fn all_modules_have_descriptions() {
 fn module_registry_count_is_stable() {
     let modules = huntsman_search_engine::modules::registry();
     assert!(
-        modules.len() >= 48,
-        "expected >=48 modules, got {}",
+        modules.len() >= 35,
+        "expected >=35 modules, got {}",
         modules.len()
     );
 }

@@ -1,18 +1,17 @@
-//! SSL/TLS certificate probe — free, zero API keys.
+//! Certificate intelligence — CT log search + live TLS probe.
 //!
-//! Connects to port 443 of a Domain target and extracts certificate
-//! metadata: issuer, subject, validity dates, Subject Alternative Names
-//! (SANs), serial number, and signature algorithm.
+//! Merges the former `crtsh` and `ssl_probe` modules into one pass.
+//! For a Domain target the module:
+//!   1. Queries crt.sh for CT-log entries (subdomains, issuers, validity).
+//!   2. Connects to port 443 and extracts the live certificate's SANs,
+//!      issuer, subject, serial, and HSTS header.
 //!
-//! SAN discovery is the key OSINT value: a certificate's SAN list
-//! reveals every domain the cert covers, often including internal
-//! subdomains, staging environments, and related brands that aren't
-//! visible via DNS or CT logs. Each discovered SAN that is a subdomain
-//! of the target is emitted as a Domain entity for expansion.
-//!
-//! Uses reqwest's TLS layer (rustls) — no additional dependencies.
+//! Discovered subdomains from both sources are deduplicated before emission.
+//! Free, no API key required.
 
 use async_trait::async_trait;
+use serde::Deserialize;
+use std::collections::HashSet;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -21,21 +20,35 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
+use crate::util::http::fetch_json;
 
-pub struct SslProbe;
+// ── crt.sh response types ──────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CrtEntry {
+    name_value: String,
+    issuer_name: Option<String>,
+    not_before: Option<String>,
+    not_after: Option<String>,
+    serial_number: Option<String>,
+}
+
+// ── Module ─────────────────────────────────────────────────────────
+
+pub struct CertIntel;
 
 #[async_trait]
-impl Module for SslProbe {
+impl Module for CertIntel {
     fn name(&self) -> &'static str {
-        "ssl_probe"
+        "cert_intel"
     }
 
     fn description(&self) -> &'static str {
-        "TLS certificate analysis and SAN subdomain discovery"
+        "Certificate intelligence: CT log search and live TLS probe"
     }
 
     fn priority(&self) -> u8 {
-        26
+        32
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -52,43 +65,96 @@ impl Module for SslProbe {
             return Ok(ModuleResult::new());
         }
 
+        let mut result = ModuleResult::new();
+        // Unified set of subdomains discovered by either source so we
+        // never emit duplicates.
+        let mut seen_subs: HashSet<String> = HashSet::new();
+        let parent = domain.to_lowercase();
+
+        // ── 1. crt.sh CT-log search ────────────────────────────────
+        let ct_url = format!("https://crt.sh/?q=%.{domain}&output=json");
+        if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, "cert_intel", &ct_url).await {
+            for entry in &entries {
+                for name in entry.name_value.split('\n') {
+                    let name = name.trim().trim_start_matches("*.").to_lowercase();
+                    if name.is_empty() || !name.contains('.') {
+                        continue;
+                    }
+                    if name == parent {
+                        continue;
+                    }
+                    if seen_subs.insert(name.clone()) {
+                        let mut e = Entity::new(EntityKind::Domain, &name, 0.88, &ctx.scan_id);
+                        e.tag(tags::CT_LOG);
+                        e.add_evidence(
+                            Evidence::new(
+                                "cert_intel",
+                                format!("Certificate transparency: {name}"),
+                            )
+                            .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))
+                            .with_attr("not_before", entry.not_before.as_deref().unwrap_or("-"))
+                            .with_attr("not_after", entry.not_after.as_deref().unwrap_or("-"))
+                            .with_attr(
+                                "serial_number",
+                                entry.serial_number.as_deref().unwrap_or("-"),
+                            )
+                            .with_attr("parent_domain", domain),
+                        );
+                        result.push(e);
+                    }
+                }
+            }
+        }
+
+        // ── 2. Live TLS certificate probe ──────────────────────────
         let url = format!("https://{domain}/");
-        let resp = ctx
+        if let Ok(resp) = ctx
             .http
             .head(&url)
             .send()
             .await
-            .map_err(|e| Error::module("ssl_probe", format!("TLS connect: {e}")))?;
-
-        let mut result = ModuleResult::new();
-        let mut entity = target.to_entity(0.88, &ctx.scan_id);
-        entity.tag("tls");
-
-        let mut ev = Evidence::new("ssl_probe", format!("TLS certificate for {domain}"))
-            .with_attr("port", "443");
-
-        let tls_info = resp.extensions().get::<reqwest::tls::TlsInfo>();
-        if let Some(info) = tls_info
-            && let Some(der) = info.peer_certificate()
+            .map_err(|e| Error::module("cert_intel", format!("TLS connect: {e}")))
         {
-            parse_certificate(der, domain, &ctx.scan_id, &mut entity, &mut ev, &mut result);
+            let mut entity = target.to_entity(0.88, &ctx.scan_id);
+            entity.tag("tls");
+
+            let mut ev = Evidence::new("cert_intel", format!("TLS certificate for {domain}"))
+                .with_attr("port", "443");
+
+            let tls_info = resp.extensions().get::<reqwest::tls::TlsInfo>();
+            if let Some(info) = tls_info
+                && let Some(der) = info.peer_certificate()
+            {
+                parse_certificate(
+                    der,
+                    domain,
+                    &ctx.scan_id,
+                    &mut entity,
+                    &mut ev,
+                    &mut result,
+                    &mut seen_subs,
+                );
+            }
+
+            let status = resp.status();
+            ev = ev.with_attr("http_status", status.as_u16().to_string());
+
+            if let Some(hsts) = resp.headers().get("strict-transport-security")
+                && let Ok(v) = hsts.to_str()
+            {
+                ev = ev.with_attr("hsts", v);
+                entity.tag("hsts");
+            }
+
+            entity.add_evidence(ev);
+            result.push(entity);
         }
 
-        let status = resp.status();
-        ev = ev.with_attr("http_status", status.as_u16().to_string());
-
-        if let Some(hsts) = resp.headers().get("strict-transport-security")
-            && let Ok(v) = hsts.to_str()
-        {
-            ev = ev.with_attr("hsts", v);
-            entity.tag("hsts");
-        }
-
-        entity.add_evidence(ev);
-        result.push(entity);
         Ok(result)
     }
 }
+
+// ── DER parsing helpers (from ssl_probe) ───────────────────────────
 
 fn parse_certificate(
     der: &[u8],
@@ -97,6 +163,7 @@ fn parse_certificate(
     entity: &mut Entity,
     ev: &mut Evidence,
     result: &mut ModuleResult,
+    seen_subs: &mut HashSet<String>,
 ) {
     let sans = extract_sans_from_der(der);
 
@@ -114,13 +181,13 @@ fn parse_certificate(
                 && san_lower.ends_with(&format!(".{target_lower}"))
                 && !san_lower.starts_with("*.");
 
-            if is_sub {
+            if is_sub && seen_subs.insert(san_lower.clone()) {
                 let mut sub = Entity::new(EntityKind::Domain, &san_lower, 0.85, scan_id);
                 sub.tag(tags::SUBDOMAIN);
                 sub.tag("tls-san");
                 sub.add_evidence(
                     Evidence::new(
-                        "ssl_probe",
+                        "cert_intel",
                         format!("TLS SAN on {target_domain} certificate"),
                     )
                     .with_attr("parent_domain", target_domain),
@@ -237,13 +304,15 @@ fn extract_serial_hex(der: &[u8]) -> String {
     String::new()
 }
 
+// ── Tests (merged from crtsh + ssl_probe) ──────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn accepts_domain_only() {
-        let m = SslProbe;
+        let m = CertIntel;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
         assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y")));
@@ -262,5 +331,13 @@ mod tests {
     #[test]
     fn extract_field_from_empty() {
         assert!(extract_field_from_der(&[], &[0x55, 0x04, 0x03], true).is_none());
+    }
+
+    #[test]
+    fn module_metadata() {
+        let m = CertIntel;
+        assert_eq!(m.name(), "cert_intel");
+        assert_eq!(m.priority(), 32);
+        assert_eq!(m.max_timeout_ms(), 10_000);
     }
 }
