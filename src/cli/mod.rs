@@ -83,9 +83,9 @@ pub enum Command {
         /// explicit --depth / --min-expand-confidence / --max-concurrent.
         #[arg(short = 'R', long)]
         recursive: bool,
-        /// Only expand entities whose C_eff is at least this. Default 0.75
-        /// (Verified tier) — strong filter to keep expansion focused.
-        #[arg(long, default_value_t = 0.75)]
+        /// Only expand entities whose C_eff is at least this. Default 0.50
+        /// (Probable tier and above). Set 0.75 for strict Verified-only expansion.
+        #[arg(long, default_value_t = 0.50)]
         min_expand_confidence: f64,
         /// Hard cap on total entities. Stops expansion when reached.
         #[arg(long)]
@@ -93,10 +93,9 @@ pub enum Command {
         /// Hard cap on total wall-time in seconds. Stops expansion when exceeded.
         #[arg(long)]
         max_wall_time: Option<u64>,
-        /// Modules to run in parallel per round (v0.8+). 0 = sequential
-        /// (default). Higher values cut wall-time on modules that are
-        /// I/O-bound — most useful with `--depth` for big expansion rounds.
-        #[arg(long, default_value_t = 0)]
+        /// Modules to run in parallel per round. Default 4. Set 0 for
+        /// sequential dispatch (v0.1 behaviour, best on low-power devices).
+        #[arg(long, default_value_t = 4)]
         max_concurrent: usize,
         /// Output format: table | json.
         #[arg(short, long, default_value = "table")]
@@ -945,24 +944,33 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     } else {
         let color = use_color();
         println!(
-            "\nScan {} — {} entities for {}={}\n",
+            "\nScan {} — {} entities for {}={}",
             &sid[..8],
             entities.len(),
             cmd.kind,
             cmd.value
         );
+        if scan.modules_run > 0 {
+            println!(
+                "  modules: {} run, {} errored, {} timed out\n",
+                scan.modules_run, scan.modules_errored, scan.modules_timed_out
+            );
+        } else {
+            println!();
+        }
         println!(
-            "{:<16} {:<46} {:>6} {:>6}  CLASS",
-            "KIND", "VALUE", "CONF", "C_EFF"
+            "{:<16} {:<42} {:>6} {:>6}  {:<10} SRCS",
+            "KIND", "VALUE", "CONF", "C_EFF", "CLASS"
         );
-        println!("{}", "-".repeat(86));
+        println!("{}", "-".repeat(90));
         for e in &entities {
-            let val = truncate(&e.value, 46);
+            let val = truncate(&e.value, 42);
             let c_eff = e.c_effective();
             let class = e.classify();
+            let sources = e.evidence.len();
             let row = format!(
-                "{:<16} {:<46} {:>6.3} {:>6.3}  {}",
-                e.kind, val, e.confidence, c_eff, class
+                "{:<16} {:<42} {:>6.3} {:>6.3}  {:<10} {}",
+                e.kind, val, e.confidence, c_eff, class, sources
             );
             println!("{}", color_confidence(c_eff, &row, color));
         }

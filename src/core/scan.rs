@@ -373,7 +373,7 @@ impl Default for ScanOptions {
             modules: None,
             exclude_modules: Vec::new(),
             throttle_ms: 0,
-            max_concurrent: 0,
+            max_concurrent: 4,
             module_timeout_ms: None,
             min_confidence: None,
             free_only: false,
@@ -389,7 +389,7 @@ impl Default for ScanOptions {
 }
 
 fn default_min_expand_confidence() -> f64 {
-    0.75
+    0.50
 }
 
 #[cfg(test)]
@@ -404,7 +404,8 @@ mod tests {
         assert!(!o.free_only);
         assert!(!o.passive_only);
         assert_eq!(o.depth, 0);
-        assert!((o.min_expand_confidence - 0.75).abs() < 1e-9);
+        assert!((o.min_expand_confidence - 0.50).abs() < 1e-9);
+        assert_eq!(o.max_concurrent, 4);
     }
 
     #[test]

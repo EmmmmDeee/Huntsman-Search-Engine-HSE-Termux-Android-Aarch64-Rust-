@@ -761,6 +761,9 @@ fn module_skip_reason(
     if opts.passive_only && !module.is_passive() {
         return Some("not passive");
     }
+    if is_expansion && module.is_passive() {
+        return Some("passive (already ran on seed round)");
+    }
     None
 }
 
