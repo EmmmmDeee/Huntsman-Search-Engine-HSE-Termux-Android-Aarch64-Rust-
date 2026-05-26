@@ -313,12 +313,15 @@ impl ScanEngine {
                 }
             }
 
-            // Sort expansion candidates by geo NPV (descending) so the
-            // highest-value seeds expand first. This maximises geolocation
-            // yield within budget constraints.
+            // Sort expansion candidates by marginal geo value at current depth
+            // (descending). This accounts for diminishing returns — deep in
+            // the expansion tree, entity types with shorter remaining paths
+            // to geolocation are preferred over those requiring many more hops.
             next.sort_by(|a, b| {
-                crate::core::scan::geo_npv(b.kind, has_paid)
-                    .partial_cmp(&crate::core::scan::geo_npv(a.kind, has_paid))
+                crate::core::scan::expansion_marginal_value(b.kind, depth, has_paid)
+                    .partial_cmp(&crate::core::scan::expansion_marginal_value(
+                        a.kind, depth, has_paid,
+                    ))
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
 

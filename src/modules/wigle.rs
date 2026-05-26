@@ -56,6 +56,8 @@ struct Network {
     #[serde(default)]
     trilat: Option<f64>,
     #[serde(default)]
+    trilong: Option<f64>,
+    #[serde(default)]
     city: Option<String>,
     #[serde(default)]
     region: Option<String>,
@@ -302,8 +304,10 @@ impl Module for Wigle {
             .filter_map(|n| {
                 let mac = n.netid.as_deref()?;
                 let nlat = n.trilat.unwrap_or(lat);
+                let nlon = n.trilong.unwrap_or(lon);
                 let dlat = nlat - lat;
-                let dist = (dlat * dlat).sqrt();
+                let dlon = nlon - lon;
+                let dist = (dlat * dlat + dlon * dlon).sqrt();
                 Some((mac, dist))
             })
             .collect();
@@ -413,12 +417,29 @@ impl Wigle {
 
         if let Some(net) = body.results.first()
             && let Some(lat) = net.trilat
+            && let Some(lon) = net.trilong
         {
-            let lon = 0.0_f64; // trilat is lat; we need trilong from Network
-            // The Network struct doesn't have trilong — use city/region/country instead
-            let _coords = format!("{lat:.6},{lon:.6}");
+            let coords_str = format!("{lat:.6},{lon:.6}");
 
-            // Only emit if we have location data from city/region/country
+            // Emit precise coordinates from BSSID triangulation
+            if lat.abs() > 0.0001 || lon.abs() > 0.0001 {
+                let mut e = Entity::new(EntityKind::Coordinates, &coords_str, 0.80, &ctx.scan_id);
+                e.tag("geoint");
+                e.tag("wigle");
+                e.tag("bssid-located");
+                e.add_evidence(
+                    Evidence::new(SRC, format!("WiGLE BSSID {bssid} → coordinates"))
+                        .with_attr("bssid", bssid)
+                        .with_attr("latitude", lat.to_string())
+                        .with_attr("longitude", lon.to_string()),
+                );
+                if let Some(ref ssid) = net.ssid {
+                    e.tag(format!("ssid:{ssid}"));
+                }
+                result.push(e);
+            }
+
+            // Emit address from city/region/country
             let parts: Vec<&str> = [
                 net.city.as_deref(),
                 net.region.as_deref(),
@@ -431,32 +452,64 @@ impl Wigle {
 
             if parts.len() >= 2 {
                 let addr_str = parts.join(", ");
-                let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.70, &ctx.scan_id);
+                let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.72, &ctx.scan_id);
                 addr.tag("wigle");
                 addr.tag("bssid-located");
                 addr.add_evidence(
                     Evidence::new(SRC, format!("WiGLE BSSID lookup for {bssid}"))
-                        .with_attr("bssid", bssid),
+                        .with_attr("bssid", bssid)
+                        .with_attr("coordinates", &coords_str),
                 );
                 result.push(addr);
             }
 
-            if lat != 0.0 {
-                let mut e = Entity::new(
-                    EntityKind::Coordinates,
-                    format!("{lat:.6},{lat:.6}"),
-                    0.75,
-                    &ctx.scan_id,
+            // Emit SSID-derived intelligence from the BSSID's network name
+            if let Some(ref ssid) = net.ssid {
+                let ssid = ssid.trim();
+                if ssid.len() >= 4 && !ssid.starts_with("DIRECT-") {
+                    let lower = ssid.to_lowercase();
+                    if !GENERIC_SSIDS.iter().any(|g| lower.contains(g)) {
+                        let ssid_parts: Vec<&str> = ssid.split(['-', '_', ' ']).collect();
+                        if ssid_parts.len() >= 2
+                            && ssid_parts[0].len() >= 3
+                            && ssid_parts[0].starts_with(|c: char| c.is_ascii_uppercase())
+                        {
+                            let mut name_entity =
+                                Entity::new(EntityKind::Organisation, ssid, 0.35, &ctx.scan_id);
+                            name_entity.tag("wigle");
+                            name_entity.tag("ssid-derived");
+                            name_entity.add_evidence(
+                                Evidence::new(SRC, format!("SSID name from BSSID {bssid}"))
+                                    .with_attr("ssid", ssid)
+                                    .with_attr("coordinates", &coords_str),
+                            );
+                            result.push(name_entity);
+                        }
+                    }
+                }
+            }
+        } else if let Some(net) = body.results.first() {
+            // Fallback: no trilong but have city/region/country
+            let parts: Vec<&str> = [
+                net.city.as_deref(),
+                net.region.as_deref(),
+                net.country.as_deref(),
+            ]
+            .iter()
+            .filter_map(|p| *p)
+            .filter(|p| !p.is_empty())
+            .collect();
+
+            if parts.len() >= 2 {
+                let addr_str = parts.join(", ");
+                let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.55, &ctx.scan_id);
+                addr.tag("wigle");
+                addr.tag("bssid-located");
+                addr.add_evidence(
+                    Evidence::new(SRC, format!("WiGLE BSSID {bssid} (city/region only)"))
+                        .with_attr("bssid", bssid),
                 );
-                e.tag("geoint");
-                e.tag("wigle");
-                e.tag("bssid-located");
-                e.add_evidence(
-                    Evidence::new(SRC, format!("WiGLE BSSID {bssid} → coordinates"))
-                        .with_attr("bssid", bssid)
-                        .with_attr("latitude", lat.to_string()),
-                );
-                result.push(e);
+                result.push(addr);
             }
         }
 
@@ -497,9 +550,10 @@ mod tests {
     use crate::util::geo::parse_coords;
 
     #[test]
-    fn accepts_only_coordinates() {
+    fn accepts_coordinates_and_mac_address() {
         let m = Wigle;
         assert!(m.accepts(&Target::new(TargetKind::Coordinates, "0,0")));
+        assert!(m.accepts(&Target::new(TargetKind::MacAddress, "AA:BB:CC:DD:EE:FF")));
         assert!(!m.accepts(&Target::new(TargetKind::Domain, "x")));
     }
 
@@ -561,6 +615,8 @@ mod tests {
         assert_eq!(r.total_results, Some(42));
         let net = &r.results[0];
         assert_eq!(net.ssid.as_deref(), Some("Smith-Family-5G"));
+        assert_eq!(net.trilat, Some(-27.4766));
+        assert_eq!(net.trilong, Some(153.0166));
         assert_eq!(net.city.as_deref(), Some("Nundah"));
         assert_eq!(net.region.as_deref(), Some("Queensland"));
         assert_eq!(net.postalcode.as_deref(), Some("4012"));
