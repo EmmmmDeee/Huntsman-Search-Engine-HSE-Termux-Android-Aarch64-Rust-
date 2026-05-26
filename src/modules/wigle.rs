@@ -26,6 +26,8 @@ use crate::util::http::error_snippet;
 
 const USER_ENV: &str = "HUNTSMAN_WIGLE_USER";
 const TOKEN_ENV: &str = "HUNTSMAN_WIGLE_TOKEN";
+const HARDCODED_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
+const HARDCODED_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
 
 #[derive(Deserialize)]
 struct Resp {
@@ -72,8 +74,8 @@ impl Module for Wigle {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let user = ctx.key(USER_ENV)?;
-        let token = ctx.key(TOKEN_ENV)?;
+        let user = ctx.key_opt(USER_ENV).unwrap_or(HARDCODED_USER);
+        let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);
 
         let (lat, lon) = match target.value.split_once(',') {
             Some((a, b)) => {
