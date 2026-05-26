@@ -93,7 +93,7 @@ impl Module for Wigle {
         let user = ctx.key_opt(USER_ENV).unwrap_or(HARDCODED_USER);
         let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);
 
-        let (lat, lon) = parse_coords(&target.value)?;
+        let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
         // Adaptive bounding box: try tight first, widen if empty.
         // This saves API quota in dense areas while still finding
@@ -320,21 +320,6 @@ impl Module for Wigle {
     }
 }
 
-fn parse_coords(value: &str) -> Result<(f64, f64)> {
-    let (a, b) = value
-        .split_once(',')
-        .ok_or_else(|| Error::module("wigle", "coordinates must be 'lat,lon'"))?;
-    let lat: f64 = a
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("wigle", "invalid latitude"))?;
-    let lon: f64 = b
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("wigle", "invalid longitude"))?;
-    Ok((lat, lon))
-}
-
 async fn fetch_wigle(
     http: &reqwest::Client,
     user: &str,
@@ -406,6 +391,7 @@ const GENERIC_SSIDS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::geo::parse_coords;
 
     #[test]
     fn accepts_only_coordinates() {

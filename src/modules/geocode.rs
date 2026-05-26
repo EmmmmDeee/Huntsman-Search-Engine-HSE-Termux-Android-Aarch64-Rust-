@@ -158,7 +158,7 @@ impl Geocode {
     // ── Reverse geocode: Coordinates → Address ──────────────────────
 
     async fn reverse(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let (lat, lon) = parse_coords(&target.value)?;
+        let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
         let url = format!(
             "https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
@@ -241,26 +241,12 @@ impl Geocode {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-fn parse_coords(value: &str) -> Result<(f64, f64)> {
-    let (lat_s, lon_s) = value
-        .split_once(',')
-        .ok_or_else(|| Error::module("geocode", "expected lat,lon"))?;
-    let lat: f64 = lat_s
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("geocode", "invalid latitude"))?;
-    let lon: f64 = lon_s
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("geocode", "invalid longitude"))?;
-    Ok((lat, lon))
-}
-
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::geo::parse_coords;
 
     // -- acceptance tests (from forward_geocode) -------------------------
 

@@ -7,6 +7,58 @@ pub mod keys;
 pub mod oathnet;
 pub mod proxy;
 
+pub mod str_util {
+    pub fn truncate_safe(s: &str, max: usize) -> &str {
+        if s.len() <= max {
+            return s;
+        }
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
+}
+
+pub mod geo {
+    use crate::core::error::{Error, Result};
+
+    pub fn parse_coords(value: &str) -> Result<(f64, f64)> {
+        let (a, b) = value
+            .split_once(',')
+            .ok_or_else(|| Error::module("geo", "coordinates must be 'lat,lon'"))?;
+        let lat: f64 = a
+            .trim()
+            .parse()
+            .map_err(|_| Error::module("geo", "invalid latitude"))?;
+        let lon: f64 = b
+            .trim()
+            .parse()
+            .map_err(|_| Error::module("geo", "invalid longitude"))?;
+        Ok((lat, lon))
+    }
+}
+
+pub mod stats {
+    pub fn mode<'a>(items: &[&'a str]) -> Option<&'a str> {
+        if items.is_empty() {
+            return None;
+        }
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for &item in items {
+            *counts.entry(item).or_default() += 1;
+        }
+        counts
+            .into_iter()
+            .max_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)))
+            .map(|(val, _)| val)
+    }
+
+    pub fn mode_or<'a>(items: &[&'a str], fallback: &'a str) -> &'a str {
+        mode(items).unwrap_or(fallback)
+    }
+}
+
 pub mod dns {
     use std::sync::OnceLock;
 
