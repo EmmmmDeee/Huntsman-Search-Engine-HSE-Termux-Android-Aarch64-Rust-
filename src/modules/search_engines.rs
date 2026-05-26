@@ -771,8 +771,16 @@ fn build_queries(target: &Target) -> Vec<String> {
             if parts.len() >= 2 {
                 let first = parts[0];
                 let last = parts[parts.len() - 1];
+                let fl = format!("{first} {last}");
+
+                // First+Last without middle names — broader match
+                if parts.len() > 2 {
+                    q.push(format!("\"{fl}\""));
+                }
+
+                // Social / professional
                 q.push(format!(
-                    "{first} {last} site:instagram.com OR site:github.com OR site:reddit.com"
+                    "{fl} site:instagram.com OR site:github.com OR site:reddit.com"
                 ));
                 q.push(format!("\"{v}\" email OR contact OR profile"));
                 q.push(format!(
@@ -780,10 +788,49 @@ fn build_queries(target: &Target) -> Vec<String> {
                      OR site:nuwber.com OR site:pipl.com"
                 ));
                 q.push(format!("\"{v}\" address OR location OR city OR suburb"));
+
+                // Middle names as potential usernames (3+ part names)
+                if parts.len() >= 3 {
+                    let middle = parts[1..parts.len() - 1].join(" ");
+                    // Common username patterns from multi-part names
+                    let fl_concat = format!("{}{}", first.to_lowercase(), last.to_lowercase());
+                    let fml = format!(
+                        "{}{}{}",
+                        &first.to_lowercase()[..1.min(first.len())],
+                        middle.to_lowercase(),
+                        last.to_lowercase()
+                    );
+                    q.push(format!("\"{fl_concat}\" OR \"{fml}\" profile OR account"));
+                }
+
+                // Business / corporate
                 q.push(format!("\"{v}\" ABN OR ACN OR \"Pty Ltd\" OR director"));
+
+                // Australian people-search directories
                 q.push(format!(
                     "\"{v}\" site:whitepages.com.au OR site:locatefamily.com \
                      OR site:peoplefinder.com.au OR site:searchfind.com.au"
+                ));
+
+                // Australian public records — courts, electoral, property
+                q.push(format!(
+                    "\"{v}\" site:courts.qld.gov.au OR site:ecourts.justice.nsw.gov.au \
+                     OR site:austlii.edu.au OR site:jade.io"
+                ));
+                q.push(format!(
+                    "\"{fl}\" Queensland OR Brisbane OR \"Gold Coast\" OR Cairns"
+                ));
+
+                // News / media mentions
+                q.push(format!(
+                    "\"{v}\" site:abc.net.au OR site:news.com.au \
+                     OR site:smh.com.au OR site:couriermail.com.au"
+                ));
+
+                // Forum / community (usernames often match real names)
+                q.push(format!(
+                    "\"{fl}\" site:whirlpool.net.au OR site:forums.realestate.com.au \
+                     OR site:ozbargain.com.au"
                 ));
             }
             q
@@ -2856,7 +2903,7 @@ mod tests {
     fn build_queries_fullname_covers_professional() {
         let t = Target::new(TargetKind::FullName, "Jane Doe");
         let q = build_queries(&t);
-        assert_eq!(q.len(), 8);
+        assert!(q.len() >= 8, "expected >=8 queries, got {}", q.len());
         assert!(q[0].contains("\"Jane Doe\""));
         assert!(q[1].contains("linkedin.com") || q[1].contains("facebook.com"));
         assert!(
@@ -2870,6 +2917,37 @@ mod tests {
         assert!(
             q.iter()
                 .any(|qr| qr.contains("peekyou.com") || qr.contains("nuwber.com"))
+        );
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("courts") || qr.contains("austlii"))
+        );
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("abc.net.au") || qr.contains("news.com.au"))
+        );
+    }
+
+    #[test]
+    fn build_queries_fullname_three_parts_generates_username_variants() {
+        let t = Target::new(TargetKind::FullName, "Jordan Leigh Meyers");
+        let q = build_queries(&t);
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("jordanmeyers") || qr.contains("jleighmeyers")),
+            "should generate username variants from 3-part name: {:?}",
+            q
+        );
+        assert!(
+            q.iter().any(|qr| qr.contains("\"Jordan Meyers\"")),
+            "should search first+last without middle: {:?}",
+            q
+        );
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("Queensland") || qr.contains("Brisbane")),
+            "should include AU geo dorks: {:?}",
+            q
         );
     }
 
