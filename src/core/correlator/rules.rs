@@ -465,7 +465,7 @@ fn rule_au_014_geo_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<C
 }
 
 fn rule_au_015_threat_intel_hit(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
-    const TI_SOURCES: &[&str] = &["alienvault_otx", "threatfox"];
+    const TI_SOURCES: &[&str] = &["ip_reputation", "threatfox"];
 
     entities
         .iter()
@@ -764,7 +764,7 @@ mod tests {
     fn au014_fires_on_two_geo_sources() {
         let mut e = Entity::new(EntityKind::Coordinates, "0,0", 0.9, "s");
         e.add_evidence(Evidence::new("wigle", "test"));
-        e.add_evidence(Evidence::new("gps_fix", "test"));
+        e.add_evidence(Evidence::new("device_sensors", "test"));
         let r = rule_au_014_geo_cluster(&[e], "s", 0);
         assert_eq!(r.len(), 1);
     }
@@ -796,12 +796,12 @@ mod tests {
     fn au015_attribution_excludes_non_ti_evidence() {
         let mut e = Entity::new(EntityKind::Domain, "bad.example", 0.9, "s");
         e.tag("threat-intel");
-        e.add_evidence(Evidence::new("alienvault_otx", "ti-hit"));
+        e.add_evidence(Evidence::new("ip_reputation", "ti-hit"));
         e.add_evidence(Evidence::new("whois", "registry-data"));
         e.add_evidence(Evidence::new("dns_resolver", "a-record"));
         let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
         assert_eq!(r.len(), 1);
-        assert!(r[0].description.contains("alienvault_otx"));
+        assert!(r[0].description.contains("ip_reputation"));
         assert!(!r[0].description.contains("whois"));
         assert!(!r[0].description.contains("dns_resolver"));
     }

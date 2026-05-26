@@ -139,8 +139,8 @@ fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
     {
         let mut e = Entity::new(EntityKind::IpAddress, ip.as_str(), 0.90, scan_id);
         e.tag("local-wifi");
-        let mut ip_ev = Evidence::new("device_sensors", format!("Local IP on {ssid}"))
-            .with_attr("ssid", ssid);
+        let mut ip_ev =
+            Evidence::new("device_sensors", format!("Local IP on {ssid}")).with_attr("ssid", ssid);
         if let Some(ref bssid) = info.bssid {
             ip_ev = ip_ev.with_attr("bssid", bssid.as_str());
         }

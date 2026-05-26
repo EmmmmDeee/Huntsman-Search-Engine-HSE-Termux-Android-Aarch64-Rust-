@@ -183,17 +183,13 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
     }
 
     // Run both lookups concurrently.
-    let (rdap_res, bgp_res) = tokio::join!(
-        rdap_lookup_ip(ip, ctx),
-        bgp_lookup_ip(ip, ctx),
-    );
+    let (rdap_res, bgp_res) = tokio::join!(rdap_lookup_ip(ip, ctx), bgp_lookup_ip(ip, ctx),);
 
     let mut result = rdap_res?;
     let bgp = bgp_res?;
 
-    // Merge BGPView entities into the RDAP result.
-    for entity in bgp.entities() {
-        result.push(entity.clone());
+    for entity in bgp.entities {
+        result.push(entity);
     }
     Ok(result)
 }

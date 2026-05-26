@@ -1,36 +1,39 @@
-//! ARP table reader — parses `/proc/net/arp` on Linux/Android. No root,
-//! no termux-api binary needed, no network traffic — passive sensor.
+//! Local network discovery — ARP table + network interface enumeration.
 //!
-//! On a non-Linux host (macOS dev box, etc.) the file doesn't exist and
-//! the module no-ops with an empty `ModuleResult`.
+//! Reads `/sys/class/net/*/address` and `/sys/class/net/*/operstate` for
+//! interfaces, then `/proc/net/arp` for the ARP table. Pure file I/O via
+//! `tokio::fs` — no root, no termux-api, no network traffic. Passive sensor.
 //!
-//! Accepts any target — the ARP table is environmental and doesn't depend
-//! on what's being scanned. Exclude with `--exclude arp_scan` if you don't
-//! want local-network entities mixed into your scan results.
+//! Off-Linux hosts (macOS, Windows) lack these paths and no-op cleanly.
+//! Accepts any target — local-network data is environmental and does not
+//! depend on the scan target. Exclude with `--exclude local_net`.
 
 use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::Target,
 };
 
-pub struct ArpScan;
+pub struct LocalNet;
 
 #[async_trait]
-impl Module for ArpScan {
+impl Module for LocalNet {
     fn name(&self) -> &'static str {
-        "arp_scan"
+        "local_net"
     }
     fn description(&self) -> &'static str {
-        "Local ARP table enumeration with vendor OUI lookup"
+        "Local network discovery via ARP table and network interfaces"
     }
     fn priority(&self) -> u8 {
         58
     }
 
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::Free
+    }
     fn is_passive(&self) -> bool {
         true
     }
@@ -39,25 +42,55 @@ impl Module for ArpScan {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // not Linux, no /proc — no-op
-        let Ok(content) = tokio::fs::read_to_string("/proc/net/arp").await else {
-            return Ok(ModuleResult::new());
-        };
-        Ok(parse_arp(&content, &ctx.scan_id))
+        let mut result = ModuleResult::new();
+
+        // ── 1. Network interfaces (/sys/class/net) ──────────────────
+        if let Ok(mut entries) = tokio::fs::read_dir("/sys/class/net").await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let iface_os = entry.file_name();
+                if iface_os == "lo" {
+                    continue;
+                }
+
+                let dir = entry.path();
+                let mac = match tokio::fs::read_to_string(dir.join("address")).await {
+                    Ok(s) => s.trim().to_lowercase(),
+                    Err(_) => continue,
+                };
+                if mac.is_empty() || mac == "00:00:00:00:00:00" {
+                    continue;
+                }
+
+                let state = tokio::fs::read_to_string(dir.join("operstate"))
+                    .await
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|_| "unknown".into());
+
+                let iface = iface_os.to_string_lossy();
+                let mut e = Entity::new(EntityKind::MacAddress, &mac, 0.95, &ctx.scan_id);
+                e.tag("local-interface");
+                e.add_evidence(
+                    Evidence::new("local_net", format!("Local interface {iface} ({state})"))
+                        .with_attr("interface", iface.as_ref())
+                        .with_attr("operstate", &state),
+                );
+                result.push(e);
+            }
+        }
+
+        // ── 2. ARP table (/proc/net/arp) ─────────────────────────────
+        if let Ok(content) = tokio::fs::read_to_string("/proc/net/arp").await {
+            parse_arp(&content, &ctx.scan_id, &mut result);
+        }
+
+        Ok(result)
     }
 }
 
 /// Parses the ARP table format. First line is the header; data rows have
 /// columns: IP, HW type, Flags, MAC, Mask, Device. Rows with the placeholder
 /// MAC `00:00:00:00:00:00` are incomplete (no resolution yet) and skipped.
-fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
-    // Pre-allocate: each valid row yields 2 entities (IP + MAC).
-    // Subtract 1 for the header line.
-    let line_count = content.lines().count().saturating_sub(1);
-    let mut result = ModuleResult {
-        entities: Vec::with_capacity(line_count.saturating_mul(2)),
-    };
-
+fn parse_arp(content: &str, scan_id: &str, result: &mut ModuleResult) {
     for line in content.lines().skip(1) {
         let mut cols = line.split_whitespace();
         let (Some(ip), Some(hw_type), Some(flags), Some(mac), Some(_mask), Some(dev)) = (
@@ -78,7 +111,7 @@ fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
 
         let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, 0.95, scan_id);
         ip_entity.tag("local-arp");
-        let mut ip_ev = Evidence::new("arp_scan", format!("ARP entry on {dev}"))
+        let mut ip_ev = Evidence::new("local_net", format!("ARP entry on {dev}"))
             .with_attr("mac", mac)
             .with_attr("interface", dev)
             .with_attr("hw_type", hw_type)
@@ -94,7 +127,7 @@ fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
         if let Some(v) = vendor {
             mac_entity.tag(format!("vendor:{}", v.to_lowercase().replace(' ', "-")));
         }
-        let mut mac_ev = Evidence::new("arp_scan", format!("ARP: {ip} via {dev}"))
+        let mut mac_ev = Evidence::new("local_net", format!("ARP: {ip} via {dev}"))
             .with_attr("ip", ip)
             .with_attr("interface", dev)
             .with_attr("hw_type", hw_type)
@@ -105,8 +138,6 @@ fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
         mac_entity.add_evidence(mac_ev);
         result.push(mac_entity);
     }
-
-    result
 }
 
 fn oui_vendor(mac: &str) -> Option<&'static str> {
@@ -137,21 +168,63 @@ fn oui_vendor(mac: &str) -> Option<&'static str> {
     }
 }
 
+/// Standalone helper used by tests — wraps `parse_arp` to return a
+/// `ModuleResult` directly, matching the old `arp_scan` test API.
+#[cfg(test)]
+fn parse_arp_result(content: &str, scan_id: &str) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    parse_arp(content, scan_id, &mut result);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::scan::TargetKind;
 
+    // ── Tests carried from net_interfaces.rs ─────────────────────────
+
     #[test]
     fn is_passive() {
-        assert!(ArpScan.is_passive());
+        assert!(LocalNet.is_passive());
     }
 
     #[test]
     fn accepts_any_target() {
-        assert!(ArpScan.accepts(&Target::new(TargetKind::Email, "x@y")));
-        assert!(ArpScan.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+        assert!(LocalNet.accepts(&Target::new(TargetKind::Domain, "x.com")));
     }
+
+    #[test]
+    fn module_name() {
+        assert_eq!(LocalNet.name(), "local_net");
+    }
+
+    #[test]
+    fn module_priority() {
+        assert_eq!(LocalNet.priority(), 58);
+    }
+
+    #[test]
+    fn accepts_all_target_kinds() {
+        assert!(LocalNet.accepts(&Target::new(TargetKind::Email, "a@b.com")));
+        assert!(LocalNet.accepts(&Target::new(TargetKind::IpAddress, "10.0.0.1")));
+        assert!(LocalNet.accepts(&Target::new(TargetKind::Username, "user1")));
+    }
+
+    #[test]
+    fn cost_is_free() {
+        assert_eq!(LocalNet.cost(), ModuleCost::Free);
+    }
+
+    #[test]
+    fn info_aggregates_metadata() {
+        let info = LocalNet.info();
+        assert_eq!(info.name, "local_net");
+        assert_eq!(info.priority, 58);
+        assert!(info.passive);
+    }
+
+    // ── Tests carried from arp_scan.rs ───────────────────────────────
 
     #[test]
     fn parser_emits_two_entities_per_complete_row() {
@@ -160,8 +233,8 @@ IP address       HW type     Flags       HW address            Mask     Device
 192.168.1.1      0x1         0x2         aa:bb:cc:dd:ee:ff     *        wlan0
 192.168.1.5      0x1         0x2         11:22:33:44:55:66     *        wlan0
 ";
-        let r = parse_arp(sample, "test-scan");
-        assert_eq!(r.entities.len(), 4); // 2 rows × (IP + MAC)
+        let r = parse_arp_result(sample, "test-scan");
+        assert_eq!(r.entities.len(), 4); // 2 rows x (IP + MAC)
     }
 
     #[test]
@@ -170,20 +243,14 @@ IP address       HW type     Flags       HW address            Mask     Device
 IP address       HW type     Flags       HW address            Mask     Device
 192.168.1.99     0x1         0x0         00:00:00:00:00:00     *        wlan0
 ";
-        let r = parse_arp(sample, "test-scan");
+        let r = parse_arp_result(sample, "test-scan");
         assert_eq!(r.entities.len(), 0);
     }
 
     #[test]
     fn parser_skips_short_rows() {
-        let r = parse_arp("IP\nshort line\n", "test-scan");
+        let r = parse_arp_result("IP\nshort line\n", "test-scan");
         assert_eq!(r.entities.len(), 0);
-    }
-
-    #[test]
-    fn module_name_and_priority() {
-        assert_eq!(ArpScan.name(), "arp_scan");
-        assert_eq!(ArpScan.priority(), 58);
     }
 
     #[test]
@@ -192,7 +259,7 @@ IP address       HW type     Flags       HW address            Mask     Device
 IP address       HW type     Flags       HW address            Mask     Device
 192.168.1.1      0x1         0x2         aa:bb:cc:dd:ee:ff     *        wlan0
 ";
-        let r = parse_arp(sample, "test-scan");
+        let r = parse_arp_result(sample, "test-scan");
         assert_eq!(r.entities.len(), 2);
 
         // First entity: IP address
@@ -202,7 +269,7 @@ IP address       HW type     Flags       HW address            Mask     Device
         assert!((ip.confidence - 0.95).abs() < 1e-6);
         assert!(ip.has_tag("local-arp"));
         assert_eq!(ip.evidence.len(), 1);
-        assert_eq!(ip.evidence[0].source, "arp_scan");
+        assert_eq!(ip.evidence[0].source, "local_net");
         assert_eq!(
             ip.evidence[0].attributes.get("mac").unwrap(),
             "aa:bb:cc:dd:ee:ff"
@@ -225,7 +292,7 @@ IP address       HW type     Flags       HW address            Mask     Device
     fn parser_header_only_yields_empty() {
         let sample =
             "IP address       HW type     Flags       HW address            Mask     Device\n";
-        let r = parse_arp(sample, "test-scan");
+        let r = parse_arp_result(sample, "test-scan");
         assert_eq!(r.entities.len(), 0);
     }
 
@@ -237,7 +304,7 @@ IP address       HW type     Flags       HW address            Mask     Device
 10.0.0.2         0x1         0x0         00:00:00:00:00:00     *        eth0
 10.0.0.3         0x1         0x2         de:ad:be:ef:00:03     *        eth0
 ";
-        let r = parse_arp(sample, "s");
+        let r = parse_arp_result(sample, "s");
         // Row 2 is incomplete (all-zero MAC) so skipped; rows 1 and 3 produce 2 entities each
         assert_eq!(r.entities.len(), 4);
         assert_eq!(r.entities[0].value, "10.0.0.1");
@@ -246,7 +313,27 @@ IP address       HW type     Flags       HW address            Mask     Device
 
     #[test]
     fn parser_empty_input() {
-        let r = parse_arp("", "test-scan");
+        let r = parse_arp_result("", "test-scan");
         assert_eq!(r.entities.len(), 0);
+    }
+
+    // ── OUI vendor lookup ────────────────────────────────────────────
+
+    #[test]
+    fn oui_known_vendors() {
+        assert_eq!(oui_vendor("00:50:56:aa:bb:cc"), Some("VMware"));
+        assert_eq!(oui_vendor("08:00:27:11:22:33"), Some("VirtualBox"));
+        assert_eq!(oui_vendor("52:54:00:ab:cd:ef"), Some("QEMU"));
+        assert_eq!(oui_vendor("02:42:AC:11:00:02"), Some("Docker"));
+    }
+
+    #[test]
+    fn oui_unknown_vendor() {
+        assert_eq!(oui_vendor("aa:bb:cc:dd:ee:ff"), None);
+    }
+
+    #[test]
+    fn oui_short_mac_returns_none() {
+        assert_eq!(oui_vendor("aa:bb"), None);
     }
 }

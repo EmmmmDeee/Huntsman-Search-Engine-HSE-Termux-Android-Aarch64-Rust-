@@ -1,12 +1,14 @@
-//! Shodan host record — paid premium internet-scan database.
+//! Shodan — combined free InternetDB + paid host-API module.
 //!
-//! Endpoint: `GET https://api.shodan.io/shodan/host/{ip}?key={KEY}`
-//! Auth:     query-string `key=…` (Shodan API quirk).
+//! **Free path (always):**
+//! `GET https://internetdb.shodan.io/{ip}` — open ports, CVEs, CPEs,
+//! hostnames, tags for any public IPv4. No credentials needed.
 //!
-//! Returns the running services, open ports, CPEs, known CVEs, hostnames,
-//! ASN/ISP/org, OS, and last-update timestamp for an IP. We summarise:
-//! open-port list (capped at 20), vuln count + top-10 CVE IDs, org/isp/asn/
-//! country, OS, last-update. Each PTR hostname becomes a `Domain` entity.
+//! **Paid path (when `HUNTSMAN_SHODAN_KEY` is set):**
+//! `GET https://api.shodan.io/shodan/host/{ip}?key={KEY}` — detailed
+//! service-scan data, org/ISP/ASN/OS, and PTR hostnames.
+//!
+//! Both paths run for every IP address target; entities are merged.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -21,6 +23,8 @@ use crate::core::{
 use crate::util::http::{error_snippet, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY";
+
+// ── Paid API response ────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct HostResp {
@@ -46,6 +50,26 @@ struct HostResp {
     os: Option<String>,
 }
 
+// ── Free InternetDB response ─────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct InternetDbResp {
+    #[serde(default)]
+    ip: Option<String>,
+    #[serde(default)]
+    ports: Vec<u16>,
+    #[serde(default)]
+    hostnames: Vec<String>,
+    #[serde(default)]
+    cpes: Vec<String>,
+    #[serde(default)]
+    vulns: Vec<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+// ── Module impl ──────────────────────────────────────────────────────
+
 pub struct Shodan;
 
 #[async_trait]
@@ -54,7 +78,7 @@ impl Module for Shodan {
         "shodan"
     }
     fn description(&self) -> &'static str {
-        "Internet-wide service scan data for IP addresses"
+        "Shodan host intelligence — free InternetDB plus paid API when keyed"
     }
     fn priority(&self) -> u8 {
         105
@@ -67,15 +91,150 @@ impl Module for Shodan {
         matches!(t.kind, TargetKind::IpAddress)
     }
     fn max_timeout_ms(&self) -> u64 {
-        8_000
+        10_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = ctx.key(KEY_ENV)?;
         let ip = target.value.trim();
         if ip.is_empty() {
             return Ok(ModuleResult::new());
         }
+
+        let mut result = ModuleResult::new();
+
+        // ── 1. Free InternetDB (always) ──────────────────────────────
+        self.query_internetdb(ip, ctx, &mut result).await;
+
+        // ── 2. Paid host API (when key is present) ───────────────────
+        if let Some(key) = ctx.key_opt(KEY_ENV) {
+            self.query_paid(ip, key, ctx, &mut result).await?;
+        }
+
+        Ok(result)
+    }
+}
+
+impl Shodan {
+    /// Query the free InternetDB endpoint. Errors are swallowed so the
+    /// paid path can still proceed.
+    async fn query_internetdb(&self, ip: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
+        let resp = match ctx
+            .http
+            .get(format!("https://internetdb.shodan.io/{}", urlencode(ip)))
+            .header("Accept", "application/json")
+            .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        let status = resp.status();
+        if status.as_u16() == 404 || !status.is_success() {
+            return;
+        }
+
+        let body: InternetDbResp = match resp.json().await {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+
+        if body.ports.is_empty()
+            && body.vulns.is_empty()
+            && body.hostnames.is_empty()
+            && body.cpes.is_empty()
+            && body.tags.is_empty()
+        {
+            return;
+        }
+
+        // Enrich the originating IP with port/vuln summary.
+        let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.92, &ctx.scan_id);
+        entity.tag("shodan-internetdb");
+        if !body.vulns.is_empty() {
+            entity.tag("vulnerable");
+        }
+
+        const MAX_PORTS: usize = 20;
+        let mut ports_sorted: Vec<u16> = body.ports.clone();
+        ports_sorted.sort_unstable();
+        ports_sorted.dedup();
+        let ports_csv = ports_sorted
+            .iter()
+            .take(MAX_PORTS)
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut ev = Evidence::new(
+            "shodan",
+            format!(
+                "Shodan InternetDB: {} port(s), {} CVE(s), {} hostname(s)",
+                body.ports.len(),
+                body.vulns.len(),
+                body.hostnames.len()
+            ),
+        )
+        .with_attr("ports", ports_csv)
+        .with_attr("port_count", body.ports.len().to_string());
+
+        if !body.vulns.is_empty() {
+            let v: Vec<&str> = body.vulns.iter().take(16).map(|s| s.as_str()).collect();
+            ev = ev
+                .with_attr("vulns", v.join(","))
+                .with_attr("vuln_count", body.vulns.len().to_string());
+        }
+        if !body.cpes.is_empty() {
+            let c: Vec<&str> = body.cpes.iter().take(8).map(|s| s.as_str()).collect();
+            ev = ev.with_attr("cpes", c.join(","));
+        }
+        if !body.tags.is_empty() {
+            ev = ev.with_attr("tags", body.tags.join(","));
+            for t in &body.tags {
+                entity.tag(format!("shodan:{t}"));
+            }
+        }
+        if let Some(canonical_ip) = body.ip.as_deref() {
+            ev = ev.with_attr("ip", canonical_ip);
+        }
+        entity.add_evidence(ev);
+        result.push(entity);
+
+        // Emit Domain entities for observed PTR / SAN hostnames.
+        const MAX_HOSTS: usize = 16;
+        for host in body.hostnames.iter().take(MAX_HOSTS) {
+            let host = host.trim().trim_end_matches('.');
+            if host.is_empty() {
+                continue;
+            }
+            if host.parse::<std::net::IpAddr>().is_ok() {
+                continue;
+            }
+            if !host.contains('.') || host.contains(char::is_whitespace) {
+                continue;
+            }
+            let mut d = Entity::new(EntityKind::Domain, host, 0.80, &ctx.scan_id);
+            d.tag("shodan-internetdb");
+            d.tag("ptr");
+            d.add_evidence(
+                Evidence::new(
+                    "shodan",
+                    format!("Hostname associated with {ip} per Shodan InternetDB"),
+                )
+                .with_attr("ip", ip),
+            );
+            result.push(d);
+        }
+    }
+
+    /// Query the paid Shodan host API.
+    async fn query_paid(
+        &self,
+        ip: &str,
+        key: &str,
+        ctx: &ModuleContext,
+        result: &mut ModuleResult,
+    ) -> Result<()> {
         let url = format!(
             "https://api.shodan.io/shodan/host/{}?key={}",
             urlencode(ip),
@@ -89,7 +248,7 @@ impl Module for Shodan {
             .map_err(|e| Error::module("shodan", e.to_string()))?;
         let status = resp.status();
         if status.as_u16() == 404 {
-            return Ok(ModuleResult::new());
+            return Ok(());
         }
         if !status.is_success() {
             let code = status.as_u16();
@@ -106,8 +265,7 @@ impl Module for Shodan {
             .await
             .map_err(|e| Error::module("shodan", e.to_string()))?;
 
-        let mut result = ModuleResult::new();
-        let mut entity = target.to_entity(0.90, &ctx.scan_id);
+        let mut entity = target_entity(ip, &ctx.scan_id);
         entity.tag("shodan");
         if !body.vulns.is_empty() {
             entity.tag("vulnerable");
@@ -169,8 +327,7 @@ impl Module for Shodan {
         entity.add_evidence(ev);
         result.push(entity);
 
-        // Each PTR hostname becomes a Domain entity so downstream
-        // domain modules pick it up during expansion.
+        // Each PTR hostname becomes a Domain entity.
         for host in body.hostnames {
             if host.is_empty() {
                 continue;
@@ -183,21 +340,63 @@ impl Module for Shodan {
             );
             result.push(d);
         }
-        Ok(result)
+        Ok(())
     }
+}
+
+/// Helper to build an IP entity from a raw IP string.
+fn target_entity(ip: &str, scan_id: &str) -> Entity {
+    Entity::new(EntityKind::IpAddress, ip, 0.90, scan_id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Tests carried from paid-only shodan.rs ───────────────────────
+
     #[test]
     fn accepts_only_ip() {
         let m = Shodan;
         assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
         assert!(!m.accepts(&Target::new(TargetKind::Domain, "x")));
     }
+
     #[test]
     fn cost_is_paid() {
         assert!(matches!(Shodan.cost(), ModuleCost::Paid));
+    }
+
+    // ── Tests carried from shodan_internetdb.rs ──────────────────────
+
+    #[test]
+    fn accepts_only_ip_not_domain() {
+        let m = Shodan;
+        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+        assert!(!m.accepts(&Target::new(TargetKind::Domain, "x.com")));
+    }
+
+    // ── Merged-module tests ──────────────────────────────────────────
+
+    #[test]
+    fn priority_is_105() {
+        assert_eq!(Shodan.priority(), 105);
+    }
+
+    #[test]
+    fn timeout_is_10s() {
+        assert_eq!(Shodan.max_timeout_ms(), 10_000);
+    }
+
+    #[test]
+    fn name_is_shodan() {
+        assert_eq!(Shodan.name(), "shodan");
+    }
+
+    #[test]
+    fn description_mentions_free_and_paid() {
+        let desc = Shodan.description();
+        assert!(desc.contains("free") || desc.contains("Free") || desc.contains("InternetDB"));
+        assert!(desc.contains("paid") || desc.contains("Paid") || desc.contains("keyed"));
     }
 }

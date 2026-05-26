@@ -73,51 +73,37 @@ impl Module for CertIntel {
 
         // ── 1. crt.sh CT-log search ────────────────────────────────
         let ct_url = format!("https://crt.sh/?q=%.{domain}&output=json");
-        match fetch_json::<Vec<CrtEntry>>(&ctx.http, "cert_intel", &ct_url).await {
-            Ok(entries) => {
-                for entry in &entries {
-                    for name in entry.name_value.split('\n') {
-                        let name = name.trim().trim_start_matches("*.").to_lowercase();
-                        if name.is_empty() || !name.contains('.') {
-                            continue;
-                        }
-                        if name == parent {
-                            continue;
-                        }
-                        if seen_subs.insert(name.clone()) {
-                            let mut e =
-                                Entity::new(EntityKind::Domain, &name, 0.88, &ctx.scan_id);
-                            e.tag(tags::CT_LOG);
-                            e.add_evidence(
-                                Evidence::new(
-                                    "cert_intel",
-                                    format!("Certificate transparency: {name}"),
-                                )
-                                .with_attr(
-                                    "issuer",
-                                    entry.issuer_name.as_deref().unwrap_or("-"),
-                                )
-                                .with_attr(
-                                    "not_before",
-                                    entry.not_before.as_deref().unwrap_or("-"),
-                                )
-                                .with_attr(
-                                    "not_after",
-                                    entry.not_after.as_deref().unwrap_or("-"),
-                                )
-                                .with_attr(
-                                    "serial_number",
-                                    entry.serial_number.as_deref().unwrap_or("-"),
-                                )
-                                .with_attr("parent_domain", domain),
-                            );
-                            result.push(e);
-                        }
+        if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, "cert_intel", &ct_url).await {
+            for entry in &entries {
+                for name in entry.name_value.split('\n') {
+                    let name = name.trim().trim_start_matches("*.").to_lowercase();
+                    if name.is_empty() || !name.contains('.') {
+                        continue;
+                    }
+                    if name == parent {
+                        continue;
+                    }
+                    if seen_subs.insert(name.clone()) {
+                        let mut e = Entity::new(EntityKind::Domain, &name, 0.88, &ctx.scan_id);
+                        e.tag(tags::CT_LOG);
+                        e.add_evidence(
+                            Evidence::new(
+                                "cert_intel",
+                                format!("Certificate transparency: {name}"),
+                            )
+                            .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))
+                            .with_attr("not_before", entry.not_before.as_deref().unwrap_or("-"))
+                            .with_attr("not_after", entry.not_after.as_deref().unwrap_or("-"))
+                            .with_attr(
+                                "serial_number",
+                                entry.serial_number.as_deref().unwrap_or("-"),
+                            )
+                            .with_attr("parent_domain", domain),
+                        );
+                        result.push(e);
                     }
                 }
             }
-            // Non-fatal: if crt.sh is down we still attempt the live probe.
-            Err(_) => {}
         }
 
         // ── 2. Live TLS certificate probe ──────────────────────────
