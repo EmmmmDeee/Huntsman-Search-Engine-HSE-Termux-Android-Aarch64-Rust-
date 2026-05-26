@@ -55,6 +55,7 @@ pub struct SearchEngines;
 const MAX_RESULTS_PER_ENGINE: usize = 20;
 const INTER_ENGINE_MS: u64 = 400;
 const MAX_PAGES: usize = 3;
+const MAX_ACCUMULATED_RESULTS: usize = 2000;
 
 struct SearchResult {
     url: String,
@@ -128,12 +129,18 @@ impl Module for SearchEngines {
                 }
                 let url = (engine.build_url)(query);
                 let post_body = engine.build_post.map(|f| f(query));
+                if all_results.len() >= MAX_ACCUMULATED_RESULTS {
+                    break;
+                }
                 let before = all_results.len();
                 if let Some(mut results) =
                     fetch_and_parse(&url, engine, query, post_body.as_deref()).await
                 {
                     let got_results = !results.is_empty();
                     all_results.append(&mut results);
+                    if all_results.len() >= MAX_ACCUMULATED_RESULTS {
+                        all_results.truncate(MAX_ACCUMULATED_RESULTS);
+                    }
                     if got_results
                         && qi == 0
                         && let Some(paginate_fn) = engine.paginate

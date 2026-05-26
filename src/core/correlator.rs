@@ -117,24 +117,32 @@ impl Correlator {
 
 // ─── Rules ─────────────────────────────────────────────────────────────────
 
+type RuleFn = fn(&[Entity], &str, u64) -> Vec<Correlation>;
+
+const RULES: &[RuleFn] = &[
+    rule_au_001_multi_breach,
+    rule_au_002_identity_cluster,
+    rule_au_003_high_corroboration,
+    rule_au_004_malicious_infrastructure,
+    rule_au_005_anonymous_network,
+    rule_au_006_proxy_vpn,
+    rule_au_007_high_risk_reputation,
+    rule_au_008_exposed_service,
+    rule_au_009_stealer_log,
+    rule_au_010_infra_consensus,
+    rule_au_011_cross_platform_username,
+    rule_au_012_identity_linked_domain,
+    rule_au_013_local_network_discovery,
+    rule_au_014_geo_cluster,
+    rule_au_015_threat_intel_hit,
+];
+
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     let now = crate::core::entity::unix_now();
     let mut out = Vec::new();
-    out.extend(rule_au_001_multi_breach(entities, scan_id, now));
-    out.extend(rule_au_002_identity_cluster(entities, scan_id, now));
-    out.extend(rule_au_003_high_corroboration(entities, scan_id, now));
-    out.extend(rule_au_004_malicious_infrastructure(entities, scan_id, now));
-    out.extend(rule_au_005_anonymous_network(entities, scan_id, now));
-    out.extend(rule_au_006_proxy_vpn(entities, scan_id, now));
-    out.extend(rule_au_007_high_risk_reputation(entities, scan_id, now));
-    out.extend(rule_au_008_exposed_service(entities, scan_id, now));
-    out.extend(rule_au_009_stealer_log(entities, scan_id, now));
-    out.extend(rule_au_010_infra_consensus(entities, scan_id, now));
-    out.extend(rule_au_011_cross_platform_username(entities, scan_id, now));
-    out.extend(rule_au_012_identity_linked_domain(entities, scan_id, now));
-    out.extend(rule_au_013_local_network_discovery(entities, scan_id, now));
-    out.extend(rule_au_014_geo_cluster(entities, scan_id, now));
-    out.extend(rule_au_015_threat_intel_hit(entities, scan_id, now));
+    for rule in RULES {
+        out.extend(rule(entities, scan_id, now));
+    }
     out
 }
 

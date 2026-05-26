@@ -184,6 +184,10 @@ impl Module for WebCrawler {
             };
 
             let status = resp.status();
+            if status.as_u16() == 429 || status.as_u16() == 503 {
+                tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                continue;
+            }
             if !status.is_success() {
                 continue;
             }

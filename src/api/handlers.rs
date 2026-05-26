@@ -493,7 +493,14 @@ pub async fn search_entities(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let query = match params.get("q") {
-        Some(q) if !q.trim().is_empty() => q.trim(),
+        Some(q) if !q.trim().is_empty() && q.len() <= 256 => q.trim(),
+        Some(q) if q.len() > 256 => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "query too long (max 256 chars)"})),
+            )
+                .into_response();
+        }
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
