@@ -19,6 +19,7 @@ pub enum TargetKind {
     Address,
     Organisation,
     AbnAcn,
+    MacAddress,
     ApiKey,
 }
 
@@ -43,8 +44,8 @@ impl TargetKind {
             EntityKind::Organisation => Some(Self::Organisation),
             EntityKind::AbnAcn => Some(Self::AbnAcn),
             EntityKind::ApiKey => Some(Self::ApiKey),
+            EntityKind::MacAddress => Some(Self::MacAddress),
             EntityKind::Credential
-            | EntityKind::MacAddress
             | EntityKind::DeviceId
             | EntityKind::Password
             | EntityKind::Other(_) => None,
@@ -67,6 +68,7 @@ impl TargetKind {
             Self::Organisation => EntityKind::Organisation,
             Self::AbnAcn => EntityKind::AbnAcn,
             Self::ApiKey => EntityKind::ApiKey,
+            Self::MacAddress => EntityKind::MacAddress,
         }
     }
 
@@ -96,6 +98,7 @@ impl TargetKind {
             Self::Organisation => "organisation",
             Self::AbnAcn => "abn_acn",
             Self::ApiKey => "api_key",
+            Self::MacAddress => "mac_address",
         }
     }
 }
@@ -220,7 +223,8 @@ impl Target {
             | TargetKind::FullName
             | TargetKind::Address
             | TargetKind::Organisation
-            | TargetKind::AbnAcn => {}
+            | TargetKind::AbnAcn
+            | TargetKind::MacAddress => {}
         }
         Ok(())
     }
@@ -479,6 +483,9 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
 
         // ApiKey: service domain → full domain pipeline.
         TargetKind::ApiKey => 3,
+
+        // MacAddress: WiGLE BSSID → Coordinates → Address. High geo value.
+        TargetKind::MacAddress => 2,
     };
 
     // Lower confidence threshold to catch more geo-relevant entities:
@@ -523,6 +530,7 @@ pub fn seed_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
         TargetKind::Url => 9.4,
         TargetKind::Organisation => 4.9,
         TargetKind::AbnAcn => 4.9,
+        TargetKind::MacAddress => 8.5,
         TargetKind::Coordinates => 1.9,
         TargetKind::Address => 1.6,
     }
@@ -552,6 +560,7 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
         TargetKind::Username => 6.3,
         TargetKind::Url => 4.2,
         TargetKind::ApiKey => 3.8,
+        TargetKind::MacAddress => 7.5,
         TargetKind::AbnAcn => 2.5,
         TargetKind::Organisation => 2.1,
         TargetKind::Coordinates => 1.9,
@@ -599,9 +608,16 @@ mod tests {
 
     #[test]
     fn unscannable_entity_kinds_return_none() {
-        assert!(TargetKind::from_entity_kind(&EntityKind::MacAddress).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::Password).is_none());
         assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
+    }
+
+    #[test]
+    fn mac_address_entity_expands() {
+        assert_eq!(
+            TargetKind::from_entity_kind(&EntityKind::MacAddress),
+            Some(TargetKind::MacAddress)
+        );
     }
 
     #[test]

@@ -664,8 +664,9 @@ pub fn parse_target_kind(s: &str) -> Result<TargetKind> {
         "organisation" | "org" => Ok(TargetKind::Organisation),
         "abn" | "acn" | "abn_acn" => Ok(TargetKind::AbnAcn),
         "apikey" | "api_key" | "key" => Ok(TargetKind::ApiKey),
+        "mac" | "bssid" | "mac_address" => Ok(TargetKind::MacAddress),
         other => Err(Error::InvalidTarget(format!(
-            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, url, asn, coords, address, org, abn, apikey"
+            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, url, asn, coords, address, org, abn, apikey, mac"
         ))),
     }
 }
