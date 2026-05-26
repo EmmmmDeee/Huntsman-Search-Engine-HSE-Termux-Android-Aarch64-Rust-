@@ -76,7 +76,7 @@ impl Module for Wigle {
         "WiGLE wireless network geolocation database"
     }
     fn priority(&self) -> u8 {
-        70
+        18
     }
 
     fn cost(&self) -> ModuleCost {
