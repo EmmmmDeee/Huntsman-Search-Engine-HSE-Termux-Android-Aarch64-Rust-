@@ -2291,6 +2291,13 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                     .with_attr("query", &r.query),
                 );
                 result.push(e);
+            } else if let Some(existing) = result
+                .entities
+                .iter_mut()
+                .find(|e| e.kind == EntityKind::Email && e.value == email)
+            {
+                existing.confidence = (existing.confidence + 0.10).min(0.85);
+                existing.corroboration = existing.corroboration.saturating_add(1);
             }
         }
 
@@ -2313,6 +2320,13 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                     .with_attr("engine", r.engine),
                 );
                 result.push(e);
+            } else if let Some(existing) = result
+                .entities
+                .iter_mut()
+                .find(|e| e.kind == EntityKind::Phone && e.value == phone)
+            {
+                existing.confidence = (existing.confidence + 0.12).min(0.80);
+                existing.corroboration = existing.corroboration.saturating_add(1);
             }
         }
 
@@ -2506,17 +2520,18 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
     // enables the geo expansion chain immediately.
     {
         let mut seen_coords: HashSet<String> = HashSet::new();
-        let addr_snapshot: Vec<(String, f64)> = result
+        let addr_snapshot: Vec<(String, f64, u32)> = result
             .entities
             .iter()
             .filter(|e| e.kind == EntityKind::Address && e.confidence >= 0.45)
-            .map(|e| (e.value.clone(), e.confidence))
+            .map(|e| (e.value.clone(), e.confidence, e.corroboration))
             .collect();
-        for (addr, conf) in &addr_snapshot {
+        for (addr, conf, corr) in &addr_snapshot {
             if let Some((lat, lon)) = known_city_coords(addr) {
                 let coords = format!("{lat:.4},{lon:.4}");
                 if seen_coords.insert(coords.clone()) {
-                    let geo_conf = (conf * 0.85).min(0.70);
+                    let corr_boost = (*corr as f64 - 1.0).max(0.0) * 0.07;
+                    let geo_conf = ((conf * 0.80) + corr_boost).min(0.72);
                     let mut ce = Entity::new(EntityKind::Coordinates, &coords, geo_conf, scan_id);
                     ce.tag("geoint");
                     ce.tag("search-geocoded");
