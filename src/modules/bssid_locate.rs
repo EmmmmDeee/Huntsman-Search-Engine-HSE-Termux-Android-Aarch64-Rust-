@@ -134,7 +134,7 @@ impl Module for BssidLocate {
                 continue;
             }
 
-            if let Some(detail) = query_wigle_detail(&ctx.http, user, token, &ap.bssid).await? {
+            if let Ok(Some(detail)) = query_wigle_detail(&ctx.http, user, token, &ap.bssid).await {
                 if let (Some(lat), Some(lon)) = (detail.trilat, detail.trilong) {
                     if lat == 0.0 && lon == 0.0 {
                         continue;
@@ -247,8 +247,14 @@ async fn query_wigle_detail(
         .map_err(|e| Error::module("bssid_locate", e.to_string()))?;
 
     let status = resp.status();
-    if status.as_u16() == 404 || status.as_u16() == 401 {
+    if status.as_u16() == 404 {
         return Ok(None);
+    }
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err(Error::module(
+            "bssid_locate",
+            format!("WiGLE auth failed (HTTP {status}): check HUNTSMAN_WIGLE_USER/TOKEN"),
+        ));
     }
     if !status.is_success() {
         return Err(Error::module(

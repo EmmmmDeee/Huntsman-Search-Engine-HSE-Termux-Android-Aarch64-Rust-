@@ -129,7 +129,7 @@ impl Module for GeoIntel {
     }
 
     fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
+        ModuleCost::KeyGated
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -285,7 +285,11 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
 // ─── Identity geo enrichment: OathNet Pro batch queries ─────────────────────
 
 async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-    let key = oathnet::resolve_key(ctx.key_opt(oathnet::KEY_ENV));
+    let oathnet_key = ctx.key_opt(oathnet::KEY_ENV);
+    if oathnet_key.is_none() {
+        return Ok(ModuleResult::new());
+    }
+    let key = oathnet::resolve_key(oathnet_key);
 
     let mut result = ModuleResult::new();
     let mut seen = HashSet::new();
@@ -432,7 +436,7 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
                 if let Some(ips) = item.get("device_ips").and_then(|v| v.as_array()) {
                     for ip_val in ips.iter().take(3) {
                         if let Some(ip) = ip_val.as_str()
-                            && ip.len() >= 7
+                            && ip.parse::<std::net::IpAddr>().is_ok()
                             && seen.insert(format!("@victim-ip:{ip}"))
                         {
                             let mut e =
@@ -515,9 +519,10 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         }
     }
 
-    // OathNet Pro breach search for phone geo data
-    let key = oathnet::resolve_key(ctx.key_opt(oathnet::KEY_ENV));
-    if !ctx.cancel.is_cancelled() {
+    // OathNet Pro breach search for phone geo data (only with explicit key)
+    let oathnet_key = ctx.key_opt(oathnet::KEY_ENV);
+    if !ctx.cancel.is_cancelled() && oathnet_key.is_some() {
+        let key = oathnet::resolve_key(oathnet_key);
         if let Ok(items) =
             oathnet::search(key, paths::BREACH, "phone", &target.value, 20).await
         {
@@ -784,17 +789,22 @@ fn mode<'a>(items: &[&'a str]) -> Option<&'a str> {
     }
     counts
         .into_iter()
-        .max_by_key(|&(_, count)| count)
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)))
         .map(|(val, _)| val)
 }
 
 // ─── Phone prefix → country ────────────────────────────────────────────────
 
 fn phone_prefix_to_country(phone: &str) -> Option<(&'static str, &'static str, f64, f64)> {
-    // Try longest prefix first (3 digits), then 2, then 1
+    if !phone.is_ascii() {
+        return None;
+    }
     for len in [3, 2, 1] {
         if phone.len() >= len {
             let prefix = &phone[..len];
+            if !prefix.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
             if let Some(result) = match prefix {
                 // 1-digit
                 "1" => Some(("United States/Canada", "US", 39.8283, -98.5795)),
@@ -1039,8 +1049,8 @@ mod tests {
     }
 
     #[test]
-    fn cost_is_free() {
-        assert!(matches!(GeoIntel.cost(), ModuleCost::Free));
+    fn cost_is_key_gated() {
+        assert!(matches!(GeoIntel.cost(), ModuleCost::KeyGated));
     }
 
     #[test]

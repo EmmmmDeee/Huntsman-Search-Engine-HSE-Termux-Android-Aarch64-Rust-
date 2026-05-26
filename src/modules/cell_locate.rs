@@ -98,7 +98,7 @@ impl Module for CellLocate {
             let mnc = json_to_str(&cell.mnc);
             let lac = cell.lac.or(cell.tac).unwrap_or(0);
             let cid = cell.cid.unwrap_or(0);
-            if mcc.is_empty() || cid == 0 {
+            if mcc.is_empty() || mnc.is_empty() || lac == 0 || cid == 0 {
                 continue;
             }
 
