@@ -42,11 +42,11 @@ else
     BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""
 fi
 
-step() { printf "${BLUE}==>${NC} ${BOLD}%s${NC}\n" "$*"; }
-ok()   { printf "  ${GREEN}✓${NC} %s\n" "$*"; }
-warn() { printf "  ${YELLOW}!${NC} %s\n" "$*"; }
-die()  { printf "  ${RED}✗${NC} %s\n" "$*" >&2; echo; echo "Full log: $LOG_FILE"; exit 1; }
-hint() { printf "    ${DIM}%s${NC}\n" "$*"; }
+step()     { printf "${BLUE}==>${NC} ${BOLD}%s${NC}\n" "$*"; }
+ok()       { printf "  ${GREEN}✓${NC} %s\n" "$*"; }
+log_warn() { printf "  ${YELLOW}!${NC} %s\n" "$*"; }
+die()      { printf "  ${RED}✗${NC} %s\n" "$*" >&2; echo; echo "Full log: $LOG_FILE"; exit 1; }
+hint()     { printf "    ${DIM}%s${NC}\n" "$*"; }
 
 on_exit() {
     local rc=$?
@@ -79,8 +79,8 @@ ok "OS=$OS  ARCH=$ARCH"
 
 case "$ARCH" in
     aarch64|arm64) : ;;
-    x86_64|amd64)  warn "Untested arch ($ARCH); proceeding — please report any issues" ;;
-    *)             warn "Unusual arch ($ARCH); installation may not work" ;;
+    x86_64|amd64)  log_warn "Untested arch ($ARCH); proceeding — please report any issues" ;;
+    *)             log_warn "Unusual arch ($ARCH); installation may not work" ;;
 esac
 
 # Termux quirks: PREFIX defaults to /data/data/com.termux/files/usr.
@@ -98,7 +98,7 @@ step "Sanity checks"
 # Clock — TLS handshakes fail with a wildly wrong clock.
 CURRENT_YEAR="$(date +%Y)"
 if [[ "$CURRENT_YEAR" -lt 2024 ]]; then
-    warn "System clock looks wrong ($(date)). TLS will likely fail."
+    log_warn "System clock looks wrong ($(date)). TLS will likely fail."
     hint "Fix on Termux: Android Settings -> System -> Date & time -> Set automatically"
     hint "Or manually: date -s 'YYYY-MM-DD HH:MM:SS'"
 fi
@@ -116,9 +116,9 @@ if command -v df >/dev/null 2>&1; then
         DISK_AVAIL_MB=0
     fi
     if [[ "$DISK_AVAIL_MB" -eq 0 ]]; then
-        warn "Could not read free disk space from df — skipping check"
+        log_warn "Could not read free disk space from df — skipping check"
     elif [[ "$DISK_AVAIL_MB" -lt 2048 ]]; then
-        warn "Only ${DISK_AVAIL_MB}MB free in \$HOME. Build needs ~2GB."
+        log_warn "Only ${DISK_AVAIL_MB}MB free in \$HOME. Build needs ~2GB."
         hint "Free space or set HSE_INSTALL_DIR / CARGO_TARGET_DIR to a larger volume."
     else
         ok "Disk: ${DISK_AVAIL_MB}MB free"
@@ -129,7 +129,7 @@ fi
 if [[ -r /proc/meminfo ]]; then
     MEM_TOTAL_MB=$(awk '/^MemTotal/ {print int($2/1024)}' /proc/meminfo)
     if [[ "$MEM_TOTAL_MB" -lt 1500 ]]; then
-        warn "Only ${MEM_TOTAL_MB}MB RAM. Build may OOM."
+        log_warn "Only ${MEM_TOTAL_MB}MB RAM. Build may OOM."
         hint "Workaround: set CARGO_BUILD_JOBS=1 to limit parallelism."
         export CARGO_BUILD_JOBS=1
     else
@@ -147,7 +147,7 @@ if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
         until pkg update -y; do
             attempts=$((attempts + 1))
             [[ $attempts -ge 4 ]] && die "pkg update failed after 4 attempts — check network"
-            warn "pkg update failed (attempt $attempts); retrying in $((attempts * 2))s"
+            log_warn "pkg update failed (attempt $attempts); retrying in $((attempts * 2))s"
             sleep $((attempts * 2))
         done
 
@@ -157,9 +157,9 @@ if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
 
         # Optional: termux-api is needed for sensor modules (v0.6+).
         if ! pkg show termux-api >/dev/null 2>&1; then
-            warn "termux-api package metadata unavailable"
+            log_warn "termux-api package metadata unavailable"
         elif ! command -v termux-info >/dev/null 2>&1; then
-            warn "termux-api is not installed — sensor modules (v0.6+) will no-op"
+            log_warn "termux-api is not installed — sensor modules (v0.6+) will no-op"
             hint "Install later: pkg install termux-api"
             hint "And install the Termux:API app from F-Droid for sensor access."
         fi
@@ -169,7 +169,7 @@ if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
     elif [[ "$OS" == "Darwin" ]]; then
         step "macOS detected — ensuring Xcode CLT and rustup"
         if ! xcode-select -p >/dev/null 2>&1; then
-            warn "Xcode Command Line Tools not installed."
+            log_warn "Xcode Command Line Tools not installed."
             hint "Install with: xcode-select --install"
         fi
     fi
@@ -182,7 +182,7 @@ if ! command -v cargo >/dev/null 2>&1; then
     if [[ $IS_TERMUX -eq 1 ]]; then
         die "cargo missing after pkg install rust — re-run installer or run: pkg install rust"
     fi
-    warn "cargo not found — bootstrapping rustup"
+    log_warn "cargo not found — bootstrapping rustup"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
     # shellcheck source=/dev/null
     source "$HOME/.cargo/env"
@@ -242,7 +242,7 @@ attempts=0
 until cargo build --release --locked; do
     attempts=$((attempts + 1))
     [[ $attempts -ge 3 ]] && die "cargo build failed after 3 attempts — check $LOG_FILE"
-    warn "Build attempt $attempts failed; retrying (slow mobile network?)"
+    log_warn "Build attempt $attempts failed; retrying (slow mobile network?)"
     sleep $((attempts * 3))
 done
 
@@ -257,7 +257,7 @@ install -m 0755 "$BUILT" "$HSE_BIN_DIR/hse"
 ok "Installed"
 
 if ! echo ":$PATH:" | grep -q ":$HSE_BIN_DIR:"; then
-    warn "$HSE_BIN_DIR is not in your PATH"
+    log_warn "$HSE_BIN_DIR is not in your PATH"
     hint "Add to ~/.bashrc or ~/.zshrc: export PATH=\"$HSE_BIN_DIR:\$PATH\""
 fi
 
