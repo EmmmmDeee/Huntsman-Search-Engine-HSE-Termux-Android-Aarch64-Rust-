@@ -831,3 +831,93 @@ async fn live_session_stops_on_explicit_cancel() {
         session.status
     );
 }
+
+// ── Geolocation confidence gating ─────────────────────────────────────
+//
+// WiGLE (priority 18, KeyGated) must ONLY fire on high-confidence
+// Coordinates. Single-source geo (confidence 0.60-0.70) must NOT
+// reach the 0.75 c_effective threshold. Two-source corroboration
+// (merge with corroboration=2) must push c_eff above 0.75.
+// This ensures WiGLE API quota is spent only on validated coordinates.
+
+#[test]
+fn single_source_coordinates_below_expansion_threshold() {
+    use huntsman_search_engine::core::entity::{Entity, EntityKind};
+    let e = Entity::new(EntityKind::Coordinates, "0,0", 0.70, "test");
+    assert!(
+        e.c_effective() < 0.75,
+        "single-source 0.70 confidence must NOT reach 0.75 threshold: c_eff={:.4}",
+        e.c_effective()
+    );
+}
+
+#[test]
+fn two_source_coordinates_above_expansion_threshold() {
+    use huntsman_search_engine::core::entity::{Entity, EntityKind};
+    let mut a = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.70, "s1");
+    let b = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.68, "s2");
+    a.merge(b);
+    assert_eq!(a.corroboration, 2);
+    assert!(
+        a.c_effective() >= 0.75,
+        "two-source corroboration must push c_eff >= 0.75: c_eff={:.4}, conf={:.4}, corr={}",
+        a.c_effective(),
+        a.confidence,
+        a.corroboration
+    );
+}
+
+#[test]
+fn wigle_priority_below_free_geo_modules() {
+    let modules = huntsman_search_engine::modules::registry();
+    let wigle = modules.iter().find(|m| m.name() == "wigle").unwrap();
+    let ip_geo = modules.iter().find(|m| m.name() == "ip_geo").unwrap();
+    let ip_whois = modules.iter().find(|m| m.name() == "ip_whois_geo").unwrap();
+    let rev_geo = modules
+        .iter()
+        .find(|m| m.name() == "reverse_geocode")
+        .unwrap();
+    let fwd_geo = modules
+        .iter()
+        .find(|m| m.name() == "forward_geocode")
+        .unwrap();
+
+    assert!(
+        wigle.priority() < ip_geo.priority(),
+        "wigle ({}) must run AFTER ip_geo ({})",
+        wigle.priority(),
+        ip_geo.priority()
+    );
+    assert!(
+        wigle.priority() < ip_whois.priority(),
+        "wigle ({}) must run AFTER ip_whois_geo ({})",
+        wigle.priority(),
+        ip_whois.priority()
+    );
+    assert!(
+        wigle.priority() < rev_geo.priority(),
+        "wigle ({}) must run AFTER reverse_geocode ({})",
+        wigle.priority(),
+        rev_geo.priority()
+    );
+    assert!(
+        wigle.priority() < fwd_geo.priority(),
+        "wigle ({}) must run AFTER forward_geocode ({})",
+        wigle.priority(),
+        fwd_geo.priority()
+    );
+}
+
+#[test]
+fn oathnet_priority_above_free_geo_modules() {
+    let modules = huntsman_search_engine::modules::registry();
+    let oathnet = modules.iter().find(|m| m.name() == "oathnet_pro").unwrap();
+    let ip_geo = modules.iter().find(|m| m.name() == "ip_geo").unwrap();
+
+    assert!(
+        oathnet.priority() > ip_geo.priority(),
+        "oathnet_pro ({}) must run BEFORE ip_geo ({}) to produce IPs first",
+        oathnet.priority(),
+        ip_geo.priority()
+    );
+}
