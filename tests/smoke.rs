@@ -231,6 +231,67 @@ async fn expansion_depth_one_chains_two_modules() {
 }
 
 #[tokio::test]
+async fn expansion_depth_two_chains_three_modules() {
+    let (engine, store, sid, target, ctx) = setup(
+        vec![
+            Arc::new(EmailToUsernameSynth),
+            Arc::new(UsernameToPhoneSynth),
+            Arc::new(SyntheticModule),
+        ],
+        "depth_two",
+        TargetKind::Email,
+        "bob@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 2,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    assert!(
+        result.entity_count >= 3,
+        "depth-2 should yield email + username + phone (got {})",
+        result.entity_count
+    );
+    let entities = store.entities_for_scan(&sid).unwrap();
+    let kinds: Vec<&EntityKind> = entities.iter().map(|e| &e.kind).collect();
+    assert!(kinds.contains(&&EntityKind::Email));
+    assert!(kinds.contains(&&EntityKind::Username));
+    assert!(kinds.contains(&&EntityKind::Phone));
+}
+
+#[tokio::test]
+async fn concurrent_dispatch_produces_same_entities_as_sequential() {
+    let modules: Vec<Arc<dyn Module>> =
+        vec![Arc::new(EmailToUsernameSynth), Arc::new(SyntheticModule)];
+    let (engine_seq, store_seq, sid_seq, target_seq, ctx_seq) = setup(
+        modules.clone(),
+        "seq_cmp",
+        TargetKind::Email,
+        "cmp@test.com",
+    );
+    let scan_seq = Scan::new(sid_seq.clone(), target_seq.clone());
+    engine_seq.run(scan_seq, target_seq, ctx_seq).await.unwrap();
+    let ents_seq = store_seq.entities_for_scan(&sid_seq).unwrap();
+
+    let (engine_par, store_par, sid_par, target_par, ctx_par) =
+        setup(modules, "par_cmp", TargetKind::Email, "cmp@test.com");
+    let opts_par = ScanOptions {
+        max_concurrent: 4,
+        ..Default::default()
+    };
+    let scan_par = Scan::new(sid_par.clone(), target_par.clone()).with_options(opts_par);
+    engine_par.run(scan_par, target_par, ctx_par).await.unwrap();
+    let ents_par = store_par.entities_for_scan(&sid_par).unwrap();
+
+    assert_eq!(
+        ents_seq.len(),
+        ents_par.len(),
+        "sequential and concurrent should produce same entity count"
+    );
+}
+
+#[tokio::test]
 async fn expansion_respects_min_expand_confidence() {
     let (engine, _store, sid, target, ctx) = setup(
         vec![
