@@ -44,7 +44,7 @@ pub(crate) struct CommunityResp {
     /// Link to the GreyNoise visualiser page for this IP.
     #[serde(default)]
     pub link: Option<String>,
-    /// `true` when the IP was found in the dataset; `false` on miss.
+    /// Human-readable status message (e.g. "IP not observed scanning the internet").
     #[serde(default)]
     pub message: Option<String>,
 }

@@ -678,7 +678,7 @@ fn color_severity(severity: &str, color: bool) -> String {
     if !color {
         return severity.to_string();
     }
-    match severity {
+    match severity.trim() {
         "critical" => format!("\x1b[1;31m{severity}\x1b[0m"),
         "high" => format!("\x1b[31m{severity}\x1b[0m"),
         "medium" => format!("\x1b[33m{severity}\x1b[0m"),
@@ -958,10 +958,10 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             );
             println!("{}", "-".repeat(86));
             for c in &correlations {
-                let sev = c.severity.to_string();
-                let sev_colored = color_severity(&sev, color);
+                let sev_padded = format!("{:<10}", c.severity);
+                let sev_colored = color_severity(&sev_padded, color);
                 println!(
-                    "{:<10} {:<10} {:<40} {}",
+                    "{:<10} {} {:<40} {}",
                     c.rule_id,
                     sev_colored,
                     truncate(&c.rule_name, 40),

@@ -89,11 +89,11 @@ impl Module for UrlScan {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let query = match target.kind {
             TargetKind::Domain => format!(
-                "https://urlscan.io/api/v1/search/?q=domain:{}&size=10",
+                "https://urlscan.io/api/v1/search/?q=domain:\"{}\"&size=10",
                 urlencode(&target.value)
             ),
             TargetKind::Url => format!(
-                "https://urlscan.io/api/v1/search/?q=page.url:{}&size=5",
+                "https://urlscan.io/api/v1/search/?q=page.url:\"{}\"&size=5",
                 urlencode(&target.value)
             ),
             _ => return Ok(ModuleResult::new()),
