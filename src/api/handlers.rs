@@ -71,8 +71,13 @@ fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, target: Targ
         proxy_pool: std::sync::Arc::clone(&state.proxy_pool),
     };
     let engine = Arc::clone(&state.engine);
+    let sem = Arc::clone(&state.scan_semaphore);
     tokio::spawn(async move {
         let _cancel_guard = cancel_guard;
+        let Ok(_permit) = sem.acquire().await else {
+            tracing::warn!(scan_id = %sid, "scan semaphore closed");
+            return;
+        };
         if let Err(e) = engine.run(scan, target, ctx).await {
             tracing::warn!(scan_id = %sid, error = %e, "scan failed");
         }

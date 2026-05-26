@@ -130,7 +130,8 @@ impl ScanEngine {
 
         let opts = scan.options.clone();
         let started = Instant::now();
-        let mut entity_map: HashMap<String, Entity> = HashMap::with_capacity(64);
+        let mut entity_map: HashMap<String, Entity> =
+            HashMap::with_capacity(opts.max_entities.unwrap_or(256).min(4096));
         let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
 
         visited.insert(visit_key(&target));
@@ -160,6 +161,7 @@ impl ScanEngine {
         entity_map: HashMap<String, Entity>,
         ctx: &ModuleContext,
     ) -> Result<Scan> {
+        let total = entity_map.len();
         let mut persisted = 0usize;
         let mut first_err: Option<String> = None;
         for entity in entity_map.into_values() {
@@ -174,6 +176,7 @@ impl ScanEngine {
             }
         }
         let entity_count = persisted;
+        let failed = total - persisted;
 
         if persisted == 0 && first_err.is_some() {
             scan.status = ScanStatus::Failed;
@@ -197,6 +200,12 @@ impl ScanEngine {
             ScanStatus::Complete
         };
         scan.entity_count = entity_count;
+        if failed > 0 {
+            scan.error = Some(format!(
+                "{failed}/{total} entities failed to persist: {}",
+                first_err.as_deref().unwrap_or("unknown")
+            ));
+        }
         scan.finished_at = Some(crate::core::entity::unix_now());
         self.store.upsert_scan(scan)?;
 
@@ -261,10 +270,8 @@ impl ScanEngine {
             // Snapshot the entity set at round start — entities discovered
             // during this round will be expansion candidates in the next round,
             // not this one.
-            let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
-
             let mut next: Vec<Target> = Vec::new();
-            for entity in &snapshot {
+            for entity in entity_map.values() {
                 if entity.c_effective() < opts.min_expand_confidence {
                     continue;
                 }
@@ -339,6 +346,11 @@ fn visit_key(target: &Target) -> (TargetKind, String) {
     let entity_kind = target.kind.to_entity_kind();
     let normalised = normalise(&entity_kind, &target.value);
     (target.kind, normalised)
+}
+
+fn resolve_timeout(opts: &ScanOptions, module: &dyn Module) -> u64 {
+    opts.module_timeout_ms
+        .unwrap_or_else(|| module.max_timeout_ms())
 }
 
 fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> Option<StopReason> {
@@ -517,13 +529,8 @@ impl ScanEngine {
                 },
             );
 
-            // Per-module timeout: user override > module's declared max.
-            // gps_fix needs 15+ s, whois can chain 2× 4 s referrals, etc.
-            let module_timeout_ms = opts
-                .module_timeout_ms
-                .unwrap_or_else(|| module.max_timeout_ms());
             let result = timeout(
-                Duration::from_millis(module_timeout_ms),
+                Duration::from_millis(resolve_timeout(opts, &**module)),
                 module.process(target, ctx),
             )
             .await;
@@ -613,9 +620,7 @@ impl ScanEngine {
             let emitter = self.emitter.clone();
             let scan_id_owned = scan_id.to_string();
             let throttle_ms = opts.throttle_ms;
-            let module_timeout_ms = opts
-                .module_timeout_ms
-                .unwrap_or_else(|| module_arc.max_timeout_ms());
+            let module_timeout_ms = resolve_timeout(opts, &*module_arc);
 
             set.spawn(async move {
                 let _permit = permit;

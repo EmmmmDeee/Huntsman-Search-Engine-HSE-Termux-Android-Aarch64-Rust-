@@ -688,6 +688,9 @@ async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
         allow_key_write,
         cancellations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
+            crate::api::MAX_CONCURRENT_SCANS,
+        )),
     });
 
     let app = router(state, &bind);

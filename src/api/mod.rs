@@ -106,33 +106,21 @@ mod tests {
     }
 }
 
-/// Application state shared across all HTTP handlers. Cloned per request via
-/// axum's [`State`](axum::extract::State) extractor.
-///
-/// Holds four `Arc`'d (or cheaply-cloneable) singletons:
-/// * `store` — SQLite WAL store (single connection behind a `parking_lot::Mutex`).
-/// * `engine` — the scan engine; its `bus` field is what the SSE handler subscribes to.
-/// * `bus` — the same `EventBus` exposed on `ScanEngine`, kept here for convenience
-///   when a handler wants to subscribe without going through the engine.
-/// * `live` — the live-session registry (v0.5+); manages periodic re-scans.
+/// Maximum number of scans that can run concurrently via the HTTP API.
+pub const MAX_CONCURRENT_SCANS: usize = 8;
+
+/// Application state shared across all HTTP handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<dyn StoragePort>,
     pub engine: Arc<ScanEngine>,
     pub bus: EventBus,
     pub live: LiveScanner,
-    /// Shared `reqwest::Client` — internally `Arc`-y so cloning per scan
-    /// is cheap. Owning it on `AppState` lets the connection pool, DNS
-    /// cache, and TLS session cache survive across scans (a noticeable
-    /// win on Termux where TLS handshake cost dominates short scans).
     pub http: reqwest::Client,
-    /// Set by `hse serve --allow-key-write`. When false, `PUT /api/v1/settings/keys`
-    /// always returns 403 regardless of where the request came from. When true,
-    /// the handler still requires the request to originate from a loopback peer.
     pub allow_key_write: bool,
-    /// In-flight scan cancellation handles, keyed by scan_id. See
-    /// `CancelRegistry` doc.
     pub cancellations: CancelRegistry,
-    /// Shared proxy pool for free scraping modules.
     pub proxy_pool: Arc<crate::util::proxy::ProxyPool>,
+    /// Bounds the number of scans running concurrently via the API.
+    /// Prevents resource exhaustion from rapid `POST /scans` calls.
+    pub scan_semaphore: Arc<tokio::sync::Semaphore>,
 }
