@@ -298,7 +298,17 @@ impl Entity {
             .saturating_add(other.corroboration)
             .max(1);
         self.observed_at = u64::max(self.observed_at, other.observed_at);
-        self.evidence.extend(other.evidence);
+        // Deduplicate evidence by (source, summary) to prevent accumulation
+        // across live mode iterations or re-scans.
+        for ev in other.evidence {
+            let dominated = self
+                .evidence
+                .iter()
+                .any(|e| e.source == ev.source && e.summary == ev.summary);
+            if !dominated {
+                self.evidence.push(ev);
+            }
+        }
         for t in other.tags {
             self.tag(t);
         }
@@ -365,7 +375,15 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
 /// - Everything else → trim
 pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
-        EntityKind::Email | EntityKind::Domain | EntityKind::Username => {
+        EntityKind::Email | EntityKind::Username => {
+            let trimmed = value.trim();
+            let mut s = String::with_capacity(trimmed.len());
+            for c in trimmed.chars() {
+                s.extend(c.to_lowercase());
+            }
+            s
+        }
+        EntityKind::Domain => {
             let trimmed = value.trim();
             let mut s = String::with_capacity(trimmed.len());
             for c in trimmed.chars() {
@@ -373,6 +391,10 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             }
             let len = s.trim_end_matches('.').len();
             s.truncate(len);
+            // Strip www. prefix for deduplication
+            if s.starts_with("www.") && s.len() > 4 {
+                s = s[4..].to_string();
+            }
             s
         }
         EntityKind::Phone => {
@@ -388,6 +410,57 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
                 }
             }
             out
+        }
+        EntityKind::IpAddress => {
+            let trimmed = value.trim();
+            // Parse and re-format to canonical form (handles IPv6 compression, mapped addresses)
+            if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+                match ip {
+                    std::net::IpAddr::V6(v6) => {
+                        // Convert IPv4-mapped IPv6 (::ffff:1.2.3.4) to plain IPv4
+                        if let Some(v4) = v6.to_ipv4_mapped() {
+                            return v4.to_string();
+                        }
+                        ip.to_string()
+                    }
+                    _ => ip.to_string(),
+                }
+            } else {
+                trimmed.to_string()
+            }
+        }
+        EntityKind::MacAddress => {
+            // Normalise to lowercase colon-separated: aa:bb:cc:dd:ee:ff
+            let trimmed = value.trim();
+            let hex: String = trimmed
+                .chars()
+                .filter(|c| c.is_ascii_hexdigit())
+                .flat_map(|c| c.to_lowercase())
+                .collect();
+            if hex.len() == 12 {
+                format!(
+                    "{}:{}:{}:{}:{}:{}",
+                    &hex[0..2],
+                    &hex[2..4],
+                    &hex[4..6],
+                    &hex[6..8],
+                    &hex[8..10],
+                    &hex[10..12]
+                )
+            } else {
+                trimmed.to_lowercase()
+            }
+        }
+        EntityKind::Coordinates => {
+            // Normalise to 6 decimal places: "lat,lon"
+            let trimmed = value.trim();
+            if let Some((lat_s, lon_s)) = trimmed.split_once(',')
+                && let (Ok(lat), Ok(lon)) =
+                    (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>())
+            {
+                return format!("{lat:.6},{lon:.6}");
+            }
+            trimmed.to_string()
         }
         EntityKind::Url => {
             let trimmed = value.trim();

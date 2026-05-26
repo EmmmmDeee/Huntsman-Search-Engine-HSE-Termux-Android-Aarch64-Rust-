@@ -299,7 +299,7 @@ mod tests {
         let json = br#"{"latitude":-27.469824123,"longitude":153.025198765,
             "provider":"network"}"#;
         let r = parse_fix(json, "test");
-        assert_eq!(r.entities[0].value, "-27.4698241,153.0251988");
+        assert_eq!(r.entities[0].value, "-27.469824,153.025199");
     }
 
     #[test]
@@ -369,6 +369,6 @@ mod tests {
     fn negative_coordinates_handled() {
         let json = br#"{"latitude":-33.8688,"longitude":151.2093,"provider":"network"}"#;
         let r = parse_fix(json, "test");
-        assert_eq!(r.entities[0].value, "-33.8688000,151.2093000");
+        assert_eq!(r.entities[0].value, "-33.868800,151.209300");
     }
 }
