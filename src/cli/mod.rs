@@ -7,6 +7,7 @@
 
 mod provision;
 
+use std::io::IsTerminal;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -653,6 +654,38 @@ fn build_runtime(
     Ok((store, bus, engine))
 }
 
+fn use_color() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    std::io::stdout().is_terminal()
+}
+
+fn color_confidence(c_eff: f64, text: &str, color: bool) -> String {
+    if !color {
+        return text.to_string();
+    }
+    if c_eff >= 0.75 {
+        format!("\x1b[32m{text}\x1b[0m")
+    } else if c_eff >= 0.40 {
+        format!("\x1b[33m{text}\x1b[0m")
+    } else {
+        format!("\x1b[31m{text}\x1b[0m")
+    }
+}
+
+fn color_severity(severity: &str, color: bool) -> String {
+    if !color {
+        return severity.to_string();
+    }
+    match severity.trim() {
+        "critical" => format!("\x1b[1;31m{severity}\x1b[0m"),
+        "high" => format!("\x1b[31m{severity}\x1b[0m"),
+        "medium" => format!("\x1b[33m{severity}\x1b[0m"),
+        _ => format!("\x1b[2m{severity}\x1b[0m"),
+    }
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -894,6 +927,7 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             }))?
         );
     } else {
+        let color = use_color();
         println!(
             "\nScan {} — {} entities for {}={}\n",
             &sid[..8],
@@ -908,14 +942,13 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         println!("{}", "-".repeat(86));
         for e in &entities {
             let val = truncate(&e.value, 46);
-            println!(
+            let c_eff = e.c_effective();
+            let class = e.classify();
+            let row = format!(
                 "{:<16} {:<46} {:>6.3} {:>6.3}  {}",
-                e.kind.to_string(),
-                val,
-                e.confidence,
-                e.c_effective(),
-                e.classify()
+                e.kind, val, e.confidence, c_eff, class
             );
+            println!("{}", color_confidence(c_eff, &row, color));
         }
         if !correlations.is_empty() {
             println!("\n{} correlations:\n", correlations.len());
@@ -925,10 +958,12 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             );
             println!("{}", "-".repeat(86));
             for c in &correlations {
+                let sev_padded = format!("{:<10}", c.severity);
+                let sev_colored = color_severity(&sev_padded, color);
                 println!(
-                    "{:<10} {:<10} {:<40} {}",
+                    "{:<10} {} {:<40} {}",
                     c.rule_id,
-                    c.severity.to_string(),
+                    sev_colored,
                     truncate(&c.rule_name, 40),
                     c.description
                 );

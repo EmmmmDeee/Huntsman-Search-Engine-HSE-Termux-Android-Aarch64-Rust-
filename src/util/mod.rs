@@ -55,14 +55,21 @@ pub mod termux {
 
     pub async fn termux_cmd(cmd: &str, args: &[&str], timeout_ms: u64) -> Option<Vec<u8>> {
         let fut = Command::new(cmd).args(args).kill_on_drop(true).output();
-        let output = timeout(Duration::from_millis(timeout_ms), fut)
-            .await
-            .ok()?
-            .ok()?;
-        if !output.status.success() {
-            return None;
+        match timeout(Duration::from_millis(timeout_ms), fut).await {
+            Err(_) => {
+                tracing::debug!(cmd, "termux_cmd: timed out after {timeout_ms}ms");
+                None
+            }
+            Ok(Err(e)) => {
+                tracing::debug!(cmd, error = %e, "termux_cmd: spawn/io failed");
+                None
+            }
+            Ok(Ok(output)) if !output.status.success() => {
+                tracing::debug!(cmd, code = ?output.status.code(), "termux_cmd: non-zero exit");
+                None
+            }
+            Ok(Ok(output)) => Some(output.stdout),
         }
-        Some(output.stdout)
     }
 }
 

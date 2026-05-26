@@ -78,11 +78,24 @@ pub fn env_path() -> String {
 /// values *and* anything the user exported in the shell before
 /// launching the binary.
 pub fn load() -> HashMap<String, String> {
-    let _ = dotenvy::from_path(env_path());
+    let path = env_path();
+    let _ = dotenvy::from_path(&path);
 
-    std::env::vars()
+    let map: HashMap<String, String> = std::env::vars()
         .filter(|(k, _)| k.starts_with("HUNTSMAN_"))
-        .collect()
+        .collect();
+
+    if map.is_empty()
+        && let Ok(meta) = std::fs::metadata(&path)
+        && meta.len() > 0
+    {
+        tracing::warn!(
+            "key file {path} exists ({} bytes) but no HUNTSMAN_* keys loaded — check formatting",
+            meta.len()
+        );
+    }
+
+    map
 }
 
 /// Parse `HUNTSMAN_*` lines from the env file at `path`, **ignoring the
