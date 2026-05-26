@@ -5,10 +5,7 @@
 //! `live` re-runs the same scan on a fixed interval (v0.5+). See
 //! `docs/USAGE.md` for the full reference.
 
-mod live;
 mod provision;
-mod scan;
-mod serve;
 
 use std::sync::Arc;
 
@@ -19,13 +16,13 @@ use crate::{
     core::{
         engine::ScanEngine,
         error::{Error, Result},
-        module::ModuleCost,
-        scan::{Target, TargetKind},
+        module::{ModuleContext, ModuleCost},
+        scan::{Scan, ScanOptions, Target, TargetKind},
     },
     default_db_path, is_termux,
     modules::registry,
     storage::store::Store,
-    util::keys,
+    util::{http::build_client, keys, uid::scan_id},
 };
 
 #[derive(Parser)]
@@ -248,7 +245,7 @@ pub async fn run() -> Result<()> {
             max_concurrent,
             output,
         } => {
-            scan::cmd_scan(scan::ScanCmd {
+            cmd_scan(ScanCmd {
                 kind,
                 value,
                 modules,
@@ -279,7 +276,7 @@ pub async fn run() -> Result<()> {
         Command::Serve {
             bind,
             allow_key_write,
-        } => serve::cmd_serve(bind, allow_key_write).await,
+        } => cmd_serve(bind, allow_key_write).await,
         Command::Live {
             kind,
             value,
@@ -290,7 +287,7 @@ pub async fn run() -> Result<()> {
             passive_only,
             modules,
         } => {
-            live::cmd_live(live::LiveCmd {
+            cmd_live(LiveCmd {
                 kind,
                 value,
                 interval,
@@ -664,6 +661,278 @@ fn truncate(s: &str, max: usize) -> String {
         out.push('…');
         out
     }
+}
+
+// ─── serve command ─────────────────────────────────────────────────────────
+
+async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
+    use std::net::SocketAddr;
+
+    use crate::api::{AppState, routes::router};
+    use crate::core::live::LiveScanner;
+
+    let (store, bus, engine) = build_runtime(1024)?;
+    let http = build_client();
+    let live = LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        http.clone(),
+        crate::util::keys::load(),
+    );
+    let state = Arc::new(AppState {
+        store,
+        engine,
+        bus,
+        live,
+        http,
+        allow_key_write,
+        cancellations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+    });
+
+    let app = router(state, &bind);
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .map_err(|e| Error::Other(format!("bind {bind}: {e}")))?;
+
+    tracing::info!("hse v{} — listening on http://{}", crate::VERSION, bind);
+    tracing::info!("  open in Chrome / Firefox on this device");
+    if allow_key_write {
+        tracing::warn!("--allow-key-write: PUT /api/v1/settings/keys enabled (loopback only)");
+    }
+    tracing::info!("  Ctrl-C to stop");
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .map_err(|e| Error::Other(format!("serve: {e}")))?;
+
+    tracing::info!("server stopped");
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("install Ctrl-C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
+}
+
+// ─── live command ──────────────────────────────────────────────────────────
+
+struct LiveCmd {
+    pub kind: String,
+    pub value: String,
+    pub interval: u64,
+    pub iterations: Option<u32>,
+    pub depth: u32,
+    pub free_only: bool,
+    pub passive_only: bool,
+    pub modules: Option<String>,
+}
+
+async fn cmd_live(cmd: LiveCmd) -> Result<()> {
+    use crate::core::live::{LiveOptions, LiveScanner};
+    use tokio_stream::StreamExt;
+    use tokio_stream::wrappers::BroadcastStream;
+
+    let target_kind = parse_target_kind(&cmd.kind)?;
+    let target = Target::new(target_kind, cmd.value.clone());
+
+    let scan_options = ScanOptions {
+        modules: split_csv(cmd.modules),
+        free_only: cmd.free_only,
+        passive_only: cmd.passive_only,
+        depth: cmd.depth,
+        ..Default::default()
+    };
+    let live_options = LiveOptions {
+        interval_secs: cmd.interval,
+        iterations: cmd.iterations,
+    };
+
+    let (_store, bus, engine) = build_runtime(1024)?;
+    let scanner = LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        crate::util::http::build_client(),
+        crate::util::keys::load(),
+    );
+
+    let live_id = scanner.start(target, scan_options, live_options);
+    eprintln!("live session {live_id} — Ctrl-C to stop");
+
+    let rx = bus.subscribe();
+    let scanner_clone = scanner.clone();
+    let target_lid = live_id.clone();
+    let mut stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
+        Ok(event)
+            if event.scan_id == target_lid
+                || scanner_clone.session_owns_scan(&target_lid, &event.scan_id) =>
+        {
+            let is_terminator =
+                matches!(event.kind, crate::core::event::EventKind::LiveStop { .. });
+            let line = serde_json::to_string(&event.kind).unwrap_or_default();
+            Some((line, is_terminator))
+        }
+        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+            eprintln!("warning: event stream lagged, {n} event(s) dropped");
+            None
+        }
+        _ => None,
+    });
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nstopping live session…");
+                scanner.stop(&live_id);
+            }
+            line = stream.next() => match line {
+                Some((s, is_terminator)) => {
+                    println!("{s}");
+                    if is_terminator {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ─── scan command ──────────────────────────────────────────────────────────
+
+struct ScanCmd {
+    pub kind: String,
+    pub value: String,
+    pub modules: Option<String>,
+    pub exclude: Option<String>,
+    pub throttle_ms: u64,
+    pub min_confidence: Option<f64>,
+    pub free_only: bool,
+    pub passive_only: bool,
+    pub module_timeout_ms: Option<u64>,
+    pub depth: u32,
+    pub min_expand_confidence: f64,
+    pub max_entities: Option<usize>,
+    pub max_wall_time_secs: Option<u64>,
+    pub max_concurrent: usize,
+    pub output: String,
+}
+
+async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
+    let target_kind = parse_target_kind(&cmd.kind)?;
+    let target = Target::new(target_kind, cmd.value.clone());
+
+    let options = ScanOptions {
+        modules: split_csv(cmd.modules),
+        exclude_modules: split_csv(cmd.exclude).unwrap_or_default(),
+        throttle_ms: cmd.throttle_ms,
+        max_concurrent: cmd.max_concurrent,
+        module_timeout_ms: cmd.module_timeout_ms,
+        min_confidence: cmd.min_confidence,
+        free_only: cmd.free_only,
+        passive_only: cmd.passive_only,
+        depth: cmd.depth,
+        min_expand_confidence: cmd.min_expand_confidence,
+        max_entities: cmd.max_entities,
+        max_wall_time_secs: cmd.max_wall_time_secs,
+        scan_tags: Vec::new(),
+        notes: None,
+    };
+
+    let sid = scan_id(target_kind.canonical_str(), &cmd.value);
+    let (store, bus, engine) = build_runtime(64)?;
+
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(options);
+    let ctx = ModuleContext {
+        scan_id: sid.clone(),
+        bus,
+        http: build_client(),
+        keys: keys::load(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+    };
+
+    let scan = engine.run(scan, target, ctx).await?;
+    let entities = store.entities_for_scan(&sid)?;
+    let correlations = store.correlations_for_scan(&sid)?;
+
+    if cmd.output == "json" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "scan": scan,
+                "entities": entities,
+                "correlations": correlations,
+            }))?
+        );
+    } else {
+        println!(
+            "\nScan {} — {} entities for {}={}\n",
+            &sid[..8],
+            entities.len(),
+            cmd.kind,
+            cmd.value
+        );
+        println!(
+            "{:<16} {:<46} {:>6} {:>6}  CLASS",
+            "KIND", "VALUE", "CONF", "C_EFF"
+        );
+        println!("{}", "-".repeat(86));
+        for e in &entities {
+            let val = truncate(&e.value, 46);
+            println!(
+                "{:<16} {:<46} {:>6.3} {:>6.3}  {}",
+                e.kind.to_string(),
+                val,
+                e.confidence,
+                e.c_effective(),
+                e.classify()
+            );
+        }
+        if !correlations.is_empty() {
+            println!("\n{} correlations:\n", correlations.len());
+            println!(
+                "{:<10} {:<10} {:<40} DESCRIPTION",
+                "RULE", "SEVERITY", "NAME"
+            );
+            println!("{}", "-".repeat(86));
+            for c in &correlations {
+                println!(
+                    "{:<10} {:<10} {:<40} {}",
+                    c.rule_id,
+                    c.severity.to_string(),
+                    truncate(&c.rule_name, 40),
+                    c.description
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

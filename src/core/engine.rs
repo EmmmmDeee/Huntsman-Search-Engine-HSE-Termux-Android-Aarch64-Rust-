@@ -1,0 +1,908 @@
+//! Scan engine — module dispatcher + autonomous expansion (v0.2+) + parallel
+//! dispatch (v0.8+).
+//!
+//! Each scan has two phases:
+//!   1. Seed dispatch — every accepting module runs against the seed target.
+//!   2. Expansion (when `ScanOptions::depth > 0`) — entities produced so far
+//!      with `c_effective() ≥ min_expand_confidence` are converted to new
+//!      targets and re-dispatched, up to `depth` rounds. Already-visited
+//!      (kind, normalised-value) pairs are skipped, so cycles terminate
+//!      naturally. Budgets (`max_entities`, `max_wall_time_secs`) short-circuit
+//!      if exceeded.
+//!
+//! Dispatch mode is selected by `ScanOptions::max_concurrent`:
+//!   * `0` (default) → sequential, byte-identical to v0.1–v0.7 behaviour.
+//!     Best for low-power Termux devices where serialising modules avoids
+//!     I/O contention.
+//!   * `N > 0` → up to N modules in flight concurrently via
+//!     `tokio::sync::Semaphore`. Wall-time roughly divides by
+//!     `min(N, n_accepting_modules)`. Event ordering across concurrent
+//!     modules is interleaved; SSE consumers handle this transparently.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tokio::time::{sleep, timeout};
+use tracing::{info, warn};
+
+use crate::core::{
+    entity::{Entity, normalise},
+    error::Result,
+    event::{Event, EventBus, EventKind},
+    module::{Module, ModuleContext, ModuleCost},
+    port::StoragePort,
+    scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
+};
+
+pub struct ScanEngine {
+    modules: Vec<Arc<dyn Module>>,
+    store: Arc<dyn StoragePort>,
+    bus: EventBus,
+    emitter: EventEmitter,
+}
+
+/// Reason an expansion round stopped before depth was exhausted.
+enum StopReason {
+    NoMoreCandidates,
+    DepthExhausted,
+    MaxEntities(usize),
+    MaxWallTime(u64),
+    Cancelled,
+}
+
+impl StopReason {
+    fn label(&self) -> String {
+        match self {
+            Self::NoMoreCandidates => "no more high-confidence candidates".into(),
+            Self::DepthExhausted => "maximum expansion depth reached".into(),
+            Self::MaxEntities(n) => format!("max_entities={n} reached"),
+            Self::MaxWallTime(s) => format!("max_wall_time_secs={s} exceeded"),
+            Self::Cancelled => "cancelled by operator".into(),
+        }
+    }
+}
+
+/// Cheaply-cloneable event emitter. Persist-first, then broadcast.
+/// Spawned tasks clone this instead of cloning store + bus separately.
+#[derive(Clone)]
+struct EventEmitter {
+    store: Arc<dyn StoragePort>,
+    bus: EventBus,
+}
+
+impl EventEmitter {
+    fn new(store: Arc<dyn StoragePort>, bus: EventBus) -> Self {
+        Self { store, bus }
+    }
+
+    fn emit(&self, scan_id: &str, kind: EventKind) {
+        let event = Event::new(scan_id, kind);
+        if let Err(e) = self.store.insert_event(&event) {
+            warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
+        }
+        if self.bus.send(event).is_err() {
+            tracing::trace!(scan_id, "broadcast dropped (no subscribers)");
+        }
+    }
+}
+
+impl ScanEngine {
+    pub fn new(
+        mut modules: Vec<Arc<dyn Module>>,
+        store: Arc<dyn StoragePort>,
+        bus: EventBus,
+    ) -> Self {
+        modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
+        let emitter = EventEmitter::new(Arc::clone(&store), bus.clone());
+        Self {
+            modules,
+            store,
+            bus,
+            emitter,
+        }
+    }
+
+    fn emit(&self, scan_id: &str, kind: EventKind) {
+        self.emitter.emit(scan_id, kind);
+    }
+
+    pub fn modules(&self) -> &[Arc<dyn Module>] {
+        &self.modules
+    }
+
+    pub fn bus(&self) -> &EventBus {
+        &self.bus
+    }
+
+    /// Run a scan to completion, including any expansion rounds.
+    pub async fn run(&self, mut scan: Scan, target: Target, ctx: ModuleContext) -> Result<Scan> {
+        scan.status = ScanStatus::Running;
+        self.store.upsert_scan(&scan)?;
+
+        self.emit(
+            &scan.id,
+            EventKind::ScanStart {
+                target_kind: target.kind.canonical_str().to_string(),
+                target_value: target.value.clone(),
+            },
+        );
+
+        let opts = scan.options.clone();
+        let started = Instant::now();
+        let mut entity_map: HashMap<String, Entity> = HashMap::with_capacity(64);
+        let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
+
+        visited.insert(visit_key(&target));
+        self.dispatch_target(&scan.id, &target, &ctx, &opts, &mut entity_map, false)
+            .await?;
+
+        if opts.depth > 0 {
+            let _ = self
+                .run_expansion(
+                    &scan.id,
+                    &ctx,
+                    &opts,
+                    started,
+                    &mut entity_map,
+                    &mut visited,
+                )
+                .await;
+        }
+
+        self.finalise_scan(&mut scan, entity_map, &ctx)
+    }
+
+    /// Persist entities, run the correlator, and mark the scan terminal.
+    fn finalise_scan(
+        &self,
+        scan: &mut Scan,
+        entity_map: HashMap<String, Entity>,
+        ctx: &ModuleContext,
+    ) -> Result<Scan> {
+        let mut persisted = 0usize;
+        let mut first_err: Option<String> = None;
+        for entity in entity_map.into_values() {
+            match self.store.upsert_entity(&entity) {
+                Ok(()) => persisted += 1,
+                Err(e) => {
+                    warn!(scan_id = %scan.id, entity_uid = %entity.uid, error = %e, "entity persist failed");
+                    if first_err.is_none() {
+                        first_err = Some(e.to_string());
+                    }
+                }
+            }
+        }
+        let entity_count = persisted;
+
+        if persisted == 0 && first_err.is_some() {
+            scan.status = ScanStatus::Failed;
+            scan.entity_count = 0;
+            scan.error = first_err;
+            scan.finished_at = Some(crate::core::entity::unix_now());
+            let _ = self.store.upsert_scan(scan);
+            self.emit(
+                &scan.id,
+                EventKind::ScanComplete {
+                    scan_id: scan.id.clone(),
+                    entity_count: 0,
+                },
+            );
+            return Ok(scan.clone());
+        }
+
+        scan.status = if ctx.cancel.is_cancelled() {
+            ScanStatus::Aborted
+        } else {
+            ScanStatus::Complete
+        };
+        scan.entity_count = entity_count;
+        scan.finished_at = Some(crate::core::entity::unix_now());
+        self.store.upsert_scan(scan)?;
+
+        self.run_correlator(&scan.id);
+
+        self.emit(
+            &scan.id,
+            EventKind::ScanComplete {
+                scan_id: scan.id.clone(),
+                entity_count,
+            },
+        );
+
+        Ok(scan.clone())
+    }
+
+    fn run_correlator(&self, scan_id: &str) {
+        match crate::core::correlator::Correlator::new(Arc::clone(&self.store)).run(scan_id) {
+            Ok(firings) => {
+                for c in &firings {
+                    self.emit(
+                        scan_id,
+                        EventKind::CorrelationFound {
+                            correlation: c.clone(),
+                        },
+                    );
+                }
+                self.emit(
+                    scan_id,
+                    EventKind::CorrelationsDone {
+                        count: firings.len(),
+                    },
+                );
+            }
+            Err(e) => warn!(scan_id, error = %e, "correlator failed"),
+        }
+    }
+
+    /// Drive the expansion loop. Returns the stop reason for diagnostics.
+    async fn run_expansion(
+        &self,
+        scan_id: &str,
+        ctx: &ModuleContext,
+        opts: &ScanOptions,
+        started: Instant,
+        entity_map: &mut HashMap<String, Entity>,
+        visited: &mut HashSet<(TargetKind, String)>,
+    ) -> StopReason {
+        for depth in 1..=opts.depth {
+            // Cancellation gate at round entry — between rounds is the
+            // cheapest place to exit because nothing new has spawned.
+            if ctx.cancel.is_cancelled() {
+                let stop = StopReason::Cancelled;
+                let _ = self.bus.send(Event::new(
+                    scan_id,
+                    EventKind::ExpansionStop {
+                        reason: stop.label(),
+                    },
+                ));
+                return stop;
+            }
+            // Snapshot the entity set at round start — entities discovered
+            // during this round will be expansion candidates in the next round,
+            // not this one.
+            let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+
+            let mut next: Vec<Target> = Vec::new();
+            for entity in &snapshot {
+                if entity.c_effective() < opts.min_expand_confidence {
+                    continue;
+                }
+                let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
+                    continue;
+                };
+                let new_target = Target::new(tk, entity.value.clone());
+                let key = visit_key(&new_target);
+                if visited.insert(key) {
+                    next.push(new_target);
+                }
+            }
+
+            if next.is_empty() {
+                let stop = StopReason::NoMoreCandidates;
+                self.emit(
+                    scan_id,
+                    EventKind::ExpansionStop {
+                        reason: stop.label(),
+                    },
+                );
+                return stop;
+            }
+
+            self.emit(
+                scan_id,
+                EventKind::ExpansionTick {
+                    depth,
+                    queued: next.len(),
+                    visited: visited.len(),
+                },
+            );
+
+            for nt in &next {
+                if ctx.cancel.is_cancelled() {
+                    let stop = StopReason::Cancelled;
+                    let _ = self.bus.send(Event::new(
+                        scan_id,
+                        EventKind::ExpansionStop {
+                            reason: stop.label(),
+                        },
+                    ));
+                    return stop;
+                }
+                if let Some(stop) = budget_check(opts, started, entity_map.len()) {
+                    self.emit(
+                        scan_id,
+                        EventKind::ExpansionStop {
+                            reason: stop.label(),
+                        },
+                    );
+                    return stop;
+                }
+                if let Err(e) = self
+                    .dispatch_target(scan_id, nt, ctx, opts, entity_map, true)
+                    .await
+                {
+                    // Per-target dispatch errors are already surfaced as
+                    // ModuleError events; we keep going through the round.
+                    warn!(scan_id, error = %e, "dispatch_target failed (continuing)");
+                }
+            }
+        }
+        StopReason::DepthExhausted
+    }
+}
+
+/// Visit-key for the expansion visited-set. Normalises the value the same
+/// way `Entity::new` does, so the seed target matches entities that point
+/// back at it.
+fn visit_key(target: &Target) -> (TargetKind, String) {
+    let entity_kind = target.kind.to_entity_kind();
+    let normalised = normalise(&entity_kind, &target.value);
+    (target.kind, normalised)
+}
+
+fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> Option<StopReason> {
+    if let Some(max) = opts.max_entities
+        && current_count >= max
+    {
+        return Some(StopReason::MaxEntities(max));
+    }
+    if let Some(max_secs) = opts.max_wall_time_secs
+        && started.elapsed() >= Duration::from_secs(max_secs)
+    {
+        return Some(StopReason::MaxWallTime(max_secs));
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Per-target module dispatch — sequential and concurrent paths.
+//
+// `ScanEngine::dispatch_target` chooses between:
+//   * `dispatch_target_sequential` — `opts.max_concurrent == 0`,
+//     byte-identical to v0.1–v0.7 behaviour. Best on low-power Termux.
+//   * `dispatch_target_concurrent` — `opts.max_concurrent > 0`, up to N
+//     modules in flight via `tokio::sync::Semaphore + JoinSet`.
+//
+// Both paths share `module_skip_reason` for the
+// allowlist/exclude/free_only/passive_only filter so the event payloads
+// stay identical regardless of dispatch mode.
+// ---------------------------------------------------------------------------
+
+/// The output of one `module.process()` call after the engine wraps it
+/// in `tokio::time::timeout` — either `Elapsed` (outer timeout fired),
+/// `Err` (module returned an error), or `Ok(ModuleResult)` (success).
+type TimeoutResult =
+    std::result::Result<Result<crate::core::module::ModuleResult>, tokio::time::error::Elapsed>;
+
+/// What a spawned per-module task returns to the consumer loop.
+struct DispatchOutcome {
+    name: &'static str,
+    result: TimeoutResult,
+}
+
+impl ScanEngine {
+    /// Translate one module's `process()` result into engine events
+    /// (`ModuleError` / `EntityFound` / `ModuleDone`) and merge any
+    /// emitted entities into the per-scan `entity_map`. Shared by
+    /// `dispatch_target_sequential` and `dispatch_target_concurrent`
+    /// so the event payload shape is identical between the two paths.
+    fn finalise_module_result(
+        &self,
+        scan_id: &str,
+        name: &'static str,
+        min_confidence: Option<f64>,
+        entity_map: &mut HashMap<String, Entity>,
+        result: TimeoutResult,
+    ) {
+        match result {
+            Err(_) => {
+                warn!(module = name, "timeout");
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleError {
+                        module: name.into(),
+                        error: "timeout".into(),
+                    },
+                );
+            }
+            Ok(Err(e)) => {
+                warn!(module = name, error = %e, "module error");
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleError {
+                        module: name.into(),
+                        error: e.to_string(),
+                    },
+                );
+            }
+            Ok(Ok(mut mr)) => {
+                let mut found = 0usize;
+                for entity in mr.entities.drain(..) {
+                    if let Some(min) = min_confidence
+                        && entity.confidence < min
+                    {
+                        continue;
+                    }
+                    self.emit(
+                        scan_id,
+                        EventKind::EntityFound {
+                            entity: entity.clone(),
+                        },
+                    );
+                    match entity_map.entry(entity.uid.clone()) {
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            e.get_mut().merge(entity);
+                        }
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(entity);
+                        }
+                    }
+                    found += 1;
+                }
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleDone {
+                        module: name.into(),
+                        found,
+                    },
+                );
+                info!(module = name, found, "done");
+            }
+        }
+    }
+
+    /// Dispatch every accepting module against `target`. Picks the
+    /// sequential or concurrent codepath based on `opts.max_concurrent`.
+    async fn dispatch_target(
+        &self,
+        scan_id: &str,
+        target: &Target,
+        ctx: &ModuleContext,
+        opts: &ScanOptions,
+        entity_map: &mut HashMap<String, Entity>,
+        is_expansion: bool,
+    ) -> Result<()> {
+        if opts.max_concurrent == 0 {
+            self.dispatch_target_sequential(scan_id, target, ctx, opts, entity_map, is_expansion)
+                .await
+        } else {
+            self.dispatch_target_concurrent(scan_id, target, ctx, opts, entity_map, is_expansion)
+                .await
+        }
+    }
+
+    /// v0.1 sequential dispatcher. Kept unchanged so the default scan
+    /// behaviour (max_concurrent == 0) is byte-identical to pre-v0.8.
+    async fn dispatch_target_sequential(
+        &self,
+        scan_id: &str,
+        target: &Target,
+        ctx: &ModuleContext,
+        opts: &ScanOptions,
+        entity_map: &mut HashMap<String, Entity>,
+        is_expansion: bool,
+    ) -> Result<()> {
+        for module in &self.modules {
+            // Cancellation gate at the top of the per-module loop — the
+            // cheapest spot to exit because we haven't fired off the
+            // next module's I/O yet (issue #23).
+            if ctx.cancel.is_cancelled() {
+                return Ok(());
+            }
+            // Budget gate: stop dispatching when max_entities is reached.
+            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
+                return Ok(());
+            }
+            let name = module.name();
+
+            if !module.accepts(target) {
+                continue;
+            }
+            if let Some(reason) = module_skip_reason(&**module, opts, is_expansion) {
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason: reason.into(),
+                    },
+                );
+                continue;
+            }
+
+            self.emit(
+                scan_id,
+                EventKind::ModuleStart {
+                    module: name.into(),
+                },
+            );
+
+            // Per-module timeout: user override > module's declared max.
+            // gps_fix needs 15+ s, whois can chain 2× 4 s referrals, etc.
+            let module_timeout_ms = opts
+                .module_timeout_ms
+                .unwrap_or_else(|| module.max_timeout_ms());
+            let result = timeout(
+                Duration::from_millis(module_timeout_ms),
+                module.process(target, ctx),
+            )
+            .await;
+
+            self.finalise_module_result(scan_id, name, opts.min_confidence, entity_map, result);
+
+            // Re-check the cancel flag before the throttle sleep so an
+            // operator cancel between modules doesn't pay the full
+            // `throttle_ms` latency before the next gate at the top of
+            // the loop is reached. The throttle exists to be polite to
+            // upstreams; once the operator has asked us to stop there's
+            // nothing left to be polite about.
+            if ctx.cancel.is_cancelled() {
+                return Ok(());
+            }
+            if opts.throttle_ms > 0 {
+                sleep(Duration::from_millis(opts.throttle_ms)).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// v0.8 concurrent dispatcher. Launches up to `opts.max_concurrent`
+    /// modules at a time via a `tokio::sync::Semaphore`; collects results
+    /// as tasks complete. Module-side filtering (allowlist, exclude,
+    /// free_only, passive_only, accepts) is performed serially before
+    /// spawning so the skip-events still emit in priority order; only the
+    /// `process()` call itself parallelises.
+    ///
+    /// Event ordering caveat: `ModuleStart` events from concurrent tasks
+    /// can interleave with each other and with `EntityFound` events from
+    /// faster modules. SSE consumers handle this fine (each event is
+    /// self-describing); CLI tracing logs will look interleaved.
+    async fn dispatch_target_concurrent(
+        &self,
+        scan_id: &str,
+        target: &Target,
+        ctx: &ModuleContext,
+        opts: &ScanOptions,
+        entity_map: &mut HashMap<String, Entity>,
+        is_expansion: bool,
+    ) -> Result<()> {
+        use tokio::sync::Semaphore;
+        use tokio::task::JoinSet;
+
+        let sem = Arc::new(Semaphore::new(opts.max_concurrent));
+        let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
+
+        for module in &self.modules {
+            // Cancellation gate before spawning each module. Tasks
+            // already in flight are left to complete naturally — their
+            // results still flow through finalise_module_result so
+            // partial work isn't lost (issue #23).
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
+                break;
+            }
+            let name = module.name();
+
+            if !module.accepts(target) {
+                continue;
+            }
+            if let Some(reason) = module_skip_reason(&**module, opts, is_expansion) {
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason: reason.into(),
+                    },
+                );
+                continue;
+            }
+
+            // Acquire BEFORE spawning so dispatch *launches* respect the
+            // concurrency cap (not just completions). The permit is held
+            // for the duration of the spawned task.
+            // semaphore closed — shouldn't happen
+            let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
+                break;
+            };
+
+            let module_arc: Arc<dyn Module> = Arc::clone(module);
+            let target = target.clone();
+            let ctx = ctx.clone();
+            let emitter = self.emitter.clone();
+            let scan_id_owned = scan_id.to_string();
+            let throttle_ms = opts.throttle_ms;
+            let module_timeout_ms = opts
+                .module_timeout_ms
+                .unwrap_or_else(|| module_arc.max_timeout_ms());
+
+            set.spawn(async move {
+                let _permit = permit;
+                let name = module_arc.name();
+
+                emitter.emit(
+                    &scan_id_owned,
+                    EventKind::ModuleStart {
+                        module: name.into(),
+                    },
+                );
+
+                let result = timeout(
+                    Duration::from_millis(module_timeout_ms),
+                    module_arc.process(&target, &ctx),
+                )
+                .await;
+
+                if throttle_ms > 0 {
+                    sleep(Duration::from_millis(throttle_ms)).await;
+                }
+
+                DispatchOutcome { name, result }
+            });
+        }
+
+        // Consume results as tasks finish. entity_map is single-owner
+        // in this loop, so no Mutex needed.
+        while let Some(joined) = set.join_next().await {
+            let outcome = match joined {
+                Ok(o) => o,
+                Err(e) => {
+                    warn!(error = %e, "concurrent module task panicked");
+                    self.emit(
+                        scan_id,
+                        EventKind::ModuleError {
+                            module: "unknown (panicked)".into(),
+                            error: e.to_string(),
+                        },
+                    );
+                    continue;
+                }
+            };
+            self.finalise_module_result(
+                scan_id,
+                outcome.name,
+                opts.min_confidence,
+                entity_map,
+                outcome.result,
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Returns `Some(reason)` if `module` should be skipped under `opts`.
+/// `accepts(target)` is intentionally NOT checked here — that case skips
+/// silently with no `ModuleSkipped` event, the others all emit one.
+fn module_skip_reason(
+    module: &dyn Module,
+    opts: &ScanOptions,
+    is_expansion: bool,
+) -> Option<&'static str> {
+    let name = module.name();
+    if !is_expansion
+        && let Some(allow) = &opts.modules
+        && !allow.iter().any(|n| n == name)
+    {
+        return Some("not in allowlist");
+    }
+    if opts.exclude_modules.iter().any(|n| n == name) {
+        return Some("excluded");
+    }
+    if opts.free_only && !matches!(module.cost(), ModuleCost::Free) {
+        return Some("requires key/payment");
+    }
+    if opts.passive_only && !module.is_passive() {
+        return Some("not passive");
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visit_key_normalises_email() {
+        let t = Target::new(TargetKind::Email, "ALICE@Example.COM");
+        let (kind, val) = visit_key(&t);
+        assert_eq!(kind, TargetKind::Email);
+        assert_eq!(val, "alice@example.com");
+    }
+
+    #[test]
+    fn visit_key_normalises_domain_trailing_dot() {
+        let t = Target::new(TargetKind::Domain, "example.com.");
+        let (_, val) = visit_key(&t);
+        assert_eq!(val, "example.com");
+    }
+
+    #[test]
+    fn budget_check_none_when_no_limits() {
+        let opts = ScanOptions::default();
+        let started = Instant::now();
+        assert!(budget_check(&opts, started, 1000).is_none());
+    }
+
+    #[test]
+    fn budget_check_max_entities_triggers() {
+        let opts = ScanOptions {
+            max_entities: Some(5),
+            ..Default::default()
+        };
+        let started = Instant::now();
+        assert!(budget_check(&opts, started, 4).is_none());
+        assert!(budget_check(&opts, started, 5).is_some());
+    }
+
+    #[test]
+    fn budget_check_wall_time_triggers() {
+        let opts = ScanOptions {
+            max_wall_time_secs: Some(0),
+            ..Default::default()
+        };
+        let started = Instant::now() - Duration::from_secs(1);
+        assert!(budget_check(&opts, started, 0).is_some());
+    }
+
+    #[test]
+    fn stop_reason_labels_are_descriptive() {
+        assert!(StopReason::NoMoreCandidates.label().contains("candidate"));
+        assert!(StopReason::DepthExhausted.label().contains("depth"));
+        assert!(StopReason::MaxEntities(10).label().contains("10"));
+        assert!(StopReason::MaxWallTime(60).label().contains("60"));
+        assert!(StopReason::Cancelled.label().contains("cancel"));
+    }
+
+    // -- dispatch tests (from former dispatch.rs) --
+
+    struct StubModule {
+        name: &'static str,
+        cost: ModuleCost,
+        passive: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for StubModule {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, _: &Target) -> bool {
+            true
+        }
+        fn cost(&self) -> ModuleCost {
+            self.cost
+        }
+        fn is_passive(&self) -> bool {
+            self.passive
+        }
+        async fn process(
+            &self,
+            _: &Target,
+            _: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            Ok(crate::core::module::ModuleResult::new())
+        }
+    }
+
+    fn free_active() -> StubModule {
+        StubModule {
+            name: "test_free",
+            cost: ModuleCost::Free,
+            passive: false,
+        }
+    }
+
+    fn keygated() -> StubModule {
+        StubModule {
+            name: "test_keygated",
+            cost: ModuleCost::KeyGated,
+            passive: false,
+        }
+    }
+
+    fn paid_passive() -> StubModule {
+        StubModule {
+            name: "test_paid",
+            cost: ModuleCost::Paid,
+            passive: true,
+        }
+    }
+
+    #[test]
+    fn skip_reason_none_for_default_opts() {
+        let m = free_active();
+        let opts = ScanOptions::default();
+        assert!(module_skip_reason(&m, &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_not_in_allowlist() {
+        let m = free_active();
+        let opts = ScanOptions {
+            modules: Some(vec!["other_module".into()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            module_skip_reason(&m, &opts, false),
+            Some("not in allowlist")
+        );
+    }
+
+    #[test]
+    fn skip_reason_in_allowlist_passes() {
+        let m = free_active();
+        let opts = ScanOptions {
+            modules: Some(vec!["test_free".into()]),
+            ..Default::default()
+        };
+        assert!(module_skip_reason(&m, &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_excluded() {
+        let m = free_active();
+        let opts = ScanOptions {
+            exclude_modules: vec!["test_free".into()],
+            ..Default::default()
+        };
+        assert_eq!(module_skip_reason(&m, &opts, false), Some("excluded"));
+    }
+
+    #[test]
+    fn skip_reason_free_only_skips_keygated() {
+        let m = keygated();
+        let opts = ScanOptions {
+            free_only: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            module_skip_reason(&m, &opts, false),
+            Some("requires key/payment")
+        );
+    }
+
+    #[test]
+    fn skip_reason_free_only_passes_free() {
+        let m = free_active();
+        let opts = ScanOptions {
+            free_only: true,
+            ..Default::default()
+        };
+        assert!(module_skip_reason(&m, &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_passive_only_skips_active() {
+        let m = free_active();
+        let opts = ScanOptions {
+            passive_only: true,
+            ..Default::default()
+        };
+        assert_eq!(module_skip_reason(&m, &opts, false), Some("not passive"));
+    }
+
+    #[test]
+    fn skip_reason_passive_only_passes_passive() {
+        let m = paid_passive();
+        let opts = ScanOptions {
+            passive_only: true,
+            ..Default::default()
+        };
+        assert!(module_skip_reason(&m, &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_allowlist_takes_priority_over_exclude() {
+        let m = free_active();
+        let opts = ScanOptions {
+            modules: Some(vec!["test_free".into()]),
+            exclude_modules: vec!["test_free".into()],
+            ..Default::default()
+        };
+        assert_eq!(module_skip_reason(&m, &opts, false), Some("excluded"));
+    }
+}
