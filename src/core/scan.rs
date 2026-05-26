@@ -110,7 +110,10 @@ impl Target {
     pub fn new(kind: TargetKind, value: impl Into<String>) -> Self {
         Self {
             kind,
-            value: value.into(),
+            value: {
+                let v: String = value.into();
+                v.trim().to_string()
+            },
         }
     }
 
@@ -141,7 +144,7 @@ impl Target {
         if v.len() > 1024 {
             return Err("value too long (>1024 chars)");
         }
-        if v.contains(['\n', '\r', '\0']) {
+        if v.chars().any(|c| c.is_control()) {
             return Err("value contains control characters");
         }
         match self.kind {
@@ -170,7 +173,8 @@ impl Target {
                     .map_err(|_| "not a valid IPv4 or IPv6 address")?;
             }
             TargetKind::Asn => {
-                let digits = v.strip_prefix("AS").unwrap_or(v);
+                let upper = v.to_uppercase();
+                let digits = upper.strip_prefix("AS").unwrap_or(&upper);
                 if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
                     return Err("ASN must be digits, optionally prefixed by 'AS'");
                 }

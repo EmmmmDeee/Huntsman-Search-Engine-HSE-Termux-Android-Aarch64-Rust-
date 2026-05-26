@@ -296,14 +296,9 @@ impl ScanEngine {
             let module_arc: Arc<dyn Module> = Arc::clone(module);
             let target = target.clone();
             let ctx = ctx.clone();
-            let bus = self.bus.clone();
-            // Clone the store for the spawned task so it can persist
-            // events through the free-function `emit_event` (no `&self`
-            // available inside the move closure).
-            let store = Arc::clone(&self.store);
+            let emitter = self.emitter.clone();
             let scan_id_owned = scan_id.to_string();
             let throttle_ms = opts.throttle_ms;
-            // Per-module timeout: user override > module's declared max.
             let module_timeout_ms = opts
                 .module_timeout_ms
                 .unwrap_or_else(|| module_arc.max_timeout_ms());
@@ -312,9 +307,7 @@ impl ScanEngine {
                 let _permit = permit;
                 let name = module_arc.name();
 
-                super::emit_event(
-                    &store,
-                    &bus,
+                emitter.emit(
                     &scan_id_owned,
                     EventKind::ModuleStart {
                         module: name.into(),
@@ -342,6 +335,13 @@ impl ScanEngine {
                 Ok(o) => o,
                 Err(e) => {
                     warn!(error = %e, "concurrent module task panicked");
+                    self.emit(
+                        scan_id,
+                        EventKind::ModuleError {
+                            module: "unknown (panicked)".into(),
+                            error: e.to_string(),
+                        },
+                    );
                     continue;
                 }
             };
@@ -354,5 +354,162 @@ impl ScanEngine {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::module::ModuleCost;
+    use crate::core::scan::{ScanOptions, Target};
+
+    struct StubModule {
+        name: &'static str,
+        cost: ModuleCost,
+        passive: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for StubModule {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, _: &Target) -> bool {
+            true
+        }
+        fn cost(&self) -> ModuleCost {
+            self.cost
+        }
+        fn is_passive(&self) -> bool {
+            self.passive
+        }
+        async fn process(
+            &self,
+            _: &Target,
+            _: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            Ok(crate::core::module::ModuleResult::new())
+        }
+    }
+
+    fn free_active() -> StubModule {
+        StubModule {
+            name: "test_free",
+            cost: ModuleCost::Free,
+            passive: false,
+        }
+    }
+
+    fn keygated() -> StubModule {
+        StubModule {
+            name: "test_keygated",
+            cost: ModuleCost::KeyGated,
+            passive: false,
+        }
+    }
+
+    fn paid_passive() -> StubModule {
+        StubModule {
+            name: "test_paid",
+            cost: ModuleCost::Paid,
+            passive: true,
+        }
+    }
+
+    #[test]
+    fn skip_reason_none_for_default_opts() {
+        let m = free_active();
+        let opts = ScanOptions::default();
+        assert!(module_skip_reason(&m, &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_not_in_allowlist() {
+        let m = free_active();
+        let opts = ScanOptions {
+            modules: Some(vec!["other_module".into()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            module_skip_reason(&m, &opts, false),
+            Some("not in allowlist")
+        );
+    }
+
+    #[test]
+    fn skip_reason_in_allowlist_passes() {
+        let m = free_active();
+        let opts = ScanOptions {
+            modules: Some(vec!["test_free".into()]),
+            ..Default::default()
+        };
+        assert!(module_skip_reason(&m, &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_excluded() {
+        let m = free_active();
+        let opts = ScanOptions {
+            exclude_modules: vec!["test_free".into()],
+            ..Default::default()
+        };
+        assert_eq!(module_skip_reason(&m, &opts, false), Some("excluded"));
+    }
+
+    #[test]
+    fn skip_reason_free_only_skips_keygated() {
+        let m = keygated();
+        let opts = ScanOptions {
+            free_only: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            module_skip_reason(&m, &opts, false),
+            Some("requires key/payment")
+        );
+    }
+
+    #[test]
+    fn skip_reason_free_only_passes_free() {
+        let m = free_active();
+        let opts = ScanOptions {
+            free_only: true,
+            ..Default::default()
+        };
+        assert!(module_skip_reason(&m, &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_passive_only_skips_active() {
+        let m = free_active();
+        let opts = ScanOptions {
+            passive_only: true,
+            ..Default::default()
+        };
+        assert_eq!(module_skip_reason(&m, &opts, false), Some("not passive"));
+    }
+
+    #[test]
+    fn skip_reason_passive_only_passes_passive() {
+        let m = paid_passive();
+        let opts = ScanOptions {
+            passive_only: true,
+            ..Default::default()
+        };
+        assert!(module_skip_reason(&m, &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_allowlist_takes_priority_over_exclude() {
+        let m = free_active();
+        let opts = ScanOptions {
+            modules: Some(vec!["test_free".into()]),
+            exclude_modules: vec!["test_free".into()],
+            ..Default::default()
+        };
+        assert_eq!(module_skip_reason(&m, &opts, false), Some("excluded"));
     }
 }

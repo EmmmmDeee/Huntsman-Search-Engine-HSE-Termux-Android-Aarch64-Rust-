@@ -37,7 +37,6 @@ use crate::core::{
     module::ModuleContext,
     scan::{Scan, ScanOptions, Target},
 };
-use crate::util::{http::build_client, keys, uid::scan_id};
 
 /// User-tunable knobs for a live session, on top of [`ScanOptions`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,28 +111,29 @@ pub struct LiveScanner {
 }
 
 struct LiveInner {
-    // Map keys are `live_id`. Entries are pruned when `session_loop`
-    // exits (either via natural iteration count or explicit stop) — see
-    // the cleanup at the bottom of `session_loop` below. This keeps the
-    // registry bounded in long-running `hse serve` processes.
     sessions: RwLock<HashMap<String, LiveSession>>,
-    /// Per-session cancel handle. The SAME handle is plumbed into each
-    /// iteration's `ModuleContext.cancel`, so `LiveScanner::stop` aborts
-    /// the in-flight iteration at the engine's next module boundary —
-    /// not just the next iteration. (Issue #23.)
     cancels: RwLock<HashMap<String, CancelHandle>>,
     engine: Arc<ScanEngine>,
     bus: EventBus,
+    http: reqwest::Client,
+    keys: std::collections::HashMap<String, String>,
 }
 
 impl LiveScanner {
-    pub fn new(engine: Arc<ScanEngine>, bus: EventBus) -> Self {
+    pub fn new(
+        engine: Arc<ScanEngine>,
+        bus: EventBus,
+        http: reqwest::Client,
+        keys: std::collections::HashMap<String, String>,
+    ) -> Self {
         Self {
             inner: Arc::new(LiveInner {
                 sessions: RwLock::new(HashMap::new()),
                 cancels: RwLock::new(HashMap::new()),
                 engine,
                 bus,
+                http,
+                keys,
             }),
         }
     }
@@ -231,11 +231,8 @@ async fn session_loop(
 ) {
     let interval = Duration::from_secs(live.interval_secs.max(1));
     let max_iter = live.iterations;
-    let http = build_client();
-    let mut loaded_keys = keys::load();
-    let kpool = crate::util::key_pool::global_pool();
-    crate::util::key_pool::merge_pool_into_env(&kpool, &mut loaded_keys);
-    let _ = crate::util::key_pool::save_pool(&kpool);
+    let http = inner.http.clone();
+    let loaded_keys = inner.keys.clone();
 
     let _ = inner.bus.send(Event::new(
         &live_id,
@@ -267,7 +264,7 @@ async fn session_loop(
         // Spawn a fresh scan for this iteration. scan_id() mixes unix_now()
         // so back-to-back ticks get distinct ids. Canonical snake_case form
         // matches CLI/API scan_id derivation.
-        let sid = scan_id(target.kind.canonical_str(), &target.value);
+        let sid = crate::core::entity::scan_id(target.kind.canonical_str(), &target.value);
 
         // Register the scan_id with the session BEFORE running, so the SSE
         // handler can forward its events the moment they fire.
@@ -290,6 +287,14 @@ async fn session_loop(
             bus: inner.bus.clone(),
             http: http.clone(),
             keys: loaded_keys.clone(),
+            // Plumb the SAME live-session cancel handle into the engine
+            // so `DELETE /api/v1/live/{id}` aborts the in-flight
+            // iteration at the next module boundary (the iteration's
+            // scan completes with `ScanStatus::Aborted` and partial
+            // entities are preserved exactly as for one-shot scans).
+            // Without this share-rather-than-replace, stop() only
+            // affected the outer loop and the iteration had to run to
+            // its full expansion depth before stopping.
             cancel: cancel.clone(),
             proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         };
@@ -422,5 +427,38 @@ mod tests {
         assert_eq!(req.kind, TargetKind::Domain);
         assert_eq!(req.live.interval_secs, crate::LIVE_DEFAULT_INTERVAL_SECS);
         assert!(req.live.iterations.is_none());
+    }
+
+    #[test]
+    fn live_status_serde_round_trip() {
+        for (variant, expected) in [
+            (LiveStatus::Running, "\"running\""),
+            (LiveStatus::Completed, "\"completed\""),
+            (LiveStatus::Stopped, "\"stopped\""),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, expected);
+            let back: LiveStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+        }
+    }
+
+    #[test]
+    fn live_session_serde_round_trip() {
+        let session = LiveSession {
+            id: "live-abc123".into(),
+            target: Target::new(TargetKind::Email, "x@y.com"),
+            scan_options: ScanOptions::default(),
+            live_options: LiveOptions::default(),
+            status: LiveStatus::Running,
+            started_at: 1700000000,
+            last_iteration_at: None,
+            iteration: 0,
+            scan_ids: std::collections::HashSet::new(),
+        };
+        let json = serde_json::to_string(&session).unwrap();
+        let back: LiveSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "live-abc123");
+        assert_eq!(back.status, LiveStatus::Running);
     }
 }

@@ -1,19 +1,7 @@
-//! Scan ID generation. Unique per scan-creation (NOT deterministic across
-//! scans of the same target — the timestamp is mixed in).
+//! Scan ID generation — delegates to `core::entity::scan_id`.
 
-use sha2::{Digest, Sha256};
-
-use crate::core::entity::unix_now;
-
-/// `hex(SHA-256("<kind>:<value>:<unix_now>"))`.
 pub fn scan_id(kind: &str, value: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(kind.as_bytes());
-    h.update(b":");
-    h.update(value.as_bytes());
-    h.update(b":");
-    h.update(unix_now().to_be_bytes());
-    hex::encode(h.finalize())
+    crate::core::entity::scan_id(kind, value)
 }
 
 #[cfg(test)]

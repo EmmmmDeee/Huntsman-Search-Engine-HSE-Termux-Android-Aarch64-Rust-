@@ -32,25 +32,23 @@ use crate::core::{
     error::Result,
     event::{Event, EventBus, EventKind},
     module::{Module, ModuleContext},
+    port::StoragePort,
     scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
 };
-use crate::storage::store::Store;
 
 pub struct ScanEngine {
     modules: Vec<Arc<dyn Module>>,
-    store: Arc<Store>,
+    store: Arc<dyn StoragePort>,
     bus: EventBus,
+    emitter: EventEmitter,
 }
 
 /// Reason an expansion round stopped before depth was exhausted.
 enum StopReason {
     NoMoreCandidates,
+    DepthExhausted,
     MaxEntities(usize),
     MaxWallTime(u64),
-    /// Operator-initiated cancellation via the `CancelHandle` plumbed
-    /// through `ModuleContext`. Distinct from the budget stops so the
-    /// `ExpansionStop` event reads "cancelled" rather than "budget
-    /// exceeded" — the SPA / log consumers can colour it differently.
     Cancelled,
 }
 
@@ -58,6 +56,7 @@ impl StopReason {
     fn label(&self) -> String {
         match self {
             Self::NoMoreCandidates => "no more high-confidence candidates".into(),
+            Self::DepthExhausted => "maximum expansion depth reached".into(),
             Self::MaxEntities(n) => format!("max_entities={n} reached"),
             Self::MaxWallTime(s) => format!("max_wall_time_secs={s} exceeded"),
             Self::Cancelled => "cancelled by operator".into(),
@@ -65,47 +64,48 @@ impl StopReason {
     }
 }
 
-/// Persist an event to `store` and broadcast it on `bus`. Free function so
-/// spawned tasks (which capture cloned `store` + `bus` rather than `&self`)
-/// can call the same code path as `ScanEngine::emit`.
-///
-/// Persist FIRST so a slow broadcast subscriber can't lose us a log entry,
-/// then broadcast for any live SSE subscribers. Both writes are
-/// best-effort — store-write errors don't abort the scan, broadcast
-/// errors just mean nobody is currently subscribed.
-pub(crate) fn emit_event(store: &Store, bus: &EventBus, scan_id: &str, kind: EventKind) {
-    let event = Event::new(scan_id, kind);
-    // Persist-first so live SSE subscribers can't have an event that
-    // history-fetch never sees. The DB write is best-effort: surface
-    // failures via tracing so an empty Scan Log tab is at least
-    // diagnosable, but don't abort the scan if SQLite is wedged.
-    if let Err(e) = store.insert_event(&event) {
-        warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
+/// Cheaply-cloneable event emitter. Persist-first, then broadcast.
+/// Spawned tasks clone this instead of cloning store + bus separately.
+#[derive(Clone)]
+pub(super) struct EventEmitter {
+    store: Arc<dyn StoragePort>,
+    bus: EventBus,
+}
+
+impl EventEmitter {
+    fn new(store: Arc<dyn StoragePort>, bus: EventBus) -> Self {
+        Self { store, bus }
     }
-    // `send` returns Err when there are zero active subscribers. This is
-    // normal during early startup (before any SSE client connects), so
-    // log at trace level — just enough to diagnose "events never reach
-    // the UI" without spamming production logs.
-    if bus.send(event).is_err() {
-        tracing::trace!(scan_id, "broadcast dropped (no subscribers)");
+
+    pub(super) fn emit(&self, scan_id: &str, kind: EventKind) {
+        let event = Event::new(scan_id, kind);
+        if let Err(e) = self.store.insert_event(&event) {
+            warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
+        }
+        if self.bus.send(event).is_err() {
+            tracing::trace!(scan_id, "broadcast dropped (no subscribers)");
+        }
     }
 }
 
 impl ScanEngine {
-    pub fn new(mut modules: Vec<Arc<dyn Module>>, store: Arc<Store>, bus: EventBus) -> Self {
+    pub fn new(
+        mut modules: Vec<Arc<dyn Module>>,
+        store: Arc<dyn StoragePort>,
+        bus: EventBus,
+    ) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
+        let emitter = EventEmitter::new(Arc::clone(&store), bus.clone());
         Self {
             modules,
             store,
             bus,
+            emitter,
         }
     }
 
-    /// Persist + broadcast one event for `scan_id`. The canonical
-    /// emit path for engine-side events; see `emit_event` for the free
-    /// function used inside spawned dispatch tasks.
     fn emit(&self, scan_id: &str, kind: EventKind) {
-        emit_event(&self.store, &self.bus, scan_id, kind);
+        self.emitter.emit(scan_id, kind);
     }
 
     pub fn modules(&self) -> &[Arc<dyn Module>] {
@@ -161,18 +161,25 @@ impl ScanEngine {
         entity_map: HashMap<String, Entity>,
         ctx: &ModuleContext,
     ) -> Result<Scan> {
-        let entity_count = entity_map.len();
+        let mut persisted = 0usize;
+        let mut first_err: Option<String> = None;
+        for entity in entity_map.into_values() {
+            match self.store.upsert_entity(&entity) {
+                Ok(()) => persisted += 1,
+                Err(e) => {
+                    warn!(scan_id = %scan.id, entity_uid = %entity.uid, error = %e, "entity persist failed");
+                    if first_err.is_none() {
+                        first_err = Some(e.to_string());
+                    }
+                }
+            }
+        }
+        let entity_count = persisted;
 
-        let persist_err: Option<String> = entity_map
-            .into_values()
-            .find_map(|entity| self.store.upsert_entity(&entity).err())
-            .map(|e| e.to_string());
-
-        if let Some(err) = persist_err {
-            warn!(scan_id = %scan.id, error = %err, "entity persist failed");
+        if persisted == 0 && first_err.is_some() {
             scan.status = ScanStatus::Failed;
             scan.entity_count = 0;
-            scan.error = Some(err);
+            scan.error = first_err;
             scan.finished_at = Some(crate::core::entity::unix_now());
             let _ = self.store.upsert_scan(scan);
             self.emit(
@@ -322,7 +329,7 @@ impl ScanEngine {
                 }
             }
         }
-        StopReason::NoMoreCandidates
+        StopReason::DepthExhausted
     }
 }
 
@@ -347,4 +354,61 @@ fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> O
         return Some(StopReason::MaxWallTime(max_secs));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visit_key_normalises_email() {
+        let t = Target::new(TargetKind::Email, "ALICE@Example.COM");
+        let (kind, val) = visit_key(&t);
+        assert_eq!(kind, TargetKind::Email);
+        assert_eq!(val, "alice@example.com");
+    }
+
+    #[test]
+    fn visit_key_normalises_domain_trailing_dot() {
+        let t = Target::new(TargetKind::Domain, "example.com.");
+        let (_, val) = visit_key(&t);
+        assert_eq!(val, "example.com");
+    }
+
+    #[test]
+    fn budget_check_none_when_no_limits() {
+        let opts = ScanOptions::default();
+        let started = Instant::now();
+        assert!(budget_check(&opts, started, 1000).is_none());
+    }
+
+    #[test]
+    fn budget_check_max_entities_triggers() {
+        let opts = ScanOptions {
+            max_entities: Some(5),
+            ..Default::default()
+        };
+        let started = Instant::now();
+        assert!(budget_check(&opts, started, 4).is_none());
+        assert!(budget_check(&opts, started, 5).is_some());
+    }
+
+    #[test]
+    fn budget_check_wall_time_triggers() {
+        let opts = ScanOptions {
+            max_wall_time_secs: Some(0),
+            ..Default::default()
+        };
+        let started = Instant::now() - Duration::from_secs(1);
+        assert!(budget_check(&opts, started, 0).is_some());
+    }
+
+    #[test]
+    fn stop_reason_labels_are_descriptive() {
+        assert!(StopReason::NoMoreCandidates.label().contains("candidate"));
+        assert!(StopReason::DepthExhausted.label().contains("depth"));
+        assert!(StopReason::MaxEntities(10).label().contains("10"));
+        assert!(StopReason::MaxWallTime(60).label().contains("60"));
+        assert!(StopReason::Cancelled.label().contains("cancel"));
+    }
 }

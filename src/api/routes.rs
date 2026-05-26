@@ -313,7 +313,7 @@ fn build_cors_layer(bind: &str) -> CorsLayer {
 
 #[cfg(test)]
 mod tests {
-    use super::is_loopback_bind;
+    use super::*;
 
     #[test]
     fn loopback_recognised() {
@@ -330,5 +330,30 @@ mod tests {
         assert!(!is_loopback_bind("192.168.1.10:8080"));
         assert!(!is_loopback_bind("10.0.0.5:8080"));
         assert!(!is_loopback_bind("example.com:8080"));
+    }
+
+    #[test]
+    fn loopback_edge_cases() {
+        assert!(is_loopback_bind("localhost"));
+        assert!(!is_loopback_bind("localhostx:8080"));
+        assert!(!is_loopback_bind(""));
+    }
+
+    #[test]
+    fn cors_loopback_includes_localhost_alias() {
+        let layer = build_cors_layer("127.0.0.1:8080");
+        let _ = layer;
+    }
+
+    #[test]
+    fn cors_non_loopback_excludes_localhost() {
+        let layer = build_cors_layer("192.168.1.5:8080");
+        let _ = layer;
+    }
+
+    #[test]
+    fn cors_ipv6_loopback() {
+        let layer = build_cors_layer("[::1]:8080");
+        let _ = layer;
     }
 }

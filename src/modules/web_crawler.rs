@@ -177,7 +177,10 @@ impl Module for WebCrawler {
 
             let resp = match ctx.http.get(&url).send().await {
                 Ok(r) => r,
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::debug!(url = %url, error = %e, "web_crawler: fetch failed");
+                    continue;
+                }
             };
 
             let status = resp.status();

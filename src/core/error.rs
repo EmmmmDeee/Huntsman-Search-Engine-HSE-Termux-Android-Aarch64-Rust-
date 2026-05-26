@@ -41,3 +41,41 @@ impl Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_module_constructor() {
+        let e = Error::module("dns_resolver", "connection refused");
+        let s = e.to_string();
+        assert!(s.contains("dns_resolver"));
+        assert!(s.contains("connection refused"));
+    }
+
+    #[test]
+    fn error_missing_key_display() {
+        let e = Error::MissingKey("HUNTSMAN_SHODAN_KEY".into());
+        assert!(e.to_string().contains("HUNTSMAN_SHODAN_KEY"));
+    }
+
+    #[test]
+    fn error_invalid_target_display() {
+        let e = Error::InvalidTarget("bad kind".into());
+        assert!(e.to_string().contains("bad kind"));
+    }
+
+    #[test]
+    fn error_other_display() {
+        let e = Error::Other("something went wrong".into());
+        assert_eq!(e.to_string(), "something went wrong");
+    }
+
+    #[test]
+    fn error_from_json() {
+        let bad = serde_json::from_str::<serde_json::Value>("not json");
+        let e: Error = bad.unwrap_err().into();
+        assert!(e.to_string().contains("json"));
+    }
+}

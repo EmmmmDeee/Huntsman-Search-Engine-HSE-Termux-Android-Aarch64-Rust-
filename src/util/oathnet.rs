@@ -219,3 +219,98 @@ async fn curl_get(url: &str, key: &str) -> Result<String> {
     }
     String::from_utf8(output.stdout).map_err(|e| Error::module("oathnet", e.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn resolve_key_uses_provided_when_non_empty() {
+        assert_eq!(resolve_key(Some("my-key")), "my-key");
+    }
+
+    #[test]
+    fn resolve_key_falls_back_to_hardcoded_when_none() {
+        assert_eq!(resolve_key(None), HARDCODED_KEY);
+    }
+
+    #[test]
+    fn resolve_key_falls_back_to_hardcoded_when_empty() {
+        assert_eq!(resolve_key(Some("")), HARDCODED_KEY);
+    }
+
+    #[test]
+    fn val_str_extracts_string_field() {
+        let v = json!({"name": "alice", "age": 30});
+        assert_eq!(val_str(&v, "name"), Some("alice".to_string()));
+    }
+
+    #[test]
+    fn val_str_returns_none_for_missing_field() {
+        let v = json!({"name": "alice"});
+        assert_eq!(val_str(&v, "missing"), None);
+    }
+
+    #[test]
+    fn val_str_returns_none_for_empty_string() {
+        let v = json!({"name": ""});
+        assert_eq!(val_str(&v, "name"), None);
+    }
+
+    #[test]
+    fn val_str_returns_none_for_non_string() {
+        let v = json!({"count": 42});
+        assert_eq!(val_str(&v, "count"), None);
+    }
+
+    #[test]
+    fn val_str_or_returns_first_match() {
+        let v = json!({"email": "a@b.com", "login": "alice"});
+        assert_eq!(
+            val_str_or(&v, &["missing", "email", "login"]),
+            Some("a@b.com".to_string())
+        );
+    }
+
+    #[test]
+    fn val_str_or_returns_none_when_all_missing() {
+        let v = json!({"x": 1});
+        assert_eq!(val_str_or(&v, &["a", "b", "c"]), None);
+    }
+
+    #[test]
+    fn top_dbnames_ranks_by_frequency() {
+        let items = vec![
+            json!({"dbname": "linkedin"}),
+            json!({"dbname": "adobe"}),
+            json!({"dbname": "linkedin"}),
+            json!({"dbname": "adobe"}),
+            json!({"dbname": "adobe"}),
+            json!({"dbname": "myspace"}),
+        ];
+        let top = top_dbnames(&items, 2);
+        assert_eq!(top[0], "adobe");
+        assert_eq!(top[1], "linkedin");
+        assert_eq!(top.len(), 2);
+    }
+
+    #[test]
+    fn top_dbnames_empty_input() {
+        assert!(top_dbnames(&[], 5).is_empty());
+    }
+
+    #[test]
+    fn top_dbnames_skips_items_without_dbname() {
+        let items = vec![json!({"other": "val"}), json!({"dbname": "x"})];
+        let top = top_dbnames(&items, 10);
+        assert_eq!(top, vec!["x"]);
+    }
+
+    #[test]
+    fn paths_are_non_empty() {
+        assert!(!paths::BREACH.is_empty());
+        assert!(!paths::STEALER.is_empty());
+        assert!(!paths::HOLEHE.is_empty());
+    }
+}

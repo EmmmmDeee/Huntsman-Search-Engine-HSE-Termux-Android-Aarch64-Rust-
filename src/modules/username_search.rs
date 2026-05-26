@@ -19,7 +19,10 @@
 
 use async_trait::async_trait;
 use futures::future::join_all;
+use std::sync::Arc;
 use std::time::Duration;
+
+const MAX_CONCURRENT_PROBES: usize = 16;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -1752,10 +1755,13 @@ impl Module for UsernameSearch {
         // 2.5 s per site is generous for HEAD/GET against a CDN edge.
         let per_site_timeout = Duration::from_millis(2_500);
 
+        let sem = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PROBES));
         let probes = SITES.iter().map(|site| {
             let url = site.url.replace("{}", &encoded);
             let client = ctx.http.clone();
+            let sem = Arc::clone(&sem);
             async move {
+                let _permit = sem.acquire().await;
                 let req = match site.method {
                     Method::Get => client.get(&url),
                     Method::Head => client.head(&url),

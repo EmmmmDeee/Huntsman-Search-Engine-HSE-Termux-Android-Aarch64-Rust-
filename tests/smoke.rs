@@ -716,7 +716,11 @@ fn setup(
     let _ = std::fs::remove_file(&tmp);
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(64);
-    let engine = ScanEngine::new(modules, Arc::clone(&store), bus.clone());
+    let engine = ScanEngine::new(
+        modules,
+        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
+        bus.clone(),
+    );
     let sid = scan_id(kind.canonical_str(), value);
     let target = Target::new(kind, value.to_string());
     let ctx = ModuleContext {
@@ -747,8 +751,17 @@ async fn live_session_runs_two_iterations_and_completes() {
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
-    let engine = Arc::new(ScanEngine::new(modules, Arc::clone(&store), bus.clone()));
-    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    let engine = Arc::new(ScanEngine::new(
+        modules,
+        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
+        bus.clone(),
+    ));
+    let scanner = LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        reqwest::Client::new(),
+        Default::default(),
+    );
 
     let target = Target::new(TargetKind::Email, "live@example.com");
     let live_id = scanner.start(
@@ -782,8 +795,17 @@ async fn live_session_stops_on_explicit_cancel() {
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
-    let engine = Arc::new(ScanEngine::new(modules, Arc::clone(&store), bus.clone()));
-    let scanner = LiveScanner::new(Arc::clone(&engine), bus.clone());
+    let engine = Arc::new(ScanEngine::new(
+        modules,
+        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
+        bus.clone(),
+    ));
+    let scanner = LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        reqwest::Client::new(),
+        Default::default(),
+    );
 
     let target = Target::new(TargetKind::Email, "cancel-live@example.com");
     let live_id = scanner.start(

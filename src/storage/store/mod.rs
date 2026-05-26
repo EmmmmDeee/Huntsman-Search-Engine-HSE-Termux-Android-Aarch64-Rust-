@@ -1,0 +1,807 @@
+//! SQLite WAL store. Entity methods in `entities.rs`, event log in `events.rs`.
+
+mod entities;
+mod events;
+
+use parking_lot::Mutex;
+use rusqlite::{Connection, params};
+
+use crate::core::{correlator::Correlation, error::Result, scan::Scan};
+
+pub struct Store {
+    conn: Mutex<Connection>,
+}
+
+impl Store {
+    pub fn open(path: &str) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
+            "
+            PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=NORMAL;
+            PRAGMA temp_store=MEMORY;
+            PRAGMA foreign_keys=ON;
+            PRAGMA cache_size=-2000;
+            PRAGMA mmap_size=67108864;
+
+            CREATE TABLE IF NOT EXISTS scans (
+                id           TEXT PRIMARY KEY,
+                target_kind  TEXT NOT NULL,
+                target_value TEXT NOT NULL,
+                status       TEXT NOT NULL,
+                started_at   INTEGER NOT NULL,
+                finished_at  INTEGER,
+                entity_count INTEGER NOT NULL DEFAULT 0,
+                error        TEXT,
+                data_json    TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS entities (
+                uid           TEXT PRIMARY KEY,
+                scan_id       TEXT NOT NULL,
+                kind          TEXT NOT NULL,
+                value         TEXT NOT NULL,
+                confidence    REAL NOT NULL,
+                corroboration INTEGER NOT NULL DEFAULT 1,
+                observed_at   INTEGER NOT NULL,
+                data_json     TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS correlations (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id     TEXT NOT NULL,
+                rule_id     TEXT NOT NULL,
+                severity    TEXT NOT NULL,
+                description TEXT NOT NULL,
+                entity_uids TEXT NOT NULL,
+                ts          INTEGER NOT NULL,
+                data_json   TEXT NOT NULL,
+                UNIQUE(scan_id, rule_id, description)
+            );
+
+            CREATE TABLE IF NOT EXISTS entity_observations (
+                entity_uid  TEXT NOT NULL,
+                scan_id     TEXT NOT NULL,
+                observed_at INTEGER NOT NULL,
+                PRIMARY KEY (entity_uid, scan_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id     TEXT NOT NULL,
+                ts          INTEGER NOT NULL,
+                event_type  TEXT NOT NULL,
+                data_json   TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
+            CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_corr_scan     ON correlations(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
+            CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
+            ",
+        )?;
+
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
+             SELECT uid, scan_id, observed_at FROM entities;",
+        )?;
+
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    // ── Scans ──────────────────────────────────────────────────────────────
+
+    pub fn upsert_scan(&self, scan: &Scan) -> Result<()> {
+        let json = serde_json::to_string(scan)?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO scans(id, target_kind, target_value, status, started_at, finished_at, entity_count, error, data_json)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET
+               status       = excluded.status,
+               finished_at  = excluded.finished_at,
+               entity_count = excluded.entity_count,
+               error        = excluded.error,
+               data_json    = excluded.data_json",
+            params![
+                scan.id,
+                scan.target.kind.canonical_str(),
+                scan.target.value,
+                scan.status.as_str(),
+                scan.started_at as i64,
+                scan.finished_at.map(|t| t as i64),
+                scan.entity_count as i64,
+                scan.error,
+                json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
+        let json: Option<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached("SELECT data_json FROM scans WHERE id = ?1")?;
+            let mut rows = stmt.query(params![id])?;
+            rows.next()?.map(|r| r.get(0)).transpose()?
+        };
+        json.map(|j| serde_json::from_str(&j))
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    pub fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn
+                .prepare_cached("SELECT data_json FROM scans ORDER BY started_at DESC LIMIT ?1")?;
+            let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+            rows.filter_map(std::result::Result::ok).collect()
+        };
+        Ok(raw
+            .into_iter()
+            .filter_map(|s| serde_json::from_str(&s).ok())
+            .collect())
+    }
+
+    // ── Correlations ───────────────────────────────────────────────────────
+
+    pub fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
+        let json = serde_json::to_string(c)?;
+        let uids = serde_json::to_string(&c.entity_uids)?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO correlations(scan_id, rule_id, severity, description, entity_uids, ts, data_json)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(scan_id, rule_id, description) DO NOTHING",
+            params![
+                c.scan_id,
+                c.rule_id,
+                c.severity.as_canonical(),
+                c.description,
+                uids,
+                c.ts as i64,
+                json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>> {
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT data_json FROM correlations WHERE scan_id = ?1
+                 ORDER BY CASE severity
+                     WHEN 'critical' THEN 0
+                     WHEN 'high'     THEN 1
+                     WHEN 'medium'   THEN 2
+                     WHEN 'low'      THEN 3
+                     ELSE 4
+                 END, id",
+            )?;
+            let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
+            rows.filter_map(std::result::Result::ok).collect()
+        };
+        Ok(raw
+            .into_iter()
+            .filter_map(|s| serde_json::from_str(&s).ok())
+            .collect())
+    }
+
+    // ── Delete (cascade) ───────────────────────────────────────────────────
+
+    pub fn delete_scan(&self, scan_id: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        let n = tx.execute("DELETE FROM scans WHERE id = ?1", params![scan_id])?;
+        if n == 0 {
+            if let Err(e) = tx.rollback() {
+                tracing::warn!(error = %e, "rollback failed during delete_scan");
+            }
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM correlations WHERE scan_id = ?1",
+            params![scan_id],
+        )?;
+        tx.execute(
+            "DELETE FROM entity_observations WHERE scan_id = ?1",
+            params![scan_id],
+        )?;
+        tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
+        tx.execute(
+            "DELETE FROM entities
+             WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+}
+
+impl crate::core::port::StoragePort for Store {
+    fn upsert_scan(&self, scan: &Scan) -> Result<()> {
+        Store::upsert_scan(self, scan)
+    }
+
+    fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
+        Store::get_scan(self, id)
+    }
+
+    fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
+        Store::list_scans(self, limit)
+    }
+
+    fn delete_scan(&self, scan_id: &str) -> Result<bool> {
+        Store::delete_scan(self, scan_id)
+    }
+
+    fn upsert_entity(&self, entity: &crate::core::entity::Entity) -> Result<()> {
+        Store::upsert_entity(self, entity)
+    }
+
+    fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<crate::core::entity::Entity>> {
+        Store::entities_for_scan(self, scan_id)
+    }
+
+    fn entities_filtered(
+        &self,
+        scan_id: &str,
+        kind: Option<&str>,
+        min_confidence: Option<f64>,
+        value_contains: Option<&str>,
+    ) -> Result<Vec<crate::core::entity::Entity>> {
+        Store::entities_filtered(self, scan_id, kind, min_confidence, value_contains)
+    }
+
+    fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {
+        Store::entity_facets(self, scan_id)
+    }
+
+    fn get_entity(&self, uid: &str) -> Result<Option<crate::core::entity::Entity>> {
+        Store::get_entity(self, uid)
+    }
+
+    fn search_entities(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::core::entity::Entity>> {
+        Store::search_entities(self, query, limit)
+    }
+
+    fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>> {
+        Store::scan_ids_for_entity(self, entity_uid)
+    }
+
+    fn observation_count(&self, entity_uid: &str) -> Result<usize> {
+        Store::observation_count(self, entity_uid)
+    }
+
+    fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
+        Store::upsert_correlation(self, c)
+    }
+
+    fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>> {
+        Store::correlations_for_scan(self, scan_id)
+    }
+
+    fn insert_event(&self, event: &crate::core::event::Event) -> Result<()> {
+        Store::insert_event(self, event)
+    }
+
+    fn events_for_scan(&self, scan_id: &str) -> Result<Vec<crate::core::event::Event>> {
+        Store::events_for_scan(self, scan_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::{Scan, Target, TargetKind};
+
+    fn tmp_db() -> String {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = format!(
+            "{}/.huntsman-test-{}-{}.db",
+            std::env::temp_dir().to_string_lossy(),
+            std::process::id(),
+            n
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}-wal"));
+        let _ = std::fs::remove_file(format!("{path}-shm"));
+        path
+    }
+
+    fn insert_scan(store: &Store, id: &str) {
+        let target = Target::new(TargetKind::Email, "x@y.com");
+        let scan = Scan::new(id, target);
+        store.upsert_scan(&scan).unwrap();
+    }
+
+    #[test]
+    fn entity_observed_by_two_scans_appears_in_both() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        insert_scan(&store, "scan-a");
+        insert_scan(&store, "scan-b");
+
+        let mut e_a = Entity::new(EntityKind::Email, "x@y.com", 0.7, "scan-a");
+        e_a.observed_at = 1000;
+        store.upsert_entity(&e_a).unwrap();
+
+        let mut e_b = Entity::new(EntityKind::Email, "x@y.com", 0.9, "scan-b");
+        e_b.observed_at = 2000;
+        store.upsert_entity(&e_b).unwrap();
+
+        let from_a = store.entities_for_scan("scan-a").unwrap();
+        let from_b = store.entities_for_scan("scan-b").unwrap();
+        assert_eq!(from_a.len(), 1, "scan-a should still see the entity");
+        assert_eq!(from_b.len(), 1, "scan-b should see the entity");
+        assert_eq!(from_a[0].uid, from_b[0].uid);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn scan_ids_for_entity_returns_all_observers() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "s1");
+        insert_scan(&store, "s2");
+        insert_scan(&store, "s3");
+
+        let mut e = Entity::new(EntityKind::Domain, "example.com", 0.8, "s1");
+        e.observed_at = 100;
+        store.upsert_entity(&e).unwrap();
+        let mut e = Entity::new(EntityKind::Domain, "example.com", 0.8, "s2");
+        e.observed_at = 200;
+        store.upsert_entity(&e).unwrap();
+        let mut e = Entity::new(EntityKind::Domain, "example.com", 0.8, "s3");
+        e.observed_at = 300;
+        store.upsert_entity(&e).unwrap();
+
+        let uid = &e.uid;
+        let scans = store.scan_ids_for_entity(uid).unwrap();
+        assert_eq!(scans.len(), 3);
+        assert_eq!(scans[0], "s3");
+        assert_eq!(scans[2], "s1");
+
+        assert_eq!(store.observation_count(uid).unwrap(), 3);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn entity_only_in_other_scan_does_not_leak() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "s1");
+        insert_scan(&store, "s2");
+
+        let e = Entity::new(EntityKind::Email, "only-in-s1@x.com", 0.7, "s1");
+        store.upsert_entity(&e).unwrap();
+
+        let from_s2 = store.entities_for_scan("s2").unwrap();
+        assert!(from_s2.is_empty(), "s2 never observed this entity");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn re_observing_same_pair_is_idempotent() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "s1");
+
+        let e = Entity::new(EntityKind::Phone, "+61400000000", 0.8, "s1");
+        store.upsert_entity(&e).unwrap();
+        store.upsert_entity(&e).unwrap();
+        store.upsert_entity(&e).unwrap();
+
+        assert_eq!(store.observation_count(&e.uid).unwrap(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn delete_scan_cascade_removes_orphans_but_keeps_shared_entities() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "scan-doomed");
+        insert_scan(&store, "scan-keeper");
+
+        let shared = Entity::new(EntityKind::Domain, "example.com", 0.8, "scan-doomed");
+        store.upsert_entity(&shared).unwrap();
+        let mut shared2 = Entity::new(EntityKind::Domain, "example.com", 0.8, "scan-keeper");
+        shared2.observed_at = shared.observed_at + 1;
+        store.upsert_entity(&shared2).unwrap();
+
+        let only_doomed = Entity::new(EntityKind::Email, "lonely@example.com", 0.6, "scan-doomed");
+        store.upsert_entity(&only_doomed).unwrap();
+
+        assert_eq!(store.entities_for_scan("scan-doomed").unwrap().len(), 2);
+
+        let removed = store.delete_scan("scan-doomed").unwrap();
+        assert!(removed);
+
+        let keeper = store.entities_for_scan("scan-keeper").unwrap();
+        assert_eq!(keeper.len(), 1);
+        assert_eq!(keeper[0].value, "example.com");
+
+        assert!(
+            store
+                .scan_ids_for_entity(&only_doomed.uid)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(store.observation_count(&only_doomed.uid).unwrap(), 0);
+
+        assert!(store.get_scan("scan-doomed").unwrap().is_none());
+        assert!(store.get_scan("scan-keeper").unwrap().is_some());
+
+        assert!(!store.delete_scan("scan-doomed").unwrap());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn delete_scan_with_unknown_id_does_not_purge_orphans() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "real-scan");
+
+        let conn = parking_lot::Mutex::new(rusqlite::Connection::open(&path).unwrap());
+        {
+            let c = conn.lock();
+            c.execute(
+                "INSERT INTO entities(uid, scan_id, kind, value, confidence, corroboration, observed_at, data_json)
+                 VALUES('orphan-uid', 'real-scan', 'domain', 'orphan.example.com', 0.5, 1, 1, '{}')",
+                [],
+            ).unwrap();
+        }
+
+        assert!(!store.delete_scan("nonexistent-scan-id").unwrap());
+
+        let count: i64 = {
+            let c = conn.lock();
+            c.query_row(
+                "SELECT COUNT(*) FROM entities WHERE uid='orphan-uid'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(count, 1, "delete_scan must not purge on unknown id");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── list_scans ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn list_scans_returns_newest_first() {
+        use crate::core::entity::unix_now;
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        let base = unix_now();
+        for (id, offset) in [("oldest", 0u64), ("middle", 100), ("newest", 200)] {
+            let target = Target::new(TargetKind::Email, "x@y.com");
+            let mut scan = Scan::new(id, target);
+            scan.started_at = base + offset;
+            store.upsert_scan(&scan).unwrap();
+        }
+
+        let scans = store.list_scans(10).unwrap();
+        assert_eq!(scans.len(), 3);
+        assert_eq!(scans[0].id, "newest");
+        assert_eq!(scans[1].id, "middle");
+        assert_eq!(scans[2].id, "oldest");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn list_scans_respects_limit() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        for i in 0..5 {
+            let target = Target::new(TargetKind::Email, "x@y.com");
+            let mut scan = Scan::new(format!("scan-{i}"), target);
+            scan.started_at = 1000 + i as u64;
+            store.upsert_scan(&scan).unwrap();
+        }
+
+        let scans = store.list_scans(2).unwrap();
+        assert_eq!(scans.len(), 2, "should return exactly 2 scans");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn list_scans_empty_db_returns_empty_vec() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        let scans = store.list_scans(10).unwrap();
+        assert!(scans.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── upsert_scan / get_scan ──────────────────────────────────────────────
+
+    #[test]
+    fn upsert_scan_updates_existing() {
+        use crate::core::scan::ScanStatus;
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        let target = Target::new(TargetKind::Email, "x@y.com");
+        let mut scan = Scan::new("update-me", target);
+        scan.status = ScanStatus::Running;
+        store.upsert_scan(&scan).unwrap();
+
+        // mutate and upsert again
+        scan.status = ScanStatus::Complete;
+        scan.entity_count = 42;
+        store.upsert_scan(&scan).unwrap();
+
+        let fetched = store.get_scan("update-me").unwrap().unwrap();
+        assert_eq!(fetched.status, ScanStatus::Complete);
+        assert_eq!(fetched.entity_count, 42);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn get_scan_nonexistent_returns_none() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        let result = store.get_scan("nonexistent").unwrap();
+        assert!(result.is_none());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Correlations ────────────────────────────────────────────────────────
+
+    #[test]
+    fn upsert_correlation_and_correlations_for_scan_round_trip() {
+        use crate::core::correlator::{Correlation, Severity};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "corr-scan");
+
+        let c = Correlation::new(
+            "AU-001",
+            "Test rule",
+            Severity::High,
+            "test desc".into(),
+            vec!["uid1".into()],
+            "corr-scan",
+            12345,
+        );
+        store.upsert_correlation(&c).unwrap();
+
+        let corrs = store.correlations_for_scan("corr-scan").unwrap();
+        assert_eq!(corrs.len(), 1);
+        assert_eq!(corrs[0].rule_id, "AU-001");
+        assert_eq!(corrs[0].rule_name, "Test rule");
+        assert_eq!(corrs[0].severity, Severity::High);
+        assert_eq!(corrs[0].description, "test desc");
+        assert_eq!(corrs[0].entity_uids, vec!["uid1".to_string()]);
+        assert_eq!(corrs[0].scan_id, "corr-scan");
+        assert_eq!(corrs[0].ts, 12345);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn correlations_for_scan_empty_scan_returns_empty() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+
+        let corrs = store.correlations_for_scan("unknown-scan").unwrap();
+        assert!(corrs.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn correlations_for_scan_orders_by_severity() {
+        use crate::core::correlator::{Correlation, Severity};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "sev-scan");
+
+        let c_low = Correlation::new(
+            "R-LOW",
+            "Low rule",
+            Severity::Low,
+            "low finding".into(),
+            vec!["u1".into()],
+            "sev-scan",
+            100,
+        );
+        let c_crit = Correlation::new(
+            "R-CRIT",
+            "Critical rule",
+            Severity::Critical,
+            "critical finding".into(),
+            vec!["u2".into()],
+            "sev-scan",
+            200,
+        );
+        let c_high = Correlation::new(
+            "R-HIGH",
+            "High rule",
+            Severity::High,
+            "high finding".into(),
+            vec!["u3".into()],
+            "sev-scan",
+            300,
+        );
+
+        // insert in non-severity order
+        store.upsert_correlation(&c_low).unwrap();
+        store.upsert_correlation(&c_crit).unwrap();
+        store.upsert_correlation(&c_high).unwrap();
+
+        let corrs = store.correlations_for_scan("sev-scan").unwrap();
+        assert_eq!(corrs.len(), 3);
+        assert_eq!(corrs[0].severity, Severity::Critical);
+        assert_eq!(corrs[1].severity, Severity::High);
+        assert_eq!(corrs[2].severity, Severity::Low);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn duplicate_correlation_is_ignored_upsert_idempotent() {
+        use crate::core::correlator::{Correlation, Severity};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "dup-scan");
+
+        let c = Correlation::new(
+            "AU-001",
+            "Test rule",
+            Severity::High,
+            "test desc".into(),
+            vec!["uid1".into()],
+            "dup-scan",
+            12345,
+        );
+        store.upsert_correlation(&c).unwrap();
+        store.upsert_correlation(&c).unwrap();
+
+        let corrs = store.correlations_for_scan("dup-scan").unwrap();
+        assert_eq!(corrs.len(), 1, "duplicate correlation should be ignored");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn event_log_round_trips_in_emission_order() {
+        use crate::core::event::{Event, EventKind};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "scan-evt");
+
+        for (i, kind) in [
+            EventKind::ScanStart {
+                target_kind: "domain".into(),
+                target_value: "example.com".into(),
+            },
+            EventKind::ModuleStart {
+                module: "dns_resolver".into(),
+            },
+            EventKind::ModuleDone {
+                module: "dns_resolver".into(),
+                found: 3,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut ev = Event::new("scan-evt", kind);
+            ev.ts = 1000 + i as u64;
+            store.insert_event(&ev).unwrap();
+        }
+
+        let other = Event::new("scan-other", EventKind::ModuleStart { module: "x".into() });
+        store.insert_event(&other).unwrap();
+
+        let evs = store.events_for_scan("scan-evt").unwrap();
+        assert_eq!(evs.len(), 3, "expected three events for scan-evt only");
+
+        let kinds: Vec<&'static str> = evs
+            .iter()
+            .map(|e| match &e.kind {
+                EventKind::ScanStart { .. } => "scan_start",
+                EventKind::ModuleStart { .. } => "module_start",
+                EventKind::ModuleDone { .. } => "module_done",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["scan_start", "module_start", "module_done"]);
+
+        let other_evs = store.events_for_scan("scan-other").unwrap();
+        assert_eq!(other_evs.len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn events_for_scan_returns_empty_for_unknown_id() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        let evs = store.events_for_scan("never-existed").unwrap();
+        assert!(evs.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn delete_scan_cascades_to_events() {
+        use crate::core::event::{Event, EventKind};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "scan-with-events");
+        insert_scan(&store, "scan-keeper");
+
+        store
+            .insert_event(&Event::new(
+                "scan-with-events",
+                EventKind::ModuleStart {
+                    module: "dns_resolver".into(),
+                },
+            ))
+            .unwrap();
+        store
+            .insert_event(&Event::new(
+                "scan-with-events",
+                EventKind::ModuleDone {
+                    module: "dns_resolver".into(),
+                    found: 1,
+                },
+            ))
+            .unwrap();
+        store
+            .insert_event(&Event::new(
+                "scan-keeper",
+                EventKind::ModuleStart {
+                    module: "whois".into(),
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(store.events_for_scan("scan-with-events").unwrap().len(), 2);
+
+        assert!(store.delete_scan("scan-with-events").unwrap());
+        assert!(
+            store
+                .events_for_scan("scan-with-events")
+                .unwrap()
+                .is_empty()
+        );
+
+        assert_eq!(store.events_for_scan("scan-keeper").unwrap().len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+}
