@@ -2523,15 +2523,17 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
         let addr_snapshot: Vec<(String, f64, u32)> = result
             .entities
             .iter()
-            .filter(|e| e.kind == EntityKind::Address && e.confidence >= 0.45)
+            .filter(|e| {
+                e.kind == EntityKind::Address && (e.confidence >= 0.45 || e.corroboration >= 3)
+            })
             .map(|e| (e.value.clone(), e.confidence, e.corroboration))
             .collect();
         for (addr, conf, corr) in &addr_snapshot {
             if let Some((lat, lon)) = known_city_coords(addr) {
                 let coords = format!("{lat:.4},{lon:.4}");
                 if seen_coords.insert(coords.clone()) {
-                    let corr_boost = (*corr as f64 - 1.0).max(0.0) * 0.07;
-                    let geo_conf = ((conf * 0.80) + corr_boost).min(0.72);
+                    let corr_boost = (*corr as f64 - 1.0).max(0.0) * 0.08;
+                    let geo_conf = ((conf * 0.82) + corr_boost).min(0.75);
                     let mut ce = Entity::new(EntityKind::Coordinates, &coords, geo_conf, scan_id);
                     ce.tag("geoint");
                     ce.tag("search-geocoded");
