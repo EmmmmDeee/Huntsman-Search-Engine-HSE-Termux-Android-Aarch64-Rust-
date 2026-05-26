@@ -405,7 +405,7 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
                 None => (no_frag, None),
             };
             let (host, path) = host_and_path.split_once('/').unwrap_or((host_and_path, ""));
-            let host_lower: String = host.chars().flat_map(|c| c.to_lowercase()).collect();
+            let host_lower: String = host.chars().flat_map(char::to_lowercase).collect();
             let path_trimmed = path.trim_end_matches('/');
             let mut out = if path_trimmed.is_empty() {
                 format!("{scheme}://{host_lower}")
@@ -868,7 +868,7 @@ mod tests {
         ];
         for kind in variants {
             let json = serde_json::to_string(&kind)
-                .unwrap_or_else(|e| panic!("serialize {:?} failed: {e}", kind));
+                .unwrap_or_else(|e| panic!("serialize {kind:?} failed: {e}"));
             let back: EntityKind = serde_json::from_str(&json)
                 .unwrap_or_else(|e| panic!("deserialize {json} failed: {e}"));
             assert_eq!(kind, back, "round-trip failed for {json}");

@@ -416,7 +416,7 @@ impl Store {
             let rows = stmt.query_map(
                 rusqlite::params_from_iter(
                     std::iter::once(scan_id.to_string())
-                        .chain(kind.map(|k| k.to_string()))
+                        .chain(kind.map(std::string::ToString::to_string))
                         .chain(min_confidence.map(|c| c.to_string()))
                         .chain(like_pattern),
                 ),

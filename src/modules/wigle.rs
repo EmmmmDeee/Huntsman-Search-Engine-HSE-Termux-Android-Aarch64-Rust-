@@ -388,8 +388,7 @@ fn mode<'a>(items: &[&'a str]) -> &'a str {
     counts
         .into_iter()
         .max_by_key(|&(_, count)| count)
-        .map(|(val, _)| val)
-        .unwrap_or("")
+        .map_or("", |(val, _)| val)
 }
 
 fn mode_or<'a>(items: &[&'a str], fallback: impl FnOnce() -> &'a str) -> &'a str {

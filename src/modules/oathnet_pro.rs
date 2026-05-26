@@ -580,8 +580,8 @@ fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResu
         }
     }
 
-    let lat = data.get("lat").and_then(|v| v.as_f64());
-    let lon = data.get("lon").and_then(|v| v.as_f64());
+    let lat = data.get("lat").and_then(serde_json::Value::as_f64);
+    let lon = data.get("lon").and_then(serde_json::Value::as_f64);
     if let (Some(lat), Some(lon)) = (lat, lon) {
         let coords = format!("{lat},{lon}");
         let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.65, scan_id);
@@ -1198,7 +1198,7 @@ fn store_unique_stealer_keys(
             .map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str())
-                    .map(|s| s.to_lowercase())
+                    .map(str::to_lowercase)
                     .collect()
             })
             .unwrap_or_default();
@@ -1268,7 +1268,7 @@ fn store_api_credential(item: &Value) {
         let _ = crate::util::key_pool::save_pool(&pool);
     }
 
-    let user_entry = crate::util::key_pool::KeyEntry::new(format!("{}:{}", username, password));
+    let user_entry = crate::util::key_pool::KeyEntry::new(format!("{username}:{password}"));
     pool.add(&format!("{service}_login"), user_entry);
     let _ = crate::util::key_pool::save_pool(&pool);
 }

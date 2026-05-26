@@ -163,7 +163,7 @@ impl Shodan {
         let ports_csv = ports_sorted
             .iter()
             .take(MAX_PORTS)
-            .map(|p| p.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
         let mut ev = Evidence::new(
@@ -179,13 +179,23 @@ impl Shodan {
         .with_attr("port_count", body.ports.len().to_string());
 
         if !body.vulns.is_empty() {
-            let v: Vec<&str> = body.vulns.iter().take(16).map(|s| s.as_str()).collect();
+            let v: Vec<&str> = body
+                .vulns
+                .iter()
+                .take(16)
+                .map(std::string::String::as_str)
+                .collect();
             ev = ev
                 .with_attr("vulns", v.join(","))
                 .with_attr("vuln_count", body.vulns.len().to_string());
         }
         if !body.cpes.is_empty() {
-            let c: Vec<&str> = body.cpes.iter().take(8).map(|s| s.as_str()).collect();
+            let c: Vec<&str> = body
+                .cpes
+                .iter()
+                .take(8)
+                .map(std::string::String::as_str)
+                .collect();
             ev = ev.with_attr("cpes", c.join(","));
         }
         if !body.tags.is_empty() {

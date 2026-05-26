@@ -646,8 +646,8 @@ fn extract_oathnet_ip_geo(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    let lat = data.get("lat").and_then(|v| v.as_f64());
-    let lon = data.get("lon").and_then(|v| v.as_f64());
+    let lat = data.get("lat").and_then(serde_json::Value::as_f64);
+    let lon = data.get("lon").and_then(serde_json::Value::as_f64);
 
     if let (Some(lat), Some(lon)) = (lat, lon) {
         if lat == 0.0 && lon == 0.0 {

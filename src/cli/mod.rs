@@ -478,9 +478,7 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
                     .filter(|e| e.status == KeyStatus::Invalid)
                     .count();
                 let total_uses: u64 = entries.iter().map(|e| e.use_count).sum();
-                let cat = key_pool::find_service(svc)
-                    .map(|d| d.category)
-                    .unwrap_or("custom");
+                let cat = key_pool::find_service(svc).map_or("custom", |d| d.category);
                 println!(
                     "{:<20} {:>5} {:>6} {:>7} {:>8}  {cat}",
                     svc,

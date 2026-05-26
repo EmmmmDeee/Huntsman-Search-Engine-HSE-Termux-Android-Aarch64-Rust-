@@ -63,8 +63,7 @@ impl Module for LocalNet {
 
                 let state = tokio::fs::read_to_string(dir.join("operstate"))
                     .await
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_else(|_| "unknown".into());
+                    .map_or_else(|_| "unknown".into(), |s| s.trim().to_string());
 
                 let iface = iface_os.to_string_lossy();
                 let mut e = Entity::new(EntityKind::MacAddress, &mac, 0.95, &ctx.scan_id);

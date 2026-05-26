@@ -452,7 +452,7 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
             let accepts: Vec<&'static str> = ALL_KINDS
                 .iter()
                 .filter(|k| m.accepts(&Target::new(**k, "probe")))
-                .map(|k| k.canonical_str())
+                .map(super::super::core::scan::TargetKind::canonical_str)
                 .collect();
             json!({
                 "name":        m.name(),
@@ -554,8 +554,8 @@ pub async fn scan_events_sse(
             _ => None,
         })
         .timeout(SSE_IDLE_TIMEOUT)
-        .take_while(|r| r.is_ok())
-        .filter_map(|r| r.ok());
+        .take_while(std::result::Result::is_ok)
+        .filter_map(std::result::Result::ok);
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -723,8 +723,8 @@ pub async fn live_events_sse(
             _ => None,
         })
         .timeout(SSE_IDLE_TIMEOUT)
-        .take_while(|r| r.is_ok())
-        .filter_map(|r| r.ok());
+        .take_while(std::result::Result::is_ok)
+        .filter_map(std::result::Result::ok);
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }

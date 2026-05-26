@@ -53,10 +53,10 @@ fn probes() -> Vec<Probe> {
                 if let Some(p) = v.get("plan").and_then(|v| v.as_str()) {
                     out.push(("plan".into(), p.to_string()));
                 }
-                if let Some(c) = v.get("query_credits").and_then(|v| v.as_u64()) {
+                if let Some(c) = v.get("query_credits").and_then(serde_json::Value::as_u64) {
                     out.push(("query_credits".into(), c.to_string()));
                 }
-                if let Some(c) = v.get("scan_credits").and_then(|v| v.as_u64()) {
+                if let Some(c) = v.get("scan_credits").and_then(serde_json::Value::as_u64) {
                     out.push(("scan_credits".into(), c.to_string()));
                 }
                 out
@@ -77,12 +77,13 @@ fn probes() -> Vec<Probe> {
                 if let Some(data) = v.get("data").and_then(|d| d.get("attributes")) {
                     if let Some(q) = data.get("quotas")
                         && let Some(api) = q.get("api_requests_daily")
-                        && let Some(allowed) = api.get("allowed").and_then(|v| v.as_u64())
+                        && let Some(allowed) =
+                            api.get("allowed").and_then(serde_json::Value::as_u64)
                     {
                         out.push(("daily_quota".into(), allowed.to_string()));
                     }
                     if let Some(p) = data.get("privileges") {
-                        out.push(("privileges".into(), format!("{}", p)));
+                        out.push(("privileges".into(), format!("{p}")));
                     }
                 }
                 out
@@ -103,10 +104,10 @@ fn probes() -> Vec<Probe> {
                 if let Some(n) = v.get("Name").and_then(|v| v.as_str()) {
                     out.push(("account_name".into(), n.to_string()));
                 }
-                if let Some(c) = v.get("CreditBalance").and_then(|v| v.as_i64()) {
+                if let Some(c) = v.get("CreditBalance").and_then(serde_json::Value::as_i64) {
                     out.push(("credit_balance".into(), c.to_string()));
                 }
-                if let Some(p) = v.get("MaxCredits").and_then(|v| v.as_i64()) {
+                if let Some(p) = v.get("MaxCredits").and_then(serde_json::Value::as_i64) {
                     out.push(("max_credits".into(), p.to_string()));
                 }
                 out
@@ -124,7 +125,7 @@ fn probes() -> Vec<Probe> {
             },
             parse_info: |v| {
                 let mut out = Vec::new();
-                if v.get("success").and_then(|v| v.as_bool()) == Some(true) {
+                if v.get("success").and_then(serde_json::Value::as_bool) == Some(true) {
                     out.push(("status".into(), "authenticated".into()));
                 }
                 out
@@ -150,7 +151,7 @@ fn probes() -> Vec<Probe> {
                         && let Some(avail) = r
                             .get("searches")
                             .and_then(|s| s.get("available"))
-                            .and_then(|v| v.as_u64())
+                            .and_then(serde_json::Value::as_u64)
                     {
                         out.push(("searches_available".into(), avail.to_string()));
                     }
@@ -182,7 +183,7 @@ fn probes() -> Vec<Probe> {
             },
             parse_info: |v| {
                 let mut out = Vec::new();
-                if let Some(c) = v.get("credits").and_then(|v| v.as_u64()) {
+                if let Some(c) = v.get("credits").and_then(serde_json::Value::as_u64) {
                     out.push(("credits".into(), c.to_string()));
                 }
                 if let Some(p) = v.get("plan").and_then(|v| v.as_str()) {
@@ -225,7 +226,7 @@ fn probes() -> Vec<Probe> {
             },
             parse_info: |v| {
                 let mut out = Vec::new();
-                if v.get("valid").and_then(|v| v.as_bool()) == Some(true) {
+                if v.get("valid").and_then(serde_json::Value::as_bool) == Some(true) {
                     out.push(("status".into(), "authenticated".into()));
                 }
                 out
@@ -320,7 +321,7 @@ fn probes() -> Vec<Probe> {
                 {
                     out.push(("plan".into(), p.to_string()));
                 }
-                if let Some(c) = v.get("requests_left").and_then(|v| v.as_u64()) {
+                if let Some(c) = v.get("requests_left").and_then(serde_json::Value::as_u64) {
                     out.push(("requests_left".into(), c.to_string()));
                 }
                 out
@@ -372,7 +373,7 @@ fn probes() -> Vec<Probe> {
                     .get("user")
                     .and_then(|u| u.get("credits"))
                     .and_then(|u| u.get("remaining"))
-                    .and_then(|v| v.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                 {
                     out.push(("credits_remaining".into(), c.to_string()));
                 }
@@ -455,7 +456,7 @@ fn probes() -> Vec<Probe> {
                 if let Some(c) = v
                     .get("resources")
                     .and_then(|r| r.get("search"))
-                    .and_then(|v| v.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                 {
                     out.push(("search_credits".into(), c.to_string()));
                 }
@@ -705,7 +706,7 @@ async fn probe_endpoint(url: &str, key: &str, headers: &[(&str, String)]) -> Opt
 }
 
 fn is_error_response(v: &Value) -> bool {
-    if let Some(code) = v.get("status_code").and_then(|c| c.as_u64())
+    if let Some(code) = v.get("status_code").and_then(serde_json::Value::as_u64)
         && (code == 401 || code == 403 || code == 429)
     {
         return true;
@@ -731,7 +732,7 @@ fn is_error_response(v: &Value) -> bool {
             return true;
         }
     }
-    if v.get("success").and_then(|s| s.as_bool()) == Some(false) {
+    if v.get("success").and_then(serde_json::Value::as_bool) == Some(false) {
         return true;
     }
     false

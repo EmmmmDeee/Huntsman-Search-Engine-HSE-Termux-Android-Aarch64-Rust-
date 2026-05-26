@@ -144,7 +144,7 @@ impl Target {
         if v.len() > 1024 {
             return Err("value too long (>1024 chars)");
         }
-        if v.chars().any(|c| c.is_control()) {
+        if v.chars().any(char::is_control) {
             return Err("value contains control characters");
         }
         match self.kind {
@@ -180,7 +180,7 @@ impl Target {
                 }
             }
             TargetKind::Phone => {
-                let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+                let digits: String = v.chars().filter(char::is_ascii_digit).collect();
                 if digits.len() < 6 {
                     return Err("phone needs at least 6 digits");
                 }

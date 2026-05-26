@@ -259,7 +259,7 @@ impl Module for SocialProbe {
                 // Also extract the domain for infrastructure expansion
                 if let Some(host) = url::Url::parse(&url)
                     .ok()
-                    .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+                    .and_then(|u| u.host_str().map(str::to_lowercase))
                     && host.contains('.')
                 {
                     let mut dom = Entity::new(EntityKind::Domain, &host, 0.40, &ctx.scan_id);
@@ -289,10 +289,7 @@ impl Module for SocialProbe {
             summary.add_evidence(
                 Evidence::new(
                     "social_probe",
-                    format!(
-                        "Probed {} platforms, found {} profiles",
-                        checked_count, found_count
-                    ),
+                    format!("Probed {checked_count} platforms, found {found_count} profiles"),
                 )
                 .with_attr("checked", checked_count.to_string())
                 .with_attr("found", found_count.to_string())

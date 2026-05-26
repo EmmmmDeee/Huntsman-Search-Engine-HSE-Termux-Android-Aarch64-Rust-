@@ -196,7 +196,7 @@ impl Module for Censys {
                 ports
                     .iter()
                     .take(20)
-                    .map(|p| p.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(","),
             );
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn deserialise_no_result() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let resp: CensysResp = serde_json::from_str(json).unwrap();
         assert!(resp.result.is_none());
     }

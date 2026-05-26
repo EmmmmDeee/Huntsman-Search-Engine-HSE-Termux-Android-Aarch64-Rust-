@@ -895,7 +895,7 @@ fn build_queries(target: &Target) -> Vec<String> {
             format!("\"{v}\" ABN OR ACN OR \"Pty Ltd\" OR \"business number\""),
         ],
         TargetKind::Email => {
-            let domain = v.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
+            let domain = v.rsplit_once('@').map_or("", |(_, d)| d);
             let local = v.split('@').next().unwrap_or("");
             let mut q = vec![format!("\"{v}\""), format!("\"{local}\"")];
             if !domain.is_empty()
@@ -1011,7 +1011,7 @@ fn build_queries(target: &Target) -> Vec<String> {
         }
         TargetKind::Phone => {
             let mut q = vec![format!("\"{v}\"")];
-            let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+            let digits: String = v.chars().filter(char::is_ascii_digit).collect();
             if digits.len() >= 7 {
                 q.push(format!(
                     "\"{v}\" site:whitepages.com OR site:truecaller.com \
@@ -1067,7 +1067,7 @@ fn build_queries(target: &Target) -> Vec<String> {
             ]
         }
         TargetKind::AbnAcn => {
-            let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+            let digits: String = v.chars().filter(char::is_ascii_digit).collect();
             vec![
                 format!("\"{v}\""),
                 format!(
@@ -1456,8 +1456,7 @@ fn add_result(
     // URL-decode percent-encoded URLs (from Google /url?q=, Yahoo /RU=, etc.)
     let decoded = url::form_urlencoded::parse(url.as_bytes())
         .next()
-        .map(|(k, _)| k.into_owned())
-        .unwrap_or_else(|| url.to_string());
+        .map_or_else(|| url.to_string(), |(k, _)| k.into_owned());
     let url = if decoded.starts_with("http") {
         &decoded
     } else {
@@ -1589,8 +1588,7 @@ fn resolve_href(href: &str) -> Option<String> {
             .and_then(|encoded| {
                 let decoded: String = url::form_urlencoded::parse(encoded.as_bytes())
                     .next()
-                    .map(|(k, _)| k.into_owned())
-                    .unwrap_or_else(|| encoded.to_string());
+                    .map_or_else(|| encoded.to_string(), |(k, _)| k.into_owned());
                 if decoded.starts_with("http") {
                     Some(decoded)
                 } else {
@@ -1619,8 +1617,7 @@ fn extract_url_param(href: &str, param: &str) -> Option<String> {
         .map(|encoded| {
             url::form_urlencoded::parse(encoded.as_bytes())
                 .next()
-                .map(|(k, _)| k.into_owned())
-                .unwrap_or_else(|| encoded.to_string())
+                .map_or_else(|| encoded.to_string(), |(k, _)| k.into_owned())
         })
 }
 
@@ -1672,7 +1669,7 @@ impl<'a> Iterator for HrefIter<'a> {
 fn extract_host(url: &str) -> String {
     url::Url::parse(url)
         .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+        .and_then(|u| u.host_str().map(str::to_lowercase))
         .unwrap_or_default()
 }
 
@@ -2249,8 +2246,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
 
         let n_engines = url_engine_count
             .get(&canonicalize_url(&r.url))
-            .map(|s| s.len() as u32)
-            .unwrap_or(1);
+            .map_or(1, |s| s.len() as u32);
 
         if is_subdomain && seen_domains.insert(host.clone()) {
             let mut e = Entity::new(EntityKind::Domain, &host, 0.70, scan_id);
@@ -2990,8 +2986,7 @@ fn extract_organisations_from_text(text: &str, terms: &[String]) -> Vec<String> 
             let before = &text[..abs];
             let name_start = before
                 .rfind([',', '.', ';', '(', '\n'])
-                .map(|i| i + 1)
-                .unwrap_or(abs.saturating_sub(60));
+                .map_or(abs.saturating_sub(60), |i| i + 1);
             let org = text[name_start..abs + suffix.len()].trim();
             if org.len() >= 5
                 && org.starts_with(|c: char| c.is_ascii_uppercase())
@@ -3174,8 +3169,7 @@ mod tests {
             addrs
                 .iter()
                 .any(|a| a.contains("Nundah") && a.contains("Queensland")),
-            "should find Nundah, Queensland: {:?}",
-            addrs
+            "should find Nundah, Queensland: {addrs:?}"
         );
     }
 
@@ -3185,8 +3179,7 @@ mod tests {
         let addrs = extract_addresses_from_text(text);
         assert!(
             addrs.iter().any(|a| a.contains("Redcliffe")),
-            "should find Redcliffe with QLD context: {:?}",
-            addrs
+            "should find Redcliffe with QLD context: {addrs:?}"
         );
     }
 
@@ -3206,8 +3199,7 @@ mod tests {
         let addrs = extract_addresses_from_text(text);
         assert!(
             addrs.iter().any(|a| a.contains("4012")),
-            "should extract 4-digit AU postcode: {:?}",
-            addrs
+            "should extract 4-digit AU postcode: {addrs:?}"
         );
     }
 
@@ -3217,8 +3209,7 @@ mod tests {
         let addrs = extract_addresses_from_text(text);
         assert!(
             !addrs.iter().any(|a| a.contains("1234")),
-            "should not extract non-AU 4-digit number as postcode: {:?}",
-            addrs
+            "should not extract non-AU 4-digit number as postcode: {addrs:?}"
         );
     }
 
@@ -3290,19 +3281,16 @@ mod tests {
         assert!(
             q.iter()
                 .any(|qr| qr.contains("jordanmeyers") || qr.contains("jleighmeyers")),
-            "should generate username variants from 3-part name: {:?}",
-            q
+            "should generate username variants from 3-part name: {q:?}"
         );
         assert!(
             q.iter().any(|qr| qr.contains("\"Jordan Meyers\"")),
-            "should search first+last without middle: {:?}",
-            q
+            "should search first+last without middle: {q:?}"
         );
         assert!(
             q.iter()
                 .any(|qr| qr.contains("Queensland") || qr.contains("Brisbane")),
-            "should include AU geo dorks: {:?}",
-            q
+            "should include AU geo dorks: {q:?}"
         );
     }
 

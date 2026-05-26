@@ -63,7 +63,7 @@ impl Module for AbnLookup {
 
         match target.kind {
             TargetKind::AbnAcn => {
-                let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+                let digits: String = value.chars().filter(char::is_ascii_digit).collect();
                 if digits.len() == 11 {
                     if let Some(data) = fetch_abn(guid, &digits).await {
                         parse_abn_result(&data, &ctx.scan_id, &mut result);
@@ -230,7 +230,10 @@ fn parse_name_results(data: &Value, query: &str, scan_id: &str, result: &mut Mod
         let name_type = str_field(entry, "NameType").unwrap_or_default();
         let state = str_field(entry, "State").unwrap_or_default();
         let postcode = str_field(entry, "Postcode").unwrap_or_default();
-        let score = entry.get("Score").and_then(|v| v.as_u64()).unwrap_or(0);
+        let score = entry
+            .get("Score")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
 
         if name.is_empty() || abn.is_empty() {
             continue;
@@ -289,7 +292,7 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
     v.get(key)
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 #[cfg(test)]

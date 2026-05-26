@@ -94,9 +94,7 @@ pub struct ServiceDef {
 }
 
 pub fn rate_limit_reset(service: &str) -> u64 {
-    find_service(service)
-        .map(|d| d.rate_limit_reset_secs)
-        .unwrap_or(3600)
+    find_service(service).map_or(3600, |d| d.rate_limit_reset_secs)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -425,7 +423,7 @@ impl KeyPool {
         let data = self.data.lock();
         data.services
             .get(&service.to_lowercase())
-            .map_or(0, |e| e.len())
+            .map_or(0, std::vec::Vec::len)
     }
 
     pub fn active_count(&self, service: &str) -> usize {
@@ -439,7 +437,7 @@ impl KeyPool {
 
     pub fn total_keys(&self) -> usize {
         let data = self.data.lock();
-        data.services.values().map(|v| v.len()).sum()
+        data.services.values().map(std::vec::Vec::len).sum()
     }
 
     pub fn total_active(&self) -> usize {
@@ -547,7 +545,7 @@ async fn validate_against_endpoint(sdef: ServiceDef, key: &str) -> bool {
     let output = tokio::time::timeout(Duration::from_millis(timeout_ms + 2000), cmd.output())
         .await
         .ok()
-        .and_then(|r| r.ok());
+        .and_then(std::result::Result::ok);
 
     let Some(output) = output else { return false };
     let code = String::from_utf8_lossy(&output.stdout);
