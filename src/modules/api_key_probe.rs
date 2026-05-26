@@ -20,6 +20,17 @@ use crate::util::key_pool::{self, KeyEntry, KeyStatus};
 
 pub struct ApiKeyProbe;
 
+fn truncate_safe(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 type UrlBuilderFn = fn(&str) -> (String, Vec<(&'static str, String)>);
 
 struct Probe {
@@ -585,7 +596,7 @@ impl Module for ApiKeyProbe {
 
             let mut entity = Entity::new(
                 EntityKind::ApiKey,
-                format!("{}:{}", probe.service, &key[..key.len().min(12)]),
+                format!("{}:{}", probe.service, truncate_safe(key, 12)),
                 0.95,
                 &ctx.scan_id,
             );
