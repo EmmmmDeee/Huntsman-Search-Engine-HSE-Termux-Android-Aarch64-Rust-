@@ -7,16 +7,13 @@
 
 pub mod abn_lookup;
 pub mod api_key_probe;
-pub mod caa_records;
 pub mod cell_intel;
 pub mod cert_intel;
 pub mod contact_enrich;
 pub mod criminal_ip;
 pub mod dehashed;
 pub mod device_sensors;
-pub mod dns_blocklist;
-pub mod dns_brute;
-pub mod dns_resolver;
+pub mod dns_intel;
 pub mod email_parse;
 pub mod geo_intel;
 pub mod geocode;
@@ -33,7 +30,6 @@ pub mod local_net;
 pub mod oathnet_pro;
 pub mod phone_intl;
 pub mod rdap_domain;
-pub mod reverse_dns;
 pub mod search_engines;
 pub mod securitytrails;
 pub mod shodan;
@@ -71,17 +67,13 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(contact_enrich::ContactEnrich),
         Arc::new(wigle::Wigle),
         Arc::new(cert_intel::CertIntel),
-        Arc::new(dns_resolver::DnsResolver),
-        Arc::new(reverse_dns::ReverseDns),
-        Arc::new(dns_brute::DnsBrute),
+        Arc::new(dns_intel::DnsIntel),
         Arc::new(whois::Whois),
         Arc::new(ip_registry::IpRegistry),
         Arc::new(ip_geo::IpGeo),
         Arc::new(ip_whois_geo::IpWhois),
         Arc::new(geo_intel::GeoIntel),
         Arc::new(geocode::Geocode),
-        Arc::new(dns_blocklist::DnsBlocklist),
-        Arc::new(caa_records::CaaRecords),
         Arc::new(threatfox::ThreatFox),
         Arc::new(rdap_domain::RdapDomain),
         Arc::new(search_engines::SearchEngines),

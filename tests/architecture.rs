@@ -112,8 +112,8 @@ fn all_modules_have_descriptions() {
 fn module_registry_count_is_stable() {
     let modules = huntsman_search_engine::modules::registry();
     assert!(
-        modules.len() >= 40,
-        "expected >=40 modules, got {}",
+        modules.len() >= 35,
+        "expected >=35 modules, got {}",
         modules.len()
     );
 }
