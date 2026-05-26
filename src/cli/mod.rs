@@ -936,8 +936,8 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         (auto_depth, auto_conf, cmd.max_concurrent.max(4))
     } else if cmd.recursive && cmd.depth == 0 {
         (
-            5,
-            cmd.min_expand_confidence.min(0.50),
+            7,
+            cmd.min_expand_confidence.min(0.40),
             cmd.max_concurrent.max(4),
         )
     } else {

@@ -392,73 +392,102 @@ fn default_min_expand_confidence() -> f64 {
     0.50
 }
 
-/// Compute the statistically optimal expansion depth for a given seed type
-/// and API tier. Based on expected-value analysis of marginal yield per round.
+/// Compute the geo-maximising expansion depth for a given seed type and
+/// API tier. Generous with depth — geolocation is paramount. Prioritises
+/// free API paths to amplify pivot economy before spending paid queries.
 ///
 /// Returns (depth, min_expand_confidence) tuple.
 pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
+    // Geolocation chain: Seed → IP/Domain → IP → Coords → Address → Coords
+    // Every identity seed needs at least 3 hops to reach refined geo.
+    // With paid keys, 5 hops catches OathNet → IP → geo → geocode → refine.
     let depth = match kind {
-        // High-yield identity seeds: OathNet Pro produces 300+ entities at round 0.
-        // Round 1 expands IPs/domains/usernames. Round 2 expands geo/social.
-        // Round 3 catches web_crawler output. Round 4+ has diminishing returns.
+        // Identity seeds have the richest expansion graph:
+        //   R0: breach/search → IPs, domains, usernames, phones, addresses
+        //   R1: dns_intel on domains → more IPs; ip_geo on IPs → coords
+        //   R2: geocode on coords → addresses; username_search → profiles
+        //   R3: web_crawler on domains → emails; shodan → ports
+        //   R4: OathNet on discovered emails → more breach data → geo
         TargetKind::Email | TargetKind::Username | TargetKind::FullName => {
             if has_paid_keys {
-                3
+                5
             } else {
-                2
+                4
             }
         }
 
-        // Domain seeds: search_engines produces 100+ entities at round 0.
-        // Round 1 expands IPs. Round 2 expands geo. Round 3 with paid keys
-        // catches OathNet enrichment on discovered emails.
+        // Domain seeds produce IPs at R0, geo at R1, addresses at R2,
+        // discovered emails at R2-3 feed back into identity expansion.
         TargetKind::Domain => {
             if has_paid_keys {
+                5
+            } else {
+                4
+            }
+        }
+
+        // IP seeds get geo at R0, reverse DNS domains at R0, those domains
+        // expand through the full domain pipeline at R1-R3.
+        TargetKind::IpAddress => {
+            if has_paid_keys {
+                4
+            } else {
+                3
+            }
+        }
+
+        // URL: extract domain at R0, then full domain pipeline.
+        TargetKind::Url => {
+            if has_paid_keys {
+                4
+            } else {
+                3
+            }
+        }
+
+        // Phone: geo_intel at R0 → coords + breach IPs. R1 geocodes.
+        // R2 expands breach IPs → domains. R3 catches remaining.
+        TargetKind::Phone => {
+            if has_paid_keys {
+                4
+            } else {
+                3
+            }
+        }
+
+        // ASN: ip_registry → IPs at R0. Full IP pipeline from R1.
+        TargetKind::Asn => {
+            if has_paid_keys {
+                4
+            } else {
+                3
+            }
+        }
+
+        // Coords/Address: already geo. R1 refines (geocode opposite
+        // direction). R2 expands wigle WiFi intelligence.
+        TargetKind::Coordinates | TargetKind::Address => 2,
+
+        // Organisation/ABN: abn_lookup → addresses. Then geocode pipeline.
+        TargetKind::Organisation | TargetKind::AbnAcn => {
+            if has_paid_keys {
                 3
             } else {
                 2
             }
         }
 
-        // IP seeds: 4 geo sources at round 0. Round 1 expands reverse DNS
-        // domains. Round 2 catches email/org expansion.
-        TargetKind::IpAddress | TargetKind::Url | TargetKind::ApiKey => 2,
-
-        // ASN: ip_registry at round 0 produces IPs. Round 1 expands geo.
-        TargetKind::Asn => {
-            if has_paid_keys {
-                2
-            } else {
-                1
-            }
-        }
-
-        // Phone: geo_intel at round 0 produces coarse coords + breach data.
-        // Round 1 geocodes. With paid keys, round 2 catches OathNet enrichment.
-        TargetKind::Phone => {
-            if has_paid_keys {
-                2
-            } else {
-                1
-            }
-        }
-
-        // Already geo — just refine
-        TargetKind::Coordinates | TargetKind::Address => 1,
-
-        // Low-yield seeds
-        TargetKind::Organisation | TargetKind::AbnAcn => {
-            if has_paid_keys {
-                2
-            } else {
-                1
-            }
-        }
+        // ApiKey: service domain → full domain pipeline.
+        TargetKind::ApiKey => 3,
     };
 
-    // Lower confidence threshold for paid APIs since OathNet breach data
-    // produces many entities at 0.50-0.65 that are valuable for expansion.
-    let min_conf = if has_paid_keys { 0.45 } else { 0.50 };
+    // Lower confidence threshold to catch more geo-relevant entities:
+    // - Breach IPs at 0.50-0.60 are valuable geo seeds
+    // - Phone prefix coords at 0.52 need to expand through geocode
+    // - Social profile URLs at 0.55 lead to domains → IPs → geo
+    // With paid keys, go even lower since OathNet data is high-quality
+    // despite conservative confidence scoring.
+    let min_conf = if has_paid_keys { 0.40 } else { 0.45 };
 
     (depth, min_conf)
 }

@@ -761,8 +761,13 @@ fn module_skip_reason(
     if opts.passive_only && !module.is_passive() {
         return Some("not passive");
     }
-    if is_expansion && module.is_passive() {
-        return Some("passive (already ran on seed round)");
+    // Skip "any-target" passive modules on expansion — device sensors
+    // produce the same local data regardless of the expansion target.
+    // Passive modules that accept specific target kinds (email_parse,
+    // phone_intl, abn_lookup) still run since their output varies.
+    const SENSOR_MODULES: &[&str] = &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
+    if is_expansion && module.is_passive() && SENSOR_MODULES.contains(&name) {
+        return Some("sensor (already ran on seed round)");
     }
     None
 }
