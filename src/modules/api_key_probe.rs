@@ -18,6 +18,8 @@ use crate::core::{
 };
 use crate::util::key_pool::{self, KeyEntry, KeyStatus};
 
+const SRC: &str = "api_key_probe";
+
 pub struct ApiKeyProbe;
 
 type UrlBuilderFn = fn(&str) -> (String, Vec<(&'static str, String)>);
@@ -616,6 +618,36 @@ impl Module for ApiKeyProbe {
 
             entity.add_evidence(ev);
             result.push(entity);
+
+            // Emit a Domain entity for the service so expansion can pivot
+            // through DNS/IP/geo pipelines.
+            let service_domain = match probe.service {
+                "shodan" => Some("shodan.io"),
+                "virustotal" => Some("virustotal.com"),
+                "censys" => Some("censys.io"),
+                "greynoise" => Some("greynoise.io"),
+                "urlscan" => Some("urlscan.io"),
+                "securitytrails" => Some("securitytrails.com"),
+                "hunter" => Some("hunter.io"),
+                "intelx" => Some("intelx.io"),
+                "dehashed" => Some("dehashed.com"),
+                "leakix" => Some("leakix.net"),
+                "ipqs" => Some("ipqualityscore.com"),
+                "numverify" => Some("numverify.com"),
+                "wigle" => Some("wigle.net"),
+                "abuseipdb" => Some("abuseipdb.com"),
+                _ => None,
+            };
+            if let Some(domain) = service_domain {
+                let mut d = Entity::new(EntityKind::Domain, domain, 0.60, &ctx.scan_id);
+                d.tag("api-key-derived");
+                d.tag(format!("service:{}", probe.service));
+                d.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Service domain for identified {} API key", probe.service),
+                ));
+                result.push(d);
+            }
 
             identified.push((probe.service, probe.category, info));
         }

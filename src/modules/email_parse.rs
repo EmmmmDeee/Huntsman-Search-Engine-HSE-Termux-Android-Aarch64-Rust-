@@ -120,7 +120,7 @@ impl Module for EmailParse {
 
                 for candidate in candidates {
                     let mut entity =
-                        Entity::new(EntityKind::Username, &candidate, 0.45, &ctx.scan_id);
+                        Entity::new(EntityKind::Username, &candidate, 0.55, &ctx.scan_id);
                     entity.tag("derived");
                     entity.add_evidence(
                         Evidence::new(SRC, format!("Derived from {}", target.value))

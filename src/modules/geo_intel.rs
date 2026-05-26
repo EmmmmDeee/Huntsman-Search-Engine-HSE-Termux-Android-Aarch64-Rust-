@@ -486,7 +486,7 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
         {
             let coords = format!("{lat:.4},{lon:.4}");
             if seen.insert(format!("@tz-geo:{coords}")) {
-                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.30, &ctx.scan_id);
+                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.52, &ctx.scan_id);
                 e.tag("geoint");
                 e.tag("timezone-inferred");
                 e.tag("coarse");
@@ -518,7 +518,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     if let Some((country, cc, lat, lon)) = phone_prefix_to_country(phone) {
         let coords = format!("{lat:.4},{lon:.4}");
         if seen.insert(format!("@phone-geo:{coords}")) {
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.30, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.52, &ctx.scan_id);
             e.tag("geoint");
             e.tag("phone-prefix");
             e.tag("coarse");
