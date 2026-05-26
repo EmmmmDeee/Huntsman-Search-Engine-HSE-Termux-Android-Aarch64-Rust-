@@ -2355,7 +2355,8 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
 
         // Extract addresses from snippet text (geolocation pivot)
         for addr in extract_addresses_from_text(&combined_text) {
-            if seen_domains.insert(format!("@addr:{}", addr.to_lowercase())) {
+            let addr_key = format!("@addr:{}", addr.to_lowercase());
+            if seen_domains.insert(addr_key.clone()) {
                 let mut e = Entity::new(EntityKind::Address, &addr, 0.40, scan_id);
                 e.tag("search-discovered");
                 e.tag(tags::WEB_SCRAPED);
@@ -2373,6 +2374,22 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                     .with_attr("engine", r.engine),
                 );
                 result.push(e);
+            } else {
+                // Address seen before — boost via merge (corroboration increases)
+                if let Some(existing) = result.entities.iter_mut().find(|e| {
+                    e.kind == EntityKind::Address && e.value.to_lowercase() == addr.to_lowercase()
+                }) {
+                    existing.confidence = (existing.confidence + 0.12).min(0.80);
+                    existing.corroboration = existing.corroboration.saturating_add(1);
+                    existing.add_evidence(
+                        Evidence::new(
+                            "search_engines",
+                            format!("[{}] Address corroborated — {}", r.engine, r.url),
+                        )
+                        .with_attr("url", &r.url)
+                        .with_attr("engine", r.engine),
+                    );
+                }
             }
         }
 
@@ -2483,6 +2500,40 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
 
     // Sort entities in a structured order suitable for both human
     // review and LLM consumption: parent entity first (it has the
+    // ── Inline geocoding: known AU/world city coordinates ────────────
+    // Produce Coordinates entities for addresses that match known cities.
+    // This avoids waiting for forward_geocode's Nominatim API call and
+    // enables the geo expansion chain immediately.
+    {
+        let mut seen_coords: HashSet<String> = HashSet::new();
+        let addr_snapshot: Vec<(String, f64)> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Address && e.confidence >= 0.45)
+            .map(|e| (e.value.clone(), e.confidence))
+            .collect();
+        for (addr, conf) in &addr_snapshot {
+            if let Some((lat, lon)) = known_city_coords(addr) {
+                let coords = format!("{lat:.4},{lon:.4}");
+                if seen_coords.insert(coords.clone()) {
+                    let geo_conf = (conf * 0.85).min(0.70);
+                    let mut ce = Entity::new(EntityKind::Coordinates, &coords, geo_conf, scan_id);
+                    ce.tag("geoint");
+                    ce.tag("search-geocoded");
+                    ce.add_evidence(
+                        Evidence::new(
+                            "search_engines",
+                            format!("Geocoded from search address: {addr}"),
+                        )
+                        .with_attr("source_address", addr)
+                        .with_attr("method", "known-city-lookup"),
+                    );
+                    result.push(ce);
+                }
+            }
+        }
+    }
+
     // highest confidence), then by kind priority (identity entities
     // first, infrastructure last), then by descending confidence,
     // then alphabetically by value within each tier.
@@ -2512,6 +2563,61 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
     });
 
     result
+}
+
+fn known_city_coords(addr: &str) -> Option<(f64, f64)> {
+    let lower = addr.to_lowercase();
+    const CITIES: &[(&str, f64, f64)] = &[
+        // Australian capitals + major cities
+        ("brisbane", -27.4698, 153.0251),
+        ("sydney", -33.8688, 151.2093),
+        ("melbourne", -37.8136, 144.9631),
+        ("perth", -31.9505, 115.8605),
+        ("adelaide", -34.9285, 138.6007),
+        ("canberra", -35.2809, 149.1300),
+        ("hobart", -42.8821, 147.3272),
+        ("darwin", -12.4634, 130.8456),
+        ("gold coast", -28.0167, 153.4000),
+        ("sunshine coast", -26.6500, 153.0667),
+        ("cairns", -16.9186, 145.7781),
+        ("townsville", -19.2590, 146.8169),
+        ("toowoomba", -27.5598, 151.9507),
+        ("rockhampton", -23.3791, 150.5100),
+        // QLD suburbs
+        ("nundah", -27.4017, 153.0600),
+        ("redcliffe", -27.2289, 153.1050),
+        ("caboolture", -27.0847, 152.9511),
+        ("chermside", -27.3861, 153.0331),
+        ("aspley", -27.3650, 153.0167),
+        ("strathpine", -27.3050, 152.9900),
+        ("north lakes", -27.2281, 153.0019),
+        ("ipswich", -27.6167, 152.7667),
+        ("logan", -27.6389, 153.1092),
+        ("springfield", -27.6667, 152.9167),
+        ("surfers paradise", -28.0029, 153.4300),
+        ("nerang", -27.9897, 153.3372),
+        // US cities
+        ("new york", 40.7128, -74.0060),
+        ("los angeles", 33.9425, -118.2551),
+        ("chicago", 41.8781, -87.6298),
+        ("houston", 29.7604, -95.3698),
+        ("phoenix", 33.4484, -111.9490),
+        ("san francisco", 37.7749, -122.4194),
+        ("seattle", 47.6062, -122.3321),
+        ("denver", 39.7392, -104.9903),
+        ("colorado springs", 38.8339, -104.8214),
+        ("colo springs", 38.8339, -104.8214),
+        // UK cities
+        ("london", 51.5074, -0.1278),
+        ("manchester", 53.4808, -2.2426),
+        ("birmingham", 52.4862, -1.8904),
+    ];
+    for &(city, lat, lon) in CITIES {
+        if lower.contains(city) {
+            return Some((lat, lon));
+        }
+    }
+    None
 }
 
 fn extract_registrable(host: &str) -> String {
