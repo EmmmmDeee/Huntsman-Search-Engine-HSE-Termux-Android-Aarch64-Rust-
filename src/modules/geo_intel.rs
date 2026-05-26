@@ -166,116 +166,111 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
     let mut seen_coords = HashSet::new();
 
     // Source 1: ipapi.co (free, HTTPS, 1000/day)
-    if !ctx.cancel.is_cancelled() {
-        if let Ok(data) =
-            fetch_json::<IpApiCoResp>(&ctx.http, "geo_intel", &format!("https://ipapi.co/{}/json/", target.value)).await
-        {
-            if data.error != Some(true) {
-                if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
-                    if !(lat == 0.0 && lon == 0.0) {
-                        let coords = format!("{lat:.6},{lon:.6}");
-                        if seen_coords.insert(coords.clone()) {
-                            let mut e =
-                                Entity::new(EntityKind::Coordinates, &coords, 0.68, &ctx.scan_id);
-                            e.tag("geoint");
-                            if let Some(cc) = data.country_code.as_deref() {
-                                e.tag(format!("country:{}", cc.to_uppercase()));
-                            }
-
-                            let mut ev = Evidence::new(
-                                "geo_intel",
-                                format!("IP geo for {} via ipapi.co", target.value),
-                            )
-                            .with_attr("latitude", lat.to_string())
-                            .with_attr("longitude", lon.to_string())
-                            .with_attr("source", "ipapi.co");
-
-                            if let Some(c) = data.city.as_deref() {
-                                ev = ev.with_attr("city", c);
-                            }
-                            if let Some(r) = data.region.as_deref() {
-                                ev = ev.with_attr("region", r);
-                            }
-                            if let Some(c) = data.country_name.as_deref() {
-                                ev = ev.with_attr("country", c);
-                            }
-                            if let Some(p) = data.postal.as_deref() {
-                                ev = ev.with_attr("postal", p);
-                            }
-                            if let Some(tz) = data.timezone.as_deref() {
-                                ev = ev.with_attr("timezone", tz);
-                            }
-                            if let Some(org) = data.org.as_deref() {
-                                ev = ev.with_attr("org", org);
-                            }
-                            if let Some(asn) = data.asn.as_deref() {
-                                ev = ev.with_attr("asn", asn);
-                            }
-
-                            e.add_evidence(ev);
-                            result.push(e);
-                        }
-                    }
-                }
+    if !ctx.cancel.is_cancelled()
+        && let Ok(data) = fetch_json::<IpApiCoResp>(
+            &ctx.http,
+            "geo_intel",
+            &format!("https://ipapi.co/{}/json/", target.value),
+        )
+        .await
+        && data.error != Some(true)
+        && let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
+        && !(lat == 0.0 && lon == 0.0)
+    {
+        let coords = format!("{lat:.6},{lon:.6}");
+        if seen_coords.insert(coords.clone()) {
+            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.68, &ctx.scan_id);
+            e.tag("geoint");
+            if let Some(cc) = data.country_code.as_deref() {
+                e.tag(format!("country:{}", cc.to_uppercase()));
             }
+
+            let mut ev = Evidence::new(
+                "geo_intel",
+                format!("IP geo for {} via ipapi.co", target.value),
+            )
+            .with_attr("latitude", lat.to_string())
+            .with_attr("longitude", lon.to_string())
+            .with_attr("source", "ipapi.co");
+
+            if let Some(c) = data.city.as_deref() {
+                ev = ev.with_attr("city", c);
+            }
+            if let Some(r) = data.region.as_deref() {
+                ev = ev.with_attr("region", r);
+            }
+            if let Some(c) = data.country_name.as_deref() {
+                ev = ev.with_attr("country", c);
+            }
+            if let Some(p) = data.postal.as_deref() {
+                ev = ev.with_attr("postal", p);
+            }
+            if let Some(tz) = data.timezone.as_deref() {
+                ev = ev.with_attr("timezone", tz);
+            }
+            if let Some(org) = data.org.as_deref() {
+                ev = ev.with_attr("org", org);
+            }
+            if let Some(asn) = data.asn.as_deref() {
+                ev = ev.with_attr("asn", asn);
+            }
+
+            e.add_evidence(ev);
+            result.push(e);
         }
     }
 
     // Source 2: freeipapi.com (free, HTTPS, no limit documented)
-    if !ctx.cancel.is_cancelled() {
-        if let Ok(data) = fetch_json::<FreeIpApiResp>(
+    if !ctx.cancel.is_cancelled()
+        && let Ok(data) = fetch_json::<FreeIpApiResp>(
             &ctx.http,
             "geo_intel",
             &format!("https://freeipapi.com/api/json/{}", target.value),
         )
         .await
-        {
-            if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
-                if !(lat == 0.0 && lon == 0.0) {
-                    let coords = format!("{lat:.6},{lon:.6}");
-                    if seen_coords.insert(coords.clone()) {
-                        let mut e =
-                            Entity::new(EntityKind::Coordinates, &coords, 0.62, &ctx.scan_id);
-                        e.tag("geoint");
-                        if let Some(cc) = data.country_code.as_deref() {
-                            e.tag(format!("country:{}", cc.to_uppercase()));
-                        }
-                        if data.is_proxy == Some(true) {
-                            e.tag("proxy");
-                        }
-
-                        let mut ev = Evidence::new(
-                            "geo_intel",
-                            format!("IP geo for {} via freeipapi.com", target.value),
-                        )
-                        .with_attr("latitude", lat.to_string())
-                        .with_attr("longitude", lon.to_string())
-                        .with_attr("source", "freeipapi.com");
-
-                        if let Some(c) = data.city_name.as_deref() {
-                            ev = ev.with_attr("city", c);
-                        }
-                        if let Some(r) = data.region_name.as_deref() {
-                            ev = ev.with_attr("region", r);
-                        }
-                        if let Some(c) = data.country_name.as_deref() {
-                            ev = ev.with_attr("country", c);
-                        }
-                        if let Some(z) = data.zip_code.as_deref() {
-                            ev = ev.with_attr("postal", z);
-                        }
-                        if let Some(tz) = data.timezone.as_deref() {
-                            ev = ev.with_attr("timezone", tz);
-                        }
-                        if let Some(v) = data.is_proxy {
-                            ev = ev.with_attr("is_proxy", v.to_string());
-                        }
-
-                        e.add_evidence(ev);
-                        result.push(e);
-                    }
-                }
+        && let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
+        && !(lat == 0.0 && lon == 0.0)
+    {
+        let coords = format!("{lat:.6},{lon:.6}");
+        if seen_coords.insert(coords.clone()) {
+            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.62, &ctx.scan_id);
+            e.tag("geoint");
+            if let Some(cc) = data.country_code.as_deref() {
+                e.tag(format!("country:{}", cc.to_uppercase()));
             }
+            if data.is_proxy == Some(true) {
+                e.tag("proxy");
+            }
+
+            let mut ev = Evidence::new(
+                "geo_intel",
+                format!("IP geo for {} via freeipapi.com", target.value),
+            )
+            .with_attr("latitude", lat.to_string())
+            .with_attr("longitude", lon.to_string())
+            .with_attr("source", "freeipapi.com");
+
+            if let Some(c) = data.city_name.as_deref() {
+                ev = ev.with_attr("city", c);
+            }
+            if let Some(r) = data.region_name.as_deref() {
+                ev = ev.with_attr("region", r);
+            }
+            if let Some(c) = data.country_name.as_deref() {
+                ev = ev.with_attr("country", c);
+            }
+            if let Some(z) = data.zip_code.as_deref() {
+                ev = ev.with_attr("postal", z);
+            }
+            if let Some(tz) = data.timezone.as_deref() {
+                ev = ev.with_attr("timezone", tz);
+            }
+            if let Some(v) = data.is_proxy {
+                ev = ev.with_attr("is_proxy", v.to_string());
+            }
+
+            e.add_evidence(ev);
+            result.push(e);
         }
     }
 
@@ -339,10 +334,12 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
         }
 
         // Extract IPs for recursive geo lookup
-        if let Some(ip) = val_str(item, "ip") {
-            if ip.len() >= 7 && ip_seeds.len() < 10 && !ip_seeds.contains(&ip) {
-                ip_seeds.push(ip);
-            }
+        if let Some(ip) = val_str(item, "ip")
+            && ip.len() >= 7
+            && ip_seeds.len() < 10
+            && !ip_seeds.contains(&ip)
+        {
+            ip_seeds.push(ip);
         }
     }
 
@@ -354,8 +351,7 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
         let addr_str = &con.address_str;
         if addr_str.len() >= 4 && seen.insert(format!("@addr:{}", addr_str.to_lowercase())) {
             let confidence = 0.35 + (0.10 * (con.source_count as f64).min(4.0));
-            let mut e =
-                Entity::new(EntityKind::Address, addr_str, confidence, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Address, addr_str, confidence, &ctx.scan_id);
             e.tag("geoint");
             e.tag("breach-derived");
             e.tag("geo-consensus");
@@ -385,31 +381,30 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
             if ctx.cancel.is_cancelled() {
                 break;
             }
-            if seen.insert(format!("@ip-geo:{ip}")) {
-                if let Some((lat, lon, ev_attrs)) = quick_ip_geo(&ctx.http, ip).await {
-                    let coords = format!("{lat:.6},{lon:.6}");
-                    if seen.insert(format!("@coords:{coords}")) {
-                        let mut e =
-                            Entity::new(EntityKind::Coordinates, &coords, 0.55, &ctx.scan_id);
-                        e.tag("geoint");
-                        e.tag("breach-ip");
-                        e.tag("geolocation-lead");
+            if seen.insert(format!("@ip-geo:{ip}"))
+                && let Some((lat, lon, ev_attrs)) = quick_ip_geo(&ctx.http, ip).await
+            {
+                let coords = format!("{lat:.6},{lon:.6}");
+                if seen.insert(format!("@coords:{coords}")) {
+                    let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.55, &ctx.scan_id);
+                    e.tag("geoint");
+                    e.tag("breach-ip");
+                    e.tag("geolocation-lead");
 
-                        let mut ev = Evidence::new(
-                            "geo_intel",
-                            format!("Breach IP {ip} geo for {}", target.value),
-                        )
-                        .with_attr("ip", ip)
-                        .with_attr("latitude", lat.to_string())
-                        .with_attr("longitude", lon.to_string());
+                    let mut ev = Evidence::new(
+                        "geo_intel",
+                        format!("Breach IP {ip} geo for {}", target.value),
+                    )
+                    .with_attr("ip", ip)
+                    .with_attr("latitude", lat.to_string())
+                    .with_attr("longitude", lon.to_string());
 
-                        for (k, v) in &ev_attrs {
-                            ev = ev.with_attr(k, v);
-                        }
-
-                        e.add_evidence(ev);
-                        result.push(e);
+                    for (k, v) in &ev_attrs {
+                        ev = ev.with_attr(k, v);
                     }
+
+                    e.add_evidence(ev);
+                    result.push(e);
                 }
             }
         }
@@ -422,33 +417,38 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
                 break;
             }
             if let Ok(info) = oathnet::osint(key, paths::IP_INFO, "ip", ip).await {
-                extract_oathnet_ip_geo(&info, ip, &target.value, &ctx.scan_id, &mut seen, &mut result);
+                extract_oathnet_ip_geo(
+                    &info,
+                    ip,
+                    &target.value,
+                    &ctx.scan_id,
+                    &mut seen,
+                    &mut result,
+                );
             }
         }
     }
 
     // Phase 6: Stealer device IP extraction for recursive geo
-    if !ctx.cancel.is_cancelled() {
-        if let Ok(victim_items) =
+    if !ctx.cancel.is_cancelled()
+        && let Ok(victim_items) =
             oathnet::search(key, paths::VICTIMS, field, &target.value, 10).await
-        {
-            for item in &victim_items {
-                if let Some(ips) = item.get("device_ips").and_then(|v| v.as_array()) {
-                    for ip_val in ips.iter().take(3) {
-                        if let Some(ip) = ip_val.as_str()
-                            && ip.parse::<std::net::IpAddr>().is_ok()
-                            && seen.insert(format!("@victim-ip:{ip}"))
-                        {
-                            let mut e =
-                                Entity::new(EntityKind::IpAddress, ip, 0.50, &ctx.scan_id);
-                            e.tag("geolocation-lead");
-                            e.tag("victim-device");
-                            e.add_evidence(Evidence::new(
-                                "geo_intel",
-                                format!("Device IP from victim data for {}", target.value),
-                            ));
-                            result.push(e);
-                        }
+    {
+        for item in &victim_items {
+            if let Some(ips) = item.get("device_ips").and_then(|v| v.as_array()) {
+                for ip_val in ips.iter().take(3) {
+                    if let Some(ip) = ip_val.as_str()
+                        && ip.parse::<std::net::IpAddr>().is_ok()
+                        && seen.insert(format!("@victim-ip:{ip}"))
+                    {
+                        let mut e = Entity::new(EntityKind::IpAddress, ip, 0.50, &ctx.scan_id);
+                        e.tag("geolocation-lead");
+                        e.tag("victim-device");
+                        e.add_evidence(Evidence::new(
+                            "geo_intel",
+                            format!("Device IP from victim data for {}", target.value),
+                        ));
+                        result.push(e);
                     }
                 }
             }
@@ -461,28 +461,26 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
             .iter()
             .filter_map(|s| s.timezone.as_deref())
             .collect();
-        if !timezones.is_empty() {
-            if let Some(tz) = mode(&timezones) {
-                if let Some((lat, lon, region)) = timezone_to_coordinates(tz) {
-                    let coords = format!("{lat:.4},{lon:.4}");
-                    if seen.insert(format!("@tz-geo:{coords}")) {
-                        let mut e =
-                            Entity::new(EntityKind::Coordinates, &coords, 0.20, &ctx.scan_id);
-                        e.tag("geoint");
-                        e.tag("timezone-inferred");
-                        e.tag("coarse");
-                        e.add_evidence(
-                            Evidence::new(
-                                "geo_intel",
-                                format!("Timezone {tz} → {region} for {}", target.value),
-                            )
-                            .with_attr("timezone", tz)
-                            .with_attr("region", region)
-                            .with_attr("method", "timezone-centroid"),
-                        );
-                        result.push(e);
-                    }
-                }
+        if !timezones.is_empty()
+            && let Some(tz) = mode(&timezones)
+            && let Some((lat, lon, region)) = timezone_to_coordinates(tz)
+        {
+            let coords = format!("{lat:.4},{lon:.4}");
+            if seen.insert(format!("@tz-geo:{coords}")) {
+                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.20, &ctx.scan_id);
+                e.tag("geoint");
+                e.tag("timezone-inferred");
+                e.tag("coarse");
+                e.add_evidence(
+                    Evidence::new(
+                        "geo_intel",
+                        format!("Timezone {tz} → {region} for {}", target.value),
+                    )
+                    .with_attr("timezone", tz)
+                    .with_attr("region", region)
+                    .with_attr("method", "timezone-centroid"),
+                );
+                result.push(e);
             }
         }
     }
@@ -523,9 +521,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     let oathnet_key = ctx.key_opt(oathnet::KEY_ENV);
     if !ctx.cancel.is_cancelled() && oathnet_key.is_some() {
         let key = oathnet::resolve_key(oathnet_key);
-        if let Ok(items) =
-            oathnet::search(key, paths::BREACH, "phone", &target.value, 20).await
-        {
+        if let Ok(items) = oathnet::search(key, paths::BREACH, "phone", &target.value, 20).await {
             let mut location_seeds = Vec::new();
             let mut ip_seeds = Vec::new();
 
@@ -547,37 +543,36 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
                     });
                 }
 
-                if let Some(ip) = val_str(item, "ip") {
-                    if ip.len() >= 7 && ip_seeds.len() < 5 && !ip_seeds.contains(&ip) {
-                        ip_seeds.push(ip);
-                    }
+                if let Some(ip) = val_str(item, "ip")
+                    && ip.len() >= 7
+                    && ip_seeds.len() < 5
+                    && !ip_seeds.contains(&ip)
+                {
+                    ip_seeds.push(ip);
                 }
             }
 
-            if let Some(con) = compute_location_consensus(&location_seeds) {
-                if seen.insert(format!("@phone-addr:{}", con.address_str.to_lowercase())) {
-                    let confidence = 0.35 + (0.10 * (con.source_count as f64).min(4.0));
-                    let mut e = Entity::new(
-                        EntityKind::Address,
-                        &con.address_str,
-                        confidence,
-                        &ctx.scan_id,
-                    );
-                    e.tag("geoint");
-                    e.tag("breach-derived");
-                    e.add_evidence(
-                        Evidence::new(
-                            "geo_intel",
-                            format!(
-                                "Phone breach location from {} source(s)",
-                                con.source_count
-                            ),
-                        )
-                        .with_attr("city", con.city.as_deref().unwrap_or("-"))
-                        .with_attr("country", con.country.as_deref().unwrap_or("-")),
-                    );
-                    result.push(e);
-                }
+            if let Some(con) = compute_location_consensus(&location_seeds)
+                && seen.insert(format!("@phone-addr:{}", con.address_str.to_lowercase()))
+            {
+                let confidence = 0.35 + (0.10 * (con.source_count as f64).min(4.0));
+                let mut e = Entity::new(
+                    EntityKind::Address,
+                    &con.address_str,
+                    confidence,
+                    &ctx.scan_id,
+                );
+                e.tag("geoint");
+                e.tag("breach-derived");
+                e.add_evidence(
+                    Evidence::new(
+                        "geo_intel",
+                        format!("Phone breach location from {} source(s)", con.source_count),
+                    )
+                    .with_attr("city", con.city.as_deref().unwrap_or("-"))
+                    .with_attr("country", con.country.as_deref().unwrap_or("-")),
+                );
+                result.push(e);
             }
 
             // Geo-locate discovered IPs
@@ -585,29 +580,23 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
                 if ctx.cancel.is_cancelled() {
                     break;
                 }
-                if seen.insert(format!("@ip-geo:{ip}")) {
-                    if let Some((lat, lon, ev_attrs)) = quick_ip_geo(&ctx.http, ip).await {
-                        let coords = format!("{lat:.6},{lon:.6}");
-                        if seen.insert(format!("@coords:{coords}")) {
-                            let mut e = Entity::new(
-                                EntityKind::Coordinates,
-                                &coords,
-                                0.50,
-                                &ctx.scan_id,
-                            );
-                            e.tag("geoint");
-                            e.tag("breach-ip");
-                            let mut ev = Evidence::new(
-                                "geo_intel",
-                                format!("Phone breach IP {ip} → {coords}"),
-                            )
-                            .with_attr("ip", ip);
-                            for (k, v) in &ev_attrs {
-                                ev = ev.with_attr(k, v);
-                            }
-                            e.add_evidence(ev);
-                            result.push(e);
+                if seen.insert(format!("@ip-geo:{ip}"))
+                    && let Some((lat, lon, ev_attrs)) = quick_ip_geo(&ctx.http, ip).await
+                {
+                    let coords = format!("{lat:.6},{lon:.6}");
+                    if seen.insert(format!("@coords:{coords}")) {
+                        let mut e =
+                            Entity::new(EntityKind::Coordinates, &coords, 0.50, &ctx.scan_id);
+                        e.tag("geoint");
+                        e.tag("breach-ip");
+                        let mut ev =
+                            Evidence::new("geo_intel", format!("Phone breach IP {ip} → {coords}"))
+                                .with_attr("ip", ip);
+                        for (k, v) in &ev_attrs {
+                            ev = ev.with_attr(k, v);
                         }
+                        e.add_evidence(ev);
+                        result.push(e);
                     }
                 }
             }
@@ -789,7 +778,7 @@ fn mode<'a>(items: &[&'a str]) -> Option<&'a str> {
     }
     counts
         .into_iter()
-        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)))
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)))
         .map(|(val, _)| val)
 }
 
@@ -902,9 +891,7 @@ fn timezone_to_coordinates(tz: &str) -> Option<(f64, f64, &'static str)> {
         "america/new_york" | "us/eastern" | "est" | "edt" => {
             Some((40.7128, -74.0060, "US Eastern"))
         }
-        "america/chicago" | "us/central" | "cst" | "cdt" => {
-            Some((41.8781, -87.6298, "US Central"))
-        }
+        "america/chicago" | "us/central" | "cst" | "cdt" => Some((41.8781, -87.6298, "US Central")),
         "america/denver" | "us/mountain" | "mst" | "mdt" => {
             Some((39.7392, -104.9903, "US Mountain"))
         }
@@ -947,9 +934,7 @@ fn timezone_to_coordinates(tz: &str) -> Option<(f64, f64, &'static str)> {
         // Asia/Pacific
         "asia/tokyo" | "jst" => Some((35.6762, 139.6503, "Tokyo/Japan")),
         "asia/seoul" | "kst" => Some((37.5665, 126.9780, "Seoul/South Korea")),
-        "asia/shanghai" | "asia/hong_kong" | "hkt" => {
-            Some((31.2304, 121.4737, "Shanghai/China"))
-        }
+        "asia/shanghai" | "asia/hong_kong" | "hkt" => Some((31.2304, 121.4737, "Shanghai/China")),
         "asia/kolkata" | "asia/calcutta" | "ist" => Some((28.6139, 77.2090, "Delhi/India")),
         "asia/singapore" | "sgt" => Some((1.3521, 103.8198, "Singapore")),
         "asia/bangkok" | "ict" => Some((13.7563, 100.5018, "Bangkok/Thailand")),
@@ -966,14 +951,10 @@ fn timezone_to_coordinates(tz: &str) -> Option<(f64, f64, &'static str)> {
         "australia/melbourne" => Some((-37.8136, 144.9631, "Melbourne/Australia")),
         "australia/brisbane" => Some((-27.4698, 153.0251, "Brisbane/Australia")),
         "australia/perth" | "awst" => Some((-31.9505, 115.8605, "Perth/Australia")),
-        "pacific/auckland" | "nzst" | "nzdt" => {
-            Some((-36.8485, 174.7633, "Auckland/New Zealand"))
-        }
+        "pacific/auckland" | "nzst" | "nzdt" => Some((-36.8485, 174.7633, "Auckland/New Zealand")),
         // Africa
         "africa/cairo" | "eet" => Some((30.0444, 31.2357, "Cairo/Egypt")),
-        "africa/johannesburg" | "sast" => {
-            Some((-26.2041, 28.0473, "Johannesburg/South Africa"))
-        }
+        "africa/johannesburg" | "sast" => Some((-26.2041, 28.0473, "Johannesburg/South Africa")),
         "africa/nairobi" | "eat" => Some((-1.2921, 36.8219, "Nairobi/Kenya")),
         "africa/lagos" | "wat" => Some((6.5244, 3.3792, "Lagos/Nigeria")),
         "africa/casablanca" => Some((33.5731, -7.5898, "Casablanca/Morocco")),

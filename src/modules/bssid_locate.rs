@@ -134,91 +134,89 @@ impl Module for BssidLocate {
                 continue;
             }
 
-            if let Ok(Some(detail)) = query_wigle_detail(&ctx.http, user, token, &ap.bssid).await {
-                if let (Some(lat), Some(lon)) = (detail.trilat, detail.trilong) {
-                    if lat == 0.0 && lon == 0.0 {
-                        continue;
-                    }
+            if let Ok(Some(detail)) = query_wigle_detail(&ctx.http, user, token, &ap.bssid).await
+                && let (Some(lat), Some(lon)) = (detail.trilat, detail.trilong)
+            {
+                if lat == 0.0 && lon == 0.0 {
+                    continue;
+                }
 
-                    let coords = format!("{lat:.6},{lon:.6}");
-                    let ssid = detail
-                        .ssid
-                        .as_deref()
-                        .or(ap.ssid.as_deref())
-                        .unwrap_or("<hidden>");
+                let coords = format!("{lat:.6},{lon:.6}");
+                let ssid = detail
+                    .ssid
+                    .as_deref()
+                    .or(ap.ssid.as_deref())
+                    .unwrap_or("<hidden>");
 
-                    let mut e =
-                        Entity::new(EntityKind::Coordinates, &coords, 0.80, &ctx.scan_id);
-                    e.tag("geoint");
-                    e.tag("wifi-ap");
-                    e.tag("bssid-located");
+                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.80, &ctx.scan_id);
+                e.tag("geoint");
+                e.tag("wifi-ap");
+                e.tag("bssid-located");
 
-                    let mut ev = Evidence::new(
-                        "bssid_locate",
-                        format!("BSSID {} ({ssid}) → {coords}", ap.bssid),
-                    )
-                    .with_attr("bssid", &ap.bssid)
-                    .with_attr("ssid", ssid)
-                    .with_attr("latitude", lat.to_string())
-                    .with_attr("longitude", lon.to_string())
-                    .with_attr("source", "WiGLE");
+                let mut ev = Evidence::new(
+                    "bssid_locate",
+                    format!("BSSID {} ({ssid}) → {coords}", ap.bssid),
+                )
+                .with_attr("bssid", &ap.bssid)
+                .with_attr("ssid", ssid)
+                .with_attr("latitude", lat.to_string())
+                .with_attr("longitude", lon.to_string())
+                .with_attr("source", "WiGLE");
 
-                    if let Some(rssi) = ap.rssi {
-                        ev = ev.with_attr("rssi_dbm", rssi.to_string());
-                    }
-                    if let Some(c) = detail.city.as_deref() {
-                        ev = ev.with_attr("city", c);
-                    }
-                    if let Some(r) = detail.region.as_deref() {
-                        ev = ev.with_attr("region", r);
-                    }
-                    if let Some(c) = detail.country.as_deref() {
-                        ev = ev.with_attr("country", c);
-                    }
-                    if let Some(p) = detail.postalcode.as_deref() {
-                        ev = ev.with_attr("postcode", p);
-                    }
-                    if let Some(t) = detail.lastupdt.as_deref() {
-                        ev = ev.with_attr("last_updated", t);
-                    }
-                    if let Some(enc) = detail.encryption.as_deref() {
-                        ev = ev.with_attr("encryption", enc);
-                    }
+                if let Some(rssi) = ap.rssi {
+                    ev = ev.with_attr("rssi_dbm", rssi.to_string());
+                }
+                if let Some(c) = detail.city.as_deref() {
+                    ev = ev.with_attr("city", c);
+                }
+                if let Some(r) = detail.region.as_deref() {
+                    ev = ev.with_attr("region", r);
+                }
+                if let Some(c) = detail.country.as_deref() {
+                    ev = ev.with_attr("country", c);
+                }
+                if let Some(p) = detail.postalcode.as_deref() {
+                    ev = ev.with_attr("postcode", p);
+                }
+                if let Some(t) = detail.lastupdt.as_deref() {
+                    ev = ev.with_attr("last_updated", t);
+                }
+                if let Some(enc) = detail.encryption.as_deref() {
+                    ev = ev.with_attr("encryption", enc);
+                }
 
-                    e.add_evidence(ev);
-                    result.push(e);
+                e.add_evidence(ev);
+                result.push(e);
 
-                    // Also emit an Address entity if we have city + country
-                    let addr_parts: Vec<&str> = [
-                        detail.city.as_deref(),
-                        detail.region.as_deref(),
-                        detail.country.as_deref(),
-                    ]
-                    .iter()
-                    .filter_map(|p| *p)
-                    .filter(|p| !p.is_empty())
-                    .collect();
+                // Also emit an Address entity if we have city + country
+                let addr_parts: Vec<&str> = [
+                    detail.city.as_deref(),
+                    detail.region.as_deref(),
+                    detail.country.as_deref(),
+                ]
+                .iter()
+                .filter_map(|p| *p)
+                .filter(|p| !p.is_empty())
+                .collect();
 
-                    if addr_parts.len() >= 2 {
-                        let mut addr_str = addr_parts.join(", ");
-                        if let Some(p) = detail.postalcode.as_deref() {
-                            if !p.is_empty() {
-                                addr_str = format!("{addr_str} {p}");
-                            }
-                        }
-                        let mut addr =
-                            Entity::new(EntityKind::Address, &addr_str, 0.60, &ctx.scan_id);
-                        addr.tag("geoint");
-                        addr.tag("bssid-derived");
-                        addr.add_evidence(
-                            Evidence::new(
-                                "bssid_locate",
-                                format!("Address from BSSID {} location", ap.bssid),
-                            )
-                            .with_attr("bssid", &ap.bssid),
-                        );
-                        result.push(addr);
+                if addr_parts.len() >= 2 {
+                    let mut addr_str = addr_parts.join(", ");
+                    if let Some(p) = detail.postalcode.as_deref()
+                        && !p.is_empty()
+                    {
+                        addr_str = format!("{addr_str} {p}");
                     }
+                    let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.60, &ctx.scan_id);
+                    addr.tag("geoint");
+                    addr.tag("bssid-derived");
+                    addr.add_evidence(
+                        Evidence::new(
+                            "bssid_locate",
+                            format!("Address from BSSID {} location", ap.bssid),
+                        )
+                        .with_attr("bssid", &ap.bssid),
+                    );
+                    result.push(addr);
                 }
             }
         }
@@ -234,9 +232,7 @@ async fn query_wigle_detail(
     bssid: &str,
 ) -> Result<Option<DetailNetwork>> {
     let encoded = crate::util::http::urlencode(bssid);
-    let url = format!(
-        "https://api.wigle.net/api/v2/network/detail?netid={encoded}&type=wifi"
-    );
+    let url = format!("https://api.wigle.net/api/v2/network/detail?netid={encoded}&type=wifi");
 
     let resp = http
         .get(&url)

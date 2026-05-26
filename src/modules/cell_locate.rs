@@ -117,44 +117,38 @@ impl Module for CellLocate {
                 _ => "GSM",
             };
 
-            if let Some(key) = api_key {
-                if let Some((lat, lon, range)) =
+            if let Some(key) = api_key
+                && let Some((lat, lon, range)) =
                     query_opencellid(&ctx.http, key, &mcc, &mnc, lac, cid, radio).await
-                {
-                    let coords = format!("{lat:.6},{lon:.6}");
-                    let confidence = accuracy_to_confidence(range);
-                    let mut e =
-                        Entity::new(EntityKind::Coordinates, &coords, confidence, &ctx.scan_id);
-                    e.tag("geoint");
-                    e.tag("cell-tower");
-                    e.tag(format!("radio:{}", ctype.to_lowercase()));
-                    e.add_evidence(
-                        Evidence::new(
-                            "cell_locate",
-                            format!("Cell tower {radio} {tower_id} → {coords}"),
-                        )
-                        .with_attr("tower_id", &tower_id)
-                        .with_attr("radio", radio)
-                        .with_attr("mcc", mcc.as_ref())
-                        .with_attr("mnc", mnc.as_ref())
-                        .with_attr("range_m", range.to_string())
-                        .with_attr("source", "OpenCelliD")
-                        .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
-                        .with_attr(
-                            "registered",
-                            cell.registered.unwrap_or(false).to_string(),
-                        ),
-                    );
-                    result.push(e);
-                    continue;
-                }
+            {
+                let coords = format!("{lat:.6},{lon:.6}");
+                let confidence = accuracy_to_confidence(range);
+                let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, &ctx.scan_id);
+                e.tag("geoint");
+                e.tag("cell-tower");
+                e.tag(format!("radio:{}", ctype.to_lowercase()));
+                e.add_evidence(
+                    Evidence::new(
+                        "cell_locate",
+                        format!("Cell tower {radio} {tower_id} → {coords}"),
+                    )
+                    .with_attr("tower_id", &tower_id)
+                    .with_attr("radio", radio)
+                    .with_attr("mcc", mcc.as_ref())
+                    .with_attr("mnc", mnc.as_ref())
+                    .with_attr("range_m", range.to_string())
+                    .with_attr("source", "OpenCelliD")
+                    .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
+                    .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
+                );
+                result.push(e);
+                continue;
             }
 
             // Fallback: MCC → country centroid (coarse but free, offline)
             if let Some((lat, lon, country)) = mcc_to_centroid(&mcc) {
                 let coords = format!("{lat:.4},{lon:.4}");
-                let mut e =
-                    Entity::new(EntityKind::Coordinates, &coords, 0.25, &ctx.scan_id);
+                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.25, &ctx.scan_id);
                 e.tag("geoint");
                 e.tag("cell-tower");
                 e.tag("coarse");
@@ -241,9 +235,7 @@ fn mcc_to_centroid(mcc: &str) -> Option<(f64, f64, &'static str)> {
         "505" => Some((-25.2744, 133.7751, "AU")),
         "530" => Some((-41.2865, 174.7762, "NZ")),
         // North America
-        "310" | "311" | "312" | "313" | "314" | "315" | "316" => {
-            Some((39.8283, -98.5795, "US"))
-        }
+        "310" | "311" | "312" | "313" | "314" | "315" | "316" => Some((39.8283, -98.5795, "US")),
         "302" => Some((56.1304, -106.3468, "CA")),
         "334" => Some((23.6345, -102.5528, "MX")),
         // Europe
