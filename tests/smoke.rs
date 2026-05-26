@@ -289,6 +289,14 @@ async fn concurrent_dispatch_produces_same_entities_as_sequential() {
         ents_par.len(),
         "sequential and concurrent should produce same entity count"
     );
+    let mut uids_seq: Vec<&str> = ents_seq.iter().map(|e| e.uid.as_str()).collect();
+    let mut uids_par: Vec<&str> = ents_par.iter().map(|e| e.uid.as_str()).collect();
+    uids_seq.sort();
+    uids_par.sort();
+    assert_eq!(
+        uids_seq, uids_par,
+        "sequential and concurrent should produce identical entity UIDs"
+    );
 }
 
 #[tokio::test]

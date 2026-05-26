@@ -327,6 +327,7 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
         if !txts.is_empty() {
             let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
             for t in &txts {
+                let t = t.trim_matches('"');
                 let b = t.as_bytes();
                 if b.len() >= 6 && b[..6].eq_ignore_ascii_case(b"v=spf1") {
                     dom.tag("spf");
