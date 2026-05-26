@@ -54,6 +54,7 @@ pub struct SearchEngines;
 
 const MAX_RESULTS_PER_ENGINE: usize = 20;
 const INTER_ENGINE_MS: u64 = 400;
+const MAX_PAGES: usize = 3;
 
 struct SearchResult {
     url: String,
@@ -87,6 +88,11 @@ impl Module for SearchEngines {
                 | TargetKind::Phone
                 | TargetKind::IpAddress
                 | TargetKind::Organisation
+                | TargetKind::Address
+                | TargetKind::Asn
+                | TargetKind::AbnAcn
+                | TargetKind::Url
+                | TargetKind::Coordinates
         )
     }
 
@@ -126,7 +132,31 @@ impl Module for SearchEngines {
                 if let Some(mut results) =
                     fetch_and_parse(&url, engine, query, post_body.as_deref()).await
                 {
+                    let got_results = !results.is_empty();
                     all_results.append(&mut results);
+                    if got_results
+                        && qi == 0
+                        && let Some(paginate_fn) = engine.paginate
+                    {
+                        for page in 1..MAX_PAGES {
+                            if ctx.cancel.is_cancelled() {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS))
+                                .await;
+                            let page_url = paginate_fn(query, page);
+                            if let Some(mut pr) =
+                                fetch_and_parse(&page_url, engine, query, None).await
+                            {
+                                if pr.is_empty() {
+                                    break;
+                                }
+                                all_results.append(&mut pr);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
                 } else if qi == 0 {
                     dead_engines.insert(engine.name);
                 }
@@ -179,6 +209,10 @@ impl Module for SearchEngines {
             }
         }
 
+        // Deduplicate results by canonical URL before entity extraction.
+        // Multiple engines returning the same page shouldn't inflate counts.
+        let all_results = dedup_results(all_results);
+
         let mut module_result = build_entities(target, &ctx.scan_id, &all_results);
 
         // ── API enrichment pass: batch-query OathNet for high-confidence
@@ -199,9 +233,8 @@ struct EngineSpec {
     name: &'static str,
     build_url: fn(&str) -> String,
     build_post: Option<fn(&str) -> String>,
-    /// Preferred User-Agent class for this engine.
+    paginate: Option<fn(&str, usize) -> String>,
     ua: &'static str,
-    /// Fallback User-Agent to retry when the primary UA gets blocked.
     ua_alt: &'static str,
 }
 
@@ -227,6 +260,13 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        paginate: Some(|q, page| {
+            format!(
+                "https://search.yahoo.com/search?p={}&n=20&b={}",
+                crate::util::http::urlencode(q),
+                1 + page * 20
+            )
+        }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
     },
@@ -239,6 +279,13 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        paginate: Some(|q, page| {
+            format!(
+                "https://www.bing.com/search?q={}&count=30&first={}",
+                crate::util::http::urlencode(q),
+                1 + page * 30
+            )
+        }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
     },
@@ -251,6 +298,13 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        paginate: Some(|q, page| {
+            format!(
+                "https://search.aol.com/aol/search?q={}&b={}",
+                crate::util::http::urlencode(q),
+                1 + page * 10
+            )
+        }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
     },
@@ -258,6 +312,7 @@ const ENGINES: &[EngineSpec] = &[
         name: "duckduckgo",
         build_url: |_q| "https://html.duckduckgo.com/html/".to_string(),
         build_post: Some(|q| format!("q={}&b=&kl=us-en&df=", crate::util::http::urlencode(q))),
+        paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
     },
@@ -270,6 +325,13 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        paginate: Some(|q, page| {
+            format!(
+                "https://www.google.com/search?q={}&num=20&start={}",
+                crate::util::http::urlencode(q),
+                page * 20
+            )
+        }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
     },
@@ -282,6 +344,13 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        paginate: Some(|q, page| {
+            format!(
+                "https://search.brave.com/search?q={}&offset={}",
+                crate::util::http::urlencode(q),
+                page + 1
+            )
+        }),
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_SAFARI,
     },
@@ -294,6 +363,13 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        paginate: Some(|q, page| {
+            format!(
+                "https://www.mojeek.com/search?q={}&s={}",
+                crate::util::http::urlencode(q),
+                page * 10
+            )
+        }),
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_MOBILE,
     },
@@ -307,6 +383,7 @@ const ENGINES: &[EngineSpec] = &[
                 crate::util::http::urlencode(q)
             )
         }),
+        paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
     },
@@ -319,6 +396,7 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_MOBILE,
     },
@@ -331,6 +409,7 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_SAFARI,
     },
@@ -343,6 +422,7 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
     },
@@ -355,6 +435,7 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_SAFARI,
     },
@@ -367,6 +448,7 @@ const ENGINES: &[EngineSpec] = &[
             )
         },
         build_post: None,
+        paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_FIREFOX,
     },
@@ -740,6 +822,65 @@ fn build_queries(target: &Target) -> Vec<String> {
                 q.push(format!("\"{v}\" \"Pty Ltd\" OR \"Limited\" OR \"Inc\""));
             }
             q
+        }
+        TargetKind::Address => {
+            let mut q = vec![format!("\"{v}\"")];
+            q.push(format!("\"{v}\" resident OR owner OR tenant OR occupant"));
+            q.push(format!(
+                "\"{v}\" site:realestate.com.au OR site:domain.com.au \
+                 OR site:zillow.com OR site:trulia.com"
+            ));
+            q.push(format!("\"{v}\" ABN OR business OR company OR shop"));
+            q
+        }
+        TargetKind::Asn => {
+            let asn = if v.starts_with("AS") || v.starts_with("as") {
+                v.to_uppercase()
+            } else {
+                format!("AS{v}")
+            };
+            vec![
+                format!("\"{asn}\""),
+                format!("\"{asn}\" site:bgp.he.net OR site:bgpview.io OR site:peeringdb.com"),
+                format!("\"{asn}\" abuse OR peering OR prefix OR allocation"),
+            ]
+        }
+        TargetKind::AbnAcn => {
+            let digits: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+            vec![
+                format!("\"{v}\""),
+                format!(
+                    "\"{digits}\" site:abr.business.gov.au OR site:asic.gov.au \
+                     OR site:opencorporates.com"
+                ),
+                format!("\"{digits}\" ABN OR ACN OR \"business number\" OR director"),
+            ]
+        }
+        TargetKind::Url => {
+            let host = v
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .split('/')
+                .next()
+                .unwrap_or(v);
+            vec![
+                format!("\"{v}\""),
+                format!("site:{host}"),
+                format!("\"{host}\" email OR contact OR about"),
+            ]
+        }
+        TargetKind::Coordinates => {
+            if let Some((lat, lon)) = v.split_once(',') {
+                let lat = lat.trim();
+                let lon = lon.trim();
+                vec![
+                    format!("\"{lat}\" \"{lon}\""),
+                    format!("\"{lat},{lon}\" address OR location OR property"),
+                    format!("\"{lat}\" \"{lon}\" site:google.com/maps OR site:openstreetmap.org"),
+                ]
+            } else {
+                Vec::new()
+            }
         }
         _ => Vec::new(),
     }
@@ -1696,6 +1837,15 @@ fn score_username(
     (score, confidence)
 }
 
+fn dedup_results(mut results: Vec<SearchResult>) -> Vec<SearchResult> {
+    let mut seen = HashSet::new();
+    results.retain(|r| {
+        let key = canonicalize_url(&r.url);
+        seen.insert(key)
+    });
+    results
+}
+
 fn canonicalize_url(url: &str) -> String {
     let base = url.split('?').next().unwrap_or(url);
     let base = base.split('#').next().unwrap_or(base);
@@ -2625,7 +2775,49 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::Phone, "x")));
         assert!(m.accepts(&Target::new(TargetKind::IpAddress, "x")));
         assert!(m.accepts(&Target::new(TargetKind::Organisation, "x")));
-        assert!(!m.accepts(&Target::new(TargetKind::Asn, "x")));
+        assert!(m.accepts(&Target::new(TargetKind::Asn, "x")));
+        assert!(m.accepts(&Target::new(TargetKind::Address, "x")));
+        assert!(m.accepts(&Target::new(TargetKind::AbnAcn, "x")));
+        assert!(m.accepts(&Target::new(TargetKind::Url, "http://x.com")));
+        assert!(m.accepts(&Target::new(TargetKind::Coordinates, "0,0")));
+    }
+
+    #[test]
+    fn build_queries_address_produces_dorks() {
+        let t = Target::new(TargetKind::Address, "123 Main St, Springfield");
+        let q = build_queries(&t);
+        assert!(q.len() >= 2);
+        assert!(q[0].contains("\"123 Main St, Springfield\""));
+    }
+
+    #[test]
+    fn build_queries_asn_normalises_prefix() {
+        let t = Target::new(TargetKind::Asn, "13335");
+        let q = build_queries(&t);
+        assert!(q.iter().any(|qr| qr.contains("AS13335")));
+    }
+
+    #[test]
+    fn build_queries_abn_extracts_digits() {
+        let t = Target::new(TargetKind::AbnAcn, "51 824 753 556");
+        let q = build_queries(&t);
+        assert!(q.iter().any(|qr| qr.contains("51824753556")));
+    }
+
+    #[test]
+    fn build_queries_url_extracts_host() {
+        let t = Target::new(TargetKind::Url, "https://example.com/page");
+        let q = build_queries(&t);
+        assert!(q.iter().any(|qr| qr.contains("site:example.com")));
+    }
+
+    #[test]
+    fn build_queries_coordinates_splits_lat_lon() {
+        let t = Target::new(TargetKind::Coordinates, "-33.86,151.20");
+        let q = build_queries(&t);
+        assert!(q.len() >= 2);
+        assert!(q[0].contains("-33.86"));
+        assert!(q[0].contains("151.20"));
     }
 
     #[test]
