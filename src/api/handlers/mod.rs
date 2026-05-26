@@ -4,15 +4,13 @@
 //! `(StatusCode, Json)`, and `Sse<...>` freely. Error paths emit a
 //! `{"error": "..."}` JSON body with the appropriate status.
 
-mod live;
 mod scan;
-mod settings;
 
-use std::{convert::Infallible, sync::Arc};
+use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc};
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::StatusCode,
     response::{
         IntoResponse,
@@ -20,7 +18,7 @@ use axum::{
     },
 };
 use futures::Stream;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio_stream::{StreamExt as _, wrappers::BroadcastStream};
 
@@ -28,15 +26,11 @@ use super::AppState;
 use crate::core::{module::ModuleContext, scan::Target};
 use crate::util::keys;
 
-// ─── Re-exports (stable public surface for routes.rs) ──────────────────────
-
-pub use live::{live_create, live_events_sse, live_get, live_list, live_stop};
 pub use scan::{
     scan_cancel, scan_correlations, scan_create, scan_delete, scan_entities, scan_entities_csv,
     scan_entities_facets, scan_entities_filter, scan_events_history, scan_get, scan_list,
     scan_report_json, scan_rerun,
 };
-pub use settings::{settings_keys_get, settings_keys_put};
 
 // ─── Shared response helpers ───────────────────────────────────────────────
 
@@ -235,6 +229,171 @@ pub async fn scan_events_sse(
 
     let stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
         Ok(event) if event.scan_id == target_sid => {
+            let payload = serde_json::to_string(&event.kind).unwrap_or_default();
+            Some(Ok(SseEvent::default().data(payload)))
+        }
+        _ => None,
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// ─── Settings handlers ─────────────────────────────────────────────────────
+
+pub async fn settings_keys_get(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    use std::path::PathBuf;
+    let path = keys::env_path();
+    let loaded = keys::load_from_file_only(&PathBuf::from(&path));
+    let mut all_names: std::collections::BTreeSet<String> =
+        keys::KNOWN_KEYS.iter().map(|s| (*s).to_string()).collect();
+    for k in loaded.keys() {
+        all_names.insert(k.clone());
+    }
+    let entries: Vec<Value> = all_names
+        .into_iter()
+        .map(|name| {
+            let set = loaded.contains_key(&name);
+            json!({ "name": name, "set": set })
+        })
+        .collect();
+    let count = entries.len();
+    Json(json!({
+        "keys": entries,
+        "count": count,
+        "write_enabled": s.allow_key_write,
+        "env_path": path,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct KeysPutRequest {
+    #[serde(default)]
+    pub updates: BTreeMap<String, String>,
+    #[serde(default)]
+    pub deletes: Vec<String>,
+}
+
+pub async fn settings_keys_put(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<KeysPutRequest>,
+) -> impl IntoResponse {
+    if !s.allow_key_write {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
+            })),
+        )
+            .into_response();
+    }
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key writes are loopback-only" })),
+        )
+            .into_response();
+    }
+    if req.updates.is_empty() && req.deletes.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "no updates or deletes"})),
+        )
+            .into_response();
+    }
+    match keys::write_keys(&req.updates, &req.deletes) {
+        Ok(()) => {
+            tracing::info!(
+                updates = req.updates.len(),
+                deletes = req.deletes.len(),
+                "settings/keys written"
+            );
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "ok",
+                    "updated": req.updates.len(),
+                    "deleted": req.deletes.len(),
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+// ─── Live-mode handlers ────────────────────────────────────────────────────
+
+pub async fn live_create(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<crate::core::live::LiveRequest>,
+) -> impl IntoResponse {
+    let target = Target::new(req.kind, req.value);
+    if let Err(msg) = target.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("invalid target: {msg}") })),
+        )
+            .into_response();
+    }
+    let live_id = s.live.start(target, req.options, req.live);
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "live_id": live_id, "status": "running" })),
+    )
+        .into_response()
+}
+
+pub async fn live_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    ok_list("sessions", s.live.list())
+}
+
+pub async fn live_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
+    match s.live.get(&id) {
+        Some(session) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(&session).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to serialize live session");
+                json!({})
+            })),
+        )
+            .into_response(),
+        None => not_found(),
+    }
+}
+
+pub async fn live_stop(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if s.live.stop(&id) {
+        (
+            StatusCode::OK,
+            Json(json!({ "live_id": id, "status": "stopping" })),
+        )
+            .into_response()
+    } else {
+        not_found()
+    }
+}
+
+pub async fn live_events_sse(
+    State(s): State<Arc<AppState>>,
+    Path(target_lid): Path<String>,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    let rx = s.bus.subscribe();
+    let live = s.live.clone();
+
+    let stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
+        Ok(event)
+            if event.scan_id == target_lid
+                || live.session_owns_scan(&target_lid, &event.scan_id) =>
+        {
             let payload = serde_json::to_string(&event.kind).unwrap_or_default();
             Some(Ok(SseEvent::default().data(payload)))
         }

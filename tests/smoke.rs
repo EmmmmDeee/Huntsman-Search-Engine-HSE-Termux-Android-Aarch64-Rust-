@@ -873,14 +873,7 @@ fn wigle_priority_below_free_geo_modules() {
     let wigle = modules.iter().find(|m| m.name() == "wigle").unwrap();
     let ip_geo = modules.iter().find(|m| m.name() == "ip_geo").unwrap();
     let ip_whois = modules.iter().find(|m| m.name() == "ip_whois_geo").unwrap();
-    let rev_geo = modules
-        .iter()
-        .find(|m| m.name() == "reverse_geocode")
-        .unwrap();
-    let fwd_geo = modules
-        .iter()
-        .find(|m| m.name() == "forward_geocode")
-        .unwrap();
+    let geocode = modules.iter().find(|m| m.name() == "geocode").unwrap();
 
     assert!(
         wigle.priority() < ip_geo.priority(),
@@ -895,16 +888,10 @@ fn wigle_priority_below_free_geo_modules() {
         ip_whois.priority()
     );
     assert!(
-        wigle.priority() < rev_geo.priority(),
-        "wigle ({}) must run AFTER reverse_geocode ({})",
+        wigle.priority() < geocode.priority(),
+        "wigle ({}) must run AFTER geocode ({})",
         wigle.priority(),
-        rev_geo.priority()
-    );
-    assert!(
-        wigle.priority() < fwd_geo.priority(),
-        "wigle ({}) must run AFTER forward_geocode ({})",
-        wigle.priority(),
-        fwd_geo.priority()
+        geocode.priority()
     );
 }
 
