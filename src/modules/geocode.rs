@@ -138,7 +138,7 @@ impl Geocode {
             && let (Ok(lat), Ok(lon)) = (lat_str.parse::<f64>(), lon_str.parse::<f64>())
         {
             let coords = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.60, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.65, &ctx.scan_id);
             e.tag("geocoded");
             let mut ev = Evidence::new(SRC, format!("Geocoded \"{addr}\" \u{2192} {coords}"))
                 .with_attr("input_address", addr)
@@ -187,7 +187,7 @@ impl Geocode {
 
         let display = data.display_name.as_deref().unwrap_or("-");
 
-        let mut entity = Entity::new(EntityKind::Address, display, 0.72, &ctx.scan_id);
+        let mut entity = Entity::new(EntityKind::Address, display, 0.65, &ctx.scan_id);
         entity.tag("geoint");
         entity.tag("reverse-geocoded");
 

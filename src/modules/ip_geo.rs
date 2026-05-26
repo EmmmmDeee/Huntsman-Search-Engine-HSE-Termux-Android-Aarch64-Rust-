@@ -82,7 +82,16 @@ impl Module for IpGeo {
 
         if let (Some(lat), Some(lon)) = (data.lat, data.lon) {
             let coords = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.70, &ctx.scan_id);
+            // Confidence scaled by IP type: hosting/proxy locations are
+            // datacenter-level (low geo value), mobile IPs are cell-tower-level.
+            let base_conf = if data.hosting == Some(true) || data.proxy == Some(true) {
+                0.45
+            } else if data.mobile == Some(true) {
+                0.60
+            } else {
+                0.70
+            };
+            let mut e = Entity::new(EntityKind::Coordinates, &coords, base_conf, &ctx.scan_id);
             e.tag("geoint");
             if let Some(cc) = data.country_code.as_deref() {
                 e.tag(format!("country:{}", cc.to_uppercase()));
