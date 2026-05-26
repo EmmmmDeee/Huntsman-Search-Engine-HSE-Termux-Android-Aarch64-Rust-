@@ -348,9 +348,9 @@ impl From<&Entity> for EntityRef {
 ///
 /// Format: `hex(SHA-256("<kind_str>:<normalised_value>"))`
 pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
+    use std::io::Write;
     let mut h = Sha256::new();
-    h.update(kind.to_string().as_bytes());
-    h.update(b":");
+    let _ = write!(h, "{kind}:");
     h.update(normalised_value.as_bytes());
     hex::encode(h.finalize())
 }
