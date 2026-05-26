@@ -287,6 +287,58 @@ impl Store {
         Ok(())
     }
 
+    pub fn upsert_entities_batch(&self, entities: impl Iterator<Item = Entity>) -> Result<usize> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        let mut count = 0usize;
+
+        for entity in entities {
+            let mut merged = entity.clone();
+            {
+                let mut stmt =
+                    tx.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
+                let mut rows = stmt.query(params![entity.uid])?;
+                if let Some(row) = rows.next()? {
+                    let existing_json: String = row.get(0)?;
+                    if let Ok(existing) = serde_json::from_str::<Entity>(&existing_json) {
+                        merged = existing;
+                        merged.merge(entity);
+                    }
+                }
+            }
+            let json = serde_json::to_string(&merged)?;
+            tx.execute(
+                "INSERT INTO entities(uid, scan_id, kind, value, confidence, corroboration, observed_at, data_json)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(uid) DO UPDATE SET
+                   scan_id       = excluded.scan_id,
+                   confidence    = excluded.confidence,
+                   corroboration = excluded.corroboration,
+                   observed_at   = excluded.observed_at,
+                   data_json     = excluded.data_json",
+                params![
+                    merged.uid,
+                    merged.scan_id,
+                    merged.kind.to_string(),
+                    merged.value,
+                    merged.confidence,
+                    merged.corroboration as i64,
+                    merged.observed_at as i64,
+                    json,
+                ],
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
+                 VALUES(?1, ?2, ?3)",
+                params![merged.uid, merged.scan_id, merged.observed_at as i64],
+            )?;
+            count += 1;
+        }
+
+        tx.commit()?;
+        Ok(count)
+    }
+
     pub fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
