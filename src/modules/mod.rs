@@ -10,7 +10,9 @@ pub mod alienvault_otx;
 pub mod api_key_probe;
 pub mod arp_scan;
 pub mod bgpview;
+pub mod bssid_locate;
 pub mod caa_records;
+pub mod cell_locate;
 pub mod cell_survey;
 pub mod criminal_ip;
 pub mod crtsh;
@@ -21,6 +23,7 @@ pub mod dns_resolver;
 pub mod email_to_domain;
 pub mod email_to_username;
 pub mod forward_geocode;
+pub mod geo_intel;
 pub mod github_user;
 pub mod gps_fix;
 pub mod gravatar;
@@ -98,6 +101,10 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // Second-source HTTPS IP geolocation (ipwho.is). Two independent
         // geo sources on the same IP let AU-014 geo-cluster fire.
         Arc::new(ip_whois_geo::IpWhois),
+        // Multi-source geolocation fusion: additional free IP geo APIs
+        // (ipapi.co, freeipapi.com) + OathNet Pro batch geo enrichment
+        // for identity targets + phone prefix/timezone inference.
+        Arc::new(geo_intel::GeoIntel),
         // Reverse geocoding via OpenStreetMap Nominatim — converts
         // Coordinates entities from ip_geo/gps_fix into Address entities
         // with country, state, city, street. Free, no API key.
@@ -153,6 +160,14 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(gps_fix::GpsFix),
         Arc::new(wifi_scan::WifiScan),
         Arc::new(cell_survey::CellSurvey),
+        // Cell tower geolocation — queries OpenCelliD to convert
+        // MCC/MNC/LAC/CID from termux-telephony-cellinfo into GPS
+        // coordinates. Falls back to MCC → country centroid offline.
+        Arc::new(cell_locate::CellLocate),
+        // WiFi BSSID geolocation — queries WiGLE network/detail to
+        // convert nearby AP BSSIDs from termux-wifi-scaninfo into GPS
+        // coordinates. Enables geo without prior coordinate fix.
+        Arc::new(bssid_locate::BssidLocate),
         Arc::new(arp_scan::ArpScan),
         Arc::new(net_interfaces::NetInterfaces),
         // Australian Business Register lookup — ABN/ACN/name search.
