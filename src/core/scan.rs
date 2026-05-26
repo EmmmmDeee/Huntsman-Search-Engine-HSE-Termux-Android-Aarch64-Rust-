@@ -392,6 +392,77 @@ fn default_min_expand_confidence() -> f64 {
     0.50
 }
 
+/// Compute the statistically optimal expansion depth for a given seed type
+/// and API tier. Based on expected-value analysis of marginal yield per round.
+///
+/// Returns (depth, min_expand_confidence) tuple.
+pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
+    let depth = match kind {
+        // High-yield identity seeds: OathNet Pro produces 300+ entities at round 0.
+        // Round 1 expands IPs/domains/usernames. Round 2 expands geo/social.
+        // Round 3 catches web_crawler output. Round 4+ has diminishing returns.
+        TargetKind::Email | TargetKind::Username | TargetKind::FullName => {
+            if has_paid_keys {
+                3
+            } else {
+                2
+            }
+        }
+
+        // Domain seeds: search_engines produces 100+ entities at round 0.
+        // Round 1 expands IPs. Round 2 expands geo. Round 3 with paid keys
+        // catches OathNet enrichment on discovered emails.
+        TargetKind::Domain => {
+            if has_paid_keys {
+                3
+            } else {
+                2
+            }
+        }
+
+        // IP seeds: 4 geo sources at round 0. Round 1 expands reverse DNS
+        // domains. Round 2 catches email/org expansion.
+        TargetKind::IpAddress | TargetKind::Url | TargetKind::ApiKey => 2,
+
+        // ASN: ip_registry at round 0 produces IPs. Round 1 expands geo.
+        TargetKind::Asn => {
+            if has_paid_keys {
+                2
+            } else {
+                1
+            }
+        }
+
+        // Phone: geo_intel at round 0 produces coarse coords + breach data.
+        // Round 1 geocodes. With paid keys, round 2 catches OathNet enrichment.
+        TargetKind::Phone => {
+            if has_paid_keys {
+                2
+            } else {
+                1
+            }
+        }
+
+        // Already geo — just refine
+        TargetKind::Coordinates | TargetKind::Address => 1,
+
+        // Low-yield seeds
+        TargetKind::Organisation | TargetKind::AbnAcn => {
+            if has_paid_keys {
+                2
+            } else {
+                1
+            }
+        }
+    };
+
+    // Lower confidence threshold for paid APIs since OathNet breach data
+    // produces many entities at 0.50-0.65 that are valuable for expansion.
+    let min_conf = if has_paid_keys { 0.45 } else { 0.50 };
+
+    (depth, min_conf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

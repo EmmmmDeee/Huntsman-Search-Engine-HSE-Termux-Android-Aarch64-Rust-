@@ -83,6 +83,11 @@ pub enum Command {
         /// explicit --depth / --min-expand-confidence / --max-concurrent.
         #[arg(short = 'R', long)]
         recursive: bool,
+        /// Automatically select optimal expansion depth based on seed type
+        /// and available API keys. Uses expected-value analysis to determine
+        /// the depth where marginal yield justifies the cost.
+        #[arg(short = 'A', long)]
+        auto: bool,
         /// Only expand entities whose C_eff is at least this. Default 0.50
         /// (Probable tier and above). Set 0.75 for strict Verified-only expansion.
         #[arg(long, default_value_t = 0.50)]
@@ -269,6 +274,7 @@ pub async fn run() -> Result<()> {
             timeout,
             depth,
             recursive,
+            auto,
             min_expand_confidence,
             max_entities,
             max_wall_time,
@@ -287,6 +293,7 @@ pub async fn run() -> Result<()> {
                 module_timeout_ms: timeout,
                 depth,
                 recursive,
+                auto,
                 min_expand_confidence,
                 max_entities,
                 max_wall_time_secs: max_wall_time,
@@ -907,6 +914,7 @@ struct ScanCmd {
     pub module_timeout_ms: Option<u64>,
     pub depth: u32,
     pub recursive: bool,
+    pub auto: bool,
     pub min_expand_confidence: f64,
     pub max_entities: Option<usize>,
     pub max_wall_time_secs: Option<u64>,
@@ -918,7 +926,15 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let target_kind = parse_target_kind(&cmd.kind)?;
     let target = Target::new(target_kind, cmd.value.clone());
 
-    let (depth, min_expand_confidence, max_concurrent) = if cmd.recursive && cmd.depth == 0 {
+    let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth == 0 {
+        let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
+        let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
+        eprintln!(
+            "auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={})",
+            has_paid
+        );
+        (auto_depth, auto_conf, cmd.max_concurrent.max(4))
+    } else if cmd.recursive && cmd.depth == 0 {
         (
             5,
             cmd.min_expand_confidence.min(0.50),
