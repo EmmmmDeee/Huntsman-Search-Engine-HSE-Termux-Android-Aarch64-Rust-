@@ -44,7 +44,7 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (`/users/{login}/keys`) and public event activity analysis
   (`/users/{login}/events/public`) with peak working hour extraction.
 
-- **3 new correlator rules** (AU-023 through AU-025):
+- **5 new correlator rules** (AU-023 through AU-027):
   - AU-023: Cross-platform identity convergence (Person confirmed by ≥2
     independent identity sources: keybase, github_user, proxycurl, etc.)
   - AU-024: Multi-signal email fraud indicator (converging risk signals:

@@ -119,7 +119,8 @@ out body;"#
         );
         result.push(coords_entity);
 
-        let mut categories: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+        let mut categories: std::collections::BTreeMap<&str, u32> =
+            std::collections::BTreeMap::new();
         for elem in body.elements.iter().take(20) {
             let tags = match &elem.tags {
                 Some(t) => t,

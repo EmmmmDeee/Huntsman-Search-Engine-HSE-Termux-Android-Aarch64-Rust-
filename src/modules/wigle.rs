@@ -69,6 +69,19 @@ struct Network {
 
 const SRC: &str = "wigle";
 
+/// Per-scan budget counters. Moved to module level so `reset_budget()` can
+/// clear them at scan start (in `hse serve` / `hse live`, the process is
+/// long-lived and these would otherwise accumulate across scans).
+static GEO_QUERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static BSSID_QUERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Reset the per-scan WiGLE budget counters. Called from `engine.rs` at
+/// scan start so each scan gets a fresh budget.
+pub fn reset_budget() {
+    GEO_QUERIES.store(0, std::sync::atomic::Ordering::Relaxed);
+    BSSID_QUERIES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub struct Wigle;
 
 #[async_trait]
@@ -94,11 +107,9 @@ impl Module for Wigle {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // WiGLE budget: 3 geo queries + 2 BSSID queries max per process.
+        // WiGLE budget: 3 geo queries + 2 BSSID queries max per scan.
         // Each query is high-value — only the highest-confidence targets
         // should reach here. The engine's expansion sort ensures that.
-        static GEO_QUERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        static BSSID_QUERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
         let user = ctx.key_opt(USER_ENV).unwrap_or(HARDCODED_USER);
         let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);

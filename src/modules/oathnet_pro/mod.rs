@@ -19,6 +19,12 @@ use crate::util::oathnet::{self, paths, val_str, val_str_or};
 
 pub mod key_harvest;
 pub use key_harvest::store_api_credential_from_item;
+
+/// Re-export the budget reset so `core/engine.rs` can call it without
+/// importing `util::oathnet` directly (which violates the architecture rule).
+pub fn reset_budget() {
+    crate::util::oathnet::reset_budget();
+}
 use key_harvest::{extract_api_keys_from_item, store_api_credential};
 
 const SRC: &str = "oathnet_pro";

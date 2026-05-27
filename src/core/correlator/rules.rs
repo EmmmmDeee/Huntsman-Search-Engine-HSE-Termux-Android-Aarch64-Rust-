@@ -17,7 +17,6 @@ pub(super) fn rule_au_001_multi_breach(
         "oathnet_pro",
         "search_engines:oathnet",
         "emailrep",
-        "pwned_passwords",
     ];
     let mut out = Vec::new();
     for e in entities.iter().filter(|e| e.kind == EntityKind::Email) {

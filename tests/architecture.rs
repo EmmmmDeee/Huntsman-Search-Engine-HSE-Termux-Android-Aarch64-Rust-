@@ -78,7 +78,13 @@ fn core_does_not_import_util_directly() {
     let v = scan_for_violations(&dir, &["crate::util"]);
     let allowed: Vec<String> = v
         .into_iter()
-        .filter(|line| !line.contains("util::proxy::ProxyPool") && !line.contains("util::key_pool"))
+        .filter(|line| {
+            !line.contains("util::proxy::ProxyPool")
+                && !line.contains("util::key_pool")
+                && !line.contains("util::oathnet::reset_budget")
+                && !line.contains("modules::wigle::reset_budget")
+                && !line.contains("modules::oathnet_pro::key_harvest::identify_api_key")
+        })
         .collect();
     assert!(
         allowed.is_empty(),

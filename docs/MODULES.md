@@ -37,8 +37,8 @@ higher-priority first; ordering doesn't affect output).
 | `seon`             | `email`, `phone`        | key-gated | no | 95  | Email/Phone (cross-platform presence across 250+ services) |
 | `epieos`           | `email`                 | key-gated | no | 92  | Email + Person + Username + Address (Google profile, Maps reviews, Skype) |
 | `emailrep`         | `email`                 | key-gated | no | 90  | Email (reputation score, breach exposure, social profiles) |
-| `proxycurl`        | `username`, `url`       | paid      | no | 88  | Person + Email + Phone + Organisation + Address (LinkedIn extraction) |
-| `opencorporates`   | `organisation`, `name`  | free      | no | 80  | Organisation + Address (AU company registry) |
+| `proxycurl`        | `username`, `url`, `email` | paid      | no | 88  | Person + Email + Phone + Organisation + Address (LinkedIn extraction) |
+| `opencorporates`   | `organisation`, `name`, `abn_acn` | free      | no | 80  | Organisation + Address (AU company registry) |
 | `photon`           | `address`, `coordinates`| free      | no | 20  | Coordinates / Address (Komoot geocoder for corroboration) |
 | `mylnikov`         | `mac_address`           | free      | no | 17  | Coordinates (free BSSID-to-GPS, no auth) |
 | `overpass`         | `coordinates`           | free      | no | 15  | Coordinates (OSM infrastructure — towers, substations, cameras) |

@@ -89,8 +89,8 @@ concurrency cap). 4.8 MB stripped binary.
 Shipped the OSINT orchestration API integration: `seon`, `keybase`,
 `emailrep`, `epieos`, `proxycurl`, `photon`, `mylnikov`, `overpass`,
 `sunrise_sunset`, `opencorporates`, `pwned_passwords`. Enhanced
-`github_user` with SSH key and event activity endpoints. Added 3 new
-correlator rules (AU-023 through AU-025) for cross-platform identity
+`github_user` with SSH key and event activity endpoints. Added 5 new
+correlator rules (AU-023 through AU-027) for cross-platform identity
 convergence, multi-signal email fraud, and corporate-identity linking.
 Proactive key harvest wired for 4 new service domains.
 

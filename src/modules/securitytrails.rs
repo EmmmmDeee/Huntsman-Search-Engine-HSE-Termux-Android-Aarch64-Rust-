@@ -127,7 +127,10 @@ impl SecurityTrails {
         );
         let body: AssociatedResp = match self.fetch_keyed(key, &url, ctx).await {
             Ok(b) => b,
-            Err(_) => return Ok(ModuleResult::new()),
+            // fetch_keyed returns Err on 404 (no records for this IP);
+            // treat as an empty result rather than a module-level error.
+            Err(e) if e.to_string().contains("404") => return Ok(ModuleResult::new()),
+            Err(e) => return Err(e),
         };
 
         let mut result = ModuleResult::new();
