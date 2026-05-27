@@ -56,7 +56,7 @@ pub struct SearchEngines;
 
 const MAX_RESULTS_PER_ENGINE: usize = 20;
 const INTER_ENGINE_MS: u64 = 400;
-const MAX_PAGES: usize = 3;
+const MAX_PAGES: usize = 2;
 const MAX_ACCUMULATED_RESULTS: usize = 2000;
 
 struct SearchResult {
@@ -223,19 +223,21 @@ impl Module for SearchEngines {
 
         let mut module_result = build_entities(target, &ctx.scan_id, &all_results);
 
-        // ── Recursive entity recycler: re-search high-confidence
-        //    discovered entities for geolocation and cross-linking ─────
-        if !ctx.cancel.is_cancelled() {
-            recycle_entities(ctx, &mut module_result, &dead_engines, &all_results).await;
-        }
-
-        // ── Email pattern generation + Holehe verification ─────────
-        // When no emails have been discovered but we have a name,
-        // generate common patterns and verify via OathNet Holehe.
+        // ── Email pattern generation (runs FIRST — before recycler) ──
+        // This is the highest-priority enrichment: without emails, the
+        // entire OathNet→IP→Geo chain cannot fire. Run it before the
+        // time-consuming recycler so it executes even when the module
+        // is close to its timeout budget.
         if !ctx.cancel.is_cancelled()
             && matches!(target.kind, TargetKind::FullName | TargetKind::Username)
         {
             generate_and_verify_emails(ctx, target, &mut module_result).await;
+        }
+
+        // ── Recursive entity recycler: re-search high-confidence
+        //    discovered entities for geolocation and cross-linking ─────
+        if !ctx.cancel.is_cancelled() {
+            recycle_entities(ctx, &mut module_result, &dead_engines, &all_results).await;
         }
 
         // ── API enrichment pass: batch-query OathNet for high-confidence
@@ -998,7 +1000,7 @@ fn apply_breach_evidence(
             && ip.len() >= 7
             && seen.insert(ip.clone())
         {
-            let mut e = Entity::new(EntityKind::IpAddress, &ip, conf(0.60), scan_id);
+            let mut e = Entity::new(EntityKind::IpAddress, &ip, conf(0.72), scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
             e.tag("geolocation-lead");

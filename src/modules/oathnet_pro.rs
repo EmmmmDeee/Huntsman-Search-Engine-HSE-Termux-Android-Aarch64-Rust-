@@ -245,7 +245,7 @@ impl Module for OathnetPro {
                 .filter(|e| e.kind == EntityKind::IpAddress)
                 .map(|e| e.value.clone())
                 .collect();
-            for ip in ips.iter().take(3) {
+            for ip in ips.iter().take(8) {
                 if ctx.cancel.is_cancelled() {
                     break;
                 }
