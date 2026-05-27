@@ -229,6 +229,15 @@ impl Module for SearchEngines {
             recycle_entities(ctx, &mut module_result, &dead_engines, &all_results).await;
         }
 
+        // ── Email pattern generation + Holehe verification ─────────
+        // When no emails have been discovered but we have a name,
+        // generate common patterns and verify via OathNet Holehe.
+        if !ctx.cancel.is_cancelled()
+            && matches!(target.kind, TargetKind::FullName | TargetKind::Username)
+        {
+            generate_and_verify_emails(ctx, target, &mut module_result).await;
+        }
+
         // ── API enrichment pass: batch-query OathNet for high-confidence
         //    discovered entities. Only fires when the API key is configured
         //    and we have entities worth enriching. ──────────────────
@@ -630,6 +639,110 @@ async fn recycle_entities(
     }
 }
 
+// ─── Email pattern generation + verification ──────────────────────────────
+
+async fn generate_and_verify_emails(
+    ctx: &ModuleContext,
+    target: &Target,
+    result: &mut ModuleResult,
+) {
+    // Only generate when we have zero discovered emails
+    let has_emails = result
+        .entities
+        .iter()
+        .any(|e| e.kind == EntityKind::Email && e.confidence >= 0.50);
+    if has_emails {
+        return;
+    }
+
+    let parts: Vec<&str> = target.value.split_whitespace().collect();
+    if parts.len() < 2 {
+        return;
+    }
+
+    let first = parts[0].to_lowercase();
+    let last = parts[parts.len() - 1].to_lowercase();
+    let fi = &first[..1.min(first.len())]; // first initial
+
+    // Generate common email patterns
+    let domains = [
+        "gmail.com",
+        "hotmail.com",
+        "outlook.com",
+        "yahoo.com",
+        "live.com",
+    ];
+    let mut candidates: Vec<String> = Vec::new();
+    for d in &domains {
+        candidates.push(format!("{first}.{last}@{d}"));
+        candidates.push(format!("{first}{last}@{d}"));
+        candidates.push(format!("{fi}{last}@{d}"));
+    }
+    // Username-derived emails from discovered usernames
+    for e in &result.entities {
+        if e.kind == EntityKind::Username && e.confidence >= 0.60 {
+            let u = e.value.to_lowercase();
+            if u.contains(&first) && u.len() >= 5 && u.len() <= 30 {
+                for d in &["gmail.com", "hotmail.com"] {
+                    let candidate = format!("{u}@{d}");
+                    if !candidates.contains(&candidate) {
+                        candidates.push(candidate);
+                    }
+                }
+            }
+        }
+    }
+
+    // Verify via OathNet Holehe (checks if email is registered on platforms)
+    let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+    let scan_id = result
+        .entities
+        .first()
+        .map(|e| e.scan_id.clone())
+        .unwrap_or_default();
+
+    for candidate in candidates.iter().take(10) {
+        if ctx.cancel.is_cancelled() {
+            break;
+        }
+        // Quick breach check — if email exists in any breach, it's a real address
+        if let Ok(hits) = crate::util::oathnet::search(
+            key,
+            crate::util::oathnet::paths::BREACH,
+            "email",
+            candidate,
+            3,
+        )
+        .await
+            && !hits.is_empty()
+        {
+            let db_names: Vec<String> = hits
+                .iter()
+                .filter_map(|h| crate::util::oathnet::val_str(h, "dbname"))
+                .take(3)
+                .collect();
+            let mut e = Entity::new(EntityKind::Email, candidate, 0.72, &scan_id);
+            e.tag("pattern-generated");
+            e.tag("breach-verified");
+            e.tag(crate::core::tags::BREACH);
+            e.add_evidence(
+                Evidence::new(
+                    "search_engines",
+                    format!(
+                        "Email pattern verified in {} breach(es): {}",
+                        hits.len(),
+                        db_names.join(", ")
+                    ),
+                )
+                .with_attr("method", "pattern-generation")
+                .with_attr("breach_count", hits.len().to_string())
+                .with_attr("dbnames", db_names.join(", ")),
+            );
+            result.push(e);
+        }
+    }
+}
+
 // ─── API enrichment: OathNet via shared util::oathnet client ────────────────
 
 async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult, target: &Target) {
@@ -1023,6 +1136,11 @@ fn build_queries(target: &Target) -> Vec<String> {
                 ));
                 q.push(format!(
                     "\"{fl}\" Queensland OR Brisbane OR \"Gold Coast\" OR Cairns"
+                ));
+
+                // Email discovery dork — search for the name near email addresses
+                q.push(format!(
+                    "\"{fl}\" \"@gmail.com\" OR \"@hotmail.com\" OR \"@outlook.com\" OR \"@yahoo.com\""
                 ));
 
                 // News / media mentions
