@@ -1,17 +1,10 @@
-//! Email header geolocation — extract IPs and timezone offsets from
-//! raw email Received headers.
+//! Email domain geolocation — infer geography from email domain
+//! infrastructure patterns.
 //!
-//! Email Received headers encode the originating IP and timezone of
-//! each relay hop. The first Received header (added by the sender's
-//! mail server) often reveals the sender's actual network IP, which
-//! can then be geolocated by ip_geo/ipinfo in a subsequent expansion
-//! round.
-//!
-//! This module is passive — it parses the email address string to
-//! extract the domain, then uses naming conventions to infer whether
-//! the email service is consumer (Gmail, Outlook) or self-hosted.
-//! For self-hosted domains, the MX infrastructure is more likely to
-//! reveal the operator's geography.
+//! Classifies email domains by ccTLD (alice@company.com.au → Australia)
+//! and by regional ISP provider (bigpond.com → Telstra, Australia).
+//! Skips consumer email providers (Gmail, Outlook, etc.) since they
+//! reveal no geographic signal. No network calls.
 
 use async_trait::async_trait;
 
@@ -56,10 +49,12 @@ impl Module for EmailHeaderGeo {
             return Ok(result);
         };
 
-        if CONSUMER_PROVIDERS
-            .iter()
-            .any(|p| domain == *p || domain.ends_with(p))
-        {
+        if CONSUMER_PROVIDERS.iter().any(|p| {
+            domain == *p
+                || (domain.len() > p.len()
+                    && domain.ends_with(p)
+                    && domain.as_bytes()[domain.len() - p.len() - 1] == b'.')
+        }) {
             return Ok(result);
         }
 
@@ -227,7 +222,7 @@ mod tests {
 
     #[test]
     fn au_cctld_detected() {
-        let geo = infer_geo_from_email_domain("alice@company.com.au").unwrap();
+        let geo = infer_geo_from_email_domain("company.com.au").unwrap();
         assert_eq!(geo.region, "Australia");
     }
 
@@ -238,15 +233,29 @@ mod tests {
 
     #[test]
     fn bigpond_is_australian() {
-        let (provider, region) = detect_corporate_provider("user@bigpond.com").unwrap();
+        let (provider, region) = detect_corporate_provider("bigpond.com").unwrap();
         assert_eq!(region, "Australia");
         assert!(provider.contains("BigPond"));
     }
 
     #[test]
     fn bt_is_uk() {
-        let (_, region) = detect_corporate_provider("user@btinternet.com").unwrap();
+        let (_, region) = detect_corporate_provider("btinternet.com").unwrap();
         assert_eq!(region, "United Kingdom");
+    }
+
+    #[test]
+    fn consumer_dot_boundary() {
+        assert!(
+            !CONSUMER_PROVIDERS.iter().any(|p| {
+                let d = "awesome.com";
+                d == *p
+                    || (d.len() > p.len()
+                        && d.ends_with(p)
+                        && d.as_bytes()[d.len() - p.len() - 1] == b'.')
+            }),
+            "awesome.com must not match me.com"
+        );
     }
 
     #[test]

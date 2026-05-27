@@ -61,7 +61,6 @@ pub mod shodan;
 pub mod social_probe;
 pub mod sunrise_sunset;
 pub mod threatfox;
-pub mod timezone_correlator;
 pub mod urlhaus;
 pub mod urlscan;
 pub mod username_search;
@@ -70,7 +69,6 @@ pub mod web_crawler;
 pub mod webserver_banner;
 pub mod whois;
 pub mod wifi_intel;
-pub mod wifi_ssid_geo;
 pub mod wigle;
 pub mod xposed_or_not;
 
@@ -147,8 +145,6 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(geo_domain_classifier::GeoDomainClassifier),
         Arc::new(email_header_geo::EmailHeaderGeo),
         Arc::new(phone_area_geo::PhoneAreaGeo),
-        Arc::new(timezone_correlator::TimezoneCorrelator),
-        Arc::new(wifi_ssid_geo::WifiSsidGeo),
         // Australian OSINT modules
         Arc::new(opencorporates::OpenCorporates),
     ]

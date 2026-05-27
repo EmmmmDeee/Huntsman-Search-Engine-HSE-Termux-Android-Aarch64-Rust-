@@ -49,9 +49,9 @@ impl Module for GeoDomainClassifier {
         let mut result = ModuleResult::new();
 
         let domain = match target.kind {
-            TargetKind::Url => {
-                crate::util::url_util::host_from_url(&target.value).unwrap_or_default()
-            }
+            TargetKind::Url => crate::util::url_util::host_from_url(&target.value)
+                .map(|h| h.to_lowercase())
+                .unwrap_or_default(),
             _ => target.value.trim().to_lowercase(),
         };
 

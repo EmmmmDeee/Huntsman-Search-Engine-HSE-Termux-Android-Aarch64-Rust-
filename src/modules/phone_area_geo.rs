@@ -135,7 +135,6 @@ const AU_AREAS: &[(&str, &str, &str)] = &[
     ("3", "Melbourne / VIC / TAS", "AU"),
     ("7", "Brisbane / QLD", "AU"),
     ("8", "Perth / SA / NT", "AU"),
-    ("4", "Mobile", "AU"),
 ];
 
 const GB_AREAS: &[(&str, &str, &str)] = &[
@@ -156,33 +155,6 @@ const GB_AREAS: &[(&str, &str, &str)] = &[
     ("24", "Coventry", "GB"),
     ("28", "Northern Ireland", "GB"),
     ("29", "Cardiff", "GB"),
-];
-
-const US_AREAS: &[(&str, &str, &str)] = &[
-    ("212", "New York City", "US"),
-    ("213", "Los Angeles", "US"),
-    ("312", "Chicago", "US"),
-    ("415", "San Francisco", "US"),
-    ("202", "Washington DC", "US"),
-    ("305", "Miami", "US"),
-    ("713", "Houston", "US"),
-    ("214", "Dallas", "US"),
-    ("404", "Atlanta", "US"),
-    ("617", "Boston", "US"),
-    ("206", "Seattle", "US"),
-    ("303", "Denver", "US"),
-    ("602", "Phoenix", "US"),
-    ("215", "Philadelphia", "US"),
-    ("313", "Detroit", "US"),
-    ("612", "Minneapolis", "US"),
-    ("314", "St. Louis", "US"),
-    ("702", "Las Vegas", "US"),
-    ("503", "Portland", "US"),
-    ("512", "Austin", "US"),
-    ("619", "San Diego", "US"),
-    ("704", "Charlotte", "US"),
-    ("808", "Hawaii", "US"),
-    ("907", "Alaska", "US"),
 ];
 
 const DE_AREAS: &[(&str, &str, &str)] = &[
@@ -226,7 +198,35 @@ const NZ_AREAS: &[(&str, &str, &str)] = &[
     ("7", "Hamilton / Waikato", "NZ"),
 ];
 
-const CA_AREAS: &[(&str, &str, &str)] = &[
+type AreaTable = &'static [(&'static str, &'static str, &'static str)];
+
+const NANP_AREAS: &[(&str, &str, &str)] = &[
+    // US
+    ("212", "New York City", "US"),
+    ("213", "Los Angeles", "US"),
+    ("312", "Chicago", "US"),
+    ("415", "San Francisco", "US"),
+    ("202", "Washington DC", "US"),
+    ("305", "Miami", "US"),
+    ("713", "Houston", "US"),
+    ("214", "Dallas", "US"),
+    ("404", "Atlanta", "US"),
+    ("617", "Boston", "US"),
+    ("206", "Seattle", "US"),
+    ("303", "Denver", "US"),
+    ("602", "Phoenix", "US"),
+    ("215", "Philadelphia", "US"),
+    ("313", "Detroit", "US"),
+    ("612", "Minneapolis", "US"),
+    ("314", "St. Louis", "US"),
+    ("702", "Las Vegas", "US"),
+    ("503", "Portland", "US"),
+    ("512", "Austin", "US"),
+    ("619", "San Diego", "US"),
+    ("704", "Charlotte", "US"),
+    ("808", "Hawaii", "US"),
+    ("907", "Alaska", "US"),
+    // Canada
     ("416", "Toronto", "CA"),
     ("604", "Vancouver", "CA"),
     ("514", "Montreal", "CA"),
@@ -237,17 +237,14 @@ const CA_AREAS: &[(&str, &str, &str)] = &[
     ("306", "Saskatchewan", "CA"),
 ];
 
-type AreaTable = &'static [(&'static str, &'static str, &'static str)];
-
 const AREA_CODE_TABLES: &[(&str, AreaTable)] = &[
     ("61", AU_AREAS),
     ("44", GB_AREAS),
-    ("1", US_AREAS),
+    ("1", NANP_AREAS),
     ("49", DE_AREAS),
     ("33", FR_AREAS),
     ("81", JP_AREAS),
     ("64", NZ_AREAS),
-    ("1", CA_AREAS),
 ];
 
 #[cfg(test)]
@@ -268,10 +265,11 @@ mod tests {
     }
 
     #[test]
-    fn au_mobile() {
-        let geo = lookup_area_code("61412345678").unwrap();
-        assert_eq!(geo.location, "Mobile");
-        assert_eq!(geo.country_code, "AU");
+    fn au_mobile_returns_none() {
+        assert!(
+            lookup_area_code("61412345678").is_none(),
+            "mobile prefixes should not produce geographic addresses"
+        );
     }
 
     #[test]
