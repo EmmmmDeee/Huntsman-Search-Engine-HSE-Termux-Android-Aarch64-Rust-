@@ -137,7 +137,7 @@ impl ScanEngine {
 
         // Reset per-scan budget counters so long-lived processes
         // (`hse serve` / `hse live`) get a fresh budget per scan.
-        crate::util::oathnet::reset_budget();
+        crate::modules::oathnet_pro::reset_budget();
         crate::modules::wigle::reset_budget();
 
         self.emit(
