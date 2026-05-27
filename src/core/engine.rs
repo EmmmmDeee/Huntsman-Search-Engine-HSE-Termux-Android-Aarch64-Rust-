@@ -126,7 +126,12 @@ impl ScanEngine {
     }
 
     /// Run a scan to completion, including any expansion rounds.
-    pub async fn run(&self, mut scan: Scan, target: Target, ctx: ModuleContext) -> Result<Scan> {
+    pub async fn run(
+        &self,
+        mut scan: Scan,
+        target: Target,
+        mut ctx: ModuleContext,
+    ) -> Result<Scan> {
         scan.status = ScanStatus::Running;
         self.store.upsert_scan(&scan)?;
 
@@ -158,6 +163,21 @@ impl ScanEngine {
         .await?;
 
         if opts.depth > 0 {
+            // Refresh keys from the global pool before expansion rounds.
+            // oathnet_pro discovers API keys from breach/stealer data during
+            // the seed round and stores them in the key_pool. Merging them
+            // into ctx.keys here makes them available to expansion modules
+            // (e.g., a discovered Shodan key lets shodan fire on expansion IPs).
+            let pool = crate::util::key_pool::global_pool();
+            for svc in crate::util::key_pool::service_defs() {
+                if ctx.keys.contains_key(svc.env_var) {
+                    continue;
+                }
+                if let Some(key) = pool.next_key(svc.name) {
+                    ctx.keys.insert(svc.env_var.to_string(), key);
+                }
+            }
+
             let _ = self
                 .run_expansion(
                     &scan.id,
