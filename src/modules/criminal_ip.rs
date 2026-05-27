@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::Evidence,
+    entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -264,6 +264,25 @@ impl Module for CriminalIp {
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();
         result.push(entity);
+
+        if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first()) {
+            if let Some(org) = w.org_name.as_deref() {
+                if !org.is_empty() {
+                    let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
+                    oe.tag("criminal_ip");
+                    oe.add_evidence(Evidence::new(SRC, format!("IP org for {ip}")));
+                    result.push(oe);
+                }
+            }
+            if let Some(asn) = w.as_no {
+                let asn_str = format!("AS{asn}");
+                let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, &ctx.scan_id);
+                ae.tag("criminal_ip");
+                ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
+                result.push(ae);
+            }
+        }
+
         Ok(result)
     }
 }

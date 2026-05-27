@@ -352,6 +352,33 @@ impl Shodan {
             );
             result.push(d);
         }
+
+        if let Some(org) = &body.org {
+            if !org.is_empty() {
+                let mut oe = Entity::new(EntityKind::Organisation, org, 0.70, &ctx.scan_id);
+                oe.tag("shodan");
+                oe.add_evidence(Evidence::new(SRC, format!("Organisation for {ip}")));
+                result.push(oe);
+            }
+        }
+        if let Some(asn) = &body.asn {
+            if !asn.is_empty() {
+                let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
+                ae.tag("shodan");
+                ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
+                result.push(ae);
+            }
+        }
+        if let Some(country) = &body.country_name {
+            if !country.is_empty() {
+                let mut addr = Entity::new(EntityKind::Address, country, 0.55, &ctx.scan_id);
+                addr.tag("shodan");
+                addr.tag("geoint");
+                addr.add_evidence(Evidence::new(SRC, format!("Country for {ip}")));
+                result.push(addr);
+            }
+        }
+
         Ok(())
     }
 }
