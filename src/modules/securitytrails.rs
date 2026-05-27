@@ -54,7 +54,7 @@ impl Module for SecurityTrails {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = ctx.key(KEY_ENV)?;
+        let key = match ctx.key_opt(KEY_ENV) { Some(k) => k, None => return Ok(ModuleResult::new()) };
         let domain = target.value.trim().trim_end_matches('.').to_lowercase();
         if domain.is_empty() || domain.contains('/') {
             return Ok(ModuleResult::new());

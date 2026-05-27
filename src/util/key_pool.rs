@@ -318,11 +318,27 @@ pub fn service_defs() -> Vec<ServiceDef> {
         },
         ServiceDef {
             name: "censys",
-            env_var: "HUNTSMAN_CENSYS_KEY",
+            env_var: "HUNTSMAN_CENSYS_ID",
             category: "infrastructure",
             test_url: "https://search.censys.io/api/v2/hosts/1.1.1.1",
             key_header: KeyPlacement::BasicAuth,
             rate_limit_reset_secs: 3,
+        },
+        ServiceDef {
+            name: "censys_secret",
+            env_var: "HUNTSMAN_CENSYS_SECRET",
+            category: "infrastructure",
+            test_url: "https://search.censys.io/api/v2/hosts/1.1.1.1",
+            key_header: KeyPlacement::BasicAuth,
+            rate_limit_reset_secs: 3,
+        },
+        ServiceDef {
+            name: "dehashed_user",
+            env_var: "HUNTSMAN_DEHASHED_USER",
+            category: "breach",
+            test_url: "https://api.dehashed.com/search?query=email:test@example.com&size=1",
+            key_header: KeyPlacement::BasicAuth,
+            rate_limit_reset_secs: 60,
         },
         ServiceDef {
             name: "binaryedge",

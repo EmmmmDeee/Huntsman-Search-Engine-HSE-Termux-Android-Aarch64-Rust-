@@ -159,7 +159,7 @@ impl Module for IntelX {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = ctx.key(KEY_ENV)?;
+        let key = match ctx.key_opt(KEY_ENV) { Some(k) => k, None => return Ok(ModuleResult::new()) };
         let value = target.value.trim();
         if value.is_empty() {
             return Ok(ModuleResult::new());

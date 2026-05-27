@@ -32,7 +32,8 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_THREATFOX_KEY",
     // Expanded services (api_key_probe compatible)
     "HUNTSMAN_ABUSEIPDB_KEY",
-    "HUNTSMAN_CENSYS_KEY",
+    "HUNTSMAN_CENSYS_ID",
+    "HUNTSMAN_CENSYS_SECRET",
     "HUNTSMAN_BINARYEDGE_KEY",
     "HUNTSMAN_GREYNOISE_KEY",
     "HUNTSMAN_FULLHUNT_KEY",

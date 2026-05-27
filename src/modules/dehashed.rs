@@ -76,8 +76,10 @@ impl Module for DeHashed {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let user = ctx.key(USER_ENV)?;
-        let key = ctx.key(KEY_ENV)?;
+        let (user, key) = match (ctx.key_opt(USER_ENV), ctx.key_opt(KEY_ENV)) {
+            (Some(u), Some(k)) => (u, k),
+            _ => return Ok(ModuleResult::new()),
+        };
         let selector = match target.kind {
             TargetKind::Email => "email",
             TargetKind::Username => "username",
