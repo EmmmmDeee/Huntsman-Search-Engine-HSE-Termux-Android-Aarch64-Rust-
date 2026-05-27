@@ -158,7 +158,7 @@ impl Shodan {
             entity.tag("vulnerable");
         }
 
-        const MAX_PORTS: usize = 20;
+        const MAX_PORTS: usize = 50;
         let mut ports_sorted: Vec<u16> = body.ports.clone();
         ports_sorted.sort_unstable();
         ports_sorted.dedup();
@@ -184,7 +184,7 @@ impl Shodan {
             let v: Vec<&str> = body
                 .vulns
                 .iter()
-                .take(16)
+                .take(30)
                 .map(std::string::String::as_str)
                 .collect();
             ev = ev
@@ -195,7 +195,7 @@ impl Shodan {
             let c: Vec<&str> = body
                 .cpes
                 .iter()
-                .take(8)
+                .take(20)
                 .map(std::string::String::as_str)
                 .collect();
             ev = ev.with_attr("cpes", c.join(","));
@@ -213,7 +213,7 @@ impl Shodan {
         result.push(entity);
 
         // Emit Domain entities for observed PTR / SAN hostnames.
-        const MAX_HOSTS: usize = 16;
+        const MAX_HOSTS: usize = 30;
         for host in body.hostnames.iter().take(MAX_HOSTS) {
             let host = host.trim().trim_end_matches('.');
             if host.is_empty() {

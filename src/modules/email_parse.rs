@@ -118,9 +118,13 @@ impl Module for EmailParse {
                     }
                 }
 
+                let email_domain = target.value.split('@').nth(1).unwrap_or("").to_lowercase();
+                let is_corporate = !["gmail.com","hotmail.com","yahoo.com","outlook.com","live.com","icloud.com","protonmail.com","aol.com"]
+                    .iter().any(|d| email_domain == *d);
+                let uname_conf = if is_corporate { 0.70 } else { 0.55 };
                 for candidate in candidates {
                     let mut entity =
-                        Entity::new(EntityKind::Username, &candidate, 0.55, &ctx.scan_id);
+                        Entity::new(EntityKind::Username, &candidate, uname_conf, &ctx.scan_id);
                     entity.tag("derived");
                     entity.add_evidence(
                         Evidence::new(SRC, format!("Derived from {}", target.value))

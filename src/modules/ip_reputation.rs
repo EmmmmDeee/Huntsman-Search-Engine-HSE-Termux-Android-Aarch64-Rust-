@@ -180,7 +180,7 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
         .pulses
         .iter()
         .filter_map(|p| p.name.as_deref())
-        .take(5)
+        .take(15)
         .collect();
     let tag_count_estimate: usize = pulse_info.pulses.iter().map(|p| p.tags.len()).sum();
     let mut all_tags: Vec<&str> = Vec::with_capacity(tag_count_estimate);
@@ -192,7 +192,7 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
     );
     all_tags.sort_unstable();
     all_tags.dedup();
-    all_tags.truncate(20);
+    all_tags.truncate(50);
     let adversary = pulse_info
         .pulses
         .iter()

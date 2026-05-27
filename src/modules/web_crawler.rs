@@ -773,7 +773,7 @@ fn build_entities(
 
     // Phone entities
     for phone in &state.phones {
-        let mut e = Entity::new(EntityKind::Phone, phone.as_str(), 0.65, scan_id);
+        let mut e = Entity::new(EntityKind::Phone, phone.as_str(), 0.75, scan_id);
         e.tag(tags::WEB_SCRAPED);
         e.add_evidence(
             Evidence::new(SRC, format!("Phone found on {domain}"))

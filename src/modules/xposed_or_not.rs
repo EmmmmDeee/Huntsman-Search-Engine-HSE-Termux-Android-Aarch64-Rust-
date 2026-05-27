@@ -302,7 +302,8 @@ fn confidence_for_count(count: usize) -> f64 {
         0 => 0.0,
         1..=2 => 0.80,
         3..=5 => 0.85,
-        _ => 0.92,
+        6..=9 => 0.92,
+        _ => 0.95,
     }
 }
 
@@ -354,7 +355,8 @@ mod tests {
     fn confidence_scales_with_breach_count() {
         assert!((confidence_for_count(1) - 0.80).abs() < 1e-9);
         assert!((confidence_for_count(4) - 0.85).abs() < 1e-9);
-        assert!((confidence_for_count(10) - 0.92).abs() < 1e-9);
+        assert!((confidence_for_count(8) - 0.92).abs() < 1e-9);
+        assert!((confidence_for_count(10) - 0.95).abs() < 1e-9);
     }
 
     #[test]
