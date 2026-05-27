@@ -55,6 +55,11 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_WIGLE_TOKEN",
     "HUNTSMAN_ABR_GUID",
     "HUNTSMAN_OPENCELLID_KEY",
+    // OSINT orchestration APIs
+    "HUNTSMAN_SEON_KEY",
+    "HUNTSMAN_EPIEOS_KEY",
+    "HUNTSMAN_PROXYCURL_KEY",
+    "HUNTSMAN_OPENCORP_KEY",
 ];
 
 /// Resolve the keys env-file path.

@@ -241,7 +241,167 @@ impl Module for GithubUser {
             }
         }
 
+        // SSH public keys → evidence on the username entity.
+        self.fetch_ssh_keys(login, ctx, &mut result).await;
+
+        // Public events → extract active working hours.
+        self.fetch_events(login, ctx, &mut result).await;
+
         Ok(result)
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        5_000
+    }
+}
+
+impl GithubUser {
+    async fn fetch_ssh_keys(&self, login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
+        let url = format!("https://api.github.com/users/{login}/keys");
+        let resp = match ctx
+            .http
+            .get(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        if !resp.status().is_success() {
+            return;
+        }
+
+        #[derive(serde::Deserialize)]
+        struct SshKey {
+            #[serde(default)]
+            id: Option<u64>,
+            #[serde(default)]
+            key: Option<String>,
+        }
+
+        let keys: Vec<SshKey> = match resp.json().await {
+            Ok(k) => k,
+            Err(_) => return,
+        };
+        if keys.is_empty() {
+            return;
+        }
+
+        if let Some(first) = result.entities.first_mut() {
+            first.tag("has-ssh-keys");
+            let key_summaries: Vec<String> = keys
+                .iter()
+                .take(5)
+                .filter_map(|k| {
+                    let key_str = k.key.as_deref()?;
+                    let algo = key_str.split_whitespace().next().unwrap_or("unknown");
+                    Some(format!("id={} type={algo}", k.id.unwrap_or(0)))
+                })
+                .collect();
+            first.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("{} SSH public key(s) for @{login}", keys.len()),
+                )
+                .with_attr("ssh_key_count", keys.len().to_string())
+                .with_attr("ssh_keys", key_summaries.join("; ")),
+            );
+        }
+    }
+
+    async fn fetch_events(&self, login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
+        let url = format!(
+            "https://api.github.com/users/{login}/events/public?per_page=30"
+        );
+        let resp = match ctx
+            .http
+            .get(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        if !resp.status().is_success() {
+            return;
+        }
+
+        #[derive(serde::Deserialize)]
+        struct GhEvent {
+            #[serde(default)]
+            created_at: Option<String>,
+            #[serde(default, rename = "type")]
+            event_type: Option<String>,
+        }
+
+        let events: Vec<GhEvent> = match resp.json().await {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        if events.is_empty() {
+            return;
+        }
+
+        let mut hours: [u32; 24] = [0; 24];
+        let mut event_types: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut most_recent: Option<&str> = None;
+
+        for event in &events {
+            if let Some(ts) = event.created_at.as_deref() {
+                if most_recent.is_none() {
+                    most_recent = Some(ts);
+                }
+                if let Some(hour_str) = ts.get(11..13) {
+                    if let Ok(h) = hour_str.parse::<usize>() {
+                        if h < 24 {
+                            hours[h] += 1;
+                        }
+                    }
+                }
+            }
+            if let Some(et) = event.event_type.as_deref() {
+                *event_types.entry(et.to_string()).or_default() += 1;
+            }
+        }
+
+        let peak_hour = hours
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, count)| **count)
+            .map(|(h, _)| h)
+            .unwrap_or(0);
+
+        if let Some(first) = result.entities.first_mut() {
+            let mut ev = Evidence::new(
+                SRC,
+                format!("{} recent public event(s) for @{login}", events.len()),
+            )
+            .with_attr("event_count", events.len().to_string())
+            .with_attr("peak_hour_utc", format!("{peak_hour:02}:00"));
+
+            if let Some(ts) = most_recent {
+                ev = ev.with_attr("most_recent_event", ts);
+            }
+
+            let top_types: Vec<String> = {
+                let mut sorted: Vec<_> = event_types.into_iter().collect();
+                sorted.sort_by(|a, b| b.1.cmp(&a.1));
+                sorted
+                    .into_iter()
+                    .take(3)
+                    .map(|(t, c)| format!("{t}={c}"))
+                    .collect()
+            };
+            if !top_types.is_empty() {
+                ev = ev.with_attr("top_event_types", top_types.join(", "));
+            }
+
+            first.add_evidence(ev);
+        }
     }
 }
 
