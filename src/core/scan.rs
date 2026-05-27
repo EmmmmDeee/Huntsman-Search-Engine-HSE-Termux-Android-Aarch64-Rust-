@@ -407,11 +407,12 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
     // With paid keys, 5 hops catches OathNet → IP → geo → geocode → refine.
     let depth = match kind {
         // Identity seeds have the richest expansion graph:
-        //   R0: breach/search → IPs, domains, usernames, phones, addresses
-        //   R1: dns_intel on domains → more IPs; ip_geo on IPs → coords
-        //   R2: geocode on coords → addresses; username_search → profiles
-        //   R3: web_crawler on domains → emails; shodan → ports
-        //   R4: OathNet on discovered emails → more breach data → geo
+        //   R0: oathnet_pro/intelx/dehashed breach search → IPs, emails,
+        //       usernames, phones; search_engines → domains, addresses
+        //   R1: dns_intel/doh on domains → more IPs; ip_geo on IPs → coords
+        //   R2: geocode on coords → addresses; wigle on coords → WiFi
+        //   R3: web_crawler on domains → more emails; shodan → ports
+        //   R4: (paid) secondary OathNet on R1 discovered emails → geo
         TargetKind::Email | TargetKind::Username | TargetKind::FullName => {
             if has_paid_keys {
                 5
@@ -515,7 +516,13 @@ pub fn seed_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
             }
         }
         TargetKind::Domain => 89.8,
-        TargetKind::FullName => 70.5,
+        TargetKind::FullName => {
+            if has_paid_keys {
+                185.0
+            } else {
+                70.5
+            }
+        }
         TargetKind::IpAddress => 17.9,
         TargetKind::Username => 15.8,
         TargetKind::Phone => {
@@ -527,7 +534,7 @@ pub fn seed_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
         }
         TargetKind::Asn => 10.2,
         TargetKind::ApiKey => 9.7,
-        TargetKind::Url => 9.4,
+        TargetKind::Url => 18.8,
         TargetKind::Organisation => 4.9,
         TargetKind::AbnAcn => 4.9,
         TargetKind::MacAddress => 8.5,
@@ -547,7 +554,9 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
             }
         }
         TargetKind::Domain => 22.1,
-        TargetKind::FullName => 15.3,
+        TargetKind::FullName => {
+            if has_paid_keys { 42.0 } else { 15.3 }
+        }
         TargetKind::IpAddress => 12.4,
         TargetKind::Phone => {
             if has_paid_keys {
@@ -558,7 +567,7 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
         }
         TargetKind::Asn => 7.1,
         TargetKind::Username => 6.3,
-        TargetKind::Url => 4.2,
+        TargetKind::Url => 8.4,
         TargetKind::ApiKey => 3.8,
         TargetKind::MacAddress => 7.5,
         TargetKind::AbnAcn => 2.5,
