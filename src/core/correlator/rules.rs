@@ -3,6 +3,18 @@ use std::collections::HashSet;
 use super::{Correlation, Severity};
 use crate::core::entity::{Entity, EntityKind};
 
+fn entities_of_kind(entities: &[Entity], kind: EntityKind) -> Vec<&Entity> {
+    entities.iter().filter(|e| e.kind == kind).collect()
+}
+
+fn tagged_matching_sources<'a>(entity: &'a Entity, allowed: &[&str]) -> HashSet<&'a str> {
+    entity
+        .evidence_sources()
+        .into_iter()
+        .filter(|s| allowed.contains(s))
+        .collect()
+}
+
 pub(super) fn rule_au_001_multi_breach(
     entities: &[Entity],
     scan_id: &str,
@@ -19,13 +31,8 @@ pub(super) fn rule_au_001_multi_breach(
         "emailrep",
     ];
     let mut out = Vec::new();
-    for e in entities.iter().filter(|e| e.kind == EntityKind::Email) {
-        let sources: HashSet<&str> = e
-            .evidence
-            .iter()
-            .filter(|ev| BREACH_SOURCES.contains(&ev.source.as_str()))
-            .map(|ev| ev.source.as_str())
-            .collect();
+    for e in entities_of_kind(entities, EntityKind::Email) {
+        let sources = tagged_matching_sources(e, BREACH_SOURCES);
         if sources.len() >= 2 {
             let mut names: Vec<&str> = sources.into_iter().collect();
             names.sort_unstable();
@@ -53,18 +60,9 @@ pub(super) fn rule_au_002_identity_cluster(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let emails: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Email)
-        .collect();
-    let usernames: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Username)
-        .collect();
-    let phones: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Phone)
-        .collect();
+    let emails = entities_of_kind(entities, EntityKind::Email);
+    let usernames = entities_of_kind(entities, EntityKind::Username);
+    let phones = entities_of_kind(entities, EntityKind::Phone);
 
     if emails.is_empty() || usernames.is_empty() || phones.is_empty() {
         return Vec::new();
@@ -313,7 +311,7 @@ pub(super) fn rule_au_010_infra_consensus(
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::Domain | EntityKind::IpAddress))
     {
-        let sources: HashSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
+        let sources = e.evidence_sources();
         if sources.len() >= 3 {
             let mut names: Vec<&str> = sources.into_iter().collect();
             names.sort_unstable();
@@ -453,12 +451,11 @@ pub(super) fn rule_au_014_geo_cluster(
     ts: u64,
 ) -> Vec<Correlation> {
     const GEO_TAGS: &[&str] = &["geoint", "wifi-observed"];
-    entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Coordinates)
+    entities_of_kind(entities, EntityKind::Coordinates)
+        .into_iter()
         .filter_map(|e| {
             let hits: Vec<&str> = GEO_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
-            let sources: HashSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
+            let sources = e.evidence_sources();
             if hits.len() >= 2 || sources.len() >= 2 {
                 Some(Correlation {
                     rule_id: "AU-014".into(),
@@ -530,13 +527,13 @@ pub(super) fn rule_au_016_breach_ip_geo_chain(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let breach_ips: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::IpAddress && e.has_tag("breach"))
+    let breach_ips: Vec<&Entity> = entities_of_kind(entities, EntityKind::IpAddress)
+        .into_iter()
+        .filter(|e| e.has_tag("breach"))
         .collect();
-    let coords: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.60)
+    let coords: Vec<&Entity> = entities_of_kind(entities, EntityKind::Coordinates)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.60)
         .collect();
     if breach_ips.is_empty() || coords.is_empty() {
         return Vec::new();
@@ -575,9 +572,9 @@ pub(super) fn rule_au_017_multi_geo_convergence(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let coords: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.50)
+    let coords: Vec<&Entity> = entities_of_kind(entities, EntityKind::Coordinates)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.50)
         .collect();
     if coords.len() < 2 {
         return Vec::new();
@@ -641,15 +638,14 @@ pub(super) fn rule_au_018_email_address_colocation(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let emails: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Email && e.confidence >= 0.60)
+    let emails: Vec<&Entity> = entities_of_kind(entities, EntityKind::Email)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.60)
         .collect();
     let addresses: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
-            (e.kind == EntityKind::Address || e.kind == EntityKind::Coordinates)
-                && e.confidence >= 0.50
+            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates) && e.confidence >= 0.50
         })
         .collect();
     if emails.is_empty() || addresses.is_empty() {
@@ -755,9 +751,9 @@ pub(super) fn rule_au_020_person_entity_cluster(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let persons: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Person && e.confidence >= 0.50)
+    let persons: Vec<&Entity> = entities_of_kind(entities, EntityKind::Person)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.50)
         .collect();
     if persons.len() < 2 {
         return Vec::new();
@@ -804,9 +800,9 @@ pub(super) fn rule_au_022_organisation_with_breach(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let orgs: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Organisation && e.confidence >= 0.60)
+    let orgs: Vec<&Entity> = entities_of_kind(entities, EntityKind::Organisation)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.60)
         .collect();
     let breach_entities: Vec<&Entity> = entities.iter().filter(|e| e.has_tag("breach")).collect();
     if orgs.is_empty() || breach_entities.is_empty() {
@@ -843,16 +839,11 @@ pub(super) fn rule_au_023_cross_platform_identity(
         "contact_enrich",
     ];
     let mut out = Vec::new();
-    for e in entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Person && e.confidence >= 0.60)
+    for e in entities_of_kind(entities, EntityKind::Person)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.60)
     {
-        let sources: HashSet<&str> = e
-            .evidence
-            .iter()
-            .filter(|ev| IDENTITY_SOURCES.contains(&ev.source.as_str()))
-            .map(|ev| ev.source.as_str())
-            .collect();
+        let sources = tagged_matching_sources(e, IDENTITY_SOURCES);
         if sources.len() >= 2 {
             let mut names: Vec<&str> = sources.into_iter().collect();
             names.sort_unstable();
@@ -971,16 +962,11 @@ pub(super) fn rule_au_026_validated_address(
         "contact_enrich",
     ];
     let mut out = Vec::new();
-    for e in entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Address && e.confidence >= 0.50)
+    for e in entities_of_kind(entities, EntityKind::Address)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.50)
     {
-        let sources: HashSet<&str> = e
-            .evidence
-            .iter()
-            .filter(|ev| GEO_SOURCES.contains(&ev.source.as_str()))
-            .map(|ev| ev.source.as_str())
-            .collect();
+        let sources = tagged_matching_sources(e, GEO_SOURCES);
         if sources.len() >= 2 {
             let mut names: Vec<&str> = sources.into_iter().collect();
             names.sort_unstable();
@@ -1008,13 +994,13 @@ pub(super) fn rule_au_027_address_coordinates_chain(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let addresses: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Address && e.confidence >= 0.55)
+    let addresses: Vec<&Entity> = entities_of_kind(entities, EntityKind::Address)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.55)
         .collect();
-    let coords: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.55)
+    let coords: Vec<&Entity> = entities_of_kind(entities, EntityKind::Coordinates)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.55)
         .collect();
     if addresses.is_empty() || coords.is_empty() {
         return Vec::new();

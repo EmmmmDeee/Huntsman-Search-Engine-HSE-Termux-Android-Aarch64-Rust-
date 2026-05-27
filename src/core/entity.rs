@@ -279,6 +279,16 @@ impl Entity {
         self.tags.iter().any(|x| x == t)
     }
 
+    // ── Evidence helpers ────────────────────────────────────────────────────
+
+    pub fn evidence_sources(&self) -> std::collections::HashSet<&str> {
+        self.evidence.iter().map(|ev| ev.source.as_str()).collect()
+    }
+
+    pub fn has_evidence_from(&self, source: &str) -> bool {
+        self.evidence.iter().any(|ev| ev.source == source)
+    }
+
     // ── GREATEST-semantics merge ─────────────────────────────────────────────
 
     /// Merge `other` into `self` using GREATEST-semantics.
@@ -380,6 +390,9 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
         EntityKind::Email | EntityKind::Username => {
             let trimmed = value.trim();
+            if trimmed.bytes().all(|b| !b.is_ascii_uppercase()) {
+                return trimmed.to_string();
+            }
             let mut s = String::with_capacity(trimmed.len());
             for c in trimmed.chars() {
                 s.extend(c.to_lowercase());

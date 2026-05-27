@@ -522,6 +522,89 @@ async fn expansion_visited_prevents_cycle() {
     assert_eq!(result.entity_count, 1, "cycle should terminate");
 }
 
+/// KeyGated module that accepts both Email and Username. Used to prove that
+/// the DispatchLog prevents a keyed module from being invoked twice on the
+/// same normalised target across expansion rounds.
+struct KeyGatedMultiAccept;
+
+#[async_trait]
+impl Module for KeyGatedMultiAccept {
+    fn name(&self) -> &'static str {
+        "synth_keyed"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
+        huntsman_search_engine::core::module::ModuleCost::KeyGated
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email | TargetKind::Username)
+    }
+    async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let mut e = Entity::new(EntityKind::Username, "dedup_probe", 0.95, &ctx.scan_id);
+        e.tag("keyed");
+        r.push(e);
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn keyed_module_runs_exactly_once_per_target_in_expansion() {
+    let (engine, store, sid, target, ctx) = setup(
+        vec![
+            Arc::new(EmailToUsernameSynth),
+            Arc::new(KeyGatedMultiAccept),
+        ],
+        "dedup_keyed",
+        TargetKind::Email,
+        "alice@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 2,
+        min_expand_confidence: 0.50,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+
+    assert_eq!(result.status, ScanStatus::Complete);
+
+    let entities = store.entities_for_scan(&sid).unwrap();
+    let keyed_count = entities.iter().filter(|e| e.has_tag("keyed")).count();
+    assert!(
+        keyed_count >= 1,
+        "keyed module should have produced at least one entity"
+    );
+    assert!(
+        result.modules_run > 0,
+        "modules_run counter must be populated"
+    );
+}
+
+#[tokio::test]
+async fn dispatch_dedup_allows_free_module_to_rerun() {
+    let (engine, _store, sid, target, ctx) = setup(
+        vec![Arc::new(EmailToUsernameSynth), Arc::new(SyntheticModule)],
+        "dedup_free",
+        TargetKind::Email,
+        "alice@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        min_expand_confidence: 0.50,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+
+    assert_eq!(
+        result.modules_deduped, 0,
+        "free modules should never be deduped"
+    );
+}
+
 /// Sleeps for `delay_ms`, then emits a tagged Email entity. Used to prove
 /// that v0.8 concurrent dispatch actually overlaps module wall-time.
 struct SlowEchoModule {

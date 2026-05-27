@@ -78,8 +78,8 @@ static BSSID_QUERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU3
 /// Reset the per-scan WiGLE budget counters. Called from `engine.rs` at
 /// scan start so each scan gets a fresh budget.
 pub fn reset_budget() {
-    GEO_QUERIES.store(0, std::sync::atomic::Ordering::Relaxed);
-    BSSID_QUERIES.store(0, std::sync::atomic::Ordering::Relaxed);
+    GEO_QUERIES.store(0, std::sync::atomic::Ordering::Release);
+    BSSID_QUERIES.store(0, std::sync::atomic::Ordering::Release);
 }
 
 pub struct Wigle;
@@ -115,13 +115,13 @@ impl Module for Wigle {
         let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);
 
         if target.kind == TargetKind::MacAddress {
-            if BSSID_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 2 {
+            if BSSID_QUERIES.fetch_add(1, std::sync::atomic::Ordering::AcqRel) >= 2 {
                 return Ok(ModuleResult::new());
             }
             return self.bssid_lookup(user, token, &target.value, ctx).await;
         }
 
-        if GEO_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 3 {
+        if GEO_QUERIES.fetch_add(1, std::sync::atomic::Ordering::AcqRel) >= 3 {
             return Ok(ModuleResult::new());
         }
 

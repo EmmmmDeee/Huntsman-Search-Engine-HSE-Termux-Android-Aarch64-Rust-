@@ -284,92 +284,20 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
             // API key pattern scanning on password field
             if let Some(pw) = doc_item.get("password").and_then(|v| v.as_str())
                 && !pw.is_empty()
-                && pw.len() >= 20
+                && pw.len() >= 16
+                && let Some((svc, e)) = detect_and_create_api_key_entity(pw, &sid, "import:oathnet")
             {
-                let is_key = pw.starts_with("sk-")
-                    || pw.starts_with("pk_")
-                    || pw.starts_with("ghp_")
-                    || pw.starts_with("gho_")
-                    || pw.starts_with("SG.")
-                    || pw.starts_with("xoxb-")
-                    || pw.starts_with("xoxp-")
-                    || pw.starts_with("AKIA")
-                    || pw.starts_with("AIzaSy")
-                    || pw.starts_with("hf_")
-                    || pw.starts_with("r8_")
-                    || pw.starts_with("npm_")
-                    || pw.starts_with("sk_live_")
-                    || pw.starts_with("rk_live_")
-                    || pw.starts_with("whsec_")
-                    || pw.starts_with("sntrys_")
-                    || pw.starts_with("glc_")
-                    || pw.starts_with("NRAK-")
-                    || pw.starts_with("dop_v1_")
-                    || pw.starts_with("ntn_")
-                    || pw.starts_with("eyJ")
-                    || pw.starts_with("github_pat_")
-                    || (pw.len() == 32 && pw.chars().all(|c| c.is_ascii_hexdigit()))
-                    || (pw.len() == 64 && pw.chars().all(|c| c.is_ascii_hexdigit()));
-                if is_key {
-                    let svc = if pw.starts_with("sk-ant-") {
-                        "anthropic"
-                    } else if pw.starts_with("sk-proj-") {
-                        "openai"
-                    } else if pw.starts_with("sk-") {
-                        "openai_or_stripe"
-                    } else if pw.starts_with("ghp_") || pw.starts_with("github_pat_") {
-                        "github"
-                    } else if pw.starts_with("AKIA") {
-                        "aws"
-                    } else if pw.starts_with("AIzaSy") {
-                        "google"
-                    } else if pw.starts_with("SG.") {
-                        "sendgrid"
-                    } else if pw.starts_with("hf_") {
-                        "huggingface"
-                    } else if pw.starts_with("sk_live_") {
-                        "stripe"
-                    } else if pw.starts_with("xoxb-") {
-                        "slack"
-                    } else if pw.starts_with("npm_") {
-                        "npm"
-                    } else if pw.starts_with("dop_v1_") {
-                        "digitalocean"
-                    } else {
-                        "generic_key"
-                    };
+                entities.push(e);
+                stats.api_keys += 1;
 
-                    let display = format!(
-                        "{}:{}...{}",
-                        svc,
-                        &pw[..pw.len().min(8)],
-                        &pw[pw.len().saturating_sub(4)..]
-                    );
-                    let mut e = Entity::new(EntityKind::ApiKey, &display, 0.80, &sid);
-                    e.tag("api-key");
-                    e.tag(format!("service:{svc}"));
-                    e.tag("import");
-                    e.add_evidence(
-                        Evidence::new(
-                            "import:oathnet",
-                            format!("API key pattern ({svc}) in stealer data"),
-                        )
-                        .with_attr("service", svc)
-                        .with_attr("key_length", pw.len().to_string()),
-                    );
-                    entities.push(e);
-                    stats.api_keys += 1;
-
-                    // Validate and store in key pool
-                    let valid = crate::util::key_pool::add_and_validate(
-                        svc,
-                        pw,
-                        Some(format!("Import: {svc} key from stealer data")),
-                    )
-                    .await;
-                    if valid {
-                        stats.api_keys_valid += 1;
-                    }
+                let valid = crate::util::key_pool::add_and_validate(
+                    svc,
+                    pw,
+                    Some(format!("Import: {svc} key from stealer data")),
+                )
+                .await;
+                if valid {
+                    stats.api_keys_valid += 1;
                 }
             }
 
@@ -429,33 +357,20 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
             let lat = info.get("lat").and_then(|v| v.as_f64());
             let lon = info.get("lon").and_then(|v| v.as_f64());
             let isp = info.get("isp").and_then(|v| v.as_str()).unwrap_or("");
-
-            if let (Some(lat), Some(lon)) = (lat, lon)
-                && lat.abs() > 0.01
-                && lon.abs() > 0.01
-            {
-                let coords = format!("{lat:.4},{lon:.4}");
-                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &sid);
-                ce.tag("geoint");
-                ce.tag("import");
-                ce.add_evidence(
-                    Evidence::new(
-                        "import:oathnet",
-                        format!("IP {ip}: {city}, {region}, {country} ({isp})"),
-                    )
-                    .with_attr("ip", ip)
-                    .with_attr("isp", isp),
-                );
-                entities.push(ce);
-                stats.coordinates += 1;
-            }
-            if !city.is_empty() {
-                let addr = format!("{city}, {region}, {country}");
-                let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &sid);
-                ae.tag("import");
-                entities.push(ae);
-                stats.addresses += 1;
-            }
+            create_geolocation_entities(
+                &GeoFields {
+                    ip,
+                    lat,
+                    lon,
+                    city,
+                    region,
+                    country,
+                    isp,
+                },
+                &sid,
+                &mut entities,
+                &mut stats,
+            );
         }
     }
 
@@ -487,42 +402,8 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         }
     }
 
-    // Dedup by UID
-    let mut seen_uids: std::collections::HashSet<String> = std::collections::HashSet::new();
-    entities.retain(|e| seen_uids.insert(e.uid.clone()));
-
-    println!("Imported {} entities:", entities.len());
-    println!(
-        "  Identity:  {} emails, {} usernames, {} device users, {} Discord IDs",
-        stats.emails, stats.usernames, stats.device_users, stats.discord_ids
-    );
-    println!(
-        "  Network:   {} IPs, {} domains, {} subdomains, {} URLs, {} admin paths",
-        stats.ips, stats.domains, stats.subdomains, stats.urls, stats.admin_paths
-    );
-    println!(
-        "  Geo:       {} coordinates, {} addresses",
-        stats.coordinates, stats.addresses
-    );
-    println!(
-        "  Device:    {} HWIDs, {} machine log IDs",
-        stats.hwids, stats.machines
-    );
-    println!("  Keys:      {} API keys detected", stats.api_keys);
-    println!("  Verified:  {} holehe platform checks", stats.holehe);
-    println!(
-        "  Source:    {} breach, {} stealer docs, {} victims",
-        stats.breach_records, stats.stealer_docs, stats.victim_records
-    );
-    if !stats.date_range.is_empty() {
-        println!("  Timeline:  {}", stats.date_range);
-    }
-    if stats.api_keys > 0 {
-        println!(
-            "  Pool:      {} API keys detected, {} validated active",
-            stats.api_keys, stats.api_keys_valid
-        );
-    }
+    deduplicate_by_uid(&mut entities);
+    print_import_stats(&stats, entities.len());
 
     match output {
         "json" => {
@@ -607,8 +488,7 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
         }
     }
 
-    let mut uid_seen: HashSet<String> = HashSet::new();
-    entities.retain(|e| uid_seen.insert(e.uid.clone()));
+    deduplicate_by_uid(&mut entities);
 
     let domains = entities
         .iter()
@@ -648,7 +528,7 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
 }
 
 fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
-    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::entity::{Entity, EntityKind};
     use std::collections::HashSet;
 
     println!("Importing OathNet TXT export...");
@@ -720,61 +600,14 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
                 entities.push(e);
                 stats.usernames += 1;
             }
-        } else if let Some(rest) = line.strip_prefix("Password: ") {
-            let pw = rest.trim();
-            if pw.len() >= 20 {
-                let is_key = pw.starts_with("sk-")
-                    || pw.starts_with("ghp_")
-                    || pw.starts_with("SG.")
-                    || pw.starts_with("AKIA")
-                    || pw.starts_with("AIzaSy")
-                    || pw.starts_with("hf_")
-                    || pw.starts_with("sk_live_")
-                    || pw.starts_with("xoxb-")
-                    || pw.starts_with("npm_")
-                    || pw.starts_with("dop_v1_")
-                    || pw.starts_with("github_pat_")
-                    || pw.starts_with("r8_")
-                    || pw.starts_with("eyJ")
-                    || pw.starts_with("ntn_")
-                    || (pw.len() == 32 && pw.chars().all(|c| c.is_ascii_hexdigit()))
-                    || (pw.len() == 64 && pw.chars().all(|c| c.is_ascii_hexdigit()));
-                if is_key {
-                    let svc = if pw.starts_with("sk-ant-") {
-                        "anthropic"
-                    } else if pw.starts_with("sk-proj-") {
-                        "openai"
-                    } else if pw.starts_with("ghp_") || pw.starts_with("github_pat_") {
-                        "github"
-                    } else if pw.starts_with("AKIA") {
-                        "aws"
-                    } else if pw.starts_with("SG.") {
-                        "sendgrid"
-                    } else if pw.starts_with("sk_live_") {
-                        "stripe"
-                    } else if pw.starts_with("hf_") {
-                        "huggingface"
-                    } else {
-                        "generic_key"
-                    };
-                    let display = format!(
-                        "{}:{}...{}",
-                        svc,
-                        &pw[..pw.len().min(8)],
-                        &pw[pw.len().saturating_sub(4)..]
-                    );
-                    let mut e = Entity::new(EntityKind::ApiKey, &display, 0.80, &sid);
-                    e.tag("api-key");
-                    e.tag(format!("service:{svc}"));
-                    e.tag("import");
-                    entities.push(e);
-                    stats.api_keys += 1;
-                    let pool = crate::util::key_pool::global_pool();
-                    let mut entry = crate::util::key_pool::KeyEntry::new(pw);
-                    entry.notes = Some(format!("TXT import: {svc} key"));
-                    pool.add(svc, entry);
-                }
-            }
+        } else if let Some(rest) = line.strip_prefix("Password: ")
+            && rest.trim().len() >= 16
+            && let Some((svc, e)) =
+                detect_and_create_api_key_entity(rest.trim(), &sid, "import:txt")
+        {
+            entities.push(e);
+            stats.api_keys += 1;
+            store_key_in_pool(svc, rest.trim(), format!("TXT import: {svc} key"));
         }
     }
 
@@ -869,28 +702,20 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
             let trimmed = line.trim();
             if let Some(rest) = trimmed.strip_prefix("IP: ") {
                 if !current_ip.is_empty() {
-                    if let (Some(la), Some(lo)) = (lat, lon)
-                        && la.abs() > 0.01
-                        && lo.abs() > 0.01
-                    {
-                        let coords = format!("{la:.4},{lo:.4}");
-                        let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &sid);
-                        ce.tag("geoint");
-                        ce.tag("import");
-                        ce.add_evidence(Evidence::new(
-                            "import:oathnet",
-                            format!("IP {current_ip}: {city}, {region}, {country} ({isp})"),
-                        ));
-                        entities.push(ce);
-                        stats.coordinates += 1;
-                    }
-                    if !city.is_empty() {
-                        let addr = format!("{city}, {region}, {country}");
-                        let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &sid);
-                        ae.tag("import");
-                        entities.push(ae);
-                        stats.addresses += 1;
-                    }
+                    create_geolocation_entities(
+                        &GeoFields {
+                            ip: &current_ip,
+                            lat,
+                            lon,
+                            city: &city,
+                            region: &region,
+                            country: &country,
+                            isp: &isp,
+                        },
+                        &sid,
+                        &mut entities,
+                        &mut stats,
+                    );
                 }
                 current_ip = rest.trim().to_string();
                 lat = None;
@@ -914,48 +739,25 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
             }
         }
         if !current_ip.is_empty() {
-            if let (Some(la), Some(lo)) = (lat, lon)
-                && la.abs() > 0.01
-                && lo.abs() > 0.01
-            {
-                let coords = format!("{la:.4},{lo:.4}");
-                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &sid);
-                ce.tag("geoint");
-                ce.tag("import");
-                entities.push(ce);
-                stats.coordinates += 1;
-            }
-            if !city.is_empty() {
-                let addr = format!("{city}, {region}, {country}");
-                let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &sid);
-                ae.tag("import");
-                entities.push(ae);
-                stats.addresses += 1;
-            }
+            create_geolocation_entities(
+                &GeoFields {
+                    ip: &current_ip,
+                    lat,
+                    lon,
+                    city: &city,
+                    region: &region,
+                    country: &country,
+                    isp: &isp,
+                },
+                &sid,
+                &mut entities,
+                &mut stats,
+            );
         }
     }
 
-    let mut uid_seen: HashSet<String> = HashSet::new();
-    entities.retain(|e| uid_seen.insert(e.uid.clone()));
-
-    println!("Imported {} entities:", entities.len());
-    println!(
-        "  Identity:  {} emails, {} usernames, {} device users, {} Discord IDs",
-        stats.emails, stats.usernames, stats.device_users, stats.discord_ids
-    );
-    println!(
-        "  Network:   {} IPs, {} domains, {} subdomains, {} URLs, {} admin paths",
-        stats.ips, stats.domains, stats.subdomains, stats.urls, stats.admin_paths
-    );
-    println!(
-        "  Geo:       {} coordinates, {} addresses",
-        stats.coordinates, stats.addresses
-    );
-    println!(
-        "  Device:    {} HWIDs, {} machine log IDs",
-        stats.hwids, stats.machines
-    );
-    println!("  Keys:      {} API keys detected", stats.api_keys);
+    deduplicate_by_uid(&mut entities);
+    print_import_stats(&stats, entities.len());
     if stats.api_keys > 0 {
         println!(
             "  Pool:      {} keys stored for automatic use",
@@ -1005,4 +807,125 @@ struct ImportStats {
     api_keys: usize,
     api_keys_valid: usize,
     date_range: String,
+}
+
+fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>) {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    entities.retain(|e| seen.insert(e.uid.clone()));
+}
+
+fn detect_and_create_api_key_entity(
+    pw: &str,
+    sid: &str,
+    source_label: &str,
+) -> Option<(&'static str, crate::core::entity::Entity)> {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+
+    let (service, _key_val) = identify_api_key(pw)?;
+
+    let char_len = pw.chars().count();
+    let prefix: String = pw.chars().take(8).collect();
+    let suffix: String = pw.chars().skip(char_len.saturating_sub(4)).collect();
+    let display = format!("{service}:{prefix}...{suffix}");
+    let mut e = Entity::new(EntityKind::ApiKey, &display, 0.80, sid);
+    e.tag("api-key");
+    e.tag(format!("service:{service}"));
+    e.tag("import");
+    e.add_evidence(
+        Evidence::new(
+            source_label,
+            format!("API key pattern ({service}) in stealer data"),
+        )
+        .with_attr("service", service)
+        .with_attr("key_length", pw.len().to_string()),
+    );
+    Some((service, e))
+}
+
+fn store_key_in_pool(service: &str, key: &str, notes: String) {
+    let pool = crate::util::key_pool::global_pool();
+    let mut entry = crate::util::key_pool::KeyEntry::new(key);
+    entry.notes = Some(notes);
+    pool.add(service, entry);
+}
+
+struct GeoFields<'a> {
+    ip: &'a str,
+    lat: Option<f64>,
+    lon: Option<f64>,
+    city: &'a str,
+    region: &'a str,
+    country: &'a str,
+    isp: &'a str,
+}
+
+fn create_geolocation_entities(
+    geo: &GeoFields<'_>,
+    sid: &str,
+    entities: &mut Vec<crate::core::entity::Entity>,
+    stats: &mut ImportStats,
+) {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    if let (Some(la), Some(lo)) = (geo.lat, geo.lon)
+        && la.abs() > 0.01
+        && lo.abs() > 0.01
+    {
+        let coords = format!("{la:.4},{lo:.4}");
+        let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, sid);
+        ce.tag("geoint");
+        ce.tag("import");
+        ce.add_evidence(Evidence::new(
+            "import:oathnet",
+            format!(
+                "IP {}: {}, {}, {} ({})",
+                geo.ip, geo.city, geo.region, geo.country, geo.isp
+            ),
+        ));
+        entities.push(ce);
+        stats.coordinates += 1;
+    }
+    if !geo.city.is_empty() {
+        let addr = format!("{}, {}, {}", geo.city, geo.region, geo.country);
+        let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, sid);
+        ae.tag("import");
+        entities.push(ae);
+        stats.addresses += 1;
+    }
+}
+
+fn print_import_stats(stats: &ImportStats, entity_count: usize) {
+    println!("Imported {} entities:", entity_count);
+    println!(
+        "  Identity:  {} emails, {} usernames, {} device users, {} Discord IDs",
+        stats.emails, stats.usernames, stats.device_users, stats.discord_ids
+    );
+    println!(
+        "  Network:   {} IPs, {} domains, {} subdomains, {} URLs, {} admin paths",
+        stats.ips, stats.domains, stats.subdomains, stats.urls, stats.admin_paths
+    );
+    println!(
+        "  Geo:       {} coordinates, {} addresses",
+        stats.coordinates, stats.addresses
+    );
+    println!(
+        "  Device:    {} HWIDs, {} machine log IDs",
+        stats.hwids, stats.machines
+    );
+    println!("  Keys:      {} API keys detected", stats.api_keys);
+    println!("  Verified:  {} holehe platform checks", stats.holehe);
+    println!(
+        "  Source:    {} breach, {} stealer docs, {} victims",
+        stats.breach_records, stats.stealer_docs, stats.victim_records
+    );
+    if !stats.date_range.is_empty() {
+        println!("  Timeline:  {}", stats.date_range);
+    }
+    if stats.api_keys > 0 {
+        println!(
+            "  Pool:      {} API keys detected, {} validated active",
+            stats.api_keys, stats.api_keys_valid
+        );
+    }
 }

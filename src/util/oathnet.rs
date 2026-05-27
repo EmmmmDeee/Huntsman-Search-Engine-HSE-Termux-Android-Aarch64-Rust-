@@ -59,7 +59,7 @@ fn cache_put(key: String, items: &[Value]) {
 }
 
 fn budget_remaining() -> bool {
-    QUERY_COUNT.load(std::sync::atomic::Ordering::Relaxed) < MAX_QUERIES_PER_SCAN
+    QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire) < MAX_QUERIES_PER_SCAN
 }
 
 fn budget_increment() {
@@ -67,19 +67,19 @@ fn budget_increment() {
 }
 
 pub fn is_quota_exhausted() -> bool {
-    QUOTA_EXHAUSTED.load(std::sync::atomic::Ordering::Relaxed)
+    QUOTA_EXHAUSTED.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// Reset the per-scan budget counters. Must be called at the start of every
 /// scan so that `hse serve` / `hse live` (long-lived processes) get a fresh
 /// budget for each scan rather than accumulating across scans.
 pub fn reset_budget() {
-    QUERY_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
-    QUOTA_EXHAUSTED.store(false, std::sync::atomic::Ordering::Relaxed);
+    QUERY_COUNT.store(0, std::sync::atomic::Ordering::Release);
+    QUOTA_EXHAUSTED.store(false, std::sync::atomic::Ordering::Release);
 }
 
 fn mark_quota_exhausted() {
-    QUOTA_EXHAUSTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    QUOTA_EXHAUSTED.store(true, std::sync::atomic::Ordering::Release);
     tracing::warn!("OathNet daily quota exhausted — skipping remaining queries");
 }
 

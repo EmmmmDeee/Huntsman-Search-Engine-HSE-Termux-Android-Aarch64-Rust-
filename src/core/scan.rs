@@ -272,6 +272,8 @@ pub struct Scan {
     #[serde(default)]
     pub modules_timed_out: usize,
     #[serde(default)]
+    pub modules_deduped: usize,
+    #[serde(default)]
     pub options: ScanOptions,
 }
 
@@ -288,6 +290,7 @@ impl Scan {
             modules_run: 0,
             modules_errored: 0,
             modules_timed_out: 0,
+            modules_deduped: 0,
             options: ScanOptions::default(),
         }
     }

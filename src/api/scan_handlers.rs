@@ -136,10 +136,9 @@ pub async fn scan_entities_facets(
         Ok(facets) => {
             let items: Vec<serde_json::Value> = facets
                 .iter()
-                .map(|(kind, count)| serde_json::json!({ "kind": kind, "count": count }))
+                .map(|(kind, count)| json!({ "kind": kind, "count": count }))
                 .collect();
-            let n = items.len();
-            Json(serde_json::json!({ "facets": items, "count": n })).into_response()
+            Json(json!({ "facets": items, "count": items.len() })).into_response()
         }
         Err(e) => internal_error(&e),
     }
@@ -215,7 +214,6 @@ pub async fn scan_entities_csv(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    use std::collections::BTreeSet;
     use std::fmt::Write as _;
     let entities = match s.store.entities_for_scan(&id) {
         Ok(es) => es,
@@ -227,8 +225,9 @@ pub async fn scan_entities_csv(
     for e in &entities {
         let eff = e.c_effective();
         let tier = e.classify().to_string();
-        let sources: BTreeSet<&str> = e.evidence.iter().map(|ev| ev.source.as_str()).collect();
-        let sources = sources.into_iter().collect::<Vec<_>>().join("|");
+        let mut sources: Vec<&str> = e.evidence_sources().into_iter().collect();
+        sources.sort_unstable();
+        let sources = sources.join("|");
         let tags = e.tags.join("|");
         let _ = writeln!(
             body,
@@ -246,18 +245,7 @@ pub async fn scan_entities_csv(
         );
     }
 
-    let filename = format!("hse-scan-{}.csv", id.chars().take(12).collect::<String>());
-    let disposition = format!("attachment; filename=\"{filename}\"");
-    let mut resp = (StatusCode::OK, body).into_response();
-    let headers = resp.headers_mut();
-    headers.insert(
-        axum::http::header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("text/csv; charset=utf-8"),
-    );
-    if let Ok(v) = axum::http::HeaderValue::from_str(&disposition) {
-        headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
-    }
-    resp
+    download_response(body, "text/csv; charset=utf-8", &id, "csv")
 }
 
 pub async fn scan_report_json(
@@ -287,20 +275,28 @@ pub async fn scan_report_json(
         "exported_at": crate::core::entity::unix_now(),
     });
 
-    let filename = format!(
-        "hse-report-{}.json",
-        id.chars().take(12).collect::<String>()
-    );
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
         tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
         "{}".into()
     });
+
+    download_response(body, "application/json; charset=utf-8", &id, "json")
+}
+
+fn download_response(
+    body: String,
+    content_type: &'static str,
+    scan_id: &str,
+    ext: &str,
+) -> axum::response::Response {
+    let short_id: String = scan_id.chars().take(12).collect();
+    let filename = format!("hse-{ext}-{short_id}.{ext}");
     let disposition = format!("attachment; filename=\"{filename}\"");
     let mut resp = (StatusCode::OK, body).into_response();
     let headers = resp.headers_mut();
     headers.insert(
         axum::http::header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/json; charset=utf-8"),
+        axum::http::HeaderValue::from_static(content_type),
     );
     if let Ok(v) = axum::http::HeaderValue::from_str(&disposition) {
         headers.insert(axum::http::header::CONTENT_DISPOSITION, v);

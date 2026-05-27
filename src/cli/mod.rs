@@ -561,7 +561,7 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
                 "SERVICE", "CATEGORY", "TEST ENDPOINT"
             );
             println!("{}", "-".repeat(85));
-            for d in &defs {
+            for d in defs {
                 let short_url = if d.test_url.len() > 25 {
                     format!("{}…", &d.test_url[..24])
                 } else {
@@ -773,8 +773,8 @@ fn print_dossier(
     println!("  Status:    {}", scan.status.as_str());
     println!("  Entities:  {}", scan.entity_count);
     println!(
-        "  Modules:   {} run, {} errored",
-        scan.modules_run, scan.modules_errored
+        "  Modules:   {} run, {} errored, {} deduped",
+        scan.modules_run, scan.modules_errored, scan.modules_deduped
     );
     println!();
 
@@ -1155,8 +1155,11 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         );
         if scan.modules_run > 0 {
             println!(
-                "  modules: {} run, {} errored, {} timed out\n",
-                scan.modules_run, scan.modules_errored, scan.modules_timed_out
+                "  modules: {} run, {} errored, {} timed out, {} deduped\n",
+                scan.modules_run,
+                scan.modules_errored,
+                scan.modules_timed_out,
+                scan.modules_deduped
             );
         } else {
             println!();
@@ -1321,7 +1324,7 @@ async fn cmd_radar(interval: u64, depth: u32, sweeps: Option<u32>, free_only: bo
                 }
 
                 eprintln!(
-                    "    {} {}={} → {} entities ({}run/{}err/{}to)",
+                    "    {} {}={} → {} entities ({}run/{}err/{}to/{}dedup)",
                     color_confidence(0.7, "↳", color),
                     tk.canonical_str(),
                     truncate(value, 30),
@@ -1329,6 +1332,7 @@ async fn cmd_radar(interval: u64, depth: u32, sweeps: Option<u32>, free_only: bo
                     result.modules_run,
                     result.modules_errored,
                     result.modules_timed_out,
+                    result.modules_deduped,
                 );
 
                 // Stream key findings to stdout as JSON

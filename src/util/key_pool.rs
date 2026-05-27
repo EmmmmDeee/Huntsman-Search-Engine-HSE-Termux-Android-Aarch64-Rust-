@@ -37,12 +37,37 @@ impl KeyStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyTier {
+    Trial = 0,
+    #[default]
+    Basic = 1,
+    Standard = 2,
+    Premium = 3,
+}
+
+impl KeyTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Premium => "premium",
+            Self::Standard => "standard",
+            Self::Basic => "basic",
+            Self::Trial => "trial",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyEntry {
     pub value: String,
     pub status: KeyStatus,
     #[serde(default)]
+    pub tier: KeyTier,
+    #[serde(default)]
     pub use_count: u64,
+    #[serde(default)]
+    pub error_count: u64,
     #[serde(default)]
     pub last_used: Option<u64>,
     #[serde(default)]
@@ -66,7 +91,9 @@ impl KeyEntry {
         Self {
             value: value.into(),
             status: KeyStatus::Untested,
+            tier: KeyTier::Basic,
             use_count: 0,
+            error_count: 0,
             last_used: None,
             last_validated: None,
             rate_limit_reset: None,
@@ -90,6 +117,14 @@ impl KeyEntry {
             }
             KeyStatus::Exhausted | KeyStatus::Invalid => false,
         }
+    }
+
+    pub fn success_rate(&self) -> f64 {
+        if self.use_count == 0 {
+            return 1.0;
+        }
+        let successes = self.use_count.saturating_sub(self.error_count) as f64;
+        successes / self.use_count as f64
     }
 }
 
@@ -141,6 +176,9 @@ impl KeyPool {
         true
     }
 
+    /// Select the optimal key for a service. Prefers higher-tier keys with
+    /// better success rates. Falls back to round-robin among equally-ranked
+    /// candidates so no single key is over-used.
     pub fn next_key(&self, service: &str) -> Option<String> {
         let lower = service.to_lowercase();
         let mut data = self.data.lock();
@@ -153,16 +191,31 @@ impl KeyPool {
         let idx = indices.entry(lower.clone()).or_insert(0);
         let len = entries.len();
 
-        for _ in 0..len {
-            let entry = &mut entries[*idx % len];
-            *idx = idx.wrapping_add(1);
-            if entry.is_usable() {
-                entry.use_count += 1;
-                entry.last_used = Some(crate::core::entity::unix_now());
-                return Some(entry.value.clone());
+        let mut best: Option<usize> = None;
+        let mut best_score: (KeyTier, u64) = (KeyTier::Trial, u64::MAX);
+
+        for offset in 0..len {
+            let i = (*idx + offset) % len;
+            let entry = &entries[i];
+            if !entry.is_usable() {
+                continue;
+            }
+            let score = (entry.tier, u64::MAX - entry.error_count);
+            if best.is_none() || score > best_score {
+                best = Some(i);
+                best_score = score;
             }
         }
-        None
+
+        if let Some(i) = best {
+            let entry = &mut entries[i];
+            entry.use_count += 1;
+            entry.last_used = Some(crate::core::entity::unix_now());
+            *idx = i.wrapping_add(1);
+            Some(entry.value.clone())
+        } else {
+            None
+        }
     }
 
     pub fn mark_status(&self, service: &str, value: &str, status: KeyStatus) {
@@ -192,6 +245,40 @@ impl KeyPool {
             };
             entry.last_validated = Some(crate::core::entity::unix_now());
         }
+    }
+
+    pub fn record_error(&self, service: &str, value: &str) {
+        let lower = service.to_lowercase();
+        let mut data = self.data.lock();
+        if let Some(entries) = data.services.get_mut(&lower)
+            && let Some(entry) = entries.iter_mut().find(|e| e.value == value)
+        {
+            entry.error_count = entry.error_count.saturating_add(1);
+        }
+    }
+
+    pub fn record_success(&self, service: &str, value: &str) {
+        let lower = service.to_lowercase();
+        let mut data = self.data.lock();
+        if let Some(entries) = data.services.get_mut(&lower)
+            && let Some(entry) = entries.iter_mut().find(|e| e.value == value)
+        {
+            entry.use_count = entry.use_count.saturating_add(1);
+            entry.last_used = Some(crate::core::entity::unix_now());
+        }
+    }
+
+    /// Remove keys with error rates above the threshold. Returns the number
+    /// of keys pruned.
+    pub fn prune_degraded(&self, max_error_rate: f64, min_uses: u64) -> usize {
+        let mut data = self.data.lock();
+        let mut pruned = 0;
+        for entries in data.services.values_mut() {
+            let before = entries.len();
+            entries.retain(|e| e.use_count < min_uses || e.success_rate() >= max_error_rate);
+            pruned += before - entries.len();
+        }
+        pruned
     }
 
     pub fn remove(&self, service: &str, value: &str) -> bool {
@@ -371,7 +458,7 @@ pub async fn validate_key(service: &str, key: &str) -> Option<bool> {
     Some(result)
 }
 
-async fn validate_against_endpoint(sdef: ServiceDef, key: &str) -> bool {
+async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
     let timeout_ms = 10_000u64;
     let secs = (timeout_ms / 1000).to_string();
 
@@ -429,7 +516,7 @@ async fn validate_against_endpoint(sdef: ServiceDef, key: &str) -> bool {
 
 pub fn merge_pool_into_env(pool: &KeyPool, keys: &mut HashMap<String, String>) {
     let defs = service_defs();
-    for sdef in &defs {
+    for sdef in defs {
         if keys.contains_key(sdef.env_var) {
             continue;
         }
@@ -544,7 +631,7 @@ mod tests {
     fn all_services_defined() {
         let defs = service_defs();
         assert!(defs.len() >= 24);
-        for d in &defs {
+        for d in defs {
             assert!(d.env_var.starts_with("HUNTSMAN_"));
             assert!(!d.test_url.is_empty());
         }
@@ -555,5 +642,93 @@ mod tests {
         assert!(find_service("shodan").is_some());
         assert!(find_service("intelx").is_some());
         assert!(find_service("nonexistent").is_none());
+    }
+
+    #[test]
+    fn tier_ordering() {
+        assert!(KeyTier::Premium > KeyTier::Standard);
+        assert!(KeyTier::Standard > KeyTier::Basic);
+        assert!(KeyTier::Basic > KeyTier::Trial);
+    }
+
+    #[test]
+    fn next_key_prefers_higher_tier() {
+        let pool = KeyPool::new();
+        let mut basic = KeyEntry::new("basic-key");
+        basic.tier = KeyTier::Basic;
+        basic.status = KeyStatus::Active;
+        let mut premium = KeyEntry::new("premium-key");
+        premium.tier = KeyTier::Premium;
+        premium.status = KeyStatus::Active;
+        pool.add("test_svc", basic);
+        pool.add("test_svc", premium);
+
+        let k = pool.next_key("test_svc").unwrap();
+        assert_eq!(k, "premium-key", "should prefer higher-tier key");
+    }
+
+    #[test]
+    fn next_key_avoids_error_prone_key() {
+        let pool = KeyPool::new();
+        let mut good = KeyEntry::new("good-key");
+        good.status = KeyStatus::Active;
+        good.error_count = 0;
+        let mut bad = KeyEntry::new("bad-key");
+        bad.status = KeyStatus::Active;
+        bad.error_count = 50;
+        pool.add("test_svc", good);
+        pool.add("test_svc", bad);
+
+        let k = pool.next_key("test_svc").unwrap();
+        assert_eq!(k, "good-key", "should prefer key with fewer errors");
+    }
+
+    #[test]
+    fn record_error_increments() {
+        let pool = KeyPool::new();
+        pool.add("svc", KeyEntry::new("k1"));
+        pool.record_error("svc", "k1");
+        pool.record_error("svc", "k1");
+        let snap = pool.snapshot();
+        assert_eq!(snap.services["svc"][0].error_count, 2);
+    }
+
+    #[test]
+    fn success_rate_calculation() {
+        let mut e = KeyEntry::new("k");
+        assert!((e.success_rate() - 1.0).abs() < 1e-9, "unused key = 100%");
+        e.use_count = 10;
+        e.error_count = 3;
+        assert!((e.success_rate() - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn prune_degraded_removes_bad_keys() {
+        let pool = KeyPool::new();
+        let mut good = KeyEntry::new("good");
+        good.use_count = 100;
+        good.error_count = 5;
+        let mut bad = KeyEntry::new("bad");
+        bad.use_count = 100;
+        bad.error_count = 90;
+        pool.add("svc", good);
+        pool.add("svc", bad);
+
+        let pruned = pool.prune_degraded(0.50, 10);
+        assert_eq!(pruned, 1);
+        assert_eq!(pool.service_count("svc"), 1);
+        assert!(pool.next_key("svc").unwrap() == "good");
+    }
+
+    #[test]
+    fn prune_degraded_spares_low_use_keys() {
+        let pool = KeyPool::new();
+        let mut new_key = KeyEntry::new("new");
+        new_key.use_count = 2;
+        new_key.error_count = 2;
+        pool.add("svc", new_key);
+
+        let pruned = pool.prune_degraded(0.50, 10);
+        assert_eq!(pruned, 0, "keys below min_uses should be spared");
     }
 }

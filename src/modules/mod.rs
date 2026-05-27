@@ -49,6 +49,7 @@ pub mod overpass;
 pub mod phone_intl;
 pub mod photon;
 pub mod proxycurl;
+pub mod pwned_passwords;
 pub mod rdap_domain;
 pub mod search_engines;
 pub mod securitytrails;
