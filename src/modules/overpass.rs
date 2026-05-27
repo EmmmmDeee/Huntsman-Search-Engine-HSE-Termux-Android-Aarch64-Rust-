@@ -92,10 +92,9 @@ out body;"#
             return Err(Error::module(SRC, format!("HTTP {status}")));
         }
 
-        let body: OverpassResp = resp
-            .json()
+        let body: OverpassResp = crate::util::http::json_scanned(resp, SRC)
             .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e))?;
 
         if body.elements.is_empty() {
             return Ok(ModuleResult::new());

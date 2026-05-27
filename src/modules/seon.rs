@@ -202,10 +202,9 @@ impl Seon {
             ));
         }
 
-        let body: SeonEmailResp = resp
-            .json()
+        let body: SeonEmailResp = crate::util::http::json_scanned(resp, SRC)
             .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e))?;
 
         if body.success != Some(true) {
             return Ok(ModuleResult::new());
@@ -336,10 +335,9 @@ impl Seon {
             ));
         }
 
-        let body: SeonPhoneResp = resp
-            .json()
+        let body: SeonPhoneResp = crate::util::http::json_scanned(resp, SRC)
             .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e))?;
 
         if body.success != Some(true) {
             return Ok(ModuleResult::new());

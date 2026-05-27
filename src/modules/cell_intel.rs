@@ -228,7 +228,7 @@ async fn query_opencellid(
         return None;
     }
 
-    let data: OpenCellidResp = resp.json().await.ok()?;
+    let data: OpenCellidResp = crate::util::http::json_scanned(resp, SRC).await.ok()?;
 
     if data.status.as_deref() == Some("error") {
         return None;
