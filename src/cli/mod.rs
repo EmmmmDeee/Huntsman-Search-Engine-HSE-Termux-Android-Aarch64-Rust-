@@ -102,7 +102,7 @@ pub enum Command {
         /// sequential dispatch (v0.1 behaviour, best on low-power devices).
         #[arg(long, default_value_t = 4)]
         max_concurrent: usize,
-        /// Output format: table | json.
+        /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(short, long, default_value = "table")]
         output: String,
     },
@@ -728,6 +728,130 @@ fn color_severity(severity: &str, color: bool) -> String {
     }
 }
 
+fn print_dossier(
+    scan: &crate::core::scan::Scan,
+    entities: &[crate::core::entity::Entity],
+    correlations: &[crate::core::correlator::Correlation],
+    kind: &str,
+    value: &str,
+    sid: &str,
+) {
+    use std::collections::BTreeMap;
+
+    println!("\n╔══════════════════════════════════════════════════════════════╗");
+    println!("║  HUNTSMAN SEARCH ENGINE — INTELLIGENCE DOSSIER              ║");
+    println!("╚══════════════════════════════════════════════════════════════╝");
+    println!();
+    println!("  Target:    {} = {}", kind, value);
+    println!("  Scan ID:   {}", &sid[..16]);
+    println!("  Status:    {}", scan.status.as_str());
+    println!("  Entities:  {}", scan.entity_count);
+    println!(
+        "  Modules:   {} run, {} errored",
+        scan.modules_run, scan.modules_errored
+    );
+    println!();
+
+    // Group by kind
+    let mut by_kind: BTreeMap<String, Vec<&crate::core::entity::Entity>> = BTreeMap::new();
+    for e in entities {
+        by_kind.entry(e.kind.to_string()).or_default().push(e);
+    }
+
+    // Priority order for dossier
+    let kind_order = [
+        "person",
+        "email",
+        "phone",
+        "username",
+        "credential",
+        "address",
+        "coordinates",
+        "organisation",
+        "abn_acn",
+        "domain",
+        "ip_address",
+        "url",
+        "mac_address",
+        "device_id",
+    ];
+
+    for kind_name in &kind_order {
+        let Some(group) = by_kind.get(*kind_name) else {
+            continue;
+        };
+        let header = match *kind_name {
+            "person" => "PERSONS",
+            "email" => "EMAIL ADDRESSES",
+            "phone" => "PHONE NUMBERS",
+            "username" => "USERNAMES / HANDLES",
+            "credential" => "CREDENTIALS (from breach/stealer data)",
+            "address" => "PHYSICAL ADDRESSES / LOCATIONS",
+            "coordinates" => "GPS COORDINATES",
+            "organisation" => "ORGANISATIONS",
+            "abn_acn" => "ABN / ACN (Australian Business Numbers)",
+            "domain" => "DOMAINS",
+            "ip_address" => "IP ADDRESSES",
+            "url" => "URLS / PROFILES",
+            "mac_address" => "MAC ADDRESSES (network devices)",
+            "device_id" => "DEVICE IDENTIFIERS",
+            other => other,
+        };
+
+        println!("━━━ {} ({}) ━━━", header, group.len());
+        println!();
+
+        let mut sorted = group.clone();
+        sorted.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        for e in &sorted {
+            let c_eff = e.c_effective();
+            let class = e.classify();
+            println!(
+                "  {} [{}]  conf={:.2}  c_eff={:.2}  corr={}",
+                e.value, class, e.confidence, c_eff, e.corroboration
+            );
+
+            if !e.tags.is_empty() {
+                println!("    tags: {}", e.tags.join(", "));
+            }
+
+            for ev in &e.evidence {
+                println!("    ├─ {} — {}", ev.source, ev.summary);
+                for (k, v) in &ev.attributes {
+                    if !v.is_empty() && v.len() <= 120 {
+                        println!("    │  {}: {}", k, v);
+                    }
+                }
+            }
+            println!();
+        }
+    }
+
+    // Correlations
+    if !correlations.is_empty() {
+        println!("━━━ CORRELATIONS ({}) ━━━", correlations.len());
+        println!();
+        for c in correlations {
+            let sev = match c.severity.to_string().as_str() {
+                "CRITICAL" => "🔴 CRITICAL",
+                "HIGH" => "🟠 HIGH",
+                "MEDIUM" => "🟡 MEDIUM",
+                _ => "🔵 LOW",
+            };
+            println!("  {} [{}] {}", c.rule_id, sev, c.rule_name);
+            println!("    {}", c.description);
+            println!();
+        }
+    }
+
+    println!("━━━ END OF DOSSIER ━━━");
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -988,6 +1112,8 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 "correlations": correlations,
             }))?
         );
+    } else if cmd.output == "dossier" {
+        print_dossier(&scan, &entities, &correlations, &cmd.kind, &cmd.value, &sid);
     } else {
         let color = use_color();
         println!(
