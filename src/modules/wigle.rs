@@ -208,7 +208,7 @@ impl Module for Wigle {
             .results
             .iter()
             .filter_map(|n| n.country.as_deref())
-            .filter(|c| !c.is_empty() && *c != "US" && *c != "AU" && c.len() > 2)
+            .filter(|c| !c.is_empty())
             .collect();
         let postcodes: Vec<&str> = body
             .results

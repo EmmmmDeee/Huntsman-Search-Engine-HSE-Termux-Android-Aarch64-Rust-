@@ -71,19 +71,20 @@ impl Module for WebserverBanner {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let host = match target.kind {
+        let (host, port) = match target.kind {
             TargetKind::Url => match url::Url::parse(target.value.trim()) {
-                Ok(u) => u.host_str().unwrap_or("").to_string(),
+                Ok(u) => (u.host_str().unwrap_or("").to_string(), u.port()),
                 Err(_) => return Ok(ModuleResult::new()),
             },
-            _ => target.value.trim().to_string(),
+            _ => (target.value.trim().to_string(), None),
         };
         if host.is_empty() || host.contains('/') {
             return Ok(ModuleResult::new());
         }
 
+        let port_suffix = port.map_or(String::new(), |p| format!(":{p}"));
         for scheme in ["https", "http"] {
-            let url = format!("{scheme}://{host}/");
+            let url = format!("{scheme}://{host}{port_suffix}/");
             let Ok(resp) = ctx.http.head(&url).send().await else {
                 continue;
             };

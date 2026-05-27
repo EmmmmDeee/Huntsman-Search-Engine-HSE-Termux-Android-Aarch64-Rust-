@@ -625,10 +625,10 @@ pub fn expansion_weight(kind: TargetKind, c_eff: f64, value: &str, has_paid_keys
 fn domain_expansion_factor(domain: &str) -> f64 {
     let d = domain.trim().to_lowercase();
     let d = d.strip_prefix("www.").unwrap_or(&d);
-    if MEGA_DOMAINS
-        .iter()
-        .any(|m| d == *m || d.ends_with(&format!(".{m}")))
-    {
+    if MEGA_DOMAINS.iter().any(|m| {
+        d == *m
+            || (d.len() > m.len() && d.as_bytes()[d.len() - m.len() - 1] == b'.' && d.ends_with(m))
+    }) {
         0.15
     } else {
         1.0
@@ -729,6 +729,20 @@ const MEGA_DOMAINS: &[&str] = &[
     "whatismyip.com",
     "whatismyipaddress.com",
     "whois.com",
+    // Australian mega-sites (common noise in AU OSINT)
+    "abc.net.au",
+    "news.com.au",
+    "smh.com.au",
+    "nine.com.au",
+    "realestate.com.au",
+    "seek.com.au",
+    "yellowpages.com.au",
+    // Additional global platforms
+    "archive.org",
+    "mastodon.social",
+    "paypal.com",
+    "snapchat.com",
+    "threads.net",
 ];
 
 #[cfg(test)]

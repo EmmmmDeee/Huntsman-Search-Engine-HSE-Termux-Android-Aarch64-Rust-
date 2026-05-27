@@ -122,10 +122,13 @@ impl SecurityTrails {
             return Ok(ModuleResult::new());
         }
         let url = format!(
-            "https://api.securitytrails.com/v1/ips/nearby/{}",
+            "https://api.securitytrails.com/v1/ips/list?ipAddresses={}",
             crate::util::http::urlencode(ip),
         );
-        let body: AssociatedResp = self.fetch_keyed(key, &url, ctx).await?;
+        let body: AssociatedResp = match self.fetch_keyed(key, &url, ctx).await {
+            Ok(b) => b,
+            Err(_) => return Ok(ModuleResult::new()),
+        };
 
         let mut result = ModuleResult::new();
         for record in body.records.iter().take(30) {

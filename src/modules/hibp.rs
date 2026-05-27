@@ -270,7 +270,15 @@ impl Hibp {
             )
             .with_attr("breach_count", total.to_string())
             .with_attr("verified_count", verified_count.to_string())
-            .with_attr("breach_names", breach_names.join(", ")),
+            .with_attr("breach_names", breach_names.join(", "))
+            .with_attr(
+                "breach_date",
+                breaches
+                    .iter()
+                    .filter_map(|b| b.breach_date.as_deref())
+                    .max()
+                    .unwrap_or(""),
+            ),
         );
         result.push(email_ent);
 
@@ -313,7 +321,8 @@ impl Hibp {
                     )
                     .with_attr("breach_name", &breach.name)
                     .with_attr("pwn_count", breach.pwn_count.unwrap_or(0).to_string())
-                    .with_attr("data_classes", breach.data_classes.join(", ")),
+                    .with_attr("data_classes", breach.data_classes.join(", "))
+                    .with_attr("breach_date", breach.breach_date.as_deref().unwrap_or("")),
                 );
                 result.push(de);
             }

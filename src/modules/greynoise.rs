@@ -108,7 +108,10 @@ impl Module for GreyNoise {
             entity.tag("greynoise-riot");
         }
         match data.classification.as_deref() {
-            Some("malicious") => entity.tag("greynoise-malicious"),
+            Some("malicious") => {
+                entity.tag("malicious");
+                entity.tag("greynoise-malicious");
+            }
             Some("benign") => entity.tag("greynoise-benign"),
             _ => entity.tag("greynoise-unknown"),
         }

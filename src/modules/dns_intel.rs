@@ -107,6 +107,38 @@ const SUBDOMAINS: &[&str] = &[
     "autodiscover",
     "autoconfig",
     "webdisk",
+    // CI/CD & DevOps
+    "ci",
+    "cd",
+    "jenkins",
+    "drone",
+    // Container & orchestration
+    "k8s",
+    "registry",
+    "docker",
+    // Monitoring & observability
+    "grafana",
+    "prometheus",
+    "kibana",
+    "sentry",
+    "monitoring",
+    "logs",
+    "metrics",
+    // Database & cache
+    "db",
+    "mysql",
+    "postgres",
+    "redis",
+    "mongo",
+    "elastic",
+    // Cloud & remote
+    "cloud",
+    "remote",
+    "demo",
+    "sandbox",
+    "uat",
+    "preview",
+    "intranet",
 ];
 
 const MAX_CONCURRENT_BRUTE: usize = 12;
