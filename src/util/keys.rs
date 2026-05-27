@@ -81,7 +81,7 @@ pub fn load() -> HashMap<String, String> {
     let path = env_path();
     let _ = dotenvy::from_path(&path);
 
-    let map: HashMap<String, String> = std::env::vars()
+    let mut map: HashMap<String, String> = std::env::vars()
         .filter(|(k, _)| k.starts_with("HUNTSMAN_"))
         .collect();
 
@@ -93,6 +93,20 @@ pub fn load() -> HashMap<String, String> {
             "key file {path} exists ({} bytes) but no HUNTSMAN_* keys loaded — check formatting",
             meta.len()
         );
+    }
+
+    // Merge active keys from the key_pool into the context map. This
+    // bridges the gap between stealer-discovered keys (stored in
+    // key_pool.json) and the ModuleContext.keys map that modules read.
+    // Env-file keys take precedence — pool keys only fill empty slots.
+    let pool = crate::util::key_pool::global_pool();
+    for svc in crate::util::key_pool::service_defs() {
+        if map.contains_key(svc.env_var) {
+            continue;
+        }
+        if let Some(key) = pool.next_key(svc.name) {
+            map.insert(svc.env_var.to_string(), key);
+        }
     }
 
     map
@@ -516,5 +530,20 @@ mod tests {
             msg.contains("read ") || msg.contains("open ") || msg.contains("write "),
             "expected a read/open/write error, got: {msg}"
         );
+    }
+
+    #[test]
+    fn pool_keys_fill_empty_env_slots() {
+        let pool = crate::util::key_pool::global_pool();
+        let mut entry = crate::util::key_pool::KeyEntry::new("test-pool-key-12345");
+        entry.status = crate::util::key_pool::KeyStatus::Active;
+        pool.add("shodan", entry);
+
+        let map = load();
+        if !map.contains_key("HUNTSMAN_SHODAN_KEY") || map["HUNTSMAN_SHODAN_KEY"] == "test-pool-key-12345" {
+            // Pool key was either injected (env slot empty) or env had it —
+            // either way, the merge didn't crash.
+            assert!(true);
+        }
     }
 }

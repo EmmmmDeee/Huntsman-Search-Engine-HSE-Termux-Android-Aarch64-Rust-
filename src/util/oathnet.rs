@@ -160,6 +160,21 @@ pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, Stri
         "urlscan.io",
         "abuseipdb.com",
         "serpapi.com",
+        "criminalip.io",
+        "onyphe.io",
+        "zoomeye.org",
+        "fofa.info",
+        "netlas.io",
+        "pulsedive.com",
+        "builtwith.com",
+        "emailrep.io",
+        "whoisxmlapi.com",
+        "passivetotal.org",
+        "twilio.com",
+        "snyk.io",
+        "mailchimp.com",
+        "ngrok.com",
+        "heroku.com",
     ];
 
     let mut creds = Vec::new();
