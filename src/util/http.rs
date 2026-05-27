@@ -231,6 +231,18 @@ pub fn urlencode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
+/// Parse a reqwest Response as JSON while scanning the raw body for API
+/// keys. Drop-in replacement for `resp.json::<T>().await` that ensures
+/// no response body bypasses the key scanner.
+pub async fn json_scanned<T: DeserializeOwned>(
+    resp: reqwest::Response,
+    module: &str,
+) -> std::result::Result<T, String> {
+    let text = resp.text().await.map_err(|e| format!("{module}: {e}"))?;
+    scan_for_api_keys(&text);
+    serde_json::from_str(&text).map_err(|e| format!("{module}: {e}"))
+}
+
 /// Scan arbitrary text for API key patterns and store any discoveries
 /// in the global key pool. Call on any raw text that passes through the
 /// system — HTTP response bodies, WHOIS output, certificate fields, etc.

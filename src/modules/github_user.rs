@@ -306,7 +306,7 @@ impl GithubUser {
             key: Option<String>,
         }
 
-        let keys: Vec<SshKey> = match resp.json().await {
+        let keys: Vec<SshKey> = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(k) => k,
             Err(_) => return,
         };
@@ -361,7 +361,7 @@ impl GithubUser {
             event_type: Option<String>,
         }
 
-        let events: Vec<GhEvent> = match resp.json().await {
+        let events: Vec<GhEvent> = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(e) => e,
             Err(_) => return,
         };

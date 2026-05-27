@@ -137,7 +137,7 @@ impl Shodan {
             return;
         }
 
-        let body: InternetDbResp = match resp.json().await {
+        let body: InternetDbResp = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(b) => b,
             Err(_) => return,
         };

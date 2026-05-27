@@ -315,7 +315,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         ));
     }
 
-    let data: ProfileResp = match resp.json().await {
+    let data: ProfileResp = match crate::util::http::json_scanned(resp, SRC).await {
         Ok(d) => d,
         // Placeholder profile -> no findings (not a module error).
         Err(_) => return Ok(ModuleResult::new()),

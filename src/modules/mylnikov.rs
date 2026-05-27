@@ -76,7 +76,7 @@ impl Module for Mylnikov {
             return Ok(ModuleResult::new());
         }
 
-        let body: MylnikovResp = match resp.json().await {
+        let body: MylnikovResp = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(b) => b,
             Err(_) => return Ok(ModuleResult::new()),
         };

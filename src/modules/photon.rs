@@ -122,7 +122,7 @@ impl Photon {
             return Ok(ModuleResult::new());
         }
 
-        let body: PhotonResp = match resp.json().await {
+        let body: PhotonResp = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(b) => b,
             Err(_) => return Ok(ModuleResult::new()),
         };
@@ -179,7 +179,7 @@ impl Photon {
             return Ok(ModuleResult::new());
         }
 
-        let body: PhotonResp = match resp.json().await {
+        let body: PhotonResp = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(b) => b,
             Err(_) => return Ok(ModuleResult::new()),
         };

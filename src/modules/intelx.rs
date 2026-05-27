@@ -274,7 +274,7 @@ impl Module for IntelX {
                 }
                 continue;
             }
-            let r: ResultResp = match resp.json().await {
+            let r: ResultResp = match crate::util::http::json_scanned(resp, SRC).await {
                 Ok(x) => x,
                 Err(_) => continue,
             };

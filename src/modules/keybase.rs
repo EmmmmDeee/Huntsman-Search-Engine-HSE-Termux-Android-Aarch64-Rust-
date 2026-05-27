@@ -130,7 +130,7 @@ impl Module for Keybase {
             return Ok(ModuleResult::new());
         }
 
-        let body: KbResp = match resp.json().await {
+        let body: KbResp = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(b) => b,
             Err(_) => return Ok(ModuleResult::new()),
         };
