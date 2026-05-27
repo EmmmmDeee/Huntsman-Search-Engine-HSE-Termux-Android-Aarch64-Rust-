@@ -232,8 +232,13 @@ impl Module for OathnetPro {
             }
         }
 
-        // ── Targeted API credential harvest ─────────────────────────
-        if !ctx.cancel.is_cancelled() {
+        // ── Targeted API credential harvest (skip for IP/Phone — no relevant stealer data) ──
+        if !ctx.cancel.is_cancelled()
+            && matches!(
+                target.kind,
+                TargetKind::Email | TargetKind::Username | TargetKind::Domain
+            )
+        {
             harvest_api_credentials_from_stealer(key).await;
         }
 

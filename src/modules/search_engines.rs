@@ -123,6 +123,10 @@ impl Module for SearchEngines {
             if ctx.cancel.is_cancelled() {
                 break;
             }
+            let elapsed = process_start.elapsed().as_millis() as u64;
+            if elapsed > budget_ms.saturating_sub(30_000) {
+                break;
+            }
 
             for engine in ENGINES {
                 if ctx.cancel.is_cancelled() {
@@ -249,7 +253,10 @@ impl Module for SearchEngines {
         //    and we have entities worth enriching. ──────────────────
         let elapsed_ms = process_start.elapsed().as_millis() as u64;
         let remaining_ms = budget_ms.saturating_sub(elapsed_ms);
-        if !ctx.cancel.is_cancelled() && remaining_ms > 10_000 {
+        if !ctx.cancel.is_cancelled()
+            && remaining_ms > 10_000
+            && !crate::util::oathnet::is_quota_exhausted()
+        {
             enrich_via_oathnet(ctx, &mut module_result, target).await;
         }
 
@@ -804,6 +811,9 @@ async fn generate_and_verify_emails(
 // ─── API enrichment: OathNet via shared util::oathnet client ────────────────
 
 async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult, target: &Target) {
+    if crate::util::oathnet::is_quota_exhausted() {
+        return;
+    }
     let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
 
     // Build target-name fragments for username relevance filtering.
@@ -2693,7 +2703,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
         for addr in extract_addresses_from_text(&combined_text) {
             let addr_key = format!("@addr:{}", normalise_address_key(&addr));
             if seen_domains.insert(addr_key.clone()) {
-                let mut e = Entity::new(EntityKind::Address, &addr, 0.40, scan_id);
+                let mut e = Entity::new(EntityKind::Address, &addr, 0.45, scan_id);
                 e.tag("search-discovered");
                 e.tag(tags::WEB_SCRAPED);
                 e.add_evidence(
