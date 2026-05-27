@@ -100,12 +100,18 @@ impl Module for OathnetPro {
         .with_attr("hits", total.to_string())
         .with_attr("top_dbnames", top_dbs.join(", "));
 
+        let mut countries: Vec<String> = Vec::new();
+        let mut names: Vec<String> = Vec::new();
         for item in &items {
-            if let Some(c) = val_str(item, "country") {
-                ev = ev.with_attr("country", &c);
+            if let Some(c) = val_str(item, "country")
+                && !countries.contains(&c)
+            {
+                countries.push(c);
             }
-            if let Some(n) = val_str(item, "full_name") {
-                ev = ev.with_attr("full_name", &n);
+            if let Some(n) = val_str(item, "full_name")
+                && !names.contains(&n)
+            {
+                names.push(n);
             }
             if let Some(g) = val_str(item, "gender") {
                 ev = ev.with_attr("gender", &g);
@@ -113,6 +119,12 @@ impl Module for OathnetPro {
             if let Some(dob) = val_str(item, "date_birth") {
                 ev = ev.with_attr("date_of_birth", &dob);
             }
+        }
+        if !countries.is_empty() {
+            ev = ev.with_attr("countries", countries.join(", "));
+        }
+        if !names.is_empty() {
+            ev = ev.with_attr("names", names.join("; "));
         }
         parent.add_evidence(ev);
         result.push(parent);

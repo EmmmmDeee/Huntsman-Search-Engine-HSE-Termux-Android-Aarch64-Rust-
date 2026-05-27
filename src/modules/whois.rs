@@ -82,7 +82,11 @@ impl Module for Whois {
         // 2) If IANA's response references another whois server, follow once.
         let response = match find_referral(&raw) {
             Some(server) => {
-                let target_server = format!("{server}:43");
+                let target_server = if server.contains(':') {
+                    server.clone()
+                } else {
+                    format!("{server}:43")
+                };
                 query(&target_server, &query_value).await.unwrap_or(raw)
             }
             None => raw,
@@ -280,6 +284,56 @@ impl Module for Whois {
                         .with_attr("parent_target", target.value.as_str()),
                 );
                 result.push(oe);
+            }
+        }
+
+        // Registrant name → Person entity (when not redacted).
+        let registrant_name = field(
+            &response,
+            &["Registrant Name:", "Registrant Person:", "person:"],
+        );
+        if let Some(name) = &registrant_name {
+            let name = name.trim();
+            if name.len() >= 4
+                && name.contains(' ')
+                && !name.to_lowercase().contains("privacy")
+                && !name.to_lowercase().contains("redacted")
+                && !name.to_lowercase().contains("data protected")
+                && !name.to_lowercase().contains("not disclosed")
+            {
+                let mut pe = Entity::new(EntityKind::Person, name, 0.72, &_ctx.scan_id);
+                pe.tag("whois");
+                pe.tag("registrant");
+                pe.add_evidence(
+                    Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
+                        .with_attr("parent_target", target.value.as_str()),
+                );
+                result.push(pe);
+            }
+        }
+
+        // Registrant address → Address entity (when available and not redacted).
+        if let Some(country) = &registrant_country {
+            let parts: Vec<&str> = [registrant_state.as_deref(), Some(country.as_str())]
+                .iter()
+                .filter_map(|p| *p)
+                .filter(|p| {
+                    !p.is_empty()
+                        && !p.to_lowercase().contains("redacted")
+                        && !p.to_lowercase().contains("privacy")
+                })
+                .collect();
+            if !parts.is_empty() && parts.iter().any(|p| p.len() >= 2) {
+                let addr = parts.join(", ");
+                let mut ae = Entity::new(EntityKind::Address, &addr, 0.50, &_ctx.scan_id);
+                ae.tag("whois");
+                ae.tag("registrant");
+                ae.tag("geoint");
+                ae.add_evidence(
+                    Evidence::new(SRC, format!("Registrant location for {}", target.value))
+                        .with_attr("parent_target", target.value.as_str()),
+                );
+                result.push(ae);
             }
         }
 
