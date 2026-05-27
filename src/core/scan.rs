@@ -372,6 +372,15 @@ pub struct ScanOptions {
     /// Freeform notes / investigation context.
     #[serde(default)]
     pub notes: Option<String>,
+
+    /// Webhook URL to POST scan results to on completion. None = no webhook.
+    #[serde(default)]
+    pub webhook_url: Option<String>,
+
+    /// Named scan profile (passive, footprint, investigate, fast).
+    /// When set, overrides individual option fields with the profile's values.
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 impl Default for ScanOptions {
@@ -391,6 +400,8 @@ impl Default for ScanOptions {
             max_wall_time_secs: None,
             scan_tags: Vec::new(),
             notes: None,
+            webhook_url: None,
+            profile: None,
         }
     }
 }

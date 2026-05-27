@@ -6,9 +6,12 @@
 pub mod correlator;
 pub mod engine;
 pub mod entity;
+pub mod gexf;
 pub mod live;
 pub mod module;
+pub mod profiles;
 pub mod scan;
+pub mod webhook;
 
 pub mod tags {
     pub const BREACH: &str = "breach";
