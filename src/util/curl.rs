@@ -141,7 +141,13 @@ pub async fn fetch_via_proxy(url: &str, timeout_ms: u64, ua: &str, proxy: &str) 
 /// Fetch JSON from a URL via curl, deserialise as T.
 pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u64) -> Option<T> {
     let body = fetch(url, timeout_ms).await?;
-    serde_json::from_str(&body).ok()
+    match serde_json::from_str(&body) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::debug!(url, error = %e, "curl JSON parse failed ({} bytes)", body.len());
+            None
+        }
+    }
 }
 
 /// Fetch with proxy fallback: direct → HUNTSMAN_PROXY env → pool rotation.

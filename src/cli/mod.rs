@@ -1582,7 +1582,9 @@ fn build_runtime(
     crate::core::event::EventBus,
     Arc<ScanEngine>,
 )> {
-    let store: Arc<dyn crate::core::port::StoragePort> = Arc::new(Store::open(&default_db_path())?);
+    let db = Store::open(&default_db_path())?;
+    let _ = db.prune_events(7 * 86400, 100_000);
+    let store: Arc<dyn crate::core::port::StoragePort> = Arc::new(db);
     let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
     let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
     Ok((store, bus, engine))

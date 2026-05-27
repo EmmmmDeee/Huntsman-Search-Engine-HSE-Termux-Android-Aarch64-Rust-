@@ -237,6 +237,27 @@ impl Store {
         Ok(true)
     }
 
+    /// Prune events older than `max_age_secs` and limit total rows to
+    /// `max_rows`. Prevents unbounded database growth from long-running
+    /// or repeated scans. Called automatically at startup.
+    pub fn prune_events(&self, max_age_secs: u64, max_rows: usize) -> Result<usize> {
+        let conn = self.conn.lock();
+        let cutoff = crate::core::entity::unix_now().saturating_sub(max_age_secs);
+        let aged = conn.execute(
+            "DELETE FROM events WHERE ts < ?1",
+            params![cutoff as i64],
+        )?;
+        let excess = conn.execute(
+            "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?1)",
+            params![max_rows as i64],
+        )?;
+        let total = aged + excess;
+        if total > 0 {
+            tracing::info!("pruned {total} old events ({aged} aged, {excess} excess)");
+        }
+        Ok(total)
+    }
+
     // ── Entities ───────────────────────────────────────────────────────────
     // Entity persistence + observation junction table.
 
