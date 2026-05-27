@@ -39,7 +39,7 @@ use axum::{
 use serde_json::json;
 use tower_http::cors::CorsLayer;
 
-use super::{AppState, handlers};
+use super::{AppState, handlers, scan_handlers};
 
 /// Embedded SPA — single self-contained HTML file with inline CSS + JS.
 /// Lives in `src/web/spa.html` and is compiled into the binary at build time
@@ -131,30 +131,30 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── scans ──
         .route(
             "/scans",
-            post(handlers::scan_create).get(handlers::scan_list),
+            post(scan_handlers::scan_create).get(scan_handlers::scan_list),
         )
         .route(
             "/scans/{id}",
-            get(handlers::scan_get).delete(handlers::scan_delete),
+            get(scan_handlers::scan_get).delete(scan_handlers::scan_delete),
         )
-        .route("/scans/{id}/rerun", post(handlers::scan_rerun))
-        .route("/scans/{id}/cancel", post(handlers::scan_cancel))
-        .route("/scans/{id}/entities", get(handlers::scan_entities))
+        .route("/scans/{id}/rerun", post(scan_handlers::scan_rerun))
+        .route("/scans/{id}/cancel", post(scan_handlers::scan_cancel))
+        .route("/scans/{id}/entities", get(scan_handlers::scan_entities))
         .route(
             "/scans/{id}/entities/filter",
-            get(handlers::scan_entities_filter),
+            get(scan_handlers::scan_entities_filter),
         )
         .route(
             "/scans/{id}/entities/facets",
-            get(handlers::scan_entities_facets),
+            get(scan_handlers::scan_entities_facets),
         )
-        .route("/scans/{id}/entities.csv", get(handlers::scan_entities_csv))
-        .route("/scans/{id}/report.json", get(handlers::scan_report_json))
-        .route("/scans/{id}/correlations", get(handlers::scan_correlations))
+        .route("/scans/{id}/entities.csv", get(scan_handlers::scan_entities_csv))
+        .route("/scans/{id}/report.json", get(scan_handlers::scan_report_json))
+        .route("/scans/{id}/correlations", get(scan_handlers::scan_correlations))
         .route("/scans/{id}/events", get(handlers::scan_events_sse))
         .route(
             "/scans/{id}/events.history",
-            get(handlers::scan_events_history),
+            get(scan_handlers::scan_events_history),
         )
         // ── live (v0.5+) ──
         .route(
