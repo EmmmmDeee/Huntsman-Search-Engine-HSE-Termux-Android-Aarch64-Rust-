@@ -13,10 +13,9 @@ use std::collections::HashSet;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
-    tags,
 };
 
 const SRC: &str = "doh_resolver";

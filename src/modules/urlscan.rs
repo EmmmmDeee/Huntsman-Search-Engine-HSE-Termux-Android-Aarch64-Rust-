@@ -192,6 +192,22 @@ impl Module for UrlScan {
             }
         }
 
+        for country in &countries {
+            let mut ae = Entity::new(
+                crate::core::entity::EntityKind::Address,
+                country,
+                0.50,
+                &ctx.scan_id,
+            );
+            ae.tag("urlscan");
+            ae.tag("geoint");
+            ae.add_evidence(Evidence::new(
+                "urlscan",
+                format!("Hosting country from URLScan.io scans of {}", &target.value),
+            ));
+            result.push(ae);
+        }
+
         Ok(result)
     }
 }

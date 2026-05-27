@@ -11,7 +11,7 @@ use std::collections::HashSet;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -23,6 +23,7 @@ struct DbResp {
     #[serde(default)]
     domains: Vec<DomainEntry>,
     #[serde(default)]
+    #[allow(dead_code)]
     total: Option<u64>,
 }
 
