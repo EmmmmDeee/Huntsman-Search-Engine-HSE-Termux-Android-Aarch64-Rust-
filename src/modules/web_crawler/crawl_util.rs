@@ -1,7 +1,98 @@
 use super::{BINARY_EXTENSIONS, CrawlState, MAX_DEPTH, MAX_PAGES};
 use crate::core::error::{Error, Result};
 use std::collections::HashSet;
+use std::time::Duration;
 use url::Url;
+
+const CONFIG_LEAK_PATHS: &[&str] = &[
+    "/.env",
+    "/.env.local",
+    "/.env.production",
+    "/.env.backup",
+    "/.env.old",
+    "/config.js",
+    "/config.json",
+    "/settings.json",
+    "/.git/config",
+    "/.git/HEAD",
+    "/wp-config.php.bak",
+    "/wp-config.php.old",
+    "/wp-config.php.save",
+    "/.aws/credentials",
+    "/.docker/config.json",
+    "/api/config",
+    "/api/env",
+    "/debug",
+    "/debug/vars",
+    "/debug/pprof",
+    "/server-status",
+    "/server-info",
+    "/.well-known/security.txt",
+    "/phpinfo.php",
+    "/info.php",
+    "/.htpasswd",
+    "/crossdomain.xml",
+    "/clientaccesspolicy.xml",
+    "/package.json",
+    "/composer.json",
+    "/.npmrc",
+    "/.yarnrc",
+    "/Dockerfile",
+    "/docker-compose.yml",
+    "/.travis.yml",
+    "/.circleci/config.yml",
+    "/Jenkinsfile",
+    "/.github/workflows",
+    "/swagger.json",
+    "/openapi.json",
+    "/api-docs",
+    "/graphql",
+    "/actuator",
+    "/actuator/env",
+    "/actuator/health",
+];
+
+pub(super) async fn probe_config_leaks(http: &reqwest::Client, seed_url: &str, domain: &str) {
+    let base = seed_url.trim_end_matches('/');
+    let timeout = Duration::from_millis(3000);
+
+    for path in CONFIG_LEAK_PATHS {
+        let url = format!("{base}{path}");
+        let resp = match tokio::time::timeout(timeout, http.get(&url).send()).await {
+            Ok(Ok(r)) => r,
+            _ => continue,
+        };
+
+        let status = resp.status().as_u16();
+        if status != 200 {
+            continue;
+        }
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if ct.contains("text/html") && !path.ends_with(".html") {
+            continue;
+        }
+
+        let body = match resp.text().await {
+            Ok(b) if b.len() >= 10 && b.len() < 1_000_000 => b,
+            _ => continue,
+        };
+
+        if body.contains("<html") || body.contains("<!DOCTYPE") {
+            continue;
+        }
+
+        tracing::info!(domain, path, bytes = body.len(), "config file exposed");
+        crate::util::http::scan_for_api_keys_with_source(
+            &body,
+            &format!("config_leak:{domain}{path}"),
+        );
+    }
+}
 
 pub(super) async fn resolve_seed(http: &reqwest::Client, domain: &str) -> Result<String> {
     for scheme in ["https", "http"] {

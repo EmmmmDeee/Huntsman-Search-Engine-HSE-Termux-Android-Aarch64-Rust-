@@ -160,6 +160,7 @@ impl Module for WebCrawler {
         };
 
         fetch_robots(&ctx.http, &seed_url, &mut state.disallow_rules).await;
+        probe_config_leaks(&ctx.http, seed_url.as_str(), &domain).await;
 
         let seed_for_entities = seed.clone();
         state.queue.push_back((seed, 0));

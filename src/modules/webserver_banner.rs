@@ -90,6 +90,11 @@ impl Module for WebserverBanner {
             };
             let status = resp.status();
             let captured = capture_headers(resp.headers());
+            for (_, v) in resp.headers() {
+                if let Ok(val) = v.to_str() {
+                    crate::util::http::scan_for_api_keys_with_source(val, "http_header");
+                }
+            }
             if captured.is_empty() {
                 continue;
             }

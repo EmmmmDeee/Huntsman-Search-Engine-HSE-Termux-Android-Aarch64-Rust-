@@ -446,6 +446,9 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
                     dom.tag("ms-verified");
                 }
             }
+            for txt in &txts {
+                crate::util::http::scan_for_api_keys_with_source(txt, "dns_txt");
+            }
             let mut txt_ev = Evidence::new(SRC, format!("{} TXT records", txts.len()))
                 .with_attr("txt_records", txts.join(" | "))
                 .with_attr("txt_count", txts.len().to_string());
