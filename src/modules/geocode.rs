@@ -187,7 +187,7 @@ impl Geocode {
 
         let display = data.display_name.as_deref().unwrap_or("-");
 
-        let mut entity = Entity::new(EntityKind::Address, display, 0.65, &ctx.scan_id);
+        let mut entity = Entity::new(EntityKind::Address, display, 0.72, &ctx.scan_id);
         entity.tag("geoint");
         entity.tag("reverse-geocoded");
 

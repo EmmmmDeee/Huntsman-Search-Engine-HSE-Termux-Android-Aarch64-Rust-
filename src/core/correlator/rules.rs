@@ -893,3 +893,81 @@ pub(super) fn rule_au_025_corporate_identity_link(
         ts,
     )]
 }
+
+pub(super) fn rule_au_026_validated_address(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    const GEO_SOURCES: &[&str] = &[
+        "geocode", "photon", "geo_intel", "wigle", "overpass", "ip_geo",
+        "ip2location", "ipapi", "ipinfo", "opencorporates", "epieos",
+        "proxycurl", "contact_enrich",
+    ];
+    let mut out = Vec::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Address && e.confidence >= 0.50) {
+        let sources: HashSet<&str> = e
+            .evidence
+            .iter()
+            .filter(|ev| GEO_SOURCES.contains(&ev.source.as_str()))
+            .map(|ev| ev.source.as_str())
+            .collect();
+        if sources.len() >= 2 {
+            let mut names: Vec<&str> = sources.into_iter().collect();
+            names.sort_unstable();
+            out.push(Correlation::new(
+                "AU-026",
+                "Multi-source validated address",
+                Severity::High,
+                format!(
+                    "Address '{}' confirmed by {} independent source(s): {}",
+                    e.value,
+                    names.len(),
+                    names.join(", ")
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}
+
+pub(super) fn rule_au_027_address_coordinates_chain(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let addresses: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address && e.confidence >= 0.55)
+        .collect();
+    let coords: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.55)
+        .collect();
+    if addresses.is_empty() || coords.is_empty() {
+        return Vec::new();
+    }
+    let addr_has_geo_tag = addresses.iter().any(|a| a.has_tag("geoint") || a.has_tag("reverse-geocoded") || a.has_tag("validated"));
+    let coords_has_geo_tag = coords.iter().any(|c| c.has_tag("geoint") || c.has_tag("geocoded"));
+    if !addr_has_geo_tag && !coords_has_geo_tag {
+        return Vec::new();
+    }
+    let mut uids: Vec<String> = addresses.iter().take(3).map(|a| a.uid.clone()).collect();
+    uids.extend(coords.iter().take(3).map(|c| c.uid.clone()));
+    vec![Correlation::new(
+        "AU-027",
+        "Address-coordinates geolocation chain",
+        Severity::High,
+        format!(
+            "{} address(es) and {} coordinate set(s) form a validated geolocation chain",
+            addresses.len(),
+            coords.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}

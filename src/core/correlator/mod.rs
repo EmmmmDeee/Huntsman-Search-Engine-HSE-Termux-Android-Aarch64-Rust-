@@ -150,6 +150,8 @@ const RULES: &[RuleFn] = &[
     rule_au_023_cross_platform_identity,
     rule_au_024_email_fraud_signal,
     rule_au_025_corporate_identity_link,
+    rule_au_026_validated_address,
+    rule_au_027_address_coordinates_chain,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

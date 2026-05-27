@@ -470,10 +470,18 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // Coords/Address: photon + geocode provide bidirectional geocoding.
-        // R1 refines opposite direction. R2 overpass/wigle for infra/WiFi.
-        // R3 catches sunrise_sunset chronolocation + BSSID expansion.
-        TargetKind::Coordinates | TargetKind::Address => 3,
+        // Coordinates: photon + geocode reverse → Address. R2 overpass + wigle.
+        // R3 sunrise_sunset chronolocation + BSSID expansion.
+        TargetKind::Coordinates => 3,
+
+        // Address is an extremely high-value pivot when validated:
+        //   R0: geocode/photon → Coordinates (bidirectional, dual-source)
+        //   R1: overpass → infrastructure nodes; wigle → WiFi/BSSIDs
+        //   R2: mylnikov on BSSIDs → more coords; sunrise_sunset → chronoloc
+        //   R3: search_engines → associated entities; geo_intel → breach context
+        TargetKind::Address => {
+            if has_paid_keys { 5 } else { 4 }
+        }
 
         // Organisation/ABN: opencorporates → addresses + company registry.
         // R1 geocode → coords. R2 overpass for nearby infrastructure.
@@ -542,7 +550,7 @@ pub fn seed_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
         TargetKind::AbnAcn => 6.2,
         TargetKind::MacAddress => 11.0,
         TargetKind::Coordinates => 4.8,
-        TargetKind::Address => 4.2,
+        TargetKind::Address => 18.5,
     }
 }
 
@@ -579,7 +587,7 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
         TargetKind::AbnAcn => 4.0,
         TargetKind::Organisation => 6.4,
         TargetKind::Coordinates => 4.2,
-        TargetKind::Address => 3.8,
+        TargetKind::Address => 15.0,
     }
 }
 

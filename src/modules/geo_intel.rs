@@ -145,6 +145,7 @@ impl Module for GeoIntel {
                 | TargetKind::Url
                 | TargetKind::FullName
                 | TargetKind::Organisation
+                | TargetKind::Address
         )
     }
 
@@ -159,7 +160,8 @@ impl Module for GeoIntel {
             | TargetKind::Username
             | TargetKind::Domain
             | TargetKind::FullName
-            | TargetKind::Organisation => process_identity(target, ctx).await,
+            | TargetKind::Organisation
+            | TargetKind::Address => process_identity(target, ctx).await,
             TargetKind::Phone => process_phone(target, ctx).await,
             TargetKind::Url => {
                 // Extract domain from URL and run the domain identity path
@@ -312,6 +314,7 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
         TargetKind::Domain => "domain",
         TargetKind::FullName => "full_name",
         TargetKind::Organisation => "domain",
+        TargetKind::Address => "address",
         _ => return Ok(result),
     };
 
@@ -1041,7 +1044,12 @@ mod tests {
     fn rejects_non_geo_targets() {
         let m = GeoIntel;
         assert!(!m.accepts(&Target::new(TargetKind::Coordinates, "0,0")));
-        assert!(!m.accepts(&Target::new(TargetKind::Address, "Brisbane")));
+    }
+
+    #[test]
+    fn accepts_address_for_breach_enrichment() {
+        let m = GeoIntel;
+        assert!(m.accepts(&Target::new(TargetKind::Address, "Brisbane, QLD, Australia")));
     }
 
     #[test]

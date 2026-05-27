@@ -207,7 +207,7 @@ impl Photon {
 
         if parts.len() >= 2 {
             let display = parts.join(", ");
-            let mut ae = Entity::new(EntityKind::Address, &display, 0.60, &ctx.scan_id);
+            let mut ae = Entity::new(EntityKind::Address, &display, 0.70, &ctx.scan_id);
             ae.tag("photon");
             ae.tag("reverse-geocoded");
             ae.tag("geoint");

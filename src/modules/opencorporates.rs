@@ -186,9 +186,10 @@ impl Module for OpenCorporates {
             if let Some(addr) = co.registered_address_in_full.as_deref()
                 && addr.len() >= 5
             {
-                let mut ae = Entity::new(EntityKind::Address, addr, 0.55, &ctx.scan_id);
+                let mut ae = Entity::new(EntityKind::Address, addr, 0.70, &ctx.scan_id);
                 ae.tag("opencorporates");
                 ae.tag("registered-address");
+                ae.tag("validated");
                 ae.add_evidence(Evidence::new(
                     SRC,
                     format!("Registered address for {name}"),
