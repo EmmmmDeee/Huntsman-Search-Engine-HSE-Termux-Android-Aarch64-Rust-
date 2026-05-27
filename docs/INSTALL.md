@@ -179,7 +179,7 @@ In Termux, `$HOME` resolves to `/data/data/com.termux/files/home`.
 ```bash
 hse --version           # → hse 0.9.0
 hse doctor              # environment report — should print "Termux: detected" on-device
-hse modules             # 21 modules listed (15 network/identity + 6 Termux sensors)
+hse modules             # 63 modules listed (see docs/MODULES.md for full catalogue)
 hse scan --kind email --value test@example.com --modules email_to_username,gravatar
 ```
 

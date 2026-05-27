@@ -12,6 +12,8 @@ pub(super) fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u
         "hibp",
         "oathnet_pro",
         "search_engines:oathnet",
+        "emailrep",
+        "pwned_passwords",
     ];
     let mut out = Vec::new();
     for e in entities.iter().filter(|e| e.kind == EntityKind::Email) {
@@ -776,6 +778,115 @@ pub(super) fn rule_au_022_organisation_with_breach(
             "{} organisation(s) co-located with {} breach entities",
             orgs.len(),
             breach_entities.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
+pub(super) fn rule_au_023_cross_platform_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    const IDENTITY_SOURCES: &[&str] = &[
+        "keybase", "github_user", "proxycurl", "epieos", "seon", "contact_enrich",
+    ];
+    let mut out = Vec::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Person && e.confidence >= 0.60) {
+        let sources: HashSet<&str> = e
+            .evidence
+            .iter()
+            .filter(|ev| IDENTITY_SOURCES.contains(&ev.source.as_str()))
+            .map(|ev| ev.source.as_str())
+            .collect();
+        if sources.len() >= 2 {
+            let mut names: Vec<&str> = sources.into_iter().collect();
+            names.sort_unstable();
+            out.push(Correlation::new(
+                "AU-023",
+                "Cross-platform identity convergence",
+                Severity::High,
+                format!(
+                    "Person '{}' confirmed by {} independent identity source(s): {}",
+                    e.value,
+                    names.len(),
+                    names.join(", ")
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}
+
+pub(super) fn rule_au_024_email_fraud_signal(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .filter(|e| {
+            let suspicious = e.has_tag("suspicious") || e.has_tag("high-risk");
+            let breach = e.has_tag("breach");
+            let disposable = e.has_tag("disposable");
+            (suspicious && breach) || (suspicious && disposable) || (breach && disposable)
+        })
+        .map(|e| {
+            let mut signals: Vec<&str> = Vec::new();
+            if e.has_tag("suspicious") || e.has_tag("high-risk") {
+                signals.push("fraud-flagged");
+            }
+            if e.has_tag("breach") {
+                signals.push("breach-exposed");
+            }
+            if e.has_tag("disposable") {
+                signals.push("disposable");
+            }
+            Correlation::new(
+                "AU-024",
+                "Multi-signal email fraud indicator",
+                Severity::High,
+                format!("Email '{}' has converging risk signals: {}", e.value, signals.join(" + ")),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
+}
+
+pub(super) fn rule_au_025_corporate_identity_link(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let orgs: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation && e.has_tag("opencorporates"))
+        .collect();
+    let persons: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person && e.confidence >= 0.60)
+        .collect();
+    if orgs.is_empty() || persons.is_empty() {
+        return Vec::new();
+    }
+    let mut uids: Vec<String> = orgs.iter().map(|o| o.uid.clone()).collect();
+    uids.extend(persons.iter().take(5).map(|p| p.uid.clone()));
+    vec![Correlation::new(
+        "AU-025",
+        "Corporate registry linked to identity",
+        Severity::Medium,
+        format!(
+            "{} registered company/ies co-located with {} person entities",
+            orgs.len(),
+            persons.len()
         ),
         uids,
         scan_id,

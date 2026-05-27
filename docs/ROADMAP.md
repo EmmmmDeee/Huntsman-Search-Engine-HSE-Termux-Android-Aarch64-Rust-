@@ -84,13 +84,22 @@ paths share `module_skip_reason` so event payloads are identical
 between modes. 94 tests (84 lib + 10 integration; +3 cover the
 concurrency cap). 4.8 MB stripped binary.
 
+### v1.0.0 — 11 new OSINT orchestration modules (63 total)
+
+Shipped the OSINT orchestration API integration: `seon`, `keybase`,
+`emailrep`, `epieos`, `proxycurl`, `photon`, `mylnikov`, `overpass`,
+`sunrise_sunset`, `opencorporates`, `pwned_passwords`. Enhanced
+`github_user` with SSH key and event activity endpoints. Added 3 new
+correlator rules (AU-023 through AU-025) for cross-platform identity
+convergence, multi-signal email fraud, and corporate-identity linking.
+Proactive key harvest wired for 4 new service domains.
+
 ## In flight
 
 Three free-module slots originally planned for v0.4/v0.5 are still
-deferred: `breach_directory`, `urlscan`, `asn_lookup`. Key-gated
-modules also deferred: `hibp`, `hunter`, `virustotal`, `dehashed`,
-`oathnet_pro`, `shodan`. They land alongside the hardening work below
-when there's a natural place to slot them.
+deferred: `breach_directory`, `urlscan`, `asn_lookup`. Most originally
+deferred key-gated modules (`hibp`, `dehashed`, `oathnet_pro`, `shodan`)
+have now shipped.
 
 ## Planned
 

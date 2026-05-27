@@ -147,6 +147,9 @@ const RULES: &[RuleFn] = &[
     rule_au_020_person_entity_cluster,
     rule_au_021_api_key_exposure,
     rule_au_022_organisation_with_breach,
+    rule_au_023_cross_platform_identity,
+    rule_au_024_email_fraud_signal,
+    rule_au_025_corporate_identity_link,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
