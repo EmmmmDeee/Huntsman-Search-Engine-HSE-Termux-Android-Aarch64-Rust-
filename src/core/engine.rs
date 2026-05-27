@@ -1,5 +1,5 @@
 //! Scan engine — module dispatcher + autonomous expansion (v0.2+) + parallel
-//! dispatch (v0.8+).
+//! dispatch (v0.8+) + per-scan dispatch deduplication (v1.1+).
 //!
 //! Each scan has two phases:
 //!   1. Seed dispatch — every accepting module runs against the seed target.
@@ -10,14 +10,17 @@
 //!      naturally. Budgets (`max_entities`, `max_wall_time_secs`) short-circuit
 //!      if exceeded.
 //!
+//! API deduplication: a per-scan `DispatchLog` tracks every
+//! (module_name, target_kind, normalised_value) triple dispatched during the
+//! scan. Non-free modules (KeyGated, Paid) are skipped if the same triple
+//! was already dispatched — this ensures each API key/service is utilised at
+//! most once per target in the pivot pipeline. Free modules are exempt since
+//! re-running them can corroborate entities with independent evidence.
+//!
 //! Dispatch mode is selected by `ScanOptions::max_concurrent`:
-//!   * `0` (default) → sequential, byte-identical to v0.1–v0.7 behaviour.
-//!     Best for low-power Termux devices where serialising modules avoids
-//!     I/O contention.
+//!   * `0` (default) → sequential. Best for low-power Termux devices.
 //!   * `N > 0` → up to N modules in flight concurrently via
-//!     `tokio::sync::Semaphore`. Wall-time roughly divides by
-//!     `min(N, n_accepting_modules)`. Event ordering across concurrent
-//!     modules is interleaved; SSE consumers handle this transparently.
+//!     `tokio::sync::Semaphore`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -59,6 +62,23 @@ pub(crate) struct ModuleStats {
     pub run: usize,
     pub errored: usize,
     pub timed_out: usize,
+    pub deduped: usize,
+}
+
+/// Per-scan log of (module_name, target_kind, normalised_value) triples
+/// already dispatched. Prevents the same keyed API from being invoked on
+/// the same normalised target across expansion rounds — the primary
+/// mechanism that ensures each API key/service is utilised at most once
+/// per (target, module) pair in a pivot pipeline.
+///
+/// Free modules are exempt: their cost is zero and re-running them on the
+/// same target across rounds can corroborate entities with fresh evidence.
+type DispatchLog = HashSet<(&'static str, TargetKind, String)>;
+
+fn dispatch_key(module_name: &'static str, target: &Target) -> (&'static str, TargetKind, String) {
+    let entity_kind = target.kind.to_entity_kind();
+    let normalised = normalise(&entity_kind, &target.value);
+    (module_name, target.kind, normalised)
 }
 
 impl StopReason {
@@ -153,6 +173,7 @@ impl ScanEngine {
         let mut entity_map: HashMap<String, Entity> =
             HashMap::with_capacity(opts.max_entities.unwrap_or(256).min(4096));
         let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
+        let mut dispatched: DispatchLog = HashSet::new();
         let mut stats = ModuleStats::default();
 
         visited.insert(visit_key(&target));
@@ -164,6 +185,7 @@ impl ScanEngine {
             &mut entity_map,
             false,
             &mut stats,
+            &mut dispatched,
         )
         .await?;
 
@@ -177,6 +199,7 @@ impl ScanEngine {
                     &mut entity_map,
                     &mut visited,
                     &mut stats,
+                    &mut dispatched,
                 )
                 .await;
         }
@@ -212,6 +235,7 @@ impl ScanEngine {
         scan.modules_run = stats.run;
         scan.modules_errored = stats.errored;
         scan.modules_timed_out = stats.timed_out;
+        scan.modules_deduped = stats.deduped;
 
         if persisted == 0 && first_err.is_some() {
             scan.status = ScanStatus::Failed;
@@ -298,6 +322,7 @@ impl ScanEngine {
         entity_map: &mut HashMap<String, Entity>,
         visited: &mut HashSet<(TargetKind, String)>,
         stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
     ) -> StopReason {
         for depth in 1..=opts.depth {
             // Refresh keys from the pool at the start of each round.
@@ -398,7 +423,7 @@ impl ScanEngine {
                     return stop;
                 }
                 if let Err(e) = self
-                    .dispatch_target(scan_id, nt, ctx, opts, entity_map, true, stats)
+                    .dispatch_target(scan_id, nt, ctx, opts, entity_map, true, stats, dispatched)
                     .await
                 {
                     // Per-target dispatch errors are already surfaced as
@@ -553,6 +578,7 @@ impl ScanEngine {
         entity_map: &mut HashMap<String, Entity>,
         is_expansion: bool,
         stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
     ) -> Result<()> {
         if opts.max_concurrent == 0 {
             self.dispatch_target_sequential(
@@ -563,6 +589,7 @@ impl ScanEngine {
                 entity_map,
                 is_expansion,
                 stats,
+                dispatched,
             )
             .await
         } else {
@@ -574,13 +601,13 @@ impl ScanEngine {
                 entity_map,
                 is_expansion,
                 stats,
+                dispatched,
             )
             .await
         }
     }
 
-    /// v0.1 sequential dispatcher. Kept unchanged so the default scan
-    /// behaviour (max_concurrent == 0) is byte-identical to pre-v0.8.
+    /// v0.1 sequential dispatcher.
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_target_sequential(
         &self,
@@ -591,15 +618,12 @@ impl ScanEngine {
         entity_map: &mut HashMap<String, Entity>,
         is_expansion: bool,
         stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
     ) -> Result<()> {
         for module in &self.modules {
-            // Cancellation gate at the top of the per-module loop — the
-            // cheapest spot to exit because we haven't fired off the
-            // next module's I/O yet (issue #23).
             if ctx.cancel.is_cancelled() {
                 return Ok(());
             }
-            // Budget gate: stop dispatching when max_entities is reached.
             if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
                 return Ok(());
             }
@@ -614,6 +638,19 @@ impl ScanEngine {
                     EventKind::ModuleSkipped {
                         module: name.into(),
                         reason: reason.into(),
+                    },
+                );
+                continue;
+            }
+            if !matches!(module.cost(), ModuleCost::Free)
+                && !dispatched.insert(dispatch_key(name, target))
+            {
+                stats.deduped += 1;
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason: "already dispatched for this target".into(),
                     },
                 );
                 continue;
@@ -658,16 +695,7 @@ impl ScanEngine {
     }
 
     /// v0.8 concurrent dispatcher. Launches up to `opts.max_concurrent`
-    /// modules at a time via a `tokio::sync::Semaphore`; collects results
-    /// as tasks complete. Module-side filtering (allowlist, exclude,
-    /// free_only, passive_only, accepts) is performed serially before
-    /// spawning so the skip-events still emit in priority order; only the
-    /// `process()` call itself parallelises.
-    ///
-    /// Event ordering caveat: `ModuleStart` events from concurrent tasks
-    /// can interleave with each other and with `EntityFound` events from
-    /// faster modules. SSE consumers handle this fine (each event is
-    /// self-describing); CLI tracing logs will look interleaved.
+    /// modules at a time via a Semaphore; collects results as tasks complete.
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_target_concurrent(
         &self,
@@ -678,6 +706,7 @@ impl ScanEngine {
         entity_map: &mut HashMap<String, Entity>,
         is_expansion: bool,
         stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
     ) -> Result<()> {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
@@ -686,10 +715,6 @@ impl ScanEngine {
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
 
         for module in &self.modules {
-            // Cancellation gate before spawning each module. Tasks
-            // already in flight are left to complete naturally — their
-            // results still flow through finalise_module_result so
-            // partial work isn't lost (issue #23).
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -707,6 +732,19 @@ impl ScanEngine {
                     EventKind::ModuleSkipped {
                         module: name.into(),
                         reason: reason.into(),
+                    },
+                );
+                continue;
+            }
+            if !matches!(module.cost(), ModuleCost::Free)
+                && !dispatched.insert(dispatch_key(name, target))
+            {
+                stats.deduped += 1;
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason: "already dispatched for this target".into(),
                     },
                 );
                 continue;
@@ -818,14 +856,6 @@ fn module_skip_reason(
     const SENSOR_MODULES: &[&str] = &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
     if is_expansion && module.is_passive() && SENSOR_MODULES.contains(&name) {
         return Some("sensor (already ran on seed round)");
-    }
-    // OathNet Pro is too expensive for expansion targets — its 2-3 API
-    // calls per invocation are reserved for the seed target only.
-    // Expansion targets get enriched by free modules (ip_geo, dns_intel,
-    // geocode, etc.) which produce the same downstream entity types.
-    const SEED_ONLY_MODULES: &[&str] = &["oathnet_pro"];
-    if is_expansion && SEED_ONLY_MODULES.contains(&name) {
-        return Some("API-expensive (seed round only)");
     }
     None
 }
@@ -1068,5 +1098,53 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(module_skip_reason(&m, &opts, false), Some("excluded"));
+    }
+
+    // -- dispatch dedup tests --
+
+    #[test]
+    fn dispatch_key_normalises_consistently() {
+        let t1 = Target::new(TargetKind::Email, "ALICE@Example.COM");
+        let t2 = Target::new(TargetKind::Email, "alice@example.com");
+        assert_eq!(dispatch_key("hibp", &t1), dispatch_key("hibp", &t2));
+    }
+
+    #[test]
+    fn dispatch_key_differs_across_modules() {
+        let t = Target::new(TargetKind::Email, "alice@example.com");
+        assert_ne!(dispatch_key("hibp", &t), dispatch_key("shodan", &t));
+    }
+
+    #[test]
+    fn dispatch_key_differs_across_target_kinds() {
+        let email = Target::new(TargetKind::Email, "alice@example.com");
+        let domain = Target::new(TargetKind::Domain, "alice@example.com");
+        assert_ne!(dispatch_key("hibp", &email), dispatch_key("hibp", &domain));
+    }
+
+    #[test]
+    fn dispatch_log_prevents_duplicate_keyed_module() {
+        let mut log: DispatchLog = HashSet::new();
+        let t = Target::new(TargetKind::Email, "alice@example.com");
+        let key = dispatch_key("hibp", &t);
+        assert!(log.insert(key.clone()), "first insert should succeed");
+        assert!(!log.insert(key), "second insert should be rejected");
+    }
+
+    #[test]
+    fn dispatch_log_allows_same_module_on_different_targets() {
+        let mut log: DispatchLog = HashSet::new();
+        let t1 = Target::new(TargetKind::Email, "alice@example.com");
+        let t2 = Target::new(TargetKind::Domain, "example.com");
+        assert!(log.insert(dispatch_key("hibp", &t1)));
+        assert!(log.insert(dispatch_key("hibp", &t2)));
+    }
+
+    #[test]
+    fn dispatch_log_allows_different_modules_on_same_target() {
+        let mut log: DispatchLog = HashSet::new();
+        let t = Target::new(TargetKind::IpAddress, "1.2.3.4");
+        assert!(log.insert(dispatch_key("shodan", &t)));
+        assert!(log.insert(dispatch_key("greynoise", &t)));
     }
 }
