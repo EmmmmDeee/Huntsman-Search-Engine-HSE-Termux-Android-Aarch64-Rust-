@@ -19,9 +19,11 @@ pub mod disposable_check;
 pub mod dns_intel;
 pub mod doh_resolver;
 pub mod domainsdb;
+pub mod email_header_geo;
 pub mod email_parse;
 pub mod emailrep;
 pub mod epieos;
+pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
 pub mod github_user;
@@ -46,6 +48,7 @@ pub mod mylnikov;
 pub mod oathnet_pro;
 pub mod opencorporates;
 pub mod overpass;
+pub mod phone_area_geo;
 pub mod phone_intl;
 pub mod photon;
 pub mod proxycurl;
@@ -138,6 +141,10 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(mylnikov::Mylnikov),
         Arc::new(overpass::Overpass),
         Arc::new(sunrise_sunset::SunriseSunset),
+        // Geolocation enrichment (passive, zero-API)
+        Arc::new(geo_domain_classifier::GeoDomainClassifier),
+        Arc::new(email_header_geo::EmailHeaderGeo),
+        Arc::new(phone_area_geo::PhoneAreaGeo),
         // Australian OSINT modules
         Arc::new(opencorporates::OpenCorporates),
     ]
