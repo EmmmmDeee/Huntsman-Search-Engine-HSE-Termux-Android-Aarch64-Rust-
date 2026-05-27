@@ -371,7 +371,7 @@ pub async fn validate_key(service: &str, key: &str) -> Option<bool> {
     Some(result)
 }
 
-async fn validate_against_endpoint(sdef: ServiceDef, key: &str) -> bool {
+async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
     let timeout_ms = 10_000u64;
     let secs = (timeout_ms / 1000).to_string();
 
@@ -429,7 +429,7 @@ async fn validate_against_endpoint(sdef: ServiceDef, key: &str) -> bool {
 
 pub fn merge_pool_into_env(pool: &KeyPool, keys: &mut HashMap<String, String>) {
     let defs = service_defs();
-    for sdef in &defs {
+    for sdef in defs {
         if keys.contains_key(sdef.env_var) {
             continue;
         }
@@ -544,7 +544,7 @@ mod tests {
     fn all_services_defined() {
         let defs = service_defs();
         assert!(defs.len() >= 24);
-        for d in &defs {
+        for d in defs {
             assert!(d.env_var.starts_with("HUNTSMAN_"));
             assert!(!d.test_url.is_empty());
         }

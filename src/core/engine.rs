@@ -830,39 +830,33 @@ fn module_skip_reason(
     None
 }
 
-/// Scan every entity's value AND evidence attributes for API key patterns.
-/// Runs on every entity from every module — this is the universal catch-all
-/// that ensures no key is ever missed regardless of which module produced it.
 fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
     use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::key_pool::{KeyEntry, KeyStatus, global_pool};
 
-    let pool = crate::util::key_pool::global_pool();
+    let pool = global_pool();
     let now = crate::core::entity::unix_now();
+    let entity_ref = format!("{}:{}", entity.kind, &entity.uid[..8]);
 
-    if let Some((service, key_val)) = identify_api_key(&entity.value) {
-        let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-        entry.status = crate::util::key_pool::KeyStatus::Untested;
-        entry.discovered_at = Some(now);
-        entry.discovered_by = Some("entity_value".to_string());
-        entry.discovered_in_scan = Some(entity.scan_id.clone());
-        entry.source_entity = Some(format!("{}:{}", entity.kind, &entity.uid[..8]));
-        pool.add(service, entry);
-    }
+    let harvest = |text: &str, source: &str, notes: Option<String>| {
+        if let Some((service, key_val)) = identify_api_key(text) {
+            let mut entry = KeyEntry::new(key_val);
+            entry.status = KeyStatus::Untested;
+            entry.discovered_at = Some(now);
+            entry.discovered_by = Some(source.to_string());
+            entry.discovered_in_scan = Some(entity.scan_id.clone());
+            entry.source_entity = Some(entity_ref.clone());
+            entry.notes = notes;
+            pool.add(service, entry);
+        }
+    };
+
+    harvest(&entity.value, "entity_value", None);
 
     for ev in &entity.evidence {
         for val in ev.attributes.values() {
-            if val.len() >= 16
-                && val.len() <= 200
-                && let Some((service, key_val)) = identify_api_key(val)
-            {
-                let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-                entry.status = crate::util::key_pool::KeyStatus::Untested;
-                entry.discovered_at = Some(now);
-                entry.discovered_by = Some(ev.source.clone());
-                entry.discovered_in_scan = Some(entity.scan_id.clone());
-                entry.source_entity = Some(format!("{}:{}", entity.kind, &entity.uid[..8]));
-                entry.notes = Some(format!("Evidence attr from {}", ev.source));
-                pool.add(service, entry);
+            if (16..=200).contains(&val.len()) {
+                harvest(val, &ev.source, Some(format!("Evidence attr from {}", ev.source)));
             }
         }
     }

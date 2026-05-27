@@ -561,7 +561,7 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
                 "SERVICE", "CATEGORY", "TEST ENDPOINT"
             );
             println!("{}", "-".repeat(85));
-            for d in &defs {
+            for d in defs {
                 let short_url = if d.test_url.len() > 25 {
                     format!("{}…", &d.test_url[..24])
                 } else {

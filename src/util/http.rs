@@ -100,29 +100,9 @@ pub async fn fetch_json<T: DeserializeOwned>(
     module: &'static str,
     url: &str,
 ) -> Result<T> {
-    match client.get(url).send().await {
-        Ok(resp) => {
-            let status = resp.status();
-            if !status.is_success() {
-                return Err(Error::module(
-                    module,
-                    format!("HTTP {status}: {}", error_snippet(resp).await),
-                ));
-            }
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| Error::module(module, e.to_string()))?;
-            scan_for_api_keys(&text);
-            serde_json::from_str::<T>(&text).map_err(|e| Error::module(module, e.to_string()))
-        }
-        Err(_) => match super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await {
-            Some(data) => Ok(data),
-            None => Err(Error::module(
-                module,
-                format!("request failed for {url} (reqwest + curl)"),
-            )),
-        },
+    match fetch_json_inner(client, module, url, false).await? {
+        Some(data) => Ok(data),
+        None => Err(Error::module(module, format!("request failed for {url}"))),
     }
 }
 
@@ -139,10 +119,19 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
     module: &'static str,
     url: &str,
 ) -> Result<Option<T>> {
+    fetch_json_inner(client, module, url, true).await
+}
+
+async fn fetch_json_inner<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    module: &'static str,
+    url: &str,
+    map_404_to_none: bool,
+) -> Result<Option<T>> {
     match client.get(url).send().await {
         Ok(resp) => {
             let status = resp.status();
-            if status.as_u16() == 404 {
+            if map_404_to_none && status.as_u16() == 404 {
                 return Ok(None);
             }
             if !status.is_success() {

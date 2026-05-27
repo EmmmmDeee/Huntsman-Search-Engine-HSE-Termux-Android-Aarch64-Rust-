@@ -8,7 +8,7 @@ use crate::core::{
     correlator::Correlation,
     entity::Entity,
     error::Result,
-    event::{Event, EventKind},
+    event::Event,
     scan::Scan,
 };
 
@@ -261,11 +261,36 @@ impl Store {
     pub fn upsert_entity(&self, entity: &Entity) -> Result<()> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
+        Self::merge_and_persist_entity(&tx, entity)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn upsert_entities_batch(&self, entities: impl Iterator<Item = Entity>) -> Result<usize> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        let mut count = 0usize;
+
+        for entity in entities {
+            Self::merge_and_persist_entity(&tx, &entity)?;
+            count += 1;
+        }
+
+        tx.commit()?;
+        Ok(count)
+    }
+
+    fn merge_and_persist_entity(
+        tx: &rusqlite::Transaction<'_>,
+        entity: &Entity,
+    ) -> Result<()> {
+        let orig_scan_id = entity.scan_id.clone();
+        let orig_observed_at = entity.observed_at;
 
         let mut merged = entity.clone();
         {
             let mut stmt = tx.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
-            let mut rows = stmt.query(rusqlite::params![entity.uid])?;
+            let mut rows = stmt.query(params![entity.uid])?;
             if let Some(row) = rows.next()? {
                 let existing_json: String = row.get(0)?;
                 if let Ok(existing) = serde_json::from_str::<Entity>(&existing_json) {
@@ -299,62 +324,9 @@ impl Store {
         tx.execute(
             "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
              VALUES(?1, ?2, ?3)",
-            params![entity.uid, entity.scan_id, entity.observed_at as i64],
+            params![entity.uid, orig_scan_id, orig_observed_at as i64],
         )?;
-        tx.commit()?;
         Ok(())
-    }
-
-    pub fn upsert_entities_batch(&self, entities: impl Iterator<Item = Entity>) -> Result<usize> {
-        let conn = self.conn.lock();
-        let tx = conn.unchecked_transaction()?;
-        let mut count = 0usize;
-
-        for entity in entities {
-            let mut merged = entity.clone();
-            {
-                let mut stmt =
-                    tx.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
-                let mut rows = stmt.query(params![entity.uid])?;
-                if let Some(row) = rows.next()? {
-                    let existing_json: String = row.get(0)?;
-                    if let Ok(existing) = serde_json::from_str::<Entity>(&existing_json) {
-                        merged = existing;
-                        merged.merge(entity);
-                    }
-                }
-            }
-            let json = serde_json::to_string(&merged)?;
-            tx.execute(
-                "INSERT INTO entities(uid, scan_id, kind, value, confidence, corroboration, observed_at, data_json)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(uid) DO UPDATE SET
-                   scan_id       = excluded.scan_id,
-                   confidence    = excluded.confidence,
-                   corroboration = excluded.corroboration,
-                   observed_at   = excluded.observed_at,
-                   data_json     = excluded.data_json",
-                params![
-                    merged.uid,
-                    merged.scan_id,
-                    merged.kind.to_string(),
-                    merged.value,
-                    merged.confidence,
-                    merged.corroboration as i64,
-                    merged.observed_at as i64,
-                    json,
-                ],
-            )?;
-            tx.execute(
-                "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
-                 VALUES(?1, ?2, ?3)",
-                params![merged.uid, merged.scan_id, merged.observed_at as i64],
-            )?;
-            count += 1;
-        }
-
-        tx.commit()?;
-        Ok(count)
     }
 
     pub fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
@@ -497,22 +469,7 @@ impl Store {
 
 impl Store {
     pub fn insert_event(&self, event: &Event) -> Result<()> {
-        let event_type = match &event.kind {
-            EventKind::ScanStart { .. } => "scan_start",
-            EventKind::ModuleStart { .. } => "module_start",
-            EventKind::ModuleDone { .. } => "module_done",
-            EventKind::ModuleError { .. } => "module_error",
-            EventKind::ModuleSkipped { .. } => "module_skipped",
-            EventKind::EntityFound { .. } => "entity_found",
-            EventKind::ExpansionTick { .. } => "expansion_tick",
-            EventKind::ExpansionStop { .. } => "expansion_stop",
-            EventKind::CorrelationFound { .. } => "correlation_found",
-            EventKind::CorrelationsDone { .. } => "correlations_done",
-            EventKind::LiveStart { .. } => "live_start",
-            EventKind::LiveTick { .. } => "live_tick",
-            EventKind::LiveStop { .. } => "live_stop",
-            EventKind::ScanComplete { .. } => "scan_complete",
-        };
+        let event_type = event.kind.event_type_str();
         let json = serde_json::to_string(event)?;
         let conn = self.conn.lock();
         conn.execute(
@@ -558,6 +515,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {
         Store::upsert_entity(self, entity)
+    }
+
+    fn upsert_entities_batch(&self, entities: Vec<Entity>) -> Result<usize> {
+        Store::upsert_entities_batch(self, entities.into_iter())
     }
 
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
@@ -617,6 +578,7 @@ impl crate::core::port::StoragePort for Store {
 mod tests {
     use super::*;
     use crate::core::entity::{Entity, EntityKind};
+    use crate::core::event::EventKind;
     use crate::core::scan::{Scan, Target, TargetKind};
 
     fn tmp_db() -> String {

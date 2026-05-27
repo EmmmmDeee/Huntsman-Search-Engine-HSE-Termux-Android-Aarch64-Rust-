@@ -273,6 +273,27 @@ pub mod event {
         },
     }
 
+    impl EventKind {
+        pub fn event_type_str(&self) -> &'static str {
+            match self {
+                Self::ScanStart { .. } => "scan_start",
+                Self::ModuleStart { .. } => "module_start",
+                Self::ModuleDone { .. } => "module_done",
+                Self::ModuleError { .. } => "module_error",
+                Self::ModuleSkipped { .. } => "module_skipped",
+                Self::EntityFound { .. } => "entity_found",
+                Self::ExpansionTick { .. } => "expansion_tick",
+                Self::ExpansionStop { .. } => "expansion_stop",
+                Self::CorrelationFound { .. } => "correlation_found",
+                Self::CorrelationsDone { .. } => "correlations_done",
+                Self::LiveStart { .. } => "live_start",
+                Self::LiveTick { .. } => "live_tick",
+                Self::LiveStop { .. } => "live_stop",
+                Self::ScanComplete { .. } => "scan_complete",
+            }
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -439,6 +460,7 @@ pub mod port {
 
         // ── Entities ───────────────────────────────────────────────────────────
         fn upsert_entity(&self, entity: &Entity) -> Result<()>;
+        fn upsert_entities_batch(&self, entities: Vec<Entity>) -> Result<usize>;
         fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>>;
         fn entities_filtered(
             &self,
