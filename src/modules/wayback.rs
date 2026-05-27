@@ -47,11 +47,27 @@ impl Module for Wayback {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
+        matches!(t.kind, TargetKind::Domain | TargetKind::Url)
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let domain = target.value.trim().to_lowercase();
+        let domain = match target.kind {
+            TargetKind::Url => {
+                let trimmed = target.value.trim();
+                let host = trimmed
+                    .strip_prefix("https://")
+                    .or_else(|| trimmed.strip_prefix("http://"))
+                    .unwrap_or(trimmed)
+                    .split('/')
+                    .next()
+                    .unwrap_or("")
+                    .split(':')
+                    .next()
+                    .unwrap_or("");
+                host.to_lowercase()
+            }
+            _ => target.value.trim().to_lowercase(),
+        };
         if domain.is_empty() {
             return Ok(ModuleResult::new());
         }

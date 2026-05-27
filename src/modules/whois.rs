@@ -47,12 +47,25 @@ impl Module for Whois {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
+        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url)
     }
 
     async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+        let query_value = match target.kind {
+            TargetKind::Url => {
+                let trimmed = target.value.trim();
+                let host = trimmed
+                    .strip_prefix("https://").or_else(|| trimmed.strip_prefix("http://"))
+                    .unwrap_or(trimmed)
+                    .split('/').next().unwrap_or("")
+                    .split(':').next().unwrap_or("");
+                if host.is_empty() { return Ok(ModuleResult::new()); }
+                host.to_string()
+            }
+            _ => target.value.clone(),
+        };
         // 1) Ask IANA who's authoritative for this name.
-        let raw = query(IANA_WHOIS, &target.value)
+        let raw = query(IANA_WHOIS, &query_value)
             .await
             .map_err(|e| Error::module("whois", e.to_string()))?;
 
@@ -60,7 +73,7 @@ impl Module for Whois {
         let response = match find_referral(&raw) {
             Some(server) => {
                 let target_server = format!("{server}:43");
-                query(&target_server, &target.value).await.unwrap_or(raw)
+                query(&target_server, &query_value).await.unwrap_or(raw)
             }
             None => raw,
         };
