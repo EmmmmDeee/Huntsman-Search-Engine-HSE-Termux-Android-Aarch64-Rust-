@@ -201,7 +201,7 @@ impl Module for SearchEngines {
 
             if !pivots.is_empty() {
                 let reliable = [&ENGINES[0], &ENGINES[1], &ENGINES[5]]; // yahoo, bing, brave
-                for pivot_query in pivots.iter().take(6) {
+                for pivot_query in pivots.iter().take(10) {
                     if ctx.cancel.is_cancelled() {
                         break;
                     }
@@ -511,7 +511,7 @@ async fn recycle_entities(
     let mut seen_queries: HashSet<String> = HashSet::new();
 
     for entity in &result.entities {
-        if entity.confidence < 0.50 {
+        if entity.confidence < 0.40 {
             continue;
         }
         let q = match entity.kind {
@@ -560,7 +560,7 @@ async fn recycle_entities(
 
     let mut recycled_results: Vec<SearchResult> = Vec::new();
 
-    for query in recycle_queries.iter().take(8) {
+    for query in recycle_queries.iter().take(12) {
         if ctx.cancel.is_cancelled() {
             break;
         }
@@ -765,7 +765,7 @@ async fn generate_and_verify_emails(
             let db_names: Vec<String> = hits
                 .iter()
                 .filter_map(|h| crate::util::oathnet::val_str(h, "dbname"))
-                .take(3)
+                .take(6)
                 .collect();
             let mut base_conf = 0.72;
             // Holehe check: if the email is registered on platforms, boost
@@ -825,7 +825,7 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult, targ
     let mut emails: Vec<String> = Vec::new();
     let mut usernames: Vec<String> = Vec::new();
     for e in &result.entities {
-        if e.confidence < 0.50 {
+        if e.confidence < 0.40 {
             continue;
         }
         match e.kind {
@@ -938,7 +938,7 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult, targ
                 && e.tags.iter().any(|t| t == "oathnet-enriched")
         })
         .map(|e| e.value.clone())
-        .take(3)
+        .take(6)
         .collect();
     for ip in &ips {
         if ctx.cancel.is_cancelled() {
@@ -2857,7 +2857,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             .entities
             .iter()
             .filter(|e| {
-                e.kind == EntityKind::Address && (e.confidence >= 0.45 || e.corroboration >= 3)
+                e.kind == EntityKind::Address && (e.confidence >= 0.40 || e.corroboration >= 2)
             })
             .map(|e| (e.value.clone(), e.confidence, e.corroboration))
             .collect();

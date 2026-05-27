@@ -396,7 +396,7 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
 
     // Phase 4: Geo-locate discovered IPs via free APIs
     if !ctx.cancel.is_cancelled() {
-        for ip in ip_seeds.iter().take(5) {
+        for ip in ip_seeds.iter().take(10) {
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -431,7 +431,7 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
 
     // Phase 5: OathNet IP info enrichment for high-confidence IPs
     if !ctx.cancel.is_cancelled() {
-        for ip in ip_seeds.iter().take(3) {
+        for ip in ip_seeds.iter().take(8) {
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -455,7 +455,7 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
     {
         for item in &victim_items {
             if let Some(ips) = item.get("device_ips").and_then(|v| v.as_array()) {
-                for ip_val in ips.iter().take(3) {
+                for ip_val in ips.iter().take(8) {
                     if let Some(ip) = ip_val.as_str()
                         && ip.parse::<std::net::IpAddr>().is_ok()
                         && seen.insert(format!("@victim-ip:{ip}"))
@@ -595,7 +595,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
             }
 
             // Geo-locate discovered IPs
-            for ip in ip_seeds.iter().take(3) {
+            for ip in ip_seeds.iter().take(8) {
                 if ctx.cancel.is_cancelled() {
                     break;
                 }

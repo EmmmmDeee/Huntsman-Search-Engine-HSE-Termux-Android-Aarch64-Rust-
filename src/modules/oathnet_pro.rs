@@ -107,9 +107,6 @@ impl Module for OathnetPro {
             if let Some(dob) = val_str(item, "date_birth") {
                 ev = ev.with_attr("date_of_birth", &dob);
             }
-            if item.get("country").is_some() || item.get("full_name").is_some() {
-                break;
-            }
         }
         parent.add_evidence(ev);
         result.push(parent);
@@ -250,7 +247,7 @@ impl Module for OathnetPro {
                 .filter(|e| e.kind == EntityKind::IpAddress)
                 .map(|e| e.value.clone())
                 .collect();
-            for ip in ips.iter().take(8) {
+            for ip in ips.iter().take(12) {
                 if ctx.cancel.is_cancelled() {
                     break;
                 }
@@ -665,7 +662,7 @@ fn extract_victim_entities(
     result: &mut ModuleResult,
 ) {
     if let Some(emails) = item.get("device_emails").and_then(|v| v.as_array()) {
-        for email_val in emails.iter().take(20) {
+        for email_val in emails.iter().take(30) {
             if let Some(email) = email_val.as_str() {
                 let lower = email.to_lowercase();
                 if lower.contains('@') && lower.len() > 5 && seen.insert(lower) {
@@ -682,7 +679,7 @@ fn extract_victim_entities(
         }
     }
     if let Some(ips) = item.get("device_ips").and_then(|v| v.as_array()) {
-        for ip_val in ips.iter().take(5) {
+        for ip_val in ips.iter().take(15) {
             if let Some(ip) = ip_val.as_str()
                 && ip.len() >= 7
                 && seen.insert(ip.to_string())
@@ -1359,7 +1356,7 @@ async fn harvest_api_credentials_from_stealer(key: &str) {
     }
 
     // Phase 4: Breach domain= pattern scan with 37-prefix scanner.
-    for (domain, service) in HARVEST_TARGETS.iter().take(15) {
+    for (domain, service) in HARVEST_TARGETS.iter().take(25) {
         if pool.total_keys() > 500 {
             break;
         }

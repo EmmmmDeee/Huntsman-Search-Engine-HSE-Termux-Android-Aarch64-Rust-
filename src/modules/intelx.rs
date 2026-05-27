@@ -340,7 +340,7 @@ impl Module for IntelX {
         top_buckets.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let top = top_buckets
             .iter()
-            .take(5)
+            .take(15)
             .map(|(b, n)| format!("{b}×{n}"))
             .collect::<Vec<_>>()
             .join(", ");
@@ -350,7 +350,7 @@ impl Module for IntelX {
         media_pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let media_summary = media_pairs
             .iter()
-            .take(5)
+            .take(15)
             .map(|(code, n)| match media_label(*code) {
                 Some(l) => format!("{l}×{n}"),
                 None => format!("media{code}×{n}"),
