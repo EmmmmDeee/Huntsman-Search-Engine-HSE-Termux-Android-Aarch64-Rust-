@@ -1217,23 +1217,33 @@ pub(super) fn extract_abn_acn_from_text(text: &str) -> Vec<(String, &'static str
             let num: String = digits.iter().map(|&b| b as char).collect();
             if is_valid_abn(&num) {
                 let before = text[..start].to_lowercase();
-                if before.ends_with("abn")
-                    || before.ends_with("abn ")
-                    || before.ends_with("abn: ")
-                    || before.ends_with("business number ")
+                let trimmed = before.trim_end();
+                if trimmed.ends_with("abn")
+                    || trimmed.ends_with("abn:")
+                    || trimmed.ends_with("a.b.n.")
+                    || trimmed.ends_with("business number")
+                    || trimmed.ends_with("business number:")
                 {
                     results.push((num, "ABN"));
+                    if results.len() >= 10 {
+                        break;
+                    }
                 }
             }
         } else if digits.len() == 9 {
             let num: String = digits.iter().map(|&b| b as char).collect();
             let before = text[..start].to_lowercase();
-            if before.ends_with("acn")
-                || before.ends_with("acn ")
-                || before.ends_with("acn: ")
-                || before.ends_with("company number ")
+            let trimmed = before.trim_end();
+            if trimmed.ends_with("acn")
+                || trimmed.ends_with("acn:")
+                || trimmed.ends_with("a.c.n.")
+                || trimmed.ends_with("company number")
+                || trimmed.ends_with("company number:")
             {
                 results.push((num, "ACN"));
+                if results.len() >= 10 {
+                    break;
+                }
             }
         }
     }
@@ -1354,8 +1364,18 @@ pub(super) fn extract_emails_from_text(text: &str) -> Vec<String> {
                 && !email.ends_with(".jpg")
                 && !email.ends_with(".gif")
                 && !email.ends_with(".css")
+                && !email.ends_with(".svg")
+                && !email.ends_with(".webp")
+                && !email.ends_with(".ico")
+                && !email.ends_with(".woff")
+                && !email.ends_with(".woff2")
+                && !email.contains("@2x.")
+                && !email.contains("@3x.")
             {
                 emails.push(email);
+                if emails.len() >= 50 {
+                    break;
+                }
             }
         }
         i = domain_end;
@@ -1391,6 +1411,9 @@ pub(super) fn extract_phones_from_text(text: &str) -> Vec<String> {
                     .filter(|c| c.is_ascii_digit() || *c == '+')
                     .collect();
                 phones.push(cleaned);
+                if phones.len() >= 30 {
+                    break;
+                }
             }
         } else {
             i += 1;

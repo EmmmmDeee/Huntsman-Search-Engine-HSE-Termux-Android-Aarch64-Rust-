@@ -13,6 +13,7 @@ pub mod breach_timezone;
 pub mod cell_intel;
 pub mod censys;
 pub mod cert_intel;
+pub mod cloud_storage;
 pub mod contact_enrich;
 pub mod criminal_ip;
 pub mod crtsh;
@@ -75,6 +76,7 @@ pub mod urlhaus;
 pub mod urlscan;
 pub mod username_search;
 pub mod virustotal;
+pub mod waf_detect;
 pub mod wayback;
 pub mod web_crawler;
 pub mod webserver_banner;
@@ -165,6 +167,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(virustotal::VirusTotal),
         Arc::new(abuseipdb::AbuseIpDb),
         Arc::new(subdomain_takeover::SubdomainTakeover),
+        Arc::new(waf_detect::WafDetect),
+        Arc::new(cloud_storage::CloudStorage),
         Arc::new(bgpview::BgpView),
         // People-centric enrichment
         Arc::new(name_to_username::NameToUsername),
