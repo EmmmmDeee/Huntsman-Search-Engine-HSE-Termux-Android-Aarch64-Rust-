@@ -659,7 +659,16 @@ async fn generate_and_verify_emails(
         }
         let local = e.value.split('@').next().unwrap_or("");
         let ll = local.to_lowercase();
-        name_parts.iter().any(|p| ll.contains(p))
+        // Require BOTH first AND last name in the email local part.
+        // A single-part match like "meyer" in "david.meyer@x.com" is
+        // too common and would falsely prevent pattern generation.
+        if name_parts.len() >= 2 {
+            let first = name_parts[0];
+            let last = name_parts[name_parts.len() - 1];
+            ll.contains(first) && ll.contains(last)
+        } else {
+            ll.contains(&target_lower)
+        }
     });
     if has_relevant_emails {
         return;
