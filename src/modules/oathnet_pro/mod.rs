@@ -19,7 +19,7 @@ use crate::util::oathnet::{self, paths, val_str, val_str_or};
 
 mod key_harvest;
 pub use key_harvest::store_api_credential_from_item;
-use key_harvest::{extract_api_keys_from_item, harvest_api_credentials_from_stealer, store_api_credential};
+use key_harvest::{extract_api_keys_from_item, store_api_credential};
 
 
 const SRC: &str = "oathnet_pro";
@@ -495,6 +495,7 @@ fn extract_holehe(data: Value, email: &str, scan_id: &str, result: &mut ModuleRe
     }
 }
 
+#[allow(dead_code)]
 fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResult) {
     let mut ev = Evidence::new(SRC, format!("IP info for {ip}")).with_attr("source", "ip-info");
     for (field, attr) in [
@@ -549,6 +550,7 @@ fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResu
     }
 }
 
+#[allow(dead_code)]
 fn extract_victim_entities(
     item: &Value,
     scan_id: &str,

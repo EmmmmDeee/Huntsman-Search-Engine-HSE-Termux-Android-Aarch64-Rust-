@@ -487,6 +487,7 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     ("dashboard.heroku.com", "heroku"),
 ];
 
+#[allow(dead_code)]
 pub(super) const HARVEST_TARGETS: &[(&str, &str)] = &[
     ("shodan.io", "shodan"),
     ("virustotal.com", "virustotal"),
@@ -538,6 +539,7 @@ pub(super) const HARVEST_TARGETS: &[(&str, &str)] = &[
     ("heroku.com", "heroku"),
 ];
 
+#[allow(dead_code)]
 pub(super) async fn harvest_api_credentials_from_stealer(key: &str) {
     let pool = crate::util::key_pool::global_pool();
     let mut stored = 0u32;
@@ -710,6 +712,7 @@ pub(super) async fn harvest_api_credentials_from_stealer(key: &str) {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn store_unique_stealer_keys(
     items: &[Value],
     domain: &str,

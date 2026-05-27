@@ -185,6 +185,7 @@ fn ensure_hardcoded_keys() {
 /// Run the OathNet stealer harvest to fill the key pool with
 /// discovered API credentials. Uses the OathNet key from env or
 /// hardcoded fallback.
+#[allow(dead_code)]
 async fn harvest_to_pool() {
     let env_key = std::env::var(crate::util::oathnet::KEY_ENV).ok();
     let key = crate::util::oathnet::resolve_key(env_key.as_deref());

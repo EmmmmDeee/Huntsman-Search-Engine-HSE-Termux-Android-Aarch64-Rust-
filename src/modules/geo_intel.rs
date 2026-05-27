@@ -274,6 +274,7 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
 
 // ─── Identity geo enrichment: OathNet Pro batch queries ─────────────────────
 
+#[allow(dead_code)]
 async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let oathnet_key = ctx.key_opt(oathnet::KEY_ENV);
     if oathnet_key.is_none() {
@@ -635,6 +636,7 @@ async fn quick_ip_geo(
 
 // ─── OathNet IP info geo extraction ─────────────────────────────────────────
 
+#[allow(dead_code)]
 fn extract_oathnet_ip_geo(
     data: &Value,
     ip: &str,
@@ -881,6 +883,7 @@ fn phone_prefix_to_country(phone: &str) -> Option<(&'static str, &'static str, f
 
 // ─── Timezone → coordinates ─────────────────────────────────────────────────
 
+#[allow(dead_code)]
 fn timezone_to_coordinates(tz: &str) -> Option<(f64, f64, &'static str)> {
     let tz_lower = tz.to_lowercase();
     match tz_lower.as_str() {
