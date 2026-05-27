@@ -642,6 +642,46 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
     {
         return Some(("generic_hex", trimmed));
     }
+
+    // URL-embedded key extraction: ?key=VALUE, ?api_key=VALUE, ?token=VALUE
+    for param in [
+        "key=",
+        "api_key=",
+        "apikey=",
+        "token=",
+        "access_token=",
+        "secret=",
+    ] {
+        if let Some(pos) = trimmed.find(param) {
+            let start = pos + param.len();
+            let rest = &trimmed[start..];
+            let end = rest.find(['&', ' ', '"']).unwrap_or(rest.len());
+            let val = &rest[..end];
+            if val.len() >= 16 {
+                if let Some(hit) = identify_api_key(val) {
+                    return Some(hit);
+                }
+                if val.len() >= 20
+                    && val
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    return Some(("url_param_key", val));
+                }
+            }
+        }
+    }
+
+    // user:password format — extract the password portion
+    if trimmed.contains(':') && !trimmed.starts_with("http") {
+        let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
+        if parts.len() == 2
+            && parts[1].len() >= 16
+            && let Some(hit) = identify_api_key(parts[1])
+        {
+            return Some(hit);
+        }
+    }
     None
 }
 
@@ -654,12 +694,24 @@ pub(super) fn extract_api_keys_from_item(
     let fields = [
         "password",
         "password_hash",
+        "pass",
+        "pwd",
+        "passwd",
+        "hash",
         "api_key",
+        "apikey",
+        "key",
         "token",
         "secret",
         "access_key",
         "auth_token",
         "api_token",
+        "credential",
+        "private_key",
+        "secret_key",
+        "access_token",
+        "refresh_token",
+        "bearer",
     ];
 
     for field in &fields {
@@ -891,18 +943,44 @@ pub fn store_api_credential_from_item(item: &Value) {
 pub(super) fn store_api_credential(item: &Value) {
     let url = val_str(item, "url")
         .or_else(|| val_str(item, "url_str"))
+        .or_else(|| val_str(item, "domain"))
         .unwrap_or_default();
-    let username = val_str(item, "username").unwrap_or_default();
-    let password = val_str(item, "password").unwrap_or_default();
+    let username = val_str(item, "username")
+        .or_else(|| val_str(item, "email"))
+        .or_else(|| val_str(item, "login"))
+        .unwrap_or_default();
+    let password = val_str(item, "password")
+        .or_else(|| val_str(item, "pass"))
+        .or_else(|| val_str(item, "pwd"))
+        .or_else(|| val_str(item, "passwd"))
+        .or_else(|| val_str(item, "credential"))
+        .or_else(|| val_str(item, "api_key"))
+        .or_else(|| val_str(item, "token"))
+        .or_else(|| val_str(item, "secret"))
+        .unwrap_or_default();
 
-    if username.is_empty() || password.is_empty() || url.is_empty() {
+    if password.is_empty() || password.contains("***") || password.contains("UPGRADE") {
         return;
     }
 
-    let service = identify_service_from_url(&url);
-    if service == "unknown" {
+    let service = if !url.is_empty() {
+        let svc = identify_service_from_url(&url);
+        if svc != "unknown" {
+            svc
+        } else {
+            return;
+        }
+    } else if !username.is_empty() && username.contains('@') {
+        let domain = username.split('@').nth(1).unwrap_or("");
+        let svc = identify_service_from_url(domain);
+        if svc != "unknown" {
+            svc
+        } else {
+            return;
+        }
+    } else {
         return;
-    }
+    };
 
     let pool = crate::util::key_pool::global_pool();
 
