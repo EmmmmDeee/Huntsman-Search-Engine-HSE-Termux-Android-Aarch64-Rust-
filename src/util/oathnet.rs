@@ -13,6 +13,18 @@ const HARDCODED_KEY: &str = "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551
 
 pub const KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
 
+static QUOTA_EXHAUSTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn is_quota_exhausted() -> bool {
+    QUOTA_EXHAUSTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn mark_quota_exhausted() {
+    QUOTA_EXHAUSTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    tracing::warn!("OathNet daily quota exhausted — skipping remaining queries");
+}
+
 fn base_url() -> String {
     std::env::var("HUNTSMAN_OATHNET_BASE").unwrap_or_else(|_| "https://oathnet.org/api".to_string())
 }
@@ -48,6 +60,7 @@ struct SearchData {
 
 /// Search a specific OathNet surface (breach, stealer, etc.) by field.
 /// Returns the raw item array on success, empty vec on 404/clean miss.
+/// Returns empty vec immediately if daily quota is exhausted.
 pub async fn search(
     key: &str,
     path: &str,
@@ -55,6 +68,9 @@ pub async fn search(
     value: &str,
     page_size: u32,
 ) -> Result<Vec<Value>> {
+    if is_quota_exhausted() {
+        return Ok(Vec::new());
+    }
     let encoded = crate::util::http::urlencode(value);
     let url = format!(
         "{}{}?{}%5B%5D={}&page_size={}",
@@ -65,10 +81,18 @@ pub async fn search(
         page_size
     );
     let body = curl_get(&url, key).await?;
+    if body.contains("\"left_today\":0") || body.contains("limit exceeded") || body.contains("quota") {
+        mark_quota_exhausted();
+        return Ok(Vec::new());
+    }
     let env: Envelope =
         serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
     if !env.success {
         if env.errors.as_ref().and_then(|e| e.status_code) == Some(404) {
+            return Ok(Vec::new());
+        }
+        if env.errors.as_ref().and_then(|e| e.status_code) == Some(429) {
+            mark_quota_exhausted();
             return Ok(Vec::new());
         }
         return Err(Error::module("oathnet", "API returned success=false"));
@@ -83,7 +107,11 @@ pub async fn search(
 }
 
 /// OSINT lookup (holehe, ip-info, discord, steam, etc.)
+/// Returns Null immediately if daily quota is exhausted.
 pub async fn osint(key: &str, path: &str, param: &str, value: &str) -> Result<Value> {
+    if is_quota_exhausted() {
+        return Ok(Value::Null);
+    }
     let encoded = crate::util::http::urlencode(value);
     let url = format!("{}{}?{}={}", base_url(), path, param, encoded);
     let body = curl_get(&url, key).await?;

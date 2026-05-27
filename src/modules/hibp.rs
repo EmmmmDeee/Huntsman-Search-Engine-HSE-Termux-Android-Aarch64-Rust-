@@ -156,44 +156,58 @@ impl Hibp {
         url: &str,
         ctx: &ModuleContext,
     ) -> Result<Option<T>> {
-        let resp = ctx
-            .http
-            .get(url)
-            .header("hibp-api-key", key)
-            .header("Accept", "application/json")
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let mut retries = 0u8;
+        loop {
+            let resp = ctx
+                .http
+                .get(url)
+                .header("hibp-api-key", key)
+                .header("Accept", "application/json")
+                .timeout(Duration::from_secs(15))
+                .send()
+                .await
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
 
-        let status = resp.status().as_u16();
-        match status {
-            200 => {
-                let data = resp
-                    .json::<T>()
-                    .await
-                    .map_err(|e| Error::module(SRC, format!("JSON parse: {e}")))?;
-                Ok(Some(data))
-            }
-            404 => Ok(None),
-            401 | 403 => {
-                ctx.report_key_exhausted("hibp", key, status);
-                Err(Error::module(
-                    SRC,
-                    format!("HTTP {status}: invalid or expired API key"),
-                ))
-            }
-            429 => {
-                ctx.report_key_exhausted("hibp", key, status);
-                let snippet = error_snippet(resp).await;
-                Err(Error::module(
-                    SRC,
-                    format!("HTTP 429 rate-limited: {snippet}"),
-                ))
-            }
-            _ => {
-                let snippet = error_snippet(resp).await;
-                Err(Error::module(SRC, format!("HTTP {status}: {snippet}")))
+            let status = resp.status().as_u16();
+            match status {
+                200 => {
+                    let data = resp
+                        .json::<T>()
+                        .await
+                        .map_err(|e| Error::module(SRC, format!("JSON parse: {e}")))?;
+                    return Ok(Some(data));
+                }
+                404 => return Ok(None),
+                401 | 403 => {
+                    ctx.report_key_exhausted("hibp", key, status);
+                    return Err(Error::module(
+                        SRC,
+                        format!("HTTP {status}: invalid or expired API key"),
+                    ));
+                }
+                429 if retries < 3 => {
+                    let retry_secs = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(7);
+                    retries += 1;
+                    tokio::time::sleep(Duration::from_secs(retry_secs)).await;
+                    continue;
+                }
+                429 => {
+                    ctx.report_key_exhausted("hibp", key, status);
+                    let snippet = error_snippet(resp).await;
+                    return Err(Error::module(
+                        SRC,
+                        format!("HTTP 429 rate-limited after {retries} retries: {snippet}"),
+                    ));
+                }
+                _ => {
+                    let snippet = error_snippet(resp).await;
+                    return Err(Error::module(SRC, format!("HTTP {status}: {snippet}")));
+                }
             }
         }
     }
