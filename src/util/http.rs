@@ -208,6 +208,49 @@ pub async fn handle_keyed_error(
     }
 }
 
+/// Keyed GET: fetch JSON from a URL that requires an API key header.
+/// Handles 401/403/429 uniformly via report_key_exhausted, maps 404
+/// to Ok(None). Consolidates the error handling pattern duplicated
+/// across 8+ keyed modules.
+pub async fn fetch_keyed_json<T: DeserializeOwned>(
+    ctx: &crate::core::module::ModuleContext,
+    module: &'static str,
+    url: &str,
+    key_env: &str,
+    header_name: &str,
+) -> Result<Option<T>> {
+    let key = ctx.key(key_env)?;
+    let resp = ctx
+        .http
+        .get(url)
+        .header(header_name, key)
+        .send()
+        .await
+        .map_err(|e| Error::module(module, e.to_string()))?;
+
+    let status = resp.status();
+    if status.as_u16() == 404 {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        if matches!(status.as_u16(), 401 | 403 | 429) {
+            ctx.report_key_exhausted(module, key, status.as_u16());
+        }
+        return Err(Error::module(
+            module,
+            format!("HTTP {status}: {}", error_snippet(resp).await),
+        ));
+    }
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| Error::module(module, e.to_string()))?;
+    scan_for_api_keys(&text);
+    let data =
+        serde_json::from_str::<T>(&text).map_err(|e| Error::module(module, e.to_string()))?;
+    Ok(Some(data))
+}
+
 /// Percent-encode a single URL path or query-string component using the
 /// `application/x-www-form-urlencoded` serialiser. Equivalent to:
 ///

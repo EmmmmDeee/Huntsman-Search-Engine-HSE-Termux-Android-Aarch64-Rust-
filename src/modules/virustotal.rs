@@ -40,51 +40,31 @@ impl Module for VirusTotal {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = ctx.key("HUNTSMAN_VIRUSTOTAL_KEY")?;
         let mut result = ModuleResult::new();
 
         let url = match target.kind {
-            TargetKind::Domain => {
-                format!(
-                    "https://www.virustotal.com/api/v3/domains/{}",
-                    crate::util::http::urlencode(&target.value)
-                )
-            }
-            TargetKind::IpAddress => {
-                format!(
-                    "https://www.virustotal.com/api/v3/ip_addresses/{}",
-                    crate::util::http::urlencode(&target.value)
-                )
-            }
+            TargetKind::Domain => format!(
+                "https://www.virustotal.com/api/v3/domains/{}",
+                crate::util::http::urlencode(&target.value)
+            ),
+            TargetKind::IpAddress => format!(
+                "https://www.virustotal.com/api/v3/ip_addresses/{}",
+                crate::util::http::urlencode(&target.value)
+            ),
             _ => return Ok(result),
         };
 
-        let resp = ctx
-            .http
-            .get(&url)
-            .header("x-apikey", key)
-            .send()
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e.to_string()))?;
-
-        let status = resp.status();
-        if status.as_u16() == 404 {
+        let Some(body) = crate::util::http::fetch_keyed_json::<VtResponse>(
+            ctx,
+            SRC,
+            &url,
+            "HUNTSMAN_VIRUSTOTAL_KEY",
+            "x-apikey",
+        )
+        .await?
+        else {
             return Ok(result);
-        }
-        if !status.is_success() {
-            if status.as_u16() == 429 || status.as_u16() == 401 {
-                ctx.report_key_exhausted(SRC, key, status.as_u16());
-            }
-            return Err(crate::core::error::Error::module(
-                SRC,
-                format!("HTTP {status}"),
-            ));
-        }
-
-        let body: VtResponse = resp
-            .json()
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e.to_string()))?;
+        };
 
         let Some(attrs) = body.data.and_then(|d| d.attributes) else {
             return Ok(result);

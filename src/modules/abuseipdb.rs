@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -36,7 +36,6 @@ impl Module for AbuseIpDb {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = ctx.key("HUNTSMAN_ABUSEIPDB_KEY")?;
         let mut result = ModuleResult::new();
 
         let url = format!(
@@ -44,27 +43,17 @@ impl Module for AbuseIpDb {
             crate::util::http::urlencode(&target.value)
         );
 
-        let resp = ctx
-            .http
-            .get(&url)
-            .header("Key", key)
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            if matches!(status.as_u16(), 401 | 429) {
-                ctx.report_key_exhausted(SRC, key, status.as_u16());
-            }
-            return Err(Error::module(SRC, format!("HTTP {status}")));
-        }
-
-        let body: AbuseResponse = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let Some(body) = crate::util::http::fetch_keyed_json::<AbuseResponse>(
+            ctx,
+            SRC,
+            &url,
+            "HUNTSMAN_ABUSEIPDB_KEY",
+            "Key",
+        )
+        .await?
+        else {
+            return Ok(result);
+        };
 
         let Some(data) = body.data else {
             return Ok(result);
