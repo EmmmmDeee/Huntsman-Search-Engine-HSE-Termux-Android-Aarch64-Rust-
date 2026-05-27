@@ -1030,3 +1030,55 @@ pub(super) fn rule_au_027_address_coordinates_chain(
         ts,
     )]
 }
+
+pub(super) fn rule_au_028_subdomain_takeover_risk(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain && e.has_tag("subdomain-takeover"))
+        .map(|e| {
+            Correlation::new(
+                "AU-028",
+                "Subdomain takeover vulnerability",
+                Severity::Critical,
+                format!(
+                    "Domain '{}' has a dangling CNAME vulnerable to takeover",
+                    e.value
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
+}
+
+pub(super) fn rule_au_029_cloud_storage_exposure(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let exposed: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.has_tag("cloud-storage") && e.has_tag("vulnerable"))
+        .collect();
+    if exposed.is_empty() {
+        return Vec::new();
+    }
+    let uids: Vec<String> = exposed.iter().map(|e| e.uid.clone()).collect();
+    vec![Correlation::new(
+        "AU-029",
+        "Exposed cloud storage",
+        Severity::Critical,
+        format!(
+            "{} publicly accessible cloud storage bucket(s) discovered",
+            exposed.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
