@@ -231,7 +231,7 @@ impl Module for Epieos {
                 if let Some(place) = review.place_name.as_deref()
                     && place.len() >= 3
                 {
-                    let mut ae = Entity::new(EntityKind::Address, place, 0.40, &ctx.scan_id);
+                    let mut ae = Entity::new(EntityKind::Address, place, 0.48, &ctx.scan_id);
                     ae.tag("epieos");
                     ae.tag("google-maps");
                     ae.tag("geoint");

@@ -54,7 +54,7 @@ impl Module for CertIntel {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
+        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -68,12 +68,12 @@ impl Module for CertIntel {
         }
 
         let mut result = ModuleResult::new();
-        // Unified set of subdomains discovered by either source so we
-        // never emit duplicates.
         let mut seen_subs: HashSet<String> = HashSet::new();
         let parent = domain.to_lowercase();
 
-        // ── 1. crt.sh CT-log search ────────────────────────────────
+        // CT-log search only works for domain targets (indexed by name).
+        // IP targets skip straight to the live TLS probe.
+        if target.kind == TargetKind::Domain {
         let ct_url = format!("https://crt.sh/?q=%.{domain}&output=json");
         if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, "cert_intel", &ct_url).await {
             for entry in &entries {
@@ -107,8 +107,9 @@ impl Module for CertIntel {
                 }
             }
         }
+        } // end CT-log search (domain-only)
 
-        // ── 2. Live TLS certificate probe ──────────────────────────
+        // ── 2. Live TLS certificate probe (works for both Domain and IP) ──
         let url = format!("https://{domain}/");
         if let Ok(resp) = ctx
             .http
@@ -313,10 +314,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_domain_only() {
+    fn accepts_domain_and_ip() {
         let m = CertIntel;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
-        assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y")));
     }
 

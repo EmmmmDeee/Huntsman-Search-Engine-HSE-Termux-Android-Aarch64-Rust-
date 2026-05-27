@@ -79,7 +79,7 @@ impl Module for UrlScan {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::Url)
+        matches!(t.kind, TargetKind::Domain | TargetKind::Url | TargetKind::IpAddress)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -94,6 +94,10 @@ impl Module for UrlScan {
             ),
             TargetKind::Url => format!(
                 "https://urlscan.io/api/v1/search/?q=page.url:\"{}\"&size=5",
+                urlencode(&target.value)
+            ),
+            TargetKind::IpAddress => format!(
+                "https://urlscan.io/api/v1/search/?q=page.ip:\"{}\"&size=10",
                 urlencode(&target.value)
             ),
             _ => return Ok(ModuleResult::new()),
@@ -217,12 +221,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_domain_and_url() {
+    fn accepts_domain_url_and_ip() {
         let m = UrlScan;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
         assert!(m.accepts(&Target::new(TargetKind::Url, "https://example.com/path")));
+        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
-        assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
         assert!(!m.accepts(&Target::new(TargetKind::Username, "alice")));
     }
 

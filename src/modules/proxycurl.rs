@@ -118,7 +118,7 @@ impl Module for Proxycurl {
         ModuleCost::Paid
     }
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Username | TargetKind::Url)
+        matches!(t.kind, TargetKind::Username | TargetKind::Url | TargetKind::Email)
     }
     fn max_timeout_ms(&self) -> u64 {
         15_000
@@ -130,24 +130,36 @@ impl Module for Proxycurl {
             None => return Ok(ModuleResult::new()),
         };
 
-        let linkedin_url = if target.kind == TargetKind::Url {
-            let v = target.value.trim().to_lowercase();
-            if !v.contains("linkedin.com/in/") {
+        let api_url = if target.kind == TargetKind::Email {
+            let email = target.value.trim();
+            if !email.contains('@') {
                 return Ok(ModuleResult::new());
             }
-            target.value.trim().to_string()
+            format!(
+                "https://nubela.co/proxycurl/api/linkedin/profile/resolve/email?work_email={}",
+                urlencode(email),
+            )
         } else {
-            let username = target.value.trim();
-            if username.is_empty() || username.len() > 100 {
-                return Ok(ModuleResult::new());
-            }
-            format!("https://linkedin.com/in/{username}")
+            let linkedin_url = if target.kind == TargetKind::Url {
+                let v = target.value.trim().to_lowercase();
+                if !v.contains("linkedin.com/in/") {
+                    return Ok(ModuleResult::new());
+                }
+                target.value.trim().to_string()
+            } else {
+                let username = target.value.trim();
+                if username.is_empty() || username.len() > 100 {
+                    return Ok(ModuleResult::new());
+                }
+                format!("https://linkedin.com/in/{username}")
+            };
+            format!(
+                "https://nubela.co/proxycurl/api/v2/linkedin?url={}",
+                urlencode(&linkedin_url),
+            )
         };
 
-        let url = format!(
-            "https://nubela.co/proxycurl/api/v2/linkedin?url={}",
-            urlencode(&linkedin_url),
-        );
+        let url = api_url;
 
         let resp = ctx
             .http
@@ -187,7 +199,7 @@ impl Module for Proxycurl {
             pe.tag("proxycurl");
             pe.tag("linkedin");
             let mut ev = Evidence::new(SRC, format!("LinkedIn profile: {name}"))
-                .with_attr("linkedin_url", &linkedin_url);
+                .with_attr("target", &target.value);
             if let Some(h) = profile.headline.as_deref() {
                 ev = ev.with_attr("headline", h);
             }
@@ -264,6 +276,23 @@ impl Module for Proxycurl {
             }
         }
 
+        for email in &profile.personal_emails {
+            if let Some(domain) = email.split('@').nth(1) {
+                let domain = domain.trim().to_lowercase();
+                if domain.contains('.')
+                    && domain.len() >= 4
+                    && !crate::modules::email_parse::is_freemail(&domain)
+                {
+                    let mut de = Entity::new(EntityKind::Domain, &domain, 0.68, &ctx.scan_id);
+                    de.tag("proxycurl");
+                    de.tag("linkedin");
+                    de.tag("derived");
+                    de.add_evidence(Evidence::new(SRC, "Email domain from LinkedIn profile"));
+                    result.push(de);
+                }
+            }
+        }
+
         for phone in profile.personal_numbers.iter().take(3) {
             if phone.len() >= 7 {
                 let mut phe = Entity::new(EntityKind::Phone, phone, 0.75, &ctx.scan_id);
@@ -313,11 +342,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_username_and_url() {
+    fn accepts_username_url_and_email() {
         let m = Proxycurl;
         assert!(m.accepts(&Target::new(TargetKind::Username, "johndoe")));
         assert!(m.accepts(&Target::new(TargetKind::Url, "https://linkedin.com/in/johndoe")));
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::Domain, "x.com")));
     }
 
     #[test]

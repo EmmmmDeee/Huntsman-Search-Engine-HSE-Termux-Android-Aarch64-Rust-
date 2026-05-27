@@ -263,6 +263,21 @@ impl Module for Keybase {
                         );
                         result.push(de);
                     }
+                    _ if nametag.contains('@') && nametag.contains('.') => {
+                        let mut ee =
+                            Entity::new(EntityKind::Email, nametag, 0.70, &ctx.scan_id);
+                        ee.tag("keybase");
+                        ee.tag(format!("proof:{ptype}"));
+                        ee.add_evidence(
+                            Evidence::new(
+                                SRC,
+                                format!("Verified {ptype} proof: {nametag} linked to Keybase/{kb_username}"),
+                            )
+                            .with_attr("proof_type", ptype)
+                            .with_attr("keybase_user", kb_username),
+                        );
+                        result.push(ee);
+                    }
                     _ => {}
                 }
             }

@@ -405,13 +405,20 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
     // Geolocation chain: Seed → IP/Domain → IP → Coords → Address → Coords
     // Every identity seed needs at least 3 hops to reach refined geo.
     // With paid keys, 5 hops catches OathNet → IP → geo → geocode → refine.
+    //
+    // v1.0 recalibration: 11 new modules widen the expansion graph.
+    //   keybase/proxycurl/epieos enrich Username/Email → Person + Address
+    //   opencorporates enriches Organisation → Address → geocode
+    //   photon/mylnikov/overpass add geo corroboration paths
     let depth = match kind {
-        // Identity seeds have the richest expansion graph:
-        //   R0: oathnet_pro/intelx/dehashed breach search → IPs, emails,
-        //       usernames, phones; search_engines → domains, addresses
-        //   R1: dns_intel/doh on domains → more IPs; ip_geo on IPs → coords
-        //   R2: geocode on coords → addresses; wigle on coords → WiFi
-        //   R3: web_crawler on domains → more emails; shodan → ports
+        // Identity seeds: richest expansion graph.
+        //   R0: oathnet_pro/intelx/dehashed → IPs, emails, usernames, phones
+        //       seon/emailrep/epieos → Person, Address; search_engines → domains
+        //   R1: dns_intel/doh on domains → IPs; ip_geo → coords;
+        //       keybase/proxycurl on usernames → Person, Email, Phone, Org
+        //   R2: geocode/photon on coords → addresses; wigle → WiFi
+        //       opencorporates on Org → Address
+        //   R3: overpass on coords → infra; web_crawler → more emails
         //   R4: (paid) secondary OathNet on R1 discovered emails → geo
         TargetKind::Email | TargetKind::Username | TargetKind::FullName => {
             if has_paid_keys {
@@ -421,8 +428,6 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // Domain seeds produce IPs at R0, geo at R1, addresses at R2,
-        // discovered emails at R2-3 feed back into identity expansion.
         TargetKind::Domain => {
             if has_paid_keys {
                 5
@@ -431,8 +436,6 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // IP seeds get geo at R0, reverse DNS domains at R0, those domains
-        // expand through the full domain pipeline at R1-R3.
         TargetKind::IpAddress => {
             if has_paid_keys {
                 4
@@ -441,7 +444,6 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // URL: extract domain at R0, then full domain pipeline.
         TargetKind::Url => {
             if has_paid_keys {
                 4
@@ -450,8 +452,8 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // Phone: geo_intel at R0 → coords + breach IPs. R1 geocodes.
-        // R2 expands breach IPs → domains. R3 catches remaining.
+        // Phone: seon → carrier/platform presence at R0; geo_intel → coords.
+        // R1 geocodes. R2 expands breach IPs → domains. R3 catches remaining.
         TargetKind::Phone => {
             if has_paid_keys {
                 4
@@ -460,7 +462,6 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // ASN: ip_registry → IPs at R0. Full IP pipeline from R1.
         TargetKind::Asn => {
             if has_paid_keys {
                 4
@@ -469,32 +470,29 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // Coords/Address: already geo. R1 refines (geocode opposite
-        // direction). R2 expands wigle WiFi intelligence.
-        TargetKind::Coordinates | TargetKind::Address => 2,
+        // Coords/Address: photon + geocode provide bidirectional geocoding.
+        // R1 refines opposite direction. R2 overpass/wigle for infra/WiFi.
+        // R3 catches sunrise_sunset chronolocation + BSSID expansion.
+        TargetKind::Coordinates | TargetKind::Address => 3,
 
-        // Organisation/ABN: abn_lookup → addresses. Then geocode pipeline.
+        // Organisation/ABN: opencorporates → addresses + company registry.
+        // R1 geocode → coords. R2 overpass for nearby infrastructure.
+        // R3 catches cross-links from company → directors → identity.
         TargetKind::Organisation | TargetKind::AbnAcn => {
             if has_paid_keys {
-                3
+                4
             } else {
-                2
+                3
             }
         }
 
-        // ApiKey: service domain → full domain pipeline.
         TargetKind::ApiKey => 3,
 
-        // MacAddress: WiGLE BSSID → Coordinates → Address. High geo value.
-        TargetKind::MacAddress => 2,
+        // MacAddress: wigle + mylnikov → coords at R0.
+        // R1 geocode/photon → address. R2 overpass for infrastructure.
+        TargetKind::MacAddress => 3,
     };
 
-    // Lower confidence threshold to catch more geo-relevant entities:
-    // - Breach IPs at 0.50-0.60 are valuable geo seeds
-    // - Phone prefix coords at 0.52 need to expand through geocode
-    // - Social profile URLs at 0.55 lead to domains → IPs → geo
-    // With paid keys, go even lower since OathNet data is high-quality
-    // despite conservative confidence scoring.
     let min_conf = if has_paid_keys { 0.40 } else { 0.45 };
 
     (depth, min_conf)
@@ -506,74 +504,82 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
 ///
 /// Used by the engine to prioritise expansion candidates when multiple
 /// entities are available — higher-NPV seeds expand first.
+/// v1.0 recalibration: 11 new modules widen the entity yield.
+///   emailrep/epieos/seon/pwned_passwords add 4 Email consumers
+///   keybase/proxycurl add Username→Person+Email+Phone+Org chains
+///   opencorporates adds Organisation→Address chains
+///   photon/mylnikov add geo corroboration paths
 pub fn seed_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
     match kind {
         TargetKind::Email => {
             if has_paid_keys {
-                332.4
+                348.0
             } else {
-                18.4
+                26.5
             }
         }
-        TargetKind::Domain => 89.8,
+        TargetKind::Domain => 92.4,
         TargetKind::FullName => {
             if has_paid_keys {
-                185.0
+                195.0
             } else {
-                70.5
+                82.0
             }
         }
-        TargetKind::IpAddress => 17.9,
-        TargetKind::Username => 15.8,
+        TargetKind::IpAddress => 18.6,
+        TargetKind::Username => 28.4,
         TargetKind::Phone => {
             if has_paid_keys {
-                13.5
+                16.2
             } else {
-                2.6
+                5.8
             }
         }
         TargetKind::Asn => 10.2,
         TargetKind::ApiKey => 9.7,
-        TargetKind::Url => 18.8,
-        TargetKind::Organisation => 4.9,
-        TargetKind::AbnAcn => 4.9,
-        TargetKind::MacAddress => 8.5,
-        TargetKind::Coordinates => 1.9,
-        TargetKind::Address => 1.6,
+        TargetKind::Url => 20.5,
+        TargetKind::Organisation => 9.4,
+        TargetKind::AbnAcn => 6.2,
+        TargetKind::MacAddress => 11.0,
+        TargetKind::Coordinates => 4.8,
+        TargetKind::Address => 4.2,
     }
 }
 
 /// Geo-specific NPV: expected Coordinates + Address entity yield.
+/// v1.0 recalibration accounts for photon (second geocoder),
+/// mylnikov (second BSSID→coords path), overpass (infra nodes),
+/// and identity→Address chains via proxycurl/opencorporates/epieos.
 pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
     match kind {
         TargetKind::Email => {
             if has_paid_keys {
-                48.2
+                52.0
             } else {
-                8.7
+                14.2
             }
         }
-        TargetKind::Domain => 22.1,
+        TargetKind::Domain => 23.5,
         TargetKind::FullName => {
-            if has_paid_keys { 42.0 } else { 15.3 }
+            if has_paid_keys { 46.0 } else { 20.8 }
         }
-        TargetKind::IpAddress => 12.4,
+        TargetKind::IpAddress => 13.2,
         TargetKind::Phone => {
             if has_paid_keys {
-                9.8
+                11.5
             } else {
-                1.8
+                4.6
             }
         }
         TargetKind::Asn => 7.1,
-        TargetKind::Username => 6.3,
-        TargetKind::Url => 8.4,
+        TargetKind::Username => 12.5,
+        TargetKind::Url => 9.2,
         TargetKind::ApiKey => 3.8,
-        TargetKind::MacAddress => 7.5,
-        TargetKind::AbnAcn => 2.5,
-        TargetKind::Organisation => 2.1,
-        TargetKind::Coordinates => 1.9,
-        TargetKind::Address => 1.6,
+        TargetKind::MacAddress => 9.8,
+        TargetKind::AbnAcn => 4.0,
+        TargetKind::Organisation => 6.4,
+        TargetKind::Coordinates => 4.2,
+        TargetKind::Address => 3.8,
     }
 }
 

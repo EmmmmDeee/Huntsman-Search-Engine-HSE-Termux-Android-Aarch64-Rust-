@@ -56,7 +56,7 @@ impl Module for WebserverBanner {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
+        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -66,13 +66,21 @@ impl Module for WebserverBanner {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let domain = target.value.trim();
-        if domain.is_empty() || domain.contains('/') {
+        let host = match target.kind {
+            TargetKind::Url => {
+                match url::Url::parse(target.value.trim()) {
+                    Ok(u) => u.host_str().unwrap_or("").to_string(),
+                    Err(_) => return Ok(ModuleResult::new()),
+                }
+            }
+            _ => target.value.trim().to_string(),
+        };
+        if host.is_empty() || host.contains('/') {
             return Ok(ModuleResult::new());
         }
 
         for scheme in ["https", "http"] {
-            let url = format!("{scheme}://{domain}/");
+            let url = format!("{scheme}://{host}/");
             let Ok(resp) = ctx.http.head(&url).send().await else {
                 continue;
             };
@@ -88,7 +96,7 @@ impl Module for WebserverBanner {
 
             let mut ev = Evidence::new(
                 "webserver_banner",
-                format!("HTTP headers from {scheme} HEAD of {domain}"),
+                format!("HTTP headers from {scheme} HEAD of {host}"),
             )
             .with_attr("scheme", scheme)
             .with_attr("status", status.as_u16().to_string());
@@ -170,10 +178,12 @@ mod tests {
     use crate::core::entity::EntityKind;
 
     #[test]
-    fn accepts_only_domain() {
+    fn accepts_domain_ip_and_url() {
         let m = WebserverBanner;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x")));
-        assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+        assert!(m.accepts(&Target::new(TargetKind::Url, "https://example.com/path")));
+        assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b")));
     }
 
     #[test]

@@ -140,7 +140,7 @@ impl Module for EmailParse {
     }
 }
 
-fn is_freemail(domain: &str) -> bool {
+pub fn is_freemail(domain: &str) -> bool {
     const FREE: &[&str] = &[
         "gmail.com",
         "yahoo.com",

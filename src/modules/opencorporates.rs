@@ -79,7 +79,7 @@ impl Module for OpenCorporates {
         ModuleCost::Free
     }
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Organisation | TargetKind::FullName)
+        matches!(t.kind, TargetKind::Organisation | TargetKind::FullName | TargetKind::AbnAcn)
     }
     fn max_timeout_ms(&self) -> u64 {
         10_000
@@ -194,6 +194,20 @@ impl Module for OpenCorporates {
                     format!("Registered address for {name}"),
                 ));
                 result.push(ae);
+            }
+
+            if let Some(num) = co.company_number.as_deref()
+                && !num.is_empty()
+                && co.jurisdiction_code.as_deref() == Some("au")
+            {
+                let mut acn = Entity::new(EntityKind::AbnAcn, num, 0.80, &ctx.scan_id);
+                acn.tag("opencorporates");
+                acn.tag("company-number");
+                acn.add_evidence(
+                    Evidence::new(SRC, format!("AU company number for {name}"))
+                        .with_attr("company_name", name),
+                );
+                result.push(acn);
             }
         }
 
