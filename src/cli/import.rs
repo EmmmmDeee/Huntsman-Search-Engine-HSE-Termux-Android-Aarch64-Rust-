@@ -352,14 +352,27 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     if let Some(ip_info) = doc.pointer("/osintData/ipInfo").and_then(|v| v.as_object()) {
         for (ip, info) in ip_info {
             let city = info.get("city").and_then(|v| v.as_str()).unwrap_or("");
-            let region = info.get("regionName").and_then(|v| v.as_str()).unwrap_or("");
+            let region = info
+                .get("regionName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let country = info.get("country").and_then(|v| v.as_str()).unwrap_or("");
             let lat = info.get("lat").and_then(|v| v.as_f64());
             let lon = info.get("lon").and_then(|v| v.as_f64());
             let isp = info.get("isp").and_then(|v| v.as_str()).unwrap_or("");
             create_geolocation_entities(
-                &GeoFields { ip, lat, lon, city, region, country, isp },
-                &sid, &mut entities, &mut stats,
+                &GeoFields {
+                    ip,
+                    lat,
+                    lon,
+                    city,
+                    region,
+                    country,
+                    isp,
+                },
+                &sid,
+                &mut entities,
+                &mut stats,
             );
         }
     }
@@ -480,13 +493,25 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
 
     deduplicate_by_uid(&mut entities);
 
-    let domains = entities.iter().filter(|e| e.kind == EntityKind::Domain).count();
-    let ips = entities.iter().filter(|e| e.kind == EntityKind::IpAddress).count();
-    let emails = entities.iter().filter(|e| e.kind == EntityKind::Email).count();
+    let domains = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .count();
+    let ips = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .count();
+    let emails = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .count();
 
     println!(
         "Imported {} entities: {} domains, {} IPs, {} emails",
-        entities.len(), domains, ips, emails
+        entities.len(),
+        domains,
+        ips,
+        emails
     );
 
     if output == "json" {
@@ -684,8 +709,18 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
             if let Some(rest) = trimmed.strip_prefix("IP: ") {
                 if !current_ip.is_empty() {
                     create_geolocation_entities(
-                        &GeoFields { ip: &current_ip, lat, lon, city: &city, region: &region, country: &country, isp: &isp },
-                        &sid, &mut entities, &mut stats,
+                        &GeoFields {
+                            ip: &current_ip,
+                            lat,
+                            lon,
+                            city: &city,
+                            region: &region,
+                            country: &country,
+                            isp: &isp,
+                        },
+                        &sid,
+                        &mut entities,
+                        &mut stats,
                     );
                 }
                 current_ip = rest.trim().to_string();
@@ -711,8 +746,18 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
         }
         if !current_ip.is_empty() {
             create_geolocation_entities(
-                &GeoFields { ip: &current_ip, lat, lon, city: &city, region: &region, country: &country, isp: &isp },
-                &sid, &mut entities, &mut stats,
+                &GeoFields {
+                    ip: &current_ip,
+                    lat,
+                    lon,
+                    city: &city,
+                    region: &region,
+                    country: &country,
+                    isp: &isp,
+                },
+                &sid,
+                &mut entities,
+                &mut stats,
             );
         }
     }
@@ -785,20 +830,21 @@ fn detect_and_create_api_key_entity(
 
     let (service, _key_val) = identify_api_key(pw)?;
 
-    let display = format!(
-        "{}:{}...{}",
-        service,
-        &pw[..pw.len().min(8)],
-        &pw[pw.len().saturating_sub(4)..]
-    );
+    let char_len = pw.chars().count();
+    let prefix: String = pw.chars().take(8).collect();
+    let suffix: String = pw.chars().skip(char_len.saturating_sub(4)).collect();
+    let display = format!("{service}:{prefix}...{suffix}");
     let mut e = Entity::new(EntityKind::ApiKey, &display, 0.80, sid);
     e.tag("api-key");
     e.tag(format!("service:{service}"));
     e.tag("import");
     e.add_evidence(
-        Evidence::new(source_label, format!("API key pattern ({service}) in stealer data"))
-            .with_attr("service", service)
-            .with_attr("key_length", pw.len().to_string()),
+        Evidence::new(
+            source_label,
+            format!("API key pattern ({service}) in stealer data"),
+        )
+        .with_attr("service", service)
+        .with_attr("key_length", pw.len().to_string()),
     );
     Some(e)
 }
@@ -838,7 +884,10 @@ fn create_geolocation_entities(
         ce.tag("import");
         ce.add_evidence(Evidence::new(
             "import:oathnet",
-            format!("IP {}: {}, {}, {} ({})", geo.ip, geo.city, geo.region, geo.country, geo.isp),
+            format!(
+                "IP {}: {}, {}, {} ({})",
+                geo.ip, geo.city, geo.region, geo.country, geo.isp
+            ),
         ));
         entities.push(ce);
         stats.coordinates += 1;

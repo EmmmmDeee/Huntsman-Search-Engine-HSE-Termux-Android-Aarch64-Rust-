@@ -645,8 +645,7 @@ pub(super) fn rule_au_018_email_address_colocation(
     let addresses: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
-            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)
-                && e.confidence >= 0.50
+            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates) && e.confidence >= 0.50
         })
         .collect();
     if emails.is_empty() || addresses.is_empty() {

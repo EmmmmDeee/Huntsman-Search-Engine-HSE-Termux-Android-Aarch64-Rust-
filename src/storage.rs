@@ -5,11 +5,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
 use crate::core::{
-    correlator::Correlation,
-    entity::Entity,
-    error::Result,
-    event::Event,
-    scan::Scan,
+    correlator::Correlation, entity::Entity, error::Result, event::Event, scan::Scan,
 };
 
 pub struct Store {
@@ -280,10 +276,7 @@ impl Store {
         Ok(count)
     }
 
-    fn merge_and_persist_entity(
-        tx: &rusqlite::Transaction<'_>,
-        entity: &Entity,
-    ) -> Result<()> {
+    fn merge_and_persist_entity(tx: &rusqlite::Transaction<'_>, entity: &Entity) -> Result<()> {
         let orig_scan_id = entity.scan_id.clone();
         let orig_observed_at = entity.observed_at;
 

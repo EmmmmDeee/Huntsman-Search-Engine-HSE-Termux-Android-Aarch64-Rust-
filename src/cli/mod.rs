@@ -1156,7 +1156,10 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         if scan.modules_run > 0 {
             println!(
                 "  modules: {} run, {} errored, {} timed out, {} deduped\n",
-                scan.modules_run, scan.modules_errored, scan.modules_timed_out, scan.modules_deduped
+                scan.modules_run,
+                scan.modules_errored,
+                scan.modules_timed_out,
+                scan.modules_deduped
             );
         } else {
             println!();

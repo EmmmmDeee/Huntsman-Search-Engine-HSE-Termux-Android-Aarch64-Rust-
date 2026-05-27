@@ -82,6 +82,15 @@ const SOCIAL_HOSTS: &[&str] = &[
     "medium.com",
 ];
 
+fn is_social_host(host: &str) -> bool {
+    SOCIAL_HOSTS.iter().any(|s| {
+        host == *s
+            || (host.len() > s.len()
+                && host.ends_with(s)
+                && host.as_bytes()[host.len() - s.len() - 1] == b'.')
+    })
+}
+
 #[async_trait]
 impl Module for SearchEngines {
     fn name(&self) -> &'static str {
@@ -778,7 +787,7 @@ fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<Str
 
     for r in results {
         let host = extract_host(&r.url);
-        if !SOCIAL_HOSTS.iter().any(|s| host == *s || host.ends_with(&format!(".{s}"))) {
+        if !is_social_host(&host) {
             continue;
         }
         if let Some(username) = extract_path_username(&r.url) {
@@ -1041,9 +1050,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
         // Extract usernames and person names from social profile URLs
         if let Some(username) = extract_path_username(&r.url) {
             let lower_user = username.to_lowercase();
-            let is_social = SOCIAL_HOSTS
-                .iter()
-                .any(|s| host == *s || host.ends_with(&format!(".{s}")));
+            let is_social = is_social_host(&host);
             if is_social
                 && lower_user.len() >= 3
                 && !is_navigation_path(&lower_user)

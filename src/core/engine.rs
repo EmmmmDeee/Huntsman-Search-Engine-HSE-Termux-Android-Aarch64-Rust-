@@ -886,7 +886,11 @@ fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
     for ev in &entity.evidence {
         for val in ev.attributes.values() {
             if (16..=200).contains(&val.len()) {
-                harvest(val, &ev.source, Some(format!("Evidence attr from {}", ev.source)));
+                harvest(
+                    val,
+                    &ev.source,
+                    Some(format!("Evidence attr from {}", ev.source)),
+                );
             }
         }
     }
