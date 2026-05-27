@@ -702,3 +702,83 @@ pub(super) fn date_diff_days(a: &str, b: &str) -> u64 {
     }
 }
 
+
+pub(super) fn rule_au_020_person_entity_cluster(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let persons: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person && e.confidence >= 0.50)
+        .collect();
+    if persons.len() < 2 {
+        return Vec::new();
+    }
+    let uids: Vec<String> = persons.iter().map(|e| e.uid.clone()).collect();
+    vec![Correlation::new(
+        "AU-020",
+        "Multiple person entities",
+        Severity::Medium,
+        format!(
+            "{} person entities discovered — potential identity disambiguation needed",
+            persons.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
+pub(super) fn rule_au_021_api_key_exposure(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::ApiKey)
+        .map(|e| Correlation::new(
+            "AU-021",
+            "API key exposure",
+            Severity::Critical,
+            format!("API key '{}' discovered in breach/stealer data", e.value),
+            vec![e.uid.clone()],
+            scan_id,
+            ts,
+        ))
+        .collect()
+}
+
+pub(super) fn rule_au_022_organisation_with_breach(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let orgs: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation && e.confidence >= 0.60)
+        .collect();
+    let breach_entities: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.has_tag("breach"))
+        .collect();
+    if orgs.is_empty() || breach_entities.is_empty() {
+        return Vec::new();
+    }
+    let mut uids: Vec<String> = orgs.iter().map(|e| e.uid.clone()).collect();
+    uids.extend(breach_entities.iter().take(5).map(|e| e.uid.clone()));
+    vec![Correlation::new(
+        "AU-022",
+        "Organisation linked to breach data",
+        Severity::High,
+        format!(
+            "{} organisation(s) co-located with {} breach entities",
+            orgs.len(),
+            breach_entities.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}

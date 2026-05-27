@@ -144,6 +144,9 @@ const RULES: &[RuleFn] = &[
     rule_au_017_multi_geo_convergence,
     rule_au_018_email_address_colocation,
     rule_au_019_temporal_breach_cluster,
+    rule_au_020_person_entity_cluster,
+    rule_au_021_api_key_exposure,
+    rule_au_022_organisation_with_breach,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
