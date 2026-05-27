@@ -22,7 +22,6 @@ const SRC: &str = "api_key_probe";
 
 pub struct ApiKeyProbe;
 
-type UrlBuilderFn = fn(&str) -> (String, Vec<(&'static str, String)>);
 
 mod probes;
 use probes::probes;

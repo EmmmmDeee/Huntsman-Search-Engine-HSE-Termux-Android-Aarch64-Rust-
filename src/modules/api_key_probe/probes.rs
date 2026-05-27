@@ -1,14 +1,13 @@
 use serde_json::Value;
 
-#[allow(dead_code)]
-type UrlBuilderFn = fn(&str) -> (String, Vec<(&'static str, String)>);
+
 
 
 pub(super) struct Probe {
     pub(super) service: &'static str,
     pub(super) category: &'static str,
     pub(super) env_var: &'static str,
-    pub(super) url_builder: UrlBuilderFn,
+    pub(super) url_builder: fn(&str) -> (String, Vec<(&'static str, String)>),
     pub(super) parse_info: fn(&Value) -> Vec<(String, String)>,
 }
 
