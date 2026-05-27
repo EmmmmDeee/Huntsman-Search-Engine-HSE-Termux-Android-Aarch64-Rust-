@@ -390,6 +390,9 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
         EntityKind::Email | EntityKind::Username => {
             let trimmed = value.trim();
+            if trimmed.bytes().all(|b| !b.is_ascii_uppercase()) {
+                return trimmed.to_string();
+            }
             let mut s = String::with_capacity(trimmed.len());
             for c in trimmed.chars() {
                 s.extend(c.to_lowercase());

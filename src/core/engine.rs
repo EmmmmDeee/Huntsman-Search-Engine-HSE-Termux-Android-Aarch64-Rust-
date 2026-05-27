@@ -710,6 +710,7 @@ impl ScanEngine {
 
         let sem = Arc::new(Semaphore::new(opts.max_concurrent));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
+        let scan_id_arc: Arc<str> = scan_id.into();
 
         for module in &self.modules {
             if ctx.cancel.is_cancelled() {
@@ -759,16 +760,15 @@ impl ScanEngine {
             let target = target.clone();
             let ctx = ctx.clone();
             let emitter = self.emitter.clone();
-            let scan_id_owned = scan_id.to_string();
+            let sid = Arc::clone(&scan_id_arc);
             let throttle_ms = opts.throttle_ms;
             let module_timeout_ms = resolve_timeout(opts, &*module_arc);
 
             set.spawn(async move {
                 let _permit = permit;
-                let name = module_arc.name();
 
                 emitter.emit(
-                    &scan_id_owned,
+                    &sid,
                     EventKind::ModuleStart {
                         module: name.into(),
                     },

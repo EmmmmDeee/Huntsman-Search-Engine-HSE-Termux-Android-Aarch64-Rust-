@@ -98,6 +98,8 @@ impl Store {
              SELECT uid, scan_id, observed_at FROM entities;",
         )?;
 
+        let _ = conn.execute_batch("PRAGMA optimize;");
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -277,11 +279,13 @@ impl Store {
     }
 
     fn merge_and_persist_entity(tx: &rusqlite::Transaction<'_>, entity: &Entity) -> Result<()> {
-        let json = serde_json::to_string(entity)?;
+        let kind_str = entity.kind.to_string();
 
         // Fast path: INSERT with DO NOTHING. For new entities (the common
         // case during a first-pass scan) this succeeds in one statement
-        // with no SELECT round-trip.
+        // with no SELECT round-trip. Serialization is deferred so the
+        // conflict path doesn't pay for a wasted to_string.
+        let json = serde_json::to_string(entity)?;
         let inserted = tx.execute(
             "INSERT INTO entities(uid, scan_id, kind, value, confidence, corroboration, observed_at, data_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -289,7 +293,7 @@ impl Store {
             params![
                 entity.uid,
                 entity.scan_id,
-                entity.kind.to_string(),
+                kind_str,
                 entity.value,
                 entity.confidence,
                 entity.corroboration as i64,
