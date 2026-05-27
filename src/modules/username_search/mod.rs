@@ -108,6 +108,7 @@ impl Module for UsernameSearch {
                             Ok(t) => t,
                             Err(_) => return ProbeResult::Error,
                         };
+                        scan_text_for_keys(&body);
                         if body.contains(needle) {
                             ProbeResult::Found(url)
                         } else {
@@ -122,6 +123,7 @@ impl Module for UsernameSearch {
                             Ok(t) => t,
                             Err(_) => return ProbeResult::Error,
                         };
+                        scan_text_for_keys(&body);
                         if body.contains(needle) {
                             ProbeResult::NotFound
                         } else {
@@ -246,6 +248,23 @@ trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
 }
 
 impl<F> WithSite for F where F: std::future::Future<Output = ProbeResult> + Send + 'static {}
+
+fn scan_text_for_keys(body: &str) {
+    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    let pool = crate::util::key_pool::global_pool();
+    for word in body.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {
+        let t = word.trim();
+        if t.len() >= 16
+            && t.len() <= 200
+            && let Some((service, key_val)) = identify_api_key(t)
+        {
+            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.notes = Some("Profile page body".into());
+            pool.add(service, entry);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
