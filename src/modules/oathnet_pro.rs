@@ -66,7 +66,12 @@ impl Module for OathnetPro {
             TargetKind::Username => "username",
             TargetKind::Phone => "phone",
             TargetKind::IpAddress => "ip",
-            TargetKind::Domain => "domain",
+            TargetKind::Domain => {
+                if is_social_platform(&target.value) {
+                    return Ok(result);
+                }
+                "domain"
+            }
             _ => return Ok(result),
         };
 
@@ -252,6 +257,54 @@ impl Module for OathnetPro {
 
         Ok(result)
     }
+}
+
+fn is_social_platform(domain: &str) -> bool {
+    const PLATFORMS: &[&str] = &[
+        "peekyou.com",
+        "spokeo.com",
+        "nuwber.com",
+        "pipl.com",
+        "facebook.com",
+        "instagram.com",
+        "twitter.com",
+        "x.com",
+        "linkedin.com",
+        "pinterest.com",
+        "tiktok.com",
+        "reddit.com",
+        "github.com",
+        "gitlab.com",
+        "bitbucket.org",
+        "youtube.com",
+        "twitch.tv",
+        "steamcommunity.com",
+        "mastodon.social",
+        "bsky.app",
+        "threads.net",
+        "tumblr.com",
+        "snapchat.com",
+        "telegram.org",
+        "discord.com",
+        "soundcloud.com",
+        "spotify.com",
+        "whatsapp.com",
+        "signal.org",
+        "vk.com",
+        "whitepages.com",
+        "whitepages.com.au",
+        "locatefamily.com",
+        "truecaller.com",
+        "cloudflare.com",
+        "google.com",
+        "microsoft.com",
+        "amazon.com",
+        "apple.com",
+    ];
+    let lower = domain.to_lowercase();
+    PLATFORMS
+        .iter()
+        .any(|p| lower == *p || lower.ends_with(&format!(".{p}")))
 }
 
 // ─── Entity extraction ─────────────────────────────────────────────────────
