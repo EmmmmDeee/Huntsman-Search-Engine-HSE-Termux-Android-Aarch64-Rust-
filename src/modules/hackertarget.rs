@@ -39,7 +39,7 @@ impl Module for HackerTarget {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
+        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -47,7 +47,13 @@ impl Module for HackerTarget {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let val = target.value.trim();
+        let val = match target.kind {
+            TargetKind::Url => match crate::util::url_util::host_from_url(&target.value) {
+                Some(h) => h,
+                None => return Ok(ModuleResult::new()),
+            },
+            _ => target.value.trim().to_string(),
+        };
         if val.is_empty() {
             return Ok(ModuleResult::new());
         }
@@ -55,13 +61,13 @@ impl Module for HackerTarget {
         let mut result = ModuleResult::new();
 
         match target.kind {
-            TargetKind::Domain => {
-                self.hostsearch(val, ctx, &mut result).await?;
+            TargetKind::Domain | TargetKind::Url => {
+                self.hostsearch(&val, ctx, &mut result).await?;
             }
             TargetKind::IpAddress => {
-                self.reverse_ip(val, ctx, &mut result).await?;
+                self.reverse_ip(&val, ctx, &mut result).await?;
                 if !ctx.cancel.is_cancelled() {
-                    self.reverse_dns(val, ctx, &mut result).await?;
+                    self.reverse_dns(&val, ctx, &mut result).await?;
                 }
             }
             _ => {}

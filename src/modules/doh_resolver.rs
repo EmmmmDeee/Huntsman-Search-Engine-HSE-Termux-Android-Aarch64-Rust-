@@ -53,14 +53,21 @@ impl Module for DohResolver {
         34
     }
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
+        matches!(t.kind, TargetKind::Domain | TargetKind::Url)
     }
     fn max_timeout_ms(&self) -> u64 {
         10_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let domain = target.value.trim();
+        let domain = match target.kind {
+            TargetKind::Url => match crate::util::url_util::host_from_url(&target.value) {
+                Some(h) => h,
+                None => return Ok(ModuleResult::new()),
+            },
+            _ => target.value.trim().to_string(),
+        };
+        let domain = domain.as_str();
         if domain.is_empty() {
             return Ok(ModuleResult::new());
         }

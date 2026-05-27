@@ -147,7 +147,7 @@ impl Module for DnsIntel {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
+        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -158,6 +158,14 @@ impl Module for DnsIntel {
         match target.kind {
             TargetKind::Domain => process_domain(target, ctx).await,
             TargetKind::IpAddress => process_ip(target, ctx).await,
+            TargetKind::Url => {
+                if let Some(host) = crate::util::url_util::host_from_url(&target.value) {
+                    let synth = Target::new(TargetKind::Domain, host);
+                    process_domain(&synth, ctx).await
+                } else {
+                    Ok(ModuleResult::new())
+                }
+            }
             _ => Ok(ModuleResult::new()),
         }
     }

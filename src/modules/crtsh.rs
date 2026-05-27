@@ -56,7 +56,7 @@ impl Module for CrtSh {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::Email)
+        matches!(t.kind, TargetKind::Domain | TargetKind::Email | TargetKind::Url)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -67,6 +67,10 @@ impl Module for CrtSh {
         let query = match target.kind {
             TargetKind::Domain => format!("%.{}", target.value.trim()),
             TargetKind::Email => target.value.trim().to_string(),
+            TargetKind::Url => match crate::util::url_util::host_from_url(&target.value) {
+                Some(h) => format!("%.{h}"),
+                None => return Ok(ModuleResult::new()),
+            },
             _ => return Ok(ModuleResult::new()),
         };
 

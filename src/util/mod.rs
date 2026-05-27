@@ -8,6 +8,26 @@ pub mod service_defs;
 pub mod oathnet;
 pub mod proxy;
 
+pub mod url_util {
+    pub fn host_from_url(url: &str) -> Option<String> {
+        let trimmed = url.trim();
+        let after_scheme = trimmed
+            .strip_prefix("https://")
+            .or_else(|| trimmed.strip_prefix("http://"))
+            .unwrap_or(trimmed);
+        let host = after_scheme
+            .split('/')
+            .next()?
+            .split(':')
+            .next()?
+            .to_lowercase();
+        if host.is_empty() || !host.contains('.') {
+            return None;
+        }
+        Some(host)
+    }
+}
+
 pub mod str_util {
     pub fn truncate_safe(s: &str, max: usize) -> &str {
         if s.len() <= max {
