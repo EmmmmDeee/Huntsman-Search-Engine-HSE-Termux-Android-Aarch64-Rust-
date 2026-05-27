@@ -86,7 +86,6 @@ impl KeyEntry {
 // Service definitions extracted to service_defs.rs
 pub use super::service_defs::*;
 
-
 // ── Pool ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

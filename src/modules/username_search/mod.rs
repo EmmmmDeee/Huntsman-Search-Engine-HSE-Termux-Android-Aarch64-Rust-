@@ -36,10 +36,8 @@ pub struct UsernameSearch;
 
 /// One site to probe. Kept inline (rather than loaded from a JSON file)
 /// so the binary stays self-contained and the list is reviewable in PR.
-
 mod sites;
-use sites::{SITES, Method, Detect};
-
+use sites::{Detect, Method, SITES};
 
 #[async_trait]
 impl Module for UsernameSearch {

@@ -72,7 +72,10 @@ impl Module for LeakIx {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) { Some(k) => k, None => return Ok(ModuleResult::new()) };
+        let key = match ctx.key_opt(KEY_ENV) {
+            Some(k) => k,
+            None => return Ok(ModuleResult::new()),
+        };
         let value = target.value.trim();
         if value.is_empty() {
             return Ok(ModuleResult::new());
@@ -99,7 +102,8 @@ impl Module for LeakIx {
             }
             if !status.is_success() {
                 let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, "leakix", key, ctx).await {
+                if handle_keyed_error(code, resp.headers(), &mut retries, "leakix", key, ctx).await
+                {
                     continue;
                 }
                 return Err(Error::module(

@@ -58,7 +58,10 @@ impl Module for AbnLookup {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let guid = match ctx.key_opt(KEY_ENV) { Some(k) => k, None => return Ok(ModuleResult::new()) };
+        let guid = match ctx.key_opt(KEY_ENV) {
+            Some(k) => k,
+            None => return Ok(ModuleResult::new()),
+        };
         let value = target.value.trim();
         if value.is_empty() {
             return Ok(ModuleResult::new());

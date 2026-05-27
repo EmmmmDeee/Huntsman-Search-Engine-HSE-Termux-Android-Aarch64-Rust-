@@ -79,7 +79,10 @@ impl Module for OpenCorporates {
         ModuleCost::Free
     }
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Organisation | TargetKind::FullName | TargetKind::AbnAcn)
+        matches!(
+            t.kind,
+            TargetKind::Organisation | TargetKind::FullName | TargetKind::AbnAcn
+        )
     }
     fn max_timeout_ms(&self) -> u64 {
         10_000
@@ -131,7 +134,9 @@ impl Module for OpenCorporates {
             return Ok(ModuleResult::new());
         }
 
-        let total = results.total_count.unwrap_or(results.companies.len() as u64);
+        let total = results
+            .total_count
+            .unwrap_or(results.companies.len() as u64);
         let mut result = ModuleResult::new();
 
         for wrapper in results.companies.iter().take(5) {
@@ -190,10 +195,7 @@ impl Module for OpenCorporates {
                 ae.tag("opencorporates");
                 ae.tag("registered-address");
                 ae.tag("validated");
-                ae.add_evidence(Evidence::new(
-                    SRC,
-                    format!("Registered address for {name}"),
-                ));
+                ae.add_evidence(Evidence::new(SRC, format!("Registered address for {name}")));
                 result.push(ae);
             }
 

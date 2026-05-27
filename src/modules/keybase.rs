@@ -156,15 +156,12 @@ impl Module for Keybase {
         entity.tag("keybase");
 
         let mut ev = Evidence::new(SRC, format!("Keybase profile for {kb_username}"))
-            .with_attr(
-                "profile_url",
-                format!("https://keybase.io/{kb_username}"),
-            );
+            .with_attr("profile_url", format!("https://keybase.io/{kb_username}"));
 
-        if let Some(basics) = &user.basics {
-            if let Some(ctime) = basics.ctime {
-                ev = ev.with_attr("created_at_unix", ctime.to_string());
-            }
+        if let Some(basics) = &user.basics
+            && let Some(ctime) = basics.ctime
+        {
+            ev = ev.with_attr("created_at_unix", ctime.to_string());
         }
         if let Some(id) = &user.id {
             ev = ev.with_attr("keybase_id", id);
@@ -236,8 +233,7 @@ impl Module for Keybase {
 
                 match ptype {
                     "twitter" | "github" | "reddit" | "hackernews" => {
-                        let mut ue =
-                            Entity::new(EntityKind::Username, nametag, 0.80, &ctx.scan_id);
+                        let mut ue = Entity::new(EntityKind::Username, nametag, 0.80, &ctx.scan_id);
                         ue.tag("keybase");
                         ue.tag(format!("platform:{ptype}"));
                         ue.add_evidence(
@@ -251,8 +247,7 @@ impl Module for Keybase {
                         result.push(ue);
                     }
                     "dns" | "generic_web_site" => {
-                        let mut de =
-                            Entity::new(EntityKind::Domain, nametag, 0.75, &ctx.scan_id);
+                        let mut de = Entity::new(EntityKind::Domain, nametag, 0.75, &ctx.scan_id);
                         de.tag("keybase");
                         de.add_evidence(
                             Evidence::new(
@@ -264,8 +259,7 @@ impl Module for Keybase {
                         result.push(de);
                     }
                     _ if nametag.contains('@') && nametag.contains('.') => {
-                        let mut ee =
-                            Entity::new(EntityKind::Email, nametag, 0.70, &ctx.scan_id);
+                        let mut ee = Entity::new(EntityKind::Email, nametag, 0.70, &ctx.scan_id);
                         ee.tag("keybase");
                         ee.tag(format!("proof:{ptype}"));
                         ee.add_evidence(
@@ -327,8 +321,14 @@ mod tests {
         let r: KbResp = serde_json::from_str(raw).unwrap();
         assert_eq!(r.status.unwrap().code, Some(0));
         let user = &r.them.unwrap()[0];
-        assert_eq!(user.basics.as_ref().unwrap().username.as_deref(), Some("alice"));
-        assert_eq!(user.profile.as_ref().unwrap().full_name.as_deref(), Some("Alice Smith"));
+        assert_eq!(
+            user.basics.as_ref().unwrap().username.as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            user.profile.as_ref().unwrap().full_name.as_deref(),
+            Some("Alice Smith")
+        );
         assert_eq!(user.proofs_summary.as_ref().unwrap().all.len(), 3);
     }
 }

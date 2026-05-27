@@ -120,7 +120,6 @@ impl Correlator {
 
 type RuleFn = fn(&[Entity], &str, u64) -> Vec<Correlation>;
 
-
 mod rules;
 use rules::*;
 
@@ -162,7 +161,6 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     }
     out
 }
-
 
 #[cfg(test)]
 mod tests {

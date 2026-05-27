@@ -129,11 +129,7 @@ out body;"#
 
             let category = if tags.get("man_made").map(|v| v == "mast") == Some(true) {
                 "cell_tower"
-            } else if tags
-                .get("tower:type")
-                .map(|v| v == "communication")
-                == Some(true)
-            {
+            } else if tags.get("tower:type").map(|v| v == "communication") == Some(true) {
                 "comm_tower"
             } else if tags.get("man_made").map(|v| v == "surveillance") == Some(true) {
                 "surveillance"

@@ -39,7 +39,10 @@ impl Module for HackerTarget {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url
+        )
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -78,11 +81,7 @@ impl Module for HackerTarget {
 }
 
 impl HackerTarget {
-    async fn fetch_text(
-        &self,
-        url: &str,
-        ctx: &ModuleContext,
-    ) -> Result<String> {
+    async fn fetch_text(&self, url: &str, ctx: &ModuleContext) -> Result<String> {
         let resp = ctx
             .http
             .get(url)
@@ -145,13 +144,9 @@ impl HackerTarget {
                 && !ip.starts_with("0.")
                 && seen.insert(format!("ip:{ip}"))
             {
-                let mut e =
-                    Entity::new(EntityKind::IpAddress, ip, 0.65, &ctx.scan_id);
+                let mut e = Entity::new(EntityKind::IpAddress, ip, 0.65, &ctx.scan_id);
                 e.tag("hackertarget");
-                e.add_evidence(Evidence::new(
-                    SRC,
-                    format!("Resolved from {host}"),
-                ));
+                e.add_evidence(Evidence::new(SRC, format!("Resolved from {host}")));
                 result.push(e);
             }
         }
@@ -175,14 +170,10 @@ impl HackerTarget {
                 continue;
             }
             if seen.insert(domain.clone()) {
-                let mut e =
-                    Entity::new(EntityKind::Domain, &domain, 0.65, &ctx.scan_id);
+                let mut e = Entity::new(EntityKind::Domain, &domain, 0.65, &ctx.scan_id);
                 e.tag("hackertarget");
                 e.tag("reverse-ip");
-                e.add_evidence(Evidence::new(
-                    SRC,
-                    format!("Reverse IP lookup for {ip}"),
-                ));
+                e.add_evidence(Evidence::new(SRC, format!("Reverse IP lookup for {ip}")));
                 result.push(e);
             }
         }
@@ -204,14 +195,10 @@ impl HackerTarget {
             if domain.is_empty() || !domain.contains('.') {
                 continue;
             }
-            let mut e =
-                Entity::new(EntityKind::Domain, &domain, 0.70, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &domain, 0.70, &ctx.scan_id);
             e.tag("hackertarget");
             e.tag(tags::PTR);
-            e.add_evidence(Evidence::new(
-                SRC,
-                format!("Reverse DNS for {ip}"),
-            ));
+            e.add_evidence(Evidence::new(SRC, format!("Reverse DNS for {ip}")));
             result.push(e);
         }
 

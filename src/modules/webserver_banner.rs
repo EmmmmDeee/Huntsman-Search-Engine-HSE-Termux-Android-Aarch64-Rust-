@@ -56,7 +56,10 @@ impl Module for WebserverBanner {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url
+        )
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -67,12 +70,10 @@ impl Module for WebserverBanner {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let host = match target.kind {
-            TargetKind::Url => {
-                match url::Url::parse(target.value.trim()) {
-                    Ok(u) => u.host_str().unwrap_or("").to_string(),
-                    Err(_) => return Ok(ModuleResult::new()),
-                }
-            }
+            TargetKind::Url => match url::Url::parse(target.value.trim()) {
+                Ok(u) => u.host_str().unwrap_or("").to_string(),
+                Err(_) => return Ok(ModuleResult::new()),
+            },
             _ => target.value.trim().to_string(),
         };
         if host.is_empty() || host.contains('/') {

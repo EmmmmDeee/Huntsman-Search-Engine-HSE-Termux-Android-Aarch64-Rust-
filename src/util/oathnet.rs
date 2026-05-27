@@ -15,8 +15,7 @@ const HARDCODED_KEY: &str = "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551
 
 pub const KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
 
-static QUOTA_EXHAUSTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static QUOTA_EXHAUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Per-process response cache: deduplicates identical (path, field, value)
 /// queries across modules. When oathnet_pro, geo_intel, and search_engines
@@ -27,8 +26,7 @@ static RESPONSE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CachedResponse>
     std::sync::LazyLock::new(|| Mutex::new(HashMap::with_capacity(256)));
 
 /// Global query counter for budget tracking.
-static QUERY_COUNT: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
+static QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 const MAX_QUERIES_PER_SCAN: u32 = 12;
 
@@ -48,10 +46,15 @@ fn cache_get(key: &str) -> Option<Vec<Value>> {
 }
 
 fn cache_put(key: String, items: &[Value]) {
-    if let Ok(mut cache) = RESPONSE_CACHE.lock() {
-        if cache.len() < 1024 {
-            cache.insert(key, CachedResponse { items: items.to_vec() });
-        }
+    if let Ok(mut cache) = RESPONSE_CACHE.lock()
+        && cache.len() < 1024
+    {
+        cache.insert(
+            key,
+            CachedResponse {
+                items: items.to_vec(),
+            },
+        );
     }
 }
 
@@ -133,7 +136,10 @@ pub async fn search(
         page_size
     );
     let body = curl_get(&url, key).await?;
-    if body.contains("\"left_today\":0") || body.contains("limit exceeded") || body.contains("quota") {
+    if body.contains("\"left_today\":0")
+        || body.contains("limit exceeded")
+        || body.contains("quota")
+    {
         mark_quota_exhausted();
         return Ok(Vec::new());
     }

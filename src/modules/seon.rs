@@ -257,10 +257,10 @@ impl Seon {
                 ("skype", &acct.skype),
             ];
             for (name, presence) in checks {
-                if let Some(p) = presence {
-                    if p.registered == Some(true) {
-                        platforms.push(name);
-                    }
+                if let Some(p) = presence
+                    && p.registered == Some(true)
+                {
+                    platforms.push(name);
                 }
             }
         }
@@ -381,10 +381,10 @@ impl Seon {
                 ("telegram", &acct.telegram),
             ];
             for (name, presence) in checks {
-                if let Some(p) = presence {
-                    if p.registered == Some(true) {
-                        msg_platforms.push(name);
-                    }
+                if let Some(p) = presence
+                    && p.registered == Some(true)
+                {
+                    msg_platforms.push(name);
                 }
             }
         }

@@ -44,11 +44,10 @@ mod engines;
 mod fetch;
 mod helpers;
 
-pub(crate) use helpers::SearchResult;
-use engines::{EngineSpec, ENGINES};
+use engines::{ENGINES, EngineSpec};
 use fetch::*;
+pub(crate) use helpers::SearchResult;
 use helpers::*;
-
 
 use async_trait::async_trait;
 
@@ -300,7 +299,9 @@ async fn recycle_entities(
             EntityKind::Phone => Some(format!("\"{}\" name OR address OR owner", entity.value)),
             EntityKind::Domain if entity.confidence >= 0.55 => {
                 let domain = &entity.value;
-                Some(format!("\"{domain}\" location OR address OR city OR suburb"))
+                Some(format!(
+                    "\"{domain}\" location OR address OR city OR suburb"
+                ))
             }
             EntityKind::Organisation if entity.confidence >= 0.50 => {
                 Some(format!("\"{}\" address OR ABN OR location", entity.value))
@@ -715,38 +716,32 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult, targ
         {
             let lat = data.get("latitude").and_then(|v| v.as_f64());
             let lon = data.get("longitude").and_then(|v| v.as_f64());
-            let city = data
-                .get("city")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let region = data
-                .get("region")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let city = data.get("city").and_then(|v| v.as_str()).unwrap_or("");
+            let region = data.get("region").and_then(|v| v.as_str()).unwrap_or("");
             let country = data
                 .get("country_name")
                 .or_else(|| data.get("country"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if let (Some(lat), Some(lon)) = (lat, lon) {
-                if lat.abs() > 0.01 && lon.abs() > 0.01 {
-                    let coords = format!("{lat:.4},{lon:.4}");
-                    let mut ce =
-                        Entity::new(EntityKind::Coordinates, &coords, 0.70, &scan_id);
-                    ce.tag("geoint");
-                    ce.tag("oathnet-ip-info");
-                    ce.add_evidence(
-                        Evidence::new(
-                            "search_engines:oathnet",
-                            format!("IP-info geolocation for {ip}: {city}, {region}, {country}"),
-                        )
-                        .with_attr("ip", ip)
-                        .with_attr("city", city)
-                        .with_attr("region", region)
-                        .with_attr("country", country),
-                    );
-                    result.push(ce);
-                }
+            if let (Some(lat), Some(lon)) = (lat, lon)
+                && lat.abs() > 0.01
+                && lon.abs() > 0.01
+            {
+                let coords = format!("{lat:.4},{lon:.4}");
+                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &scan_id);
+                ce.tag("geoint");
+                ce.tag("oathnet-ip-info");
+                ce.add_evidence(
+                    Evidence::new(
+                        "search_engines:oathnet",
+                        format!("IP-info geolocation for {ip}: {city}, {region}, {country}"),
+                    )
+                    .with_attr("ip", ip)
+                    .with_attr("city", city)
+                    .with_attr("region", region)
+                    .with_attr("country", country),
+                );
+                result.push(ce);
             }
             if !city.is_empty() && !region.is_empty() {
                 let addr = if !country.is_empty() {
@@ -864,8 +859,8 @@ fn apply_breach_evidence(
         // Tier confidence by breach source quality
         let db_lower = db.to_lowercase();
         let quality_boost: f64 = if [
-            "linkedin", "facebook", "adobe", "myspace", "dropbox", "twitter",
-            "canva", "dubsmash", "spotify", "zynga",
+            "linkedin", "facebook", "adobe", "myspace", "dropbox", "twitter", "canva", "dubsmash",
+            "spotify", "zynga",
         ]
         .iter()
         .any(|s| db_lower.contains(s))
@@ -2524,7 +2519,10 @@ mod tests {
 
     #[test]
     fn canonicalize_url_strips_query_params() {
-        assert_eq!(canonicalize_url("https://x.com/page?a=1"), "https://x.com/page");
+        assert_eq!(
+            canonicalize_url("https://x.com/page?a=1"),
+            "https://x.com/page"
+        );
     }
 
     #[test]
@@ -2537,6 +2535,9 @@ mod tests {
 
     #[test]
     fn canonicalize_url_strips_trailing_slash() {
-        assert_eq!(canonicalize_url("https://x.com/page/"), "https://x.com/page");
+        assert_eq!(
+            canonicalize_url("https://x.com/page/"),
+            "https://x.com/page"
+        );
     }
 }

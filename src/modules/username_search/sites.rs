@@ -13,7 +13,6 @@ pub(super) struct Site {
     pub(super) cat: &'static str,
 }
 
-
 #[derive(Clone, Copy)]
 pub(super) enum Method {
     Get,
@@ -76,8 +75,6 @@ macro_rules! s {
         }
     };
 }
-
-
 
 pub(super) const SITES: &[Site] = &[
     // ── Social Media ────────────────────────────────────────────────

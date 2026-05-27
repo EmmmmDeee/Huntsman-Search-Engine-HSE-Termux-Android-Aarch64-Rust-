@@ -200,12 +200,40 @@ impl Module for GithubUser {
             result.push(e);
         }
 
+        // Company → Organisation entity, when present.
+        if let Some(company) = user.company.as_deref() {
+            let company = company.trim().trim_start_matches('@');
+            if company.len() >= 2 {
+                let mut o = Entity::new(EntityKind::Organisation, company, 0.65, &ctx.scan_id);
+                o.tag("github");
+                o.tag("derived");
+                o.add_evidence(
+                    Evidence::new(SRC, format!("Company from GitHub profile @{}", user.login))
+                        .with_attr("github_login", &user.login),
+                );
+                result.push(o);
+            }
+        }
+
+        // Location → Address entity, when present.
+        if let Some(location) = user.location.as_deref() {
+            let location = location.trim();
+            if location.len() >= 3 {
+                let mut a = Entity::new(EntityKind::Address, location, 0.55, &ctx.scan_id);
+                a.tag("github");
+                a.tag("geoint");
+                a.add_evidence(
+                    Evidence::new(SRC, format!("Location from GitHub profile @{}", user.login))
+                        .with_attr("github_login", &user.login),
+                );
+                result.push(a);
+            }
+        }
+
         // Blog URL → Url entity, when present.
         if let Some(blog) = user.blog.as_deref()
             && !blog.trim().is_empty()
         {
-            // GitHub stores the blog as a free-form string; only emit if
-            // it looks like a URL (must start with a scheme to count).
             let blog = blog.trim();
             if blog.starts_with("http://") || blog.starts_with("https://") {
                 let mut u = Entity::new(EntityKind::Url, blog, 0.80, &ctx.scan_id);
@@ -312,9 +340,7 @@ impl GithubUser {
     }
 
     async fn fetch_events(&self, login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
-        let url = format!(
-            "https://api.github.com/users/{login}/events/public?per_page=30"
-        );
+        let url = format!("https://api.github.com/users/{login}/events/public?per_page=30");
         let resp = match ctx
             .http
             .get(&url)
@@ -347,7 +373,8 @@ impl GithubUser {
         }
 
         let mut hours: [u32; 24] = [0; 24];
-        let mut event_types: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut event_types: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
         let mut most_recent: Option<&str> = None;
 
         for event in &events {
@@ -355,12 +382,11 @@ impl GithubUser {
                 if most_recent.is_none() {
                     most_recent = Some(ts);
                 }
-                if let Some(hour_str) = ts.get(11..13) {
-                    if let Ok(h) = hour_str.parse::<usize>() {
-                        if h < 24 {
-                            hours[h] += 1;
-                        }
-                    }
+                if let Some(hour_str) = ts.get(11..13)
+                    && let Ok(h) = hour_str.parse::<usize>()
+                    && h < 24
+                {
+                    hours[h] += 1;
                 }
             }
             if let Some(et) = event.event_type.as_deref() {

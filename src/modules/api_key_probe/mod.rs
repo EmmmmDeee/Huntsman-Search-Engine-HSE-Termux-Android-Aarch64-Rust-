@@ -22,10 +22,8 @@ const SRC: &str = "api_key_probe";
 
 pub struct ApiKeyProbe;
 
-
 mod probes;
 use probes::probes;
-
 
 #[async_trait]
 impl Module for ApiKeyProbe {

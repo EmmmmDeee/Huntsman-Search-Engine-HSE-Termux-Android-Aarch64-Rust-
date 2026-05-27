@@ -79,7 +79,10 @@ impl Module for UrlScan {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::Url | TargetKind::IpAddress)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::Url | TargetKind::IpAddress
+        )
     }
 
     fn max_timeout_ms(&self) -> u64 {

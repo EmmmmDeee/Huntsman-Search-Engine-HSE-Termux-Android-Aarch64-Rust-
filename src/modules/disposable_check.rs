@@ -27,15 +27,21 @@ pub struct DisposableCheck;
 
 #[async_trait]
 impl Module for DisposableCheck {
-    fn name(&self) -> &'static str { "disposable_check" }
+    fn name(&self) -> &'static str {
+        "disposable_check"
+    }
     fn description(&self) -> &'static str {
         "Disposable/throwaway email detection via debounce.io (free, unlimited)"
     }
-    fn priority(&self) -> u8 { 97 }
+    fn priority(&self) -> u8 {
+        97
+    }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email)
     }
-    fn is_passive(&self) -> bool { true }
+    fn is_passive(&self) -> bool {
+        true
+    }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let email = target.value.trim();
@@ -47,17 +53,21 @@ impl Module for DisposableCheck {
             "https://disposable.debounce.io/?email={}",
             crate::util::http::urlencode(email)
         );
-        let resp = ctx.http
+        let resp = ctx
+            .http
             .get(&url)
             .timeout(std::time::Duration::from_secs(5))
-            .send().await
+            .send()
+            .await
             .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());
         }
 
-        let data: Resp = resp.json().await
+        let data: Resp = resp
+            .json()
+            .await
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
 
         let mut entity = target.to_entity(0.75, &ctx.scan_id);
@@ -93,6 +103,9 @@ mod tests {
     }
     #[test]
     fn cost_is_free() {
-        assert!(matches!(DisposableCheck.cost(), crate::core::module::ModuleCost::Free));
+        assert!(matches!(
+            DisposableCheck.cost(),
+            crate::core::module::ModuleCost::Free
+        ));
     }
 }

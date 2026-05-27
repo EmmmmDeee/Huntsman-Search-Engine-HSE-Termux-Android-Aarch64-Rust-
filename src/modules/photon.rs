@@ -163,9 +163,7 @@ impl Photon {
     async fn reverse(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
-        let url = format!(
-            "https://photon.komoot.io/reverse?lon={lon:.6}&lat={lat:.6}",
-        );
+        let url = format!("https://photon.komoot.io/reverse?lon={lon:.6}&lat={lat:.6}",);
 
         let resp = ctx
             .http
@@ -212,9 +210,10 @@ impl Photon {
             ae.tag("reverse-geocoded");
             ae.tag("geoint");
 
-            let mut ev = Evidence::new(SRC, format!("Photon reverse geocode for {lat:.6},{lon:.6}"))
-                .with_attr("latitude", format!("{lat:.6}"))
-                .with_attr("longitude", format!("{lon:.6}"));
+            let mut ev =
+                Evidence::new(SRC, format!("Photon reverse geocode for {lat:.6},{lon:.6}"))
+                    .with_attr("latitude", format!("{lat:.6}"))
+                    .with_attr("longitude", format!("{lon:.6}"));
 
             if let Some(c) = props.city.as_deref() {
                 ev = ev.with_attr("city", c);
@@ -280,6 +279,9 @@ mod tests {
         let coords = &f.geometry.as_ref().unwrap().coordinates;
         assert!((coords[0] - 151.2093).abs() < 0.001);
         assert!((coords[1] - (-33.8688)).abs() < 0.001);
-        assert_eq!(f.properties.as_ref().unwrap().countrycode.as_deref(), Some("AU"));
+        assert_eq!(
+            f.properties.as_ref().unwrap().countrycode.as_deref(),
+            Some("AU")
+        );
     }
 }

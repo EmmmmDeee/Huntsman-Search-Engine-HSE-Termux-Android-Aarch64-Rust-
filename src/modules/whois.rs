@@ -47,7 +47,10 @@ impl Module for Whois {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url
+        )
     }
 
     async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -55,11 +58,18 @@ impl Module for Whois {
             TargetKind::Url => {
                 let trimmed = target.value.trim();
                 let host = trimmed
-                    .strip_prefix("https://").or_else(|| trimmed.strip_prefix("http://"))
+                    .strip_prefix("https://")
+                    .or_else(|| trimmed.strip_prefix("http://"))
                     .unwrap_or(trimmed)
-                    .split('/').next().unwrap_or("")
-                    .split(':').next().unwrap_or("");
-                if host.is_empty() { return Ok(ModuleResult::new()); }
+                    .split('/')
+                    .next()
+                    .unwrap_or("")
+                    .split(':')
+                    .next()
+                    .unwrap_or("");
+                if host.is_empty() {
+                    return Ok(ModuleResult::new());
+                }
                 host.to_string()
             }
             _ => target.value.clone(),
@@ -254,6 +264,25 @@ impl Module for Whois {
                     .with_attr("parent_target", target.value.as_str()),
                 );
                 result.push(e);
+            }
+        }
+
+        // Registrant organisation → Organisation entity.
+        if let Some(org) = &registrant_org {
+            let org = org.trim();
+            if org.len() >= 3
+                && !org.eq_ignore_ascii_case("REDACTED FOR PRIVACY")
+                && !org.to_lowercase().contains("privacy")
+                && !org.to_lowercase().contains("redacted")
+            {
+                let mut oe = Entity::new(EntityKind::Organisation, org, 0.72, &_ctx.scan_id);
+                oe.tag("whois");
+                oe.tag("registrant");
+                oe.add_evidence(
+                    Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
+                        .with_attr("parent_target", target.value.as_str()),
+                );
+                result.push(oe);
             }
         }
 

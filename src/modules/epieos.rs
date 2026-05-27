@@ -149,31 +149,31 @@ impl Module for Epieos {
             ev = ev.with_attr("profile_picture", pic);
         }
 
-        if let Some(reviews) = &body.maps_reviews {
-            if !reviews.is_empty() {
-                ev = ev.with_attr("maps_review_count", reviews.len().to_string());
-                let places: Vec<&str> = reviews
-                    .iter()
-                    .filter_map(|r| r.place_name.as_deref())
-                    .take(5)
-                    .collect();
-                if !places.is_empty() {
-                    ev = ev.with_attr("maps_places", places.join("; "));
-                    entity.tag("has-maps-reviews");
-                }
+        if let Some(reviews) = &body.maps_reviews
+            && !reviews.is_empty()
+        {
+            ev = ev.with_attr("maps_review_count", reviews.len().to_string());
+            let places: Vec<&str> = reviews
+                .iter()
+                .filter_map(|r| r.place_name.as_deref())
+                .take(5)
+                .collect();
+            if !places.is_empty() {
+                ev = ev.with_attr("maps_places", places.join("; "));
+                entity.tag("has-maps-reviews");
             }
         }
 
-        if let Some(skype) = &body.skype {
-            if let Some(h) = skype.handle.as_deref() {
-                ev = ev.with_attr("skype_handle", h);
-                entity.tag("skype");
-            }
+        if let Some(skype) = &body.skype
+            && let Some(h) = skype.handle.as_deref()
+        {
+            ev = ev.with_attr("skype_handle", h);
+            entity.tag("skype");
         }
-        if let Some(cal) = &body.calendar {
-            if let Some(n) = cal.name.as_deref() {
-                ev = ev.with_attr("calendar_name", n);
-            }
+        if let Some(cal) = &body.calendar
+            && let Some(n) = cal.name.as_deref()
+        {
+            ev = ev.with_attr("calendar_name", n);
         }
 
         entity.add_evidence(ev);
@@ -200,10 +200,7 @@ impl Module for Epieos {
                 let mut ue = Entity::new(EntityKind::Username, handle, 0.70, &ctx.scan_id);
                 ue.tag("epieos");
                 ue.tag("platform:skype");
-                ue.add_evidence(Evidence::new(
-                    SRC,
-                    format!("Skype handle for {email}"),
-                ));
+                ue.add_evidence(Evidence::new(SRC, format!("Skype handle for {email}")));
                 result.push(ue);
             }
 
@@ -218,10 +215,7 @@ impl Module for Epieos {
                 ae.tag("epieos");
                 ae.tag("skype");
                 ae.tag("geoint");
-                ae.add_evidence(Evidence::new(
-                    SRC,
-                    format!("Skype location for {email}"),
-                ));
+                ae.add_evidence(Evidence::new(SRC, format!("Skype location for {email}")));
                 result.push(ae);
             }
         }
@@ -235,10 +229,8 @@ impl Module for Epieos {
                     ae.tag("epieos");
                     ae.tag("google-maps");
                     ae.tag("geoint");
-                    let mut rev_ev = Evidence::new(
-                        SRC,
-                        format!("Google Maps review at \"{place}\" by {email}"),
-                    );
+                    let mut rev_ev =
+                        Evidence::new(SRC, format!("Google Maps review at \"{place}\" by {email}"));
                     if let Some(d) = review.date.as_deref() {
                         rev_ev = rev_ev.with_attr("review_date", d);
                     }

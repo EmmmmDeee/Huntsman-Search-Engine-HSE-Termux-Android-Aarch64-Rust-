@@ -176,10 +176,7 @@ fn ensure_hardcoded_keys() {
     for (k, v) in &to_write {
         let _ = writeln!(file, "{k}={v}");
     }
-    tracing::info!(
-        "wrote {} hardcoded key(s) to {path}",
-        to_write.len()
-    );
+    tracing::info!("wrote {} hardcoded key(s) to {path}", to_write.len());
 }
 
 /// Run the OathNet stealer harvest to fill the key pool with
@@ -677,10 +674,8 @@ mod tests {
         pool.add("shodan", entry);
 
         let map = load();
-        if !map.contains_key("HUNTSMAN_SHODAN_KEY") || map["HUNTSMAN_SHODAN_KEY"] == "test-pool-key-12345" {
-            // Pool key was either injected (env slot empty) or env had it —
-            // either way, the merge didn't crash.
-            assert!(true);
-        }
+        // Pool key was either injected (env slot empty) or env had it —
+        // either way, the merge didn't crash. Success if we get here.
+        let _ = map;
     }
 }

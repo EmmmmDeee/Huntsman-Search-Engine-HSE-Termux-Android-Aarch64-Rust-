@@ -56,7 +56,10 @@ impl Module for CrtSh {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::Email | TargetKind::Url)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::Email | TargetKind::Url
+        )
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -74,10 +77,7 @@ impl Module for CrtSh {
             _ => return Ok(ModuleResult::new()),
         };
 
-        let url = format!(
-            "https://crt.sh/?q={}&output=json",
-            urlencode(&query)
-        );
+        let url = format!("https://crt.sh/?q={}&output=json", urlencode(&query));
 
         let resp = ctx
             .http
@@ -123,55 +123,39 @@ impl Module for CrtSh {
 
                 if name.contains('@') {
                     if seen_emails.insert(name.clone()) && name.len() >= 5 {
-                        let mut e =
-                            Entity::new(EntityKind::Email, &name, 0.70, &ctx.scan_id);
+                        let mut e = Entity::new(EntityKind::Email, &name, 0.70, &ctx.scan_id);
                         e.tag(tags::CT_LOG);
                         e.add_evidence(
-                            Evidence::new(
-                                SRC,
-                                format!("Email in certificate SAN"),
-                            )
-                            .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or(""))
-                            .with_attr(
-                                "not_before",
-                                entry.not_before.as_deref().unwrap_or(""),
-                            ),
+                            Evidence::new(SRC, "Email in certificate SAN".to_string())
+                                .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or(""))
+                                .with_attr("not_before", entry.not_before.as_deref().unwrap_or("")),
                         );
                         result.push(e);
                     }
                 } else if name.contains('.') && seen_domains.insert(name.clone()) {
-                    let is_sub = name.ends_with(&format!(".{domain_base}"))
-                        || name == domain_base;
+                    let is_sub = name.ends_with(&format!(".{domain_base}")) || name == domain_base;
                     let conf = if is_sub { 0.75 } else { 0.45 };
-                    let mut e =
-                        Entity::new(EntityKind::Domain, &name, conf, &ctx.scan_id);
+                    let mut e = Entity::new(EntityKind::Domain, &name, conf, &ctx.scan_id);
                     e.tag(tags::CT_LOG);
                     if is_sub {
                         e.tag(tags::SUBDOMAIN);
                     }
                     e.add_evidence(
-                        Evidence::new(SRC, format!("Certificate Transparency log"))
-                            .with_attr(
-                                "issuer",
-                                entry.issuer_name.as_deref().unwrap_or(""),
-                            )
-                            .with_attr(
-                                "not_before",
-                                entry.not_before.as_deref().unwrap_or(""),
-                            )
-                            .with_attr(
-                                "not_after",
-                                entry.not_after.as_deref().unwrap_or(""),
-                            ),
+                        Evidence::new(SRC, "Certificate Transparency log".to_string())
+                            .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or(""))
+                            .with_attr("not_before", entry.not_before.as_deref().unwrap_or(""))
+                            .with_attr("not_after", entry.not_after.as_deref().unwrap_or("")),
                     );
                     result.push(e);
                 }
             }
         }
 
-        result
-            .entities
-            .sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        result.entities.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         if result.entities.len() > 200 {
             result.entities.truncate(200);
         }
@@ -194,7 +178,10 @@ mod tests {
 
     #[test]
     fn cost_is_free() {
-        assert!(matches!(CrtSh.cost(), crate::core::module::ModuleCost::Free));
+        assert!(matches!(
+            CrtSh.cost(),
+            crate::core::module::ModuleCost::Free
+        ));
     }
 
     #[test]
@@ -208,6 +195,12 @@ mod tests {
         let entries: Vec<CrtEntry> = serde_json::from_str(json).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].common_name.as_deref(), Some("www.example.com"));
-        assert!(entries[0].name_value.as_deref().unwrap().contains("example.com"));
+        assert!(
+            entries[0]
+                .name_value
+                .as_deref()
+                .unwrap()
+                .contains("example.com")
+        );
     }
 }

@@ -1,14 +1,13 @@
-pub(super) use std::collections::HashSet;
 pub(super) use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     scan::{Target, TargetKind},
     tags,
 };
+pub(super) use std::collections::HashSet;
 
 pub(super) const SRC: &str = "search_engines";
 
 pub(crate) struct SearchResult {
-
     pub(super) url: String,
     pub(super) title: String,
     pub(super) snippet: String,
@@ -1407,4 +1406,3 @@ pub(super) fn is_email_local_char(b: u8) -> bool {
 pub(super) fn is_domain_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'.' || b == b'-'
 }
-

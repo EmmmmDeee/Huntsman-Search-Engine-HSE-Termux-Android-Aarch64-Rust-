@@ -109,7 +109,9 @@ impl Module for DeHashed {
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, "dehashed", key, ctx).await {
+                if handle_keyed_error(code, resp.headers(), &mut retries, "dehashed", key, ctx)
+                    .await
+                {
                     continue;
                 }
                 return Err(Error::module(

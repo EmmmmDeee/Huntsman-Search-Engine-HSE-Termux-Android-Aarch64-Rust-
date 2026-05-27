@@ -96,7 +96,12 @@ impl Module for DohResolver {
                         }
                     }
                     "MX" => {
-                        let mx = rec.data.trim().split_whitespace().last().unwrap_or("").trim_end_matches('.');
+                        let mx = rec
+                            .data
+                            .split_whitespace()
+                            .last()
+                            .unwrap_or("")
+                            .trim_end_matches('.');
                         if !mx.is_empty() && mx.contains('.') && seen.insert(format!("mx:{mx}")) {
                             let mut e = Entity::new(EntityKind::Domain, mx, 0.75, &ctx.scan_id);
                             e.tag("dns");
@@ -125,28 +130,43 @@ impl Module for DohResolver {
                                 if let Some(ip) = part.strip_prefix("ip4:") {
                                     let ip = ip.split('/').next().unwrap_or(ip);
                                     if seen.insert(format!("spf:{ip}")) {
-                                        let mut e = Entity::new(EntityKind::IpAddress, ip, 0.75, &ctx.scan_id);
+                                        let mut e = Entity::new(
+                                            EntityKind::IpAddress,
+                                            ip,
+                                            0.75,
+                                            &ctx.scan_id,
+                                        );
                                         e.tag("dns");
                                         e.tag("spf");
-                                        e.add_evidence(Evidence::new(SRC, format!("SPF include for {domain}")));
+                                        e.add_evidence(Evidence::new(
+                                            SRC,
+                                            format!("SPF include for {domain}"),
+                                        ));
                                         result.push(e);
                                     }
                                 }
-                                if let Some(inc) = part.strip_prefix("include:") {
-                                    if seen.insert(format!("spfinc:{inc}")) {
-                                        let mut e = Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
-                                        e.tag("dns");
-                                        e.tag("spf-include");
-                                        e.add_evidence(Evidence::new(SRC, format!("SPF include for {domain}")));
-                                        result.push(e);
-                                    }
+                                if let Some(inc) = part.strip_prefix("include:")
+                                    && seen.insert(format!("spfinc:{inc}"))
+                                {
+                                    let mut e =
+                                        Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
+                                    e.tag("dns");
+                                    e.tag("spf-include");
+                                    e.add_evidence(Evidence::new(
+                                        SRC,
+                                        format!("SPF include for {domain}"),
+                                    ));
+                                    result.push(e);
                                 }
                             }
                         }
                     }
                     "CNAME" => {
                         let cname = rec.data.trim().trim_end_matches('.');
-                        if !cname.is_empty() && cname.contains('.') && seen.insert(format!("cn:{cname}")) {
+                        if !cname.is_empty()
+                            && cname.contains('.')
+                            && seen.insert(format!("cn:{cname}"))
+                        {
                             let mut e = Entity::new(EntityKind::Domain, cname, 0.80, &ctx.scan_id);
                             e.tag("dns");
                             e.tag("cname");
@@ -163,21 +183,18 @@ impl Module for DohResolver {
 }
 
 async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> Vec<DohRecord> {
-    let cf_url = format!(
-        "https://cloudflare-dns.com/dns-query?name={domain}&type={rtype}"
-    );
+    let cf_url = format!("https://cloudflare-dns.com/dns-query?name={domain}&type={rtype}");
     let resp = http
         .get(&cf_url)
         .header("Accept", "application/dns-json")
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await;
-    if let Ok(r) = resp {
-        if let Ok(data) = r.json::<DohResp>().await {
-            if data.status == 0 {
-                return data.answer;
-            }
-        }
+    if let Ok(r) = resp
+        && let Ok(data) = r.json::<DohResp>().await
+        && data.status == 0
+    {
+        return data.answer;
     }
     let google_url = format!("https://dns.google/resolve?name={domain}&type={rtype}");
     let resp = http
@@ -185,12 +202,11 @@ async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> Vec<Doh
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await;
-    if let Ok(r) = resp {
-        if let Ok(data) = r.json::<DohResp>().await {
-            if data.status == 0 {
-                return data.answer;
-            }
-        }
+    if let Ok(r) = resp
+        && let Ok(data) = r.json::<DohResp>().await
+        && data.status == 0
+    {
+        return data.answer;
     }
     Vec::new()
 }
@@ -207,12 +223,16 @@ mod tests {
 
     #[test]
     fn cost_is_free() {
-        assert!(matches!(DohResolver.cost(), crate::core::module::ModuleCost::Free));
+        assert!(matches!(
+            DohResolver.cost(),
+            crate::core::module::ModuleCost::Free
+        ));
     }
 
     #[test]
     fn doh_resp_deser() {
-        let json = r#"{"Status":0,"Answer":[{"name":"example.com.","type":1,"data":"93.184.216.34"}]}"#;
+        let json =
+            r#"{"Status":0,"Answer":[{"name":"example.com.","type":1,"data":"93.184.216.34"}]}"#;
         let resp: DohResp = serde_json::from_str(json).unwrap();
         assert_eq!(resp.answer.len(), 1);
         assert_eq!(resp.answer[0].data, "93.184.216.34");

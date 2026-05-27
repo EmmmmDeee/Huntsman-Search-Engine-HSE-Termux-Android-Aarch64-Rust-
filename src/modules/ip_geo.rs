@@ -152,17 +152,20 @@ impl Module for IpGeo {
             };
             let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &ctx.scan_id);
             ae.tag("geoint");
-            ae.add_evidence(Evidence::new(SRC, format!("IP address for {}", target.value)));
+            ae.add_evidence(Evidence::new(
+                SRC,
+                format!("IP address for {}", target.value),
+            ));
             result.push(ae);
         }
 
         // Emit ASN entity
-        if let Some(asn) = &data.asn {
-            if !asn.is_empty() {
-                let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
-                ae.add_evidence(Evidence::new(SRC, format!("ASN for {}", target.value)));
-                result.push(ae);
-            }
+        if let Some(asn) = &data.asn
+            && !asn.is_empty()
+        {
+            let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
+            ae.add_evidence(Evidence::new(SRC, format!("ASN for {}", target.value)));
+            result.push(ae);
         }
 
         // Emit reverse DNS domain if present in ISP name

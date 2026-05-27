@@ -1,7 +1,7 @@
-use super::{CrawlState, MAX_PAGES, MAX_DEPTH, BINARY_EXTENSIONS};
+use super::{BINARY_EXTENSIONS, CrawlState, MAX_DEPTH, MAX_PAGES};
+use crate::core::error::{Error, Result};
 use std::collections::HashSet;
 use url::Url;
-use crate::core::error::{Error, Result};
 
 pub(super) async fn resolve_seed(http: &reqwest::Client, domain: &str) -> Result<String> {
     for scheme in ["https", "http"] {
@@ -372,4 +372,3 @@ pub(super) fn audit_security_headers(
         results.push((label, headers.get(*header_name).is_some()));
     }
 }
-

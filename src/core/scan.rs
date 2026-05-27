@@ -480,7 +480,11 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
         //   R2: mylnikov on BSSIDs → more coords; sunrise_sunset → chronoloc
         //   R3: search_engines → associated entities; geo_intel → breach context
         TargetKind::Address => {
-            if has_paid_keys { 5 } else { 4 }
+            if has_paid_keys {
+                5
+            } else {
+                4
+            }
         }
 
         // Organisation/ABN: opencorporates → addresses + company registry.
@@ -569,7 +573,11 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
         }
         TargetKind::Domain => 23.5,
         TargetKind::FullName => {
-            if has_paid_keys { 46.0 } else { 20.8 }
+            if has_paid_keys {
+                46.0
+            } else {
+                20.8
+            }
         }
         TargetKind::IpAddress => 13.2,
         TargetKind::Phone => {
@@ -604,12 +612,7 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
 /// - `c_eff` rewards entities confirmed by multiple sources
 /// - `domain_factor` dampens known-generic mega-domains (0.15×)
 ///   so target-specific domains and geo entities expand first
-pub fn expansion_weight(
-    kind: TargetKind,
-    c_eff: f64,
-    value: &str,
-    has_paid_keys: bool,
-) -> f64 {
+pub fn expansion_weight(kind: TargetKind, c_eff: f64, value: &str, has_paid_keys: bool) -> f64 {
     let base = geo_npv(kind, has_paid_keys);
     let dampener = if kind == TargetKind::Domain {
         domain_expansion_factor(value)
@@ -630,7 +633,10 @@ pub fn expansion_weight(
 fn domain_expansion_factor(domain: &str) -> f64 {
     let d = domain.trim().to_lowercase();
     let d = d.strip_prefix("www.").unwrap_or(&d);
-    if MEGA_DOMAINS.iter().any(|m| d == *m || d.ends_with(&format!(".{m}"))) {
+    if MEGA_DOMAINS
+        .iter()
+        .any(|m| d == *m || d.ends_with(&format!(".{m}")))
+    {
         0.15
     } else {
         1.0
@@ -638,33 +644,92 @@ fn domain_expansion_factor(domain: &str) -> f64 {
 }
 
 const MEGA_DOMAINS: &[&str] = &[
-    "google.com", "google.com.au", "youtube.com", "facebook.com",
-    "twitter.com", "x.com", "instagram.com", "linkedin.com",
-    "reddit.com", "wikipedia.org", "amazon.com", "amazon.com.au",
-    "apple.com", "microsoft.com", "netflix.com", "tiktok.com",
-    "yahoo.com", "bing.com", "duckduckgo.com", "pinterest.com",
-    "tumblr.com", "quora.com", "stackoverflow.com", "github.com",
-    "medium.com", "wordpress.com", "blogspot.com", "whatsapp.com",
-    "telegram.org", "discord.com", "twitch.tv", "spotify.com",
-    "cnn.com", "bbc.com", "bbc.co.uk", "nytimes.com",
-    "washingtonpost.com", "theguardian.com", "reuters.com",
-    "forbes.com", "businessinsider.com", "techcrunch.com",
-    "imdb.com", "ebay.com", "ebay.com.au", "aliexpress.com",
-    "cloudflare.com", "akamai.com", "fastly.com",
-    "pornhub.com", "xvideos.com", "xhamster.com",
-    "chatgpt.com", "openai.com",
+    "google.com",
+    "google.com.au",
+    "youtube.com",
+    "facebook.com",
+    "twitter.com",
+    "x.com",
+    "instagram.com",
+    "linkedin.com",
+    "reddit.com",
+    "wikipedia.org",
+    "amazon.com",
+    "amazon.com.au",
+    "apple.com",
+    "microsoft.com",
+    "netflix.com",
+    "tiktok.com",
+    "yahoo.com",
+    "bing.com",
+    "duckduckgo.com",
+    "pinterest.com",
+    "tumblr.com",
+    "quora.com",
+    "stackoverflow.com",
+    "github.com",
+    "medium.com",
+    "wordpress.com",
+    "blogspot.com",
+    "whatsapp.com",
+    "telegram.org",
+    "discord.com",
+    "twitch.tv",
+    "spotify.com",
+    "cnn.com",
+    "bbc.com",
+    "bbc.co.uk",
+    "nytimes.com",
+    "washingtonpost.com",
+    "theguardian.com",
+    "reuters.com",
+    "forbes.com",
+    "businessinsider.com",
+    "techcrunch.com",
+    "imdb.com",
+    "ebay.com",
+    "ebay.com.au",
+    "aliexpress.com",
+    "cloudflare.com",
+    "akamai.com",
+    "fastly.com",
+    "pornhub.com",
+    "xvideos.com",
+    "xhamster.com",
+    "chatgpt.com",
+    "openai.com",
     // People-search/OSINT aggregators (noise in person scans)
-    "whitepages.com", "truepeoplesearch.com", "nuwber.com",
-    "peekyou.com", "radaris.com", "idcrawl.com", "anywho.com",
-    "socialcatfish.com", "spokeo.com", "pipl.com",
-    "beenverified.com", "intelius.com", "mylife.com",
-    "zabasearch.com", "usphonebook.com",
+    "whitepages.com",
+    "truepeoplesearch.com",
+    "nuwber.com",
+    "peekyou.com",
+    "radaris.com",
+    "idcrawl.com",
+    "anywho.com",
+    "socialcatfish.com",
+    "spokeo.com",
+    "pipl.com",
+    "beenverified.com",
+    "intelius.com",
+    "mylife.com",
+    "zabasearch.com",
+    "usphonebook.com",
     // Generic infra/tools
-    "office365.com", "outlook.com", "live.com", "hotmail.com",
-    "gmail.com", "icloud.com", "protonmail.com",
-    "whois.com", "domaintools.com", "dnschecker.org",
-    "whatismyipaddress.com", "whatismyip.com", "ipaddress.com",
-    "iplocation.io", "ip2location.com",
+    "office365.com",
+    "outlook.com",
+    "live.com",
+    "hotmail.com",
+    "gmail.com",
+    "icloud.com",
+    "protonmail.com",
+    "whois.com",
+    "domaintools.com",
+    "dnschecker.org",
+    "whatismyipaddress.com",
+    "whatismyip.com",
+    "ipaddress.com",
+    "iplocation.io",
+    "ip2location.com",
 ];
 
 #[cfg(test)]

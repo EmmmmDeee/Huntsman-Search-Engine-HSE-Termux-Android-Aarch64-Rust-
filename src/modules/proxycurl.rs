@@ -118,7 +118,10 @@ impl Module for Proxycurl {
         ModuleCost::Paid
     }
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Username | TargetKind::Url | TargetKind::Email)
+        matches!(
+            t.kind,
+            TargetKind::Username | TargetKind::Url | TargetKind::Email
+        )
     }
     fn max_timeout_ms(&self) -> u64 {
         15_000
@@ -256,10 +259,7 @@ impl Module for Proxycurl {
             ae.tag("proxycurl");
             ae.tag("linkedin");
             ae.tag("geoint");
-            ae.add_evidence(Evidence::new(
-                SRC,
-                format!("LinkedIn location: {location}"),
-            ));
+            ae.add_evidence(Evidence::new(SRC, format!("LinkedIn location: {location}")));
             if let Some(cc) = profile.country.as_deref() {
                 ae.tag(format!("country:{}", cc.to_uppercase()));
             }
@@ -271,7 +271,10 @@ impl Module for Proxycurl {
                 let mut ee = Entity::new(EntityKind::Email, email, 0.80, &ctx.scan_id);
                 ee.tag("proxycurl");
                 ee.tag("linkedin");
-                ee.add_evidence(Evidence::new(SRC, format!("Personal email from LinkedIn")));
+                ee.add_evidence(Evidence::new(
+                    SRC,
+                    "Personal email from LinkedIn".to_string(),
+                ));
                 result.push(ee);
             }
         }
@@ -298,7 +301,7 @@ impl Module for Proxycurl {
                 let mut phe = Entity::new(EntityKind::Phone, phone, 0.75, &ctx.scan_id);
                 phe.tag("proxycurl");
                 phe.tag("linkedin");
-                phe.add_evidence(Evidence::new(SRC, format!("Phone from LinkedIn")));
+                phe.add_evidence(Evidence::new(SRC, "Phone from LinkedIn".to_string()));
                 result.push(phe);
             }
         }
@@ -345,7 +348,10 @@ mod tests {
     fn accepts_username_url_and_email() {
         let m = Proxycurl;
         assert!(m.accepts(&Target::new(TargetKind::Username, "johndoe")));
-        assert!(m.accepts(&Target::new(TargetKind::Url, "https://linkedin.com/in/johndoe")));
+        assert!(m.accepts(&Target::new(
+            TargetKind::Url,
+            "https://linkedin.com/in/johndoe"
+        )));
         assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
         assert!(!m.accepts(&Target::new(TargetKind::Domain, "x.com")));
     }
@@ -393,11 +399,20 @@ mod tests {
 
     #[test]
     fn date_field_to_string() {
-        let d = DateField { year: Some(2020), month: Some(3) };
+        let d = DateField {
+            year: Some(2020),
+            month: Some(3),
+        };
         assert_eq!(d.to_string_approx(), "2020-03");
-        let d2 = DateField { year: Some(2020), month: None };
+        let d2 = DateField {
+            year: Some(2020),
+            month: None,
+        };
         assert_eq!(d2.to_string_approx(), "2020");
-        let d3 = DateField { year: None, month: None };
+        let d3 = DateField {
+            year: None,
+            month: None,
+        };
         assert_eq!(d3.to_string_approx(), "");
     }
 }

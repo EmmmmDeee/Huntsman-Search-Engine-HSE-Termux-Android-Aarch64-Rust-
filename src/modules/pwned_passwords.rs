@@ -82,11 +82,11 @@ impl Module for PwnedPasswords {
         let mut breach_count: Option<u64> = None;
         for line in body.lines() {
             let line = line.trim();
-            if let Some((hash_suffix, count_str)) = line.split_once(':') {
-                if hash_suffix.eq_ignore_ascii_case(suffix) {
-                    breach_count = count_str.trim().parse().ok();
-                    break;
-                }
+            if let Some((hash_suffix, count_str)) = line.split_once(':')
+                && hash_suffix.eq_ignore_ascii_case(suffix)
+            {
+                breach_count = count_str.trim().parse().ok();
+                break;
             }
         }
 
@@ -98,7 +98,13 @@ impl Module for PwnedPasswords {
         }
 
         let mut result = ModuleResult::new();
-        let confidence = if count >= 100 { 0.90 } else if count >= 10 { 0.80 } else { 0.70 };
+        let confidence = if count >= 100 {
+            0.90
+        } else if count >= 10 {
+            0.80
+        } else {
+            0.70
+        };
         let mut entity = Entity::new(
             target.kind.to_entity_kind(),
             &target.value,

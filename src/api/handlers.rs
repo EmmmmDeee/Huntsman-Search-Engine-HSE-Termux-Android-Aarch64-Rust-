@@ -4,8 +4,6 @@
 // `(StatusCode, Json)`, and `Sse<...>` freely. Error paths emit a
 // `{"error": "..."}` JSON body with the appropriate status.
 
-
-
 use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc};
 
 use axum::{
@@ -19,14 +17,11 @@ use axum::{
 };
 use futures::Stream;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_stream::{StreamExt as _, wrappers::BroadcastStream};
 
 use super::AppState;
-use crate::core::{
-    module::ModuleContext,
-    scan::Target,
-};
+use crate::core::{module::ModuleContext, scan::Target};
 use crate::util::keys;
 
 // ─── Shared response helpers ───────────────────────────────────────────────

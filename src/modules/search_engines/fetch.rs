@@ -1,5 +1,5 @@
 use super::helpers::*;
-use super::{SearchResult, EngineSpec, MAX_RESULTS_PER_ENGINE};
+use super::{EngineSpec, MAX_RESULTS_PER_ENGINE, SearchResult};
 
 pub(super) async fn fetch_and_parse(
     url: &str,

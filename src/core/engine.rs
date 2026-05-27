@@ -322,10 +322,7 @@ impl ScanEngine {
             // Sort expansion candidates by weighted score (descending).
             // The weight combines geo_npv with entity confidence and
             // dampens generic mega-domains that waste expansion budget.
-            next.sort_by(|a, b| {
-                b.1.partial_cmp(&a.1)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+            next.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             let next: Vec<Target> = next.into_iter().map(|(t, _)| t).collect();
 
             if next.is_empty() {

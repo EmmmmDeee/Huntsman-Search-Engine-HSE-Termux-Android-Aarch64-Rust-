@@ -184,14 +184,14 @@ impl Module for IpWhois {
             result.push(e);
         }
 
-        if let Some(conn) = &data.connection {
-            if let Some(asn) = conn.asn_num {
-                let asn_str = format!("AS{asn}");
-                let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, &ctx.scan_id);
-                ae.tag("ip-whois");
-                ae.add_evidence(Evidence::new(SRC, format!("ASN for {}", target.value)));
-                result.push(ae);
-            }
+        if let Some(conn) = &data.connection
+            && let Some(asn) = conn.asn_num
+        {
+            let asn_str = format!("AS{asn}");
+            let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, &ctx.scan_id);
+            ae.tag("ip-whois");
+            ae.add_evidence(Evidence::new(SRC, format!("ASN for {}", target.value)));
+            result.push(ae);
         }
 
         Ok(result)

@@ -237,7 +237,12 @@ impl Hibp {
             .count();
         let total = breaches.len();
         let breach_names: Vec<&str> = breaches.iter().map(|b| b.name.as_str()).collect();
-        let top_names: String = breach_names.iter().take(10).copied().collect::<Vec<_>>().join(", ");
+        let top_names: String = breach_names
+            .iter()
+            .take(10)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
 
         let base_conf = match verified_count {
             0 => 0.65,
@@ -261,9 +266,7 @@ impl Hibp {
         email_ent.add_evidence(
             Evidence::new(
                 SRC,
-                format!(
-                    "Found in {total} breach(es) ({verified_count} verified): {top_names}"
-                ),
+                format!("Found in {total} breach(es) ({verified_count} verified): {top_names}"),
             )
             .with_attr("breach_count", total.to_string())
             .with_attr("verified_count", verified_count.to_string())
@@ -285,59 +288,46 @@ impl Hibp {
                 if dcl.contains("phone") {
                     has_phone = true;
                 }
-                if dcl.contains("physical") || dcl.contains("address") || dcl.contains("location")
-                {
+                if dcl.contains("physical") || dcl.contains("address") || dcl.contains("location") {
                     has_physical = true;
                 }
             }
 
             // Extract associated domains as expansion seeds
-            if let Some(domain) = &breach.domain {
-                if !domain.is_empty() && domain.contains('.') {
-                    let mut de =
-                        Entity::new(EntityKind::Domain, domain, 0.55, &ctx.scan_id);
-                    de.tag(tags::BREACH);
-                    de.tag("hibp");
-                    de.tag(tags::BREACH_DERIVED);
-                    de.add_evidence(
-                        Evidence::new(
-                            SRC,
-                            format!(
-                                "Domain from breach '{}' ({})",
-                                breach.name,
-                                breach
-                                    .breach_date
-                                    .as_deref()
-                                    .unwrap_or("unknown date")
-                            ),
-                        )
-                        .with_attr("breach_name", &breach.name)
-                        .with_attr(
-                            "pwn_count",
-                            breach.pwn_count.unwrap_or(0).to_string(),
-                        )
-                        .with_attr("data_classes", breach.data_classes.join(", ")),
-                    );
-                    result.push(de);
-                }
+            if let Some(domain) = &breach.domain
+                && !domain.is_empty()
+                && domain.contains('.')
+            {
+                let mut de = Entity::new(EntityKind::Domain, domain, 0.55, &ctx.scan_id);
+                de.tag(tags::BREACH);
+                de.tag("hibp");
+                de.tag(tags::BREACH_DERIVED);
+                de.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!(
+                            "Domain from breach '{}' ({})",
+                            breach.name,
+                            breach.breach_date.as_deref().unwrap_or("unknown date")
+                        ),
+                    )
+                    .with_attr("breach_name", &breach.name)
+                    .with_attr("pwn_count", breach.pwn_count.unwrap_or(0).to_string())
+                    .with_attr("data_classes", breach.data_classes.join(", ")),
+                );
+                result.push(de);
             }
         }
 
         // Emit risk-level tags on the email entity
-        if has_passwords {
-            if let Some(e) = result.entities.first_mut() {
-                e.tag(tags::PASSWORD_AT_RISK);
-            }
+        if has_passwords && let Some(e) = result.entities.first_mut() {
+            e.tag(tags::PASSWORD_AT_RISK);
         }
-        if has_phone {
-            if let Some(e) = result.entities.first_mut() {
-                e.tag("phone-exposed");
-            }
+        if has_phone && let Some(e) = result.entities.first_mut() {
+            e.tag("phone-exposed");
         }
-        if has_physical {
-            if let Some(e) = result.entities.first_mut() {
-                e.tag("address-exposed");
-            }
+        if has_physical && let Some(e) = result.entities.first_mut() {
+            e.tag("address-exposed");
         }
 
         Ok(())
@@ -365,18 +355,17 @@ impl Hibp {
         let total = pastes.len();
         let sources: Vec<String> = pastes
             .iter()
-            .filter_map(|p| {
+            .map(|p| {
                 let src = p.source.as_deref().unwrap_or("unknown");
                 let id = p.id.as_deref().unwrap_or("?");
-                Some(format!("{src}:{id}"))
+                format!("{src}:{id}")
             })
             .take(10)
             .collect();
 
         // Boost the existing email entity if present, otherwise create one
         if let Some(existing) = result.entities.iter_mut().find(|e| {
-            e.kind == EntityKind::Email
-                && e.value.eq_ignore_ascii_case(target.value.trim())
+            e.kind == EntityKind::Email && e.value.eq_ignore_ascii_case(target.value.trim())
         }) {
             existing.tag(tags::PASTE_EXPOSED);
             existing.confidence = (existing.confidence + 0.05).min(1.0);
@@ -390,12 +379,7 @@ impl Hibp {
                 .with_attr("paste_sources", sources.join(", ")),
             );
         } else {
-            let mut e = Entity::new(
-                EntityKind::Email,
-                target.value.trim(),
-                0.60,
-                &ctx.scan_id,
-            );
+            let mut e = Entity::new(EntityKind::Email, target.value.trim(), 0.60, &ctx.scan_id);
             e.tag(tags::PASTE_EXPOSED);
             e.tag("hibp");
             e.add_evidence(
@@ -481,11 +465,8 @@ impl Hibp {
             sorted.sort();
             if let Some(e) = result.entities.first_mut() {
                 e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Exposed data classes: {}", sorted.join(", ")),
-                    )
-                    .with_attr("data_classes", sorted.join(", ")),
+                    Evidence::new(SRC, format!("Exposed data classes: {}", sorted.join(", ")))
+                        .with_attr("data_classes", sorted.join(", ")),
                 );
             }
         }
@@ -510,7 +491,10 @@ mod tests {
     #[test]
     fn priority_above_free_breach_modules() {
         let m = Hibp;
-        assert!(m.priority() > 100, "HIBP should run before free breach modules");
+        assert!(
+            m.priority() > 100,
+            "HIBP should run before free breach modules"
+        );
     }
 
     #[test]

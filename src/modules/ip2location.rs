@@ -53,15 +53,21 @@ pub struct Ip2Location;
 
 #[async_trait]
 impl Module for Ip2Location {
-    fn name(&self) -> &'static str { "ip2location" }
+    fn name(&self) -> &'static str {
+        "ip2location"
+    }
     fn description(&self) -> &'static str {
         "Suburb-precision IP geolocation via ip2location.io (free, 1K/day)"
     }
-    fn priority(&self) -> u8 { 26 }
+    fn priority(&self) -> u8 {
+        26
+    }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)
     }
-    fn max_timeout_ms(&self) -> u64 { 8_000 }
+    fn max_timeout_ms(&self) -> u64 {
+        8_000
+    }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let ip = target.value.trim();
@@ -70,17 +76,21 @@ impl Module for Ip2Location {
         }
 
         let url = format!("https://api.ip2location.io/?ip={ip}");
-        let resp = ctx.http
+        let resp = ctx
+            .http
             .get(&url)
             .timeout(std::time::Duration::from_secs(6))
-            .send().await
+            .send()
+            .await
             .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());
         }
 
-        let data: Resp = resp.json().await
+        let data: Resp = resp
+            .json()
+            .await
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
 
         let mut result = ModuleResult::new();
@@ -90,22 +100,36 @@ impl Module for Ip2Location {
         let country = data.country_name.as_deref().unwrap_or("");
         let zip = data.zip_code.as_deref().unwrap_or("");
 
-        if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
-            if lat.abs() > 0.01 && lon.abs() > 0.01 {
-                let coords = format!("{lat:.4},{lon:.4}");
-                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.72, &ctx.scan_id);
-                ce.tag(tags::GEOINT);
-                ce.tag("ip2location");
-                if data.is_proxy == Some(true) { ce.tag(tags::PROXY); }
-                let mut ev = Evidence::new(SRC, format!("IP geolocation for {ip}: {city}, {region}, {country}"))
-                    .with_attr("ip", ip);
-                if !city.is_empty() { ev = ev.with_attr("city", city); }
-                if !region.is_empty() { ev = ev.with_attr("region", region); }
-                if !country.is_empty() { ev = ev.with_attr("country", country); }
-                if !zip.is_empty() { ev = ev.with_attr("postcode", zip); }
-                ce.add_evidence(ev);
-                result.push(ce);
+        if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
+            && lat.abs() > 0.01
+            && lon.abs() > 0.01
+        {
+            let coords = format!("{lat:.4},{lon:.4}");
+            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.72, &ctx.scan_id);
+            ce.tag(tags::GEOINT);
+            ce.tag("ip2location");
+            if data.is_proxy == Some(true) {
+                ce.tag(tags::PROXY);
             }
+            let mut ev = Evidence::new(
+                SRC,
+                format!("IP geolocation for {ip}: {city}, {region}, {country}"),
+            )
+            .with_attr("ip", ip);
+            if !city.is_empty() {
+                ev = ev.with_attr("city", city);
+            }
+            if !region.is_empty() {
+                ev = ev.with_attr("region", region);
+            }
+            if !country.is_empty() {
+                ev = ev.with_attr("country", country);
+            }
+            if !zip.is_empty() {
+                ev = ev.with_attr("postcode", zip);
+            }
+            ce.add_evidence(ev);
+            result.push(ce);
         }
 
         if !city.is_empty() && !country.is_empty() {
@@ -123,23 +147,23 @@ impl Module for Ip2Location {
             result.push(ae);
         }
 
-        if let Some(asn) = &data.asn {
-            if !asn.is_empty() {
-                let asn_str = format!("AS{asn}");
-                let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, &ctx.scan_id);
-                ae.tag("ip2location");
-                ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
-                result.push(ae);
-            }
+        if let Some(asn) = &data.asn
+            && !asn.is_empty()
+        {
+            let asn_str = format!("AS{asn}");
+            let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, &ctx.scan_id);
+            ae.tag("ip2location");
+            ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
+            result.push(ae);
         }
 
-        if let Some(as_name) = &data.as_name {
-            if !as_name.is_empty() {
-                let mut oe = Entity::new(EntityKind::Organisation, as_name, 0.65, &ctx.scan_id);
-                oe.tag("ip2location");
-                oe.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
-                result.push(oe);
-            }
+        if let Some(as_name) = &data.as_name
+            && !as_name.is_empty()
+        {
+            let mut oe = Entity::new(EntityKind::Organisation, as_name, 0.65, &ctx.scan_id);
+            oe.tag("ip2location");
+            oe.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
+            result.push(oe);
         }
 
         Ok(result)
@@ -156,7 +180,10 @@ mod tests {
     }
     #[test]
     fn cost_is_free() {
-        assert!(matches!(Ip2Location.cost(), crate::core::module::ModuleCost::Free));
+        assert!(matches!(
+            Ip2Location.cost(),
+            crate::core::module::ModuleCost::Free
+        ));
     }
     #[test]
     fn deser_gatton() {

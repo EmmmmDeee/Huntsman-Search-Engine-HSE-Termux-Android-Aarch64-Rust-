@@ -1,12 +1,11 @@
-use std::collections::HashSet;
 use serde_json::Value;
+use std::collections::HashSet;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
 use crate::util::oathnet::{self, paths, val_str};
-
 
 pub(super) struct KeyPattern {
     prefix: &'static str,
@@ -813,4 +812,3 @@ pub(super) fn store_api_credential(item: &Value) {
     pool.add(&format!("{service}_login"), user_entry);
     let _ = crate::util::key_pool::save_pool(&pool);
 }
-

@@ -87,7 +87,10 @@ impl Module for ThreatFox {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) { Some(k) => k, None => return Ok(ModuleResult::new()) };
+        let key = match ctx.key_opt(KEY_ENV) {
+            Some(k) => k,
+            None => return Ok(ModuleResult::new()),
+        };
         let term = target.value.trim();
         if term.is_empty() {
             return Ok(ModuleResult::new());
@@ -119,7 +122,9 @@ impl Module for ThreatFox {
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, "threatfox", key, ctx).await {
+                if handle_keyed_error(code, resp.headers(), &mut retries, "threatfox", key, ctx)
+                    .await
+                {
                     continue;
                 }
                 return Err(Error::module(

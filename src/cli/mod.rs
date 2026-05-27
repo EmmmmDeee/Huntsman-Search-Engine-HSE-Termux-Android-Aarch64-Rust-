@@ -567,9 +567,8 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
     Ok(())
 }
 
-
 mod import;
-use import::{cmd_import};
+use import::cmd_import;
 
 fn cmd_modules() -> Result<()> {
     let mut mods = registry();

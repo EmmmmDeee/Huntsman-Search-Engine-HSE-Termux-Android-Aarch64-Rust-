@@ -373,39 +373,52 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     let mut result = ModuleResult::new();
     result.push(entity);
 
-    if let Some(name) = entry.name.as_ref().and_then(|n| n.formatted.as_deref()) {
-        if name.len() >= 3 && name.contains(' ') {
-            let mut pe = Entity::new(EntityKind::Person, name, 0.75, &ctx.scan_id);
-            pe.tag("gravatar");
-            pe.add_evidence(Evidence::new(SRC, format!("Gravatar name for {normalised}")));
-            result.push(pe);
-        }
+    if let Some(name) = entry.name.as_ref().and_then(|n| n.formatted.as_deref())
+        && name.len() >= 3
+        && name.contains(' ')
+    {
+        let mut pe = Entity::new(EntityKind::Person, name, 0.75, &ctx.scan_id);
+        pe.tag("gravatar");
+        pe.add_evidence(Evidence::new(
+            SRC,
+            format!("Gravatar name for {normalised}"),
+        ));
+        result.push(pe);
     }
-    if let Some(username) = entry.preferred_username.as_deref() {
-        if username.len() >= 3 {
-            let mut ue = Entity::new(EntityKind::Username, username, 0.70, &ctx.scan_id);
-            ue.tag("gravatar");
-            ue.add_evidence(Evidence::new(SRC, format!("Gravatar username for {normalised}")));
-            result.push(ue);
-        }
+    if let Some(username) = entry.preferred_username.as_deref()
+        && username.len() >= 3
+    {
+        let mut ue = Entity::new(EntityKind::Username, username, 0.70, &ctx.scan_id);
+        ue.tag("gravatar");
+        ue.add_evidence(Evidence::new(
+            SRC,
+            format!("Gravatar username for {normalised}"),
+        ));
+        result.push(ue);
     }
-    if let Some(loc) = entry.location.as_deref() {
-        if loc.len() >= 3 {
-            let mut ae = Entity::new(EntityKind::Address, loc, 0.55, &ctx.scan_id);
-            ae.tag("gravatar");
-            ae.tag("geoint");
-            ae.add_evidence(Evidence::new(SRC, format!("Gravatar location for {normalised}")));
-            result.push(ae);
-        }
+    if let Some(loc) = entry.location.as_deref()
+        && loc.len() >= 3
+    {
+        let mut ae = Entity::new(EntityKind::Address, loc, 0.55, &ctx.scan_id);
+        ae.tag("gravatar");
+        ae.tag("geoint");
+        ae.add_evidence(Evidence::new(
+            SRC,
+            format!("Gravatar location for {normalised}"),
+        ));
+        result.push(ae);
     }
     for url_entry in &entry.urls {
-        if let Some(url) = url_entry.value.as_deref() {
-            if url.starts_with("http") {
-                let mut ue = Entity::new(EntityKind::Url, url, 0.60, &ctx.scan_id);
-                ue.tag("gravatar");
-                ue.add_evidence(Evidence::new(SRC, format!("Gravatar link for {normalised}")));
-                result.push(ue);
-            }
+        if let Some(url) = url_entry.value.as_deref()
+            && url.starts_with("http")
+        {
+            let mut ue = Entity::new(EntityKind::Url, url, 0.60, &ctx.scan_id);
+            ue.tag("gravatar");
+            ue.add_evidence(Evidence::new(
+                SRC,
+                format!("Gravatar link for {normalised}"),
+            ));
+            result.push(ue);
         }
     }
 

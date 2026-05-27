@@ -6,7 +6,9 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::Other(format!("cannot read {path}: {e}")))?;
 
-    let is_html = path.ends_with(".html") || body.trim_start().starts_with("<!") || body.trim_start().starts_with("<html");
+    let is_html = path.ends_with(".html")
+        || body.trim_start().starts_with("<!")
+        || body.trim_start().starts_with("<html");
     let is_txt = path.ends_with(".txt") && !is_html;
 
     if is_html {
@@ -16,8 +18,8 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         return cmd_import_txt(&body, output);
     }
 
-    let doc: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
+    let doc: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
 
     let export_info = doc.get("exportInfo").and_then(|v| v.as_object());
     let query = export_info
@@ -42,31 +44,33 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     {
         for item in breach {
             stats.breach_records += 1;
-            if let Some(email) = item.get("email").and_then(|v| v.as_str()) {
-                if email.contains('@') && !email.contains("UPGRADE") {
-                    let db = item
-                        .get("dbname")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let mut e = Entity::new(EntityKind::Email, email, 0.75, &sid);
-                    e.tag("breach");
-                    e.tag("import");
-                    e.add_evidence(
-                        Evidence::new("import:oathnet", format!("Breach on {db}"))
-                            .with_attr("dbname", db),
-                    );
-                    entities.push(e);
-                    stats.emails += 1;
-                }
+            if let Some(email) = item.get("email").and_then(|v| v.as_str())
+                && email.contains('@')
+                && !email.contains("UPGRADE")
+            {
+                let db = item
+                    .get("dbname")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let mut e = Entity::new(EntityKind::Email, email, 0.75, &sid);
+                e.tag("breach");
+                e.tag("import");
+                e.add_evidence(
+                    Evidence::new("import:oathnet", format!("Breach on {db}"))
+                        .with_attr("dbname", db),
+                );
+                entities.push(e);
+                stats.emails += 1;
             }
-            if let Some(ip) = item.get("ip").and_then(|v| v.as_str()) {
-                if ip.contains('.') && !ip.contains("UPGRADE") {
-                    let mut e = Entity::new(EntityKind::IpAddress, ip, 0.65, &sid);
-                    e.tag("breach");
-                    e.tag("import");
-                    entities.push(e);
-                    stats.ips += 1;
-                }
+            if let Some(ip) = item.get("ip").and_then(|v| v.as_str())
+                && ip.contains('.')
+                && !ip.contains("UPGRADE")
+            {
+                let mut e = Entity::new(EntityKind::IpAddress, ip, 0.65, &sid);
+                e.tag("breach");
+                e.tag("import");
+                entities.push(e);
+                stats.ips += 1;
             }
         }
     }
@@ -81,74 +85,85 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
 
         for victim in victims {
             stats.victim_records += 1;
-            let total_docs = victim.get("total_docs").and_then(|v| v.as_u64()).unwrap_or(0);
+            let total_docs = victim
+                .get("total_docs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             let log_id = victim.get("log_id").and_then(|v| v.as_str()).unwrap_or("");
 
             if let Some(ips) = victim.get("device_ips").and_then(|v| v.as_array()) {
                 for ip_val in ips.iter().take(10) {
-                    if let Some(ip) = ip_val.as_str() {
-                        if ip.contains('.') && !ip.contains("UPGRADE") {
-                            let mut e =
-                                Entity::new(EntityKind::IpAddress, ip, 0.60, &sid);
-                            e.tag("stealer-victim");
-                            e.tag("import");
-                            if total_docs > 100 {
-                                e.tag("high-exposure");
-                            }
-                            e.add_evidence(
-                                Evidence::new("import:oathnet", format!("Victim device IP ({total_docs} creds stolen)"))
-                                    .with_attr("log_id", log_id)
-                                    .with_attr("total_docs", total_docs.to_string()),
-                            );
-                            entities.push(e);
-                            stats.ips += 1;
+                    if let Some(ip) = ip_val.as_str()
+                        && ip.contains('.')
+                        && !ip.contains("UPGRADE")
+                    {
+                        let mut e = Entity::new(EntityKind::IpAddress, ip, 0.60, &sid);
+                        e.tag("stealer-victim");
+                        e.tag("import");
+                        if total_docs > 100 {
+                            e.tag("high-exposure");
                         }
+                        e.add_evidence(
+                            Evidence::new(
+                                "import:oathnet",
+                                format!("Victim device IP ({total_docs} creds stolen)"),
+                            )
+                            .with_attr("log_id", log_id)
+                            .with_attr("total_docs", total_docs.to_string()),
+                        );
+                        entities.push(e);
+                        stats.ips += 1;
                     }
                 }
             }
             if let Some(emails) = victim.get("device_emails").and_then(|v| v.as_array()) {
                 for email_val in emails.iter().take(20) {
-                    if let Some(email) = email_val.as_str() {
-                        if email.contains('@') && !email.contains("UPGRADE") {
-                            let mut e =
-                                Entity::new(EntityKind::Email, email, 0.55, &sid);
-                            e.tag("stealer-victim");
-                            e.tag("import");
-                            entities.push(e);
-                            stats.emails += 1;
-                        }
+                    if let Some(email) = email_val.as_str()
+                        && email.contains('@')
+                        && !email.contains("UPGRADE")
+                    {
+                        let mut e = Entity::new(EntityKind::Email, email, 0.55, &sid);
+                        e.tag("stealer-victim");
+                        e.tag("import");
+                        entities.push(e);
+                        stats.emails += 1;
                     }
                 }
             }
             // HWIDs — hardware identifiers for machine tracking
             if let Some(hwids) = victim.get("hwids").and_then(|v| v.as_array()) {
                 for h in hwids.iter().take(5) {
-                    if let Some(hwid) = h.as_str() {
-                        if !hwid.is_empty() && seen_hwids.insert(hwid.to_string()) {
-                            let mut e = Entity::new(EntityKind::DeviceId, hwid, 0.70, &sid);
-                            e.tag("hwid");
-                            e.tag("import");
-                            e.add_evidence(
-                                Evidence::new("import:oathnet", format!("Hardware ID from infected machine ({total_docs} creds)"))
-                                    .with_attr("log_id", log_id),
-                            );
-                            entities.push(e);
-                            stats.hwids += 1;
-                        }
+                    if let Some(hwid) = h.as_str()
+                        && !hwid.is_empty()
+                        && seen_hwids.insert(hwid.to_string())
+                    {
+                        let mut e = Entity::new(EntityKind::DeviceId, hwid, 0.70, &sid);
+                        e.tag("hwid");
+                        e.tag("import");
+                        e.add_evidence(
+                            Evidence::new(
+                                "import:oathnet",
+                                format!("Hardware ID from infected machine ({total_docs} creds)"),
+                            )
+                            .with_attr("log_id", log_id),
+                        );
+                        entities.push(e);
+                        stats.hwids += 1;
                     }
                 }
             }
             // Discord IDs — identity pivots
             if let Some(dids) = victim.get("discord_ids").and_then(|v| v.as_array()) {
                 for d in dids.iter().take(5) {
-                    if let Some(did) = d.as_str() {
-                        if !did.is_empty() && seen_discord.insert(did.to_string()) {
-                            let mut e = Entity::new(EntityKind::Username, did, 0.60, &sid);
-                            e.tag("discord-id");
-                            e.tag("import");
-                            entities.push(e);
-                            stats.discord_ids += 1;
-                        }
+                    if let Some(did) = d.as_str()
+                        && !did.is_empty()
+                        && seen_discord.insert(did.to_string())
+                    {
+                        let mut e = Entity::new(EntityKind::Username, did, 0.60, &sid);
+                        e.tag("discord-id");
+                        e.tag("import");
+                        entities.push(e);
+                        stats.discord_ids += 1;
                     }
                 }
             }
@@ -156,18 +171,11 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     }
 
     // ── Parse stealer docs — domains, subdomains, URLs, usernames, timelines ──
-    if let Some(docs) = doc
-        .pointer("/stealerData/docs")
-        .and_then(|v| v.as_array())
-    {
-        let mut seen_domains: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut seen_users: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut seen_urls: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut log_ids: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+    if let Some(docs) = doc.pointer("/stealerData/docs").and_then(|v| v.as_array()) {
+        let mut seen_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen_users: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut log_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut earliest_date: Option<String> = None;
         let mut latest_date: Option<String> = None;
 
@@ -180,8 +188,7 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
                     if let Some(domain) = d.as_str() {
                         let lower = domain.to_lowercase();
                         if seen_domains.insert(lower.clone()) && domain.contains('.') {
-                            let mut e =
-                                Entity::new(EntityKind::Domain, &lower, 0.50, &sid);
+                            let mut e = Entity::new(EntityKind::Domain, &lower, 0.50, &sid);
                             e.tag("stealer-target");
                             e.tag("import");
                             entities.push(e);
@@ -197,8 +204,7 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
                     if let Some(sub) = s.as_str() {
                         let lower = sub.to_lowercase();
                         if lower.contains('.') && seen_domains.insert(format!("sub:{lower}")) {
-                            let mut e =
-                                Entity::new(EntityKind::Domain, &lower, 0.55, &sid);
+                            let mut e = Entity::new(EntityKind::Domain, &lower, 0.55, &sid);
                             e.tag("subdomain");
                             e.tag("stealer-target");
                             e.tag("import");
@@ -210,44 +216,44 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
             }
 
             // URLs (compromised login/register pages)
-            if let Some(url) = doc_item.get("url").and_then(|v| v.as_str()) {
-                if url.starts_with("http") && seen_urls.insert(url.to_string()) {
-                    let mut e = Entity::new(EntityKind::Url, url, 0.45, &sid);
-                    e.tag("stealer-target");
-                    e.tag("import");
-                    entities.push(e);
-                    stats.urls += 1;
-                }
+            if let Some(url) = doc_item.get("url").and_then(|v| v.as_str())
+                && url.starts_with("http")
+                && seen_urls.insert(url.to_string())
+            {
+                let mut e = Entity::new(EntityKind::Url, url, 0.45, &sid);
+                e.tag("stealer-target");
+                e.tag("import");
+                entities.push(e);
+                stats.urls += 1;
             }
 
             // Usernames (identity pivots)
-            if let Some(username) = doc_item.get("username").and_then(|v| v.as_str()) {
-                if !username.is_empty()
-                    && username.len() >= 3
-                    && seen_users.insert(username.to_lowercase())
-                {
-                    let conf = if username.contains('@') { 0.55 } else { 0.40 };
-                    let kind = if username.contains('@') {
-                        EntityKind::Email
-                    } else {
-                        EntityKind::Username
-                    };
-                    let mut e = Entity::new(kind, username, conf, &sid);
-                    e.tag("stealer-username");
-                    e.tag("import");
-                    entities.push(e);
-                    stats.usernames += 1;
-                }
+            if let Some(username) = doc_item.get("username").and_then(|v| v.as_str())
+                && !username.is_empty()
+                && username.len() >= 3
+                && seen_users.insert(username.to_lowercase())
+            {
+                let conf = if username.contains('@') { 0.55 } else { 0.40 };
+                let kind = if username.contains('@') {
+                    EntityKind::Email
+                } else {
+                    EntityKind::Username
+                };
+                let mut e = Entity::new(kind, username, conf, &sid);
+                e.tag("stealer-username");
+                e.tag("import");
+                entities.push(e);
+                stats.usernames += 1;
             }
 
             // Log IDs (unique infected machines) → DeviceId entities
-            if let Some(lid) = doc_item.get("log_id").and_then(|v| v.as_str()) {
-                if log_ids.insert(lid.to_string()) {
-                    let mut e = Entity::new(EntityKind::DeviceId, lid, 0.50, &sid);
-                    e.tag("log-id");
-                    e.tag("import");
-                    entities.push(e);
-                }
+            if let Some(lid) = doc_item.get("log_id").and_then(|v| v.as_str())
+                && log_ids.insert(lid.to_string())
+            {
+                let mut e = Entity::new(EntityKind::DeviceId, lid, 0.50, &sid);
+                e.tag("log-id");
+                e.tag("import");
+                entities.push(e);
             }
 
             // Paths (login/admin/API endpoints)
@@ -255,79 +261,114 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
                 for p in paths {
                     if let Some(path) = p.as_str() {
                         let pl = path.to_lowercase();
-                        if (pl.contains("admin") || pl.contains("api") || pl.contains("login")
-                            || pl.contains("dashboard") || pl.contains("panel"))
+                        if (pl.contains("admin")
+                            || pl.contains("api")
+                            || pl.contains("login")
+                            || pl.contains("dashboard")
+                            || pl.contains("panel"))
                             && seen_urls.insert(format!("path:{path}"))
+                            && let Some(doms) = doc_item.get("domain").and_then(|v| v.as_array())
+                            && let Some(dom) = doms.first().and_then(|d| d.as_str())
                         {
-                            if let Some(doms) = doc_item.get("domain").and_then(|v| v.as_array()) {
-                                if let Some(dom) = doms.first().and_then(|d| d.as_str()) {
-                                    let full_url = format!("https://{dom}{path}");
-                                    let mut e = Entity::new(EntityKind::Url, &full_url, 0.50, &sid);
-                                    e.tag("admin-panel");
-                                    e.tag("import");
-                                    entities.push(e);
-                                    stats.admin_paths += 1;
-                                }
-                            }
+                            let full_url = format!("https://{dom}{path}");
+                            let mut e = Entity::new(EntityKind::Url, &full_url, 0.50, &sid);
+                            e.tag("admin-panel");
+                            e.tag("import");
+                            entities.push(e);
+                            stats.admin_paths += 1;
                         }
                     }
                 }
             }
 
             // API key pattern scanning on password field
-            if let Some(pw) = doc_item.get("password").and_then(|v| v.as_str()) {
-                if !pw.is_empty() && pw.len() >= 20 {
-                    let is_key = pw.starts_with("sk-") || pw.starts_with("pk_")
-                        || pw.starts_with("ghp_") || pw.starts_with("gho_")
-                        || pw.starts_with("SG.") || pw.starts_with("xoxb-")
-                        || pw.starts_with("xoxp-") || pw.starts_with("AKIA")
-                        || pw.starts_with("AIzaSy") || pw.starts_with("hf_")
-                        || pw.starts_with("r8_") || pw.starts_with("npm_")
-                        || pw.starts_with("sk_live_") || pw.starts_with("rk_live_")
-                        || pw.starts_with("whsec_") || pw.starts_with("sntrys_")
-                        || pw.starts_with("glc_") || pw.starts_with("NRAK-")
-                        || pw.starts_with("dop_v1_") || pw.starts_with("ntn_")
-                        || pw.starts_with("eyJ") || pw.starts_with("github_pat_")
-                        || (pw.len() == 32 && pw.chars().all(|c| c.is_ascii_hexdigit()))
-                        || (pw.len() == 64 && pw.chars().all(|c| c.is_ascii_hexdigit()));
-                    if is_key {
-                        let svc = if pw.starts_with("sk-ant-") { "anthropic" }
-                            else if pw.starts_with("sk-proj-") { "openai" }
-                            else if pw.starts_with("sk-") { "openai_or_stripe" }
-                            else if pw.starts_with("ghp_") || pw.starts_with("github_pat_") { "github" }
-                            else if pw.starts_with("AKIA") { "aws" }
-                            else if pw.starts_with("AIzaSy") { "google" }
-                            else if pw.starts_with("SG.") { "sendgrid" }
-                            else if pw.starts_with("hf_") { "huggingface" }
-                            else if pw.starts_with("sk_live_") { "stripe" }
-                            else if pw.starts_with("xoxb-") { "slack" }
-                            else if pw.starts_with("npm_") { "npm" }
-                            else if pw.starts_with("dop_v1_") { "digitalocean" }
-                            else { "generic_key" };
+            if let Some(pw) = doc_item.get("password").and_then(|v| v.as_str())
+                && !pw.is_empty()
+                && pw.len() >= 20
+            {
+                let is_key = pw.starts_with("sk-")
+                    || pw.starts_with("pk_")
+                    || pw.starts_with("ghp_")
+                    || pw.starts_with("gho_")
+                    || pw.starts_with("SG.")
+                    || pw.starts_with("xoxb-")
+                    || pw.starts_with("xoxp-")
+                    || pw.starts_with("AKIA")
+                    || pw.starts_with("AIzaSy")
+                    || pw.starts_with("hf_")
+                    || pw.starts_with("r8_")
+                    || pw.starts_with("npm_")
+                    || pw.starts_with("sk_live_")
+                    || pw.starts_with("rk_live_")
+                    || pw.starts_with("whsec_")
+                    || pw.starts_with("sntrys_")
+                    || pw.starts_with("glc_")
+                    || pw.starts_with("NRAK-")
+                    || pw.starts_with("dop_v1_")
+                    || pw.starts_with("ntn_")
+                    || pw.starts_with("eyJ")
+                    || pw.starts_with("github_pat_")
+                    || (pw.len() == 32 && pw.chars().all(|c| c.is_ascii_hexdigit()))
+                    || (pw.len() == 64 && pw.chars().all(|c| c.is_ascii_hexdigit()));
+                if is_key {
+                    let svc = if pw.starts_with("sk-ant-") {
+                        "anthropic"
+                    } else if pw.starts_with("sk-proj-") {
+                        "openai"
+                    } else if pw.starts_with("sk-") {
+                        "openai_or_stripe"
+                    } else if pw.starts_with("ghp_") || pw.starts_with("github_pat_") {
+                        "github"
+                    } else if pw.starts_with("AKIA") {
+                        "aws"
+                    } else if pw.starts_with("AIzaSy") {
+                        "google"
+                    } else if pw.starts_with("SG.") {
+                        "sendgrid"
+                    } else if pw.starts_with("hf_") {
+                        "huggingface"
+                    } else if pw.starts_with("sk_live_") {
+                        "stripe"
+                    } else if pw.starts_with("xoxb-") {
+                        "slack"
+                    } else if pw.starts_with("npm_") {
+                        "npm"
+                    } else if pw.starts_with("dop_v1_") {
+                        "digitalocean"
+                    } else {
+                        "generic_key"
+                    };
 
-                        let display = format!("{}:{}...{}",
-                            svc,
-                            &pw[..pw.len().min(8)],
-                            &pw[pw.len().saturating_sub(4)..]);
-                        let mut e = Entity::new(EntityKind::ApiKey, &display, 0.80, &sid);
-                        e.tag("api-key");
-                        e.tag(format!("service:{svc}"));
-                        e.tag("import");
-                        e.add_evidence(
-                            Evidence::new("import:oathnet", format!("API key pattern ({svc}) in stealer data"))
-                                .with_attr("service", svc)
-                                .with_attr("key_length", pw.len().to_string()),
-                        );
-                        entities.push(e);
-                        stats.api_keys += 1;
+                    let display = format!(
+                        "{}:{}...{}",
+                        svc,
+                        &pw[..pw.len().min(8)],
+                        &pw[pw.len().saturating_sub(4)..]
+                    );
+                    let mut e = Entity::new(EntityKind::ApiKey, &display, 0.80, &sid);
+                    e.tag("api-key");
+                    e.tag(format!("service:{svc}"));
+                    e.tag("import");
+                    e.add_evidence(
+                        Evidence::new(
+                            "import:oathnet",
+                            format!("API key pattern ({svc}) in stealer data"),
+                        )
+                        .with_attr("service", svc)
+                        .with_attr("key_length", pw.len().to_string()),
+                    );
+                    entities.push(e);
+                    stats.api_keys += 1;
 
-                        // Validate and store in key pool
-                        let valid = crate::util::key_pool::add_and_validate(
-                            svc, pw, Some(format!("Import: {svc} key from stealer data"))
-                        ).await;
-                        if valid {
-                            stats.api_keys_valid += 1;
-                        }
+                    // Validate and store in key pool
+                    let valid = crate::util::key_pool::add_and_validate(
+                        svc,
+                        pw,
+                        Some(format!("Import: {svc} key from stealer data")),
+                    )
+                    .await;
+                    if valid {
+                        stats.api_keys_valid += 1;
                     }
                 }
             }
@@ -335,10 +376,10 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
             // Infection timeline
             if let Some(dt) = doc_item.get("pwned_at").and_then(|v| v.as_str()) {
                 let date = &dt[..dt.len().min(10)];
-                if earliest_date.as_deref().map_or(true, |e| date < e) {
+                if earliest_date.as_deref().is_none_or(|e| date < e) {
                     earliest_date = Some(date.to_string());
                 }
-                if latest_date.as_deref().map_or(true, |l| date > l) {
+                if latest_date.as_deref().is_none_or(|l| date > l) {
                     latest_date = Some(date.to_string());
                 }
             }
@@ -361,14 +402,15 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         for victim in victims {
             if let Some(users) = victim.get("device_users").and_then(|v| v.as_array()) {
                 for u in users.iter().take(5) {
-                    if let Some(name) = u.as_str() {
-                        if !name.is_empty() && seen_device_users.insert(name.to_lowercase()) {
-                            let mut e = Entity::new(EntityKind::Username, name, 0.35, &sid);
-                            e.tag("device-user");
-                            e.tag("import");
-                            entities.push(e);
-                            stats.device_users += 1;
-                        }
+                    if let Some(name) = u.as_str()
+                        && !name.is_empty()
+                        && seen_device_users.insert(name.to_lowercase())
+                    {
+                        let mut e = Entity::new(EntityKind::Username, name, 0.35, &sid);
+                        e.tag("device-user");
+                        e.tag("import");
+                        entities.push(e);
+                        stats.device_users += 1;
                     }
                 }
             }
@@ -379,30 +421,33 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     if let Some(ip_info) = doc.pointer("/osintData/ipInfo").and_then(|v| v.as_object()) {
         for (ip, info) in ip_info {
             let city = info.get("city").and_then(|v| v.as_str()).unwrap_or("");
-            let region = info.get("regionName").and_then(|v| v.as_str()).unwrap_or("");
+            let region = info
+                .get("regionName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let country = info.get("country").and_then(|v| v.as_str()).unwrap_or("");
             let lat = info.get("lat").and_then(|v| v.as_f64());
             let lon = info.get("lon").and_then(|v| v.as_f64());
             let isp = info.get("isp").and_then(|v| v.as_str()).unwrap_or("");
 
-            if let (Some(lat), Some(lon)) = (lat, lon) {
-                if lat.abs() > 0.01 && lon.abs() > 0.01 {
-                    let coords = format!("{lat:.4},{lon:.4}");
-                    let mut ce =
-                        Entity::new(EntityKind::Coordinates, &coords, 0.70, &sid);
-                    ce.tag("geoint");
-                    ce.tag("import");
-                    ce.add_evidence(
-                        Evidence::new(
-                            "import:oathnet",
-                            format!("IP {ip}: {city}, {region}, {country} ({isp})"),
-                        )
-                        .with_attr("ip", ip)
-                        .with_attr("isp", isp),
-                    );
-                    entities.push(ce);
-                    stats.coordinates += 1;
-                }
+            if let (Some(lat), Some(lon)) = (lat, lon)
+                && lat.abs() > 0.01
+                && lon.abs() > 0.01
+            {
+                let coords = format!("{lat:.4},{lon:.4}");
+                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &sid);
+                ce.tag("geoint");
+                ce.tag("import");
+                ce.add_evidence(
+                    Evidence::new(
+                        "import:oathnet",
+                        format!("IP {ip}: {city}, {region}, {country} ({isp})"),
+                    )
+                    .with_attr("ip", ip)
+                    .with_attr("isp", isp),
+                );
+                entities.push(ce);
+                stats.coordinates += 1;
             }
             if !city.is_empty() {
                 let addr = format!("{city}, {region}, {country}");
@@ -417,14 +462,8 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     // ── Parse Holehe platform checks ──
     if let Some(holehe) = doc.pointer("/osintData/holehe").and_then(|v| v.as_object()) {
         for (email, data) in holehe {
-            if let Some(domains) = data
-                .pointer("/data/domains")
-                .and_then(|v| v.as_array())
-            {
-                let platforms: Vec<&str> = domains
-                    .iter()
-                    .filter_map(|d| d.as_str())
-                    .collect();
+            if let Some(domains) = data.pointer("/data/domains").and_then(|v| v.as_array()) {
+                let platforms: Vec<&str> = domains.iter().filter_map(|d| d.as_str()).collect();
                 if !platforms.is_empty() && !email.contains("UPGRADE") {
                     let mut e = Entity::new(EntityKind::Email, email, 0.85, &sid);
                     e.tag("holehe-verified");
@@ -469,10 +508,7 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         "  Device:    {} HWIDs, {} machine log IDs",
         stats.hwids, stats.machines
     );
-    println!(
-        "  Keys:      {} API keys detected",
-        stats.api_keys
-    );
+    println!("  Keys:      {} API keys detected", stats.api_keys);
     println!("  Verified:  {} holehe platform checks", stats.holehe);
     println!(
         "  Source:    {} breach, {} stealer docs, {} victims",
@@ -530,8 +566,7 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
     let ip_re = regex::Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
     let email_re = regex::Regex::new(r"[\w.+-]+@[\w.-]+\.\w{2,}").unwrap();
     let domain_re =
-        regex::Regex::new(r"(?:https?://)?([a-z0-9][-a-z0-9]*(?:\.[a-z0-9][-a-z0-9]*)+)")
-            .unwrap();
+        regex::Regex::new(r"(?:https?://)?([a-z0-9][-a-z0-9]*(?:\.[a-z0-9][-a-z0-9]*)+)").unwrap();
 
     let lower = body.to_lowercase();
 
@@ -575,13 +610,25 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
     let mut uid_seen: HashSet<String> = HashSet::new();
     entities.retain(|e| uid_seen.insert(e.uid.clone()));
 
-    let domains = entities.iter().filter(|e| e.kind == EntityKind::Domain).count();
-    let ips = entities.iter().filter(|e| e.kind == EntityKind::IpAddress).count();
-    let emails = entities.iter().filter(|e| e.kind == EntityKind::Email).count();
+    let domains = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .count();
+    let ips = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .count();
+    let emails = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .count();
 
     println!(
         "Imported {} entities: {} domains, {} IPs, {} emails",
-        entities.len(), domains, ips, emails
+        entities.len(),
+        domains,
+        ips,
+        emails
     );
 
     if output == "json" {
@@ -589,7 +636,12 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
     } else {
         for e in &entities {
-            println!("  [{:.2}] {:15} {}", e.confidence, e.kind.to_string(), &e.value[..e.value.len().min(70)]);
+            println!(
+                "  [{:.2}] {:15} {}",
+                e.confidence,
+                e.kind.to_string(),
+                &e.value[..e.value.len().min(70)]
+            );
         }
     }
     Ok(())
@@ -613,20 +665,43 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
                 let mut e = Entity::new(EntityKind::Url, url, 0.45, &sid);
                 e.tag("import");
                 let pl = url.to_lowercase();
-                if pl.contains("admin") || pl.contains("/api") || pl.contains("login") || pl.contains("dashboard") {
+                if pl.contains("admin")
+                    || pl.contains("/api")
+                    || pl.contains("login")
+                    || pl.contains("dashboard")
+                {
                     e.tag("admin-panel");
                     stats.admin_paths += 1;
                 }
                 entities.push(e);
                 stats.urls += 1;
-                if let Some(host) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) {
-                    let domain = host.split('/').next().unwrap_or("").split(':').next().unwrap_or("");
+                if let Some(host) = url
+                    .strip_prefix("https://")
+                    .or_else(|| url.strip_prefix("http://"))
+                {
+                    let domain = host
+                        .split('/')
+                        .next()
+                        .unwrap_or("")
+                        .split(':')
+                        .next()
+                        .unwrap_or("");
                     if domain.contains('.') && seen.insert(format!("d:{domain}")) {
                         let parts: Vec<&str> = domain.split('.').collect();
                         let is_sub = parts.len() >= 3;
-                        let mut de = Entity::new(EntityKind::Domain, domain, if is_sub { 0.45 } else { 0.50 }, &sid);
+                        let mut de = Entity::new(
+                            EntityKind::Domain,
+                            domain,
+                            if is_sub { 0.45 } else { 0.50 },
+                            &sid,
+                        );
                         de.tag("import");
-                        if is_sub { de.tag("subdomain"); stats.subdomains += 1; } else { stats.domains += 1; }
+                        if is_sub {
+                            de.tag("subdomain");
+                            stats.subdomains += 1;
+                        } else {
+                            stats.domains += 1;
+                        }
                         entities.push(de);
                     }
                 }
@@ -634,7 +709,11 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
         } else if let Some(rest) = line.strip_prefix("Username: ") {
             let uname = rest.trim();
             if uname.len() >= 2 && seen.insert(format!("un:{uname}")) {
-                let kind = if uname.contains('@') { EntityKind::Email } else { EntityKind::Username };
+                let kind = if uname.contains('@') {
+                    EntityKind::Email
+                } else {
+                    EntityKind::Username
+                };
                 let mut e = Entity::new(kind, uname, 0.40, &sid);
                 e.tag("import");
                 e.tag("stealer-username");
@@ -644,25 +723,46 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
         } else if let Some(rest) = line.strip_prefix("Password: ") {
             let pw = rest.trim();
             if pw.len() >= 20 {
-                let is_key = pw.starts_with("sk-") || pw.starts_with("ghp_")
-                    || pw.starts_with("SG.") || pw.starts_with("AKIA")
-                    || pw.starts_with("AIzaSy") || pw.starts_with("hf_")
-                    || pw.starts_with("sk_live_") || pw.starts_with("xoxb-")
-                    || pw.starts_with("npm_") || pw.starts_with("dop_v1_")
-                    || pw.starts_with("github_pat_") || pw.starts_with("r8_")
-                    || pw.starts_with("eyJ") || pw.starts_with("ntn_")
+                let is_key = pw.starts_with("sk-")
+                    || pw.starts_with("ghp_")
+                    || pw.starts_with("SG.")
+                    || pw.starts_with("AKIA")
+                    || pw.starts_with("AIzaSy")
+                    || pw.starts_with("hf_")
+                    || pw.starts_with("sk_live_")
+                    || pw.starts_with("xoxb-")
+                    || pw.starts_with("npm_")
+                    || pw.starts_with("dop_v1_")
+                    || pw.starts_with("github_pat_")
+                    || pw.starts_with("r8_")
+                    || pw.starts_with("eyJ")
+                    || pw.starts_with("ntn_")
                     || (pw.len() == 32 && pw.chars().all(|c| c.is_ascii_hexdigit()))
                     || (pw.len() == 64 && pw.chars().all(|c| c.is_ascii_hexdigit()));
                 if is_key {
-                    let svc = if pw.starts_with("sk-ant-") { "anthropic" }
-                        else if pw.starts_with("sk-proj-") { "openai" }
-                        else if pw.starts_with("ghp_") || pw.starts_with("github_pat_") { "github" }
-                        else if pw.starts_with("AKIA") { "aws" }
-                        else if pw.starts_with("SG.") { "sendgrid" }
-                        else if pw.starts_with("sk_live_") { "stripe" }
-                        else if pw.starts_with("hf_") { "huggingface" }
-                        else { "generic_key" };
-                    let display = format!("{}:{}...{}", svc, &pw[..pw.len().min(8)], &pw[pw.len().saturating_sub(4)..]);
+                    let svc = if pw.starts_with("sk-ant-") {
+                        "anthropic"
+                    } else if pw.starts_with("sk-proj-") {
+                        "openai"
+                    } else if pw.starts_with("ghp_") || pw.starts_with("github_pat_") {
+                        "github"
+                    } else if pw.starts_with("AKIA") {
+                        "aws"
+                    } else if pw.starts_with("SG.") {
+                        "sendgrid"
+                    } else if pw.starts_with("sk_live_") {
+                        "stripe"
+                    } else if pw.starts_with("hf_") {
+                        "huggingface"
+                    } else {
+                        "generic_key"
+                    };
+                    let display = format!(
+                        "{}:{}...{}",
+                        svc,
+                        &pw[..pw.len().min(8)],
+                        &pw[pw.len().saturating_sub(4)..]
+                    );
                     let mut e = Entity::new(EntityKind::ApiKey, &display, 0.80, &sid);
                     e.tag("api-key");
                     e.tag(format!("service:{svc}"));
@@ -687,7 +787,8 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
             if let Some(rest) = line.strip_prefix("IPs: ") {
                 for ip in rest.split(", ") {
                     let ip = ip.trim();
-                    if ip.contains('.') && !ip.starts_with("0.") && seen.insert(format!("ip:{ip}")) {
+                    if ip.contains('.') && !ip.starts_with("0.") && seen.insert(format!("ip:{ip}"))
+                    {
                         let mut e = Entity::new(EntityKind::IpAddress, ip, 0.60, &sid);
                         e.tag("stealer-victim");
                         e.tag("import");
@@ -768,16 +869,20 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
             let trimmed = line.trim();
             if let Some(rest) = trimmed.strip_prefix("IP: ") {
                 if !current_ip.is_empty() {
-                    if let (Some(la), Some(lo)) = (lat, lon) {
-                        if la.abs() > 0.01 && lo.abs() > 0.01 {
-                            let coords = format!("{la:.4},{lo:.4}");
-                            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &sid);
-                            ce.tag("geoint");
-                            ce.tag("import");
-                            ce.add_evidence(Evidence::new("import:oathnet", format!("IP {current_ip}: {city}, {region}, {country} ({isp})")));
-                            entities.push(ce);
-                            stats.coordinates += 1;
-                        }
+                    if let (Some(la), Some(lo)) = (lat, lon)
+                        && la.abs() > 0.01
+                        && lo.abs() > 0.01
+                    {
+                        let coords = format!("{la:.4},{lo:.4}");
+                        let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &sid);
+                        ce.tag("geoint");
+                        ce.tag("import");
+                        ce.add_evidence(Evidence::new(
+                            "import:oathnet",
+                            format!("IP {current_ip}: {city}, {region}, {country} ({isp})"),
+                        ));
+                        entities.push(ce);
+                        stats.coordinates += 1;
                     }
                     if !city.is_empty() {
                         let addr = format!("{city}, {region}, {country}");
@@ -788,8 +893,12 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
                     }
                 }
                 current_ip = rest.trim().to_string();
-                lat = None; lon = None;
-                city.clear(); region.clear(); country.clear(); isp.clear();
+                lat = None;
+                lon = None;
+                city.clear();
+                region.clear();
+                country.clear();
+                isp.clear();
             } else if let Some(rest) = trimmed.strip_prefix("lat: ") {
                 lat = rest.trim().parse().ok();
             } else if let Some(rest) = trimmed.strip_prefix("lon: ") {
@@ -805,15 +914,16 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
             }
         }
         if !current_ip.is_empty() {
-            if let (Some(la), Some(lo)) = (lat, lon) {
-                if la.abs() > 0.01 && lo.abs() > 0.01 {
-                    let coords = format!("{la:.4},{lo:.4}");
-                    let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &sid);
-                    ce.tag("geoint");
-                    ce.tag("import");
-                    entities.push(ce);
-                    stats.coordinates += 1;
-                }
+            if let (Some(la), Some(lo)) = (lat, lon)
+                && la.abs() > 0.01
+                && lo.abs() > 0.01
+            {
+                let coords = format!("{la:.4},{lo:.4}");
+                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &sid);
+                ce.tag("geoint");
+                ce.tag("import");
+                entities.push(ce);
+                stats.coordinates += 1;
             }
             if !city.is_empty() {
                 let addr = format!("{city}, {region}, {country}");
@@ -829,13 +939,28 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
     entities.retain(|e| uid_seen.insert(e.uid.clone()));
 
     println!("Imported {} entities:", entities.len());
-    println!("  Identity:  {} emails, {} usernames, {} device users, {} Discord IDs", stats.emails, stats.usernames, stats.device_users, stats.discord_ids);
-    println!("  Network:   {} IPs, {} domains, {} subdomains, {} URLs, {} admin paths", stats.ips, stats.domains, stats.subdomains, stats.urls, stats.admin_paths);
-    println!("  Geo:       {} coordinates, {} addresses", stats.coordinates, stats.addresses);
-    println!("  Device:    {} HWIDs, {} machine log IDs", stats.hwids, stats.machines);
+    println!(
+        "  Identity:  {} emails, {} usernames, {} device users, {} Discord IDs",
+        stats.emails, stats.usernames, stats.device_users, stats.discord_ids
+    );
+    println!(
+        "  Network:   {} IPs, {} domains, {} subdomains, {} URLs, {} admin paths",
+        stats.ips, stats.domains, stats.subdomains, stats.urls, stats.admin_paths
+    );
+    println!(
+        "  Geo:       {} coordinates, {} addresses",
+        stats.coordinates, stats.addresses
+    );
+    println!(
+        "  Device:    {} HWIDs, {} machine log IDs",
+        stats.hwids, stats.machines
+    );
     println!("  Keys:      {} API keys detected", stats.api_keys);
     if stats.api_keys > 0 {
-        println!("  Pool:      {} keys stored for automatic use", stats.api_keys);
+        println!(
+            "  Pool:      {} keys stored for automatic use",
+            stats.api_keys
+        );
         let _ = crate::util::key_pool::save_pool(&crate::util::key_pool::global_pool());
     }
 
@@ -844,7 +969,12 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
     } else {
         for e in entities.iter().take(50) {
-            println!("  [{:.2}] {:15} {}", e.confidence, e.kind.to_string(), &e.value[..e.value.len().min(70)]);
+            println!(
+                "  [{:.2}] {:15} {}",
+                e.confidence,
+                e.kind.to_string(),
+                &e.value[..e.value.len().min(70)]
+            );
         }
         if entities.len() > 50 {
             println!("  ... and {} more", entities.len() - 50);
@@ -876,4 +1006,3 @@ struct ImportStats {
     api_keys_valid: usize,
     date_range: String,
 }
-

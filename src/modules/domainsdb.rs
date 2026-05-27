@@ -56,7 +56,10 @@ impl Module for DomainsDb {
         19
     }
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::Organisation | TargetKind::FullName)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::Organisation | TargetKind::FullName
+        )
     }
     fn max_timeout_ms(&self) -> u64 {
         12_000
@@ -65,18 +68,29 @@ impl Module for DomainsDb {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let query = match target.kind {
             TargetKind::Domain => {
-                let base = target.value.trim().split('.').next().unwrap_or("").to_lowercase();
-                if base.len() < 3 { return Ok(ModuleResult::new()); }
+                let base = target
+                    .value
+                    .trim()
+                    .split('.')
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase();
+                if base.len() < 3 {
+                    return Ok(ModuleResult::new());
+                }
                 base
             }
             TargetKind::Organisation | TargetKind::FullName => {
-                let cleaned: String = target.value
+                let cleaned: String = target
+                    .value
                     .to_lowercase()
                     .chars()
                     .filter(|c| c.is_alphanumeric() || *c == ' ')
                     .collect();
                 let parts: Vec<&str> = cleaned.split_whitespace().collect();
-                if parts.is_empty() { return Ok(ModuleResult::new()); }
+                if parts.is_empty() {
+                    return Ok(ModuleResult::new());
+                }
                 parts.join("")
             }
             _ => return Ok(ModuleResult::new()),
@@ -86,19 +100,26 @@ impl Module for DomainsDb {
         let mut seen: HashSet<String> = HashSet::new();
 
         for zone in &["com", "net", "org", "io", "com.au", "co.uk"] {
-            if ctx.cancel.is_cancelled() { break; }
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
             let url = format!(
                 "https://api.domainsdb.info/v1/domains/search?domain={}&zone={zone}&limit=20",
                 crate::util::http::urlencode(&query)
             );
-            let resp = ctx.http
+            let resp = ctx
+                .http
                 .get(&url)
                 .timeout(std::time::Duration::from_secs(8))
                 .send()
                 .await;
             let Ok(r) = resp else { continue };
-            if !r.status().is_success() { continue; }
-            let Ok(data) = r.json::<DbResp>().await else { continue };
+            if !r.status().is_success() {
+                continue;
+            }
+            let Ok(data) = r.json::<DbResp>().await else {
+                continue;
+            };
 
             for entry in &data.domains {
                 if entry.domain.is_empty() || !seen.insert(entry.domain.clone()) {
@@ -108,7 +129,9 @@ impl Module for DomainsDb {
                 let conf = if is_dead { 0.35 } else { 0.55 };
                 let mut e = Entity::new(EntityKind::Domain, &entry.domain, conf, &ctx.scan_id);
                 e.tag("domainsdb");
-                if is_dead { e.tag("dead-domain"); }
+                if is_dead {
+                    e.tag("dead-domain");
+                }
                 let mut ev = Evidence::new(SRC, format!("Registered domain: {}", entry.domain));
                 if let Some(d) = entry.create_date.as_deref() {
                     ev = ev.with_attr("created", d);
@@ -137,7 +160,10 @@ mod tests {
     }
     #[test]
     fn cost_is_free() {
-        assert!(matches!(DomainsDb.cost(), crate::core::module::ModuleCost::Free));
+        assert!(matches!(
+            DomainsDb.cost(),
+            crate::core::module::ModuleCost::Free
+        ));
     }
     #[test]
     fn deser() {

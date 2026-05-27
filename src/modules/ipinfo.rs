@@ -69,7 +69,8 @@ impl Module for IpInfo {
         }
 
         let url = format!("https://ipinfo.io/{ip}/json");
-        let resp = ctx.http
+        let resp = ctx
+            .http
             .get(&url)
             .timeout(std::time::Duration::from_secs(6))
             .send()
@@ -80,28 +81,37 @@ impl Module for IpInfo {
             return Ok(ModuleResult::new());
         }
 
-        let data: IpInfoResp = resp.json().await
+        let data: IpInfoResp = resp
+            .json()
+            .await
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
 
         let mut result = ModuleResult::new();
 
         if let Some(loc) = &data.loc {
             let parts: Vec<&str> = loc.split(',').collect();
-            if let (Some(lat_s), Some(lon_s)) = (parts.first(), parts.get(1)) {
-                if let (Ok(lat), Ok(lon)) = (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>()) {
-                    if lat.abs() > 0.01 && lon.abs() > 0.01 {
-                        let coords = format!("{lat:.4},{lon:.4}");
-                        let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.68, &ctx.scan_id);
-                        ce.tag(tags::GEOINT);
-                        ce.tag("ipinfo");
-                        let mut ev = Evidence::new(SRC, format!("IP geo for {ip}"));
-                        if let Some(c) = &data.city { ev = ev.with_attr("city", c); }
-                        if let Some(r) = &data.region { ev = ev.with_attr("region", r); }
-                        if let Some(co) = &data.country { ev = ev.with_attr("country", co); }
-                        ce.add_evidence(ev);
-                        result.push(ce);
-                    }
+            if let (Some(lat_s), Some(lon_s)) = (parts.first(), parts.get(1))
+                && let (Ok(lat), Ok(lon)) =
+                    (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>())
+                && lat.abs() > 0.01
+                && lon.abs() > 0.01
+            {
+                let coords = format!("{lat:.4},{lon:.4}");
+                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.68, &ctx.scan_id);
+                ce.tag(tags::GEOINT);
+                ce.tag("ipinfo");
+                let mut ev = Evidence::new(SRC, format!("IP geo for {ip}"));
+                if let Some(c) = &data.city {
+                    ev = ev.with_attr("city", c);
                 }
+                if let Some(r) = &data.region {
+                    ev = ev.with_attr("region", r);
+                }
+                if let Some(co) = &data.country {
+                    ev = ev.with_attr("country", co);
+                }
+                ce.add_evidence(ev);
+                result.push(ce);
             }
         }
 
@@ -109,38 +119,43 @@ impl Module for IpInfo {
         let region = data.region.as_deref().unwrap_or("");
         let country = data.country.as_deref().unwrap_or("");
         if !city.is_empty() {
-            let addr = if !region.is_empty() { format!("{city}, {region}, {country}") } else { format!("{city}, {country}") };
+            let addr = if !region.is_empty() {
+                format!("{city}, {region}, {country}")
+            } else {
+                format!("{city}, {country}")
+            };
             let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, &ctx.scan_id);
             ae.tag("ipinfo");
             ae.add_evidence(Evidence::new(SRC, format!("Address for {ip}")));
             result.push(ae);
         }
 
-        if let Some(org) = &data.org {
-            if !org.is_empty() {
-                let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
-                oe.tag("ipinfo");
-                oe.add_evidence(Evidence::new(SRC, format!("Org for {ip}")));
-                result.push(oe);
-                if let Some(asn) = org.split_whitespace().next() {
-                    if asn.starts_with("AS") {
-                        let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
-                        ae.tag("ipinfo");
-                        ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
-                        result.push(ae);
-                    }
-                }
+        if let Some(org) = &data.org
+            && !org.is_empty()
+        {
+            let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
+            oe.tag("ipinfo");
+            oe.add_evidence(Evidence::new(SRC, format!("Org for {ip}")));
+            result.push(oe);
+            if let Some(asn) = org.split_whitespace().next()
+                && asn.starts_with("AS")
+            {
+                let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
+                ae.tag("ipinfo");
+                ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
+                result.push(ae);
             }
         }
 
-        if let Some(hostname) = &data.hostname {
-            if !hostname.is_empty() && hostname.contains('.') {
-                let mut de = Entity::new(EntityKind::Domain, hostname, 0.70, &ctx.scan_id);
-                de.tag("ipinfo");
-                de.tag(tags::PTR);
-                de.add_evidence(Evidence::new(SRC, format!("Hostname for {ip}")));
-                result.push(de);
-            }
+        if let Some(hostname) = &data.hostname
+            && !hostname.is_empty()
+            && hostname.contains('.')
+        {
+            let mut de = Entity::new(EntityKind::Domain, hostname, 0.70, &ctx.scan_id);
+            de.tag("ipinfo");
+            de.tag(tags::PTR);
+            de.add_evidence(Evidence::new(SRC, format!("Hostname for {ip}")));
+            result.push(de);
         }
 
         Ok(result)
@@ -157,7 +172,10 @@ mod tests {
     }
     #[test]
     fn cost_is_free() {
-        assert!(matches!(IpInfo.cost(), crate::core::module::ModuleCost::Free));
+        assert!(matches!(
+            IpInfo.cost(),
+            crate::core::module::ModuleCost::Free
+        ));
     }
     #[test]
     fn deser() {

@@ -63,7 +63,10 @@ impl Module for SecurityTrails {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) { Some(k) => k, None => return Ok(ModuleResult::new()) };
+        let key = match ctx.key_opt(KEY_ENV) {
+            Some(k) => k,
+            None => return Ok(ModuleResult::new()),
+        };
 
         match target.kind {
             TargetKind::Domain => self.subdomain_search(target, key, ctx).await,
@@ -140,8 +143,11 @@ impl SecurityTrails {
             e.tag("securitytrails");
             e.tag("reverse-ip");
             e.add_evidence(
-                Evidence::new(SRC, format!("Domain associated with {ip} per SecurityTrails"))
-                    .with_attr("ip", ip),
+                Evidence::new(
+                    SRC,
+                    format!("Domain associated with {ip} per SecurityTrails"),
+                )
+                .with_attr("ip", ip),
             );
             result.push(e);
         }
