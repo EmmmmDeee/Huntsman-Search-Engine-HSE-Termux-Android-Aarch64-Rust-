@@ -26,7 +26,13 @@ pub async fn scan_create(
             .into_response();
     }
     let sid = scan_id(req.kind.canonical_str(), &req.value);
-    let scan = Scan::new(sid.clone(), target.clone()).with_options(req.options);
+    let mut opts = req.options;
+    if let Some(ref profile_name) = opts.profile
+        && let Some(profile_opts) = crate::core::profiles::resolve_profile(profile_name)
+    {
+        opts = profile_opts;
+    }
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
 
     if let Err(e) = s.store.upsert_scan(&scan) {
         return internal_error(&e);
@@ -38,6 +44,55 @@ pub async fn scan_create(
     (
         StatusCode::ACCEPTED,
         Json(json!({ "scan_id": scan.id, "status": "queued" })),
+    )
+        .into_response()
+}
+
+pub async fn scan_batch(
+    State(s): State<Arc<AppState>>,
+    Json(requests): Json<Vec<ScanRequest>>,
+) -> impl IntoResponse {
+    if requests.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "empty batch" })),
+        )
+            .into_response();
+    }
+    if requests.len() > 50 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "batch too large (max 50)" })),
+        )
+            .into_response();
+    }
+
+    let mut scan_ids = Vec::with_capacity(requests.len());
+    for req in requests {
+        let target = Target::new(req.kind, req.value.clone());
+        if let Err(msg) = target.validate() {
+            scan_ids.push(json!({ "error": format!("invalid target: {msg}") }));
+            continue;
+        }
+        let sid = scan_id(req.kind.canonical_str(), &req.value);
+        let mut opts = req.options;
+        if let Some(ref profile_name) = opts.profile {
+            if let Some(profile_opts) = crate::core::profiles::resolve_profile(profile_name) {
+                opts = profile_opts;
+            }
+        }
+        let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+        if let Err(e) = s.store.upsert_scan(&scan) {
+            scan_ids.push(json!({ "error": e.to_string() }));
+            continue;
+        }
+        spawn_scan(&s, scan, target);
+        scan_ids.push(json!({ "scan_id": sid, "status": "queued" }));
+    }
+
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "scans": scan_ids, "count": scan_ids.len() })),
     )
         .into_response()
 }
@@ -281,6 +336,18 @@ pub async fn scan_report_json(
     });
 
     download_response(body, "application/json; charset=utf-8", &id, "json")
+}
+
+pub async fn scan_export_gexf(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let entities = match s.store.entities_for_scan(&id) {
+        Ok(entities) => entities,
+        Err(e) => return internal_error(&e),
+    };
+    let body = crate::core::gexf::entities_to_gexf(&entities, &id);
+    download_response(body, "application/xml; charset=utf-8", &id, "gexf")
 }
 
 fn download_response(

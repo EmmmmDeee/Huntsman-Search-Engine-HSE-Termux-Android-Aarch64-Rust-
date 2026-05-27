@@ -1113,6 +1113,8 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         max_wall_time_secs: cmd.max_wall_time_secs,
         scan_tags: Vec::new(),
         notes: None,
+        webhook_url: crate::core::webhook::webhook_url_from_env(),
+        profile: None,
     };
 
     let sid = scan_id(target_kind.canonical_str(), &cmd.value);

@@ -16,6 +16,7 @@ pub mod crtsh;
 pub mod dehashed;
 pub mod device_sensors;
 pub mod disposable_check;
+pub mod dns_axfr;
 pub mod dns_intel;
 pub mod doh_resolver;
 pub mod domainsdb;
@@ -58,6 +59,7 @@ pub mod search_engines;
 pub mod securitytrails;
 pub mod seon;
 pub mod shodan;
+pub mod smtp_vrfy;
 pub mod social_probe;
 pub mod sunrise_sunset;
 pub mod threatfox;
@@ -100,6 +102,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(cert_intel::CertIntel),
         Arc::new(crtsh::CrtSh),
         Arc::new(dns_intel::DnsIntel),
+        Arc::new(dns_axfr::DnsAxfr),
+        Arc::new(smtp_vrfy::SmtpVrfy),
         Arc::new(doh_resolver::DohResolver),
         Arc::new(whois::Whois),
         Arc::new(ip_registry::IpRegistry),
