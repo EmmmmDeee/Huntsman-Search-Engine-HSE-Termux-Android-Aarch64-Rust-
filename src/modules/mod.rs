@@ -7,6 +7,7 @@
 
 pub mod abn_lookup;
 pub mod api_key_probe;
+pub mod breach_timezone;
 pub mod cell_intel;
 pub mod censys;
 pub mod cert_intel;
@@ -21,6 +22,7 @@ pub mod dns_intel;
 pub mod doh_resolver;
 pub mod domainsdb;
 pub mod email_header_geo;
+pub mod email_locale;
 pub mod email_parse;
 pub mod emailrep;
 pub mod epieos;
@@ -46,10 +48,12 @@ pub mod keybase;
 pub mod leakix;
 pub mod local_net;
 pub mod mylnikov;
+pub mod name_to_username;
 pub mod oathnet_pro;
 pub mod opencorporates;
 pub mod overpass;
 pub mod phone_area_geo;
+pub mod phone_carrier_geo;
 pub mod phone_intl;
 pub mod photon;
 pub mod proxycurl;
@@ -60,6 +64,7 @@ pub mod securitytrails;
 pub mod seon;
 pub mod shodan;
 pub mod smtp_vrfy;
+pub mod social_location;
 pub mod social_probe;
 pub mod sunrise_sunset;
 pub mod threatfox;
@@ -149,6 +154,12 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(geo_domain_classifier::GeoDomainClassifier),
         Arc::new(email_header_geo::EmailHeaderGeo),
         Arc::new(phone_area_geo::PhoneAreaGeo),
+        Arc::new(phone_carrier_geo::PhoneCarrierGeo),
+        Arc::new(email_locale::EmailLocale),
+        Arc::new(breach_timezone::BreachTimezone),
+        // People-centric enrichment
+        Arc::new(name_to_username::NameToUsername),
+        Arc::new(social_location::SocialLocation),
         // Australian OSINT modules
         Arc::new(opencorporates::OpenCorporates),
     ]
