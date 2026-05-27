@@ -56,6 +56,8 @@ struct Network {
     #[serde(default)]
     trilat: Option<f64>,
     #[serde(default)]
+    trilong: Option<f64>,
+    #[serde(default)]
     city: Option<String>,
     #[serde(default)]
     region: Option<String>,
@@ -425,9 +427,7 @@ impl Wigle {
         if let Some(net) = body.results.first()
             && let Some(lat) = net.trilat
         {
-            let lon = 0.0_f64; // trilat is lat; we need trilong from Network
-            // The Network struct doesn't have trilong — use city/region/country instead
-            let _coords = format!("{lat:.6},{lon:.6}");
+            let lon = net.trilong.unwrap_or(0.0);
 
             // Only emit if we have location data from city/region/country
             let parts: Vec<&str> = [
@@ -452,10 +452,10 @@ impl Wigle {
                 result.push(addr);
             }
 
-            if lat != 0.0 {
+            if lat.abs() > 0.01 && lon.abs() > 0.01 {
                 let mut e = Entity::new(
                     EntityKind::Coordinates,
-                    format!("{lat:.6},{lat:.6}"),
+                    format!("{lat:.6},{lon:.6}"),
                     0.75,
                     &ctx.scan_id,
                 );
@@ -465,7 +465,8 @@ impl Wigle {
                 e.add_evidence(
                     Evidence::new(SRC, format!("WiGLE BSSID {bssid} → coordinates"))
                         .with_attr("bssid", bssid)
-                        .with_attr("latitude", lat.to_string()),
+                        .with_attr("latitude", lat.to_string())
+                        .with_attr("longitude", lon.to_string()),
                 );
                 result.push(e);
             }

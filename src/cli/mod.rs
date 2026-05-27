@@ -1086,7 +1086,7 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
 }
 
 fn cmd_import_html(body: &str, output: &str) -> Result<()> {
-    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::entity::{Entity, EntityKind};
     use std::collections::HashSet;
 
     println!("Importing OathNet HTML export...");
@@ -1171,10 +1171,6 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
     let mut entities: Vec<Entity> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut stats = ImportStats::default();
-
-    let ip_re = regex::Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
-    let email_re = regex::Regex::new(r"[\w.+-]+@[\w.-]+\.\w{2,}").unwrap();
-    let _url_re = regex::Regex::new(r#"https?://[^\s,<>"']+"#).unwrap();
 
     // ── Credential section: URLs, domains, usernames, API key scanning ──
     for line in body.lines() {
@@ -1659,10 +1655,13 @@ fn print_dossier(
         "phone",
         "username",
         "credential",
+        "api_key",
+        "password",
         "address",
         "coordinates",
         "organisation",
         "abn_acn",
+        "asn",
         "domain",
         "ip_address",
         "url",
