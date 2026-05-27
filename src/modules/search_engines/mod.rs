@@ -63,6 +63,25 @@ const INTER_ENGINE_MS: u64 = 400;
 const MAX_PAGES: usize = 2;
 const MAX_ACCUMULATED_RESULTS: usize = 2000;
 
+const SOCIAL_HOSTS: &[&str] = &[
+    "facebook.com",
+    "linkedin.com",
+    "twitter.com",
+    "x.com",
+    "instagram.com",
+    "github.com",
+    "reddit.com",
+    "myspace.com",
+    "soundcloud.com",
+    "peekyou.com",
+    "youtube.com",
+    "tiktok.com",
+    "pinterest.com",
+    "tumblr.com",
+    "linktr.ee",
+    "medium.com",
+];
+
 #[async_trait]
 impl Module for SearchEngines {
     fn name(&self) -> &'static str {
@@ -752,25 +771,6 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
 /// profile URLs contain usernames in their path that can be used
 /// as secondary search seeds to find cross-platform identity links.
 fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<String> {
-    let social_hosts = [
-        "facebook.com",
-        "linkedin.com",
-        "twitter.com",
-        "x.com",
-        "instagram.com",
-        "github.com",
-        "reddit.com",
-        "myspace.com",
-        "soundcloud.com",
-        "peekyou.com",
-        "youtube.com",
-        "tiktok.com",
-        "pinterest.com",
-        "tumblr.com",
-        "linktr.ee",
-        "medium.com",
-    ];
-
     let terms = target_terms(target);
     let mut seen = HashSet::new();
     let target_lower = target.value.to_lowercase();
@@ -778,10 +778,7 @@ fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<Str
 
     for r in results {
         let host = extract_host(&r.url);
-        if !social_hosts
-            .iter()
-            .any(|s| host == *s || host.ends_with(&format!(".{s}")))
-        {
+        if !SOCIAL_HOSTS.iter().any(|s| host == *s || host.ends_with(&format!(".{s}"))) {
             continue;
         }
         if let Some(username) = extract_path_username(&r.url) {
@@ -1043,23 +1040,8 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
 
         // Extract usernames and person names from social profile URLs
         if let Some(username) = extract_path_username(&r.url) {
-            let social_hosts = [
-                "facebook.com",
-                "linkedin.com",
-                "twitter.com",
-                "x.com",
-                "instagram.com",
-                "github.com",
-                "reddit.com",
-                "myspace.com",
-                "soundcloud.com",
-                "peekyou.com",
-                "tiktok.com",
-                "pinterest.com",
-                "linktr.ee",
-            ];
             let lower_user = username.to_lowercase();
-            let is_social = social_hosts
+            let is_social = SOCIAL_HOSTS
                 .iter()
                 .any(|s| host == *s || host.ends_with(&format!(".{s}")));
             if is_social
