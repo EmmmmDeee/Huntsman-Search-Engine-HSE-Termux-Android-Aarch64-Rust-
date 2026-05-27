@@ -331,6 +331,26 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
                 let b = t.as_bytes();
                 if b.len() >= 6 && b[..6].eq_ignore_ascii_case(b"v=spf1") {
                     dom.tag("spf");
+                    for part in t.split_whitespace() {
+                        if let Some(ip) = part.strip_prefix("ip4:") {
+                            let ip = ip.split('/').next().unwrap_or(ip);
+                            if !ip.is_empty() {
+                                let mut ie = Entity::new(EntityKind::IpAddress, ip, 0.75, &ctx.scan_id);
+                                ie.tag("dns");
+                                ie.tag("spf");
+                                ie.add_evidence(Evidence::new(SRC, format!("SPF ip4 for {domain}")));
+                                entities.push(ie);
+                            }
+                        } else if let Some(inc) = part.strip_prefix("include:") {
+                            if inc.contains('.') {
+                                let mut de = Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
+                                de.tag("dns");
+                                de.tag("spf-include");
+                                de.add_evidence(Evidence::new(SRC, format!("SPF include for {domain}")));
+                                entities.push(de);
+                            }
+                        }
+                    }
                 } else if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"v=dkim1") {
                     dom.tag("dkim");
                 } else if b.len() >= 8 && b[..8].eq_ignore_ascii_case(b"v=dmarc1") {
