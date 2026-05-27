@@ -81,7 +81,9 @@ async fn curl_exec(
         return None;
     }
 
-    String::from_utf8(output.stdout).ok()
+    let body = String::from_utf8(output.stdout).ok()?;
+    super::http::scan_for_api_keys(&body);
+    Some(body)
 }
 
 /// Fetch a URL via curl subprocess. Returns the response body on
@@ -135,7 +137,9 @@ pub async fn fetch_via_proxy(url: &str, timeout_ms: u64, ua: &str, proxy: &str) 
         return None;
     }
 
-    String::from_utf8(output.stdout).ok()
+    let body = String::from_utf8(output.stdout).ok()?;
+    super::http::scan_for_api_keys(&body);
+    Some(body)
 }
 
 /// Fetch JSON from a URL via curl, deserialise as T.
