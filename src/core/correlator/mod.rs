@@ -12,13 +12,12 @@
 // no LLMs, no fuzzy matching. Adding a new rule is a 10-line
 // function plus one line in `evaluate_rules`.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::core::entity::{Entity, EntityKind};
+use crate::core::entity::Entity;
 use crate::core::error::Result;
 use crate::core::port::StoragePort;
 
