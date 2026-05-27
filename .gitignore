@@ -16,3 +16,4 @@
 *.db-wal
 *.db-shm
 .huntsman.env
+.claude/worktrees/
