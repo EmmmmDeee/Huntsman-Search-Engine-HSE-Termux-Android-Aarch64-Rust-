@@ -1159,68 +1159,235 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
 }
 
 fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
-    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
     use std::collections::HashSet;
 
     println!("Importing OathNet TXT export...");
     let sid = format!("import-txt-{}", crate::core::entity::unix_now());
     let mut entities: Vec<Entity> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
+    let mut stats = ImportStats::default();
 
     let ip_re = regex::Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
     let email_re = regex::Regex::new(r"[\w.+-]+@[\w.-]+\.\w{2,}").unwrap();
-    let url_re = regex::Regex::new(r#"https?://[^\s,<>"']+"#).unwrap();
+    let _url_re = regex::Regex::new(r#"https?://[^\s,<>"']+"#).unwrap();
 
-    for cap in url_re.captures_iter(body) {
-        let url = cap[0].trim_end_matches(|c: char| c == ')' || c == ']' || c == '\'');
-        if seen.insert(format!("u:{url}")) {
-            let mut e = Entity::new(EntityKind::Url, url, 0.45, &sid);
-            e.tag("import");
-            entities.push(e);
-            if let Some(host) = url
-                .strip_prefix("https://")
-                .or_else(|| url.strip_prefix("http://"))
-            {
-                let domain = host.split('/').next().unwrap_or("").split(':').next().unwrap_or("");
-                if domain.contains('.') && seen.insert(format!("d:{domain}")) {
-                    let mut de = Entity::new(EntityKind::Domain, domain, 0.50, &sid);
-                    de.tag("import");
-                    entities.push(de);
+    // ── Credential section: URLs, domains, usernames, API key scanning ──
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("URL: ") {
+            let url = rest.trim();
+            if url.starts_with("http") && seen.insert(format!("u:{url}")) {
+                let mut e = Entity::new(EntityKind::Url, url, 0.45, &sid);
+                e.tag("import");
+                let pl = url.to_lowercase();
+                if pl.contains("admin") || pl.contains("/api") || pl.contains("login") || pl.contains("dashboard") {
+                    e.tag("admin-panel");
+                    stats.admin_paths += 1;
+                }
+                entities.push(e);
+                stats.urls += 1;
+                if let Some(host) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) {
+                    let domain = host.split('/').next().unwrap_or("").split(':').next().unwrap_or("");
+                    if domain.contains('.') && seen.insert(format!("d:{domain}")) {
+                        let parts: Vec<&str> = domain.split('.').collect();
+                        let is_sub = parts.len() >= 3;
+                        let mut de = Entity::new(EntityKind::Domain, domain, if is_sub { 0.45 } else { 0.50 }, &sid);
+                        de.tag("import");
+                        if is_sub { de.tag("subdomain"); stats.subdomains += 1; } else { stats.domains += 1; }
+                        entities.push(de);
+                    }
                 }
             }
-        }
-    }
-
-    for cap in ip_re.captures_iter(body) {
-        let ip = cap[0].to_string();
-        if seen.insert(format!("ip:{ip}"))
-            && !ip.starts_with("0.")
-            && !ip.starts_with("127.")
-        {
-            let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.55, &sid);
-            e.tag("import");
-            entities.push(e);
-        }
-    }
-
-    for cap in email_re.captures_iter(body) {
-        let em = cap[0].to_lowercase();
-        if em.len() >= 5 && seen.insert(format!("em:{em}")) {
-            let mut e = Entity::new(EntityKind::Email, &em, 0.50, &sid);
-            e.tag("import");
-            entities.push(e);
-        }
-    }
-
-    // Extract usernames from "Username: xxx" lines
-    for line in body.lines() {
-        if let Some(rest) = line.strip_prefix("Username: ") {
+        } else if let Some(rest) = line.strip_prefix("Username: ") {
             let uname = rest.trim();
             if uname.len() >= 2 && seen.insert(format!("un:{uname}")) {
                 let kind = if uname.contains('@') { EntityKind::Email } else { EntityKind::Username };
                 let mut e = Entity::new(kind, uname, 0.40, &sid);
                 e.tag("import");
+                e.tag("stealer-username");
                 entities.push(e);
+                stats.usernames += 1;
+            }
+        } else if let Some(rest) = line.strip_prefix("Password: ") {
+            let pw = rest.trim();
+            if pw.len() >= 20 {
+                let is_key = pw.starts_with("sk-") || pw.starts_with("ghp_")
+                    || pw.starts_with("SG.") || pw.starts_with("AKIA")
+                    || pw.starts_with("AIzaSy") || pw.starts_with("hf_")
+                    || pw.starts_with("sk_live_") || pw.starts_with("xoxb-")
+                    || pw.starts_with("npm_") || pw.starts_with("dop_v1_")
+                    || pw.starts_with("github_pat_") || pw.starts_with("r8_")
+                    || pw.starts_with("eyJ") || pw.starts_with("ntn_")
+                    || (pw.len() == 32 && pw.chars().all(|c| c.is_ascii_hexdigit()))
+                    || (pw.len() == 64 && pw.chars().all(|c| c.is_ascii_hexdigit()));
+                if is_key {
+                    let svc = if pw.starts_with("sk-ant-") { "anthropic" }
+                        else if pw.starts_with("sk-proj-") { "openai" }
+                        else if pw.starts_with("ghp_") || pw.starts_with("github_pat_") { "github" }
+                        else if pw.starts_with("AKIA") { "aws" }
+                        else if pw.starts_with("SG.") { "sendgrid" }
+                        else if pw.starts_with("sk_live_") { "stripe" }
+                        else if pw.starts_with("hf_") { "huggingface" }
+                        else { "generic_key" };
+                    let display = format!("{}:{}...{}", svc, &pw[..pw.len().min(8)], &pw[pw.len().saturating_sub(4)..]);
+                    let mut e = Entity::new(EntityKind::ApiKey, &display, 0.80, &sid);
+                    e.tag("api-key");
+                    e.tag(format!("service:{svc}"));
+                    e.tag("import");
+                    entities.push(e);
+                    stats.api_keys += 1;
+                    let pool = crate::util::key_pool::global_pool();
+                    let mut entry = crate::util::key_pool::KeyEntry::new(pw);
+                    entry.notes = Some(format!("TXT import: {svc} key"));
+                    pool.add(svc, entry);
+                }
+            }
+        }
+    }
+
+    // ── Victim section: IPs, emails, HWIDs, device users ──
+    let victim_start = body.find("=== INFECTED MACHINES");
+    let victim_end = body.find("=== OSINT ENRICHMENT").unwrap_or(body.len());
+    if let Some(vs) = victim_start {
+        let victim_section = &body[vs..victim_end];
+        for line in victim_section.lines() {
+            if let Some(rest) = line.strip_prefix("IPs: ") {
+                for ip in rest.split(", ") {
+                    let ip = ip.trim();
+                    if ip.contains('.') && !ip.starts_with("0.") && seen.insert(format!("ip:{ip}")) {
+                        let mut e = Entity::new(EntityKind::IpAddress, ip, 0.60, &sid);
+                        e.tag("stealer-victim");
+                        e.tag("import");
+                        entities.push(e);
+                        stats.ips += 1;
+                    }
+                }
+            } else if let Some(rest) = line.strip_prefix("Device Emails: ") {
+                for em in rest.split(", ") {
+                    let em = em.trim().to_lowercase();
+                    if em.contains('@') && em.len() >= 5 && seen.insert(format!("em:{em}")) {
+                        let mut e = Entity::new(EntityKind::Email, &em, 0.55, &sid);
+                        e.tag("stealer-victim");
+                        e.tag("import");
+                        entities.push(e);
+                        stats.emails += 1;
+                    }
+                }
+            } else if let Some(rest) = line.strip_prefix("HWIDs: ") {
+                for hwid in rest.split(", ") {
+                    let hwid = hwid.trim();
+                    if !hwid.is_empty() && seen.insert(format!("hw:{hwid}")) {
+                        let mut e = Entity::new(EntityKind::DeviceId, hwid, 0.70, &sid);
+                        e.tag("hwid");
+                        e.tag("import");
+                        entities.push(e);
+                        stats.hwids += 1;
+                    }
+                }
+            } else if let Some(rest) = line.strip_prefix("Users: ") {
+                for user in rest.split(", ") {
+                    let user = user.trim();
+                    if !user.is_empty() && seen.insert(format!("du:{user}")) {
+                        let mut e = Entity::new(EntityKind::Username, user, 0.35, &sid);
+                        e.tag("device-user");
+                        e.tag("import");
+                        entities.push(e);
+                        stats.device_users += 1;
+                    }
+                }
+            } else if let Some(rest) = line.strip_prefix("Log ID: ") {
+                let lid = rest.trim();
+                if !lid.is_empty() && seen.insert(format!("lid:{lid}")) {
+                    let mut e = Entity::new(EntityKind::DeviceId, lid, 0.50, &sid);
+                    e.tag("log-id");
+                    e.tag("import");
+                    entities.push(e);
+                    stats.machines += 1;
+                }
+            } else if let Some(rest) = line.strip_prefix("Discord IDs: ") {
+                for did in rest.split(", ") {
+                    let did = did.trim();
+                    if !did.is_empty() && seen.insert(format!("dc:{did}")) {
+                        let mut e = Entity::new(EntityKind::Username, did, 0.60, &sid);
+                        e.tag("discord-id");
+                        e.tag("import");
+                        entities.push(e);
+                        stats.discord_ids += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // ── OSINT section: IP geolocation ──
+    let osint_start = body.find("=== OSINT ENRICHMENT");
+    if let Some(os) = osint_start {
+        let osint_section = &body[os..];
+        let mut current_ip = String::new();
+        let mut lat: Option<f64> = None;
+        let mut lon: Option<f64> = None;
+        let mut city = String::new();
+        let mut region = String::new();
+        let mut country = String::new();
+        let mut isp = String::new();
+
+        for line in osint_section.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("IP: ") {
+                if !current_ip.is_empty() {
+                    if let (Some(la), Some(lo)) = (lat, lon) {
+                        if la.abs() > 0.01 && lo.abs() > 0.01 {
+                            let coords = format!("{la:.4},{lo:.4}");
+                            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &sid);
+                            ce.tag("geoint");
+                            ce.tag("import");
+                            ce.add_evidence(Evidence::new("import:oathnet", format!("IP {current_ip}: {city}, {region}, {country} ({isp})")));
+                            entities.push(ce);
+                            stats.coordinates += 1;
+                        }
+                    }
+                    if !city.is_empty() {
+                        let addr = format!("{city}, {region}, {country}");
+                        let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &sid);
+                        ae.tag("import");
+                        entities.push(ae);
+                        stats.addresses += 1;
+                    }
+                }
+                current_ip = rest.trim().to_string();
+                lat = None; lon = None;
+                city.clear(); region.clear(); country.clear(); isp.clear();
+            } else if let Some(rest) = trimmed.strip_prefix("lat: ") {
+                lat = rest.trim().parse().ok();
+            } else if let Some(rest) = trimmed.strip_prefix("lon: ") {
+                lon = rest.trim().parse().ok();
+            } else if let Some(rest) = trimmed.strip_prefix("city: ") {
+                city = rest.trim().to_string();
+            } else if let Some(rest) = trimmed.strip_prefix("regionName: ") {
+                region = rest.trim().to_string();
+            } else if let Some(rest) = trimmed.strip_prefix("country: ") {
+                country = rest.trim().to_string();
+            } else if let Some(rest) = trimmed.strip_prefix("isp: ") {
+                isp = rest.trim().to_string();
+            }
+        }
+        if !current_ip.is_empty() {
+            if let (Some(la), Some(lo)) = (lat, lon) {
+                if la.abs() > 0.01 && lo.abs() > 0.01 {
+                    let coords = format!("{la:.4},{lo:.4}");
+                    let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &sid);
+                    ce.tag("geoint");
+                    ce.tag("import");
+                    entities.push(ce);
+                    stats.coordinates += 1;
+                }
+            }
+            if !city.is_empty() {
+                let addr = format!("{city}, {region}, {country}");
+                let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &sid);
+                ae.tag("import");
+                entities.push(ae);
+                stats.addresses += 1;
             }
         }
     }
@@ -1228,7 +1395,17 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
     let mut uid_seen: HashSet<String> = HashSet::new();
     entities.retain(|e| uid_seen.insert(e.uid.clone()));
 
-    println!("Imported {} entities from TXT", entities.len());
+    println!("Imported {} entities:", entities.len());
+    println!("  Identity:  {} emails, {} usernames, {} device users, {} Discord IDs", stats.emails, stats.usernames, stats.device_users, stats.discord_ids);
+    println!("  Network:   {} IPs, {} domains, {} subdomains, {} URLs, {} admin paths", stats.ips, stats.domains, stats.subdomains, stats.urls, stats.admin_paths);
+    println!("  Geo:       {} coordinates, {} addresses", stats.coordinates, stats.addresses);
+    println!("  Device:    {} HWIDs, {} machine log IDs", stats.hwids, stats.machines);
+    println!("  Keys:      {} API keys detected", stats.api_keys);
+    if stats.api_keys > 0 {
+        println!("  Pool:      {} keys stored for automatic use", stats.api_keys);
+        let _ = crate::util::key_pool::save_pool(&crate::util::key_pool::global_pool());
+    }
+
     if output == "json" {
         let out = serde_json::json!({ "entities": entities });
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
