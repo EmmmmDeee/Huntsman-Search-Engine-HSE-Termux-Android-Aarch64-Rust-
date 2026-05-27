@@ -15,6 +15,7 @@ pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
 pub mod device_sensors;
+pub mod disposable_check;
 pub mod dns_intel;
 pub mod doh_resolver;
 pub mod domainsdb;
@@ -27,6 +28,7 @@ pub mod hackertarget;
 pub mod hibp;
 pub mod hudsonrock;
 pub mod intelx;
+pub mod ip2location;
 pub mod ip_geo;
 pub mod ipapi;
 pub mod ipinfo;
@@ -79,6 +81,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(criminal_ip::CriminalIp),
         Arc::new(ipqs::IpQs),
         Arc::new(contact_enrich::ContactEnrich),
+        Arc::new(disposable_check::DisposableCheck),
         Arc::new(wigle::Wigle),
         Arc::new(cert_intel::CertIntel),
         Arc::new(crtsh::CrtSh),
@@ -86,6 +89,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(doh_resolver::DohResolver),
         Arc::new(whois::Whois),
         Arc::new(ip_registry::IpRegistry),
+        Arc::new(ip2location::Ip2Location),
         Arc::new(ip_geo::IpGeo),
         Arc::new(ipinfo::IpInfo),
         Arc::new(domainsdb::DomainsDb),
