@@ -101,7 +101,8 @@ impl Module for IpQuery {
         }
 
         let url = format!("https://api.ipquery.io/{ip}");
-        let resp = ctx.http
+        let resp = ctx
+            .http
             .get(&url)
             .timeout(std::time::Duration::from_secs(6))
             .send()
@@ -112,7 +113,9 @@ impl Module for IpQuery {
             return Ok(ModuleResult::new());
         }
 
-        let data: Resp = resp.json().await
+        let data: Resp = resp
+            .json()
+            .await
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
 
         let mut result = ModuleResult::new();
@@ -122,33 +125,52 @@ impl Module for IpQuery {
 
         let mut ip_entity = target.to_entity(0.80, &ctx.scan_id);
         ip_entity.tag("ipquery");
-        if risk.and_then(|r| r.is_vpn) == Some(true) { ip_entity.tag(tags::VPN); }
-        if risk.and_then(|r| r.is_tor) == Some(true) { ip_entity.tag(tags::TOR_EXIT); }
-        if risk.and_then(|r| r.is_proxy) == Some(true) { ip_entity.tag(tags::PROXY); }
-        if risk.and_then(|r| r.is_mobile) == Some(true) { ip_entity.tag("mobile"); }
-        if risk.and_then(|r| r.is_datacenter) == Some(true) { ip_entity.tag("hosting"); }
-        if risk_score >= 70 { ip_entity.tag("high-risk"); }
+        if risk.and_then(|r| r.is_vpn) == Some(true) {
+            ip_entity.tag(tags::VPN);
+        }
+        if risk.and_then(|r| r.is_tor) == Some(true) {
+            ip_entity.tag(tags::TOR_EXIT);
+        }
+        if risk.and_then(|r| r.is_proxy) == Some(true) {
+            ip_entity.tag(tags::PROXY);
+        }
+        if risk.and_then(|r| r.is_mobile) == Some(true) {
+            ip_entity.tag("mobile");
+        }
+        if risk.and_then(|r| r.is_datacenter) == Some(true) {
+            ip_entity.tag("hosting");
+        }
+        if risk_score >= 70 {
+            ip_entity.tag("high-risk");
+        }
 
         let mut ev = Evidence::new(SRC, format!("IPQuery risk assessment for {ip}"))
             .with_attr("risk_score", risk_score.to_string());
         if let Some(isp) = data.isp.as_ref() {
-            if let Some(v) = isp.isp.as_deref() { ev = ev.with_attr("isp", v); }
-            if let Some(v) = isp.org.as_deref() { ev = ev.with_attr("org", v); }
-            if let Some(v) = isp.asn.as_deref() { ev = ev.with_attr("asn", v); }
+            if let Some(v) = isp.isp.as_deref() {
+                ev = ev.with_attr("isp", v);
+            }
+            if let Some(v) = isp.org.as_deref() {
+                ev = ev.with_attr("org", v);
+            }
+            if let Some(v) = isp.asn.as_deref() {
+                ev = ev.with_attr("asn", v);
+            }
         }
         ip_entity.add_evidence(ev);
         result.push(ip_entity);
 
         if let Some(loc) = &data.location {
-            if let (Some(lat), Some(lon)) = (loc.latitude, loc.longitude) {
-                if lat.abs() > 0.01 && lon.abs() > 0.01 {
-                    let coords = format!("{lat:.4},{lon:.4}");
-                    let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.68, &ctx.scan_id);
-                    ce.tag(tags::GEOINT);
-                    ce.tag("ipquery");
-                    ce.add_evidence(Evidence::new(SRC, format!("Geolocation for {ip}")));
-                    result.push(ce);
-                }
+            if let (Some(lat), Some(lon)) = (loc.latitude, loc.longitude)
+                && lat.abs() > 0.01
+                && lon.abs() > 0.01
+            {
+                let coords = format!("{lat:.4},{lon:.4}");
+                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.68, &ctx.scan_id);
+                ce.tag(tags::GEOINT);
+                ce.tag("ipquery");
+                ce.add_evidence(Evidence::new(SRC, format!("Geolocation for {ip}")));
+                result.push(ce);
             }
             let city = loc.city.as_deref().unwrap_or("");
             let state = loc.state.as_deref().unwrap_or("");
@@ -167,21 +189,21 @@ impl Module for IpQuery {
         }
 
         if let Some(isp) = &data.isp {
-            if let Some(asn) = isp.asn.as_deref() {
-                if !asn.is_empty() {
-                    let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
-                    ae.tag("ipquery");
-                    ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
-                    result.push(ae);
-                }
+            if let Some(asn) = isp.asn.as_deref()
+                && !asn.is_empty()
+            {
+                let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
+                ae.tag("ipquery");
+                ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
+                result.push(ae);
             }
-            if let Some(org) = isp.org.as_deref() {
-                if !org.is_empty() {
-                    let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
-                    oe.tag("ipquery");
-                    oe.add_evidence(Evidence::new(SRC, format!("ISP org for {ip}")));
-                    result.push(oe);
-                }
+            if let Some(org) = isp.org.as_deref()
+                && !org.is_empty()
+            {
+                let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
+                oe.tag("ipquery");
+                oe.add_evidence(Evidence::new(SRC, format!("ISP org for {ip}")));
+                result.push(oe);
             }
         }
 
@@ -201,7 +223,10 @@ mod tests {
 
     #[test]
     fn cost_is_free() {
-        assert!(matches!(IpQuery.cost(), crate::core::module::ModuleCost::Free));
+        assert!(matches!(
+            IpQuery.cost(),
+            crate::core::module::ModuleCost::Free
+        ));
     }
 
     #[test]

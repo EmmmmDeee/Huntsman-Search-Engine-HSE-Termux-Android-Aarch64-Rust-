@@ -78,7 +78,7 @@ impl Module for IpWhois {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let url = format!("https://ipwho.is/{}", target.value);
-        let data: Resp = fetch_json(&ctx.http, "ip_whois_geo", &url).await?;
+        let data: Resp = fetch_json(&ctx.http, SRC, &url).await?;
 
         if data.success == Some(false) {
             return Ok(ModuleResult::new());
@@ -98,13 +98,10 @@ impl Module for IpWhois {
                 e.tag(format!("country:{}", cc.to_uppercase()));
             }
 
-            let mut ev = Evidence::new(
-                "ip_whois_geo",
-                format!("IP geolocation for {}", target.value),
-            )
-            .with_attr("latitude", lat.to_string())
-            .with_attr("longitude", lon.to_string())
-            .with_attr("source", "ipwho.is");
+            let mut ev = Evidence::new(SRC, format!("IP geolocation for {}", target.value))
+                .with_attr("latitude", lat.to_string())
+                .with_attr("longitude", lon.to_string())
+                .with_attr("source", "ipwho.is");
 
             if let Some(c) = data.country.as_deref() {
                 ev = ev.with_attr("country", c);
@@ -184,14 +181,14 @@ impl Module for IpWhois {
             result.push(e);
         }
 
-        if let Some(conn) = &data.connection {
-            if let Some(asn) = conn.asn_num {
-                let asn_str = format!("AS{asn}");
-                let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, &ctx.scan_id);
-                ae.tag("ip-whois");
-                ae.add_evidence(Evidence::new(SRC, format!("ASN for {}", target.value)));
-                result.push(ae);
-            }
+        if let Some(conn) = &data.connection
+            && let Some(asn) = conn.asn_num
+        {
+            let asn_str = format!("AS{asn}");
+            let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, &ctx.scan_id);
+            ae.tag("ip-whois");
+            ae.add_evidence(Evidence::new(SRC, format!("ASN for {}", target.value)));
+            result.push(ae);
         }
 
         Ok(result)

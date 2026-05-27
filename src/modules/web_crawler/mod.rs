@@ -110,11 +110,11 @@ impl Module for WebCrawler {
             if raw.is_empty() {
                 return Ok(ModuleResult::new());
             }
-            let parsed = Url::parse(&raw)
-                .map_err(|e| Error::module("web_crawler", format!("bad URL target: {e}")))?;
+            let parsed =
+                Url::parse(&raw).map_err(|e| Error::module(SRC, format!("bad URL target: {e}")))?;
             let host = parsed
                 .host_str()
-                .ok_or_else(|| Error::module("web_crawler", "URL has no host"))?
+                .ok_or_else(|| Error::module(SRC, "URL has no host"))?
                 .to_lowercase();
             (raw, host)
         } else {
@@ -137,8 +137,8 @@ impl Module for WebCrawler {
             MAX_DEPTH
         };
 
-        let seed_url = Url::parse(&seed)
-            .map_err(|e| Error::module("web_crawler", format!("bad seed URL: {e}")))?;
+        let seed_url =
+            Url::parse(&seed).map_err(|e| Error::module(SRC, format!("bad seed URL: {e}")))?;
         let base_host = seed_url.host_str().unwrap_or(&domain).to_lowercase();
 
         let mut state = CrawlState {
@@ -160,6 +160,7 @@ impl Module for WebCrawler {
         };
 
         fetch_robots(&ctx.http, &seed_url, &mut state.disallow_rules).await;
+        probe_config_leaks(&ctx.http, seed_url.as_str(), &domain).await;
 
         let seed_for_entities = seed.clone();
         state.queue.push_back((seed, 0));
@@ -238,6 +239,7 @@ impl Module for WebCrawler {
 
             extract_emails(&body, &mut state.emails);
             extract_phones(&body, &mut state.phones);
+            extract_api_keys_from_body(&body, &domain);
 
             if depth < max_depth {
                 extract_links(&body, &url, &base_host, &domain, &mut state);
@@ -283,7 +285,7 @@ fn build_entities(
         }
         url_entity.add_evidence(
             Evidence::new(
-                "web_crawler",
+                SRC,
                 format!(
                     "Single-page harvest of {seed_url}: {} pages",
                     state.pages_fetched
@@ -320,7 +322,7 @@ fn build_entities(
     }
 
     let mut ev = Evidence::new(
-        "web_crawler",
+        SRC,
         format!(
             "Crawled {domain}: {} pages, {} internal links, {} external links",
             state.pages_fetched, state.internal_links, state.external_links
@@ -370,11 +372,8 @@ fn build_entities(
         e.tag(tags::WEB);
         e.tag(tags::SUBDOMAIN);
         e.add_evidence(
-            Evidence::new(
-                "web_crawler",
-                format!("Subdomain discovered by crawling {domain}"),
-            )
-            .with_attr("parent_domain", domain),
+            Evidence::new(SRC, format!("Subdomain discovered by crawling {domain}"))
+                .with_attr("parent_domain", domain),
         );
         state.result.push(e);
     }
@@ -384,11 +383,8 @@ fn build_entities(
         let mut e = Entity::new(EntityKind::Domain, ext.as_str(), 0.50, scan_id);
         e.tag(tags::EXTERNAL);
         e.add_evidence(
-            Evidence::new(
-                "web_crawler",
-                format!("External domain linked from {domain}"),
-            )
-            .with_attr("source_domain", domain),
+            Evidence::new(SRC, format!("External domain linked from {domain}"))
+                .with_attr("source_domain", domain),
         );
         state.result.push(e);
     }

@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (v0.9 — 21 modules)
+## Catalogue (v1.0 — 63 modules)
 
 ### Network / identity modules (target-driven)
 
@@ -29,6 +29,22 @@ higher-priority first; ordering doesn't affect output).
 | [`ip_geo`](#ip_geo)                         | `ip`                  | free | no  | 28  | Coordinates, Organisation |
 | `bgpview`                                   | `asn`, `ip`           | free | no  | 25  | Asn (holder + contacts) — also reverse-maps IPs to announcing ASN |
 
+### OSINT orchestration modules (v1.0+)
+
+| Module | Targets | Cost | Passive | Priority | Output kinds |
+|--------|---------|------|---------|----------|--------------|
+| `keybase`          | `username`              | free      | no | 100 | Username + Person + Address + Domain (identity graph with crypto proofs) |
+| `seon`             | `email`, `phone`        | key-gated | no | 95  | Email/Phone (cross-platform presence across 250+ services) |
+| `epieos`           | `email`                 | key-gated | no | 92  | Email + Person + Username + Address (Google profile, Maps reviews, Skype) |
+| `emailrep`         | `email`                 | key-gated | no | 90  | Email (reputation score, breach exposure, social profiles) |
+| `proxycurl`        | `username`, `url`, `email` | paid      | no | 88  | Person + Email + Phone + Organisation + Address (LinkedIn extraction) |
+| `opencorporates`   | `organisation`, `name`, `abn_acn` | free      | no | 80  | Organisation + Address (AU company registry) |
+| `photon`           | `address`, `coordinates`| free      | no | 20  | Coordinates / Address (Komoot geocoder for corroboration) |
+| `mylnikov`         | `mac_address`           | free      | no | 17  | Coordinates (free BSSID-to-GPS, no auth) |
+| `overpass`         | `coordinates`           | free      | no | 15  | Coordinates (OSM infrastructure — towers, substations, cameras) |
+| `pwned_passwords`  | `email`, `username`     | free      | yes| 115 | Email/Username (HIBP k-Anonymity SHA-1 breach check) |
+| `sunrise_sunset`   | `coordinates`           | free      | no | 10  | Coordinates (solar phase timestamps for chronolocation) |
+
 ### Termux sensors (v0.6+, environmental — accept any target)
 
 | Module | Cost | Passive | Priority | Output kinds | Needs `termux-api` |
@@ -48,12 +64,18 @@ binary-based modules no-op cleanly (no `module_error` events).
 
 | Target | Modules that fire |
 |---|---|
-| `email`    | hudsonrock + xposed_or_not + email_to_username + gravatar |
-| `username` | username_search + github_user |
-| `phone`    | phone_intl |
-| `domain`   | hudsonrock + alienvault_otx + crtsh + dns_resolver + whois + wayback |
-| `ip`       | alienvault_otx + whois + reverse_dns + ip_geo + bgpview |
-| `asn`      | bgpview |
+| `email`       | hudsonrock + xposed_or_not + email_to_username + gravatar + seon + emailrep + epieos + pwned_passwords + hibp + dehashed + contact_enrich |
+| `username`    | username_search + github_user + keybase + proxycurl + social_probe |
+| `phone`       | phone_intl + seon + contact_enrich |
+| `full_name`   | dehashed + opencorporates + proxycurl |
+| `domain`      | hudsonrock + alienvault_otx + crtsh + dns_resolver + whois + wayback + dehashed |
+| `ip`          | alienvault_otx + whois + reverse_dns + ip_geo + bgpview + shodan |
+| `asn`         | bgpview |
+| `coordinates` | wigle + overpass + sunrise_sunset + photon + geocode |
+| `address`     | geocode + photon |
+| `mac_address` | wigle + mylnikov |
+| `url`         | proxycurl + web_crawler + wayback |
+| `organisation`| opencorporates + abn_lookup |
 
 Any target also fires the 6 Termux sensors (passive, no-op without `termux-api`).
 

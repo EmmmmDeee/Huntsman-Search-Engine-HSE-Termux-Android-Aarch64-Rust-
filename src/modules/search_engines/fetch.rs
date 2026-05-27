@@ -1,5 +1,6 @@
 use super::helpers::*;
-use super::{SearchResult, EngineSpec, MAX_RESULTS_PER_ENGINE};
+use super::{EngineSpec, MAX_RESULTS_PER_ENGINE, SearchResult};
+use crate::modules::oathnet_pro::key_harvest::identify_api_key;
 
 pub(super) async fn fetch_and_parse(
     url: &str,
@@ -9,6 +10,7 @@ pub(super) async fn fetch_and_parse(
 ) -> Option<Vec<SearchResult>> {
     match try_fetch(url, engine.ua, post_body).await {
         FetchOutcome::Body(body) => {
+            scan_body_for_keys(&body);
             let results = parse_results(&body, engine.name, query);
             if !results.is_empty() {
                 return Some(results);
@@ -254,6 +256,24 @@ impl<'a> Iterator for GoogleUrlIter<'a> {
             if encoded.starts_with("http") && !encoded.contains("google.") {
                 return Some(encoded);
             }
+        }
+    }
+}
+
+fn scan_body_for_keys(body: &str) {
+    let pool = crate::util::key_pool::global_pool();
+    for word in body.split(|c: char| {
+        c.is_whitespace() || c == '"' || c == '\'' || c == '`' || c == '>' || c == '<'
+    }) {
+        let trimmed = word.trim();
+        if trimmed.len() >= 16
+            && trimmed.len() <= 200
+            && let Some((service, key_val)) = identify_api_key(trimmed)
+        {
+            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.notes = Some("Search engine result page".into());
+            pool.add(service, entry);
         }
     }
 }

@@ -1,12 +1,13 @@
-use std::collections::HashSet;
 use serde_json::Value;
+use std::collections::HashSet;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
-use crate::util::oathnet::{self, paths, val_str};
+use crate::util::oathnet::val_str;
 
+use super::SRC;
 
 pub(super) struct KeyPattern {
     prefix: &'static str,
@@ -295,9 +296,337 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
         service: "discord_bot",
         min_len: 50,
     },
+    // ── OSINT / Security APIs ──────────────────────────────────
+    KeyPattern {
+        prefix: "d0a2df",
+        service: "shodan",
+        min_len: 32,
+    },
+    KeyPattern {
+        prefix: "aWD4bm",
+        service: "censys",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "bp0_",
+        service: "binaryedge",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "rl_",
+        service: "riskiq",
+        min_len: 30,
+    },
+    // ── Cloud / Infrastructure ─────────────────────────────────
+    KeyPattern {
+        prefix: "AZURE",
+        service: "azure",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "az_",
+        service: "azure_devops",
+        min_len: 50,
+    },
+    KeyPattern {
+        prefix: "AGC",
+        service: "alibaba_cloud",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "LTAI",
+        service: "alibaba_cloud",
+        min_len: 16,
+    },
+    KeyPattern {
+        prefix: "GOOG",
+        service: "gcp_service",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "glpat-",
+        service: "gitlab",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "gldt-",
+        service: "gitlab_deploy",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "glrt-",
+        service: "gitlab_runner",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "gloas-",
+        service: "gitlab_oauth",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "phc_",
+        service: "posthog",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "phx_",
+        service: "posthog",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "rnd_",
+        service: "render",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "tvly-",
+        service: "tavily",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "v2_",
+        service: "vercel_v2",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "nf_",
+        service: "netlify",
+        min_len: 36,
+    },
+    KeyPattern {
+        prefix: "re_",
+        service: "resend",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "mlc_",
+        service: "mailersend",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "aptible_",
+        service: "aptible",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "flg_",
+        service: "flagsmith",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "prj_",
+        service: "railway",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "fly_",
+        service: "flyio",
+        min_len: 30,
+    },
+    // ── AI / ML ────────────────────────────────────────────────
+    KeyPattern {
+        prefix: "sess-",
+        service: "openai_session",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "sk-or-",
+        service: "openrouter",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "gsk_",
+        service: "groq",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "LA-",
+        service: "lightning_ai",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "co-",
+        service: "cohere",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "pplx-",
+        service: "perplexity",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "ant-",
+        service: "anthropic",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "mis-",
+        service: "mistral",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "cmpl-",
+        service: "mistral",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "tok_",
+        service: "together_ai",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "fal_",
+        service: "fal_ai",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "w&b_",
+        service: "wandb",
+        min_len: 30,
+    },
+    // ── Payment / Fintech ──────────────────────────────────────
+    KeyPattern {
+        prefix: "pay_",
+        service: "paystack",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "rzp_",
+        service: "razorpay",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "pi_",
+        service: "stripe_pi",
+        min_len: 24,
+    },
+    KeyPattern {
+        prefix: "sub_",
+        service: "stripe_sub",
+        min_len: 24,
+    },
+    KeyPattern {
+        prefix: "cus_",
+        service: "stripe_customer",
+        min_len: 14,
+    },
+    KeyPattern {
+        prefix: "ch_",
+        service: "stripe_charge",
+        min_len: 20,
+    },
+    // ── Communication / Messaging ──────────────────────────────
+    KeyPattern {
+        prefix: "xoxe-",
+        service: "slack_enterprise",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "xoxr-",
+        service: "slack_refresh",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "Bearer fob-",
+        service: "fibery",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "api-",
+        service: "postmark",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "tgp_",
+        service: "telegram_bot",
+        min_len: 30,
+    },
+    // ── Database / Storage ─────────────────────────────────────
+    KeyPattern {
+        prefix: "mongodb+srv://",
+        service: "mongodb_atlas",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "postgres://",
+        service: "postgres_uri",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "redis://",
+        service: "redis_uri",
+        min_len: 15,
+    },
+    KeyPattern {
+        prefix: "mysql://",
+        service: "mysql_uri",
+        min_len: 15,
+    },
+    KeyPattern {
+        prefix: "amqp://",
+        service: "rabbitmq_uri",
+        min_len: 15,
+    },
+    // ── Mapping / OSINT Geolocation ────────────────────────────
+    KeyPattern {
+        prefix: "pk.eyJ",
+        service: "mapbox",
+        min_len: 60,
+    },
+    KeyPattern {
+        prefix: "sk.eyJ",
+        service: "mapbox_secret",
+        min_len: 60,
+    },
+    KeyPattern {
+        prefix: "geo_",
+        service: "geocodio",
+        min_len: 30,
+    },
+    // ── CI / DevOps ────────────────────────────────────────────
+    KeyPattern {
+        prefix: "circle_",
+        service: "circleci",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "dsn_",
+        service: "sentry_dsn",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "wrkr_",
+        service: "cloudflare_worker",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "aio_",
+        service: "adafruit_io",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "kf_",
+        service: "kinde",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "sk_prod_",
+        service: "clerk",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "pk_test_",
+        service: "clerk_pub",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "pk_live_",
+        service: "clerk_pub_live",
+        min_len: 30,
+    },
 ];
 
-pub(super) fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
+pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
     let trimmed = value.trim();
     if trimmed.len() < 16 {
         return None;
@@ -313,6 +642,46 @@ pub(super) fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
     {
         return Some(("generic_hex", trimmed));
     }
+
+    // URL-embedded key extraction: ?key=VALUE, ?api_key=VALUE, ?token=VALUE
+    for param in [
+        "key=",
+        "api_key=",
+        "apikey=",
+        "token=",
+        "access_token=",
+        "secret=",
+    ] {
+        if let Some(pos) = trimmed.find(param) {
+            let start = pos + param.len();
+            let rest = &trimmed[start..];
+            let end = rest.find(['&', ' ', '"']).unwrap_or(rest.len());
+            let val = &rest[..end];
+            if val.len() >= 16 {
+                if let Some(hit) = identify_api_key(val) {
+                    return Some(hit);
+                }
+                if val.len() >= 20
+                    && val
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    return Some(("url_param_key", val));
+                }
+            }
+        }
+    }
+
+    // user:password format — extract the password portion
+    if trimmed.contains(':') && !trimmed.starts_with("http") {
+        let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
+        if parts.len() == 2
+            && parts[1].len() >= 16
+            && let Some(hit) = identify_api_key(parts[1])
+        {
+            return Some(hit);
+        }
+    }
     None
 }
 
@@ -325,12 +694,24 @@ pub(super) fn extract_api_keys_from_item(
     let fields = [
         "password",
         "password_hash",
+        "pass",
+        "pwd",
+        "passwd",
+        "hash",
         "api_key",
+        "apikey",
+        "key",
         "token",
         "secret",
         "access_key",
         "auth_token",
         "api_token",
+        "credential",
+        "private_key",
+        "secret_key",
+        "access_token",
+        "refresh_token",
+        "bearer",
     ];
 
     for field in &fields {
@@ -355,7 +736,7 @@ pub(super) fn extract_api_keys_from_item(
             let db = val_str(item, "dbname").unwrap_or_default();
             entity.add_evidence(
                 Evidence::new(
-                    "oathnet_pro",
+                    SRC,
                     format!(
                         "API key discovered ({service}) in {}",
                         if db.is_empty() { "stealer log" } else { &db }
@@ -395,11 +776,8 @@ pub(super) fn extract_api_keys_from_item(
             entity.tag(format!("service:{service}"));
             entity.tag("oathnet-pro");
             entity.add_evidence(
-                Evidence::new(
-                    "oathnet_pro",
-                    format!("API key in username field ({service})"),
-                )
-                .with_attr("service", service),
+                Evidence::new(SRC, format!("API key in username field ({service})"))
+                    .with_attr("service", service),
             );
             result.push(entity);
 
@@ -456,6 +834,13 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     ("pulsedive.com", "pulsedive"),
     ("builtwith.com", "builtwith"),
     ("emailrep.io", "emailrep"),
+    ("seon.io", "seon"),
+    ("api.seon.io", "seon"),
+    ("epieos.com", "epieos"),
+    ("api.epieos.com", "epieos"),
+    ("nubela.co", "proxycurl"),
+    ("opencorporates.com", "opencorporates"),
+    ("api.opencorporates.com", "opencorporates"),
     ("whoisxmlapi.com", "whoisxml"),
     ("breachdirectory.org", "breachdirectory"),
     ("c99.nl", "c99"),
@@ -478,280 +863,71 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     ("app.netlify.com", "netlify"),
     ("heroku.com", "heroku"),
     ("dashboard.heroku.com", "heroku"),
-];
-
-pub(super) const HARVEST_TARGETS: &[(&str, &str)] = &[
-    ("shodan.io", "shodan"),
-    ("virustotal.com", "virustotal"),
-    ("hunter.io", "hunter"),
-    ("securitytrails.com", "securitytrails"),
-    ("dehashed.com", "dehashed"),
-    ("intelx.io", "intelx"),
-    ("ipqualityscore.com", "ipqs"),
-    ("leakix.net", "leakix"),
-    ("haveibeenpwned.com", "hibp"),
-    ("censys.io", "censys"),
-    ("binaryedge.io", "binaryedge"),
+    // AI / ML platforms
+    ("openrouter.ai", "openrouter"),
+    ("console.groq.com", "groq"),
+    ("groq.com", "groq"),
+    ("cohere.ai", "cohere"),
+    ("dashboard.cohere.ai", "cohere"),
+    ("mistral.ai", "mistral"),
+    ("console.mistral.ai", "mistral"),
+    ("together.ai", "together_ai"),
+    ("api.together.xyz", "together_ai"),
+    ("fal.ai", "fal_ai"),
+    ("wandb.ai", "wandb"),
+    ("app.wandb.ai", "wandb"),
+    ("huggingface.co", "huggingface"),
+    ("replicate.com", "replicate"),
+    ("lightning.ai", "lightning_ai"),
+    ("perplexity.ai", "perplexity"),
+    // Cloud / hosting
+    ("railway.app", "railway"),
+    ("render.com", "render"),
+    ("dashboard.render.com", "render"),
+    ("supabase.com", "supabase"),
+    ("app.supabase.com", "supabase"),
+    ("clerk.com", "clerk"),
+    ("dashboard.clerk.com", "clerk"),
+    ("posthog.com", "posthog"),
+    ("app.posthog.com", "posthog"),
+    ("flagsmith.com", "flagsmith"),
+    ("resend.com", "resend"),
+    // Security / OSINT
     ("greynoise.io", "greynoise"),
-    ("fullhunt.io", "fullhunt"),
-    ("urlscan.io", "urlscan"),
-    ("abuseipdb.com", "abuseipdb"),
-    ("criminalip.io", "criminal_ip"),
-    ("numverify.com", "numverify"),
-    ("wigle.net", "wigle"),
-    ("serpapi.com", "serpapi"),
-    ("openai.com", "openai"),
-    ("anthropic.com", "anthropic"),
-    ("passivetotal.org", "passivetotal"),
-    ("riskiq.net", "passivetotal"),
-    ("onyphe.io", "onyphe"),
-    ("zoomeye.org", "zoomeye"),
-    ("fofa.info", "fofa"),
-    ("netlas.io", "netlas"),
-    ("pulsedive.com", "pulsedive"),
-    ("builtwith.com", "builtwith"),
-    ("emailrep.io", "emailrep"),
-    ("whoisxmlapi.com", "whoisxml"),
-    ("breachdirectory.org", "breachdirectory"),
-    ("c99.nl", "c99"),
-    ("twilio.com", "twilio"),
-    ("snyk.io", "snyk"),
-    ("digitalocean.com", "digitalocean"),
-    ("ngrok.com", "ngrok"),
-    ("mailchimp.com", "mailchimp"),
-    ("discord.com", "discord"),
-    ("npmjs.org", "npm"),
-    ("pypi.org", "pypi"),
-    ("vercel.com", "vercel"),
-    ("netlify.com", "netlify"),
-    ("heroku.com", "heroku"),
+    ("viz.greynoise.io", "greynoise"),
+    ("gitlab.com", "gitlab"),
+    ("riskiq.net", "riskiq"),
+    ("community.riskiq.com", "riskiq"),
+    ("spyse.com", "spyse"),
+    ("securitytrails.com", "securitytrails"),
+    ("app.securitytrails.com", "securitytrails"),
+    // Mapping
+    ("mapbox.com", "mapbox"),
+    ("account.mapbox.com", "mapbox"),
+    ("geocodio.io", "geocodio"),
+    // Payment
+    ("paystack.com", "paystack"),
+    ("dashboard.paystack.com", "paystack"),
+    ("razorpay.com", "razorpay"),
+    ("dashboard.razorpay.com", "razorpay"),
+    // Communication
+    ("postmarkapp.com", "postmark"),
+    ("account.postmarkapp.com", "postmark"),
+    ("mailersend.com", "mailersend"),
+    ("app.mailersend.com", "mailersend"),
+    // Database
+    ("cloud.mongodb.com", "mongodb_atlas"),
+    ("atlas.mongodb.com", "mongodb_atlas"),
+    ("neon.tech", "neon"),
+    ("console.neon.tech", "neon"),
+    ("planetscale.com", "planetscale"),
+    ("app.planetscale.com", "planetscale"),
+    ("upstash.com", "upstash"),
+    ("console.upstash.com", "upstash"),
+    // OSINT / validation (complete coverage)
+    ("opencellid.org", "opencellid"),
+    ("unwiredlabs.com", "opencellid"),
 ];
-
-pub(super) async fn harvest_api_credentials_from_stealer(key: &str) {
-    let pool = crate::util::key_pool::global_pool();
-    let mut stored = 0u32;
-    let mut seen: HashSet<String> = HashSet::new();
-
-    // ── PRECISE QUERIES ONLY ──
-    // Live-tested: only domain= and password= return domain-relevant results.
-    // All other field params (q=, username=, email=) return generic data.
-
-    // Phase 1: domain= queries — 100% precise (verified live).
-    for (domain, service) in HARVEST_TARGETS {
-        if pool.active_count(service) >= 5 {
-            continue;
-        }
-        if let Ok(items) = oathnet::search(key, paths::STEALER, "domain", domain, 20).await {
-            stored += store_unique_stealer_keys(&items, domain, service, &pool, &mut seen);
-        }
-    }
-
-    // Phase 2: password= queries — 100% precise (verified live).
-    for (domain, service) in HARVEST_TARGETS {
-        if pool.active_count(service) >= 5 {
-            continue;
-        }
-        if let Ok(items) = oathnet::search(key, paths::STEALER, "password", domain, 10).await {
-            for item in &items {
-                let pw = val_str(item, "password").unwrap_or_default();
-                let user = val_str(item, "username").unwrap_or_default();
-                let url = val_str(item, "url").unwrap_or_default();
-                if user.is_empty() || pw.is_empty() || !seen.insert(format!("pw:{service}:{user}"))
-                {
-                    continue;
-                }
-                let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
-                entry.notes = Some(format!(
-                    "OathNet password-match [{service}]: user={} url={}",
-                    &crate::util::str_util::truncate_safe(&user, 25),
-                    &crate::util::str_util::truncate_safe(&url, 50)
-                ));
-                pool.add(service, entry);
-                pool.add(
-                    &format!("{service}_login"),
-                    crate::util::key_pool::KeyEntry::new(format!("{user}:{pw}")),
-                );
-                stored += 1;
-            }
-        }
-    }
-
-    // Phase 3: username= field-name capture — returns entries where form
-    // field names like "api_key" were stored as the username. The password
-    // field contains the actual key value. NOT domain-precise, but the
-    // values are API-key-shaped (28+ chars, mixed alphanumeric).
-    const KEY_FIELD_NAMES: &[&str] = &[
-        "api_key",
-        "apikey",
-        "api-key",
-        "apiKey",
-        "access_key",
-        "secret_key",
-        "api_token",
-        "auth_token",
-        "token",
-        "access_token",
-        "x-api-key",
-        "x-key",
-        "SHODAN_API_KEY",
-        "VT_API_KEY",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GITHUB_TOKEN",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "STRIPE_SECRET_KEY",
-        "SENDGRID_API_KEY",
-        "HIBP_API_KEY",
-        "CENSYS_API_ID",
-        "CENSYS_API_SECRET",
-        "GREYNOISE_API_KEY",
-        "HUNTER_API_KEY",
-        "INTELX_API_KEY",
-        "LEAKIX_API_KEY",
-        "URLSCAN_API_KEY",
-        "ABUSEIPDB_KEY",
-        "BINARYEDGE_API_KEY",
-        "FULLHUNT_API_KEY",
-        "SECURITYTRAILS_API_KEY",
-        "CRIMINALIP_API_KEY",
-        "TWILIO_AUTH_TOKEN",
-        "TWILIO_ACCOUNT_SID",
-        "MAILCHIMP_API_KEY",
-        "DISCORD_TOKEN",
-        "DISCORD_BOT_TOKEN",
-        "NPM_TOKEN",
-        "PYPI_TOKEN",
-        "HEROKU_API_KEY",
-        "VERCEL_TOKEN",
-        "NETLIFY_AUTH_TOKEN",
-        "DIGITALOCEAN_TOKEN",
-        "NGROK_AUTHTOKEN",
-        "SNYK_TOKEN",
-        "DATABRICKS_TOKEN",
-        "CLOUDFLARE_API_TOKEN",
-        "SUPABASE_KEY",
-        "NOTION_TOKEN",
-        "LINEAR_API_KEY",
-        "SENTRY_AUTH_TOKEN",
-        "GRAFANA_API_KEY",
-        "NEWRELIC_API_KEY",
-        "PAGERDUTY_TOKEN",
-        "DATADOG_API_KEY",
-    ];
-    for field_name in KEY_FIELD_NAMES {
-        if pool.total_keys() > 500 {
-            break;
-        }
-        if let Ok(items) = oathnet::search(key, paths::STEALER, "username", field_name, 10).await {
-            for item in &items {
-                let pw = val_str(item, "password").unwrap_or_default();
-                let url = val_str(item, "url").unwrap_or_default();
-                if pw.len() < 10 || !seen.insert(format!("fn:{field_name}:{pw}")) {
-                    continue;
-                }
-                let service = identify_service_from_url(&url);
-                let label = if service != "unknown" {
-                    service
-                } else {
-                    "discovered_api_key"
-                };
-                let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
-                entry.notes = Some(format!(
-                    "OathNet field-capture [{field_name}->{label}]: url={}",
-                    &crate::util::str_util::truncate_safe(&url, 50)
-                ));
-                pool.add(label, entry);
-                stored += 1;
-            }
-        }
-    }
-
-    // Phase 4: Breach domain= pattern scan with 37-prefix scanner.
-    for (domain, service) in HARVEST_TARGETS.iter().take(25) {
-        if pool.total_keys() > 500 {
-            break;
-        }
-        if let Ok(items) = oathnet::search(key, paths::BREACH, "domain", domain, 20).await {
-            for item in &items {
-                for field in ["password", "password_hash", "username"] {
-                    if let Some(val) = val_str(item, field)
-                        && let Some((svc, key_val)) = identify_api_key(&val)
-                        && seen.insert(format!(
-                            "br:{svc}:{}",
-                            crate::util::str_util::truncate_safe(key_val, 12)
-                        ))
-                    {
-                        let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-                        entry.notes = Some(format!(
-                            "OathNet breach [{svc}]: field={field} via={service}"
-                        ));
-                        pool.add(svc, entry);
-                        stored += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    if stored > 0 {
-        let _ = crate::util::key_pool::save_pool(&pool);
-    }
-}
-
-pub(super) fn store_unique_stealer_keys(
-    items: &[Value],
-    domain: &str,
-    service: &str,
-    pool: &crate::util::key_pool::KeyPool,
-    seen: &mut HashSet<String>,
-) -> u32 {
-    let mut stored = 0u32;
-    for item in items {
-        let url = val_str(item, "url").unwrap_or_default();
-        let user = val_str(item, "username").unwrap_or_default();
-        let pw = val_str(item, "password").unwrap_or_default();
-        if user.is_empty() || pw.is_empty() {
-            continue;
-        }
-        if !seen.insert(format!("{service}:{pw}")) {
-            continue;
-        }
-
-        let url_lower = url.to_lowercase();
-        let domains_field: Vec<String> = item
-            .get("domain")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(str::to_lowercase)
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let url_matches =
-            url_lower.contains(domain) || domains_field.iter().any(|d| d.contains(domain));
-
-        if url_matches {
-            let mut entry = crate::util::key_pool::KeyEntry::new(&pw);
-            entry.notes = Some(format!(
-                "OathNet stealer [{}]: user={} url={}",
-                service,
-                &crate::util::str_util::truncate_safe(&user, 30),
-                &crate::util::str_util::truncate_safe(&url, 60)
-            ));
-            if pool.add(service, entry) {
-                stored += 1;
-            }
-        }
-
-        let login_entry = crate::util::key_pool::KeyEntry::new(format!("{user}:{pw}"));
-        pool.add(&format!("{service}_login"), login_entry);
-        stored += 1;
-    }
-    stored
-}
 
 pub(super) fn identify_service_from_url(url: &str) -> &'static str {
     let lower = url.to_lowercase();
@@ -770,18 +946,44 @@ pub fn store_api_credential_from_item(item: &Value) {
 pub(super) fn store_api_credential(item: &Value) {
     let url = val_str(item, "url")
         .or_else(|| val_str(item, "url_str"))
+        .or_else(|| val_str(item, "domain"))
         .unwrap_or_default();
-    let username = val_str(item, "username").unwrap_or_default();
-    let password = val_str(item, "password").unwrap_or_default();
+    let username = val_str(item, "username")
+        .or_else(|| val_str(item, "email"))
+        .or_else(|| val_str(item, "login"))
+        .unwrap_or_default();
+    let password = val_str(item, "password")
+        .or_else(|| val_str(item, "pass"))
+        .or_else(|| val_str(item, "pwd"))
+        .or_else(|| val_str(item, "passwd"))
+        .or_else(|| val_str(item, "credential"))
+        .or_else(|| val_str(item, "api_key"))
+        .or_else(|| val_str(item, "token"))
+        .or_else(|| val_str(item, "secret"))
+        .unwrap_or_default();
 
-    if username.is_empty() || password.is_empty() || url.is_empty() {
+    if password.is_empty() || password.contains("***") || password.contains("UPGRADE") {
         return;
     }
 
-    let service = identify_service_from_url(&url);
-    if service == "unknown" {
+    let service = if !url.is_empty() {
+        let svc = identify_service_from_url(&url);
+        if svc != "unknown" {
+            svc
+        } else {
+            return;
+        }
+    } else if !username.is_empty() && username.contains('@') {
+        let domain = username.split('@').nth(1).unwrap_or("");
+        let svc = identify_service_from_url(domain);
+        if svc != "unknown" {
+            svc
+        } else {
+            return;
+        }
+    } else {
         return;
-    }
+    };
 
     let pool = crate::util::key_pool::global_pool();
 
@@ -799,4 +1001,3 @@ pub(super) fn store_api_credential(item: &Value) {
     pool.add(&format!("{service}_login"), user_entry);
     let _ = crate::util::key_pool::save_pool(&pool);
 }
-

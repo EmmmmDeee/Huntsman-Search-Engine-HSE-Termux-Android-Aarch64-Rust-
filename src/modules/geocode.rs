@@ -121,7 +121,9 @@ impl Geocode {
             .await;
 
         let results: Vec<NominatimResult> = match resp {
-            Ok(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
+            Ok(r) if r.status().is_success() => crate::util::http::json_scanned(r, SRC)
+                .await
+                .unwrap_or_default(),
             _ => {
                 if let Some(body) = crate::util::curl::fetch(&url, crate::MODULE_TIMEOUT_MS).await {
                     serde_json::from_str(&body).unwrap_or_default()
@@ -178,16 +180,15 @@ impl Geocode {
             return Err(Error::module("geocode", format!("HTTP {}", resp.status())));
         }
 
-        let data: NominatimResp = resp
-            .json()
+        let data: NominatimResp = crate::util::http::json_scanned(resp, SRC)
             .await
-            .map_err(|e| Error::module("geocode", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
 
         let display = data.display_name.as_deref().unwrap_or("-");
 
-        let mut entity = Entity::new(EntityKind::Address, display, 0.65, &ctx.scan_id);
+        let mut entity = Entity::new(EntityKind::Address, display, 0.72, &ctx.scan_id);
         entity.tag("geoint");
         entity.tag("reverse-geocoded");
 

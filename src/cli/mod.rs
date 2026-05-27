@@ -442,6 +442,16 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
                         e.use_count,
                         notes
                     );
+                    if let Some(ts) = e.discovered_at {
+                        let by = e.discovered_by.as_deref().unwrap_or("unknown");
+                        let scan = e
+                            .discovered_in_scan
+                            .as_deref()
+                            .map(|s| &s[..8.min(s.len())])
+                            .unwrap_or("-");
+                        let src = e.source_entity.as_deref().unwrap_or("-");
+                        println!("       discovered: ts={ts} by={by} scan={scan} entity={src}");
+                    }
                 }
             }
         }
@@ -567,9 +577,8 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
     Ok(())
 }
 
-
 mod import;
-use import::{cmd_import};
+use import::cmd_import;
 
 fn cmd_modules() -> Result<()> {
     let mut mods = registry();

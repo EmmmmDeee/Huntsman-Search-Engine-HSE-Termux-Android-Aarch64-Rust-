@@ -107,6 +107,38 @@ const SUBDOMAINS: &[&str] = &[
     "autodiscover",
     "autoconfig",
     "webdisk",
+    // CI/CD & DevOps
+    "ci",
+    "cd",
+    "jenkins",
+    "drone",
+    // Container & orchestration
+    "k8s",
+    "registry",
+    "docker",
+    // Monitoring & observability
+    "grafana",
+    "prometheus",
+    "kibana",
+    "sentry",
+    "monitoring",
+    "logs",
+    "metrics",
+    // Database & cache
+    "db",
+    "mysql",
+    "postgres",
+    "redis",
+    "mongo",
+    "elastic",
+    // Cloud & remote
+    "cloud",
+    "remote",
+    "demo",
+    "sandbox",
+    "uat",
+    "preview",
+    "intranet",
 ];
 
 const MAX_CONCURRENT_BRUTE: usize = 12;
@@ -147,7 +179,10 @@ impl Module for DnsIntel {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url
+        )
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -333,6 +368,7 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
             })
             .collect();
         if !txts.is_empty() {
+            let mut dmarc_emails: Vec<Entity> = Vec::new();
             let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
             for t in &txts {
                 let t = t.trim_matches('"');
@@ -343,32 +379,75 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
                         if let Some(ip) = part.strip_prefix("ip4:") {
                             let ip = ip.split('/').next().unwrap_or(ip);
                             if !ip.is_empty() {
-                                let mut ie = Entity::new(EntityKind::IpAddress, ip, 0.75, &ctx.scan_id);
+                                let mut ie =
+                                    Entity::new(EntityKind::IpAddress, ip, 0.75, &ctx.scan_id);
                                 ie.tag("dns");
                                 ie.tag("spf");
-                                ie.add_evidence(Evidence::new(SRC, format!("SPF ip4 for {domain}")));
+                                ie.add_evidence(Evidence::new(
+                                    SRC,
+                                    format!("SPF ip4 for {domain}"),
+                                ));
                                 entities.push(ie);
                             }
-                        } else if let Some(inc) = part.strip_prefix("include:") {
-                            if inc.contains('.') {
-                                let mut de = Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
-                                de.tag("dns");
-                                de.tag("spf-include");
-                                de.add_evidence(Evidence::new(SRC, format!("SPF include for {domain}")));
-                                entities.push(de);
-                            }
+                        } else if let Some(inc) = part.strip_prefix("include:")
+                            && inc.contains('.')
+                        {
+                            let mut de = Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
+                            de.tag("dns");
+                            de.tag("spf-include");
+                            de.add_evidence(Evidence::new(
+                                SRC,
+                                format!("SPF include for {domain}"),
+                            ));
+                            entities.push(de);
                         }
                     }
                 } else if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"v=dkim1") {
                     dom.tag("dkim");
                 } else if b.len() >= 8 && b[..8].eq_ignore_ascii_case(b"v=dmarc1") {
                     dom.tag("dmarc");
+                    let txt = String::from_utf8_lossy(b);
+                    for part in txt.split(';') {
+                        let part = part.trim();
+                        if let Some(uri) = part
+                            .strip_prefix("rua=")
+                            .or_else(|| part.strip_prefix("ruf="))
+                        {
+                            for addr in uri.split(',') {
+                                let addr = addr.trim();
+                                if let Some(email) = addr.strip_prefix("mailto:") {
+                                    let email = email.trim();
+                                    if email.contains('@') && email.len() >= 5 {
+                                        let mut ee = Entity::new(
+                                            EntityKind::Email,
+                                            email,
+                                            0.72,
+                                            &ctx.scan_id,
+                                        );
+                                        ee.tag("dmarc-report");
+                                        ee.tag("dns");
+                                        ee.add_evidence(
+                                            Evidence::new(
+                                                SRC,
+                                                format!("DMARC report address for {domain}"),
+                                            )
+                                            .with_attr("record_type", "DMARC"),
+                                        );
+                                        dmarc_emails.push(ee);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else if b.len() >= 24 && b[..24].eq_ignore_ascii_case(b"google-site-verification")
                 {
                     dom.tag("google-verified");
                 } else if b.len() >= 3 && b[..3].eq_ignore_ascii_case(b"ms=") {
                     dom.tag("ms-verified");
                 }
+            }
+            for txt in &txts {
+                crate::util::http::scan_for_api_keys_with_source(txt, "dns_txt");
             }
             let mut txt_ev = Evidence::new(SRC, format!("{} TXT records", txts.len()))
                 .with_attr("txt_records", txts.join(" | "))
@@ -378,6 +457,7 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
             }
             dom.add_evidence(txt_ev);
             entities.push(dom);
+            entities.extend(dmarc_emails);
         }
     }
 

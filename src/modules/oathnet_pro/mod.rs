@@ -17,10 +17,15 @@ use crate::core::{
 };
 use crate::util::oathnet::{self, paths, val_str, val_str_or};
 
-mod key_harvest;
+pub mod key_harvest;
 pub use key_harvest::store_api_credential_from_item;
-use key_harvest::{extract_api_keys_from_item, harvest_api_credentials_from_stealer, store_api_credential};
 
+/// Re-export the budget reset so `core/engine.rs` can call it without
+/// importing `util::oathnet` directly (which violates the architecture rule).
+pub fn reset_budget() {
+    crate::util::oathnet::reset_budget();
+}
+use key_harvest::{extract_api_keys_from_item, store_api_credential};
 
 const SRC: &str = "oathnet_pro";
 
@@ -82,8 +87,8 @@ impl Module for OathnetPro {
             _ => return Ok(result),
         };
 
-        // ── Breach search ───────────────────────────────────────────
-        let items = oathnet::search(key, paths::BREACH, field, &target.value, 50).await?;
+        // ── Query 1: Breach search (highest value — entities + geo + identity) ──
+        let items = oathnet::search(key, paths::BREACH, field, &target.value, 15).await?;
         if items.is_empty() {
             return Ok(result);
         }
@@ -95,18 +100,24 @@ impl Module for OathnetPro {
         parent.tag(tags::BREACH);
         parent.tag("oathnet-pro");
         let mut ev = Evidence::new(
-            "oathnet_pro",
+            SRC,
             format!("OathNet: {total} breach record(s) — {}", top_dbs.join(", ")),
         )
         .with_attr("hits", total.to_string())
         .with_attr("top_dbnames", top_dbs.join(", "));
 
+        let mut countries: Vec<String> = Vec::new();
+        let mut names: Vec<String> = Vec::new();
         for item in &items {
-            if let Some(c) = val_str(item, "country") {
-                ev = ev.with_attr("country", &c);
+            if let Some(c) = val_str(item, "country")
+                && !countries.contains(&c)
+            {
+                countries.push(c);
             }
-            if let Some(n) = val_str(item, "full_name") {
-                ev = ev.with_attr("full_name", &n);
+            if let Some(n) = val_str(item, "full_name")
+                && !names.contains(&n)
+            {
+                names.push(n);
             }
             if let Some(g) = val_str(item, "gender") {
                 ev = ev.with_attr("gender", &g);
@@ -114,6 +125,12 @@ impl Module for OathnetPro {
             if let Some(dob) = val_str(item, "date_birth") {
                 ev = ev.with_attr("date_of_birth", &dob);
             }
+        }
+        if !countries.is_empty() {
+            ev = ev.with_attr("countries", countries.join(", "));
+        }
+        if !names.is_empty() {
+            ev = ev.with_attr("names", names.join("; "));
         }
         parent.add_evidence(ev);
         result.push(parent);
@@ -124,10 +141,10 @@ impl Module for OathnetPro {
             extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
         }
 
-        // ── Stealer search ──────────────────────────────────────────
+        // ── Query 2: Stealer search (credential/device intelligence) ──
         if !ctx.cancel.is_cancelled()
             && let Ok(stealer_items) =
-                oathnet::search(key, paths::STEALER, field, &target.value, 50).await
+                oathnet::search(key, paths::STEALER, field, &target.value, 10).await
         {
             for item in &stealer_items {
                 extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
@@ -136,17 +153,7 @@ impl Module for OathnetPro {
             }
         }
 
-        // ── Victims search (compromised device intelligence) ────────
-        if !ctx.cancel.is_cancelled()
-            && let Ok(victim_items) =
-                oathnet::search(key, paths::VICTIMS, field, &target.value, 20).await
-        {
-            for item in &victim_items {
-                extract_victim_entities(item, &ctx.scan_id, &mut seen, &mut result);
-            }
-        }
-
-        // ── Holehe (email targets) ──────────────────────────────────
+        // ── Query 3: Holehe — only for Email targets (platform presence) ──
         if target.kind == TargetKind::Email
             && !ctx.cancel.is_cancelled()
             && let Ok(holehe) = oathnet::osint(key, paths::HOLEHE, "email", &target.value).await
@@ -154,115 +161,12 @@ impl Module for OathnetPro {
             extract_holehe(holehe, &target.value, &ctx.scan_id, &mut result);
         }
 
-        // ── Recursive credential discovery ─────────────────────────
-        // Use discovered emails from breach data to search stealer
-        // endpoint for additional credential exposure.
-        if !ctx.cancel.is_cancelled() {
-            let discovered_emails: Vec<String> = result
-                .entities
-                .iter()
-                .filter(|e| e.kind == EntityKind::Email && e.value != target.value)
-                .take(5)
-                .map(|e| e.value.clone())
-                .collect();
-            for email in &discovered_emails {
-                if ctx.cancel.is_cancelled() {
-                    break;
-                }
-                if let Ok(items) = oathnet::search(key, paths::STEALER, "email", email, 10).await {
-                    for item in &items {
-                        store_api_credential(item);
-                        extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
-                    }
-                }
-            }
-        }
-
-        // ── OSINT enrichment (Discord, Steam, GHunt) ──────────────
-        if !ctx.cancel.is_cancelled() {
-            let usernames: Vec<String> = result
-                .entities
-                .iter()
-                .filter(|e| e.kind == EntityKind::Username && e.confidence >= 0.60)
-                .take(3)
-                .map(|e| e.value.clone())
-                .collect();
-            for uname in &usernames {
-                if ctx.cancel.is_cancelled() {
-                    break;
-                }
-                // Discord user info
-                if let Ok(data) = oathnet::osint(key, paths::DISCORD_USER, "user", uname).await
-                    && let Some(id) = data.get("id").and_then(|v| v.as_str())
-                {
-                    let mut e = Entity::new(
-                        EntityKind::Username,
-                        format!("discord:{id}"),
-                        0.65,
-                        &ctx.scan_id,
-                    );
-                    e.tag("oathnet-pro");
-                    e.tag("discord");
-                    let mut ev = Evidence::new(SRC, format!("Discord lookup for {uname}"));
-                    if let Some(n) = data.get("username").and_then(|v| v.as_str()) {
-                        ev = ev.with_attr("discord_username", n);
-                    }
-                    if let Some(a) = data.get("avatar").and_then(|v| v.as_str()) {
-                        ev = ev.with_attr("avatar", a);
-                    }
-                    e.add_evidence(ev);
-                    if seen.insert(format!("@discord:{id}")) {
-                        result.push(e);
-                    }
-                }
-            }
-
-            // GHunt for email targets
-            if target.kind == TargetKind::Email
-                && let Ok(data) = oathnet::osint(key, paths::GHUNT, "email", &target.value).await
-                && let Some(name) = data.get("name").and_then(|v| v.as_str())
-                && name.len() >= 3
-                && name.contains(' ')
-                && seen.insert(format!("@ghunt:{}", name.to_lowercase()))
-            {
-                let mut e = Entity::new(EntityKind::Person, name, 0.70, &ctx.scan_id);
-                e.tag("oathnet-pro");
-                e.tag("google");
-                e.add_evidence(Evidence::new(
-                    "oathnet_pro",
-                    format!("GHunt: Google account for {}", &target.value),
-                ));
-                result.push(e);
-            }
-        }
-
-        // ── Targeted API credential harvest (skip for IP/Phone — no relevant stealer data) ──
-        if !ctx.cancel.is_cancelled()
-            && matches!(
-                target.kind,
-                TargetKind::Email | TargetKind::Username | TargetKind::Domain
-            )
-        {
-            harvest_api_credentials_from_stealer(key).await;
-        }
-
-        // ── IP info for discovered IPs ──────────────────────────────
-        if !ctx.cancel.is_cancelled() {
-            let ips: Vec<String> = result
-                .entities
-                .iter()
-                .filter(|e| e.kind == EntityKind::IpAddress)
-                .map(|e| e.value.clone())
-                .collect();
-            for ip in ips.iter().take(12) {
-                if ctx.cancel.is_cancelled() {
-                    break;
-                }
-                if let Ok(info) = oathnet::osint(key, paths::IP_INFO, "ip", ip).await {
-                    extract_ip_info(info, ip, &ctx.scan_id, &mut result);
-                }
-            }
-        }
+        // No further OathNet queries — victims, recursive stealer,
+        // Discord, GHunt, IP info, and key harvest are all cut.
+        // The breach + stealer queries already extract IPs, emails,
+        // usernames, addresses, and credentials. Downstream free
+        // modules (ip_geo, dns_intel, geocode, etc.) handle the
+        // expansion from those entities without costing OathNet quota.
 
         Ok(result)
     }
@@ -535,6 +439,14 @@ fn extract_stealer_entities(
     }
     if let Some(pw) = val_str(item, "password") {
         ev = ev.with_attr("password", &pw);
+        if pw.contains("UPGRADE_TO_SEE") && pw.len() >= 3 {
+            let first = &pw[..1];
+            let last = &pw[pw.len() - 1..];
+            ev = ev
+                .with_attr("password_hint_first", first)
+                .with_attr("password_hint_last", last)
+                .with_attr("password_redacted", "true");
+        }
     }
     if let Some(uname) = val_str(item, "username") {
         ev = ev.with_attr("username", &uname);
@@ -553,6 +465,27 @@ fn extract_stealer_entities(
                     result.push(e);
                 }
             }
+        }
+    }
+
+    // Username field often contains an email address (stealer logs use the
+    // login email as "username"). Emit it so it expands through the email
+    // pipeline — HIBP, emailrep, epieos, etc. can then cross-reference.
+    if let Some(uname) = val_str(item, "username") {
+        let lower = uname.to_lowercase();
+        if lower.contains('@')
+            && lower.contains('.')
+            && seen.insert(format!("@stealer-user:{lower}"))
+        {
+            let mut e = Entity::new(EntityKind::Email, &uname, 0.60, scan_id);
+            e.tag("oathnet-pro");
+            e.tag("stealer");
+            e.tag("stealer-login");
+            e.add_evidence(
+                Evidence::new(SRC, "Stealer login email (username field)")
+                    .with_attr("source", "stealer"),
+            );
+            result.push(e);
         }
     }
 
@@ -599,105 +532,12 @@ fn extract_holehe(data: Value, email: &str, scan_id: &str, result: &mut ModuleRe
         parent.tag("holehe");
         parent.add_evidence(
             Evidence::new(
-                "oathnet_pro",
+                SRC,
                 format!("Holehe: email on {} service(s)", domains_str.len()),
             )
             .with_attr("holehe_domains", domains_str.join(", ")),
         );
         result.push(parent);
-    }
-}
-
-fn extract_ip_info(data: Value, ip: &str, scan_id: &str, result: &mut ModuleResult) {
-    let mut ev = Evidence::new(SRC, format!("IP info for {ip}")).with_attr("source", "ip-info");
-    for (field, attr) in [
-        ("city", "city"),
-        ("regionName", "region"),
-        ("region", "region_code"),
-        ("country", "country"),
-        ("countryCode", "country_code"),
-        ("zip", "postal_code"),
-        ("isp", "isp"),
-        ("org", "org"),
-        ("as", "asn"),
-        ("timezone", "timezone"),
-        ("reverse", "reverse_dns"),
-        ("district", "district"),
-        ("continent", "continent"),
-    ] {
-        if let Some(v) = data.get(field).and_then(|v| v.as_str()) {
-            ev = ev.with_attr(attr, v);
-        }
-    }
-
-    let lat = data.get("lat").and_then(serde_json::Value::as_f64);
-    let lon = data.get("lon").and_then(serde_json::Value::as_f64);
-    if let (Some(lat), Some(lon)) = (lat, lon) {
-        let coords = format!("{lat},{lon}");
-        let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.65, scan_id);
-        e.tag("oathnet-pro");
-        e.tag("geolocation");
-        e.add_evidence(ev.clone());
-        result.push(e);
-    }
-
-    let city = data.get("city").and_then(|v| v.as_str());
-    let region = data
-        .get("regionName")
-        .or_else(|| data.get("region"))
-        .and_then(|v| v.as_str());
-    let country = data.get("country").and_then(|v| v.as_str());
-    if city.is_some() {
-        let addr = [city, region, country]
-            .iter()
-            .flatten()
-            .copied()
-            .collect::<Vec<&str>>()
-            .join(", ");
-        let mut e = Entity::new(EntityKind::Address, &addr, 0.60, scan_id);
-        e.tag("oathnet-pro");
-        e.tag("geolocation");
-        e.add_evidence(ev);
-        result.push(e);
-    }
-}
-
-fn extract_victim_entities(
-    item: &Value,
-    scan_id: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    if let Some(emails) = item.get("device_emails").and_then(|v| v.as_array()) {
-        for email_val in emails.iter().take(30) {
-            if let Some(email) = email_val.as_str() {
-                let lower = email.to_lowercase();
-                if lower.contains('@') && lower.len() > 5 && seen.insert(lower) {
-                    let mut e = Entity::new(EntityKind::Email, email, 0.50, scan_id);
-                    e.tag("oathnet-pro");
-                    e.tag("victim-device");
-                    e.add_evidence(Evidence::new(
-                        "oathnet_pro",
-                        "Email found on compromised device",
-                    ));
-                    result.push(e);
-                }
-            }
-        }
-    }
-    if let Some(ips) = item.get("device_ips").and_then(|v| v.as_array()) {
-        for ip_val in ips.iter().take(15) {
-            if let Some(ip) = ip_val.as_str()
-                && ip.len() >= 7
-                && seen.insert(ip.to_string())
-            {
-                let mut e = Entity::new(EntityKind::IpAddress, ip, 0.50, scan_id);
-                e.tag("oathnet-pro");
-                e.tag("victim-device");
-                e.add_evidence(Evidence::new(SRC, "IP from compromised device"));
-                result.push(e);
-            }
-        }
     }
 }
 

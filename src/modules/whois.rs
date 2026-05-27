@@ -47,7 +47,10 @@ impl Module for Whois {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url
+        )
     }
 
     async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -55,11 +58,18 @@ impl Module for Whois {
             TargetKind::Url => {
                 let trimmed = target.value.trim();
                 let host = trimmed
-                    .strip_prefix("https://").or_else(|| trimmed.strip_prefix("http://"))
+                    .strip_prefix("https://")
+                    .or_else(|| trimmed.strip_prefix("http://"))
                     .unwrap_or(trimmed)
-                    .split('/').next().unwrap_or("")
-                    .split(':').next().unwrap_or("");
-                if host.is_empty() { return Ok(ModuleResult::new()); }
+                    .split('/')
+                    .next()
+                    .unwrap_or("")
+                    .split(':')
+                    .next()
+                    .unwrap_or("");
+                if host.is_empty() {
+                    return Ok(ModuleResult::new());
+                }
                 host.to_string()
             }
             _ => target.value.clone(),
@@ -67,16 +77,22 @@ impl Module for Whois {
         // 1) Ask IANA who's authoritative for this name.
         let raw = query(IANA_WHOIS, &query_value)
             .await
-            .map_err(|e| Error::module("whois", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         // 2) If IANA's response references another whois server, follow once.
         let response = match find_referral(&raw) {
             Some(server) => {
-                let target_server = format!("{server}:43");
+                let target_server = if server.contains(':') {
+                    server.clone()
+                } else {
+                    format!("{server}:43")
+                };
                 query(&target_server, &query_value).await.unwrap_or(raw)
             }
             None => raw,
         };
+
+        crate::util::http::scan_for_api_keys_with_source(&response, "whois");
 
         // 3) Parse the response into the fields we surface.
         let registrar = field(&response, &["Registrar:", "Sponsoring Registrar:"]);
@@ -246,14 +262,80 @@ impl Module for Whois {
                 let mut e = Entity::new(EntityKind::Email, addr, 0.78, &_ctx.scan_id);
                 e.tag(format!("whois-{role}"));
                 e.add_evidence(
-                    Evidence::new(
-                        "whois",
-                        format!("WHOIS {role} contact for {}", target.value),
-                    )
-                    .with_attr("role", role)
-                    .with_attr("parent_target", target.value.as_str()),
+                    Evidence::new(SRC, format!("WHOIS {role} contact for {}", target.value))
+                        .with_attr("role", role)
+                        .with_attr("parent_target", target.value.as_str()),
                 );
                 result.push(e);
+            }
+        }
+
+        // Registrant organisation → Organisation entity.
+        if let Some(org) = &registrant_org {
+            let org = org.trim();
+            if org.len() >= 3
+                && !org.eq_ignore_ascii_case("REDACTED FOR PRIVACY")
+                && !org.to_lowercase().contains("privacy")
+                && !org.to_lowercase().contains("redacted")
+            {
+                let mut oe = Entity::new(EntityKind::Organisation, org, 0.72, &_ctx.scan_id);
+                oe.tag("whois");
+                oe.tag("registrant");
+                oe.add_evidence(
+                    Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
+                        .with_attr("parent_target", target.value.as_str()),
+                );
+                result.push(oe);
+            }
+        }
+
+        // Registrant name → Person entity (when not redacted).
+        let registrant_name = field(
+            &response,
+            &["Registrant Name:", "Registrant Person:", "person:"],
+        );
+        if let Some(name) = &registrant_name {
+            let name = name.trim();
+            if name.len() >= 4
+                && name.contains(' ')
+                && !name.to_lowercase().contains("privacy")
+                && !name.to_lowercase().contains("redacted")
+                && !name.to_lowercase().contains("data protected")
+                && !name.to_lowercase().contains("not disclosed")
+            {
+                let mut pe = Entity::new(EntityKind::Person, name, 0.72, &_ctx.scan_id);
+                pe.tag("whois");
+                pe.tag("registrant");
+                pe.add_evidence(
+                    Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
+                        .with_attr("parent_target", target.value.as_str()),
+                );
+                result.push(pe);
+            }
+        }
+
+        // Registrant address → Address entity (when available and not redacted).
+        if let Some(country) = &registrant_country {
+            let parts: Vec<&str> = [registrant_state.as_deref(), Some(country.as_str())]
+                .iter()
+                .filter_map(|p| *p)
+                .filter(|p| {
+                    !p.is_empty()
+                        && !p.to_lowercase().contains("redacted")
+                        && !p.to_lowercase().contains("privacy")
+                })
+                .collect();
+            if !parts.is_empty() && parts.iter().any(|p| p.len() >= 2) {
+                let addr = parts.join(", ");
+                let mut ae = Entity::new(EntityKind::Address, &addr, 0.50, &_ctx.scan_id);
+                ae.tag("whois");
+                ae.tag("registrant");
+                ae.tag("geoint");
+                ae.add_evidence(
+                    Evidence::new(SRC, format!("Registrant location for {}", target.value))
+                        .with_attr("parent_target", target.value.as_str()),
+                );
+                result.push(ae);
             }
         }
 

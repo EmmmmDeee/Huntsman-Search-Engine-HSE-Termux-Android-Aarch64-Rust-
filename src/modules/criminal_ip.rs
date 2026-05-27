@@ -139,11 +139,11 @@ impl Module for CriminalIp {
                 .header("x-api-key", key)
                 .send()
                 .await
-                .map_err(|e| Error::module("criminal_ip", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, "criminal_ip", key, ctx).await {
+                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
                 return Err(Error::module(
@@ -154,7 +154,7 @@ impl Module for CriminalIp {
             break resp
                 .json()
                 .await
-                .map_err(|e| Error::module("criminal_ip", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
         };
         if body.status != Some(200) {
             return Ok(ModuleResult::new());
@@ -266,13 +266,13 @@ impl Module for CriminalIp {
         result.push(entity);
 
         if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first()) {
-            if let Some(org) = w.org_name.as_deref() {
-                if !org.is_empty() {
-                    let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
-                    oe.tag("criminal_ip");
-                    oe.add_evidence(Evidence::new(SRC, format!("IP org for {ip}")));
-                    result.push(oe);
-                }
+            if let Some(org) = w.org_name.as_deref()
+                && !org.is_empty()
+            {
+                let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
+                oe.tag("criminal_ip");
+                oe.add_evidence(Evidence::new(SRC, format!("IP org for {ip}")));
+                result.push(oe);
             }
             if let Some(asn) = w.as_no {
                 let asn_str = format!("AS{asn}");

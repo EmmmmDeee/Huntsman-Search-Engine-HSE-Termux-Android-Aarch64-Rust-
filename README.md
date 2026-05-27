@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-Pure-Rust OSINT / GEOINT platform with **50+ modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **60+ modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 SpiderFoot-style Web UI, zero native dependencies.
 
@@ -50,7 +50,7 @@ for all install paths and Termux quirks.
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 50+ modules
+hse modules                                                 # list all 60+ modules
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
 hse scan --kind domain --value example.com --depth 2        # domain recon
 hse scan --kind email --value user@example.com --free-only  # email pivot (free only)
@@ -66,22 +66,23 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 | Seed | Flag | Example | Modules |
 |------|------|---------|---------|
-| Email | `--kind email` | `user@example.com` | 30 |
-| Username | `--kind username` | `johndoe` | 10 |
-| Phone | `--kind phone` | `+61400000000` | 7 |
-| Full Name | `--kind name` | `Jordan Leigh Meyers` | 5 |
+| Email | `--kind email` | `user@example.com` | 34 |
+| Username | `--kind username` | `johndoe` | 13 |
+| Phone | `--kind phone` | `+61400000000` | 8 |
+| Full Name | `--kind name` | `Jordan Leigh Meyers` | 6 |
 | IP Address | `--kind ip` | `1.1.1.1` | 33 |
 | Domain | `--kind domain` | `example.com` | 39 |
 | ASN | `--kind asn` | `AS13335` | 1 |
-| Coordinates | `--kind coords` | `-27.47,153.02` | 3 |
-| Address | `--kind address` | `Nundah, QLD 4012` | 1 |
-| URL | `--kind url` | `https://example.com/page` | 1 |
-| Organisation | `--kind org` | `ACME Pty Ltd` | 1 |
+| Coordinates | `--kind coords` | `-27.47,153.02` | 6 |
+| Address | `--kind address` | `Nundah, QLD 4012` | 2 |
+| URL | `--kind url` | `https://example.com/page` | 2 |
+| Organisation | `--kind org` | `ACME Pty Ltd` | 2 |
 | ABN/ACN | `--kind abn` | `51824753556` | 1 |
+| MAC Address | `--kind mac` | `AA:BB:CC:DD:EE:FF` | 3 |
 
 ---
 
-## Module Overview (50+ modules)
+## Module Overview (60+ modules)
 
 **API-Free (no keys required):**
 - **Search engines** (13 engines): Yahoo, Bing, AOL, DuckDuckGo, Google,
@@ -89,22 +90,27 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
   paginated crawling with CAPTCHA detection, recursive entity recycling,
   and username variant generation
 - **Breach/identity**: `hudsonrock`, `xposed_or_not`, `username_search`
-  (150+ sites), `social_probe` (20+ platforms), `github_user`, `gravatar`
+  (150+ sites), `social_probe` (20+ platforms), `github_user`, `gravatar`,
+  `keybase`, `pwned_passwords`
 - **DNS/domain**: `crtsh`, `dns_resolver`, `dns_brute`, `reverse_dns`,
   `ssl_probe`, `whois`, `rdap_domain`, `caa_records`, `wayback`
 - **IP/infrastructure**: `ip_geo`, `ip_whois_geo`, `ip_rdap`, `bgpview`,
   `shodan_internetdb`, `tor_exit_check`, `dns_blocklist`
-- **Geolocation**: `forward_geocode`, `reverse_geocode` (OSM Nominatim)
+- **Geolocation**: `geocode` (OSM Nominatim), `photon` (Komoot),
+  `overpass` (OSM infrastructure), `sunrise_sunset` (chronolocation),
+  `mylnikov` (BSSID geolocation)
 - **Threat intel**: `alienvault_otx`, `threatfox`, `urlhaus`
 - **Web analysis**: `web_crawler`, `webserver_banner`, `search_engines`
 - **Phone**: `phone_intl` (offline, 175 country prefixes)
+- **Corporate**: `opencorporates` (AU jurisdiction focus)
 - **Termux sensors**: `gps_fix`, `wifi_scan`, `wifi_connect`, `arp_scan`,
   `cell_survey`, `net_interfaces`
 
 **Key-gated / Paid:**
 - `shodan`, `dehashed`, `intelx`, `securitytrails`, `leakix`,
   `criminal_ip`, `ipqs`, `numverify`, `wigle`, `oathnet_pro`,
-  `abn_lookup`, `api_key_probe`
+  `abn_lookup`, `api_key_probe`, `seon`, `emailrep`, `epieos`,
+  `proxycurl`
 
 ---
 
@@ -182,8 +188,8 @@ Round 2: Discovered IPs → geo modules → coordinates → address.
 - `#![forbid(unsafe_code)]` — entire codebase
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
-- 597 tests (unit + API integration + architecture boundary enforcement)
-- 15 correlator rules (AU-001 through AU-015)
+- 700+ tests (unit + API integration + architecture boundary enforcement)
+- 27 correlator rules (AU-001 through AU-027)
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 

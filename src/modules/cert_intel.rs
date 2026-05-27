@@ -54,7 +54,7 @@ impl Module for CertIntel {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
+        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -68,54 +68,61 @@ impl Module for CertIntel {
         }
 
         let mut result = ModuleResult::new();
-        // Unified set of subdomains discovered by either source so we
-        // never emit duplicates.
         let mut seen_subs: HashSet<String> = HashSet::new();
         let parent = domain.to_lowercase();
 
-        // ── 1. crt.sh CT-log search ────────────────────────────────
-        let ct_url = format!("https://crt.sh/?q=%.{domain}&output=json");
-        if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, "cert_intel", &ct_url).await {
-            for entry in &entries {
-                for name in entry.name_value.split('\n') {
-                    let name = name.trim().trim_start_matches("*.").to_lowercase();
-                    if name.is_empty() || !name.contains('.') {
-                        continue;
-                    }
-                    if name == parent {
-                        continue;
-                    }
-                    if seen_subs.insert(name.clone()) {
-                        let mut e = Entity::new(EntityKind::Domain, &name, 0.88, &ctx.scan_id);
-                        e.tag(tags::CT_LOG);
-                        e.add_evidence(
-                            Evidence::new(
-                                "cert_intel",
-                                format!("Certificate transparency: {name}"),
-                            )
-                            .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))
-                            .with_attr("not_before", entry.not_before.as_deref().unwrap_or("-"))
-                            .with_attr("not_after", entry.not_after.as_deref().unwrap_or("-"))
-                            .with_attr(
-                                "serial_number",
-                                entry.serial_number.as_deref().unwrap_or("-"),
-                            )
-                            .with_attr("parent_domain", domain),
-                        );
-                        result.push(e);
+        // CT-log search only works for domain targets (indexed by name).
+        // IP targets skip straight to the live TLS probe.
+        if target.kind == TargetKind::Domain {
+            let ct_url = format!("https://crt.sh/?q=%.{domain}&output=json");
+            if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, SRC, &ct_url).await {
+                for entry in &entries {
+                    for name in entry.name_value.split('\n') {
+                        let name = name.trim().trim_start_matches("*.").to_lowercase();
+                        if name.is_empty() || !name.contains('.') {
+                            continue;
+                        }
+                        if name == parent {
+                            continue;
+                        }
+                        if seen_subs.insert(name.clone()) {
+                            let mut e = Entity::new(EntityKind::Domain, &name, 0.88, &ctx.scan_id);
+                            e.tag(tags::CT_LOG);
+                            e.add_evidence(
+                                Evidence::new(SRC, format!("Certificate transparency: {name}"))
+                                    .with_attr(
+                                        "issuer",
+                                        entry.issuer_name.as_deref().unwrap_or("-"),
+                                    )
+                                    .with_attr(
+                                        "not_before",
+                                        entry.not_before.as_deref().unwrap_or("-"),
+                                    )
+                                    .with_attr(
+                                        "not_after",
+                                        entry.not_after.as_deref().unwrap_or("-"),
+                                    )
+                                    .with_attr(
+                                        "serial_number",
+                                        entry.serial_number.as_deref().unwrap_or("-"),
+                                    )
+                                    .with_attr("parent_domain", domain),
+                            );
+                            result.push(e);
+                        }
                     }
                 }
             }
-        }
+        } // end CT-log search (domain-only)
 
-        // ── 2. Live TLS certificate probe ──────────────────────────
+        // ── 2. Live TLS certificate probe (works for both Domain and IP) ──
         let url = format!("https://{domain}/");
         if let Ok(resp) = ctx
             .http
             .head(&url)
             .send()
             .await
-            .map_err(|e| Error::module("cert_intel", format!("TLS connect: {e}")))
+            .map_err(|e| Error::module(SRC, format!("TLS connect: {e}")))
         {
             let mut entity = target.to_entity(0.88, &ctx.scan_id);
             entity.tag("tls");
@@ -313,10 +320,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_domain_only() {
+    fn accepts_domain_and_ip() {
         let m = CertIntel;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
-        assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y")));
     }
 

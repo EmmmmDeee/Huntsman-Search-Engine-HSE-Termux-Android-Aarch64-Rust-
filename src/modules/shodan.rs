@@ -137,7 +137,7 @@ impl Shodan {
             return;
         }
 
-        let body: InternetDbResp = match resp.json().await {
+        let body: InternetDbResp = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(b) => b,
             Err(_) => return,
         };
@@ -169,7 +169,7 @@ impl Shodan {
             .collect::<Vec<_>>()
             .join(",");
         let mut ev = Evidence::new(
-            "shodan",
+            SRC,
             format!(
                 "Shodan InternetDB: {} port(s), {} CVE(s), {} hostname(s)",
                 body.ports.len(),
@@ -230,7 +230,7 @@ impl Shodan {
             d.tag("ptr");
             d.add_evidence(
                 Evidence::new(
-                    "shodan",
+                    SRC,
                     format!("Hostname associated with {ip} per Shodan InternetDB"),
                 )
                 .with_attr("ip", ip),
@@ -257,7 +257,7 @@ impl Shodan {
             .get(&url)
             .send()
             .await
-            .map_err(|e| Error::module("shodan", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(());
@@ -265,17 +265,17 @@ impl Shodan {
         if !status.is_success() {
             let code = status.as_u16();
             if code == 429 || code == 401 || code == 403 {
-                ctx.report_key_exhausted("shodan", key, code);
+                ctx.report_key_exhausted(SRC, key, code);
             }
             return Err(Error::module(
-                "shodan",
+                SRC,
                 format!("HTTP {status}: {}", error_snippet(resp).await),
             ));
         }
         let body: HostResp = resp
             .json()
             .await
-            .map_err(|e| Error::module("shodan", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         let mut entity = target_entity(ip, &ctx.scan_id);
         entity.tag("shodan");
@@ -353,30 +353,30 @@ impl Shodan {
             result.push(d);
         }
 
-        if let Some(org) = &body.org {
-            if !org.is_empty() {
-                let mut oe = Entity::new(EntityKind::Organisation, org, 0.70, &ctx.scan_id);
-                oe.tag("shodan");
-                oe.add_evidence(Evidence::new(SRC, format!("Organisation for {ip}")));
-                result.push(oe);
-            }
+        if let Some(org) = &body.org
+            && !org.is_empty()
+        {
+            let mut oe = Entity::new(EntityKind::Organisation, org, 0.70, &ctx.scan_id);
+            oe.tag("shodan");
+            oe.add_evidence(Evidence::new(SRC, format!("Organisation for {ip}")));
+            result.push(oe);
         }
-        if let Some(asn) = &body.asn {
-            if !asn.is_empty() {
-                let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
-                ae.tag("shodan");
-                ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
-                result.push(ae);
-            }
+        if let Some(asn) = &body.asn
+            && !asn.is_empty()
+        {
+            let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
+            ae.tag("shodan");
+            ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
+            result.push(ae);
         }
-        if let Some(country) = &body.country_name {
-            if !country.is_empty() {
-                let mut addr = Entity::new(EntityKind::Address, country, 0.55, &ctx.scan_id);
-                addr.tag("shodan");
-                addr.tag("geoint");
-                addr.add_evidence(Evidence::new(SRC, format!("Country for {ip}")));
-                result.push(addr);
-            }
+        if let Some(country) = &body.country_name
+            && !country.is_empty()
+        {
+            let mut addr = Entity::new(EntityKind::Address, country, 0.55, &ctx.scan_id);
+            addr.tag("shodan");
+            addr.tag("geoint");
+            addr.add_evidence(Evidence::new(SRC, format!("Country for {ip}")));
+            result.push(addr);
         }
 
         Ok(())

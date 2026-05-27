@@ -44,11 +44,10 @@ mod engines;
 mod fetch;
 mod helpers;
 
-pub(crate) use helpers::SearchResult;
-use engines::{EngineSpec, ENGINES};
+use engines::{ENGINES, EngineSpec};
 use fetch::*;
+pub(crate) use helpers::SearchResult;
 use helpers::*;
-
 
 use async_trait::async_trait;
 
@@ -226,35 +225,12 @@ impl Module for SearchEngines {
 
         let mut module_result = build_entities(target, &ctx.scan_id, &all_results);
 
-        // ── Email pattern generation (runs FIRST — before recycler) ──
-        // This is the highest-priority enrichment: without emails, the
-        // entire OathNet→IP→Geo chain cannot fire. Run it before the
-        // time-consuming recycler so it executes even when the module
-        // is close to its timeout budget.
-        if !ctx.cancel.is_cancelled()
-            && matches!(target.kind, TargetKind::FullName | TargetKind::Username)
-        {
-            generate_and_verify_emails(ctx, target, &mut module_result).await;
-        }
-
         // ── Recursive entity recycler: re-search high-confidence
         //    discovered entities for geolocation and cross-linking ─────
         let elapsed_ms = process_start.elapsed().as_millis() as u64;
         let remaining_ms = budget_ms.saturating_sub(elapsed_ms);
         if !ctx.cancel.is_cancelled() && remaining_ms > 15_000 {
             recycle_entities(ctx, &mut module_result, &dead_engines, &all_results).await;
-        }
-
-        // ── API enrichment pass: batch-query OathNet for high-confidence
-        //    discovered entities. Only fires when the API key is configured
-        //    and we have entities worth enriching. ──────────────────
-        let elapsed_ms = process_start.elapsed().as_millis() as u64;
-        let remaining_ms = budget_ms.saturating_sub(elapsed_ms);
-        if !ctx.cancel.is_cancelled()
-            && remaining_ms > 10_000
-            && !crate::util::oathnet::is_quota_exhausted()
-        {
-            enrich_via_oathnet(ctx, &mut module_result, target).await;
         }
 
         Ok(module_result)
@@ -304,7 +280,9 @@ async fn recycle_entities(
             EntityKind::Phone => Some(format!("\"{}\" name OR address OR owner", entity.value)),
             EntityKind::Domain if entity.confidence >= 0.55 => {
                 let domain = &entity.value;
-                Some(format!("\"{domain}\" location OR address OR city OR suburb"))
+                Some(format!(
+                    "\"{domain}\" location OR address OR city OR suburb"
+                ))
             }
             EntityKind::Organisation if entity.confidence >= 0.50 => {
                 Some(format!("\"{}\" address OR ABN OR location", entity.value))
@@ -429,531 +407,6 @@ async fn recycle_entities(
             }
         }
     }
-}
-
-// ─── Email pattern generation + verification ──────────────────────────────
-
-async fn generate_and_verify_emails(
-    ctx: &ModuleContext,
-    target: &Target,
-    result: &mut ModuleResult,
-) {
-    // Only generate when we have zero discovered emails
-    // Check for TARGET-RELEVANT emails (containing name parts), not
-    // platform emails like raj@peekyou.com that come from domain expansion.
-    let target_lower = target.value.to_lowercase();
-    let name_parts: Vec<&str> = target_lower.split_whitespace().collect();
-    let has_relevant_emails = result.entities.iter().any(|e| {
-        if e.kind != EntityKind::Email || e.confidence < 0.50 {
-            return false;
-        }
-        let local = e.value.split('@').next().unwrap_or("");
-        let ll = local.to_lowercase();
-        // Require BOTH first AND last name in the email local part.
-        // A single-part match like "meyer" in "david.meyer@x.com" is
-        // too common and would falsely prevent pattern generation.
-        if name_parts.len() >= 2 {
-            let first = name_parts[0];
-            let last = name_parts[name_parts.len() - 1];
-            ll.contains(first) && ll.contains(last)
-        } else {
-            ll.contains(&target_lower)
-        }
-    });
-    if has_relevant_emails {
-        return;
-    }
-
-    let parts: Vec<&str> = target.value.split_whitespace().collect();
-    if parts.len() < 2 {
-        return;
-    }
-
-    let first = parts[0].to_lowercase();
-    let last = parts[parts.len() - 1].to_lowercase();
-    let fi = &first[..1.min(first.len())]; // first initial
-
-    // Generate common email patterns across consumer + AU domains
-    let domains = [
-        "gmail.com",
-        "hotmail.com",
-        "outlook.com",
-        "yahoo.com",
-        "live.com",
-        "hotmail.com.au",
-        "outlook.com.au",
-        "icloud.com",
-        "protonmail.com",
-    ];
-    let mut candidates: Vec<String> = Vec::new();
-    for d in &domains {
-        candidates.push(format!("{first}.{last}@{d}"));
-        candidates.push(format!("{first}{last}@{d}"));
-        candidates.push(format!("{fi}{last}@{d}"));
-        candidates.push(format!("{first}_{last}@{d}"));
-        candidates.push(format!("{last}{first}@{d}"));
-        candidates.push(format!("{first}.{last}1@{d}"));
-    }
-    // Username-derived emails from discovered usernames
-    for e in &result.entities {
-        if e.kind == EntityKind::Username && e.confidence >= 0.60 {
-            let u = e.value.to_lowercase();
-            if u.contains(&first) && u.len() >= 5 && u.len() <= 30 {
-                for d in &["gmail.com", "hotmail.com"] {
-                    let candidate = format!("{u}@{d}");
-                    if !candidates.contains(&candidate) {
-                        candidates.push(candidate);
-                    }
-                }
-            }
-        }
-    }
-
-    // Verify via OathNet Holehe (checks if email is registered on platforms)
-    let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
-    let scan_id = result
-        .entities
-        .first()
-        .map(|e| e.scan_id.clone())
-        .unwrap_or_default();
-
-    for candidate in candidates.iter().take(20) {
-        if ctx.cancel.is_cancelled() {
-            break;
-        }
-        // Quick breach check — if email exists in any breach, it's a real address
-        if let Ok(hits) = crate::util::oathnet::search(
-            key,
-            crate::util::oathnet::paths::BREACH,
-            "email",
-            candidate,
-            3,
-        )
-        .await
-            && !hits.is_empty()
-        {
-            let db_names: Vec<String> = hits
-                .iter()
-                .filter_map(|h| crate::util::oathnet::val_str(h, "dbname"))
-                .take(6)
-                .collect();
-            let mut base_conf = 0.72;
-            // Holehe check: if the email is registered on platforms, boost
-            if let Ok(holehe_data) = crate::util::oathnet::osint(
-                key,
-                crate::util::oathnet::paths::HOLEHE,
-                "email",
-                candidate,
-            )
-            .await
-            {
-                let platform_count = holehe_data
-                    .as_array()
-                    .or_else(|| holehe_data.get("sites").and_then(|s| s.as_array()))
-                    .map(|a| a.len())
-                    .unwrap_or(0);
-                if platform_count > 0 {
-                    base_conf = 0.85;
-                }
-            }
-            let mut e = Entity::new(EntityKind::Email, candidate, base_conf, &scan_id);
-            e.tag("pattern-generated");
-            e.tag("breach-verified");
-            e.tag(crate::core::tags::BREACH);
-            e.add_evidence(
-                Evidence::new(
-                    "search_engines",
-                    format!(
-                        "Email pattern verified in {} breach(es): {}",
-                        hits.len(),
-                        db_names.join(", ")
-                    ),
-                )
-                .with_attr("method", "pattern-generation")
-                .with_attr("breach_count", hits.len().to_string())
-                .with_attr("dbnames", db_names.join(", ")),
-            );
-            result.push(e);
-        }
-    }
-}
-
-// ─── API enrichment: OathNet via shared util::oathnet client ────────────────
-
-async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult, target: &Target) {
-    if crate::util::oathnet::is_quota_exhausted() {
-        return;
-    }
-    let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
-
-    // Build target-name fragments for username relevance filtering.
-    // Only usernames containing target name parts get batched to OathNet —
-    // this prevents enriching unrelated people who share a common name.
-    let target_lower = target.value.to_lowercase();
-    let name_parts: Vec<&str> = target_lower.split_whitespace().collect();
-
-    let mut emails: Vec<String> = Vec::new();
-    let mut usernames: Vec<String> = Vec::new();
-    for e in &result.entities {
-        if e.confidence < 0.40 {
-            continue;
-        }
-        match e.kind {
-            EntityKind::Email if emails.len() < 10 => emails.push(e.value.clone()),
-            EntityKind::Username if usernames.len() < 5 => {
-                let u_lower = e.value.to_lowercase();
-                // Only enrich usernames that contain at least the target's
-                // first AND last name fragments (or the full name concatenated).
-                // This prevents enriching "jordanmeyer_" when the target is
-                // "Jordan Leigh Meyer" from Australia but "jordanmeyer_"
-                // belongs to a different person in New York.
-                let relevant = if name_parts.len() >= 2 {
-                    let first = name_parts[0];
-                    let last = name_parts[name_parts.len() - 1];
-                    (u_lower.contains(first) && u_lower.contains(last))
-                        || u_lower.contains(&target_lower.replace(' ', ""))
-                        || u_lower.contains(&target_lower.replace(' ', "_"))
-                        || u_lower.contains(&target_lower.replace(' ', "."))
-                } else {
-                    u_lower.contains(&target_lower)
-                };
-                if relevant {
-                    usernames.push(e.value.clone());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if emails.is_empty() && usernames.is_empty() {
-        return;
-    }
-
-    let scan_id = result
-        .entities
-        .first()
-        .map(|e| e.scan_id.clone())
-        .unwrap_or_default();
-
-    for email in &emails {
-        if ctx.cancel.is_cancelled() {
-            break;
-        }
-        if let Ok(hits) = crate::util::oathnet::search(
-            key,
-            crate::util::oathnet::paths::BREACH,
-            "email",
-            email,
-            20,
-        )
-        .await
-        {
-            apply_breach_evidence(result, email, &hits, &scan_id);
-        }
-    }
-
-    for uname in &usernames {
-        if ctx.cancel.is_cancelled() {
-            break;
-        }
-        if let Ok(hits) = crate::util::oathnet::search(
-            key,
-            crate::util::oathnet::paths::BREACH,
-            "username",
-            uname,
-            20,
-        )
-        .await
-        {
-            apply_breach_evidence(result, uname, &hits, &scan_id);
-        }
-    }
-
-    // Store any API credentials found in stealer results.
-    // Uses "domain" field (verified precise) extracted from email domains.
-    let mut queried_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for email in &emails {
-        if ctx.cancel.is_cancelled() {
-            break;
-        }
-        if let Some(domain) = email.split('@').nth(1) {
-            if !queried_domains.insert(domain.to_lowercase()) {
-                continue;
-            }
-            if let Ok(items) = crate::util::oathnet::search(
-                key,
-                crate::util::oathnet::paths::STEALER,
-                "domain",
-                domain,
-                10,
-            )
-            .await
-            {
-                for item in &items {
-                    crate::modules::oathnet_pro::store_api_credential_from_item(item);
-                }
-            }
-        }
-    }
-
-    // Inline IP-info geolocation: resolve the top 3 breach-discovered IPs
-    // via OathNet ip-info to produce Coordinates entities immediately,
-    // instead of waiting for depth-2 expansion through ip_geo.
-    let ips: Vec<String> = result
-        .entities
-        .iter()
-        .filter(|e| {
-            e.kind == EntityKind::IpAddress
-                && e.confidence >= 0.60
-                && e.tags.iter().any(|t| t == "oathnet-enriched")
-        })
-        .map(|e| e.value.clone())
-        .take(6)
-        .collect();
-    for ip in &ips {
-        if ctx.cancel.is_cancelled() {
-            break;
-        }
-        if let Ok(data) =
-            crate::util::oathnet::osint(key, crate::util::oathnet::paths::IP_INFO, "ip", ip).await
-        {
-            let lat = data.get("latitude").and_then(|v| v.as_f64());
-            let lon = data.get("longitude").and_then(|v| v.as_f64());
-            let city = data
-                .get("city")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let region = data
-                .get("region")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let country = data
-                .get("country_name")
-                .or_else(|| data.get("country"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if let (Some(lat), Some(lon)) = (lat, lon) {
-                if lat.abs() > 0.01 && lon.abs() > 0.01 {
-                    let coords = format!("{lat:.4},{lon:.4}");
-                    let mut ce =
-                        Entity::new(EntityKind::Coordinates, &coords, 0.70, &scan_id);
-                    ce.tag("geoint");
-                    ce.tag("oathnet-ip-info");
-                    ce.add_evidence(
-                        Evidence::new(
-                            "search_engines:oathnet",
-                            format!("IP-info geolocation for {ip}: {city}, {region}, {country}"),
-                        )
-                        .with_attr("ip", ip)
-                        .with_attr("city", city)
-                        .with_attr("region", region)
-                        .with_attr("country", country),
-                    );
-                    result.push(ce);
-                }
-            }
-            if !city.is_empty() && !region.is_empty() {
-                let addr = if !country.is_empty() {
-                    format!("{city}, {region}, {country}")
-                } else {
-                    format!("{city}, {region}")
-                };
-                let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &scan_id);
-                ae.tag("oathnet-ip-info");
-                ae.add_evidence(
-                    Evidence::new(
-                        "search_engines:oathnet",
-                        format!("IP-info address for {ip}"),
-                    )
-                    .with_attr("ip", ip),
-                );
-                result.push(ae);
-            }
-        }
-    }
-}
-
-fn apply_breach_evidence(
-    result: &mut ModuleResult,
-    lookup_value: &str,
-    items: &[serde_json::Value],
-    scan_id: &str,
-) {
-    use crate::util::oathnet::{top_dbnames, val_str, val_str_or};
-
-    let total = items.len();
-    let top_dbs = top_dbnames(items, 5);
-    let dbs_str = top_dbs.join(", ");
-    let summary = format!(
-        "OathNet breach: {total} record(s) for {lookup_value} — {}",
-        if dbs_str.is_empty() {
-            "no dbnames"
-        } else {
-            &dbs_str
-        }
-    );
-
-    let lookup_lower = lookup_value.to_lowercase();
-    let ev = Evidence::new("search_engines:oathnet", &summary)
-        .with_attr("breach_hits", total.to_string())
-        .with_attr("top_dbnames", top_dbs.join(", "))
-        .with_attr("lookup_value", lookup_value);
-
-    for e in &mut result.entities {
-        if e.value.to_lowercase() == lookup_lower {
-            e.tag(tags::BREACH);
-            e.tag("oathnet-enriched");
-            if e.confidence < 0.70 {
-                e.confidence = 0.70;
-            }
-            e.add_evidence(ev.clone());
-        }
-    }
-
-    let mut seen: HashSet<String> = result
-        .entities
-        .iter()
-        .map(|e| e.value.to_lowercase())
-        .collect();
-    let lookup_lower = lookup_value.to_lowercase();
-    let lookup_terms: Vec<&str> = lookup_lower
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() >= 3)
-        .collect();
-    let mut new_ents: Vec<Entity> = Vec::new();
-    for item in items {
-        let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
-
-        // Only emit Person/Phone/IP from rows matching the lookup target.
-        let row_matches = {
-            let mut matches = false;
-            for field in ["email", "username", "phone_number", "full_name"] {
-                if let Some(v) = val_str(item, field) {
-                    let vl = v.to_lowercase();
-                    if vl == lookup_lower || lookup_terms.iter().any(|t| vl.contains(t)) {
-                        matches = true;
-                        break;
-                    }
-                }
-            }
-            matches
-        };
-
-        if let Some(email) = val_str(item, "email") {
-            let lower = email.to_lowercase();
-            if lower.contains('@') && lower.len() >= 5 && seen.insert(lower) {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
-                e.tag(tags::BREACH);
-                e.tag("oathnet-enriched");
-                e.add_evidence(
-                    Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
-                        .with_attr("dbname", &db),
-                );
-                new_ents.push(e);
-            }
-        }
-        if let Some(uname) = val_str(item, "username") {
-            let lower = uname.to_lowercase();
-            if lower.len() >= 3 && !is_navigation_path(&lower) && seen.insert(lower) {
-                let mut e = Entity::new(EntityKind::Username, &uname, 0.65, scan_id);
-                e.tag(tags::BREACH);
-                e.tag("oathnet-enriched");
-                e.add_evidence(
-                    Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
-                        .with_attr("dbname", &db),
-                );
-                new_ents.push(e);
-            }
-        }
-        // Tier confidence by breach source quality
-        let db_lower = db.to_lowercase();
-        let quality_boost: f64 = if [
-            "linkedin", "facebook", "adobe", "myspace", "dropbox", "twitter",
-            "canva", "dubsmash", "spotify", "zynga",
-        ]
-        .iter()
-        .any(|s| db_lower.contains(s))
-        {
-            0.05
-        } else {
-            0.0
-        };
-        let conf = |base: f64| -> f64 {
-            if row_matches {
-                (base + quality_boost).min(1.0)
-            } else {
-                0.25
-            }
-        };
-        if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
-            && ph.len() >= 7
-            && seen.insert(ph.to_lowercase())
-        {
-            let mut e = Entity::new(EntityKind::Phone, &ph, conf(0.70), scan_id);
-            e.tag(tags::BREACH);
-            e.tag("oathnet-enriched");
-            if !row_matches {
-                e.tag("candidate");
-            }
-            e.add_evidence(
-                Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
-                    .with_attr("dbname", &db),
-            );
-            new_ents.push(e);
-        }
-        if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
-            let t = n.trim();
-            if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
-                let mut e = Entity::new(EntityKind::Person, t, conf(0.70), scan_id);
-                e.tag(tags::BREACH);
-                e.tag("oathnet-enriched");
-                if !row_matches {
-                    e.tag("candidate");
-                }
-                e.add_evidence(
-                    Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
-                        .with_attr("dbname", &db),
-                );
-                new_ents.push(e);
-            }
-        }
-        if let Some(ip) = val_str(item, "ip")
-            && ip.contains('.')
-            && ip.len() >= 7
-            && seen.insert(ip.clone())
-        {
-            let mut e = Entity::new(EntityKind::IpAddress, &ip, conf(0.72), scan_id);
-            e.tag(tags::BREACH);
-            e.tag("oathnet-enriched");
-            e.tag("geolocation-lead");
-            e.tag(format!("via-username:{lookup_value}"));
-            if !row_matches {
-                e.tag("candidate");
-            }
-            e.add_evidence(
-                Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
-                    .with_attr("dbname", &db)
-                    .with_attr("linked_to", lookup_value),
-            );
-            new_ents.push(e);
-        }
-        if let Some(country) = val_str(item, "country")
-            && seen.insert(format!("@country:{country}"))
-        {
-            let mut e = Entity::new(EntityKind::Address, &country, conf(0.55), scan_id);
-            e.tag(tags::BREACH);
-            e.tag("oathnet-enriched");
-            if !row_matches {
-                e.tag("candidate");
-            }
-            e.add_evidence(
-                Evidence::new("search_engines:oathnet", format!("Country from {db}"))
-                    .with_attr("dbname", &db),
-            );
-            new_ents.push(e);
-        }
-    }
-    result.extend(new_ents);
 }
 
 fn build_queries(target: &Target) -> Vec<String> {
@@ -2528,7 +1981,10 @@ mod tests {
 
     #[test]
     fn canonicalize_url_strips_query_params() {
-        assert_eq!(canonicalize_url("https://x.com/page?a=1"), "https://x.com/page");
+        assert_eq!(
+            canonicalize_url("https://x.com/page?a=1"),
+            "https://x.com/page"
+        );
     }
 
     #[test]
@@ -2541,6 +1997,9 @@ mod tests {
 
     #[test]
     fn canonicalize_url_strips_trailing_slash() {
-        assert_eq!(canonicalize_url("https://x.com/page/"), "https://x.com/page");
+        assert_eq!(
+            canonicalize_url("https://x.com/page/"),
+            "https://x.com/page"
+        );
     }
 }

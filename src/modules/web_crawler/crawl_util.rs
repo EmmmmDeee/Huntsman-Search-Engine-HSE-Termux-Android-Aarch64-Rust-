@@ -1,7 +1,98 @@
-use super::{CrawlState, MAX_PAGES, MAX_DEPTH, BINARY_EXTENSIONS};
-use std::collections::HashSet;
-use url::Url;
+use super::{BINARY_EXTENSIONS, CrawlState, MAX_DEPTH, MAX_PAGES};
 use crate::core::error::{Error, Result};
+use std::collections::HashSet;
+use std::time::Duration;
+use url::Url;
+
+const CONFIG_LEAK_PATHS: &[&str] = &[
+    "/.env",
+    "/.env.local",
+    "/.env.production",
+    "/.env.backup",
+    "/.env.old",
+    "/config.js",
+    "/config.json",
+    "/settings.json",
+    "/.git/config",
+    "/.git/HEAD",
+    "/wp-config.php.bak",
+    "/wp-config.php.old",
+    "/wp-config.php.save",
+    "/.aws/credentials",
+    "/.docker/config.json",
+    "/api/config",
+    "/api/env",
+    "/debug",
+    "/debug/vars",
+    "/debug/pprof",
+    "/server-status",
+    "/server-info",
+    "/.well-known/security.txt",
+    "/phpinfo.php",
+    "/info.php",
+    "/.htpasswd",
+    "/crossdomain.xml",
+    "/clientaccesspolicy.xml",
+    "/package.json",
+    "/composer.json",
+    "/.npmrc",
+    "/.yarnrc",
+    "/Dockerfile",
+    "/docker-compose.yml",
+    "/.travis.yml",
+    "/.circleci/config.yml",
+    "/Jenkinsfile",
+    "/.github/workflows",
+    "/swagger.json",
+    "/openapi.json",
+    "/api-docs",
+    "/graphql",
+    "/actuator",
+    "/actuator/env",
+    "/actuator/health",
+];
+
+pub(super) async fn probe_config_leaks(http: &reqwest::Client, seed_url: &str, domain: &str) {
+    let base = seed_url.trim_end_matches('/');
+    let timeout = Duration::from_millis(3000);
+
+    for path in CONFIG_LEAK_PATHS {
+        let url = format!("{base}{path}");
+        let resp = match tokio::time::timeout(timeout, http.get(&url).send()).await {
+            Ok(Ok(r)) => r,
+            _ => continue,
+        };
+
+        let status = resp.status().as_u16();
+        if status != 200 {
+            continue;
+        }
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if ct.contains("text/html") && !path.ends_with(".html") {
+            continue;
+        }
+
+        let body = match resp.text().await {
+            Ok(b) if b.len() >= 10 && b.len() < 1_000_000 => b,
+            _ => continue,
+        };
+
+        if body.contains("<html") || body.contains("<!DOCTYPE") {
+            continue;
+        }
+
+        tracing::info!(domain, path, bytes = body.len(), "config file exposed");
+        crate::util::http::scan_for_api_keys_with_source(
+            &body,
+            &format!("config_leak:{domain}{path}"),
+        );
+    }
+}
 
 pub(super) async fn resolve_seed(http: &reqwest::Client, domain: &str) -> Result<String> {
     for scheme in ["https", "http"] {
@@ -269,6 +360,32 @@ pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
     }
 }
 
+pub(super) fn extract_api_keys_from_body(body: &str, domain: &str) {
+    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+
+    let pool = crate::util::key_pool::global_pool();
+    for word in body.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {
+        let trimmed = word.trim();
+        if trimmed.len() < 16 || trimmed.len() > 200 {
+            continue;
+        }
+        if let Some((service, key_val)) = identify_api_key(trimmed) {
+            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            entry.notes = Some(format!("Web-scraped from {domain}"));
+            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.discovered_at = Some(crate::core::entity::unix_now());
+            entry.discovered_by = Some(format!("web_crawler:{domain}"));
+            if pool.add(service, entry) {
+                tracing::info!(
+                    service,
+                    domain,
+                    "API key discovered in page body (web_crawler)"
+                );
+            }
+        }
+    }
+}
+
 pub(super) fn detect_frameworks(body: &str, found: &mut HashSet<&'static str>) {
     let lower = body.to_lowercase();
     let checks: &[(&str, &'static str)] = &[
@@ -372,4 +489,3 @@ pub(super) fn audit_security_headers(
         results.push((label, headers.get(*header_name).is_some()));
     }
 }
-

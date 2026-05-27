@@ -55,6 +55,11 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_WIGLE_TOKEN",
     "HUNTSMAN_ABR_GUID",
     "HUNTSMAN_OPENCELLID_KEY",
+    // OSINT orchestration APIs
+    "HUNTSMAN_SEON_KEY",
+    "HUNTSMAN_EPIEOS_KEY",
+    "HUNTSMAN_PROXYCURL_KEY",
+    "HUNTSMAN_OPENCORP_KEY",
 ];
 
 /// Resolve the keys env-file path.
@@ -97,13 +102,34 @@ pub fn load() -> HashMap<String, String> {
         );
     }
 
-    // Merge active keys from the key_pool into the context map. This
-    // bridges the gap between stealer-discovered keys (stored in
-    // key_pool.json) and the ModuleContext.keys map that modules read.
-    // Env-file keys take precedence — pool keys only fill empty slots.
+    // Multi-key support: if an env var contains comma-separated values,
+    // load each into the pool for round-robin rotation. The first key
+    // stays in the env map for backward compat; extras go to the pool.
     let pool = crate::util::key_pool::global_pool();
     for svc in crate::util::key_pool::service_defs() {
-        if map.contains_key(svc.env_var) {
+        let val = map.get(svc.env_var).cloned();
+        if let Some(val) = val {
+            if val.contains(',') {
+                let keys: Vec<&str> = val
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|k| !k.is_empty())
+                    .collect();
+                if keys.len() > 1 {
+                    map.insert(svc.env_var.to_string(), keys[0].to_string());
+                    for k in &keys {
+                        let mut entry = crate::util::key_pool::KeyEntry::new(*k);
+                        entry.status = crate::util::key_pool::KeyStatus::Active;
+                        pool.add(svc.name, entry);
+                    }
+                    tracing::info!(
+                        service = svc.name,
+                        count = keys.len(),
+                        "loaded {} keys for rotation",
+                        keys.len()
+                    );
+                }
+            }
             continue;
         }
         if let Some(key) = pool.next_key(svc.name) {
@@ -126,7 +152,10 @@ pub fn load() -> HashMap<String, String> {
 /// the OathNet stealer API (~30 service domain queries).
 pub async fn populate_and_load() -> HashMap<String, String> {
     ensure_hardcoded_keys();
-    harvest_to_pool().await;
+    // Pre-scan OathNet harvest disabled — costs 38 API calls before any
+    // scan begins. The oathnet_pro module extracts credentials from
+    // breach/stealer results during the seed query instead, getting the
+    // same data as a side-effect of the 2-3 high-value queries it makes.
     load()
 }
 
@@ -168,72 +197,7 @@ fn ensure_hardcoded_keys() {
     for (k, v) in &to_write {
         let _ = writeln!(file, "{k}={v}");
     }
-    tracing::info!(
-        "wrote {} hardcoded key(s) to {path}",
-        to_write.len()
-    );
-}
-
-/// Run the OathNet stealer harvest to fill the key pool with
-/// discovered API credentials. Uses the OathNet key from env or
-/// hardcoded fallback.
-async fn harvest_to_pool() {
-    let env_key = std::env::var(crate::util::oathnet::KEY_ENV).ok();
-    let key = crate::util::oathnet::resolve_key(env_key.as_deref());
-    let creds = crate::util::oathnet::harvest_credentials(key).await;
-    if creds.is_empty() {
-        return;
-    }
-
-    let pool = crate::util::key_pool::global_pool();
-    let mut stored = 0u32;
-    for (service, _user, password, _url) in &creds {
-        let svc_name = match service.as_str() {
-            "shodan.io" => "shodan",
-            "virustotal.com" => "virustotal",
-            "hunter.io" => "hunter",
-            "securitytrails.com" => "securitytrails",
-            "dehashed.com" => "dehashed",
-            "intelx.io" => "intelx",
-            "numverify.com" => "numverify",
-            "wigle.net" => "wigle",
-            "ipqualityscore.com" => "ipqs",
-            "leakix.net" => "leakix",
-            "haveibeenpwned.com" => "hibp",
-            "censys.io" => "censys",
-            "binaryedge.io" => "binaryedge",
-            "greynoise.io" => "greynoise",
-            "fullhunt.io" => "fullhunt",
-            "urlscan.io" => "urlscan",
-            "abuseipdb.com" => "abuseipdb",
-            "serpapi.com" => "serpapi",
-            "criminalip.io" => "criminal_ip",
-            "onyphe.io" => "onyphe",
-            "zoomeye.org" => "zoomeye",
-            "fofa.info" => "fofa",
-            "netlas.io" => "netlas",
-            "pulsedive.com" => "pulsedive",
-            "builtwith.com" => "builtwith",
-            "emailrep.io" => "emailrep",
-            "whoisxmlapi.com" => "whoisxml",
-            "passivetotal.org" => "passivetotal",
-            "twilio.com" => "twilio",
-            "snyk.io" => "snyk",
-            "mailchimp.com" => "mailchimp",
-            "ngrok.com" => "ngrok",
-            "heroku.com" => "heroku",
-            _ => continue,
-        };
-        let mut entry = crate::util::key_pool::KeyEntry::new(password);
-        entry.notes = Some(format!("Proactive harvest: {service}"));
-        if pool.add(svc_name, entry) {
-            stored += 1;
-        }
-    }
-    if stored > 0 {
-        let _ = crate::util::key_pool::save_pool(&pool);
-        tracing::info!("proactive harvest: stored {stored} credential(s) in key pool");
-    }
+    tracing::info!("wrote {} hardcoded key(s) to {path}", to_write.len());
 }
 
 /// Parse `HUNTSMAN_*` lines from the env file at `path`, **ignoring the
@@ -664,10 +628,8 @@ mod tests {
         pool.add("shodan", entry);
 
         let map = load();
-        if !map.contains_key("HUNTSMAN_SHODAN_KEY") || map["HUNTSMAN_SHODAN_KEY"] == "test-pool-key-12345" {
-            // Pool key was either injected (env slot empty) or env had it —
-            // either way, the merge didn't crash.
-            assert!(true);
-        }
+        // Pool key was either injected (env slot empty) or env had it —
+        // either way, the merge didn't crash. Success if we get here.
+        let _ = map;
     }
 }

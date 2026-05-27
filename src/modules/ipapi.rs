@@ -107,10 +107,7 @@ impl Module for IpApi {
             .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         if !resp.status().is_success() {
-            return Err(Error::module(
-                SRC,
-                format!("HTTP {}", resp.status()),
-            ));
+            return Err(Error::module(SRC, format!("HTTP {}", resp.status())));
         }
 
         let data: IpApiResp = resp
@@ -153,23 +150,24 @@ impl Module for IpApi {
             ev = ev.with_attr("timezone", tz);
         }
 
-        if let (Some(lat), Some(lon)) = (data.lat, data.lon) {
-            if lat.abs() > 0.01 && lon.abs() > 0.01 {
-                let coords = format!("{lat:.4},{lon:.4}");
-                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &ctx.scan_id);
-                ce.tag(tags::GEOINT);
-                if data.mobile == Some(true) {
-                    ce.tag("mobile");
-                }
-                if data.proxy == Some(true) {
-                    ce.tag(tags::PROXY);
-                }
-                if data.hosting == Some(true) {
-                    ce.tag("hosting");
-                }
-                ce.add_evidence(ev.clone());
-                result.push(ce);
+        if let (Some(lat), Some(lon)) = (data.lat, data.lon)
+            && lat.abs() > 0.01
+            && lon.abs() > 0.01
+        {
+            let coords = format!("{lat:.4},{lon:.4}");
+            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &ctx.scan_id);
+            ce.tag(tags::GEOINT);
+            if data.mobile == Some(true) {
+                ce.tag("mobile");
             }
+            if data.proxy == Some(true) {
+                ce.tag(tags::PROXY);
+            }
+            if data.hosting == Some(true) {
+                ce.tag("hosting");
+            }
+            ce.add_evidence(ev.clone());
+            result.push(ce);
         }
 
         if !city.is_empty() {
@@ -192,21 +190,23 @@ impl Module for IpApi {
             result.push(ae);
         }
 
-        if let Some(org) = &data.org {
-            if !org.is_empty() && org.len() >= 3 {
-                let mut oe = Entity::new(EntityKind::Organisation, org, 0.60, &ctx.scan_id);
-                oe.add_evidence(ev.clone());
-                result.push(oe);
-            }
+        if let Some(org) = &data.org
+            && !org.is_empty()
+            && org.len() >= 3
+        {
+            let mut oe = Entity::new(EntityKind::Organisation, org, 0.60, &ctx.scan_id);
+            oe.add_evidence(ev.clone());
+            result.push(oe);
         }
 
-        if let Some(rev) = &data.reverse {
-            if !rev.is_empty() && rev.contains('.') {
-                let mut de = Entity::new(EntityKind::Domain, rev, 0.65, &ctx.scan_id);
-                de.tag(tags::PTR);
-                de.add_evidence(ev);
-                result.push(de);
-            }
+        if let Some(rev) = &data.reverse
+            && !rev.is_empty()
+            && rev.contains('.')
+        {
+            let mut de = Entity::new(EntityKind::Domain, rev, 0.65, &ctx.scan_id);
+            de.tag(tags::PTR);
+            de.add_evidence(ev);
+            result.push(de);
         }
 
         Ok(result)
@@ -226,7 +226,10 @@ mod tests {
 
     #[test]
     fn cost_is_free() {
-        assert!(matches!(IpApi.cost(), crate::core::module::ModuleCost::Free));
+        assert!(matches!(
+            IpApi.cost(),
+            crate::core::module::ModuleCost::Free
+        ));
     }
 
     #[test]

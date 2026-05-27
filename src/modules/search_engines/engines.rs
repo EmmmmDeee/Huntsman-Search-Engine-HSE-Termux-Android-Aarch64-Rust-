@@ -1,4 +1,3 @@
-
 pub(super) struct EngineSpec {
     pub(super) name: &'static str,
     pub(super) build_url: fn(&str) -> String,
@@ -223,4 +222,3 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         ua_alt: crate::util::curl::UA_FIREFOX,
     },
 ];
-

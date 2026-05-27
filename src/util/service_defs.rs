@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceDef {
     pub name: &'static str,
@@ -304,6 +303,38 @@ pub fn service_defs() -> Vec<ServiceDef> {
             category: "geoint",
             test_url: "https://opencellid.org/cell/get?key=",
             key_header: KeyPlacement::QueryParam("key"),
+            rate_limit_reset_secs: 60,
+        },
+        ServiceDef {
+            name: "seon",
+            env_var: "HUNTSMAN_SEON_KEY",
+            category: "identity",
+            test_url: "https://api.seon.io/SeonRestService/email-api/v3",
+            key_header: KeyPlacement::Header("X-API-KEY"),
+            rate_limit_reset_secs: 18,
+        },
+        ServiceDef {
+            name: "epieos",
+            env_var: "HUNTSMAN_EPIEOS_KEY",
+            category: "identity",
+            test_url: "https://api.epieos.com/api/v1/email",
+            key_header: KeyPlacement::BearerAuth,
+            rate_limit_reset_secs: 36,
+        },
+        ServiceDef {
+            name: "proxycurl",
+            env_var: "HUNTSMAN_PROXYCURL_KEY",
+            category: "identity",
+            test_url: "https://nubela.co/proxycurl/api/v2/linkedin",
+            key_header: KeyPlacement::BearerAuth,
+            rate_limit_reset_secs: 12,
+        },
+        ServiceDef {
+            name: "opencorporates",
+            env_var: "HUNTSMAN_OPENCORP_KEY",
+            category: "identity",
+            test_url: "https://api.opencorporates.com/v0.4/companies/search?q=test",
+            key_header: KeyPlacement::QueryParam("api_token"),
             rate_limit_reset_secs: 60,
         },
     ]

@@ -3,14 +3,8 @@
 // Runs after all modules complete (engine hook). Loads the entities the
 // scan produced and evaluates a fixed set of declarative rules. Each
 // firing rule produces a [`Correlation`] record persisted alongside the
-// scan and emitted on the event bus.
-
-// Correlation rules — rule-based post-scan analysis.
-//
-// Each rule function receives the entity set and scan_id, returns
-// zero or more `Correlation` firings. Rules are deterministic —
-// no LLMs, no fuzzy matching. Adding a new rule is a 10-line
-// function plus one line in `evaluate_rules`.
+// scan and emitted on the event bus. Rules are deterministic — no LLMs,
+// no fuzzy matching.
 
 #[allow(unused_imports)]
 use std::collections::HashSet;
@@ -120,7 +114,6 @@ impl Correlator {
 
 type RuleFn = fn(&[Entity], &str, u64) -> Vec<Correlation>;
 
-
 mod rules;
 use rules::*;
 
@@ -147,6 +140,11 @@ const RULES: &[RuleFn] = &[
     rule_au_020_person_entity_cluster,
     rule_au_021_api_key_exposure,
     rule_au_022_organisation_with_breach,
+    rule_au_023_cross_platform_identity,
+    rule_au_024_email_fraud_signal,
+    rule_au_025_corporate_identity_link,
+    rule_au_026_validated_address,
+    rule_au_027_address_coordinates_chain,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -157,7 +155,6 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     }
     out
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -347,19 +344,28 @@ mod tests {
     // ── AU-003 ──────────────────────────────────────────────────────────
 
     #[test]
-    fn au003_fires_at_corroboration_three() {
-        let mut e = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
-        e.corroboration = 3;
-        let r = rule_au_003_high_corroboration(&[e], "s", 0);
+    fn au003_fires_at_kind_specific_thresholds() {
+        let mut email = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+        email.corroboration = 3;
+        let r = rule_au_003_high_corroboration(&[email], "s", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].rule_id, "AU-003");
+
+        let mut domain = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
+        domain.corroboration = 5;
+        let r = rule_au_003_high_corroboration(&[domain], "s", 0);
+        assert_eq!(r.len(), 1);
     }
 
     #[test]
-    fn au003_no_fire_at_two() {
-        let mut e = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
+    fn au003_no_fire_below_threshold() {
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
         e.corroboration = 2;
         assert!(rule_au_003_high_corroboration(&[e], "s", 0).is_empty());
+
+        let mut d = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
+        d.corroboration = 4;
+        assert!(rule_au_003_high_corroboration(&[d], "s", 0).is_empty());
     }
 
     // ── AU-004 ──────────────────────────────────────────────────────────
@@ -606,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_rules_total_count_15() {
+    fn evaluate_rules_fires_expected_subset() {
         let mut email = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
         email.add_evidence(Evidence::new("hudsonrock", "t"));
         email.add_evidence(Evidence::new("xposed_or_not", "t"));

@@ -23,6 +23,7 @@ use crate::core::{
 use crate::util::http::{error_snippet, handle_keyed_error};
 
 const KEY_ENV: &str = "HUNTSMAN_LEAKIX_KEY";
+const SRC: &str = "leakix";
 
 /// Subset of the LeakIX event fields we actually consume.
 #[derive(Deserialize)]
@@ -72,7 +73,10 @@ impl Module for LeakIx {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) { Some(k) => k, None => return Ok(ModuleResult::new()) };
+        let key = match ctx.key_opt(KEY_ENV) {
+            Some(k) => k,
+            None => return Ok(ModuleResult::new()),
+        };
         let value = target.value.trim();
         if value.is_empty() {
             return Ok(ModuleResult::new());
@@ -92,25 +96,25 @@ impl Module for LeakIx {
                 .header("Accept", "application/json")
                 .send()
                 .await
-                .map_err(|e| Error::module("leakix", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
             let status = resp.status();
             if status.as_u16() == 404 {
                 return Ok(ModuleResult::new());
             }
             if !status.is_success() {
                 let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, "leakix", key, ctx).await {
+                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
                 return Err(Error::module(
-                    "leakix",
+                    SRC,
                     format!("HTTP {status}: {}", error_snippet(resp).await),
                 ));
             }
             break resp
                 .json()
                 .await
-                .map_err(|e| Error::module("leakix", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
         };
         if body.services.is_empty() && body.leaks.is_empty() {
             return Ok(ModuleResult::new());
@@ -154,7 +158,7 @@ impl Module for LeakIx {
             .join(",");
 
         let mut ev = Evidence::new(
-            "leakix",
+            SRC,
             format!(
                 "LeakIX exposure: {} service event(s), {} leak event(s)",
                 body.services.len(),

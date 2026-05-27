@@ -1,49 +1,20 @@
-//! Geolocation intelligence fusion — multi-source geo enrichment pipeline.
+//! Geolocation intelligence — free-API IP geo and E.164 phone prefix lookup.
 //!
-//! # Geolocation Pathway Priority Matrix
+//! For IP targets: queries free geo APIs (ipapi.co, freeipapi.com) that aren't
+//! covered by ip_geo or ip_whois_geo, providing a third and fourth independent
+//! source for AU-014 geo-cluster correlation.
 //!
-//! **P1 — Direct Physical (0.80–0.95 confidence)**
-//!   GPS fix, cell tower triangulation, WiFi BSSID location
-//!   Modules: gps_fix, cell_locate, bssid_locate
-//!
-//! **P2 — IP-Based (0.60–0.75 confidence)**
-//!   ip-api.com, ipwho.is, ipapi.co, freeipapi.com, OathNet ip-info
-//!   Modules: ip_geo, ip_whois_geo, THIS MODULE (additional sources)
-//!
-//! **P3 — Breach-Derived (0.35–0.65 confidence)**
-//!   OathNet breach location fields (country, city, state, address)
-//!   OathNet stealer/victim device IPs → IP geo chain
-//!   Modules: oathnet_pro (extracts IPs/addresses), THIS MODULE (batch geo)
-//!
-//! **P4 — Inferred (0.15–0.35 confidence)**
-//!   Phone prefix → country, timezone → region, ASN HQ
-//!   Modules: phone_intl, THIS MODULE
-//!
-//! # Strategy
-//!
-//! For IP targets: queries additional free geo APIs (ipapi.co, freeipapi.com)
-//! that aren't covered by ip_geo or ip_whois_geo, providing a third and
-//! fourth independent source for AU-014 geo-cluster correlation.
-//!
-//! For identity targets (Email, Username, Phone, Domain): runs a geo-focused
-//! OathNet Pro enrichment pass that extracts location fields from breach
-//! data and converts them to Coordinates/Address entities. Assembles
-//! high-confidence seeds from free sources first, then batch-queries
-//! OathNet Pro for enrichment.
+//! For Phone targets: derives a coarse country-centroid coordinate from the
+//! ITU E.164 country prefix (offline, no API call).
 //!
 //! Free APIs used:
-//!   - ipapi.co — 1000 req/day, HTTPS, no key required
+//!   - ipapi.co     — 1000 req/day, HTTPS, no key required
 //!   - freeipapi.com — unlimited, HTTPS, no key required
-//!   - OathNet ip-info — included with OathNet Pro key
-//!
-//! Phone prefix geolocation:
-//!   - ITU E.164 country code → country centroid (offline, coarse)
 
 use std::collections::HashSet;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::Value;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -52,7 +23,6 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::fetch_json;
-use crate::util::oathnet::{self, paths, val_str};
 
 const SRC: &str = "geo_intel";
 
@@ -61,9 +31,9 @@ pub struct GeoIntel;
 // ─── ipapi.co response ─────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct IpApiCoResp {
     #[serde(default)]
+    #[allow(dead_code)]
     ip: Option<String>,
     #[serde(default)]
     city: Option<String>,
@@ -92,9 +62,9 @@ struct IpApiCoResp {
 // ─── freeipapi.com response ─────────────────────────────────────────────────
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct FreeIpApiResp {
     #[serde(default, rename = "ipAddress")]
+    #[allow(dead_code)]
     ip_address: Option<String>,
     #[serde(default)]
     latitude: Option<f64>,
@@ -123,7 +93,7 @@ impl Module for GeoIntel {
     }
 
     fn description(&self) -> &'static str {
-        "Multi-source geolocation fusion: free APIs + OathNet Pro batch enrichment"
+        "Free-API IP geolocation (ipapi.co, freeipapi.com) and E.164 phone prefix lookup"
     }
 
     fn priority(&self) -> u8 {
@@ -131,21 +101,11 @@ impl Module for GeoIntel {
     }
 
     fn cost(&self) -> ModuleCost {
-        ModuleCost::KeyGated
+        ModuleCost::Free
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(
-            t.kind,
-            TargetKind::IpAddress
-                | TargetKind::Email
-                | TargetKind::Username
-                | TargetKind::Phone
-                | TargetKind::Domain
-                | TargetKind::Url
-                | TargetKind::FullName
-                | TargetKind::Organisation
-        )
+        matches!(t.kind, TargetKind::IpAddress | TargetKind::Phone)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -155,22 +115,7 @@ impl Module for GeoIntel {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         match target.kind {
             TargetKind::IpAddress => process_ip(target, ctx).await,
-            TargetKind::Email
-            | TargetKind::Username
-            | TargetKind::Domain
-            | TargetKind::FullName
-            | TargetKind::Organisation => process_identity(target, ctx).await,
-            TargetKind::Phone => process_phone(target, ctx).await,
-            TargetKind::Url => {
-                // Extract domain from URL and run the domain identity path
-                if let Some(host) = target.value.split("//").nth(1) {
-                    let domain = host.split('/').next().unwrap_or(host);
-                    let domain_target = Target::new(TargetKind::Domain, domain);
-                    process_identity(&domain_target, ctx).await
-                } else {
-                    Ok(ModuleResult::new())
-                }
-            }
+            TargetKind::Phone => process_phone_prefix_only(target, ctx).await,
             _ => Ok(ModuleResult::new()),
         }
     }
@@ -186,7 +131,7 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
     if !ctx.cancel.is_cancelled()
         && let Ok(data) = fetch_json::<IpApiCoResp>(
             &ctx.http,
-            "geo_intel",
+            SRC,
             &format!("https://ipapi.co/{}/json/", target.value),
         )
         .await
@@ -202,13 +147,10 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
                 e.tag(format!("country:{}", cc.to_uppercase()));
             }
 
-            let mut ev = Evidence::new(
-                "geo_intel",
-                format!("IP geo for {} via ipapi.co", target.value),
-            )
-            .with_attr("latitude", lat.to_string())
-            .with_attr("longitude", lon.to_string())
-            .with_attr("source", "ipapi.co");
+            let mut ev = Evidence::new(SRC, format!("IP geo for {} via ipapi.co", target.value))
+                .with_attr("latitude", lat.to_string())
+                .with_attr("longitude", lon.to_string())
+                .with_attr("source", "ipapi.co");
 
             if let Some(c) = data.city.as_deref() {
                 ev = ev.with_attr("city", c);
@@ -241,7 +183,7 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
     if !ctx.cancel.is_cancelled()
         && let Ok(data) = fetch_json::<FreeIpApiResp>(
             &ctx.http,
-            "geo_intel",
+            SRC,
             &format!("https://freeipapi.com/api/json/{}", target.value),
         )
         .await
@@ -260,7 +202,7 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
             }
 
             let mut ev = Evidence::new(
-                "geo_intel",
+                SRC,
                 format!("IP geo for {} via freeipapi.com", target.value),
             )
             .with_attr("latitude", lat.to_string())
@@ -294,222 +236,9 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
     Ok(result)
 }
 
-// ─── Identity geo enrichment: OathNet Pro batch queries ─────────────────────
+// ─── Phone number geolocation (free — E.164 prefix only) ────────────────────
 
-async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-    let oathnet_key = ctx.key_opt(oathnet::KEY_ENV);
-    if oathnet_key.is_none() {
-        return Ok(ModuleResult::new());
-    }
-    let key = oathnet::resolve_key(oathnet_key);
-
-    let mut result = ModuleResult::new();
-    let mut seen = HashSet::new();
-
-    let field = match target.kind {
-        TargetKind::Email => "email",
-        TargetKind::Username => "username",
-        TargetKind::Domain => "domain",
-        TargetKind::FullName => "full_name",
-        TargetKind::Organisation => "domain",
-        _ => return Ok(result),
-    };
-
-    // Phase 1: Geo-focused breach search — extract location fields
-    let items = match oathnet::search(key, paths::BREACH, field, &target.value, 50).await {
-        Ok(items) => items,
-        Err(_) => return Ok(result),
-    };
-
-    if items.is_empty() {
-        return Ok(result);
-    }
-
-    // Phase 2: Aggregate all location mentions across breach records
-    let mut location_seeds: Vec<LocationSeed> = Vec::new();
-    let mut ip_seeds: Vec<String> = Vec::new();
-
-    for item in &items {
-        // Extract explicit location fields
-        let country = val_str(item, "country");
-        let city = val_str(item, "city");
-        let state = val_str(item, "state");
-        let postal = val_str(item, "postal_code");
-        let address = val_str(item, "address_street");
-        let location = val_str(item, "location");
-        let timezone = val_str(item, "timezone");
-
-        if city.is_some() || country.is_some() || location.is_some() {
-            location_seeds.push(LocationSeed {
-                country: country.clone(),
-                city: city.clone(),
-                state: state.clone(),
-                postal: postal.clone(),
-                address,
-                location,
-                timezone: timezone.clone(),
-                source: val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string()),
-            });
-        }
-
-        // Extract IPs for recursive geo lookup
-        if let Some(ip) = val_str(item, "ip")
-            && ip.len() >= 7
-            && ip_seeds.len() < 10
-            && !ip_seeds.contains(&ip)
-        {
-            ip_seeds.push(ip);
-        }
-    }
-
-    // Phase 3: Build location frequency map and find consensus
-    let consensus = compute_location_consensus(&location_seeds);
-
-    // Emit Address entity from breach location consensus
-    if let Some(ref con) = consensus {
-        let addr_str = &con.address_str;
-        if addr_str.len() >= 4 && seen.insert(format!("@addr:{}", addr_str.to_lowercase())) {
-            let confidence = 0.35 + (0.10 * (con.source_count as f64).min(4.0));
-            let mut e = Entity::new(EntityKind::Address, addr_str, confidence, &ctx.scan_id);
-            e.tag("geoint");
-            e.tag("breach-derived");
-            e.tag("geo-consensus");
-            if let Some(cc) = &con.country_code {
-                e.tag(format!("country:{cc}"));
-            }
-            e.add_evidence(
-                Evidence::new(
-                    "geo_intel",
-                    format!(
-                        "Breach location consensus from {} source(s) for {}",
-                        con.source_count, target.value
-                    ),
-                )
-                .with_attr("city", con.city.as_deref().unwrap_or("-"))
-                .with_attr("country", con.country.as_deref().unwrap_or("-"))
-                .with_attr("sources", con.source_count.to_string())
-                .with_attr("method", "breach-frequency-consensus"),
-            );
-            result.push(e);
-        }
-    }
-
-    // Phase 4: Geo-locate discovered IPs via free APIs
-    if !ctx.cancel.is_cancelled() {
-        for ip in ip_seeds.iter().take(10) {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            if seen.insert(format!("@ip-geo:{ip}"))
-                && let Some((lat, lon, ev_attrs)) = quick_ip_geo(&ctx.http, ip).await
-            {
-                let coords = format!("{lat:.6},{lon:.6}");
-                if seen.insert(format!("@coords:{coords}")) {
-                    let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.55, &ctx.scan_id);
-                    e.tag("geoint");
-                    e.tag("breach-ip");
-                    e.tag("geolocation-lead");
-
-                    let mut ev = Evidence::new(
-                        "geo_intel",
-                        format!("Breach IP {ip} geo for {}", target.value),
-                    )
-                    .with_attr("ip", ip)
-                    .with_attr("latitude", lat.to_string())
-                    .with_attr("longitude", lon.to_string());
-
-                    for (k, v) in &ev_attrs {
-                        ev = ev.with_attr(k, v);
-                    }
-
-                    e.add_evidence(ev);
-                    result.push(e);
-                }
-            }
-        }
-    }
-
-    // Phase 5: OathNet IP info enrichment for high-confidence IPs
-    if !ctx.cancel.is_cancelled() {
-        for ip in ip_seeds.iter().take(8) {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            if let Ok(info) = oathnet::osint(key, paths::IP_INFO, "ip", ip).await {
-                extract_oathnet_ip_geo(
-                    &info,
-                    ip,
-                    &target.value,
-                    &ctx.scan_id,
-                    &mut seen,
-                    &mut result,
-                );
-            }
-        }
-    }
-
-    // Phase 6: Stealer device IP extraction for recursive geo
-    if !ctx.cancel.is_cancelled()
-        && let Ok(victim_items) =
-            oathnet::search(key, paths::VICTIMS, field, &target.value, 10).await
-    {
-        for item in &victim_items {
-            if let Some(ips) = item.get("device_ips").and_then(|v| v.as_array()) {
-                for ip_val in ips.iter().take(8) {
-                    if let Some(ip) = ip_val.as_str()
-                        && ip.parse::<std::net::IpAddr>().is_ok()
-                        && seen.insert(format!("@victim-ip:{ip}"))
-                    {
-                        let mut e = Entity::new(EntityKind::IpAddress, ip, 0.50, &ctx.scan_id);
-                        e.tag("geolocation-lead");
-                        e.tag("victim-device");
-                        e.add_evidence(Evidence::new(
-                            "geo_intel",
-                            format!("Device IP from victim data for {}", target.value),
-                        ));
-                        result.push(e);
-                    }
-                }
-            }
-        }
-    }
-
-    // Phase 7: Timezone inference from breach data
-    if !ctx.cancel.is_cancelled() {
-        let timezones: Vec<&str> = location_seeds
-            .iter()
-            .filter_map(|s| s.timezone.as_deref())
-            .collect();
-        if !timezones.is_empty()
-            && let Some(tz) = mode(&timezones)
-            && let Some((lat, lon, region)) = timezone_to_coordinates(tz)
-        {
-            let coords = format!("{lat:.4},{lon:.4}");
-            if seen.insert(format!("@tz-geo:{coords}")) {
-                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.52, &ctx.scan_id);
-                e.tag("geoint");
-                e.tag("timezone-inferred");
-                e.tag("coarse");
-                e.add_evidence(
-                    Evidence::new(
-                        "geo_intel",
-                        format!("Timezone {tz} → {region} for {}", target.value),
-                    )
-                    .with_attr("timezone", tz)
-                    .with_attr("region", region)
-                    .with_attr("method", "timezone-centroid"),
-                );
-                result.push(e);
-            }
-        }
-    }
-
-    Ok(result)
-}
-
-// ─── Phone number geolocation ───────────────────────────────────────────────
-
-async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+async fn process_phone_prefix_only(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let mut result = ModuleResult::new();
     let mut seen = HashSet::new();
 
@@ -526,7 +255,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
             e.add_evidence(
                 Evidence::new(
                     "geo_intel",
-                    format!("Phone prefix → {country} for {}", target.value),
+                    format!("Phone prefix -> {country} for {}", target.value),
                 )
                 .with_attr("country", country)
                 .with_attr("country_code", cc)
@@ -536,271 +265,10 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         }
     }
 
-    // OathNet Pro breach search for phone geo data (only with explicit key)
-    let oathnet_key = ctx.key_opt(oathnet::KEY_ENV);
-    if !ctx.cancel.is_cancelled() && oathnet_key.is_some() {
-        let key = oathnet::resolve_key(oathnet_key);
-        if let Ok(items) = oathnet::search(key, paths::BREACH, "phone", &target.value, 20).await {
-            let mut location_seeds = Vec::new();
-            let mut ip_seeds = Vec::new();
-
-            for item in &items {
-                let country = val_str(item, "country");
-                let city = val_str(item, "city");
-                let state = val_str(item, "state");
-
-                if city.is_some() || country.is_some() {
-                    location_seeds.push(LocationSeed {
-                        country: country.clone(),
-                        city: city.clone(),
-                        state: state.clone(),
-                        postal: val_str(item, "postal_code"),
-                        address: val_str(item, "address_street"),
-                        location: val_str(item, "location"),
-                        timezone: val_str(item, "timezone"),
-                        source: val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string()),
-                    });
-                }
-
-                if let Some(ip) = val_str(item, "ip")
-                    && ip.len() >= 7
-                    && ip_seeds.len() < 5
-                    && !ip_seeds.contains(&ip)
-                {
-                    ip_seeds.push(ip);
-                }
-            }
-
-            if let Some(con) = compute_location_consensus(&location_seeds)
-                && seen.insert(format!("@phone-addr:{}", con.address_str.to_lowercase()))
-            {
-                let confidence = 0.35 + (0.10 * (con.source_count as f64).min(4.0));
-                let mut e = Entity::new(
-                    EntityKind::Address,
-                    &con.address_str,
-                    confidence,
-                    &ctx.scan_id,
-                );
-                e.tag("geoint");
-                e.tag("breach-derived");
-                e.add_evidence(
-                    Evidence::new(
-                        "geo_intel",
-                        format!("Phone breach location from {} source(s)", con.source_count),
-                    )
-                    .with_attr("city", con.city.as_deref().unwrap_or("-"))
-                    .with_attr("country", con.country.as_deref().unwrap_or("-")),
-                );
-                result.push(e);
-            }
-
-            // Geo-locate discovered IPs
-            for ip in ip_seeds.iter().take(8) {
-                if ctx.cancel.is_cancelled() {
-                    break;
-                }
-                if seen.insert(format!("@ip-geo:{ip}"))
-                    && let Some((lat, lon, ev_attrs)) = quick_ip_geo(&ctx.http, ip).await
-                {
-                    let coords = format!("{lat:.6},{lon:.6}");
-                    if seen.insert(format!("@coords:{coords}")) {
-                        let mut e =
-                            Entity::new(EntityKind::Coordinates, &coords, 0.50, &ctx.scan_id);
-                        e.tag("geoint");
-                        e.tag("breach-ip");
-                        let mut ev = Evidence::new(SRC, format!("Phone breach IP {ip} → {coords}"))
-                            .with_attr("ip", ip);
-                        for (k, v) in &ev_attrs {
-                            ev = ev.with_attr(k, v);
-                        }
-                        e.add_evidence(ev);
-                        result.push(e);
-                    }
-                }
-            }
-        }
-    }
-
     Ok(result)
 }
 
-// ─── Quick IP geo via freeipapi.com (no key, no rate limit) ─────────────────
-
-async fn quick_ip_geo(
-    http: &reqwest::Client,
-    ip: &str,
-) -> Option<(f64, f64, Vec<(String, String)>)> {
-    let url = format!("https://freeipapi.com/api/json/{ip}");
-    let data: FreeIpApiResp = fetch_json(http, "geo_intel", &url).await.ok()?;
-
-    let lat = data.latitude?;
-    let lon = data.longitude?;
-    if lat == 0.0 && lon == 0.0 {
-        return None;
-    }
-
-    let mut attrs = Vec::new();
-    attrs.push(("source".to_string(), "freeipapi.com".to_string()));
-    if let Some(c) = data.city_name {
-        attrs.push(("city".to_string(), c));
-    }
-    if let Some(r) = data.region_name {
-        attrs.push(("region".to_string(), r));
-    }
-    if let Some(c) = data.country_name {
-        attrs.push(("country".to_string(), c));
-    }
-
-    Some((lat, lon, attrs))
-}
-
-// ─── OathNet IP info geo extraction ─────────────────────────────────────────
-
-fn extract_oathnet_ip_geo(
-    data: &Value,
-    ip: &str,
-    target_value: &str,
-    scan_id: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    let lat = data.get("lat").and_then(serde_json::Value::as_f64);
-    let lon = data.get("lon").and_then(serde_json::Value::as_f64);
-
-    if let (Some(lat), Some(lon)) = (lat, lon) {
-        if lat == 0.0 && lon == 0.0 {
-            return;
-        }
-        let coords = format!("{lat:.6},{lon:.6}");
-        if !seen.insert(format!("@oathnet-geo:{coords}")) {
-            return;
-        }
-
-        let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.60, scan_id);
-        e.tag("geoint");
-        e.tag("oathnet-pro");
-        e.tag("breach-ip");
-
-        let mut ev = Evidence::new(
-            "geo_intel",
-            format!("OathNet IP info: {ip} → {coords} for {target_value}"),
-        )
-        .with_attr("ip", ip)
-        .with_attr("source", "OathNet ip-info");
-
-        for (field, attr) in [
-            ("city", "city"),
-            ("regionName", "region"),
-            ("country", "country"),
-            ("countryCode", "country_code"),
-            ("isp", "isp"),
-            ("org", "org"),
-            ("timezone", "timezone"),
-        ] {
-            if let Some(v) = data.get(field).and_then(|v| v.as_str()) {
-                ev = ev.with_attr(attr, v);
-            }
-        }
-
-        e.add_evidence(ev);
-        result.push(e);
-    }
-}
-
-// ─── Location consensus engine ──────────────────────────────────────────────
-
-#[allow(dead_code)]
-struct LocationSeed {
-    country: Option<String>,
-    city: Option<String>,
-    state: Option<String>,
-    postal: Option<String>,
-    address: Option<String>,
-    location: Option<String>,
-    timezone: Option<String>,
-    source: String,
-}
-
-#[allow(dead_code)]
-struct LocationConsensus {
-    city: Option<String>,
-    state: Option<String>,
-    country: Option<String>,
-    country_code: Option<String>,
-    address_str: String,
-    source_count: usize,
-}
-
-fn compute_location_consensus(seeds: &[LocationSeed]) -> Option<LocationConsensus> {
-    if seeds.is_empty() {
-        return None;
-    }
-
-    let countries: Vec<&str> = seeds
-        .iter()
-        .filter_map(|s| s.country.as_deref())
-        .filter(|c| !c.is_empty())
-        .collect();
-    let cities: Vec<&str> = seeds
-        .iter()
-        .filter_map(|s| s.city.as_deref())
-        .filter(|c| !c.is_empty())
-        .collect();
-    let states: Vec<&str> = seeds
-        .iter()
-        .filter_map(|s| s.state.as_deref())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    let top_country = mode(&countries).map(String::from);
-    let top_city = mode(&cities).map(String::from);
-    let top_state = mode(&states).map(String::from);
-
-    if top_country.is_none() && top_city.is_none() {
-        return None;
-    }
-
-    let unique_sources: HashSet<&str> = seeds.iter().map(|s| s.source.as_str()).collect();
-
-    let addr_parts: Vec<&str> = [
-        top_city.as_deref(),
-        top_state.as_deref(),
-        top_country.as_deref(),
-    ]
-    .iter()
-    .filter_map(|p| *p)
-    .filter(|p| !p.is_empty())
-    .collect();
-
-    let address_str = addr_parts.join(", ");
-
-    let country_code = top_country.as_deref().and_then(country_name_to_code);
-
-    Some(LocationConsensus {
-        city: top_city,
-        state: top_state,
-        country: top_country,
-        country_code: country_code.map(String::from),
-        address_str,
-        source_count: unique_sources.len(),
-    })
-}
-
-fn mode<'a>(items: &[&'a str]) -> Option<&'a str> {
-    if items.is_empty() {
-        return None;
-    }
-    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for &item in items {
-        *counts.entry(item).or_default() += 1;
-    }
-    counts
-        .into_iter()
-        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)))
-        .map(|(val, _)| val)
-}
-
-// ─── Phone prefix → country ────────────────────────────────────────────────
+// ─── Phone prefix -> country ────────────────────────────────────────────────
 
 fn phone_prefix_to_country(phone: &str) -> Option<(&'static str, &'static str, f64, f64)> {
     if !phone.is_ascii() {
@@ -900,148 +368,26 @@ fn phone_prefix_to_country(phone: &str) -> Option<(&'static str, &'static str, f
     None
 }
 
-// ─── Timezone → coordinates ─────────────────────────────────────────────────
-
-fn timezone_to_coordinates(tz: &str) -> Option<(f64, f64, &'static str)> {
-    let tz_lower = tz.to_lowercase();
-    match tz_lower.as_str() {
-        // Americas
-        "america/new_york" | "us/eastern" | "est" | "edt" => {
-            Some((40.7128, -74.0060, "US Eastern"))
-        }
-        "america/chicago" | "us/central" | "cst" | "cdt" => Some((41.8781, -87.6298, "US Central")),
-        "america/denver" | "us/mountain" | "mst" | "mdt" => {
-            Some((39.7392, -104.9903, "US Mountain"))
-        }
-        "america/los_angeles" | "us/pacific" | "pst" | "pdt" => {
-            Some((34.0522, -118.2437, "US Pacific"))
-        }
-        "america/toronto" => Some((43.6532, -79.3832, "Eastern Canada")),
-        "america/vancouver" => Some((49.2827, -123.1207, "Western Canada")),
-        "america/sao_paulo" | "brazil/east" => Some((-23.5505, -46.6333, "Brazil")),
-        "america/buenos_aires" | "america/argentina/buenos_aires" => {
-            Some((-34.6037, -58.3816, "Argentina"))
-        }
-        "america/mexico_city" => Some((19.4326, -99.1332, "Mexico")),
-        "america/bogota" => Some((4.7110, -74.0721, "Colombia")),
-        "america/lima" => Some((-12.0464, -77.0428, "Peru")),
-        "america/santiago" => Some((-33.4489, -70.6693, "Chile")),
-        // Europe
-        "europe/london" | "gmt" | "bst" => Some((51.5074, -0.1278, "London/UK")),
-        "europe/paris" | "cet" | "cest" => Some((48.8566, 2.3522, "Paris/France")),
-        "europe/berlin" => Some((52.5200, 13.4050, "Berlin/Germany")),
-        "europe/rome" => Some((41.9028, 12.4964, "Rome/Italy")),
-        "europe/madrid" => Some((40.4168, -3.7038, "Madrid/Spain")),
-        "europe/amsterdam" => Some((52.3676, 4.9041, "Amsterdam/Netherlands")),
-        "europe/brussels" => Some((50.8503, 4.3517, "Brussels/Belgium")),
-        "europe/zurich" => Some((47.3769, 8.5417, "Zurich/Switzerland")),
-        "europe/vienna" => Some((48.2082, 16.3738, "Vienna/Austria")),
-        "europe/stockholm" => Some((59.3293, 18.0686, "Stockholm/Sweden")),
-        "europe/oslo" => Some((59.9139, 10.7522, "Oslo/Norway")),
-        "europe/helsinki" => Some((60.1699, 24.9384, "Helsinki/Finland")),
-        "europe/copenhagen" => Some((55.6761, 12.5683, "Copenhagen/Denmark")),
-        "europe/warsaw" => Some((52.2297, 21.0122, "Warsaw/Poland")),
-        "europe/bucharest" => Some((44.4268, 26.1025, "Bucharest/Romania")),
-        "europe/prague" => Some((50.0755, 14.4378, "Prague/Czech Republic")),
-        "europe/athens" => Some((37.9838, 23.7275, "Athens/Greece")),
-        "europe/lisbon" => Some((38.7223, -9.1393, "Lisbon/Portugal")),
-        "europe/dublin" => Some((53.3498, -6.2603, "Dublin/Ireland")),
-        "europe/moscow" | "msk" => Some((55.7558, 37.6173, "Moscow/Russia")),
-        "europe/istanbul" => Some((41.0082, 28.9784, "Istanbul/Turkey")),
-        "europe/kyiv" | "europe/kiev" => Some((50.4504, 30.5234, "Kyiv/Ukraine")),
-        // Asia/Pacific
-        "asia/tokyo" | "jst" => Some((35.6762, 139.6503, "Tokyo/Japan")),
-        "asia/seoul" | "kst" => Some((37.5665, 126.9780, "Seoul/South Korea")),
-        "asia/shanghai" | "asia/hong_kong" | "hkt" => Some((31.2304, 121.4737, "Shanghai/China")),
-        "asia/kolkata" | "asia/calcutta" | "ist" => Some((28.6139, 77.2090, "Delhi/India")),
-        "asia/singapore" | "sgt" => Some((1.3521, 103.8198, "Singapore")),
-        "asia/bangkok" | "ict" => Some((13.7563, 100.5018, "Bangkok/Thailand")),
-        "asia/jakarta" | "wib" => Some((-6.2088, 106.8456, "Jakarta/Indonesia")),
-        "asia/manila" | "pht" => Some((14.5995, 120.9842, "Manila/Philippines")),
-        "asia/ho_chi_minh" | "asia/saigon" => Some((10.8231, 106.6297, "Vietnam")),
-        "asia/kuala_lumpur" | "myt" => Some((3.1390, 101.6869, "Kuala Lumpur/Malaysia")),
-        "asia/dubai" | "gst" => Some((25.2048, 55.2708, "Dubai/UAE")),
-        "asia/riyadh" => Some((24.7136, 46.6753, "Riyadh/Saudi Arabia")),
-        "asia/tehran" | "irst" => Some((35.6892, 51.3890, "Tehran/Iran")),
-        "asia/jerusalem" | "asia/tel_aviv" => Some((31.7683, 35.2137, "Jerusalem/Israel")),
-        // Oceania
-        "australia/sydney" | "aest" | "aedt" => Some((-33.8688, 151.2093, "Sydney/Australia")),
-        "australia/melbourne" => Some((-37.8136, 144.9631, "Melbourne/Australia")),
-        "australia/brisbane" => Some((-27.4698, 153.0251, "Brisbane/Australia")),
-        "australia/perth" | "awst" => Some((-31.9505, 115.8605, "Perth/Australia")),
-        "pacific/auckland" | "nzst" | "nzdt" => Some((-36.8485, 174.7633, "Auckland/New Zealand")),
-        // Africa
-        "africa/cairo" | "eet" => Some((30.0444, 31.2357, "Cairo/Egypt")),
-        "africa/johannesburg" | "sast" => Some((-26.2041, 28.0473, "Johannesburg/South Africa")),
-        "africa/nairobi" | "eat" => Some((-1.2921, 36.8219, "Nairobi/Kenya")),
-        "africa/lagos" | "wat" => Some((6.5244, 3.3792, "Lagos/Nigeria")),
-        "africa/casablanca" => Some((33.5731, -7.5898, "Casablanca/Morocco")),
-        _ => None,
-    }
-}
-
-// ─── Country name → code ────────────────────────────────────────────────────
-
-fn country_name_to_code(name: &str) -> Option<&'static str> {
-    let lower = name.to_lowercase();
-    match lower.as_str() {
-        "united states" | "us" | "usa" => Some("US"),
-        "united kingdom" | "uk" | "gb" | "great britain" => Some("GB"),
-        "australia" | "au" => Some("AU"),
-        "canada" | "ca" => Some("CA"),
-        "germany" | "de" | "deutschland" => Some("DE"),
-        "france" | "fr" => Some("FR"),
-        "italy" | "it" | "italia" => Some("IT"),
-        "spain" | "es" | "españa" => Some("ES"),
-        "japan" | "jp" => Some("JP"),
-        "south korea" | "kr" | "korea" => Some("KR"),
-        "china" | "cn" => Some("CN"),
-        "india" | "in" => Some("IN"),
-        "brazil" | "br" | "brasil" => Some("BR"),
-        "russia" | "ru" => Some("RU"),
-        "netherlands" | "nl" => Some("NL"),
-        "switzerland" | "ch" => Some("CH"),
-        "sweden" | "se" => Some("SE"),
-        "norway" | "no" => Some("NO"),
-        "new zealand" | "nz" => Some("NZ"),
-        "singapore" | "sg" => Some("SG"),
-        "indonesia" | "id" => Some("ID"),
-        "mexico" | "mx" => Some("MX"),
-        "argentina" | "ar" => Some("AR"),
-        "south africa" | "za" => Some("ZA"),
-        "turkey" | "tr" | "türkiye" => Some("TR"),
-        "poland" | "pl" => Some("PL"),
-        "ukraine" | "ua" => Some("UA"),
-        "israel" | "il" => Some("IL"),
-        "egypt" | "eg" => Some("EG"),
-        "nigeria" | "ng" => Some("NG"),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::scan::TargetKind;
 
     #[test]
-    fn accepts_geo_relevant_targets() {
+    fn accepts_ip_and_phone() {
         let m = GeoIntel;
         assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
-        assert!(m.accepts(&Target::new(TargetKind::Email, "x@y")));
-        assert!(m.accepts(&Target::new(TargetKind::Username, "alice")));
         assert!(m.accepts(&Target::new(TargetKind::Phone, "+61400000000")));
-        assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
-        assert!(m.accepts(&Target::new(TargetKind::Url, "https://example.com")));
-        assert!(m.accepts(&Target::new(TargetKind::FullName, "John Doe")));
-        assert!(m.accepts(&Target::new(TargetKind::Organisation, "Acme Corp")));
     }
 
     #[test]
-    fn rejects_non_geo_targets() {
+    fn rejects_non_ip_phone_targets() {
         let m = GeoIntel;
         assert!(!m.accepts(&Target::new(TargetKind::Coordinates, "0,0")));
-        assert!(!m.accepts(&Target::new(TargetKind::Address, "Brisbane")));
+        assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y")));
+        assert!(!m.accepts(&Target::new(TargetKind::Domain, "x.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::Username, "alice")));
+        assert!(!m.accepts(&Target::new(TargetKind::FullName, "Alice Bob")));
     }
 
     #[test]
@@ -1051,8 +397,8 @@ mod tests {
     }
 
     #[test]
-    fn cost_is_key_gated() {
-        assert!(matches!(GeoIntel.cost(), ModuleCost::KeyGated));
+    fn cost_is_free() {
+        assert!(matches!(GeoIntel.cost(), ModuleCost::Free));
     }
 
     #[test]
@@ -1085,105 +431,6 @@ mod tests {
     #[test]
     fn phone_prefix_unknown() {
         assert!(phone_prefix_to_country("000").is_none());
-    }
-
-    #[test]
-    fn timezone_nyc() {
-        let (lat, lon, region) = timezone_to_coordinates("America/New_York").unwrap();
-        assert!((lat - 40.7128).abs() < 0.01);
-        assert!((lon - (-74.0060)).abs() < 0.01);
-        assert!(region.contains("Eastern"));
-    }
-
-    #[test]
-    fn timezone_sydney() {
-        let (lat, _, region) = timezone_to_coordinates("Australia/Sydney").unwrap();
-        assert!(lat < 0.0);
-        assert!(region.contains("Sydney"));
-    }
-
-    #[test]
-    fn timezone_unknown() {
-        assert!(timezone_to_coordinates("Unknown/Zone").is_none());
-    }
-
-    #[test]
-    fn consensus_single_source() {
-        let seeds = vec![LocationSeed {
-            country: Some("Australia".into()),
-            city: Some("Brisbane".into()),
-            state: Some("QLD".into()),
-            postal: None,
-            address: None,
-            location: None,
-            timezone: None,
-            source: "linkedin".into(),
-        }];
-        let con = compute_location_consensus(&seeds).unwrap();
-        assert_eq!(con.city.as_deref(), Some("Brisbane"));
-        assert_eq!(con.country.as_deref(), Some("Australia"));
-        assert_eq!(con.source_count, 1);
-        assert!(con.address_str.contains("Brisbane"));
-    }
-
-    #[test]
-    fn consensus_multiple_sources() {
-        let seeds = vec![
-            LocationSeed {
-                country: Some("US".into()),
-                city: Some("New York".into()),
-                state: None,
-                postal: None,
-                address: None,
-                location: None,
-                timezone: None,
-                source: "linkedin".into(),
-            },
-            LocationSeed {
-                country: Some("US".into()),
-                city: Some("New York".into()),
-                state: None,
-                postal: None,
-                address: None,
-                location: None,
-                timezone: None,
-                source: "adobe".into(),
-            },
-            LocationSeed {
-                country: Some("US".into()),
-                city: Some("Los Angeles".into()),
-                state: None,
-                postal: None,
-                address: None,
-                location: None,
-                timezone: None,
-                source: "myspace".into(),
-            },
-        ];
-        let con = compute_location_consensus(&seeds).unwrap();
-        assert_eq!(con.city.as_deref(), Some("New York"));
-        assert_eq!(con.country.as_deref(), Some("US"));
-        assert_eq!(con.source_count, 3);
-    }
-
-    #[test]
-    fn consensus_empty() {
-        assert!(compute_location_consensus(&[]).is_none());
-    }
-
-    #[test]
-    fn country_name_to_code_works() {
-        assert_eq!(country_name_to_code("Australia"), Some("AU"));
-        assert_eq!(country_name_to_code("united states"), Some("US"));
-        assert_eq!(country_name_to_code("United Kingdom"), Some("GB"));
-        assert_eq!(country_name_to_code("Unknown Country"), None);
-    }
-
-    #[test]
-    fn mode_finds_most_common() {
-        assert_eq!(mode(&["a", "b", "a", "c", "a"]), Some("a"));
-        assert_eq!(mode(&["x"]), Some("x"));
-        assert_eq!(mode(&[]), None);
     }
 
     #[test]

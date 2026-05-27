@@ -21,6 +21,8 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
+const SRC: &str = "webserver_banner";
+
 pub struct WebserverBanner;
 
 /// Headers we surface as evidence. Lower-case because `reqwest`
@@ -56,7 +58,10 @@ impl Module for WebserverBanner {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url
+        )
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -66,18 +71,30 @@ impl Module for WebserverBanner {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let domain = target.value.trim();
-        if domain.is_empty() || domain.contains('/') {
+        let (host, port) = match target.kind {
+            TargetKind::Url => match url::Url::parse(target.value.trim()) {
+                Ok(u) => (u.host_str().unwrap_or("").to_string(), u.port()),
+                Err(_) => return Ok(ModuleResult::new()),
+            },
+            _ => (target.value.trim().to_string(), None),
+        };
+        if host.is_empty() || host.contains('/') {
             return Ok(ModuleResult::new());
         }
 
+        let port_suffix = port.map_or(String::new(), |p| format!(":{p}"));
         for scheme in ["https", "http"] {
-            let url = format!("{scheme}://{domain}/");
+            let url = format!("{scheme}://{host}{port_suffix}/");
             let Ok(resp) = ctx.http.head(&url).send().await else {
                 continue;
             };
             let status = resp.status();
             let captured = capture_headers(resp.headers());
+            for (_, v) in resp.headers() {
+                if let Ok(val) = v.to_str() {
+                    crate::util::http::scan_for_api_keys_with_source(val, "http_header");
+                }
+            }
             if captured.is_empty() {
                 continue;
             }
@@ -86,12 +103,9 @@ impl Module for WebserverBanner {
             entity.tag(crate::core::tags::WEB);
             apply_stack_tags(&mut entity, &captured);
 
-            let mut ev = Evidence::new(
-                "webserver_banner",
-                format!("HTTP headers from {scheme} HEAD of {domain}"),
-            )
-            .with_attr("scheme", scheme)
-            .with_attr("status", status.as_u16().to_string());
+            let mut ev = Evidence::new(SRC, format!("HTTP headers from {scheme} HEAD of {host}"))
+                .with_attr("scheme", scheme)
+                .with_attr("status", status.as_u16().to_string());
             for (h, v) in &captured {
                 // Clip individual values so a verbose CSP doesn't bloat
                 // the evidence row past sanity.
@@ -170,10 +184,12 @@ mod tests {
     use crate::core::entity::EntityKind;
 
     #[test]
-    fn accepts_only_domain() {
+    fn accepts_domain_ip_and_url() {
         let m = WebserverBanner;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x")));
-        assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+        assert!(m.accepts(&Target::new(TargetKind::Url, "https://example.com/path")));
+        assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b")));
     }
 
     #[test]

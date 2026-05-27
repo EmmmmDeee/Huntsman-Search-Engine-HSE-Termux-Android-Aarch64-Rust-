@@ -32,14 +32,14 @@ use crate::core::{
 };
 use crate::util::http::urlencode;
 
+const SRC: &str = "username_search";
+
 pub struct UsernameSearch;
 
 /// One site to probe. Kept inline (rather than loaded from a JSON file)
 /// so the binary stays self-contained and the list is reviewable in PR.
-
 mod sites;
-use sites::{SITES, Method, Detect};
-
+use sites::{Detect, Method, SITES};
 
 #[async_trait]
 impl Module for UsernameSearch {
@@ -108,6 +108,7 @@ impl Module for UsernameSearch {
                             Ok(t) => t,
                             Err(_) => return ProbeResult::Error,
                         };
+                        scan_text_for_keys(&body);
                         if body.contains(needle) {
                             ProbeResult::Found(url)
                         } else {
@@ -122,6 +123,7 @@ impl Module for UsernameSearch {
                             Ok(t) => t,
                             Err(_) => return ProbeResult::Error,
                         };
+                        scan_text_for_keys(&body);
                         if body.contains(needle) {
                             ProbeResult::NotFound
                         } else {
@@ -148,14 +150,11 @@ impl Module for UsernameSearch {
                 e.tag(format!("platform:{site_name}"));
                 e.tag(format!("cat:{site_cat}"));
                 e.add_evidence(
-                    Evidence::new(
-                        "username_search",
-                        format!("@{username} has a profile on {site_name}"),
-                    )
-                    .with_attr("platform", *site_name)
-                    .with_attr("category", *site_cat)
-                    .with_attr("username", username)
-                    .with_attr("url", url),
+                    Evidence::new(SRC, format!("@{username} has a profile on {site_name}"))
+                        .with_attr("platform", *site_name)
+                        .with_attr("category", *site_cat)
+                        .with_attr("username", username)
+                        .with_attr("url", url),
                 );
                 module_result.push(e);
             }
@@ -201,7 +200,7 @@ impl Module for UsernameSearch {
                 .collect();
             summary.add_evidence(
                 Evidence::new(
-                    "username_search",
+                    SRC,
                     format!(
                         "@{username} found on {n} platform(s): {list}",
                         n = found_names.len(),
@@ -249,6 +248,23 @@ trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
 }
 
 impl<F> WithSite for F where F: std::future::Future<Output = ProbeResult> + Send + 'static {}
+
+fn scan_text_for_keys(body: &str) {
+    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    let pool = crate::util::key_pool::global_pool();
+    for word in body.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {
+        let t = word.trim();
+        if t.len() >= 16
+            && t.len() <= 200
+            && let Some((service, key_val)) = identify_api_key(t)
+        {
+            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.notes = Some("Profile page body".into());
+            pool.add(service, entry);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

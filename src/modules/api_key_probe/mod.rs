@@ -22,10 +22,8 @@ const SRC: &str = "api_key_probe";
 
 pub struct ApiKeyProbe;
 
-
 mod probes;
 use probes::probes;
-
 
 #[async_trait]
 impl Module for ApiKeyProbe {
@@ -118,7 +116,7 @@ impl Module for ApiKeyProbe {
             entity.tag("validated");
 
             let mut ev = Evidence::new(
-                "api_key_probe",
+                SRC,
                 format!(
                     "API key identified as {} ({})",
                     probe.service, probe.category
@@ -183,7 +181,7 @@ impl Module for ApiKeyProbe {
 
             let svc_list: Vec<&str> = identified.iter().map(|(s, _, _)| *s).collect();
             let mut ev = Evidence::new(
-                "api_key_probe",
+                SRC,
                 format!(
                     "Key identified across {} service(s): {}",
                     identified.len(),

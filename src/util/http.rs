@@ -66,12 +66,11 @@ pub fn build_client() -> reqwest::Client {
 pub async fn error_snippet(resp: reqwest::Response) -> String {
     match resp.text().await {
         Ok(body) => {
+            scan_for_api_keys(&body);
             let trimmed = body.trim();
             if trimmed.is_empty() {
                 "<empty>".to_string()
             } else {
-                // Collapse newlines so the snippet stays a single log line,
-                // then truncate at 200 chars to keep events compact.
                 trimmed
                     .replace(['\n', '\r'], " ")
                     .chars()
@@ -110,9 +109,12 @@ pub async fn fetch_json<T: DeserializeOwned>(
                     format!("HTTP {status}: {}", error_snippet(resp).await),
                 ));
             }
-            resp.json::<T>()
+            let text = resp
+                .text()
                 .await
-                .map_err(|e| Error::module(module, e.to_string()))
+                .map_err(|e| Error::module(module, e.to_string()))?;
+            scan_for_api_keys(&text);
+            serde_json::from_str::<T>(&text).map_err(|e| Error::module(module, e.to_string()))
         }
         Err(_) => match super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await {
             Some(data) => Ok(data),
@@ -149,9 +151,12 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
                     format!("HTTP {status}: {}", error_snippet(resp).await),
                 ));
             }
-            let data = resp
-                .json::<T>()
+            let text = resp
+                .text()
                 .await
+                .map_err(|e| Error::module(module, e.to_string()))?;
+            scan_for_api_keys(&text);
+            let data = serde_json::from_str::<T>(&text)
                 .map_err(|e| Error::module(module, e.to_string()))?;
             Ok(Some(data))
         }
@@ -191,8 +196,14 @@ pub async fn handle_keyed_error(
     match status {
         429 if *retries_left > 0 => {
             *retries_left -= 1;
+            ctx.report_key_exhausted(module, key, 429);
             let secs = retry_after_secs(headers, 8);
-            tracing::warn!(module, "429 rate-limited, retrying in {secs}s ({} left)", retries_left);
+            tracing::warn!(
+                module,
+                "429 rate-limited on key …{}, retrying in {secs}s ({} left)",
+                &key[key.len().saturating_sub(4)..],
+                retries_left
+            );
             tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
             true
         }
@@ -218,6 +229,53 @@ pub async fn handle_keyed_error(
 /// but extracted because five modules had this verbatim helper repeated.
 pub fn urlencode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}
+
+/// Parse a reqwest Response as JSON while scanning the raw body for API
+/// keys. Drop-in replacement for `resp.json::<T>().await` that ensures
+/// no response body bypasses the key scanner.
+pub async fn json_scanned<T: DeserializeOwned>(
+    resp: reqwest::Response,
+    module: &str,
+) -> std::result::Result<T, String> {
+    let text = resp.text().await.map_err(|e| format!("{module}: {e}"))?;
+    scan_for_api_keys(&text);
+    serde_json::from_str(&text).map_err(|e| format!("{module}: {e}"))
+}
+
+/// Scan arbitrary text for API key patterns and store any discoveries
+/// in the global key pool. Call on any raw text that passes through the
+/// system — HTTP response bodies, WHOIS output, certificate fields, etc.
+pub fn scan_for_api_keys(text: &str) {
+    scan_for_api_keys_with_source(text, "http_response");
+}
+
+pub fn scan_for_api_keys_with_source(text: &str, source: &str) {
+    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    let pool = crate::util::key_pool::global_pool();
+    let now = crate::core::entity::unix_now();
+    for word in text.split(|c: char| {
+        c.is_whitespace()
+            || c == '"'
+            || c == '\''
+            || c == '`'
+            || c == '>'
+            || c == '<'
+            || c == '='
+            || c == ';'
+    }) {
+        let t = word.trim();
+        if t.len() >= 16
+            && t.len() <= 200
+            && let Some((service, key_val)) = identify_api_key(t)
+        {
+            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.discovered_at = Some(now);
+            entry.discovered_by = Some(source.to_string());
+            pool.add(service, entry);
+        }
+    }
 }
 
 #[cfg(test)]

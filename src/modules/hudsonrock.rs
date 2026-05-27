@@ -21,6 +21,8 @@ use crate::core::{
 };
 use crate::util::http::{fetch_json_or_404, urlencode};
 
+const SRC: &str = "hudsonrock";
+
 pub struct HudsonRock;
 
 #[derive(Deserialize)]
@@ -91,8 +93,7 @@ impl Module for HudsonRock {
             _ => return Ok(ModuleResult::new()),
         };
 
-        let Some(data): Option<CavalierResp> =
-            fetch_json_or_404(&ctx.http, "hudsonrock", &url).await?
+        let Some(data): Option<CavalierResp> = fetch_json_or_404(&ctx.http, SRC, &url).await?
         else {
             return Ok(ModuleResult::new());
         };
@@ -121,7 +122,7 @@ impl Module for HudsonRock {
             }
 
             let mut ev = Evidence::new(
-                "hudsonrock",
+                SRC,
                 format!("Stealer log: {cred_count} credentials on compromised machine"),
             )
             .with_attr(
@@ -164,23 +165,25 @@ impl Module for HudsonRock {
 
         let mut seen_ips: std::collections::HashSet<String> = std::collections::HashSet::new();
         for stealer in &data.stealers {
-            if let Some(ip) = stealer.ip.as_deref() {
-                if !ip.is_empty() && ip.contains('.') && seen_ips.insert(ip.to_string()) {
-                    let mut e = Entity::new(
-                        crate::core::entity::EntityKind::IpAddress,
-                        ip,
-                        0.70,
-                        &ctx.scan_id,
-                    );
-                    e.tag(tags::STEALER_LOG);
-                    e.tag("hudsonrock");
-                    e.tag(crate::core::tags::GEOLOCATION_LEAD);
-                    e.add_evidence(Evidence::new(
-                        "hudsonrock",
-                        format!("Victim device IP from stealer log"),
-                    ));
-                    result.push(e);
-                }
+            if let Some(ip) = stealer.ip.as_deref()
+                && !ip.is_empty()
+                && ip.contains('.')
+                && seen_ips.insert(ip.to_string())
+            {
+                let mut e = Entity::new(
+                    crate::core::entity::EntityKind::IpAddress,
+                    ip,
+                    0.70,
+                    &ctx.scan_id,
+                );
+                e.tag(tags::STEALER_LOG);
+                e.tag("hudsonrock");
+                e.tag(crate::core::tags::GEOLOCATION_LEAD);
+                e.add_evidence(Evidence::new(
+                    "hudsonrock",
+                    "Victim device IP from stealer log".to_string(),
+                ));
+                result.push(e);
             }
         }
 

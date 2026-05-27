@@ -44,6 +44,8 @@ struct Entry {
     created_at: Option<String>,
 }
 
+const SRC: &str = "dehashed";
+
 pub struct DeHashed;
 
 #[async_trait]
@@ -105,11 +107,11 @@ impl Module for DeHashed {
                 .header("Accept", "application/json")
                 .send()
                 .await
-                .map_err(|e| Error::module("dehashed", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, "dehashed", key, ctx).await {
+                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
                 return Err(Error::module(
@@ -120,7 +122,7 @@ impl Module for DeHashed {
             break resp
                 .json()
                 .await
-                .map_err(|e| Error::module("dehashed", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
         };
 
         let entries = body.entries.unwrap_or_default();
@@ -142,7 +144,7 @@ impl Module for DeHashed {
         );
 
         let mut ev = Evidence::new(
-            "dehashed",
+            SRC,
             format!("DeHashed: {total} breach record(s) for {selector}={value}"),
         )
         .with_attr("hits", total.to_string())

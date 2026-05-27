@@ -1,9 +1,13 @@
 use std::collections::HashSet;
 
-use crate::core::entity::{Entity, EntityKind};
 use super::{Correlation, Severity};
+use crate::core::entity::{Entity, EntityKind};
 
-pub(super) fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+pub(super) fn rule_au_001_multi_breach(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     const BREACH_SOURCES: &[&str] = &[
         "hudsonrock",
         "xposed_or_not",
@@ -12,6 +16,7 @@ pub(super) fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u
         "hibp",
         "oathnet_pro",
         "search_engines:oathnet",
+        "emailrep",
     ];
     let mut out = Vec::new();
     for e in entities.iter().filter(|e| e.kind == EntityKind::Email) {
@@ -43,7 +48,11 @@ pub(super) fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u
     out
 }
 
-pub(super) fn rule_au_002_identity_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+pub(super) fn rule_au_002_identity_cluster(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     let emails: Vec<&Entity> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Email)
@@ -81,10 +90,21 @@ pub(super) fn rule_au_002_identity_cluster(entities: &[Entity], scan_id: &str, t
     }]
 }
 
-pub(super) fn rule_au_003_high_corroboration(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+pub(super) fn rule_au_003_high_corroboration(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let min_corr = |kind: &crate::core::entity::EntityKind| -> u32 {
+        match kind {
+            EntityKind::Domain | EntityKind::Url => 5,
+            EntityKind::IpAddress => 4,
+            _ => 3,
+        }
+    };
     entities
         .iter()
-        .filter(|e| e.corroboration >= 3)
+        .filter(|e| e.corroboration >= min_corr(&e.kind))
         .map(|e| Correlation {
             rule_id: "AU-003".into(),
             rule_name: "High cross-source corroboration".into(),
@@ -132,7 +152,11 @@ pub(super) fn rule_au_004_malicious_infrastructure(
         .collect()
 }
 
-pub(super) fn rule_au_005_anonymous_network(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+pub(super) fn rule_au_005_anonymous_network(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     const ANON_TAGS: &[&str] = &["tor-exit", "tor", "anonymous-network", "anonymous-vpn"];
     entities
         .iter()
@@ -157,7 +181,11 @@ pub(super) fn rule_au_005_anonymous_network(entities: &[Entity], scan_id: &str, 
         .collect()
 }
 
-pub(super) fn rule_au_006_proxy_vpn(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+pub(super) fn rule_au_006_proxy_vpn(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     const ANON_TAGS: &[&str] = &["tor-exit", "tor", "anonymous-network", "anonymous-vpn"];
     entities
         .iter()
@@ -221,7 +249,11 @@ pub(super) fn rule_au_007_high_risk_reputation(
         .collect()
 }
 
-pub(super) fn rule_au_008_exposed_service(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+pub(super) fn rule_au_008_exposed_service(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     const EXPOSURE_TAGS: &[&str] = &["vulnerable", "ssh-exposed", "leak"];
     entities
         .iter()
@@ -251,7 +283,11 @@ pub(super) fn rule_au_008_exposed_service(entities: &[Entity], scan_id: &str, ts
         .collect()
 }
 
-pub(super) fn rule_au_009_stealer_log(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+pub(super) fn rule_au_009_stealer_log(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Email && e.has_tag("stealer-log"))
@@ -267,7 +303,11 @@ pub(super) fn rule_au_009_stealer_log(entities: &[Entity], scan_id: &str, ts: u6
         .collect()
 }
 
-pub(super) fn rule_au_010_infra_consensus(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+pub(super) fn rule_au_010_infra_consensus(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     let mut out = Vec::new();
     for e in entities
         .iter()
@@ -407,7 +447,11 @@ pub(super) fn rule_au_013_local_network_discovery(
     }]
 }
 
-pub(super) fn rule_au_014_geo_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+pub(super) fn rule_au_014_geo_cluster(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     const GEO_TAGS: &[&str] = &["geoint", "wifi-observed"];
     entities
         .iter()
@@ -436,7 +480,11 @@ pub(super) fn rule_au_014_geo_cluster(entities: &[Entity], scan_id: &str, ts: u6
         .collect()
 }
 
-pub(super) fn rule_au_015_threat_intel_hit(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+pub(super) fn rule_au_015_threat_intel_hit(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
     const TI_SOURCES: &[&str] = &["ip_reputation", "threatfox"];
 
     entities
@@ -548,14 +596,14 @@ pub(super) fn rule_au_017_multi_geo_convergence(
         for cluster in &mut clusters {
             let rep = cluster[0];
             let rp: Vec<&str> = rep.value.split(',').collect();
-            if let (Some(a), Some(b)) = (rp.first(), rp.get(1)) {
-                if let (Ok(rl), Ok(ro)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>()) {
-                    if (lat - rl).abs() < 0.5 && (lon - ro).abs() < 0.5 {
-                        cluster.push(c);
-                        found = true;
-                        break;
-                    }
-                }
+            if let (Some(a), Some(b)) = (rp.first(), rp.get(1))
+                && let (Ok(rl), Ok(ro)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>())
+                && (lat - rl).abs() < 0.5
+                && (lon - ro).abs() < 0.5
+            {
+                cluster.push(c);
+                found = true;
+                break;
             }
         }
         if !found {
@@ -636,10 +684,10 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
         }
         for ev in &e.evidence {
             for field in ["breach_date", "not_before", "earliest_record", "date"] {
-                if let Some(d) = ev.attributes.get(field) {
-                    if d.len() >= 10 {
-                        breach_dates.push((e, &d[..10]));
-                    }
+                if let Some(d) = ev.attributes.get(field)
+                    && d.len() >= 10
+                {
+                    breach_dates.push((e, &d[..10]));
                 }
             }
         }
@@ -702,7 +750,6 @@ pub(super) fn date_diff_days(a: &str, b: &str) -> u64 {
     }
 }
 
-
 pub(super) fn rule_au_020_person_entity_cluster(
     entities: &[Entity],
     scan_id: &str,
@@ -738,15 +785,17 @@ pub(super) fn rule_au_021_api_key_exposure(
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::ApiKey)
-        .map(|e| Correlation::new(
-            "AU-021",
-            "API key exposure",
-            Severity::Critical,
-            format!("API key '{}' discovered in breach/stealer data", e.value),
-            vec![e.uid.clone()],
-            scan_id,
-            ts,
-        ))
+        .map(|e| {
+            Correlation::new(
+                "AU-021",
+                "API key exposure",
+                Severity::Critical,
+                format!("API key '{}' discovered in breach/stealer data", e.value),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            )
+        })
         .collect()
 }
 
@@ -759,10 +808,7 @@ pub(super) fn rule_au_022_organisation_with_breach(
         .iter()
         .filter(|e| e.kind == EntityKind::Organisation && e.confidence >= 0.60)
         .collect();
-    let breach_entities: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.has_tag("breach"))
-        .collect();
+    let breach_entities: Vec<&Entity> = entities.iter().filter(|e| e.has_tag("breach")).collect();
     if orgs.is_empty() || breach_entities.is_empty() {
         return Vec::new();
     }
@@ -776,6 +822,222 @@ pub(super) fn rule_au_022_organisation_with_breach(
             "{} organisation(s) co-located with {} breach entities",
             orgs.len(),
             breach_entities.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
+pub(super) fn rule_au_023_cross_platform_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    const IDENTITY_SOURCES: &[&str] = &[
+        "keybase",
+        "github_user",
+        "proxycurl",
+        "epieos",
+        "seon",
+        "contact_enrich",
+    ];
+    let mut out = Vec::new();
+    for e in entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person && e.confidence >= 0.60)
+    {
+        let sources: HashSet<&str> = e
+            .evidence
+            .iter()
+            .filter(|ev| IDENTITY_SOURCES.contains(&ev.source.as_str()))
+            .map(|ev| ev.source.as_str())
+            .collect();
+        if sources.len() >= 2 {
+            let mut names: Vec<&str> = sources.into_iter().collect();
+            names.sort_unstable();
+            out.push(Correlation::new(
+                "AU-023",
+                "Cross-platform identity convergence",
+                Severity::High,
+                format!(
+                    "Person '{}' confirmed by {} independent identity source(s): {}",
+                    e.value,
+                    names.len(),
+                    names.join(", ")
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}
+
+pub(super) fn rule_au_024_email_fraud_signal(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .filter(|e| {
+            let s = e.has_tag("suspicious") || e.has_tag("high-risk");
+            let b = e.has_tag("breach");
+            let d = e.has_tag("disposable");
+            u32::from(s) + u32::from(b) + u32::from(d) >= 2
+        })
+        .map(|e| {
+            let mut signals: Vec<&str> = Vec::new();
+            if e.has_tag("suspicious") || e.has_tag("high-risk") {
+                signals.push("fraud-flagged");
+            }
+            if e.has_tag("breach") {
+                signals.push("breach-exposed");
+            }
+            if e.has_tag("disposable") {
+                signals.push("disposable");
+            }
+            Correlation::new(
+                "AU-024",
+                "Multi-signal email fraud indicator",
+                Severity::High,
+                format!(
+                    "Email '{}' has converging risk signals: {}",
+                    e.value,
+                    signals.join(" + ")
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
+}
+
+pub(super) fn rule_au_025_corporate_identity_link(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let orgs: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation && e.has_tag("opencorporates"))
+        .collect();
+    let persons: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person && e.confidence >= 0.60)
+        .collect();
+    if orgs.is_empty() || persons.is_empty() {
+        return Vec::new();
+    }
+    let mut uids: Vec<String> = orgs.iter().map(|o| o.uid.clone()).collect();
+    uids.extend(persons.iter().take(5).map(|p| p.uid.clone()));
+    vec![Correlation::new(
+        "AU-025",
+        "Corporate registry linked to identity",
+        Severity::Medium,
+        format!(
+            "{} registered company/ies co-located with {} person entities",
+            orgs.len(),
+            persons.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
+pub(super) fn rule_au_026_validated_address(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    const GEO_SOURCES: &[&str] = &[
+        "geocode",
+        "photon",
+        "geo_intel",
+        "wigle",
+        "overpass",
+        "ip_geo",
+        "ip2location",
+        "ipapi",
+        "ipinfo",
+        "opencorporates",
+        "epieos",
+        "proxycurl",
+        "contact_enrich",
+    ];
+    let mut out = Vec::new();
+    for e in entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address && e.confidence >= 0.50)
+    {
+        let sources: HashSet<&str> = e
+            .evidence
+            .iter()
+            .filter(|ev| GEO_SOURCES.contains(&ev.source.as_str()))
+            .map(|ev| ev.source.as_str())
+            .collect();
+        if sources.len() >= 2 {
+            let mut names: Vec<&str> = sources.into_iter().collect();
+            names.sort_unstable();
+            out.push(Correlation::new(
+                "AU-026",
+                "Multi-source validated address",
+                Severity::High,
+                format!(
+                    "Address '{}' confirmed by {} independent source(s): {}",
+                    e.value,
+                    names.len(),
+                    names.join(", ")
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}
+
+pub(super) fn rule_au_027_address_coordinates_chain(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let addresses: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address && e.confidence >= 0.55)
+        .collect();
+    let coords: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.55)
+        .collect();
+    if addresses.is_empty() || coords.is_empty() {
+        return Vec::new();
+    }
+    let addr_has_geo_tag = addresses
+        .iter()
+        .any(|a| a.has_tag("geoint") || a.has_tag("reverse-geocoded") || a.has_tag("validated"));
+    let coords_has_geo_tag = coords
+        .iter()
+        .any(|c| c.has_tag("geoint") || c.has_tag("geocoded"));
+    if !addr_has_geo_tag && !coords_has_geo_tag {
+        return Vec::new();
+    }
+    let mut uids: Vec<String> = addresses.iter().take(3).map(|a| a.uid.clone()).collect();
+    uids.extend(coords.iter().take(3).map(|c| c.uid.clone()));
+    vec![Correlation::new(
+        "AU-027",
+        "Address-coordinates geolocation chain",
+        Severity::High,
+        format!(
+            "{} address(es) and {} coordinate set(s) form a validated geolocation chain",
+            addresses.len(),
+            coords.len()
         ),
         uids,
         scan_id,

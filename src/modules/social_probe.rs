@@ -20,6 +20,8 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
+const SRC: &str = "social_probe";
+
 pub struct SocialProbe;
 
 struct Platform {
@@ -246,13 +248,10 @@ impl Module for SocialProbe {
                 entity.tag("social-profile");
                 entity.tag(format!("platform:{}", platform.name));
                 entity.add_evidence(
-                    Evidence::new(
-                        "social_probe",
-                        format!("Profile found on {}", platform.name),
-                    )
-                    .with_attr("platform", platform.name)
-                    .with_attr("http_status", code.to_string())
-                    .with_attr("profile_url", &url),
+                    Evidence::new(SRC, format!("Profile found on {}", platform.name))
+                        .with_attr("platform", platform.name)
+                        .with_attr("http_status", code.to_string())
+                        .with_attr("profile_url", &url),
                 );
                 result.push(entity);
 
@@ -266,7 +265,7 @@ impl Module for SocialProbe {
                     dom.tag("social-platform");
                     dom.add_evidence(
                         Evidence::new(
-                            "social_probe",
+                            SRC,
                             format!("Platform domain from {} profile", platform.name),
                         )
                         .with_attr("platform", platform.name),
@@ -288,7 +287,7 @@ impl Module for SocialProbe {
             found_platforms.sort_unstable();
             summary.add_evidence(
                 Evidence::new(
-                    "social_probe",
+                    SRC,
                     format!("Probed {checked_count} platforms, found {found_count} profiles"),
                 )
                 .with_attr("checked", checked_count.to_string())

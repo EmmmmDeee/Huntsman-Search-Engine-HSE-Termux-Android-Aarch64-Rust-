@@ -4,9 +4,9 @@ pub mod curl;
 pub mod http;
 pub mod key_pool;
 pub mod keys;
-pub mod service_defs;
 pub mod oathnet;
 pub mod proxy;
+pub mod service_defs;
 
 pub mod url_util {
     pub fn host_from_url(url: &str) -> Option<String> {

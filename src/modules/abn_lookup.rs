@@ -58,7 +58,10 @@ impl Module for AbnLookup {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let guid = match ctx.key_opt(KEY_ENV) { Some(k) => k, None => return Ok(ModuleResult::new()) };
+        let guid = match ctx.key_opt(KEY_ENV) {
+            Some(k) => k,
+            None => return Ok(ModuleResult::new()),
+        };
         let value = target.value.trim();
         if value.is_empty() {
             return Ok(ModuleResult::new());
@@ -79,7 +82,7 @@ impl Module for AbnLookup {
                     }
                 } else {
                     return Err(Error::module(
-                        "abn_lookup",
+                        SRC,
                         format!("'{value}' is not a valid ABN (11 digits) or ACN (9 digits)"),
                     ));
                 }
@@ -252,10 +255,7 @@ fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleResult) {
     if !abn.is_empty() {
         let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, 0.95, scan_id);
         abn_entity.tag("abr");
-        abn_entity.add_evidence(Evidence::new(
-            "abn_lookup",
-            format!("ABN {abn} → {entity_name}"),
-        ));
+        abn_entity.add_evidence(Evidence::new(SRC, format!("ABN {abn} → {entity_name}")));
         result.push(abn_entity);
     }
 
@@ -268,7 +268,7 @@ fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleResult) {
         let mut addr_entity = Entity::new(EntityKind::Address, &addr, 0.75, scan_id);
         addr_entity.tag("abr");
         addr_entity.add_evidence(Evidence::new(
-            "abn_lookup",
+            SRC,
             format!("Business address for {entity_name}"),
         ));
         result.push(addr_entity);
@@ -285,10 +285,7 @@ fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleResult) {
                 let mut bn_entity = Entity::new(EntityKind::Organisation, name, 0.80, scan_id);
                 bn_entity.tag("abr");
                 bn_entity.tag("business-name");
-                bn_entity.add_evidence(Evidence::new(
-                    "abn_lookup",
-                    format!("Trading name for ABN {abn}"),
-                ));
+                bn_entity.add_evidence(Evidence::new(SRC, format!("Trading name for ABN {abn}")));
                 result.push(bn_entity);
             }
         }
@@ -299,7 +296,7 @@ fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleResult) {
         person.tag("abr");
         person.tag("sole-trader");
         person.add_evidence(Evidence::new(
-            "abn_lookup",
+            SRC,
             format!("Individual/sole trader: ABN {abn}"),
         ));
         result.push(person);
@@ -339,7 +336,7 @@ fn parse_name_results(data: &Value, query: &str, scan_id: &str, result: &mut Mod
         org.tag("australian");
 
         let mut ev = Evidence::new(
-            "abn_lookup",
+            SRC,
             format!("ABR name match for '{query}': {name} (ABN {abn})"),
         )
         .with_attr("abn", &abn)
@@ -356,10 +353,7 @@ fn parse_name_results(data: &Value, query: &str, scan_id: &str, result: &mut Mod
 
         let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, conf, scan_id);
         abn_entity.tag("abr");
-        abn_entity.add_evidence(Evidence::new(
-            "abn_lookup",
-            format!("{name} (score {score})"),
-        ));
+        abn_entity.add_evidence(Evidence::new(SRC, format!("{name} (score {score})")));
         result.push(abn_entity);
 
         if !state.is_empty() {

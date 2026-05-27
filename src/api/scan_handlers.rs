@@ -1,17 +1,17 @@
-use std::sync::Arc;
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
-use tracing::info;
 use serde_json::json;
+use std::sync::Arc;
+use tracing::info;
 
+use super::handlers::{internal_error, not_found, ok_list, spawn_scan};
+use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target};
-use crate::api::AppState;
-use super::handlers::{internal_error, not_found, ok_list, spawn_scan};
 
 pub async fn scan_create(
     State(s): State<Arc<AppState>>,
@@ -317,4 +317,3 @@ pub(crate) fn csv_escape(s: &str) -> String {
 }
 
 // ─── Health / Version / Stats / Modules ────────────────────────────────────
-

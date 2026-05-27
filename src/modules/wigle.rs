@@ -69,6 +69,19 @@ struct Network {
 
 const SRC: &str = "wigle";
 
+/// Per-scan budget counters. Moved to module level so `reset_budget()` can
+/// clear them at scan start (in `hse serve` / `hse live`, the process is
+/// long-lived and these would otherwise accumulate across scans).
+static GEO_QUERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static BSSID_QUERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Reset the per-scan WiGLE budget counters. Called from `engine.rs` at
+/// scan start so each scan gets a fresh budget.
+pub fn reset_budget() {
+    GEO_QUERIES.store(0, std::sync::atomic::Ordering::Relaxed);
+    BSSID_QUERIES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub struct Wigle;
 
 #[async_trait]
@@ -94,19 +107,26 @@ impl Module for Wigle {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // WiGLE budget: 3 geo queries + 2 BSSID queries max per scan.
+        // Each query is high-value — only the highest-confidence targets
+        // should reach here. The engine's expansion sort ensures that.
+
         let user = ctx.key_opt(USER_ENV).unwrap_or(HARDCODED_USER);
         let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);
 
-        // MacAddress target: BSSID detail lookup → coordinates
         if target.kind == TargetKind::MacAddress {
+            if BSSID_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 2 {
+                return Ok(ModuleResult::new());
+            }
             return self.bssid_lookup(user, token, &target.value, ctx).await;
+        }
+
+        if GEO_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 3 {
+            return Ok(ModuleResult::new());
         }
 
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
-        // Adaptive bounding box: try tight first, widen if empty.
-        // This saves API quota in dense areas while still finding
-        // results in sparse ones.
         let body = {
             let tight = fetch_wigle(&ctx.http, user, token, lat, lon, 0.002).await?;
             if tight.success == Some(true)
@@ -152,7 +172,7 @@ impl Module for Wigle {
             .map(String::from);
 
         let mut ev = Evidence::new(
-            "wigle",
+            SRC,
             format!("WiGLE: {total} WiFi network(s) near {}", target.value),
         )
         .with_attr("total", total.to_string())
@@ -199,7 +219,7 @@ impl Module for Wigle {
             .results
             .iter()
             .filter_map(|n| n.country.as_deref())
-            .filter(|c| !c.is_empty() && *c != "US" && *c != "AU" && c.len() > 2)
+            .filter(|c| !c.is_empty())
             .collect();
         let postcodes: Vec<&str> = body
             .results
@@ -234,7 +254,7 @@ impl Module for Wigle {
             addr.tag("wifi-derived");
             addr.add_evidence(
                 Evidence::new(
-                    "wigle",
+                    SRC,
                     format!("Address from WiFi AP consensus near {}", target.value),
                 )
                 .with_attr("networks_sampled", total.to_string())
@@ -279,7 +299,7 @@ impl Module for Wigle {
         if !ssid_names.is_empty() {
             let top_ssids: Vec<&str> = ssid_names.iter().take(10).map(String::as_str).collect();
             let mut ssid_ev = Evidence::new(
-                "wigle",
+                SRC,
                 format!(
                     "{} named WiFi network(s) near {}",
                     top_ssids.len(),
@@ -355,7 +375,7 @@ async fn fetch_wigle(
         .header("Accept", "application/json")
         .send()
         .await
-        .map_err(|e| Error::module("wigle", e.to_string()))?;
+        .map_err(|e| Error::module(SRC, e.to_string()))?;
 
     let status = resp.status();
     if status.as_u16() == 429 {
@@ -367,18 +387,18 @@ async fn fetch_wigle(
             .unwrap_or(60);
         tracing::warn!("WiGLE 429 — backing off {retry_secs}s");
         tokio::time::sleep(std::time::Duration::from_secs(retry_secs.min(120))).await;
-        return Err(Error::module("wigle", "rate-limited (429)"));
+        return Err(Error::module(SRC, "rate-limited (429)"));
     }
     if !status.is_success() {
         return Err(Error::module(
-            "wigle",
+            SRC,
             format!("HTTP {status}: {}", error_snippet(resp).await),
         ));
     }
 
     resp.json()
         .await
-        .map_err(|e| Error::module("wigle", e.to_string()))
+        .map_err(|e| Error::module(SRC, e.to_string()))
 }
 
 impl Wigle {
@@ -399,7 +419,7 @@ impl Wigle {
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|e| Error::module("wigle", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());
@@ -416,7 +436,7 @@ impl Wigle {
         let body: DetailResp = resp
             .json()
             .await
-            .map_err(|e| Error::module("wigle", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         if body.success != Some(true) {
             return Ok(ModuleResult::new());

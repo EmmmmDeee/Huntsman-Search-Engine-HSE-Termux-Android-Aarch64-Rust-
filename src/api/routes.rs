@@ -148,9 +148,18 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             "/scans/{id}/entities/facets",
             get(scan_handlers::scan_entities_facets),
         )
-        .route("/scans/{id}/entities.csv", get(scan_handlers::scan_entities_csv))
-        .route("/scans/{id}/report.json", get(scan_handlers::scan_report_json))
-        .route("/scans/{id}/correlations", get(scan_handlers::scan_correlations))
+        .route(
+            "/scans/{id}/entities.csv",
+            get(scan_handlers::scan_entities_csv),
+        )
+        .route(
+            "/scans/{id}/report.json",
+            get(scan_handlers::scan_report_json),
+        )
+        .route(
+            "/scans/{id}/correlations",
+            get(scan_handlers::scan_correlations),
+        )
         .route("/scans/{id}/events", get(handlers::scan_events_sse))
         .route(
             "/scans/{id}/events.history",

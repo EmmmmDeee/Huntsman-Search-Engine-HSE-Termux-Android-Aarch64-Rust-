@@ -126,9 +126,19 @@ impl ScanEngine {
     }
 
     /// Run a scan to completion, including any expansion rounds.
-    pub async fn run(&self, mut scan: Scan, target: Target, ctx: ModuleContext) -> Result<Scan> {
+    pub async fn run(
+        &self,
+        mut scan: Scan,
+        target: Target,
+        mut ctx: ModuleContext,
+    ) -> Result<Scan> {
         scan.status = ScanStatus::Running;
         self.store.upsert_scan(&scan)?;
+
+        // Reset per-scan budget counters so long-lived processes
+        // (`hse serve` / `hse live`) get a fresh budget per scan.
+        crate::modules::oathnet_pro::reset_budget();
+        crate::modules::wigle::reset_budget();
 
         self.emit(
             &scan.id,
@@ -161,7 +171,7 @@ impl ScanEngine {
             let _ = self
                 .run_expansion(
                     &scan.id,
-                    &ctx,
+                    &mut ctx,
                     &opts,
                     started,
                     &mut entity_map,
@@ -236,6 +246,14 @@ impl ScanEngine {
 
         self.run_correlator(&scan.id);
 
+        // Persist the key pool to disk after every scan. Keys discovered
+        // during this scan (from breach data, page bodies, entity values)
+        // are permanently stored with full provenance metadata.
+        let pool = crate::util::key_pool::global_pool();
+        if let Err(e) = crate::util::key_pool::save_pool(&pool) {
+            warn!("failed to save key pool after scan: {e}");
+        }
+
         self.emit(
             &scan.id,
             EventKind::ScanComplete {
@@ -274,7 +292,7 @@ impl ScanEngine {
     async fn run_expansion(
         &self,
         scan_id: &str,
-        ctx: &ModuleContext,
+        ctx: &mut ModuleContext,
         opts: &ScanOptions,
         started: Instant,
         entity_map: &mut HashMap<String, Entity>,
@@ -282,8 +300,22 @@ impl ScanEngine {
         stats: &mut ModuleStats,
     ) -> StopReason {
         for depth in 1..=opts.depth {
-            // Cancellation gate at round entry — between rounds is the
-            // cheapest place to exit because nothing new has spawned.
+            // Refresh keys from the pool at the start of each round.
+            // Keys discovered during the previous round (oathnet_pro breach
+            // data, api_key_probe validation, web_crawler credential scraping)
+            // become available to modules in this round automatically.
+            {
+                let pool = crate::util::key_pool::global_pool();
+                for svc in crate::util::key_pool::service_defs() {
+                    if ctx.keys.contains_key(svc.env_var) {
+                        continue;
+                    }
+                    if let Some(key) = pool.next_key(svc.name) {
+                        ctx.keys.insert(svc.env_var.to_string(), key);
+                    }
+                }
+            }
+
             if ctx.cancel.is_cancelled() {
                 let stop = StopReason::Cancelled;
                 self.emit(
@@ -298,7 +330,7 @@ impl ScanEngine {
             // during this round will be expansion candidates in the next round,
             // not this one.
             let has_paid = ctx.keys.contains_key("HUNTSMAN_OATHNET_KEY");
-            let mut next: Vec<Target> = Vec::new();
+            let mut next: Vec<(Target, f64)> = Vec::new();
             for entity in entity_map.values() {
                 if entity.c_effective() < opts.min_expand_confidence {
                     continue;
@@ -309,18 +341,21 @@ impl ScanEngine {
                 let new_target = Target::new(tk, entity.value.clone());
                 let key = visit_key(&new_target);
                 if visited.insert(key) {
-                    next.push(new_target);
+                    let weight = crate::core::scan::expansion_weight(
+                        tk,
+                        entity.c_effective(),
+                        &entity.value,
+                        has_paid,
+                    );
+                    next.push((new_target, weight));
                 }
             }
 
-            // Sort expansion candidates by geo NPV (descending) so the
-            // highest-value seeds expand first. This maximises geolocation
-            // yield within budget constraints.
-            next.sort_by(|a, b| {
-                crate::core::scan::geo_npv(b.kind, has_paid)
-                    .partial_cmp(&crate::core::scan::geo_npv(a.kind, has_paid))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+            // Sort expansion candidates by weighted score (descending).
+            // The weight combines geo_npv with entity confidence and
+            // dampens generic mega-domains that waste expansion budget.
+            next.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let next: Vec<Target> = next.into_iter().map(|(t, _)| t).collect();
 
             if next.is_empty() {
                 let stop = StopReason::NoMoreCandidates;
@@ -483,6 +518,7 @@ impl ScanEngine {
                             entity: entity.clone(),
                         },
                     );
+                    scan_entity_for_keys(&entity);
                     match entity_map.entry(entity.uid.clone()) {
                         std::collections::hash_map::Entry::Occupied(mut e) => {
                             e.get_mut().merge(entity);
@@ -783,7 +819,53 @@ fn module_skip_reason(
     if is_expansion && module.is_passive() && SENSOR_MODULES.contains(&name) {
         return Some("sensor (already ran on seed round)");
     }
+    // OathNet Pro is too expensive for expansion targets — its 2-3 API
+    // calls per invocation are reserved for the seed target only.
+    // Expansion targets get enriched by free modules (ip_geo, dns_intel,
+    // geocode, etc.) which produce the same downstream entity types.
+    const SEED_ONLY_MODULES: &[&str] = &["oathnet_pro"];
+    if is_expansion && SEED_ONLY_MODULES.contains(&name) {
+        return Some("API-expensive (seed round only)");
+    }
     None
+}
+
+/// Scan every entity's value AND evidence attributes for API key patterns.
+/// Runs on every entity from every module — this is the universal catch-all
+/// that ensures no key is ever missed regardless of which module produced it.
+fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
+    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+
+    let pool = crate::util::key_pool::global_pool();
+    let now = crate::core::entity::unix_now();
+
+    if let Some((service, key_val)) = identify_api_key(&entity.value) {
+        let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+        entry.status = crate::util::key_pool::KeyStatus::Untested;
+        entry.discovered_at = Some(now);
+        entry.discovered_by = Some("entity_value".to_string());
+        entry.discovered_in_scan = Some(entity.scan_id.clone());
+        entry.source_entity = Some(format!("{}:{}", entity.kind, &entity.uid[..8]));
+        pool.add(service, entry);
+    }
+
+    for ev in &entity.evidence {
+        for val in ev.attributes.values() {
+            if val.len() >= 16
+                && val.len() <= 200
+                && let Some((service, key_val)) = identify_api_key(val)
+            {
+                let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+                entry.status = crate::util::key_pool::KeyStatus::Untested;
+                entry.discovered_at = Some(now);
+                entry.discovered_by = Some(ev.source.clone());
+                entry.discovered_in_scan = Some(entity.scan_id.clone());
+                entry.source_entity = Some(format!("{}:{}", entity.kind, &entity.uid[..8]));
+                entry.notes = Some(format!("Evidence attr from {}", ev.source));
+                pool.add(service, entry);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

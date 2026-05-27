@@ -243,10 +243,7 @@ impl Store {
     pub fn prune_events(&self, max_age_secs: u64, max_rows: usize) -> Result<usize> {
         let conn = self.conn.lock();
         let cutoff = crate::core::entity::unix_now().saturating_sub(max_age_secs);
-        let aged = conn.execute(
-            "DELETE FROM events WHERE ts < ?1",
-            params![cutoff as i64],
-        )?;
+        let aged = conn.execute("DELETE FROM events WHERE ts < ?1", params![cutoff as i64])?;
         let excess = conn.execute(
             "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?1)",
             params![max_rows as i64],

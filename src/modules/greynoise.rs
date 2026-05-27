@@ -81,8 +81,7 @@ impl Module for GreyNoise {
 
         let url = format!("https://api.greynoise.io/v3/community/{}", urlencode(ip));
 
-        let Some(data): Option<CommunityResp> =
-            fetch_json_or_404(&ctx.http, "greynoise", &url).await?
+        let Some(data): Option<CommunityResp> = fetch_json_or_404(&ctx.http, SRC, &url).await?
         else {
             return Ok(ModuleResult::new());
         };
@@ -109,7 +108,10 @@ impl Module for GreyNoise {
             entity.tag("greynoise-riot");
         }
         match data.classification.as_deref() {
-            Some("malicious") => entity.tag("greynoise-malicious"),
+            Some("malicious") => {
+                entity.tag("malicious");
+                entity.tag("greynoise-malicious");
+            }
             Some("benign") => entity.tag("greynoise-benign"),
             _ => entity.tag("greynoise-unknown"),
         }

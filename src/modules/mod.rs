@@ -20,6 +20,8 @@ pub mod dns_intel;
 pub mod doh_resolver;
 pub mod domainsdb;
 pub mod email_parse;
+pub mod emailrep;
+pub mod epieos;
 pub mod geo_intel;
 pub mod geocode;
 pub mod github_user;
@@ -30,22 +32,30 @@ pub mod hudsonrock;
 pub mod intelx;
 pub mod ip2location;
 pub mod ip_geo;
-pub mod ipapi;
-pub mod ipinfo;
-pub mod ipquery;
 pub mod ip_registry;
 pub mod ip_reputation;
 pub mod ip_whois_geo;
+pub mod ipapi;
+pub mod ipinfo;
 pub mod ipqs;
+pub mod ipquery;
+pub mod keybase;
 pub mod leakix;
 pub mod local_net;
+pub mod mylnikov;
 pub mod oathnet_pro;
+pub mod opencorporates;
+pub mod overpass;
 pub mod phone_intl;
+pub mod photon;
+pub mod proxycurl;
 pub mod rdap_domain;
 pub mod search_engines;
 pub mod securitytrails;
+pub mod seon;
 pub mod shodan;
 pub mod social_probe;
+pub mod sunrise_sunset;
 pub mod threatfox;
 pub mod urlhaus;
 pub mod urlscan;
@@ -117,5 +127,17 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(local_net::LocalNet),
         Arc::new(abn_lookup::AbnLookup),
         Arc::new(api_key_probe::ApiKeyProbe),
+        // OSINT orchestration API modules
+        Arc::new(seon::Seon),
+        Arc::new(keybase::Keybase),
+        Arc::new(emailrep::EmailRep),
+        Arc::new(epieos::Epieos),
+        Arc::new(proxycurl::Proxycurl),
+        Arc::new(photon::Photon),
+        Arc::new(mylnikov::Mylnikov),
+        Arc::new(overpass::Overpass),
+        Arc::new(sunrise_sunset::SunriseSunset),
+        // Australian OSINT modules
+        Arc::new(opencorporates::OpenCorporates),
     ]
 }

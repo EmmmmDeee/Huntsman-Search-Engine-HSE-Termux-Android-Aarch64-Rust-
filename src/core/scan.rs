@@ -405,13 +405,20 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
     // Geolocation chain: Seed → IP/Domain → IP → Coords → Address → Coords
     // Every identity seed needs at least 3 hops to reach refined geo.
     // With paid keys, 5 hops catches OathNet → IP → geo → geocode → refine.
+    //
+    // v1.0 recalibration: 11 new modules widen the expansion graph.
+    //   keybase/proxycurl/epieos enrich Username/Email → Person + Address
+    //   opencorporates enriches Organisation → Address → geocode
+    //   photon/mylnikov/overpass add geo corroboration paths
     let depth = match kind {
-        // Identity seeds have the richest expansion graph:
-        //   R0: oathnet_pro/intelx/dehashed breach search → IPs, emails,
-        //       usernames, phones; search_engines → domains, addresses
-        //   R1: dns_intel/doh on domains → more IPs; ip_geo on IPs → coords
-        //   R2: geocode on coords → addresses; wigle on coords → WiFi
-        //   R3: web_crawler on domains → more emails; shodan → ports
+        // Identity seeds: richest expansion graph.
+        //   R0: oathnet_pro/intelx/dehashed → IPs, emails, usernames, phones
+        //       seon/emailrep/epieos → Person, Address; search_engines → domains
+        //   R1: dns_intel/doh on domains → IPs; ip_geo → coords;
+        //       keybase/proxycurl on usernames → Person, Email, Phone, Org
+        //   R2: geocode/photon on coords → addresses; wigle → WiFi
+        //       opencorporates on Org → Address
+        //   R3: overpass on coords → infra; web_crawler → more emails
         //   R4: (paid) secondary OathNet on R1 discovered emails → geo
         TargetKind::Email | TargetKind::Username | TargetKind::FullName => {
             if has_paid_keys {
@@ -421,8 +428,6 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // Domain seeds produce IPs at R0, geo at R1, addresses at R2,
-        // discovered emails at R2-3 feed back into identity expansion.
         TargetKind::Domain => {
             if has_paid_keys {
                 5
@@ -431,8 +436,6 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // IP seeds get geo at R0, reverse DNS domains at R0, those domains
-        // expand through the full domain pipeline at R1-R3.
         TargetKind::IpAddress => {
             if has_paid_keys {
                 4
@@ -441,7 +444,6 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // URL: extract domain at R0, then full domain pipeline.
         TargetKind::Url => {
             if has_paid_keys {
                 4
@@ -450,8 +452,8 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // Phone: geo_intel at R0 → coords + breach IPs. R1 geocodes.
-        // R2 expands breach IPs → domains. R3 catches remaining.
+        // Phone: seon → carrier/platform presence at R0; geo_intel → coords.
+        // R1 geocodes. R2 expands breach IPs → domains. R3 catches remaining.
         TargetKind::Phone => {
             if has_paid_keys {
                 4
@@ -460,7 +462,6 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // ASN: ip_registry → IPs at R0. Full IP pipeline from R1.
         TargetKind::Asn => {
             if has_paid_keys {
                 4
@@ -469,32 +470,41 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
             }
         }
 
-        // Coords/Address: already geo. R1 refines (geocode opposite
-        // direction). R2 expands wigle WiFi intelligence.
-        TargetKind::Coordinates | TargetKind::Address => 2,
+        // Coordinates: photon + geocode reverse → Address. R2 overpass + wigle.
+        // R3 sunrise_sunset chronolocation + BSSID expansion.
+        TargetKind::Coordinates => 3,
 
-        // Organisation/ABN: abn_lookup → addresses. Then geocode pipeline.
-        TargetKind::Organisation | TargetKind::AbnAcn => {
+        // Address is an extremely high-value pivot when validated:
+        //   R0: geocode/photon → Coordinates (bidirectional, dual-source)
+        //   R1: overpass → infrastructure nodes; wigle → WiFi/BSSIDs
+        //   R2: mylnikov on BSSIDs → more coords; sunrise_sunset → chronoloc
+        //   R3: search_engines → associated entities; geo_intel → breach context
+        TargetKind::Address => {
             if has_paid_keys {
-                3
+                5
             } else {
-                2
+                4
             }
         }
 
-        // ApiKey: service domain → full domain pipeline.
+        // Organisation/ABN: opencorporates → addresses + company registry.
+        // R1 geocode → coords. R2 overpass for nearby infrastructure.
+        // R3 catches cross-links from company → directors → identity.
+        TargetKind::Organisation | TargetKind::AbnAcn => {
+            if has_paid_keys {
+                4
+            } else {
+                3
+            }
+        }
+
         TargetKind::ApiKey => 3,
 
-        // MacAddress: WiGLE BSSID → Coordinates → Address. High geo value.
-        TargetKind::MacAddress => 2,
+        // MacAddress: wigle + mylnikov → coords at R0.
+        // R1 geocode/photon → address. R2 overpass for infrastructure.
+        TargetKind::MacAddress => 3,
     };
 
-    // Lower confidence threshold to catch more geo-relevant entities:
-    // - Breach IPs at 0.50-0.60 are valuable geo seeds
-    // - Phone prefix coords at 0.52 need to expand through geocode
-    // - Social profile URLs at 0.55 lead to domains → IPs → geo
-    // With paid keys, go even lower since OathNet data is high-quality
-    // despite conservative confidence scoring.
     let min_conf = if has_paid_keys { 0.40 } else { 0.45 };
 
     (depth, min_conf)
@@ -506,76 +516,234 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
 ///
 /// Used by the engine to prioritise expansion candidates when multiple
 /// entities are available — higher-NPV seeds expand first.
+/// v1.0 recalibration: 11 new modules widen the entity yield.
+///   emailrep/epieos/seon/pwned_passwords add 4 Email consumers
+///   keybase/proxycurl add Username→Person+Email+Phone+Org chains
+///   opencorporates adds Organisation→Address chains
+///   photon/mylnikov add geo corroboration paths
 pub fn seed_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
     match kind {
         TargetKind::Email => {
             if has_paid_keys {
-                332.4
+                348.0
             } else {
-                18.4
+                26.5
             }
         }
-        TargetKind::Domain => 89.8,
+        TargetKind::Domain => 92.4,
         TargetKind::FullName => {
             if has_paid_keys {
-                185.0
+                195.0
             } else {
-                70.5
+                82.0
             }
         }
-        TargetKind::IpAddress => 17.9,
-        TargetKind::Username => 15.8,
+        TargetKind::IpAddress => 18.6,
+        TargetKind::Username => 28.4,
         TargetKind::Phone => {
             if has_paid_keys {
-                13.5
+                16.2
             } else {
-                2.6
+                5.8
             }
         }
         TargetKind::Asn => 10.2,
         TargetKind::ApiKey => 9.7,
-        TargetKind::Url => 18.8,
-        TargetKind::Organisation => 4.9,
-        TargetKind::AbnAcn => 4.9,
-        TargetKind::MacAddress => 8.5,
-        TargetKind::Coordinates => 1.9,
-        TargetKind::Address => 1.6,
+        TargetKind::Url => 20.5,
+        TargetKind::Organisation => 9.4,
+        TargetKind::AbnAcn => 6.2,
+        TargetKind::MacAddress => 11.0,
+        TargetKind::Coordinates => 4.8,
+        TargetKind::Address => 18.5,
     }
 }
 
 /// Geo-specific NPV: expected Coordinates + Address entity yield.
+/// v1.0 recalibration accounts for photon (second geocoder),
+/// mylnikov (second BSSID→coords path), overpass (infra nodes),
+/// and identity→Address chains via proxycurl/opencorporates/epieos.
 pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
     match kind {
         TargetKind::Email => {
             if has_paid_keys {
-                48.2
+                52.0
             } else {
-                8.7
+                14.2
             }
         }
-        TargetKind::Domain => 22.1,
+        TargetKind::Domain => 23.5,
         TargetKind::FullName => {
-            if has_paid_keys { 42.0 } else { 15.3 }
+            if has_paid_keys {
+                46.0
+            } else {
+                20.8
+            }
         }
-        TargetKind::IpAddress => 12.4,
+        TargetKind::IpAddress => 13.2,
         TargetKind::Phone => {
             if has_paid_keys {
-                9.8
+                11.5
             } else {
-                1.8
+                4.6
             }
         }
         TargetKind::Asn => 7.1,
-        TargetKind::Username => 6.3,
-        TargetKind::Url => 8.4,
+        TargetKind::Username => 12.5,
+        TargetKind::Url => 9.2,
         TargetKind::ApiKey => 3.8,
-        TargetKind::MacAddress => 7.5,
-        TargetKind::AbnAcn => 2.5,
-        TargetKind::Organisation => 2.1,
-        TargetKind::Coordinates => 1.9,
-        TargetKind::Address => 1.6,
+        TargetKind::MacAddress => 9.8,
+        TargetKind::AbnAcn => 4.0,
+        TargetKind::Organisation => 6.4,
+        TargetKind::Coordinates => 4.2,
+        TargetKind::Address => 15.0,
     }
 }
+
+/// Composite expansion weight: `geo_npv × c_eff × domain_factor`.
+///
+/// - `c_eff` rewards entities confirmed by multiple sources
+/// - `domain_factor` dampens known-generic mega-domains (0.15x)
+///   so target-specific domains and geo entities expand first
+pub fn expansion_weight(kind: TargetKind, c_eff: f64, value: &str, has_paid_keys: bool) -> f64 {
+    let base = geo_npv(kind, has_paid_keys);
+    let dampener = if kind == TargetKind::Domain {
+        domain_expansion_factor(value)
+    } else {
+        1.0
+    };
+    base * c_eff * dampener
+}
+
+/// Dampening factor for domain targets. Mega-domains (top internet
+/// properties that appear in nearly every search result) get a 0.15×
+/// penalty so they expand after target-specific entities.
+///
+/// Calibrated from JLM scan: facebook.com (corr=337), reddit.com (111),
+/// whitepages.com (83) are noise. Target-specific domains like
+/// welcometothejungle.com (corr=262) are valuable but indistinguishable
+/// by corroboration alone, so we blocklist by known mega-domain.
+fn domain_expansion_factor(domain: &str) -> f64 {
+    let d = domain.trim().to_lowercase();
+    let d = d.strip_prefix("www.").unwrap_or(&d);
+    if MEGA_DOMAINS.iter().any(|m| {
+        d == *m
+            || (d.len() > m.len() && d.as_bytes()[d.len() - m.len() - 1] == b'.' && d.ends_with(m))
+    }) {
+        0.15
+    } else {
+        1.0
+    }
+}
+
+const MEGA_DOMAINS: &[&str] = &[
+    // Major platforms & social media
+    "amazon.com",
+    "amazon.com.au",
+    "apple.com",
+    "discord.com",
+    "facebook.com",
+    "github.com",
+    "google.com",
+    "google.com.au",
+    "instagram.com",
+    "linkedin.com",
+    "microsoft.com",
+    "netflix.com",
+    "pinterest.com",
+    "quora.com",
+    "reddit.com",
+    "spotify.com",
+    "stackoverflow.com",
+    "tiktok.com",
+    "tumblr.com",
+    "twitch.tv",
+    "twitter.com",
+    "whatsapp.com",
+    "wikipedia.org",
+    "x.com",
+    "yahoo.com",
+    "youtube.com",
+    // Search engines & AI
+    "bing.com",
+    "chatgpt.com",
+    "duckduckgo.com",
+    "openai.com",
+    // Content platforms & blogs
+    "blogspot.com",
+    "medium.com",
+    "telegram.org",
+    "wordpress.com",
+    // News & media
+    "bbc.co.uk",
+    "bbc.com",
+    "businessinsider.com",
+    "cnn.com",
+    "forbes.com",
+    "nytimes.com",
+    "reuters.com",
+    "techcrunch.com",
+    "theguardian.com",
+    "washingtonpost.com",
+    // Commerce & entertainment
+    "aliexpress.com",
+    "ebay.com",
+    "ebay.com.au",
+    "imdb.com",
+    "pornhub.com",
+    "xhamster.com",
+    "xvideos.com",
+    // CDN / infrastructure
+    "akamai.com",
+    "cloudflare.com",
+    "fastly.com",
+    // People-search / OSINT aggregators
+    "anywho.com",
+    "beenverified.com",
+    "idcrawl.com",
+    "intelius.com",
+    "mylife.com",
+    "nuwber.com",
+    "peekyou.com",
+    "pipl.com",
+    "radaris.com",
+    "socialcatfish.com",
+    "spokeo.com",
+    "truepeoplesearch.com",
+    "usphonebook.com",
+    "whitepages.com",
+    "zabasearch.com",
+    // Email providers
+    "gmail.com",
+    "hotmail.com",
+    "icloud.com",
+    "live.com",
+    "office365.com",
+    "outlook.com",
+    "protonmail.com",
+    // DNS / IP lookup tools
+    "dnschecker.org",
+    "domaintools.com",
+    "ip2location.com",
+    "ipaddress.com",
+    "iplocation.io",
+    "whatismyip.com",
+    "whatismyipaddress.com",
+    "whois.com",
+    // Australian mega-sites (common noise in AU OSINT)
+    "abc.net.au",
+    "news.com.au",
+    "smh.com.au",
+    "nine.com.au",
+    "realestate.com.au",
+    "seek.com.au",
+    "yellowpages.com.au",
+    // Additional global platforms
+    "archive.org",
+    "mastodon.social",
+    "paypal.com",
+    "snapchat.com",
+    "threads.net",
+];
 
 #[cfg(test)]
 mod tests {
@@ -591,6 +759,41 @@ mod tests {
         assert_eq!(o.depth, 0);
         assert!((o.min_expand_confidence - 0.50).abs() < 1e-9);
         assert_eq!(o.max_concurrent, 4);
+    }
+
+    #[test]
+    fn expansion_weight_dampens_mega_domains() {
+        let facebook = expansion_weight(TargetKind::Domain, 1.0, "facebook.com", false);
+        let specific = expansion_weight(TargetKind::Domain, 1.0, "target-company.com.au", false);
+        assert!(
+            specific > facebook * 5.0,
+            "target-specific domain ({specific:.1}) should far outrank facebook ({facebook:.1})"
+        );
+    }
+
+    #[test]
+    fn expansion_weight_address_beats_mega_domain() {
+        let addr = expansion_weight(TargetKind::Address, 0.80, "Brisbane, QLD", false);
+        let fb = expansion_weight(TargetKind::Domain, 1.0, "facebook.com", false);
+        assert!(
+            addr > fb,
+            "validated address ({addr:.1}) should outrank dampened mega-domain ({fb:.1})"
+        );
+    }
+
+    #[test]
+    fn expansion_weight_respects_confidence() {
+        let high = expansion_weight(TargetKind::Domain, 0.90, "example.com", false);
+        let low = expansion_weight(TargetKind::Domain, 0.45, "example.com", false);
+        assert!(high > low * 1.9);
+    }
+
+    #[test]
+    fn mega_domain_list_catches_common_noise() {
+        assert!(domain_expansion_factor("facebook.com") < 0.5);
+        assert!(domain_expansion_factor("www.reddit.com") < 0.5);
+        assert!(domain_expansion_factor("whitepages.com") < 0.5);
+        assert!((domain_expansion_factor("target-specific.com.au") - 1.0).abs() < 1e-9);
     }
 
     #[test]

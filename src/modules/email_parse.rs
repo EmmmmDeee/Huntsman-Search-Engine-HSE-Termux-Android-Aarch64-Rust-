@@ -69,11 +69,8 @@ impl Module for EmailParse {
                 entity.tag("derived");
                 entity.tag("email-domain");
                 entity.add_evidence(
-                    Evidence::new(
-                        "email_parse",
-                        format!("Domain extracted from {}", target.value),
-                    )
-                    .with_attr("source_email", &target.value),
+                    Evidence::new(SRC, format!("Domain extracted from {}", target.value))
+                        .with_attr("source_email", &target.value),
                 );
                 result.push(entity);
             }
@@ -119,8 +116,18 @@ impl Module for EmailParse {
                 }
 
                 let email_domain = target.value.split('@').nth(1).unwrap_or("").to_lowercase();
-                let is_corporate = !["gmail.com","hotmail.com","yahoo.com","outlook.com","live.com","icloud.com","protonmail.com","aol.com"]
-                    .iter().any(|d| email_domain == *d);
+                let is_corporate = ![
+                    "gmail.com",
+                    "hotmail.com",
+                    "yahoo.com",
+                    "outlook.com",
+                    "live.com",
+                    "icloud.com",
+                    "protonmail.com",
+                    "aol.com",
+                ]
+                .iter()
+                .any(|d| email_domain == *d);
                 let uname_conf = if is_corporate { 0.70 } else { 0.55 };
                 for candidate in candidates {
                     let mut entity =
@@ -133,6 +140,27 @@ impl Module for EmailParse {
                     );
                     result.push(entity);
                 }
+
+                // firstname.lastname → Person entity (corporate emails)
+                let parts: Vec<&str> = detagged.split(['.', '_']).collect();
+                if parts.len() == 2
+                    && parts[0].len() >= 2
+                    && parts[1].len() >= 2
+                    && parts[0].chars().all(|c| c.is_alphabetic())
+                    && parts[1].chars().all(|c| c.is_alphabetic())
+                    && is_corporate
+                {
+                    let name = format!("{} {}", capitalise(parts[0]), capitalise(parts[1]));
+                    let mut pe = Entity::new(EntityKind::Person, &name, 0.55, &ctx.scan_id);
+                    pe.tag("derived");
+                    pe.tag("email-inferred");
+                    pe.add_evidence(
+                        Evidence::new(SRC, format!("Name inferred from {}", target.value))
+                            .with_attr("source_email", &target.value)
+                            .with_attr("pattern", "firstname.lastname"),
+                    );
+                    result.push(pe);
+                }
             }
         }
 
@@ -140,7 +168,15 @@ impl Module for EmailParse {
     }
 }
 
-fn is_freemail(domain: &str) -> bool {
+fn capitalise(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().chain(c).collect(),
+    }
+}
+
+pub fn is_freemail(domain: &str) -> bool {
     const FREE: &[&str] = &[
         "gmail.com",
         "yahoo.com",

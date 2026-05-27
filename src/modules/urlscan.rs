@@ -23,6 +23,8 @@ use crate::core::{
 };
 use crate::util::http::{fetch_json, urlencode};
 
+const SRC: &str = "urlscan";
+
 pub struct UrlScan;
 
 // ─── Response types ─────────────────────────────────────────────────────────
@@ -79,7 +81,10 @@ impl Module for UrlScan {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::Url)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::Url | TargetKind::IpAddress
+        )
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -96,10 +101,14 @@ impl Module for UrlScan {
                 "https://urlscan.io/api/v1/search/?q=page.url:\"{}\"&size=5",
                 urlencode(&target.value)
             ),
+            TargetKind::IpAddress => format!(
+                "https://urlscan.io/api/v1/search/?q=page.ip:\"{}\"&size=10",
+                urlencode(&target.value)
+            ),
             _ => return Ok(ModuleResult::new()),
         };
 
-        let data: SearchResp = fetch_json(&ctx.http, "urlscan", &query).await?;
+        let data: SearchResp = fetch_json(&ctx.http, SRC, &query).await?;
 
         if data.results.is_empty() {
             return Ok(ModuleResult::new());
@@ -151,7 +160,7 @@ impl Module for UrlScan {
         // ── Evidence ────────────────────────────────────────────────────────
         let scan_count = data.results.len();
         let mut ev = Evidence::new(
-            "urlscan",
+            SRC,
             format!(
                 "URLScan.io: {scan_count} recent scan(s), {} unique IP(s)",
                 unique_ips.len()
@@ -185,7 +194,7 @@ impl Module for UrlScan {
                 let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, 0.65, &ctx.scan_id);
                 ip_entity.tag("urlscan");
                 ip_entity.add_evidence(Evidence::new(
-                    "urlscan",
+                    SRC,
                     format!("Resolved IP seen in URLScan.io scans of {}", &target.value),
                 ));
                 result.push(ip_entity);
@@ -202,7 +211,7 @@ impl Module for UrlScan {
             ae.tag("urlscan");
             ae.tag("geoint");
             ae.add_evidence(Evidence::new(
-                "urlscan",
+                SRC,
                 format!("Hosting country from URLScan.io scans of {}", &target.value),
             ));
             result.push(ae);
@@ -217,12 +226,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_domain_and_url() {
+    fn accepts_domain_url_and_ip() {
         let m = UrlScan;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
         assert!(m.accepts(&Target::new(TargetKind::Url, "https://example.com/path")));
+        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
-        assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
         assert!(!m.accepts(&Target::new(TargetKind::Username, "alice")));
     }
 

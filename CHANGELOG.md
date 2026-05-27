@@ -10,6 +10,55 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-05-27
+
+### Added
+
+- **11 new OSINT orchestration modules** — module count 52 → 63:
+  - `seon` (pri 95, key-gated) — Email/phone cross-platform presence
+    detection across 250+ services via SEON API.
+  - `keybase` (pri 100, free) — Identity graph with cryptographic proofs.
+    Pivots from username to linked Twitter, GitHub, Reddit, HN, DNS accounts.
+  - `emailrep` (pri 90, key-gated) — Email reputation scoring: breach
+    exposure, blacklists, social media profiles via EmailRep.
+  - `epieos` (pri 92, key-gated) — Email-to-identity resolution: Google
+    profile ID, Maps reviews for chronolocation, Skype handle.
+  - `proxycurl` (pri 88, paid) — LinkedIn profile extraction: full
+    employment history, education, certifications, personal contacts.
+  - `photon` (pri 20, free) — Komoot Photon geocoder for independent
+    forward/reverse geocoding corroboration alongside Nominatim.
+  - `mylnikov` (pri 17, free) — No-auth BSSID-to-coordinates WiFi
+    geolocation. Complements WiGLE when keys are exhausted.
+  - `overpass` (pri 15, free) — OpenStreetMap infrastructure query:
+    cell towers, substations, surveillance cameras within 500m of coords.
+  - `sunrise_sunset` (pri 10, free) — Solar phase timestamps (sunrise,
+    sunset, twilight) for chronolocation of imagery.
+  - `opencorporates` (pri 80, free) — Australian company/director search
+    with AU jurisdiction focus. Cross-references directors and shell-company
+    links against the global OpenCorporates dataset.
+  - `pwned_passwords` (pri 115, free) — HIBP Pwned Passwords k-Anonymity
+    check: SHA-1 range API verifies if a credential hash appears in known
+    breach compilations without exposing the full hash.
+
+- **`github_user` enhancement** — SSH public key retrieval
+  (`/users/{login}/keys`) and public event activity analysis
+  (`/users/{login}/events/public`) with peak working hour extraction.
+
+- **5 new correlator rules** (AU-023 through AU-027):
+  - AU-023: Cross-platform identity convergence (Person confirmed by ≥2
+    independent identity sources: keybase, github_user, proxycurl, etc.)
+  - AU-024: Multi-signal email fraud indicator (converging risk signals:
+    suspicious + breach, suspicious + disposable, breach + disposable)
+  - AU-025: Corporate registry linked to identity (OpenCorporates
+    Organisation co-located with Person entities)
+
+- **Proactive key harvest** — 4 new service domains wired into OathNet
+  stealer credential harvest: seon.io, epieos.com, nubela.co,
+  opencorporates.com.
+
+- **Infrastructure**: 4 new `KNOWN_KEYS`, 4 new `service_defs`, `sha1`
+  crate dependency, updated env templates (install.sh + env_template.txt).
+
 ## [0.9.0] — 2026-05-23
 
 ### Added
