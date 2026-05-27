@@ -854,6 +854,10 @@ fn module_skip_reason(
     if is_expansion && module.is_passive() && SENSOR_MODULES.contains(&name) {
         return Some("sensor (already ran on seed round)");
     }
+    const SEED_ONLY_MODULES: &[&str] = &["oathnet_pro"];
+    if is_expansion && SEED_ONLY_MODULES.contains(&name) {
+        return Some("API-expensive (seed round only)");
+    }
     None
 }
 

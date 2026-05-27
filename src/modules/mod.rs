@@ -132,7 +132,6 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(seon::Seon),
         Arc::new(keybase::Keybase),
         Arc::new(emailrep::EmailRep),
-        Arc::new(pwned_passwords::PwnedPasswords),
         Arc::new(epieos::Epieos),
         Arc::new(proxycurl::Proxycurl),
         Arc::new(photon::Photon),
