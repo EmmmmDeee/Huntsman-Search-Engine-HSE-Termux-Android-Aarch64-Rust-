@@ -147,6 +147,7 @@ impl ModuleContext {
     /// Marks the key in the global pool so subsequent scans rotate to the next one.
     pub fn report_key_exhausted(&self, service: &str, key_value: &str, status: u16) {
         let pool = crate::util::key_pool::global_pool();
+        pool.record_error(service, key_value);
         let key_status = if status == 429 {
             crate::util::key_pool::KeyStatus::RateLimited
         } else {
