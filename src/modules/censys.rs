@@ -16,7 +16,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, urlencode};
+use crate::util::http::{error_snippet, handle_keyed_error, urlencode};
 
 const ID_ENV: &str = "HUNTSMAN_CENSYS_ID";
 const SECRET_ENV: &str = "HUNTSMAN_CENSYS_SECRET";
@@ -113,37 +113,40 @@ impl Module for Censys {
         }
 
         let url = format!("https://search.censys.io/api/v2/hosts/{}", urlencode(ip),);
-        let resp = ctx
-            .http
-            .get(&url)
-            .basic_auth(api_id, Some(api_secret))
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| Error::module("censys", e.to_string()))?;
+        let mut retries = 2u8;
+        let body: CensysResp = loop {
+            let resp = ctx
+                .http
+                .get(&url)
+                .basic_auth(api_id, Some(api_secret))
+                .header("Accept", "application/json")
+                .send()
+                .await
+                .map_err(|e| Error::module("censys", e.to_string()))?;
 
-        let status = resp.status();
+            let status = resp.status();
 
-        // Unknown host returns 404 — not an error, just no data.
-        if status.as_u16() == 404 {
-            return Ok(ModuleResult::new());
-        }
-
-        if !status.is_success() {
-            let code = status.as_u16();
-            if code == 401 || code == 403 {
-                ctx.report_key_exhausted("censys", api_id, code);
+            // Unknown host returns 404 — not an error, just no data.
+            if status.as_u16() == 404 {
+                return Ok(ModuleResult::new());
             }
-            return Err(Error::module(
-                "censys",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
-        }
 
-        let body: CensysResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module("censys", e.to_string()))?;
+            if !status.is_success() {
+                let code = status.as_u16();
+                if handle_keyed_error(code, resp.headers(), &mut retries, "censys", api_id, ctx).await {
+                    continue;
+                }
+                return Err(Error::module(
+                    "censys",
+                    format!("HTTP {status}: {}", error_snippet(resp).await),
+                ));
+            }
+
+            break resp
+                .json()
+                .await
+                .map_err(|e| Error::module("censys", e.to_string()))?;
+        };
 
         let host = match body.result {
             Some(r) => r,

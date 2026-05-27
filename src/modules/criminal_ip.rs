@@ -17,7 +17,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
+use crate::util::http::{error_snippet, handle_keyed_error};
 
 const KEY_ENV: &str = "HUNTSMAN_CRIMINALIP_KEY";
 
@@ -131,28 +131,31 @@ impl Module for CriminalIp {
             return Ok(ModuleResult::new());
         }
         let url = format!("https://api.criminalip.io/v1/asset/ip/report?ip={ip}");
-        let resp = ctx
-            .http
-            .get(&url)
-            .header("x-api-key", key)
-            .send()
-            .await
-            .map_err(|e| Error::module("criminal_ip", e.to_string()))?;
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            if code == 429 || code == 401 || code == 403 {
-                ctx.report_key_exhausted("criminal_ip", key, code);
+        let mut retries = 2u8;
+        let body: Resp = loop {
+            let resp = ctx
+                .http
+                .get(&url)
+                .header("x-api-key", key)
+                .send()
+                .await
+                .map_err(|e| Error::module("criminal_ip", e.to_string()))?;
+            let status = resp.status();
+            if !status.is_success() {
+                let code = status.as_u16();
+                if handle_keyed_error(code, resp.headers(), &mut retries, "criminal_ip", key, ctx).await {
+                    continue;
+                }
+                return Err(Error::module(
+                    "criminal_ip",
+                    format!("HTTP {status}: {}", error_snippet(resp).await),
+                ));
             }
-            return Err(Error::module(
-                "criminal_ip",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
-        }
-        let body: Resp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module("criminal_ip", e.to_string()))?;
+            break resp
+                .json()
+                .await
+                .map_err(|e| Error::module("criminal_ip", e.to_string()))?;
+        };
         if body.status != Some(200) {
             return Ok(ModuleResult::new());
         }

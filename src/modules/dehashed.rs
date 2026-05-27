@@ -19,7 +19,7 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::{error_snippet, urlencode};
+use crate::util::http::{error_snippet, handle_keyed_error, urlencode};
 
 const USER_ENV: &str = "HUNTSMAN_DEHASHED_USER";
 const KEY_ENV: &str = "HUNTSMAN_DEHASHED_KEY";
@@ -94,29 +94,32 @@ impl Module for DeHashed {
         }
         let q = format!("{selector}:{value}");
         let url = format!("https://api.dehashed.com/search?query={}", urlencode(&q));
-        let resp = ctx
-            .http
-            .get(&url)
-            .basic_auth(user, Some(key))
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| Error::module("dehashed", e.to_string()))?;
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            if code == 429 || code == 401 || code == 403 {
-                ctx.report_key_exhausted("dehashed", key, code);
+        let mut retries = 2u8;
+        let body: DehashedResp = loop {
+            let resp = ctx
+                .http
+                .get(&url)
+                .basic_auth(user, Some(key))
+                .header("Accept", "application/json")
+                .send()
+                .await
+                .map_err(|e| Error::module("dehashed", e.to_string()))?;
+            let status = resp.status();
+            if !status.is_success() {
+                let code = status.as_u16();
+                if handle_keyed_error(code, resp.headers(), &mut retries, "dehashed", key, ctx).await {
+                    continue;
+                }
+                return Err(Error::module(
+                    "dehashed",
+                    format!("HTTP {status}: {}", error_snippet(resp).await),
+                ));
             }
-            return Err(Error::module(
-                "dehashed",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
-        }
-        let body: DehashedResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module("dehashed", e.to_string()))?;
+            break resp
+                .json()
+                .await
+                .map_err(|e| Error::module("dehashed", e.to_string()))?;
+        };
 
         let entries = body.entries.unwrap_or_default();
         let total = body.total.unwrap_or(entries.len() as u64);

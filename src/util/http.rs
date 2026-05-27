@@ -171,6 +171,43 @@ pub fn retry_after_secs(headers: &reqwest::header::HeaderMap, default_secs: u64)
         .min(120)
 }
 
+/// Handle a non-success HTTP response for keyed modules. Returns:
+/// - `Ok(true)` if the caller should retry (429 with retries remaining)
+/// - `Ok(false)` if the response is a permanent failure (report + stop)
+/// - The function sleeps on 429 before returning Ok(true).
+///
+/// `retries_left`: mutable counter, decremented on 429.
+/// `module`: stable module name for report_key_exhausted.
+/// `key`: the API key value being used.
+/// `ctx`: module context for key exhaustion reporting.
+pub async fn handle_keyed_error(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+    retries_left: &mut u8,
+    module: &str,
+    key: &str,
+    ctx: &crate::core::module::ModuleContext,
+) -> bool {
+    match status {
+        429 if *retries_left > 0 => {
+            *retries_left -= 1;
+            let secs = retry_after_secs(headers, 8);
+            tracing::warn!(module, "429 rate-limited, retrying in {secs}s ({} left)", retries_left);
+            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            true
+        }
+        429 => {
+            ctx.report_key_exhausted(module, key, 429);
+            false
+        }
+        401 | 403 => {
+            ctx.report_key_exhausted(module, key, status);
+            false
+        }
+        _ => false,
+    }
+}
+
 /// Percent-encode a single URL path or query-string component using the
 /// `application/x-www-form-urlencoded` serialiser. Equivalent to:
 ///

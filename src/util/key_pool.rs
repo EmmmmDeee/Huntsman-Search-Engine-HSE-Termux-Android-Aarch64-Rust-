@@ -364,6 +364,30 @@ pub fn service_defs() -> Vec<ServiceDef> {
             key_header: KeyPlacement::Header("X-API-KEY"),
             rate_limit_reset_secs: 60,
         },
+        ServiceDef {
+            name: "abr",
+            env_var: "HUNTSMAN_ABR_GUID",
+            category: "identity",
+            test_url: "https://abr.business.gov.au/json/AbnDetails.aspx?abn=51824753556&callback=cb&guid=",
+            key_header: KeyPlacement::QueryParam("guid"),
+            rate_limit_reset_secs: 5,
+        },
+        ServiceDef {
+            name: "wigle_user",
+            env_var: "HUNTSMAN_WIGLE_USER",
+            category: "geoint",
+            test_url: "https://api.wigle.net/api/v2/profile/user",
+            key_header: KeyPlacement::Header("Authorization"),
+            rate_limit_reset_secs: 60,
+        },
+        ServiceDef {
+            name: "opencellid",
+            env_var: "HUNTSMAN_OPENCELLID_KEY",
+            category: "geoint",
+            test_url: "https://opencellid.org/cell/get?key=",
+            key_header: KeyPlacement::QueryParam("key"),
+            rate_limit_reset_secs: 60,
+        },
     ]
 }
 
@@ -556,6 +580,40 @@ pub fn save_pool(pool: &KeyPool) -> std::io::Result<()> {
 }
 
 // ── Validation ───────────────────────────────────────────────────────────────
+
+/// Add a key and validate it immediately against the service endpoint.
+/// If valid, marks it Active and stores it. If invalid, marks it Invalid
+/// but still stores it (won't be used by next_key).
+/// Returns true if the key is valid and was stored.
+pub async fn add_and_validate(service: &str, key_value: &str, notes: Option<String>) -> bool {
+    let pool = global_pool();
+    let mut entry = KeyEntry::new(key_value);
+    entry.notes = notes;
+
+    if let Some(valid) = validate_key(service, key_value).await {
+        if valid {
+            entry.status = KeyStatus::Active;
+            entry.last_validated = Some(crate::core::entity::unix_now());
+            let added = pool.add(service, entry);
+            if added {
+                let _ = save_pool(&pool);
+                tracing::info!(service, "validated and stored API key");
+            }
+            true
+        } else {
+            entry.status = KeyStatus::Invalid;
+            entry.last_validated = Some(crate::core::entity::unix_now());
+            pool.add(service, entry);
+            let _ = save_pool(&pool);
+            tracing::warn!(service, "API key failed validation — stored as invalid");
+            false
+        }
+    } else {
+        pool.add(service, entry);
+        let _ = save_pool(&pool);
+        false
+    }
+}
 
 pub async fn validate_key(service: &str, key: &str) -> Option<bool> {
     let sdef = find_service(service)?;

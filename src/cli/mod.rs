@@ -888,11 +888,13 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
                         entities.push(e);
                         stats.api_keys += 1;
 
-                        // Store in key pool for automatic use
-                        let pool = crate::util::key_pool::global_pool();
-                        let mut entry = crate::util::key_pool::KeyEntry::new(pw);
-                        entry.notes = Some(format!("Import: {svc} key from stealer data"));
-                        pool.add(svc, entry);
+                        // Validate and store in key pool
+                        let valid = crate::util::key_pool::add_and_validate(
+                            svc, pw, Some(format!("Import: {svc} key from stealer data"))
+                        ).await;
+                        if valid {
+                            stats.api_keys_valid += 1;
+                        }
                     }
                 }
             }
@@ -1047,8 +1049,10 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
         println!("  Timeline:  {}", stats.date_range);
     }
     if stats.api_keys > 0 {
-        println!("  Pool:      {} API keys stored in key pool for automatic use", stats.api_keys);
-        let _ = crate::util::key_pool::save_pool(&crate::util::key_pool::global_pool());
+        println!(
+            "  Pool:      {} API keys detected, {} validated active",
+            stats.api_keys, stats.api_keys_valid
+        );
     }
 
     match output {
@@ -1440,6 +1444,7 @@ struct ImportStats {
     discord_ids: usize,
     admin_paths: usize,
     api_keys: usize,
+    api_keys_valid: usize,
     date_range: String,
 }
 
