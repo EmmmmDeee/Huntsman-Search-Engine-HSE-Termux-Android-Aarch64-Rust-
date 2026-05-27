@@ -23,8 +23,8 @@ const SRC: &str = "emailrep";
 pub struct EmailRep;
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct RepResp {
+    #[allow(dead_code)]
     #[serde(default)]
     email: Option<String>,
     #[serde(default)]
@@ -38,7 +38,6 @@ struct RepResp {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct RepDetails {
     #[serde(default)]
     blacklisted: Option<bool>,
@@ -52,10 +51,12 @@ struct RepDetails {
     first_seen: Option<String>,
     #[serde(default)]
     last_seen: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     domain_exists: Option<bool>,
     #[serde(default)]
     domain_reputation: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     new_domain: Option<bool>,
     #[serde(default)]
@@ -66,6 +67,7 @@ struct RepDetails {
     disposable: Option<bool>,
     #[serde(default)]
     deliverable: Option<bool>,
+    #[allow(dead_code)]
     #[serde(default)]
     spam: Option<bool>,
     #[serde(default)]

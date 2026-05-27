@@ -113,7 +113,7 @@ impl Module for CrtSh {
                 .as_deref()
                 .unwrap_or("")
                 .split('\n')
-                .chain(entry.common_name.as_deref().into_iter());
+                .chain(entry.common_name.as_deref());
 
             for raw_name in names {
                 let name = raw_name.trim().to_lowercase();

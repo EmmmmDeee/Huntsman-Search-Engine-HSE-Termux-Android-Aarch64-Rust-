@@ -47,16 +47,17 @@ struct SeonEmailData {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct DomainDetails {
     #[serde(default)]
     domain: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     registered: Option<bool>,
     #[serde(default)]
     disposable: Option<bool>,
     #[serde(default)]
     free: Option<bool>,
+    #[allow(dead_code)]
     #[serde(default)]
     custom: Option<bool>,
 }
@@ -86,12 +87,12 @@ struct AccountDetails {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct AccountPresence {
     #[serde(default)]
     registered: Option<bool>,
     #[serde(default)]
     name: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     url: Option<String>,
 }

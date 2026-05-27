@@ -27,8 +27,8 @@ struct OverpassResp {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct OsmElement {
+    #[allow(dead_code)]
     #[serde(default, rename = "type")]
     osm_type: Option<String>,
     #[serde(default)]

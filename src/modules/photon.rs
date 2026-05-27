@@ -42,8 +42,8 @@ struct Geometry {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct Props {
+    #[allow(dead_code)]
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -63,8 +63,10 @@ struct Props {
     #[serde(rename = "type")]
     #[serde(default)]
     place_type: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     osm_key: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     osm_value: Option<String>,
 }

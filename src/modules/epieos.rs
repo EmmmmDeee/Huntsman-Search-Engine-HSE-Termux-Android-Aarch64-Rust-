@@ -39,12 +39,13 @@ struct EpieosResp {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct MapsReview {
     #[serde(default)]
     place_name: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     rating: Option<f64>,
+    #[allow(dead_code)]
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
@@ -52,10 +53,10 @@ struct MapsReview {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct SkypeInfo {
     #[serde(default)]
     handle: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]

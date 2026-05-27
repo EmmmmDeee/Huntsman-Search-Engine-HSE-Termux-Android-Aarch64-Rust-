@@ -23,16 +23,18 @@ const SRC: &str = "proxycurl";
 pub struct Proxycurl;
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct LinkedInProfile {
     #[serde(default)]
     full_name: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     first_name: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     last_name: Option<String>,
     #[serde(default)]
     headline: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     summary: Option<String>,
     #[serde(default)]
@@ -60,7 +62,6 @@ struct LinkedInProfile {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct Experience {
     #[serde(default)]
     company: Option<String>,
@@ -70,17 +71,19 @@ struct Experience {
     starts_at: Option<DateField>,
     #[serde(default)]
     ends_at: Option<DateField>,
+    #[allow(dead_code)]
     #[serde(default)]
     location: Option<String>,
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct Education {
     #[serde(default)]
     school: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     degree_name: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     field_of_study: Option<String>,
 }
@@ -162,11 +165,9 @@ impl Module for Proxycurl {
             )
         };
 
-        let url = api_url;
-
         let resp = ctx
             .http
-            .get(&url)
+            .get(&api_url)
             .bearer_auth(key)
             .header("Accept", "application/json")
             .send()

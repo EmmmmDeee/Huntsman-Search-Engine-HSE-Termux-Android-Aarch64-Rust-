@@ -73,12 +73,12 @@ struct KbProofs {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct KbProof {
     #[serde(default)]
     proof_type: Option<String>,
     #[serde(default)]
     nametag: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     service_url: Option<String>,
     #[serde(default)]
