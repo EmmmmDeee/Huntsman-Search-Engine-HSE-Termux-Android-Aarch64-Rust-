@@ -924,6 +924,9 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     ("app.planetscale.com", "planetscale"),
     ("upstash.com", "upstash"),
     ("console.upstash.com", "upstash"),
+    // OSINT / validation (complete coverage)
+    ("opencellid.org", "opencellid"),
+    ("unwiredlabs.com", "opencellid"),
 ];
 
 pub(super) fn identify_service_from_url(url: &str) -> &'static str {
