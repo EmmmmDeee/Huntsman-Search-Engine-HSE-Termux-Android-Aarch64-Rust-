@@ -135,6 +135,8 @@ const RULES: &[RuleFn] = &[
     rule_au_013_local_network_discovery,
     rule_au_014_geo_cluster,
     rule_au_015_threat_intel_hit,
+    rule_au_016_breach_ip_geo_chain,
+    rule_au_017_multi_geo_convergence,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -619,6 +621,117 @@ fn rule_au_015_threat_intel_hit(entities: &[Entity], scan_id: &str, ts: u64) -> 
         .collect()
 }
 
+fn rule_au_016_breach_ip_geo_chain(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let breach_ips: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress && e.has_tag("breach"))
+        .collect();
+    let coords: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.60)
+        .collect();
+    if breach_ips.is_empty() || coords.is_empty() {
+        return Vec::new();
+    }
+    let linked: Vec<&Entity> = coords
+        .iter()
+        .filter(|c| {
+            c.evidence
+                .iter()
+                .any(|ev| breach_ips.iter().any(|ip| ev.summary.contains(&ip.value)))
+        })
+        .copied()
+        .collect();
+    if linked.is_empty() {
+        return Vec::new();
+    }
+    let mut uids: Vec<String> = breach_ips.iter().map(|e| e.uid.clone()).collect();
+    uids.extend(linked.iter().map(|e| e.uid.clone()));
+    vec![Correlation {
+        rule_id: "AU-016".into(),
+        rule_name: "Breach IP → geolocation chain".into(),
+        severity: Severity::High,
+        description: format!(
+            "{} breach IP(s) resolved to {} coordinate(s) via geolocation pipeline",
+            breach_ips.len(),
+            linked.len()
+        ),
+        entity_uids: uids,
+        scan_id: scan_id.into(),
+        ts,
+    }]
+}
+
+fn rule_au_017_multi_geo_convergence(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let coords: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.50)
+        .collect();
+    if coords.len() < 2 {
+        return Vec::new();
+    }
+    let mut clusters: Vec<Vec<&Entity>> = Vec::new();
+    for c in &coords {
+        let parts: Vec<&str> = c.value.split(',').collect();
+        let (lat, lon) = match (parts.first(), parts.get(1)) {
+            (Some(a), Some(b)) => match (a.trim().parse::<f64>(), b.trim().parse::<f64>()) {
+                (Ok(la), Ok(lo)) => (la, lo),
+                _ => continue,
+            },
+            _ => continue,
+        };
+        let mut found = false;
+        for cluster in &mut clusters {
+            let rep = cluster[0];
+            let rp: Vec<&str> = rep.value.split(',').collect();
+            if let (Some(a), Some(b)) = (rp.first(), rp.get(1)) {
+                if let (Ok(rl), Ok(ro)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>()) {
+                    if (lat - rl).abs() < 0.5 && (lon - ro).abs() < 0.5 {
+                        cluster.push(c);
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !found {
+            clusters.push(vec![c]);
+        }
+    }
+    clusters
+        .into_iter()
+        .filter(|cl| cl.len() >= 2)
+        .map(|cl| {
+            let uids: Vec<String> = cl.iter().map(|e| e.uid.clone()).collect();
+            let sources: HashSet<&str> = cl
+                .iter()
+                .flat_map(|e| e.evidence.iter().map(|ev| ev.source.as_str()))
+                .collect();
+            Correlation {
+                rule_id: "AU-017".into(),
+                rule_name: "Multi-source geographic convergence".into(),
+                severity: Severity::High,
+                description: format!(
+                    "{} coordinate entities converge within 0.5° (~55km), from {} source(s)",
+                    cl.len(),
+                    sources.len()
+                ),
+                entity_uids: uids,
+                scan_id: scan_id.into(),
+                ts,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1085,5 +1198,45 @@ mod tests {
                 "expected {expected} in firings, got {ids:?}"
             );
         }
+    }
+
+    #[test]
+    fn rule_016_breach_ip_geo_chain_fires() {
+        let mut ip = Entity::new(EntityKind::IpAddress, "101.169.42.148", 0.72, "s");
+        ip.tag("breach");
+        let mut coord = Entity::new(EntityKind::Coordinates, "-27.5567,152.2767", 0.65, "s");
+        coord.add_evidence(Evidence::new(
+            "ip_geo",
+            "Geolocation for 101.169.42.148: Gatton, QLD",
+        ));
+        let firings = rule_au_016_breach_ip_geo_chain(&[ip, coord], "s", 0);
+        assert_eq!(firings.len(), 1);
+        assert_eq!(firings[0].rule_id, "AU-016");
+    }
+
+    #[test]
+    fn rule_016_no_fire_without_breach_tag() {
+        let ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.72, "s");
+        let coord = Entity::new(EntityKind::Coordinates, "1.0,2.0", 0.65, "s");
+        let firings = rule_au_016_breach_ip_geo_chain(&[ip, coord], "s", 0);
+        assert!(firings.is_empty());
+    }
+
+    #[test]
+    fn rule_017_multi_geo_convergence_fires() {
+        let c1 = Entity::new(EntityKind::Coordinates, "-27.55,152.27", 0.60, "s");
+        let c2 = Entity::new(EntityKind::Coordinates, "-27.60,152.30", 0.65, "s");
+        let firings = rule_au_017_multi_geo_convergence(&[c1, c2], "s", 0);
+        assert_eq!(firings.len(), 1);
+        assert_eq!(firings[0].rule_id, "AU-017");
+        assert!(firings[0].description.contains("converge"));
+    }
+
+    #[test]
+    fn rule_017_no_fire_for_distant_coords() {
+        let c1 = Entity::new(EntityKind::Coordinates, "-27.55,152.27", 0.60, "s");
+        let c2 = Entity::new(EntityKind::Coordinates, "-33.86,151.20", 0.65, "s");
+        let firings = rule_au_017_multi_geo_convergence(&[c1, c2], "s", 0);
+        assert!(firings.is_empty());
     }
 }

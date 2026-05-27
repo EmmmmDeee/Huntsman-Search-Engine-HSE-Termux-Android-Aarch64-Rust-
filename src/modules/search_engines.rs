@@ -109,6 +109,8 @@ impl Module for SearchEngines {
             return Ok(ModuleResult::new());
         }
 
+        let process_start = std::time::Instant::now();
+        let budget_ms = self.max_timeout_ms();
         let mut all_results: Vec<SearchResult> = Vec::new();
 
         // Track engines that failed on the first query so we skip them
@@ -236,14 +238,18 @@ impl Module for SearchEngines {
 
         // ── Recursive entity recycler: re-search high-confidence
         //    discovered entities for geolocation and cross-linking ─────
-        if !ctx.cancel.is_cancelled() {
+        let elapsed_ms = process_start.elapsed().as_millis() as u64;
+        let remaining_ms = budget_ms.saturating_sub(elapsed_ms);
+        if !ctx.cancel.is_cancelled() && remaining_ms > 15_000 {
             recycle_entities(ctx, &mut module_result, &dead_engines, &all_results).await;
         }
 
         // ── API enrichment pass: batch-query OathNet for high-confidence
         //    discovered entities. Only fires when the API key is configured
         //    and we have entities worth enriching. ──────────────────
-        if !ctx.cancel.is_cancelled() {
+        let elapsed_ms = process_start.elapsed().as_millis() as u64;
+        let remaining_ms = budget_ms.saturating_sub(elapsed_ms);
+        if !ctx.cancel.is_cancelled() && remaining_ms > 10_000 {
             enrich_via_oathnet(ctx, &mut module_result, target).await;
         }
 
@@ -519,6 +525,13 @@ async fn recycle_entities(
                 entity.value
             )),
             EntityKind::Phone => Some(format!("\"{}\" name OR address OR owner", entity.value)),
+            EntityKind::Domain if entity.confidence >= 0.55 => {
+                let domain = &entity.value;
+                Some(format!("\"{domain}\" location OR address OR city OR suburb"))
+            }
+            EntityKind::Organisation if entity.confidence >= 0.50 => {
+                Some(format!("\"{}\" address OR ABN OR location", entity.value))
+            }
             _ => None,
         };
         if let Some(query) = q
@@ -683,19 +696,26 @@ async fn generate_and_verify_emails(
     let last = parts[parts.len() - 1].to_lowercase();
     let fi = &first[..1.min(first.len())]; // first initial
 
-    // Generate common email patterns
+    // Generate common email patterns across consumer + AU domains
     let domains = [
         "gmail.com",
         "hotmail.com",
         "outlook.com",
         "yahoo.com",
         "live.com",
+        "hotmail.com.au",
+        "outlook.com.au",
+        "icloud.com",
+        "protonmail.com",
     ];
     let mut candidates: Vec<String> = Vec::new();
     for d in &domains {
         candidates.push(format!("{first}.{last}@{d}"));
         candidates.push(format!("{first}{last}@{d}"));
         candidates.push(format!("{fi}{last}@{d}"));
+        candidates.push(format!("{first}_{last}@{d}"));
+        candidates.push(format!("{last}{first}@{d}"));
+        candidates.push(format!("{first}.{last}1@{d}"));
     }
     // Username-derived emails from discovered usernames
     for e in &result.entities {
@@ -720,7 +740,7 @@ async fn generate_and_verify_emails(
         .map(|e| e.scan_id.clone())
         .unwrap_or_default();
 
-    for candidate in candidates.iter().take(10) {
+    for candidate in candidates.iter().take(20) {
         if ctx.cancel.is_cancelled() {
             break;
         }
@@ -740,7 +760,26 @@ async fn generate_and_verify_emails(
                 .filter_map(|h| crate::util::oathnet::val_str(h, "dbname"))
                 .take(3)
                 .collect();
-            let mut e = Entity::new(EntityKind::Email, candidate, 0.72, &scan_id);
+            let mut base_conf = 0.72;
+            // Holehe check: if the email is registered on platforms, boost
+            if let Ok(holehe_data) = crate::util::oathnet::osint(
+                key,
+                crate::util::oathnet::paths::HOLEHE,
+                "email",
+                candidate,
+            )
+            .await
+            {
+                let platform_count = holehe_data
+                    .as_array()
+                    .or_else(|| holehe_data.get("sites").and_then(|s| s.as_array()))
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                if platform_count > 0 {
+                    base_conf = 0.85;
+                }
+            }
+            let mut e = Entity::new(EntityKind::Email, candidate, base_conf, &scan_id);
             e.tag("pattern-generated");
             e.tag("breach-verified");
             e.tag(crate::core::tags::BREACH);
@@ -876,6 +915,82 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult, targ
             }
         }
     }
+
+    // Inline IP-info geolocation: resolve the top 3 breach-discovered IPs
+    // via OathNet ip-info to produce Coordinates entities immediately,
+    // instead of waiting for depth-2 expansion through ip_geo.
+    let ips: Vec<String> = result
+        .entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::IpAddress
+                && e.confidence >= 0.60
+                && e.tags.iter().any(|t| t == "oathnet-enriched")
+        })
+        .map(|e| e.value.clone())
+        .take(3)
+        .collect();
+    for ip in &ips {
+        if ctx.cancel.is_cancelled() {
+            break;
+        }
+        if let Ok(data) =
+            crate::util::oathnet::osint(key, crate::util::oathnet::paths::IP_INFO, "ip", ip).await
+        {
+            let lat = data.get("latitude").and_then(|v| v.as_f64());
+            let lon = data.get("longitude").and_then(|v| v.as_f64());
+            let city = data
+                .get("city")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let region = data
+                .get("region")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let country = data
+                .get("country_name")
+                .or_else(|| data.get("country"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if let (Some(lat), Some(lon)) = (lat, lon) {
+                if lat.abs() > 0.01 && lon.abs() > 0.01 {
+                    let coords = format!("{lat:.4},{lon:.4}");
+                    let mut ce =
+                        Entity::new(EntityKind::Coordinates, &coords, 0.70, &scan_id);
+                    ce.tag("geoint");
+                    ce.tag("oathnet-ip-info");
+                    ce.add_evidence(
+                        Evidence::new(
+                            "search_engines:oathnet",
+                            format!("IP-info geolocation for {ip}: {city}, {region}, {country}"),
+                        )
+                        .with_attr("ip", ip)
+                        .with_attr("city", city)
+                        .with_attr("region", region)
+                        .with_attr("country", country),
+                    );
+                    result.push(ce);
+                }
+            }
+            if !city.is_empty() && !region.is_empty() {
+                let addr = if !country.is_empty() {
+                    format!("{city}, {region}, {country}")
+                } else {
+                    format!("{city}, {region}")
+                };
+                let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &scan_id);
+                ae.tag("oathnet-ip-info");
+                ae.add_evidence(
+                    Evidence::new(
+                        "search_engines:oathnet",
+                        format!("IP-info address for {ip}"),
+                    )
+                    .with_attr("ip", ip),
+                );
+                result.push(ae);
+            }
+        }
+    }
 }
 
 fn apply_breach_evidence(
@@ -970,8 +1085,26 @@ fn apply_breach_evidence(
                 new_ents.push(e);
             }
         }
-        // Preserve non-target rows as CANDIDATE (0.25) instead of discarding
-        let conf = |base: f64| -> f64 { if row_matches { base } else { 0.25 } };
+        // Tier confidence by breach source quality
+        let db_lower = db.to_lowercase();
+        let quality_boost: f64 = if [
+            "linkedin", "facebook", "adobe", "myspace", "dropbox", "twitter",
+            "canva", "dubsmash", "spotify", "zynga",
+        ]
+        .iter()
+        .any(|s| db_lower.contains(s))
+        {
+            0.05
+        } else {
+            0.0
+        };
+        let conf = |base: f64| -> f64 {
+            if row_matches {
+                (base + quality_boost).min(1.0)
+            } else {
+                0.25
+            }
+        };
         if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
             && ph.len() >= 7
             && seen.insert(ph.to_lowercase())
@@ -2237,6 +2370,30 @@ fn canonicalize_url(url: &str) -> String {
     base.trim_end_matches('/').to_string()
 }
 
+/// Normalize an address for fuzzy dedup: lowercased, state abbreviations
+/// expanded, common punctuation and whitespace collapsed. This catches
+/// "Gatton, QLD" ≡ "Gatton, Queensland" ≡ "gatton queensland".
+fn normalise_address_key(addr: &str) -> String {
+    let mut s = addr.to_lowercase();
+    let expansions = [
+        ("qld", "queensland"),
+        ("nsw", "new south wales"),
+        ("vic", "victoria"),
+        ("tas", "tasmania"),
+        ("act", "australian capital territory"),
+        ("sa", "south australia"),
+        ("wa", "western australia"),
+        ("nt", "northern territory"),
+    ];
+    for (abbr, full) in &expansions {
+        if s.contains(abbr) && !s.contains(full) {
+            s = s.replace(abbr, full);
+        }
+    }
+    s.retain(|c| c.is_alphanumeric() || c == ' ');
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn floor_char_boundary(s: &str, mut i: usize) -> usize {
     if i >= s.len() {
         return s.len();
@@ -2534,7 +2691,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
 
         // Extract addresses from snippet text (geolocation pivot)
         for addr in extract_addresses_from_text(&combined_text) {
-            let addr_key = format!("@addr:{}", addr.to_lowercase());
+            let addr_key = format!("@addr:{}", normalise_address_key(&addr));
             if seen_domains.insert(addr_key.clone()) {
                 let mut e = Entity::new(EntityKind::Address, &addr, 0.40, scan_id);
                 e.tag("search-discovered");
@@ -2555,8 +2712,9 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                 result.push(e);
             } else {
                 // Address seen before — boost via merge (corroboration increases)
+                let norm = normalise_address_key(&addr);
                 if let Some(existing) = result.entities.iter_mut().find(|e| {
-                    e.kind == EntityKind::Address && e.value.to_lowercase() == addr.to_lowercase()
+                    e.kind == EntityKind::Address && normalise_address_key(&e.value) == norm
                 }) {
                     existing.confidence = (existing.confidence + 0.12).min(0.80);
                     existing.corroboration = existing.corroboration.saturating_add(1);
@@ -2765,7 +2923,13 @@ fn known_city_coords(addr: &str) -> Option<(f64, f64)> {
         ("townsville", -19.2590, 146.8169),
         ("toowoomba", -27.5598, 151.9507),
         ("rockhampton", -23.3791, 150.5100),
-        // QLD suburbs
+        // QLD suburbs + regional
+        ("gatton", -27.5567, 152.2767),
+        ("laidley", -27.6333, 152.3833),
+        ("lockyer valley", -27.5567, 152.2767),
+        ("helidon", -27.5500, 152.1167),
+        ("plainland", -27.5667, 152.4167),
+        ("forest hill", -27.5833, 152.3500),
         ("nundah", -27.4017, 153.0600),
         ("redcliffe", -27.2289, 153.1050),
         ("caboolture", -27.0847, 152.9511),
@@ -2778,7 +2942,32 @@ fn known_city_coords(addr: &str) -> Option<(f64, f64)> {
         ("springfield", -27.6667, 152.9167),
         ("surfers paradise", -28.0029, 153.4300),
         ("nerang", -27.9897, 153.3372),
-        // US cities
+        ("bundaberg", -24.8661, 152.3489),
+        ("hervey bay", -25.2881, 152.8411),
+        ("gladstone", -23.8488, 151.2673),
+        ("mount isa", -20.7264, 139.4928),
+        ("mackay", -21.1411, 149.1861),
+        ("maryborough", -25.5411, 152.7028),
+        ("warwick", -28.2167, 152.0333),
+        ("dalby", -27.1833, 151.2667),
+        ("kingaroy", -26.5400, 151.8400),
+        ("stanthorpe", -28.6567, 151.9333),
+        // NSW regional
+        ("newcastle", -32.9283, 151.7817),
+        ("wollongong", -34.4278, 150.8931),
+        ("central coast", -33.3000, 151.3500),
+        ("tamworth", -31.0833, 150.9167),
+        ("wagga wagga", -35.1083, 147.3598),
+        ("albury", -36.0737, 146.9135),
+        ("orange", -33.2833, 149.1000),
+        ("bathurst", -33.4167, 149.5833),
+        ("dubbo", -32.2569, 148.6011),
+        // VIC regional
+        ("geelong", -38.1499, 144.3617),
+        ("ballarat", -37.5622, 143.8503),
+        ("bendigo", -36.7570, 144.2794),
+        ("shepparton", -36.3833, 145.3833),
+        // US cities (expanded)
         ("new york", 40.7128, -74.0060),
         ("los angeles", 33.9425, -118.2551),
         ("chicago", 41.8781, -87.6298),
@@ -2789,10 +2978,33 @@ fn known_city_coords(addr: &str) -> Option<(f64, f64)> {
         ("denver", 39.7392, -104.9903),
         ("colorado springs", 38.8339, -104.8214),
         ("colo springs", 38.8339, -104.8214),
-        // UK cities
+        ("philadelphia", 39.9526, -75.1652),
+        ("san antonio", 29.4241, -98.4936),
+        ("dallas", 32.7767, -96.7970),
+        ("san jose", 37.3382, -121.8863),
+        ("austin", 30.2672, -97.7431),
+        ("jacksonville", 30.3322, -81.6557),
+        ("columbus", 39.9612, -82.9988),
+        ("miami", 25.7617, -80.1918),
+        ("boston", 42.3601, -71.0589),
+        ("atlanta", 33.7490, -84.3880),
+        ("portland", 45.5152, -122.6784),
+        ("las vegas", 36.1699, -115.1398),
+        ("nashville", 36.1627, -86.7816),
+        ("minneapolis", 44.9778, -93.2650),
+        // UK cities (expanded)
         ("london", 51.5074, -0.1278),
         ("manchester", 53.4808, -2.2426),
         ("birmingham", 52.4862, -1.8904),
+        ("leeds", 53.8008, -1.5491),
+        ("glasgow", 55.8642, -4.2518),
+        ("liverpool", 53.4084, -2.9916),
+        ("edinburgh", 55.9533, -3.1883),
+        ("bristol", 51.4545, -2.5879),
+        // NZ cities
+        ("auckland", -36.8485, 174.7633),
+        ("wellington", -41.2865, 174.7762),
+        ("christchurch", -43.5321, 172.6362),
     ];
     for &(city, lat, lon) in CITIES {
         if lower.contains(city) {
@@ -3067,6 +3279,23 @@ fn extract_addresses_from_text(text: &str) -> Vec<String> {
         "Logan",
         "Ipswich",
         "Springfield",
+        // Lockyer Valley region
+        "Gatton",
+        "Laidley",
+        "Helidon",
+        "Plainland",
+        "Forest Hill",
+        "Lockyer Valley",
+        "Withcott",
+        // Western Downs / Darling Downs
+        "Dalby",
+        "Warwick",
+        "Kingaroy",
+        "Stanthorpe",
+        "Goondiwindi",
+        "Chinchilla",
+        // Moreton Bay
+        "Maryborough",
         "Beenleigh",
         "Capalaba",
         "Cleveland",
@@ -4110,5 +4339,80 @@ mod tests {
         assert!(!family.is_empty());
         assert!(family[0].0.contains("Jeanette"));
         assert!(family[0].0.contains("Despal"));
+    }
+
+    #[test]
+    fn address_normalise_qld_variants() {
+        let a = normalise_address_key("Gatton, QLD");
+        let b = normalise_address_key("Gatton, Queensland");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn address_normalise_nsw_variants() {
+        let a = normalise_address_key("Sydney, NSW");
+        let b = normalise_address_key("Sydney, New South Wales");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn address_normalise_strips_punctuation() {
+        let a = normalise_address_key("St Lucia, QLD, 4067");
+        assert!(!a.contains(','));
+        assert!(a.contains("queensland"));
+    }
+
+    #[test]
+    fn known_city_coords_gatton() {
+        let coords = known_city_coords("Gatton, QLD");
+        assert!(coords.is_some(), "Gatton should have known coordinates");
+        let (lat, lon) = coords.unwrap();
+        assert!((lat - (-27.5567)).abs() < 0.01);
+        assert!((lon - 152.2767).abs() < 0.01);
+    }
+
+    #[test]
+    fn known_city_coords_lockyer_valley() {
+        let coords = known_city_coords("Lockyer Valley");
+        assert!(
+            coords.is_some(),
+            "Lockyer Valley should have known coordinates"
+        );
+    }
+
+    #[test]
+    fn known_city_coords_expanded_cities() {
+        assert!(known_city_coords("Philadelphia").is_some());
+        assert!(known_city_coords("Miami, FL").is_some());
+        assert!(known_city_coords("Newcastle NSW").is_some());
+        assert!(known_city_coords("Auckland").is_some());
+    }
+
+    #[test]
+    fn address_extractor_finds_gatton_qld() {
+        let text = "Jordan Meyer from Gatton QLD works in agriculture";
+        let addrs = extract_addresses_from_text(text);
+        assert!(
+            addrs.iter().any(|a| a.contains("Gatton")),
+            "should find Gatton with QLD context: {addrs:?}"
+        );
+    }
+
+    #[test]
+    fn canonicalize_url_strips_query_params() {
+        assert_eq!(canonicalize_url("https://x.com/page?a=1"), "https://x.com/page");
+    }
+
+    #[test]
+    fn canonicalize_url_strips_fragment() {
+        assert_eq!(
+            canonicalize_url("https://x.com/page#section"),
+            "https://x.com/page"
+        );
+    }
+
+    #[test]
+    fn canonicalize_url_strips_trailing_slash() {
+        assert_eq!(canonicalize_url("https://x.com/page/"), "https://x.com/page");
     }
 }
