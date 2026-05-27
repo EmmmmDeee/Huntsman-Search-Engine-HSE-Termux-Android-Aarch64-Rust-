@@ -12,6 +12,7 @@
 // no LLMs, no fuzzy matching. Adding a new rule is a 10-line
 // function plus one line in `evaluate_rules`.
 
+#[allow(unused_imports)]
 use std::collections::HashSet;
 use std::sync::Arc;
 
