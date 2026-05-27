@@ -433,6 +433,14 @@ fn extract_stealer_entities(
     }
     if let Some(pw) = val_str(item, "password") {
         ev = ev.with_attr("password", &pw);
+        if pw.contains("UPGRADE_TO_SEE") && pw.len() >= 3 {
+            let first = &pw[..1];
+            let last = &pw[pw.len() - 1..];
+            ev = ev
+                .with_attr("password_hint_first", first)
+                .with_attr("password_hint_last", last)
+                .with_attr("password_redacted", "true");
+        }
     }
     if let Some(uname) = val_str(item, "username") {
         ev = ev.with_attr("username", &uname);
@@ -451,6 +459,27 @@ fn extract_stealer_entities(
                     result.push(e);
                 }
             }
+        }
+    }
+
+    // Username field often contains an email address (stealer logs use the
+    // login email as "username"). Emit it so it expands through the email
+    // pipeline — HIBP, emailrep, epieos, etc. can then cross-reference.
+    if let Some(uname) = val_str(item, "username") {
+        let lower = uname.to_lowercase();
+        if lower.contains('@')
+            && lower.contains('.')
+            && seen.insert(format!("@stealer-user:{lower}"))
+        {
+            let mut e = Entity::new(EntityKind::Email, &uname, 0.60, scan_id);
+            e.tag("oathnet-pro");
+            e.tag("stealer");
+            e.tag("stealer-login");
+            e.add_evidence(
+                Evidence::new(SRC, "Stealer login email (username field)")
+                    .with_attr("source", "stealer"),
+            );
+            result.push(e);
         }
     }
 
