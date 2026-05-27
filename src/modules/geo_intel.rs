@@ -131,22 +131,11 @@ impl Module for GeoIntel {
     }
 
     fn cost(&self) -> ModuleCost {
-        ModuleCost::KeyGated
+        ModuleCost::Free
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(
-            t.kind,
-            TargetKind::IpAddress
-                | TargetKind::Email
-                | TargetKind::Username
-                | TargetKind::Phone
-                | TargetKind::Domain
-                | TargetKind::Url
-                | TargetKind::FullName
-                | TargetKind::Organisation
-                | TargetKind::Address
-        )
+        matches!(t.kind, TargetKind::IpAddress | TargetKind::Phone)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -154,25 +143,12 @@ impl Module for GeoIntel {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // geo_intel now uses ONLY free APIs (ipapi.co, freeipapi.com).
+        // OathNet breach/victim queries are handled exclusively by
+        // oathnet_pro on the seed target — no duplication here.
         match target.kind {
             TargetKind::IpAddress => process_ip(target, ctx).await,
-            TargetKind::Email
-            | TargetKind::Username
-            | TargetKind::Domain
-            | TargetKind::FullName
-            | TargetKind::Organisation
-            | TargetKind::Address => process_identity(target, ctx).await,
-            TargetKind::Phone => process_phone(target, ctx).await,
-            TargetKind::Url => {
-                // Extract domain from URL and run the domain identity path
-                if let Some(host) = target.value.split("//").nth(1) {
-                    let domain = host.split('/').next().unwrap_or(host);
-                    let domain_target = Target::new(TargetKind::Domain, domain);
-                    process_identity(&domain_target, ctx).await
-                } else {
-                    Ok(ModuleResult::new())
-                }
-            }
+            TargetKind::Phone => process_phone_prefix_only(target, ctx).await,
             _ => Ok(ModuleResult::new()),
         }
     }
@@ -510,9 +486,9 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
     Ok(result)
 }
 
-// ─── Phone number geolocation ───────────────────────────────────────────────
+// ─── Phone number geolocation (free — E.164 prefix only) ────────────────────
 
-async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+async fn process_phone_prefix_only(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let mut result = ModuleResult::new();
     let mut seen = HashSet::new();
 
@@ -539,9 +515,9 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         }
     }
 
-    // OathNet Pro breach search for phone geo data (only with explicit key)
-    let oathnet_key = ctx.key_opt(oathnet::KEY_ENV);
-    if !ctx.cancel.is_cancelled() && oathnet_key.is_some() {
+    #[allow(unreachable_code)]
+    if false {
+        let oathnet_key: Option<&str> = None;
         let key = oathnet::resolve_key(oathnet_key);
         if let Ok(items) = oathnet::search(key, paths::BREACH, "phone", &target.value, 20).await {
             let mut location_seeds = Vec::new();
@@ -1031,25 +1007,15 @@ mod tests {
     fn accepts_geo_relevant_targets() {
         let m = GeoIntel;
         assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
-        assert!(m.accepts(&Target::new(TargetKind::Email, "x@y")));
-        assert!(m.accepts(&Target::new(TargetKind::Username, "alice")));
         assert!(m.accepts(&Target::new(TargetKind::Phone, "+61400000000")));
-        assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
-        assert!(m.accepts(&Target::new(TargetKind::Url, "https://example.com")));
-        assert!(m.accepts(&Target::new(TargetKind::FullName, "John Doe")));
-        assert!(m.accepts(&Target::new(TargetKind::Organisation, "Acme Corp")));
     }
 
     #[test]
-    fn rejects_non_geo_targets() {
+    fn rejects_non_ip_phone_targets() {
         let m = GeoIntel;
         assert!(!m.accepts(&Target::new(TargetKind::Coordinates, "0,0")));
-    }
-
-    #[test]
-    fn accepts_address_for_breach_enrichment() {
-        let m = GeoIntel;
-        assert!(m.accepts(&Target::new(TargetKind::Address, "Brisbane, QLD, Australia")));
+        assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y")));
+        assert!(!m.accepts(&Target::new(TargetKind::Domain, "x.com")));
     }
 
     #[test]
@@ -1059,8 +1025,8 @@ mod tests {
     }
 
     #[test]
-    fn cost_is_key_gated() {
-        assert!(matches!(GeoIntel.cost(), ModuleCost::KeyGated));
+    fn cost_is_free() {
+        assert!(matches!(GeoIntel.cost(), ModuleCost::Free));
     }
 
     #[test]

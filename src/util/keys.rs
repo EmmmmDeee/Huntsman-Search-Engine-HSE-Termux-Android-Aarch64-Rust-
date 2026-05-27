@@ -131,7 +131,10 @@ pub fn load() -> HashMap<String, String> {
 /// the OathNet stealer API (~30 service domain queries).
 pub async fn populate_and_load() -> HashMap<String, String> {
     ensure_hardcoded_keys();
-    harvest_to_pool().await;
+    // Pre-scan OathNet harvest disabled — costs 38 API calls before any
+    // scan begins. The oathnet_pro module extracts credentials from
+    // breach/stealer results during the seed query instead, getting the
+    // same data as a side-effect of the 2-3 high-value queries it makes.
     load()
 }
 

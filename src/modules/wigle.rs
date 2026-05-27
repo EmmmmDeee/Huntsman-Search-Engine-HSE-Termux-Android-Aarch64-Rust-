@@ -94,8 +94,9 @@ impl Module for Wigle {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // WiGLE budget: cap at 10 geo queries + 5 BSSID queries per process
-        // lifetime. Each geo query uses 1-2 API calls (tight + optional wide).
+        // WiGLE budget: 3 geo queries + 2 BSSID queries max per process.
+        // Each query is high-value — only the highest-confidence targets
+        // should reach here. The engine's expansion sort ensures that.
         static GEO_QUERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         static BSSID_QUERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
@@ -103,13 +104,13 @@ impl Module for Wigle {
         let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);
 
         if target.kind == TargetKind::MacAddress {
-            if BSSID_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 5 {
+            if BSSID_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 2 {
                 return Ok(ModuleResult::new());
             }
             return self.bssid_lookup(user, token, &target.value, ctx).await;
         }
 
-        if GEO_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 10 {
+        if GEO_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 3 {
             return Ok(ModuleResult::new());
         }
 

@@ -789,6 +789,14 @@ fn module_skip_reason(
     if is_expansion && module.is_passive() && SENSOR_MODULES.contains(&name) {
         return Some("sensor (already ran on seed round)");
     }
+    // OathNet Pro is too expensive for expansion targets — its 2-3 API
+    // calls per invocation are reserved for the seed target only.
+    // Expansion targets get enriched by free modules (ip_geo, dns_intel,
+    // geocode, etc.) which produce the same downstream entity types.
+    const SEED_ONLY_MODULES: &[&str] = &["oathnet_pro"];
+    if is_expansion && SEED_ONLY_MODULES.contains(&name) {
+        return Some("API-expensive (seed round only)");
+    }
     None
 }
 

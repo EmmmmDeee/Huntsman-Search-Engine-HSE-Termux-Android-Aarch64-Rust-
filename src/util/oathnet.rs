@@ -30,7 +30,7 @@ static RESPONSE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CachedResponse>
 static QUERY_COUNT: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
-const MAX_QUERIES_PER_SCAN: u32 = 500;
+const MAX_QUERIES_PER_SCAN: u32 = 12;
 
 struct CachedResponse {
     items: Vec<Value>,

@@ -231,11 +231,9 @@ impl Module for SearchEngines {
         // entire OathNet→IP→Geo chain cannot fire. Run it before the
         // time-consuming recycler so it executes even when the module
         // is close to its timeout budget.
-        if !ctx.cancel.is_cancelled()
-            && matches!(target.kind, TargetKind::FullName | TargetKind::Username)
-        {
-            generate_and_verify_emails(ctx, target, &mut module_result).await;
-        }
+        // Email generation via OathNet disabled — oathnet_pro handles
+        // breach lookups exclusively. Preserves API budget.
+        let _ = (generate_and_verify_emails, ctx, target);
 
         // ── Recursive entity recycler: re-search high-confidence
         //    discovered entities for geolocation and cross-linking ─────
@@ -250,12 +248,10 @@ impl Module for SearchEngines {
         //    and we have entities worth enriching. ──────────────────
         let elapsed_ms = process_start.elapsed().as_millis() as u64;
         let remaining_ms = budget_ms.saturating_sub(elapsed_ms);
-        if !ctx.cancel.is_cancelled()
-            && remaining_ms > 10_000
-            && !crate::util::oathnet::is_quota_exhausted()
-        {
-            enrich_via_oathnet(ctx, &mut module_result, target).await;
-        }
+        // OathNet enrichment disabled — oathnet_pro handles breach
+        // lookups exclusively on the seed target. Zero OathNet calls
+        // from search_engines preserves budget for high-value queries.
+        let _ = (enrich_via_oathnet, remaining_ms);
 
         Ok(module_result)
     }

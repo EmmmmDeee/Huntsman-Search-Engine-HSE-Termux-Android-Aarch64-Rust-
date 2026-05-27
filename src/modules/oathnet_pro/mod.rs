@@ -82,10 +82,8 @@ impl Module for OathnetPro {
             _ => return Ok(result),
         };
 
-        // ── Breach search ───────────────────────────────────────────
-        // Conservative query limit: 20 results covers entity extraction
-        // needs while halving API budget vs the previous 50-result cap.
-        let items = oathnet::search(key, paths::BREACH, field, &target.value, 20).await?;
+        // ── Query 1: Breach search (highest value — entities + geo + identity) ──
+        let items = oathnet::search(key, paths::BREACH, field, &target.value, 15).await?;
         if items.is_empty() {
             return Ok(result);
         }
@@ -126,10 +124,10 @@ impl Module for OathnetPro {
             extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
         }
 
-        // ── Stealer search ──────────────────────────────────────────
+        // ── Query 2: Stealer search (credential/device intelligence) ──
         if !ctx.cancel.is_cancelled()
             && let Ok(stealer_items) =
-                oathnet::search(key, paths::STEALER, field, &target.value, 15).await
+                oathnet::search(key, paths::STEALER, field, &target.value, 10).await
         {
             for item in &stealer_items {
                 extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
@@ -138,17 +136,7 @@ impl Module for OathnetPro {
             }
         }
 
-        // ── Victims search (compromised device intelligence) ────────
-        if !ctx.cancel.is_cancelled()
-            && let Ok(victim_items) =
-                oathnet::search(key, paths::VICTIMS, field, &target.value, 20).await
-        {
-            for item in &victim_items {
-                extract_victim_entities(item, &ctx.scan_id, &mut seen, &mut result);
-            }
-        }
-
-        // ── Holehe (email targets) ──────────────────────────────────
+        // ── Query 3: Holehe — only for Email targets (platform presence) ──
         if target.kind == TargetKind::Email
             && !ctx.cancel.is_cancelled()
             && let Ok(holehe) = oathnet::osint(key, paths::HOLEHE, "email", &target.value).await
@@ -156,121 +144,12 @@ impl Module for OathnetPro {
             extract_holehe(holehe, &target.value, &ctx.scan_id, &mut result);
         }
 
-        // ── Recursive credential discovery ─────────────────────────
-        // Use discovered emails from breach data to search stealer
-        // endpoint for additional credential exposure.
-        if !ctx.cancel.is_cancelled() {
-            let discovered_emails: Vec<String> = result
-                .entities
-                .iter()
-                .filter(|e| e.kind == EntityKind::Email && e.value != target.value && e.confidence >= 0.65)
-                .take(2)
-                .map(|e| e.value.clone())
-                .collect();
-            for email in &discovered_emails {
-                if ctx.cancel.is_cancelled() {
-                    break;
-                }
-                if let Ok(items) = oathnet::search(key, paths::STEALER, "email", email, 10).await {
-                    for item in &items {
-                        store_api_credential(item);
-                        extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
-                    }
-                }
-            }
-        }
-
-        // ── OSINT enrichment (Discord, Steam, GHunt) ──────────────
-        if !ctx.cancel.is_cancelled() {
-            let usernames: Vec<String> = result
-                .entities
-                .iter()
-                .filter(|e| e.kind == EntityKind::Username && e.confidence >= 0.70)
-                .take(2)
-                .map(|e| e.value.clone())
-                .collect();
-            for uname in &usernames {
-                if ctx.cancel.is_cancelled() {
-                    break;
-                }
-                // Discord user info
-                if let Ok(data) = oathnet::osint(key, paths::DISCORD_USER, "user", uname).await
-                    && let Some(id) = data.get("id").and_then(|v| v.as_str())
-                {
-                    let mut e = Entity::new(
-                        EntityKind::Username,
-                        format!("discord:{id}"),
-                        0.65,
-                        &ctx.scan_id,
-                    );
-                    e.tag("oathnet-pro");
-                    e.tag("discord");
-                    let mut ev = Evidence::new(SRC, format!("Discord lookup for {uname}"));
-                    if let Some(n) = data.get("username").and_then(|v| v.as_str()) {
-                        ev = ev.with_attr("discord_username", n);
-                    }
-                    if let Some(a) = data.get("avatar").and_then(|v| v.as_str()) {
-                        ev = ev.with_attr("avatar", a);
-                    }
-                    e.add_evidence(ev);
-                    if seen.insert(format!("@discord:{id}")) {
-                        result.push(e);
-                    }
-                }
-            }
-
-            // GHunt for email targets
-            if target.kind == TargetKind::Email
-                && let Ok(data) = oathnet::osint(key, paths::GHUNT, "email", &target.value).await
-                && let Some(name) = data.get("name").and_then(|v| v.as_str())
-                && name.len() >= 3
-                && name.contains(' ')
-                && seen.insert(format!("@ghunt:{}", name.to_lowercase()))
-            {
-                let mut e = Entity::new(EntityKind::Person, name, 0.70, &ctx.scan_id);
-                e.tag("oathnet-pro");
-                e.tag("google");
-                e.add_evidence(Evidence::new(
-                    "oathnet_pro",
-                    format!("GHunt: Google account for {}", &target.value),
-                ));
-                result.push(e);
-            }
-        }
-
-        // ── Targeted API credential harvest ──
-        // Runs at most once per process lifetime via atomic guard.
-        // Saves ~125 API calls per scan after the first.
-        if !ctx.cancel.is_cancelled()
-            && matches!(
-                target.kind,
-                TargetKind::Email | TargetKind::Username | TargetKind::Domain
-            )
-        {
-            static HARVEST_DONE: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !HARVEST_DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                harvest_api_credentials_from_stealer(key).await;
-            }
-        }
-
-        // ── IP info for discovered IPs ──────────────────────────────
-        if !ctx.cancel.is_cancelled() {
-            let ips: Vec<String> = result
-                .entities
-                .iter()
-                .filter(|e| e.kind == EntityKind::IpAddress)
-                .map(|e| e.value.clone())
-                .collect();
-            for ip in ips.iter().take(5) {
-                if ctx.cancel.is_cancelled() {
-                    break;
-                }
-                if let Ok(info) = oathnet::osint(key, paths::IP_INFO, "ip", ip).await {
-                    extract_ip_info(info, ip, &ctx.scan_id, &mut result);
-                }
-            }
-        }
+        // No further OathNet queries — victims, recursive stealer,
+        // Discord, GHunt, IP info, and key harvest are all cut.
+        // The breach + stealer queries already extract IPs, emails,
+        // usernames, addresses, and credentials. Downstream free
+        // modules (ip_geo, dns_intel, geocode, etc.) handle the
+        // expansion from those entities without costing OathNet quota.
 
         Ok(result)
     }
