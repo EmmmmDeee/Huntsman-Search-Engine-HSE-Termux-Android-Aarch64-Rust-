@@ -76,10 +76,10 @@ pub async fn scan_batch(
         }
         let sid = scan_id(req.kind.canonical_str(), &req.value);
         let mut opts = req.options;
-        if let Some(ref profile_name) = opts.profile {
-            if let Some(profile_opts) = crate::core::profiles::resolve_profile(profile_name) {
-                opts = profile_opts;
-            }
+        if let Some(ref profile_name) = opts.profile
+            && let Some(profile_opts) = crate::core::profiles::resolve_profile(profile_name)
+        {
+            opts = profile_opts;
         }
         let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
         if let Err(e) = s.store.upsert_scan(&scan) {
