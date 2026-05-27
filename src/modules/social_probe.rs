@@ -195,7 +195,7 @@ impl Module for SocialProbe {
     }
 
     fn priority(&self) -> u8 {
-        109
+        108
     }
 
     fn accepts(&self, t: &Target) -> bool {

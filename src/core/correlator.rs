@@ -137,6 +137,8 @@ const RULES: &[RuleFn] = &[
     rule_au_015_threat_intel_hit,
     rule_au_016_breach_ip_geo_chain,
     rule_au_017_multi_geo_convergence,
+    rule_au_018_email_address_colocation,
+    rule_au_019_temporal_breach_cluster,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -213,7 +215,7 @@ fn rule_au_002_identity_cluster(entities: &[Entity], scan_id: &str, ts: u64) -> 
     vec![Correlation {
         rule_id: "AU-002".into(),
         rule_name: "Identity cluster".into(),
-        severity: Severity::High,
+        severity: Severity::Critical,
         description: format!(
             "Email + Username + Phone co-located: {} email(s), {} username(s), {} phone(s)",
             emails.len(),
@@ -731,6 +733,120 @@ fn rule_au_017_multi_geo_convergence(
             }
         })
         .collect()
+}
+
+fn rule_au_018_email_address_colocation(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let emails: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email && e.confidence >= 0.60)
+        .collect();
+    let addresses: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            (e.kind == EntityKind::Address || e.kind == EntityKind::Coordinates)
+                && e.confidence >= 0.50
+        })
+        .collect();
+    if emails.is_empty() || addresses.is_empty() {
+        return Vec::new();
+    }
+    let mut uids: Vec<String> = emails.iter().take(10).map(|e| e.uid.clone()).collect();
+    uids.extend(addresses.iter().take(5).map(|e| e.uid.clone()));
+    vec![Correlation {
+        rule_id: "AU-018".into(),
+        rule_name: "Email + physical location co-located".into(),
+        severity: Severity::High,
+        description: format!(
+            "{} email(s) co-located with {} address/coordinate(s) — identity-location linkage",
+            emails.len(),
+            addresses.len()
+        ),
+        entity_uids: uids,
+        scan_id: scan_id.into(),
+        ts,
+    }]
+}
+
+fn rule_au_019_temporal_breach_cluster(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut breach_dates: Vec<(&Entity, &str)> = Vec::new();
+    for e in entities {
+        if !e.has_tag("breach") {
+            continue;
+        }
+        for ev in &e.evidence {
+            for field in ["breach_date", "not_before", "earliest_record", "date"] {
+                if let Some(d) = ev.attributes.get(field) {
+                    if d.len() >= 10 {
+                        breach_dates.push((e, &d[..10]));
+                    }
+                }
+            }
+        }
+    }
+    if breach_dates.len() < 3 {
+        return Vec::new();
+    }
+    breach_dates.sort_by_key(|(_, d)| *d);
+    let mut clusters: Vec<Vec<String>> = Vec::new();
+    let mut current: Vec<String> = vec![breach_dates[0].0.uid.clone()];
+    let mut prev_date = breach_dates[0].1;
+    for &(e, d) in &breach_dates[1..] {
+        let days_apart = date_diff_days(prev_date, d);
+        if days_apart <= 30 {
+            if !current.contains(&e.uid) {
+                current.push(e.uid.clone());
+            }
+        } else {
+            if current.len() >= 3 {
+                clusters.push(current);
+            }
+            current = vec![e.uid.clone()];
+        }
+        prev_date = d;
+    }
+    if current.len() >= 3 {
+        clusters.push(current);
+    }
+    clusters
+        .into_iter()
+        .map(|uids| Correlation {
+            rule_id: "AU-019".into(),
+            rule_name: "Temporal breach cluster".into(),
+            severity: Severity::High,
+            description: format!(
+                "{} breach entities clustered within 30 days — potential coordinated compromise",
+                uids.len()
+            ),
+            entity_uids: uids,
+            scan_id: scan_id.into(),
+            ts,
+        })
+        .collect()
+}
+
+fn date_diff_days(a: &str, b: &str) -> u64 {
+    let parse = |s: &str| -> Option<u64> {
+        let parts: Vec<&str> = s.split('-').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let y: u64 = parts[0].parse().ok()?;
+        let m: u64 = parts[1].parse().ok()?;
+        let d: u64 = parts[2].parse().ok()?;
+        Some(y * 365 + m * 30 + d)
+    };
+    match (parse(a), parse(b)) {
+        (Some(da), Some(db)) => da.abs_diff(db),
+        _ => u64::MAX,
+    }
 }
 
 #[cfg(test)]

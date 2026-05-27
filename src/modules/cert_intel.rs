@@ -50,7 +50,7 @@ impl Module for CertIntel {
     }
 
     fn priority(&self) -> u8 {
-        32
+        33
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -339,7 +339,7 @@ mod tests {
     fn module_metadata() {
         let m = CertIntel;
         assert_eq!(m.name(), "cert_intel");
-        assert_eq!(m.priority(), 32);
+        assert_eq!(m.priority(), 33);
         assert_eq!(m.max_timeout_ms(), 10_000);
     }
 }

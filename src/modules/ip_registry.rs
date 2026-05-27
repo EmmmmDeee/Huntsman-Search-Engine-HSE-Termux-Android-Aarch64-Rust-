@@ -152,7 +152,7 @@ impl Module for IpRegistry {
     }
 
     fn priority(&self) -> u8 {
-        25
+        23
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn priority_and_timeout() {
         let m = IpRegistry;
-        assert_eq!(m.priority(), 25);
+        assert_eq!(m.priority(), 23);
         assert_eq!(m.max_timeout_ms(), 8_000);
     }
 

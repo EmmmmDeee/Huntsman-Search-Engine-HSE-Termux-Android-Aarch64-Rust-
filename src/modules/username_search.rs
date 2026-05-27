@@ -1727,7 +1727,7 @@ impl Module for UsernameSearch {
         // Higher than email_to_username (95) so it dispatches first when
         // a Username target is the seed — gives the user visible progress
         // immediately rather than waiting for derivation modules.
-        110
+        111
     }
 
     fn description(&self) -> &'static str {

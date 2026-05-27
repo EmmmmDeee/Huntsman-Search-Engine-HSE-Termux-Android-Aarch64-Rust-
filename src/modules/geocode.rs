@@ -76,7 +76,7 @@ impl Module for Geocode {
     }
 
     fn priority(&self) -> u8 {
-        22
+        21
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -307,7 +307,7 @@ mod tests {
     fn module_metadata() {
         let m = Geocode;
         assert_eq!(m.name(), "geocode");
-        assert_eq!(m.priority(), 22);
+        assert_eq!(m.priority(), 21);
         assert_eq!(m.max_timeout_ms(), 8_000);
     }
 }

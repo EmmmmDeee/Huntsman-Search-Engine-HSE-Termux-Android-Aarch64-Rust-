@@ -143,7 +143,7 @@ impl Module for DnsIntel {
     }
 
     fn priority(&self) -> u8 {
-        30
+        31
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -728,7 +728,7 @@ mod tests {
     fn metadata() {
         let m = DnsIntel;
         assert_eq!(m.name(), "dns_intel");
-        assert_eq!(m.priority(), 30);
+        assert_eq!(m.priority(), 31);
         assert_eq!(m.max_timeout_ms(), 15_000);
     }
 }

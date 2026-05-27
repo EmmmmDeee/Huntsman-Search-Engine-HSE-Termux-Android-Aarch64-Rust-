@@ -59,7 +59,7 @@ impl Module for GithubUser {
     }
 
     fn priority(&self) -> u8 {
-        108
+        107
     }
 
     fn accepts(&self, t: &Target) -> bool {

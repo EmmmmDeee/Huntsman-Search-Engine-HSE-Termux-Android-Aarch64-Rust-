@@ -32,7 +32,7 @@ impl Module for OathnetPro {
     }
 
     fn priority(&self) -> u8 {
-        128
+        127
     }
 
     fn cost(&self) -> ModuleCost {

@@ -52,7 +52,7 @@ impl Module for CrtSh {
     }
 
     fn priority(&self) -> u8 {
-        28
+        29
     }
 
     fn accepts(&self, t: &Target) -> bool {

@@ -127,7 +127,7 @@ impl Module for GeoIntel {
     }
 
     fn priority(&self) -> u8 {
-        24
+        22
     }
 
     fn cost(&self) -> ModuleCost {
@@ -1047,7 +1047,7 @@ mod tests {
     #[test]
     fn module_name_and_priority() {
         assert_eq!(GeoIntel.name(), "geo_intel");
-        assert_eq!(GeoIntel.priority(), 24);
+        assert_eq!(GeoIntel.priority(), 22);
     }
 
     #[test]

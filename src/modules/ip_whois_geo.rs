@@ -69,7 +69,7 @@ impl Module for IpWhois {
     }
 
     fn priority(&self) -> u8 {
-        26
+        27
     }
 
     fn accepts(&self, t: &Target) -> bool {
