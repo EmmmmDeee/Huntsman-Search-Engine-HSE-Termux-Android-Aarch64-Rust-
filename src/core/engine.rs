@@ -1,5 +1,5 @@
-//! Scan engine — module dispatcher + autonomous expansion (v0.2+) + parallel
-//! dispatch (v0.8+) + per-scan dispatch deduplication (v1.1+).
+//! Scan engine — module dispatcher + autonomous expansion + parallel dispatch
+//! + per-scan dispatch deduplication.
 //!
 //! Each scan has two phases:
 //!   1. Seed dispatch — every accepting module runs against the seed target.
@@ -469,7 +469,7 @@ fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> O
 //
 // `ScanEngine::dispatch_target` chooses between:
 //   * `dispatch_target_sequential` — `opts.max_concurrent == 0`,
-//     byte-identical to v0.1–v0.7 behaviour. Best on low-power Termux.
+//     Best on low-power Termux devices.
 //   * `dispatch_target_concurrent` — `opts.max_concurrent > 0`, up to N
 //     modules in flight via `tokio::sync::Semaphore + JoinSet`.
 //
@@ -604,7 +604,7 @@ impl ScanEngine {
         }
     }
 
-    /// v0.1 sequential dispatcher.
+    /// Sequential dispatcher (max_concurrent == 0).
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_target_sequential(
         &self,
@@ -691,7 +691,7 @@ impl ScanEngine {
         Ok(())
     }
 
-    /// v0.8 concurrent dispatcher. Launches up to `opts.max_concurrent`
+    /// Concurrent dispatcher (max_concurrent > 0). Launches up to `opts.max_concurrent`
     /// modules at a time via a Semaphore; collects results as tasks complete.
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_target_concurrent(

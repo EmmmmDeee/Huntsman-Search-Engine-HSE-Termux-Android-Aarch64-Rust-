@@ -99,9 +99,11 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let mut by_status: std::collections::BTreeMap<&'static str, u64> =
         std::collections::BTreeMap::new();
     let mut total_entities = 0u64;
+    let mut total_deduped = 0u64;
     for scan in &scans {
         *by_status.entry(scan.status.as_str()).or_insert(0) += 1;
         total_entities += scan.entity_count as u64;
+        total_deduped += scan.modules_deduped as u64;
     }
     let modules = s.engine.modules().len();
     let live_sessions = s.live.list().len();
@@ -111,6 +113,7 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             "scans_total": scans.len(),
             "scans_by_status": by_status,
             "entities_total": total_entities,
+            "modules_deduped_total": total_deduped,
             "modules": modules,
             "live_sessions": live_sessions,
             "version": crate::VERSION,
