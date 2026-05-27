@@ -298,7 +298,7 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
     },
 ];
 
-pub(super) fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
+pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
     let trimmed = value.trim();
     if trimmed.len() < 16 {
         return None;

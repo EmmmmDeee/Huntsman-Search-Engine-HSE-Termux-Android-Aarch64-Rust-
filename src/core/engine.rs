@@ -163,25 +163,10 @@ impl ScanEngine {
         .await?;
 
         if opts.depth > 0 {
-            // Refresh keys from the global pool before expansion rounds.
-            // oathnet_pro discovers API keys from breach/stealer data during
-            // the seed round and stores them in the key_pool. Merging them
-            // into ctx.keys here makes them available to expansion modules
-            // (e.g., a discovered Shodan key lets shodan fire on expansion IPs).
-            let pool = crate::util::key_pool::global_pool();
-            for svc in crate::util::key_pool::service_defs() {
-                if ctx.keys.contains_key(svc.env_var) {
-                    continue;
-                }
-                if let Some(key) = pool.next_key(svc.name) {
-                    ctx.keys.insert(svc.env_var.to_string(), key);
-                }
-            }
-
             let _ = self
                 .run_expansion(
                     &scan.id,
-                    &ctx,
+                    &mut ctx,
                     &opts,
                     started,
                     &mut entity_map,
@@ -294,7 +279,7 @@ impl ScanEngine {
     async fn run_expansion(
         &self,
         scan_id: &str,
-        ctx: &ModuleContext,
+        ctx: &mut ModuleContext,
         opts: &ScanOptions,
         started: Instant,
         entity_map: &mut HashMap<String, Entity>,
@@ -302,8 +287,22 @@ impl ScanEngine {
         stats: &mut ModuleStats,
     ) -> StopReason {
         for depth in 1..=opts.depth {
-            // Cancellation gate at round entry — between rounds is the
-            // cheapest place to exit because nothing new has spawned.
+            // Refresh keys from the pool at the start of each round.
+            // Keys discovered during the previous round (oathnet_pro breach
+            // data, api_key_probe validation, web_crawler credential scraping)
+            // become available to modules in this round automatically.
+            {
+                let pool = crate::util::key_pool::global_pool();
+                for svc in crate::util::key_pool::service_defs() {
+                    if ctx.keys.contains_key(svc.env_var) {
+                        continue;
+                    }
+                    if let Some(key) = pool.next_key(svc.name) {
+                        ctx.keys.insert(svc.env_var.to_string(), key);
+                    }
+                }
+            }
+
             if ctx.cancel.is_cancelled() {
                 let stop = StopReason::Cancelled;
                 self.emit(

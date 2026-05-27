@@ -269,6 +269,30 @@ pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
     }
 }
 
+pub(super) fn extract_api_keys_from_body(body: &str, domain: &str) {
+    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+
+    let pool = crate::util::key_pool::global_pool();
+    for word in body.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {
+        let trimmed = word.trim();
+        if trimmed.len() < 16 || trimmed.len() > 200 {
+            continue;
+        }
+        if let Some((service, key_val)) = identify_api_key(trimmed) {
+            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            entry.notes = Some(format!("Web-scraped from {domain}"));
+            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            if pool.add(service, entry) {
+                tracing::info!(
+                    service,
+                    domain,
+                    "API key discovered in page body (web_crawler)"
+                );
+            }
+        }
+    }
+}
+
 pub(super) fn detect_frameworks(body: &str, found: &mut HashSet<&'static str>) {
     let lower = body.to_lowercase();
     let checks: &[(&str, &'static str)] = &[

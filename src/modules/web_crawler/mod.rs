@@ -238,6 +238,7 @@ impl Module for WebCrawler {
 
             extract_emails(&body, &mut state.emails);
             extract_phones(&body, &mut state.phones);
+            extract_api_keys_from_body(&body, &domain);
 
             if depth < max_depth {
                 extract_links(&body, &url, &base_host, &domain, &mut state);

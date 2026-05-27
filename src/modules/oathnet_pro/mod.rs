@@ -17,7 +17,7 @@ use crate::core::{
 };
 use crate::util::oathnet::{self, paths, val_str, val_str_or};
 
-mod key_harvest;
+pub mod key_harvest;
 pub use key_harvest::store_api_credential_from_item;
 use key_harvest::{extract_api_keys_from_item, store_api_credential};
 
