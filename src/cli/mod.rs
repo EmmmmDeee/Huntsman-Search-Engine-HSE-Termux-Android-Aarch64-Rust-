@@ -147,6 +147,16 @@ pub enum Command {
         /// Raw value to store. Quote in the shell to avoid mis-parsing.
         value: String,
     },
+    /// Import an OathNet JSON export file. Extracts breach results,
+    /// stealer metadata, IP geolocation, and Holehe platform checks
+    /// into a new scan record with full entity extraction.
+    Import {
+        /// Path to the OathNet export JSON file.
+        file: String,
+        /// Output format: json, table, dossier.
+        #[arg(short, long, default_value = "table")]
+        output: String,
+    },
     /// Start the HTTP server + SPA (browse to http://127.0.0.1:8080 from Chrome).
     Serve {
         /// Bind address. Localhost-only by default — change at your own risk.
@@ -311,6 +321,7 @@ pub async fn run() -> Result<()> {
         } => cmd_provision(env_only, verify_only, dry_run).await,
         Command::SetKey { name, value } => cmd_set_key(name, value),
         Command::Keys { action } => cmd_keys(action).await,
+        Command::Import { file, output } => cmd_import(&file, &output).await,
         Command::Serve {
             bind,
             allow_key_write,
@@ -554,6 +565,266 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn cmd_import(path: &str, output: &str) -> Result<()> {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    let body = std::fs::read_to_string(path)
+        .map_err(|e| Error::Other(format!("cannot read {path}: {e}")))?;
+    let doc: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
+
+    let export_info = doc.get("exportInfo").and_then(|v| v.as_object());
+    let query = export_info
+        .and_then(|ei| ei.get("query"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let date = export_info
+        .and_then(|ei| ei.get("exportDate"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    println!("Importing OathNet export: query=\"{query}\", date={date}");
+
+    let sid = format!("import-{}", &crate::core::entity::unix_now().to_string());
+    let mut entities: Vec<Entity> = Vec::new();
+    let mut stats = ImportStats::default();
+
+    // ── Parse breach results ──
+    if let Some(breach) = doc
+        .pointer("/searchResults/MULTI_SERVICE_RESULTS/breach/data/results")
+        .and_then(|v| v.as_array())
+    {
+        for item in breach {
+            stats.breach_records += 1;
+            if let Some(email) = item.get("email").and_then(|v| v.as_str()) {
+                if email.contains('@') && !email.contains("UPGRADE") {
+                    let db = item
+                        .get("dbname")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let mut e = Entity::new(EntityKind::Email, email, 0.75, &sid);
+                    e.tag("breach");
+                    e.tag("import");
+                    e.add_evidence(
+                        Evidence::new("import:oathnet", format!("Breach on {db}"))
+                            .with_attr("dbname", db),
+                    );
+                    entities.push(e);
+                    stats.emails += 1;
+                }
+            }
+            if let Some(ip) = item.get("ip").and_then(|v| v.as_str()) {
+                if ip.contains('.') && !ip.contains("UPGRADE") {
+                    let mut e = Entity::new(EntityKind::IpAddress, ip, 0.65, &sid);
+                    e.tag("breach");
+                    e.tag("import");
+                    entities.push(e);
+                    stats.ips += 1;
+                }
+            }
+        }
+    }
+
+    // ── Parse stealer metadata (domains compromised, victim IPs — NOT passwords) ──
+    if let Some(victims) = doc
+        .pointer("/stealerData/victims")
+        .and_then(|v| v.as_array())
+    {
+        for victim in victims {
+            stats.victim_records += 1;
+            if let Some(ips) = victim.get("device_ips").and_then(|v| v.as_array()) {
+                for ip_val in ips.iter().take(5) {
+                    if let Some(ip) = ip_val.as_str() {
+                        if ip.contains('.') && !ip.contains("UPGRADE") {
+                            let mut e =
+                                Entity::new(EntityKind::IpAddress, ip, 0.60, &sid);
+                            e.tag("stealer-victim");
+                            e.tag("import");
+                            entities.push(e);
+                            stats.ips += 1;
+                        }
+                    }
+                }
+            }
+            if let Some(emails) = victim.get("device_emails").and_then(|v| v.as_array()) {
+                for email_val in emails.iter().take(10) {
+                    if let Some(email) = email_val.as_str() {
+                        if email.contains('@') && !email.contains("UPGRADE") {
+                            let mut e =
+                                Entity::new(EntityKind::Email, email, 0.55, &sid);
+                            e.tag("stealer-victim");
+                            e.tag("import");
+                            entities.push(e);
+                            stats.emails += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Parse stealer docs for domain intelligence (NOT credentials) ──
+    if let Some(docs) = doc
+        .pointer("/stealerData/docs")
+        .and_then(|v| v.as_array())
+    {
+        let mut seen_domains: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for doc_item in docs {
+            stats.stealer_docs += 1;
+            if let Some(domains) = doc_item.get("domain").and_then(|v| v.as_array()) {
+                for d in domains {
+                    if let Some(domain) = d.as_str() {
+                        let lower = domain.to_lowercase();
+                        if seen_domains.insert(lower.clone()) && domain.contains('.') {
+                            let mut e =
+                                Entity::new(EntityKind::Domain, &lower, 0.50, &sid);
+                            e.tag("stealer-target");
+                            e.tag("import");
+                            entities.push(e);
+                            stats.domains += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Parse IP geolocation from osintData ──
+    if let Some(ip_info) = doc.pointer("/osintData/ipInfo").and_then(|v| v.as_object()) {
+        for (ip, info) in ip_info {
+            let city = info.get("city").and_then(|v| v.as_str()).unwrap_or("");
+            let region = info.get("regionName").and_then(|v| v.as_str()).unwrap_or("");
+            let country = info.get("country").and_then(|v| v.as_str()).unwrap_or("");
+            let lat = info.get("lat").and_then(|v| v.as_f64());
+            let lon = info.get("lon").and_then(|v| v.as_f64());
+            let isp = info.get("isp").and_then(|v| v.as_str()).unwrap_or("");
+
+            if let (Some(lat), Some(lon)) = (lat, lon) {
+                if lat.abs() > 0.01 && lon.abs() > 0.01 {
+                    let coords = format!("{lat:.4},{lon:.4}");
+                    let mut ce =
+                        Entity::new(EntityKind::Coordinates, &coords, 0.70, &sid);
+                    ce.tag("geoint");
+                    ce.tag("import");
+                    ce.add_evidence(
+                        Evidence::new(
+                            "import:oathnet",
+                            format!("IP {ip}: {city}, {region}, {country} ({isp})"),
+                        )
+                        .with_attr("ip", ip)
+                        .with_attr("isp", isp),
+                    );
+                    entities.push(ce);
+                    stats.coordinates += 1;
+                }
+            }
+            if !city.is_empty() {
+                let addr = format!("{city}, {region}, {country}");
+                let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &sid);
+                ae.tag("import");
+                entities.push(ae);
+                stats.addresses += 1;
+            }
+        }
+    }
+
+    // ── Parse Holehe platform checks ──
+    if let Some(holehe) = doc.pointer("/osintData/holehe").and_then(|v| v.as_object()) {
+        for (email, data) in holehe {
+            if let Some(domains) = data
+                .pointer("/data/domains")
+                .and_then(|v| v.as_array())
+            {
+                let platforms: Vec<&str> = domains
+                    .iter()
+                    .filter_map(|d| d.as_str())
+                    .collect();
+                if !platforms.is_empty() && !email.contains("UPGRADE") {
+                    let mut e = Entity::new(EntityKind::Email, email, 0.85, &sid);
+                    e.tag("holehe-verified");
+                    e.tag("import");
+                    e.add_evidence(
+                        Evidence::new(
+                            "import:oathnet",
+                            format!(
+                                "Holehe: registered on {} platform(s): {}",
+                                platforms.len(),
+                                platforms.join(", ")
+                            ),
+                        )
+                        .with_attr("platforms", platforms.join(", "))
+                        .with_attr("platform_count", platforms.len().to_string()),
+                    );
+                    entities.push(e);
+                    stats.holehe += 1;
+                }
+            }
+        }
+    }
+
+    // Dedup by UID
+    let mut seen_uids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    entities.retain(|e| seen_uids.insert(e.uid.clone()));
+
+    println!(
+        "Imported {} entities: {} emails, {} IPs, {} domains, {} coordinates, {} addresses, {} holehe",
+        entities.len(),
+        stats.emails,
+        stats.ips,
+        stats.domains,
+        stats.coordinates,
+        stats.addresses,
+        stats.holehe
+    );
+    println!(
+        "Source records: {} breach, {} stealer docs, {} victims",
+        stats.breach_records, stats.stealer_docs, stats.victim_records
+    );
+
+    match output {
+        "json" => {
+            let out = serde_json::json!({
+                "import": { "query": query, "date": date, "file": path },
+                "stats": {
+                    "entities": entities.len(),
+                    "emails": stats.emails,
+                    "ips": stats.ips,
+                    "domains": stats.domains,
+                    "coordinates": stats.coordinates,
+                },
+                "entities": entities,
+            });
+            println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        }
+        _ => {
+            for e in &entities {
+                println!(
+                    "  [{:.2}] {:15} {}",
+                    e.confidence,
+                    e.kind.to_string(),
+                    &e.value[..e.value.len().min(70)]
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Default)]
+struct ImportStats {
+    breach_records: usize,
+    stealer_docs: usize,
+    victim_records: usize,
+    emails: usize,
+    ips: usize,
+    domains: usize,
+    coordinates: usize,
+    addresses: usize,
+    holehe: usize,
 }
 
 fn cmd_modules() -> Result<()> {
