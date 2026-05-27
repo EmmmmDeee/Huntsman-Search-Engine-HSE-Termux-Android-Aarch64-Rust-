@@ -156,7 +156,7 @@ impl Module for CertIntel {
     }
 }
 
-// ── DER parsing helpers (from ssl_probe) ───────────────────────────
+// ── DER parsing helpers ───────────────────────────
 
 fn parse_certificate(
     der: &[u8],
@@ -306,7 +306,7 @@ fn extract_serial_hex(der: &[u8]) -> String {
     String::new()
 }
 
-// ── Tests (merged from crtsh + ssl_probe) ──────────────────────────
+// ── Tests ──────────────────────────
 
 #[cfg(test)]
 mod tests {

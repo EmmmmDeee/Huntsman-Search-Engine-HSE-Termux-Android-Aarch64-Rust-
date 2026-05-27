@@ -380,7 +380,7 @@ mod tests {
         assert_eq!(WifiIntel.max_timeout_ms(), 20_000);
     }
 
-    // ── AP parsing (from wifi_scan) ─────────────────────────────────────
+    // ── AP parsing ─────────────────────────────────────
 
     #[test]
     fn parses_sample_payload() {

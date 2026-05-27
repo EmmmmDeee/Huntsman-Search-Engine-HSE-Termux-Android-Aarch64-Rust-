@@ -1,5 +1,5 @@
-//! Unified DNS intelligence module — merges five formerly-separate modules
-//! into a single `DnsIntel` struct that dispatches on target kind:
+//! Unified DNS intelligence module — resolution, brute-force, CAA, reverse,
+//! and blocklist checks dispatched by target kind:
 //!
 //! **Domain targets** (sequential):
 //!   1. *Resolution* — A / AAAA / MX / NS / SOA / TXT lookups via `tokio::join!`.
@@ -692,7 +692,7 @@ mod tests {
         assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y")));
     }
 
-    // -- from dns_resolver -------------------------------------------------
+    // -- DNS resolution tests -------------------------------------------------
 
     #[test]
     fn soa_rname_decodes() {
@@ -708,7 +708,7 @@ mod tests {
         assert_eq!(soa_rname_to_email("notanemail"), "");
     }
 
-    // -- from dns_brute ----------------------------------------------------
+    // -- Subdomain brute tests ----------------------------------------------------
 
     #[test]
     fn dictionary_is_unique_and_lowercase() {

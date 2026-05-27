@@ -960,10 +960,10 @@ mod tests {
                 target_value: "example.com".into(),
             },
             EventKind::ModuleStart {
-                module: "dns_resolver".into(),
+                module: "dns_intel".into(),
             },
             EventKind::ModuleDone {
-                module: "dns_resolver".into(),
+                module: "dns_intel".into(),
                 found: 3,
             },
         ]
@@ -1012,7 +1012,7 @@ mod tests {
             .insert_event(&Event::new(
                 "scan-with-events",
                 EventKind::ModuleStart {
-                    module: "dns_resolver".into(),
+                    module: "dns_intel".into(),
                 },
             ))
             .unwrap();
@@ -1020,7 +1020,7 @@ mod tests {
             .insert_event(&Event::new(
                 "scan-with-events",
                 EventKind::ModuleDone {
-                    module: "dns_resolver".into(),
+                    module: "dns_intel".into(),
                     found: 1,
                 },
             ))

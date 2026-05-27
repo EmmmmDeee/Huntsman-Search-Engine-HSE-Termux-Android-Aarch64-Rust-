@@ -225,7 +225,7 @@ mod tests {
         assert!(info.passive);
     }
 
-    // ── Tests carried from arp_scan.rs ───────────────────────────────
+    // ── Tests (from local network discovery) ───────────────────────────────
 
     #[test]
     fn parser_emits_two_entities_per_complete_row() {
