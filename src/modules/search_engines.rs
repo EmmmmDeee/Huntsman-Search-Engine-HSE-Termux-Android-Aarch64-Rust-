@@ -233,7 +233,7 @@ impl Module for SearchEngines {
         //    discovered entities. Only fires when the API key is configured
         //    and we have entities worth enriching. ──────────────────
         if !ctx.cancel.is_cancelled() {
-            enrich_via_oathnet(ctx, &mut module_result).await;
+            enrich_via_oathnet(ctx, &mut module_result, target).await;
         }
 
         Ok(module_result)
@@ -632,8 +632,14 @@ async fn recycle_entities(
 
 // ─── API enrichment: OathNet via shared util::oathnet client ────────────────
 
-async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
+async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult, target: &Target) {
     let key = crate::util::oathnet::resolve_key(ctx.key_opt(crate::util::oathnet::KEY_ENV));
+
+    // Build target-name fragments for username relevance filtering.
+    // Only usernames containing target name parts get batched to OathNet —
+    // this prevents enriching unrelated people who share a common name.
+    let target_lower = target.value.to_lowercase();
+    let name_parts: Vec<&str> = target_lower.split_whitespace().collect();
 
     let mut emails: Vec<String> = Vec::new();
     let mut usernames: Vec<String> = Vec::new();
@@ -643,7 +649,27 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult) {
         }
         match e.kind {
             EntityKind::Email if emails.len() < 10 => emails.push(e.value.clone()),
-            EntityKind::Username if usernames.len() < 5 => usernames.push(e.value.clone()),
+            EntityKind::Username if usernames.len() < 5 => {
+                let u_lower = e.value.to_lowercase();
+                // Only enrich usernames that contain at least the target's
+                // first AND last name fragments (or the full name concatenated).
+                // This prevents enriching "jordanmeyer_" when the target is
+                // "Jordan Leigh Meyer" from Australia but "jordanmeyer_"
+                // belongs to a different person in New York.
+                let relevant = if name_parts.len() >= 2 {
+                    let first = name_parts[0];
+                    let last = name_parts[name_parts.len() - 1];
+                    (u_lower.contains(first) && u_lower.contains(last))
+                        || u_lower.contains(&target_lower.replace(' ', ""))
+                        || u_lower.contains(&target_lower.replace(' ', "_"))
+                        || u_lower.contains(&target_lower.replace(' ', "."))
+                } else {
+                    u_lower.contains(&target_lower)
+                };
+                if relevant {
+                    usernames.push(e.value.clone());
+                }
+            }
             _ => {}
         }
     }
@@ -855,12 +881,14 @@ fn apply_breach_evidence(
             e.tag(tags::BREACH);
             e.tag("oathnet-enriched");
             e.tag("geolocation-lead");
+            e.tag(format!("via-username:{lookup_value}"));
             if !row_matches {
                 e.tag("candidate");
             }
             e.add_evidence(
                 Evidence::new("search_engines:oathnet", format!("Breach on {db}"))
-                    .with_attr("dbname", &db),
+                    .with_attr("dbname", &db)
+                    .with_attr("linked_to", lookup_value),
             );
             new_ents.push(e);
         }
