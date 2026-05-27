@@ -191,10 +191,12 @@ pub async fn handle_keyed_error(
     match status {
         429 if *retries_left > 0 => {
             *retries_left -= 1;
+            ctx.report_key_exhausted(module, key, 429);
             let secs = retry_after_secs(headers, 8);
             tracing::warn!(
                 module,
-                "429 rate-limited, retrying in {secs}s ({} left)",
+                "429 rate-limited on key …{}, retrying in {secs}s ({} left)",
+                &key[key.len().saturating_sub(4)..],
                 retries_left
             );
             tokio::time::sleep(std::time::Duration::from_secs(secs)).await;

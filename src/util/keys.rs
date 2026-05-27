@@ -102,13 +102,34 @@ pub fn load() -> HashMap<String, String> {
         );
     }
 
-    // Merge active keys from the key_pool into the context map. This
-    // bridges the gap between stealer-discovered keys (stored in
-    // key_pool.json) and the ModuleContext.keys map that modules read.
-    // Env-file keys take precedence — pool keys only fill empty slots.
+    // Multi-key support: if an env var contains comma-separated values,
+    // load each into the pool for round-robin rotation. The first key
+    // stays in the env map for backward compat; extras go to the pool.
     let pool = crate::util::key_pool::global_pool();
     for svc in crate::util::key_pool::service_defs() {
-        if map.contains_key(svc.env_var) {
+        let val = map.get(svc.env_var).cloned();
+        if let Some(val) = val {
+            if val.contains(',') {
+                let keys: Vec<&str> = val
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|k| !k.is_empty())
+                    .collect();
+                if keys.len() > 1 {
+                    map.insert(svc.env_var.to_string(), keys[0].to_string());
+                    for k in &keys {
+                        let mut entry = crate::util::key_pool::KeyEntry::new(*k);
+                        entry.status = crate::util::key_pool::KeyStatus::Active;
+                        pool.add(svc.name, entry);
+                    }
+                    tracing::info!(
+                        service = svc.name,
+                        count = keys.len(),
+                        "loaded {} keys for rotation",
+                        keys.len()
+                    );
+                }
+            }
             continue;
         }
         if let Some(key) = pool.next_key(svc.name) {
