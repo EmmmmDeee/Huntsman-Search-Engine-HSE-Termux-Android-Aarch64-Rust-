@@ -20,6 +20,7 @@ pub mod geo_intel;
 pub mod geocode;
 pub mod github_user;
 pub mod greynoise;
+pub mod hibp;
 pub mod hudsonrock;
 pub mod intelx;
 pub mod ip_geo;
@@ -55,6 +56,7 @@ use crate::core::module::Module;
 /// Built-in module set. The engine sorts by priority — order here is irrelevant.
 pub fn registry() -> Vec<Arc<dyn Module>> {
     vec![
+        Arc::new(hibp::Hibp),
         Arc::new(hudsonrock::HudsonRock),
         Arc::new(xposed_or_not::XposedOrNot),
         Arc::new(ip_reputation::IpReputation),
