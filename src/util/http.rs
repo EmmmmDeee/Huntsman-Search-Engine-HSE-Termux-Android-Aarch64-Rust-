@@ -159,6 +159,18 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
     }
 }
 
+/// Parse the `Retry-After` header from a response, returning the number
+/// of seconds to wait. Falls back to `default_secs` if absent or
+/// unparseable. Capped at 120s to prevent infinite waits.
+pub fn retry_after_secs(headers: &reqwest::header::HeaderMap, default_secs: u64) -> u64 {
+    headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(default_secs)
+        .min(120)
+}
+
 /// Percent-encode a single URL path or query-string component using the
 /// `application/x-www-form-urlencoded` serialiser. Equivalent to:
 ///

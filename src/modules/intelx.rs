@@ -178,26 +178,44 @@ impl Module for IntelX {
             "media": 0,
             "terminate": []
         });
-        let resp = ctx
-            .http
-            .post(format!("{BASE}/intelligent/search"))
-            .header("x-key", key)
-            .header("Accept", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::module("intelx", e.to_string()))?;
-        let status = resp.status();
-        if !status.is_success() {
+        let mut retries = 0u32;
+        let start: StartResp = loop {
+            let resp = ctx
+                .http
+                .post(format!("{BASE}/intelligent/search"))
+                .header("x-key", key)
+                .header("Accept", "application/json")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| Error::module("intelx", e.to_string()))?;
+            let status = resp.status();
+            if status.is_success() {
+                break resp
+                    .json()
+                    .await
+                    .map_err(|e| Error::module("intelx", e.to_string()))?;
+            }
+            let code = status.as_u16();
+            if code == 429 && retries < 2 {
+                let retry_secs = resp
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(10);
+                retries += 1;
+                tokio::time::sleep(Duration::from_secs(retry_secs)).await;
+                continue;
+            }
+            if code == 401 || code == 403 || code == 429 {
+                ctx.report_key_exhausted("intelx", key, code);
+            }
             return Err(Error::module(
                 "intelx",
                 format!("HTTP {status} on start: {}", error_snippet(resp).await),
             ));
-        }
-        let start: StartResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module("intelx", e.to_string()))?;
+        };
         let search_id = match (start.id, start.status) {
             (Some(id), Some(0) | None) if !id.is_empty() => id,
             (_, Some(1)) => return Ok(ModuleResult::new()), // invalid term
@@ -215,6 +233,7 @@ impl Module for IntelX {
         );
         let mut all_records: Vec<Record> = Vec::with_capacity(MAX_RESULTS as usize);
         let mut finished = false;
+        let mut poll_retries = 0u32;
         for _ in 0..POLL_ATTEMPTS {
             // Honor scan cancellation for faster abort latency (issue #23).
             if ctx.cancel.is_cancelled() {
@@ -233,6 +252,20 @@ impl Module for IntelX {
                 Err(_) => continue,
             };
             if !resp.status().is_success() {
+                let code = resp.status().as_u16();
+                if code == 429 && poll_retries < 2 {
+                    let retry_secs = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(10);
+                    poll_retries += 1;
+                    tokio::time::sleep(Duration::from_secs(retry_secs)).await;
+                }
+                if code == 401 || code == 403 || (code == 429 && poll_retries >= 2) {
+                    ctx.report_key_exhausted("intelx", key, code);
+                }
                 continue;
             }
             let r: ResultResp = match resp.json().await {

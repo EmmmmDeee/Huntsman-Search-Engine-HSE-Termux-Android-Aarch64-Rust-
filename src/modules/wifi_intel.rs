@@ -270,6 +270,17 @@ async fn query_wigle_detail(
         .map_err(|e| Error::module(SOURCE, e.to_string()))?;
 
     let status = resp.status();
+    if status.as_u16() == 429 {
+        let retry_secs = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(60);
+        tracing::warn!("WiGLE 429 — backing off {retry_secs}s");
+        tokio::time::sleep(std::time::Duration::from_secs(retry_secs.min(120))).await;
+        return Err(Error::module(SOURCE, "rate-limited (429)"));
+    }
     if status.as_u16() == 404 {
         return Ok(None);
     }

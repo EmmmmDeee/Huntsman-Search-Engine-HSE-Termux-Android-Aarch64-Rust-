@@ -203,6 +203,8 @@ pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, Stri
         "mailchimp.com",
         "ngrok.com",
         "heroku.com",
+        "breachdirectory.org",
+        "c99.nl",
     ];
 
     let mut creds = Vec::new();
