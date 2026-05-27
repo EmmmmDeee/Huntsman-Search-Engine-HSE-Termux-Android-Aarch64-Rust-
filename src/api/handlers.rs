@@ -62,18 +62,22 @@ fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, target: Targ
         sid.clone(),
         cancel.clone(),
     );
-    let ctx = ModuleContext {
-        scan_id: sid.clone(),
-        bus: state.bus.clone(),
-        http: state.http.clone(),
-        keys: keys::load(),
-        cancel,
-        proxy_pool: std::sync::Arc::clone(&state.proxy_pool),
-    };
+    let bus_clone = state.bus.clone();
+    let http_clone = state.http.clone();
+    let proxy_clone = std::sync::Arc::clone(&state.proxy_pool);
     let engine = Arc::clone(&state.engine);
     let sem = Arc::clone(&state.scan_semaphore);
     tokio::spawn(async move {
         let _cancel_guard = cancel_guard;
+        let api_keys = keys::populate_and_load().await;
+        let ctx = ModuleContext {
+            scan_id: sid.clone(),
+            bus: bus_clone,
+            http: http_clone,
+            keys: api_keys,
+            cancel,
+            proxy_pool: proxy_clone,
+        };
         let Ok(_permit) = sem.acquire().await else {
             tracing::warn!(scan_id = %sid, "scan semaphore closed");
             return;

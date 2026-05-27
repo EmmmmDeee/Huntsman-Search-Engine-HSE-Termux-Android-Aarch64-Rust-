@@ -876,7 +876,7 @@ async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
         Arc::clone(&engine),
         bus.clone(),
         http.clone(),
-        crate::util::keys::load(),
+        crate::util::keys::populate_and_load().await,
     );
     let state = Arc::new(AppState {
         store,
@@ -978,7 +978,7 @@ async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         Arc::clone(&engine),
         bus.clone(),
         crate::util::http::build_client(),
-        crate::util::keys::load(),
+        crate::util::keys::populate_and_load().await,
     );
 
     let live_id = scanner.start(target, scan_options, live_options);
@@ -1090,11 +1090,12 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let (store, bus, engine) = build_runtime(64)?;
 
     let scan = Scan::new(sid.clone(), target.clone()).with_options(options);
+    let keys = keys::populate_and_load().await;
     let ctx = ModuleContext {
         scan_id: sid.clone(),
         bus,
         http: build_client(),
-        keys: keys::load(),
+        keys,
         cancel: crate::core::cancel::CancelHandle::new(),
         proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
@@ -1216,11 +1217,12 @@ async fn cmd_radar(interval: u64, depth: u32, sweeps: Option<u32>, free_only: bo
         };
         let sweep_scan =
             Scan::new(sweep_sid.clone(), sweep_target.clone()).with_options(sweep_opts);
+        let sweep_keys = keys::load();
         let sweep_ctx = ModuleContext {
             scan_id: sweep_sid.clone(),
             bus: bus.clone(),
             http: crate::util::http::build_client(),
-            keys: keys::load(),
+            keys: sweep_keys,
             cancel: crate::core::cancel::CancelHandle::new(),
             proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
         };
@@ -1271,11 +1273,12 @@ async fn cmd_radar(interval: u64, depth: u32, sweeps: Option<u32>, free_only: bo
                 };
                 let pivot_scan =
                     Scan::new(pivot_sid.clone(), pivot_target.clone()).with_options(pivot_opts);
+                let pivot_keys = keys::load();
                 let pivot_ctx = ModuleContext {
                     scan_id: pivot_sid.clone(),
                     bus: bus.clone(),
                     http: crate::util::http::build_client(),
-                    keys: keys::load(),
+                    keys: pivot_keys,
                     cancel: crate::core::cancel::CancelHandle::new(),
                     proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
                 };
