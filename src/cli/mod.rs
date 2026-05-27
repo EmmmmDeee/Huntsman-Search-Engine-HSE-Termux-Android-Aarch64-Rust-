@@ -638,21 +638,35 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
         }
     }
 
-    // ── Parse stealer metadata (domains compromised, victim IPs — NOT passwords) ──
+    // ── Parse stealer victims — IPs, emails, HWIDs, Discord IDs, severity ──
     if let Some(victims) = doc
         .pointer("/stealerData/victims")
         .and_then(|v| v.as_array())
     {
+        let mut seen_hwids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen_discord: std::collections::HashSet<String> = std::collections::HashSet::new();
+
         for victim in victims {
             stats.victim_records += 1;
+            let total_docs = victim.get("total_docs").and_then(|v| v.as_u64()).unwrap_or(0);
+            let log_id = victim.get("log_id").and_then(|v| v.as_str()).unwrap_or("");
+
             if let Some(ips) = victim.get("device_ips").and_then(|v| v.as_array()) {
-                for ip_val in ips.iter().take(5) {
+                for ip_val in ips.iter().take(10) {
                     if let Some(ip) = ip_val.as_str() {
                         if ip.contains('.') && !ip.contains("UPGRADE") {
                             let mut e =
                                 Entity::new(EntityKind::IpAddress, ip, 0.60, &sid);
                             e.tag("stealer-victim");
                             e.tag("import");
+                            if total_docs > 100 {
+                                e.tag("high-exposure");
+                            }
+                            e.add_evidence(
+                                Evidence::new("import:oathnet", format!("Victim device IP ({total_docs} creds stolen)"))
+                                    .with_attr("log_id", log_id)
+                                    .with_attr("total_docs", total_docs.to_string()),
+                            );
                             entities.push(e);
                             stats.ips += 1;
                         }
@@ -660,7 +674,7 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
                 }
             }
             if let Some(emails) = victim.get("device_emails").and_then(|v| v.as_array()) {
-                for email_val in emails.iter().take(10) {
+                for email_val in emails.iter().take(20) {
                     if let Some(email) = email_val.as_str() {
                         if email.contains('@') && !email.contains("UPGRADE") {
                             let mut e =
@@ -669,6 +683,38 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
                             e.tag("import");
                             entities.push(e);
                             stats.emails += 1;
+                        }
+                    }
+                }
+            }
+            // HWIDs — hardware identifiers for machine tracking
+            if let Some(hwids) = victim.get("hwids").and_then(|v| v.as_array()) {
+                for h in hwids.iter().take(5) {
+                    if let Some(hwid) = h.as_str() {
+                        if !hwid.is_empty() && seen_hwids.insert(hwid.to_string()) {
+                            let mut e = Entity::new(EntityKind::DeviceId, hwid, 0.70, &sid);
+                            e.tag("hwid");
+                            e.tag("import");
+                            e.add_evidence(
+                                Evidence::new("import:oathnet", format!("Hardware ID from infected machine ({total_docs} creds)"))
+                                    .with_attr("log_id", log_id),
+                            );
+                            entities.push(e);
+                            stats.hwids += 1;
+                        }
+                    }
+                }
+            }
+            // Discord IDs — identity pivots
+            if let Some(dids) = victim.get("discord_ids").and_then(|v| v.as_array()) {
+                for d in dids.iter().take(5) {
+                    if let Some(did) = d.as_str() {
+                        if !did.is_empty() && seen_discord.insert(did.to_string()) {
+                            let mut e = Entity::new(EntityKind::Username, did, 0.60, &sid);
+                            e.tag("discord-id");
+                            e.tag("import");
+                            entities.push(e);
+                            stats.discord_ids += 1;
                         }
                     }
                 }
@@ -761,9 +807,94 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
                 }
             }
 
-            // Log IDs (unique infected machines)
+            // Log IDs (unique infected machines) → DeviceId entities
             if let Some(lid) = doc_item.get("log_id").and_then(|v| v.as_str()) {
-                log_ids.insert(lid.to_string());
+                if log_ids.insert(lid.to_string()) {
+                    let mut e = Entity::new(EntityKind::DeviceId, lid, 0.50, &sid);
+                    e.tag("log-id");
+                    e.tag("import");
+                    entities.push(e);
+                }
+            }
+
+            // Paths (login/admin/API endpoints)
+            if let Some(paths) = doc_item.get("path").and_then(|v| v.as_array()) {
+                for p in paths {
+                    if let Some(path) = p.as_str() {
+                        let pl = path.to_lowercase();
+                        if (pl.contains("admin") || pl.contains("api") || pl.contains("login")
+                            || pl.contains("dashboard") || pl.contains("panel"))
+                            && seen_urls.insert(format!("path:{path}"))
+                        {
+                            if let Some(doms) = doc_item.get("domain").and_then(|v| v.as_array()) {
+                                if let Some(dom) = doms.first().and_then(|d| d.as_str()) {
+                                    let full_url = format!("https://{dom}{path}");
+                                    let mut e = Entity::new(EntityKind::Url, &full_url, 0.50, &sid);
+                                    e.tag("admin-panel");
+                                    e.tag("import");
+                                    entities.push(e);
+                                    stats.admin_paths += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // API key pattern scanning on password field
+            if let Some(pw) = doc_item.get("password").and_then(|v| v.as_str()) {
+                if !pw.is_empty() && pw.len() >= 20 {
+                    let is_key = pw.starts_with("sk-") || pw.starts_with("pk_")
+                        || pw.starts_with("ghp_") || pw.starts_with("gho_")
+                        || pw.starts_with("SG.") || pw.starts_with("xoxb-")
+                        || pw.starts_with("xoxp-") || pw.starts_with("AKIA")
+                        || pw.starts_with("AIzaSy") || pw.starts_with("hf_")
+                        || pw.starts_with("r8_") || pw.starts_with("npm_")
+                        || pw.starts_with("sk_live_") || pw.starts_with("rk_live_")
+                        || pw.starts_with("whsec_") || pw.starts_with("sntrys_")
+                        || pw.starts_with("glc_") || pw.starts_with("NRAK-")
+                        || pw.starts_with("dop_v1_") || pw.starts_with("ntn_")
+                        || pw.starts_with("eyJ") || pw.starts_with("github_pat_")
+                        || (pw.len() == 32 && pw.chars().all(|c| c.is_ascii_hexdigit()))
+                        || (pw.len() == 64 && pw.chars().all(|c| c.is_ascii_hexdigit()));
+                    if is_key {
+                        let svc = if pw.starts_with("sk-ant-") { "anthropic" }
+                            else if pw.starts_with("sk-proj-") { "openai" }
+                            else if pw.starts_with("sk-") { "openai_or_stripe" }
+                            else if pw.starts_with("ghp_") || pw.starts_with("github_pat_") { "github" }
+                            else if pw.starts_with("AKIA") { "aws" }
+                            else if pw.starts_with("AIzaSy") { "google" }
+                            else if pw.starts_with("SG.") { "sendgrid" }
+                            else if pw.starts_with("hf_") { "huggingface" }
+                            else if pw.starts_with("sk_live_") { "stripe" }
+                            else if pw.starts_with("xoxb-") { "slack" }
+                            else if pw.starts_with("npm_") { "npm" }
+                            else if pw.starts_with("dop_v1_") { "digitalocean" }
+                            else { "generic_key" };
+
+                        let display = format!("{}:{}...{}",
+                            svc,
+                            &pw[..pw.len().min(8)],
+                            &pw[pw.len().saturating_sub(4)..]);
+                        let mut e = Entity::new(EntityKind::ApiKey, &display, 0.80, &sid);
+                        e.tag("api-key");
+                        e.tag(format!("service:{svc}"));
+                        e.tag("import");
+                        e.add_evidence(
+                            Evidence::new("import:oathnet", format!("API key pattern ({svc}) in stealer data"))
+                                .with_attr("service", svc)
+                                .with_attr("key_length", pw.len().to_string()),
+                        );
+                        entities.push(e);
+                        stats.api_keys += 1;
+
+                        // Store in key pool for automatic use
+                        let pool = crate::util::key_pool::global_pool();
+                        let mut entry = crate::util::key_pool::KeyEntry::new(pw);
+                        entry.notes = Some(format!("Import: {svc} key from stealer data"));
+                        pool.add(svc, entry);
+                    }
+                }
             }
 
             // Infection timeline
@@ -888,24 +1019,36 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
 
     println!("Imported {} entities:", entities.len());
     println!(
-        "  Identity:  {} emails, {} usernames, {} device users",
-        stats.emails, stats.usernames, stats.device_users
+        "  Identity:  {} emails, {} usernames, {} device users, {} Discord IDs",
+        stats.emails, stats.usernames, stats.device_users, stats.discord_ids
     );
     println!(
-        "  Network:   {} IPs, {} domains, {} subdomains, {} URLs",
-        stats.ips, stats.domains, stats.subdomains, stats.urls
+        "  Network:   {} IPs, {} domains, {} subdomains, {} URLs, {} admin paths",
+        stats.ips, stats.domains, stats.subdomains, stats.urls, stats.admin_paths
     );
     println!(
         "  Geo:       {} coordinates, {} addresses",
         stats.coordinates, stats.addresses
     );
+    println!(
+        "  Device:    {} HWIDs, {} machine log IDs",
+        stats.hwids, stats.machines
+    );
+    println!(
+        "  Keys:      {} API keys detected",
+        stats.api_keys
+    );
     println!("  Verified:  {} holehe platform checks", stats.holehe);
     println!(
-        "  Source:    {} breach, {} stealer docs, {} victims, {} machines",
-        stats.breach_records, stats.stealer_docs, stats.victim_records, stats.machines
+        "  Source:    {} breach, {} stealer docs, {} victims",
+        stats.breach_records, stats.stealer_docs, stats.victim_records
     );
     if !stats.date_range.is_empty() {
         println!("  Timeline:  {}", stats.date_range);
+    }
+    if stats.api_keys > 0 {
+        println!("  Pool:      {} API keys stored in key pool for automatic use", stats.api_keys);
+        let _ = crate::util::key_pool::save_pool(&crate::util::key_pool::global_pool());
     }
 
     match output {
@@ -1116,6 +1259,10 @@ struct ImportStats {
     holehe: usize,
     machines: usize,
     device_users: usize,
+    hwids: usize,
+    discord_ids: usize,
+    admin_paths: usize,
+    api_keys: usize,
     date_range: String,
 }
 
