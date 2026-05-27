@@ -298,7 +298,7 @@ impl ScanEngine {
             // during this round will be expansion candidates in the next round,
             // not this one.
             let has_paid = ctx.keys.contains_key("HUNTSMAN_OATHNET_KEY");
-            let mut next: Vec<Target> = Vec::new();
+            let mut next: Vec<(Target, f64)> = Vec::new();
             for entity in entity_map.values() {
                 if entity.c_effective() < opts.min_expand_confidence {
                     continue;
@@ -309,18 +309,24 @@ impl ScanEngine {
                 let new_target = Target::new(tk, entity.value.clone());
                 let key = visit_key(&new_target);
                 if visited.insert(key) {
-                    next.push(new_target);
+                    let weight = crate::core::scan::expansion_weight(
+                        tk,
+                        entity.c_effective(),
+                        &entity.value,
+                        has_paid,
+                    );
+                    next.push((new_target, weight));
                 }
             }
 
-            // Sort expansion candidates by geo NPV (descending) so the
-            // highest-value seeds expand first. This maximises geolocation
-            // yield within budget constraints.
+            // Sort expansion candidates by weighted score (descending).
+            // The weight combines geo_npv with entity confidence and
+            // dampens generic mega-domains that waste expansion budget.
             next.sort_by(|a, b| {
-                crate::core::scan::geo_npv(b.kind, has_paid)
-                    .partial_cmp(&crate::core::scan::geo_npv(a.kind, has_paid))
+                b.1.partial_cmp(&a.1)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
+            let next: Vec<Target> = next.into_iter().map(|(t, _)| t).collect();
 
             if next.is_empty() {
                 let stop = StopReason::NoMoreCandidates;

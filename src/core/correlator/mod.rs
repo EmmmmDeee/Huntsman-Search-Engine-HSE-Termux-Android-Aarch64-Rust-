@@ -352,19 +352,28 @@ mod tests {
     // ── AU-003 ──────────────────────────────────────────────────────────
 
     #[test]
-    fn au003_fires_at_corroboration_three() {
-        let mut e = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
-        e.corroboration = 3;
-        let r = rule_au_003_high_corroboration(&[e], "s", 0);
+    fn au003_fires_at_kind_specific_thresholds() {
+        let mut email = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+        email.corroboration = 3;
+        let r = rule_au_003_high_corroboration(&[email], "s", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].rule_id, "AU-003");
+
+        let mut domain = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
+        domain.corroboration = 5;
+        let r = rule_au_003_high_corroboration(&[domain], "s", 0);
+        assert_eq!(r.len(), 1);
     }
 
     #[test]
-    fn au003_no_fire_at_two() {
-        let mut e = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
+    fn au003_no_fire_below_threshold() {
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
         e.corroboration = 2;
         assert!(rule_au_003_high_corroboration(&[e], "s", 0).is_empty());
+
+        let mut d = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
+        d.corroboration = 4;
+        assert!(rule_au_003_high_corroboration(&[d], "s", 0).is_empty());
     }
 
     // ── AU-004 ──────────────────────────────────────────────────────────

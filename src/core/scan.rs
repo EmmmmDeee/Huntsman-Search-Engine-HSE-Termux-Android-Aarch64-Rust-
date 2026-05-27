@@ -591,6 +591,82 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
     }
 }
 
+/// Composite expansion weight: `geo_npv × c_eff × domain_factor`.
+///
+/// Empirical analysis of JLM depth-2 scans (480 entities) revealed that
+/// 308 of 480 entities (64%) were domains, mostly generic mega-domains
+/// (reddit.com corr=111, whitepages.com corr=83) that consumed expansion
+/// budget before high-value Address/Coordinates entities. The old sort
+/// used `geo_npv(kind)` alone, so ALL domains (23.5) outranked ALL
+/// addresses (15.0) regardless of relevance.
+///
+/// The weighted score `geo_npv × c_eff × domain_factor` fixes this:
+/// - `c_eff` rewards entities confirmed by multiple sources
+/// - `domain_factor` dampens known-generic mega-domains (0.15×)
+///   so target-specific domains and geo entities expand first
+pub fn expansion_weight(
+    kind: TargetKind,
+    c_eff: f64,
+    value: &str,
+    has_paid_keys: bool,
+) -> f64 {
+    let base = geo_npv(kind, has_paid_keys);
+    let dampener = if kind == TargetKind::Domain {
+        domain_expansion_factor(value)
+    } else {
+        1.0
+    };
+    base * c_eff * dampener
+}
+
+/// Dampening factor for domain targets. Mega-domains (top internet
+/// properties that appear in nearly every search result) get a 0.15×
+/// penalty so they expand after target-specific entities.
+///
+/// Calibrated from JLM scan: facebook.com (corr=337), reddit.com (111),
+/// whitepages.com (83) are noise. Target-specific domains like
+/// welcometothejungle.com (corr=262) are valuable but indistinguishable
+/// by corroboration alone, so we blocklist by known mega-domain.
+fn domain_expansion_factor(domain: &str) -> f64 {
+    let d = domain.trim().to_lowercase();
+    let d = d.strip_prefix("www.").unwrap_or(&d);
+    if MEGA_DOMAINS.iter().any(|m| d == *m || d.ends_with(&format!(".{m}"))) {
+        0.15
+    } else {
+        1.0
+    }
+}
+
+const MEGA_DOMAINS: &[&str] = &[
+    "google.com", "google.com.au", "youtube.com", "facebook.com",
+    "twitter.com", "x.com", "instagram.com", "linkedin.com",
+    "reddit.com", "wikipedia.org", "amazon.com", "amazon.com.au",
+    "apple.com", "microsoft.com", "netflix.com", "tiktok.com",
+    "yahoo.com", "bing.com", "duckduckgo.com", "pinterest.com",
+    "tumblr.com", "quora.com", "stackoverflow.com", "github.com",
+    "medium.com", "wordpress.com", "blogspot.com", "whatsapp.com",
+    "telegram.org", "discord.com", "twitch.tv", "spotify.com",
+    "cnn.com", "bbc.com", "bbc.co.uk", "nytimes.com",
+    "washingtonpost.com", "theguardian.com", "reuters.com",
+    "forbes.com", "businessinsider.com", "techcrunch.com",
+    "imdb.com", "ebay.com", "ebay.com.au", "aliexpress.com",
+    "cloudflare.com", "akamai.com", "fastly.com",
+    "pornhub.com", "xvideos.com", "xhamster.com",
+    "chatgpt.com", "openai.com",
+    // People-search/OSINT aggregators (noise in person scans)
+    "whitepages.com", "truepeoplesearch.com", "nuwber.com",
+    "peekyou.com", "radaris.com", "idcrawl.com", "anywho.com",
+    "socialcatfish.com", "spokeo.com", "pipl.com",
+    "beenverified.com", "intelius.com", "mylife.com",
+    "zabasearch.com", "usphonebook.com",
+    // Generic infra/tools
+    "office365.com", "outlook.com", "live.com", "hotmail.com",
+    "gmail.com", "icloud.com", "protonmail.com",
+    "whois.com", "domaintools.com", "dnschecker.org",
+    "whatismyipaddress.com", "whatismyip.com", "ipaddress.com",
+    "iplocation.io", "ip2location.com",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,6 +681,41 @@ mod tests {
         assert_eq!(o.depth, 0);
         assert!((o.min_expand_confidence - 0.50).abs() < 1e-9);
         assert_eq!(o.max_concurrent, 4);
+    }
+
+    #[test]
+    fn expansion_weight_dampens_mega_domains() {
+        let facebook = expansion_weight(TargetKind::Domain, 1.0, "facebook.com", false);
+        let specific = expansion_weight(TargetKind::Domain, 1.0, "target-company.com.au", false);
+        assert!(
+            specific > facebook * 5.0,
+            "target-specific domain ({specific:.1}) should far outrank facebook ({facebook:.1})"
+        );
+    }
+
+    #[test]
+    fn expansion_weight_address_beats_mega_domain() {
+        let addr = expansion_weight(TargetKind::Address, 0.80, "Brisbane, QLD", false);
+        let fb = expansion_weight(TargetKind::Domain, 1.0, "facebook.com", false);
+        assert!(
+            addr > fb,
+            "validated address ({addr:.1}) should outrank dampened mega-domain ({fb:.1})"
+        );
+    }
+
+    #[test]
+    fn expansion_weight_respects_confidence() {
+        let high = expansion_weight(TargetKind::Domain, 0.90, "example.com", false);
+        let low = expansion_weight(TargetKind::Domain, 0.45, "example.com", false);
+        assert!(high > low * 1.9);
+    }
+
+    #[test]
+    fn mega_domain_list_catches_common_noise() {
+        assert!(domain_expansion_factor("facebook.com") < 0.5);
+        assert!(domain_expansion_factor("www.reddit.com") < 0.5);
+        assert!(domain_expansion_factor("whitepages.com") < 0.5);
+        assert!((domain_expansion_factor("target-specific.com.au") - 1.0).abs() < 1e-9);
     }
 
     #[test]

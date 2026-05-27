@@ -84,9 +84,16 @@ pub(super) fn rule_au_002_identity_cluster(entities: &[Entity], scan_id: &str, t
 }
 
 pub(super) fn rule_au_003_high_corroboration(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<Correlation> {
+    let min_corr = |kind: &crate::core::entity::EntityKind| -> u32 {
+        match kind {
+            EntityKind::Domain | EntityKind::Url => 5,
+            EntityKind::IpAddress => 4,
+            _ => 3,
+        }
+    };
     entities
         .iter()
-        .filter(|e| e.corroboration >= 3)
+        .filter(|e| e.corroboration >= min_corr(&e.kind))
         .map(|e| Correlation {
             rule_id: "AU-003".into(),
             rule_name: "High cross-source corroboration".into(),
