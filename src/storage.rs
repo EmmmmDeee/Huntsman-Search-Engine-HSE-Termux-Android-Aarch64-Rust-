@@ -277,47 +277,52 @@ impl Store {
     }
 
     fn merge_and_persist_entity(tx: &rusqlite::Transaction<'_>, entity: &Entity) -> Result<()> {
-        let orig_scan_id = entity.scan_id.clone();
-        let orig_observed_at = entity.observed_at;
+        let json = serde_json::to_string(entity)?;
 
-        let mut merged = entity.clone();
-        {
-            let mut stmt = tx.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
-            let mut rows = stmt.query(params![entity.uid])?;
-            if let Some(row) = rows.next()? {
-                let existing_json: String = row.get(0)?;
-                if let Ok(existing) = serde_json::from_str::<Entity>(&existing_json) {
-                    merged = existing;
-                    merged.merge(entity.clone());
-                }
-            }
-        }
-
-        let json = serde_json::to_string(&merged)?;
-        tx.execute(
+        // Fast path: INSERT with DO NOTHING. For new entities (the common
+        // case during a first-pass scan) this succeeds in one statement
+        // with no SELECT round-trip.
+        let inserted = tx.execute(
             "INSERT INTO entities(uid, scan_id, kind, value, confidence, corroboration, observed_at, data_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(uid) DO UPDATE SET
-               scan_id       = excluded.scan_id,
-               confidence    = excluded.confidence,
-               corroboration = excluded.corroboration,
-               observed_at   = excluded.observed_at,
-               data_json     = excluded.data_json",
+             ON CONFLICT(uid) DO NOTHING",
             params![
-                merged.uid,
-                merged.scan_id,
-                merged.kind.to_string(),
-                merged.value,
-                merged.confidence,
-                merged.corroboration as i64,
-                merged.observed_at as i64,
+                entity.uid,
+                entity.scan_id,
+                entity.kind.to_string(),
+                entity.value,
+                entity.confidence,
+                entity.corroboration as i64,
+                entity.observed_at as i64,
                 json,
             ],
         )?;
+
+        if inserted == 0 {
+            // Slow path: entity already exists — SELECT, merge, UPDATE.
+            let mut stmt = tx.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
+            let existing_json: String = stmt.query_row(params![entity.uid], |r| r.get(0))?;
+            let mut merged = serde_json::from_str::<Entity>(&existing_json)?;
+            merged.merge(entity.clone());
+            let merged_json = serde_json::to_string(&merged)?;
+            tx.execute(
+                "UPDATE entities SET scan_id = ?1, confidence = ?2, corroboration = ?3,
+                 observed_at = ?4, data_json = ?5 WHERE uid = ?6",
+                params![
+                    merged.scan_id,
+                    merged.confidence,
+                    merged.corroboration as i64,
+                    merged.observed_at as i64,
+                    merged_json,
+                    merged.uid,
+                ],
+            )?;
+        }
+
         tx.execute(
             "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
              VALUES(?1, ?2, ?3)",
-            params![entity.uid, orig_scan_id, orig_observed_at as i64],
+            params![entity.uid, entity.scan_id, entity.observed_at as i64],
         )?;
         Ok(())
     }

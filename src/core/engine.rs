@@ -544,13 +544,10 @@ impl ScanEngine {
                         },
                     );
                     scan_entity_for_keys(&entity);
-                    match entity_map.entry(entity.uid.clone()) {
-                        std::collections::hash_map::Entry::Occupied(mut e) => {
-                            e.get_mut().merge(entity);
-                        }
-                        std::collections::hash_map::Entry::Vacant(e) => {
-                            e.insert(entity);
-                        }
+                    if let Some(existing) = entity_map.get_mut(&entity.uid) {
+                        existing.merge(entity);
+                    } else {
+                        entity_map.insert(entity.uid.clone(), entity);
                     }
                     found += 1;
                 }
