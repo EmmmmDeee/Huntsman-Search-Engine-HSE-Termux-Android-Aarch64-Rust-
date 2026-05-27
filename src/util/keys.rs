@@ -54,6 +54,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_WIGLE_USER",
     "HUNTSMAN_WIGLE_TOKEN",
     "HUNTSMAN_ABR_GUID",
+    "HUNTSMAN_OPENCELLID_KEY",
 ];
 
 /// Resolve the keys env-file path.
