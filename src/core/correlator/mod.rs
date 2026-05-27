@@ -6,8 +6,6 @@
 // scan and emitted on the event bus. Rules are deterministic — no LLMs,
 // no fuzzy matching.
 
-#[allow(unused_imports)]
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -158,6 +156,8 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
 

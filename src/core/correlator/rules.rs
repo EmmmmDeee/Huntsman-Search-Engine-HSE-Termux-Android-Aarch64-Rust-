@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use super::{Correlation, Severity};
 use crate::core::entity::{Entity, EntityKind};
 
-fn entities_of_kind<'a>(entities: &'a [Entity], kind: EntityKind) -> Vec<&'a Entity> {
+fn entities_of_kind(entities: &[Entity], kind: EntityKind) -> Vec<&Entity> {
     entities.iter().filter(|e| e.kind == kind).collect()
 }
 

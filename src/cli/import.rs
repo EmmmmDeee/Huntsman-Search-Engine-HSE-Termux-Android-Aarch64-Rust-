@@ -285,23 +285,22 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
             if let Some(pw) = doc_item.get("password").and_then(|v| v.as_str())
                 && !pw.is_empty()
                 && pw.len() >= 16
+                && let Some(e) = detect_and_create_api_key_entity(pw, &sid, "import:oathnet")
             {
-                if let Some(e) = detect_and_create_api_key_entity(pw, &sid, "import:oathnet") {
-                    entities.push(e);
-                    stats.api_keys += 1;
+                entities.push(e);
+                stats.api_keys += 1;
 
-                    let svc = crate::modules::oathnet_pro::key_harvest::identify_api_key(pw)
-                        .map(|(s, _)| s)
-                        .unwrap_or("generic_key");
-                    let valid = crate::util::key_pool::add_and_validate(
-                        svc,
-                        pw,
-                        Some(format!("Import: {svc} key from stealer data")),
-                    )
-                    .await;
-                    if valid {
-                        stats.api_keys_valid += 1;
-                    }
+                let svc = crate::modules::oathnet_pro::key_harvest::identify_api_key(pw)
+                    .map(|(s, _)| s)
+                    .unwrap_or("generic_key");
+                let valid = crate::util::key_pool::add_and_validate(
+                    svc,
+                    pw,
+                    Some(format!("Import: {svc} key from stealer data")),
+                )
+                .await;
+                if valid {
+                    stats.api_keys_valid += 1;
                 }
             }
 
@@ -359,7 +358,7 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
             let lon = info.get("lon").and_then(|v| v.as_f64());
             let isp = info.get("isp").and_then(|v| v.as_str()).unwrap_or("");
             create_geolocation_entities(
-                ip, lat, lon, city, region, country, isp,
+                &GeoFields { ip, lat, lon, city, region, country, isp },
                 &sid, &mut entities, &mut stats,
             );
         }
@@ -579,18 +578,17 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
                 entities.push(e);
                 stats.usernames += 1;
             }
-        } else if let Some(rest) = line.strip_prefix("Password: ") {
+        } else if let Some(rest) = line.strip_prefix("Password: ")
+            && rest.trim().len() >= 16
+            && let Some(e) = detect_and_create_api_key_entity(rest.trim(), &sid, "import:txt")
+        {
             let pw = rest.trim();
-            if pw.len() >= 16 {
-                if let Some(e) = detect_and_create_api_key_entity(pw, &sid, "import:txt") {
-                    entities.push(e);
-                    stats.api_keys += 1;
-                    let svc = crate::modules::oathnet_pro::key_harvest::identify_api_key(pw)
-                        .map(|(s, _)| s)
-                        .unwrap_or("generic_key");
-                    store_key_in_pool(svc, pw, format!("TXT import: {svc} key"));
-                }
-            }
+            entities.push(e);
+            stats.api_keys += 1;
+            let svc = crate::modules::oathnet_pro::key_harvest::identify_api_key(pw)
+                .map(|(s, _)| s)
+                .unwrap_or("generic_key");
+            store_key_in_pool(svc, pw, format!("TXT import: {svc} key"));
         }
     }
 
@@ -686,7 +684,7 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
             if let Some(rest) = trimmed.strip_prefix("IP: ") {
                 if !current_ip.is_empty() {
                     create_geolocation_entities(
-                        &current_ip, lat, lon, &city, &region, &country, &isp,
+                        &GeoFields { ip: &current_ip, lat, lon, city: &city, region: &region, country: &country, isp: &isp },
                         &sid, &mut entities, &mut stats,
                     );
                 }
@@ -713,7 +711,7 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
         }
         if !current_ip.is_empty() {
             create_geolocation_entities(
-                &current_ip, lat, lon, &city, &region, &country, &isp,
+                &GeoFields { ip: &current_ip, lat, lon, city: &city, region: &region, country: &country, isp: &isp },
                 &sid, &mut entities, &mut stats,
             );
         }
@@ -812,21 +810,25 @@ fn store_key_in_pool(service: &str, key: &str, notes: String) {
     pool.add(service, entry);
 }
 
-fn create_geolocation_entities(
-    ip: &str,
+struct GeoFields<'a> {
+    ip: &'a str,
     lat: Option<f64>,
     lon: Option<f64>,
-    city: &str,
-    region: &str,
-    country: &str,
-    isp: &str,
+    city: &'a str,
+    region: &'a str,
+    country: &'a str,
+    isp: &'a str,
+}
+
+fn create_geolocation_entities(
+    geo: &GeoFields<'_>,
     sid: &str,
     entities: &mut Vec<crate::core::entity::Entity>,
     stats: &mut ImportStats,
 ) {
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
-    if let (Some(la), Some(lo)) = (lat, lon)
+    if let (Some(la), Some(lo)) = (geo.lat, geo.lon)
         && la.abs() > 0.01
         && lo.abs() > 0.01
     {
@@ -836,13 +838,13 @@ fn create_geolocation_entities(
         ce.tag("import");
         ce.add_evidence(Evidence::new(
             "import:oathnet",
-            format!("IP {ip}: {city}, {region}, {country} ({isp})"),
+            format!("IP {}: {}, {}, {} ({})", geo.ip, geo.city, geo.region, geo.country, geo.isp),
         ));
         entities.push(ce);
         stats.coordinates += 1;
     }
-    if !city.is_empty() {
-        let addr = format!("{city}, {region}, {country}");
+    if !geo.city.is_empty() {
+        let addr = format!("{}, {}, {}", geo.city, geo.region, geo.country);
         let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, sid);
         ae.tag("import");
         entities.push(ae);
