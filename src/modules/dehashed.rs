@@ -67,6 +67,7 @@ impl Module for DeHashed {
             TargetKind::Email
                 | TargetKind::Username
                 | TargetKind::Phone
+                | TargetKind::FullName
                 | TargetKind::IpAddress
                 | TargetKind::Domain
         )
@@ -84,6 +85,7 @@ impl Module for DeHashed {
             TargetKind::Email => "email",
             TargetKind::Username => "username",
             TargetKind::Phone => "phone",
+            TargetKind::FullName => "name",
             TargetKind::IpAddress => "ip_address",
             TargetKind::Domain => "domain",
             _ => return Ok(ModuleResult::new()),
@@ -168,7 +170,7 @@ impl Module for DeHashed {
 mod tests {
     use super::*;
     #[test]
-    fn accepts_five_kinds() {
+    fn accepts_six_kinds() {
         let m = DeHashed;
         for k in [
             TargetKind::Email,
@@ -179,7 +181,7 @@ mod tests {
         ] {
             assert!(m.accepts(&Target::new(k, "x")));
         }
-        assert!(!m.accepts(&Target::new(TargetKind::FullName, "Jane Doe")));
+        assert!(m.accepts(&Target::new(TargetKind::FullName, "Jane Doe")));
     }
     #[test]
     fn cost_is_paid() {

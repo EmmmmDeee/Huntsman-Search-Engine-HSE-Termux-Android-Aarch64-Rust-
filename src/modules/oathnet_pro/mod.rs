@@ -50,6 +50,7 @@ impl Module for OathnetPro {
             TargetKind::Email
                 | TargetKind::Username
                 | TargetKind::Phone
+                | TargetKind::FullName
                 | TargetKind::IpAddress
                 | TargetKind::Domain
         )
@@ -70,6 +71,7 @@ impl Module for OathnetPro {
             TargetKind::Email => "email",
             TargetKind::Username => "username",
             TargetKind::Phone => "phone",
+            TargetKind::FullName => "q",
             TargetKind::IpAddress => "ip",
             TargetKind::Domain => {
                 if is_social_platform(&target.value) {
@@ -714,10 +716,10 @@ mod tests {
             TargetKind::Phone,
             TargetKind::IpAddress,
             TargetKind::Domain,
+            TargetKind::FullName,
         ] {
             assert!(m.accepts(&Target::new(k, "x")));
         }
-        assert!(!m.accepts(&Target::new(TargetKind::FullName, "Jane Doe")));
     }
 
     #[test]
