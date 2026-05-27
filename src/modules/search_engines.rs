@@ -647,11 +647,19 @@ async fn generate_and_verify_emails(
     result: &mut ModuleResult,
 ) {
     // Only generate when we have zero discovered emails
-    let has_emails = result
-        .entities
-        .iter()
-        .any(|e| e.kind == EntityKind::Email && e.confidence >= 0.50);
-    if has_emails {
+    // Check for TARGET-RELEVANT emails (containing name parts), not
+    // platform emails like raj@peekyou.com that come from domain expansion.
+    let target_lower = target.value.to_lowercase();
+    let name_parts: Vec<&str> = target_lower.split_whitespace().collect();
+    let has_relevant_emails = result.entities.iter().any(|e| {
+        if e.kind != EntityKind::Email || e.confidence < 0.50 {
+            return false;
+        }
+        let local = e.value.split('@').next().unwrap_or("");
+        let ll = local.to_lowercase();
+        name_parts.iter().any(|p| ll.contains(p))
+    });
+    if has_relevant_emails {
         return;
     }
 
