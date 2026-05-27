@@ -256,12 +256,9 @@ impl Module for Whois {
                 let mut e = Entity::new(EntityKind::Email, addr, 0.78, &_ctx.scan_id);
                 e.tag(format!("whois-{role}"));
                 e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("WHOIS {role} contact for {}", target.value),
-                    )
-                    .with_attr("role", role)
-                    .with_attr("parent_target", target.value.as_str()),
+                    Evidence::new(SRC, format!("WHOIS {role} contact for {}", target.value))
+                        .with_attr("role", role)
+                        .with_attr("parent_target", target.value.as_str()),
                 );
                 result.push(e);
             }

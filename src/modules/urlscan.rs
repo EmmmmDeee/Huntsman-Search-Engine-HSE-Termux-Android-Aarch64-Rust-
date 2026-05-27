@@ -211,7 +211,7 @@ impl Module for UrlScan {
             ae.tag("urlscan");
             ae.tag("geoint");
             ae.add_evidence(Evidence::new(
-                "urlscan",
+                SRC,
                 format!("Hosting country from URLScan.io scans of {}", &target.value),
             ));
             result.push(ae);

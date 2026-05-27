@@ -75,8 +75,7 @@ impl Module for CertIntel {
         // IP targets skip straight to the live TLS probe.
         if target.kind == TargetKind::Domain {
             let ct_url = format!("https://crt.sh/?q=%.{domain}&output=json");
-            if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, SRC, &ct_url).await
-            {
+            if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, SRC, &ct_url).await {
                 for entry in &entries {
                     for name in entry.name_value.split('\n') {
                         let name = name.trim().trim_start_matches("*.").to_lowercase();
@@ -90,18 +89,24 @@ impl Module for CertIntel {
                             let mut e = Entity::new(EntityKind::Domain, &name, 0.88, &ctx.scan_id);
                             e.tag(tags::CT_LOG);
                             e.add_evidence(
-                                Evidence::new(
-                                    SRC,
-                                    format!("Certificate transparency: {name}"),
-                                )
-                                .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))
-                                .with_attr("not_before", entry.not_before.as_deref().unwrap_or("-"))
-                                .with_attr("not_after", entry.not_after.as_deref().unwrap_or("-"))
-                                .with_attr(
-                                    "serial_number",
-                                    entry.serial_number.as_deref().unwrap_or("-"),
-                                )
-                                .with_attr("parent_domain", domain),
+                                Evidence::new(SRC, format!("Certificate transparency: {name}"))
+                                    .with_attr(
+                                        "issuer",
+                                        entry.issuer_name.as_deref().unwrap_or("-"),
+                                    )
+                                    .with_attr(
+                                        "not_before",
+                                        entry.not_before.as_deref().unwrap_or("-"),
+                                    )
+                                    .with_attr(
+                                        "not_after",
+                                        entry.not_after.as_deref().unwrap_or("-"),
+                                    )
+                                    .with_attr(
+                                        "serial_number",
+                                        entry.serial_number.as_deref().unwrap_or("-"),
+                                    )
+                                    .with_attr("parent_domain", domain),
                             );
                             result.push(e);
                         }

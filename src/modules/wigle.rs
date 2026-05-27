@@ -288,7 +288,7 @@ impl Module for Wigle {
         if !ssid_names.is_empty() {
             let top_ssids: Vec<&str> = ssid_names.iter().take(10).map(String::as_str).collect();
             let mut ssid_ev = Evidence::new(
-                "wigle",
+                SRC,
                 format!(
                     "{} named WiFi network(s) near {}",
                     top_ssids.len(),
@@ -380,7 +380,7 @@ async fn fetch_wigle(
     }
     if !status.is_success() {
         return Err(Error::module(
-            "wigle",
+            SRC,
             format!("HTTP {status}: {}", error_snippet(resp).await),
         ));
     }

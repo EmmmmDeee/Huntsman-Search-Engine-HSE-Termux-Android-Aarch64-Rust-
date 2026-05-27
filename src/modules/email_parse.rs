@@ -69,11 +69,8 @@ impl Module for EmailParse {
                 entity.tag("derived");
                 entity.tag("email-domain");
                 entity.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Domain extracted from {}", target.value),
-                    )
-                    .with_attr("source_email", &target.value),
+                    Evidence::new(SRC, format!("Domain extracted from {}", target.value))
+                        .with_attr("source_email", &target.value),
                 );
                 result.push(entity);
             }

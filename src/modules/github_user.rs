@@ -256,12 +256,9 @@ impl Module for GithubUser {
                         d.tag("derived");
                         d.tag("personal-site");
                         d.add_evidence(
-                            Evidence::new(
-                                SRC,
-                                format!("Blog domain from @{}", user.login),
-                            )
-                            .with_attr("blog_url", blog)
-                            .with_attr("github_login", &user.login),
+                            Evidence::new(SRC, format!("Blog domain from @{}", user.login))
+                                .with_attr("blog_url", blog)
+                                .with_attr("github_login", &user.login),
                         );
                         result.push(d);
                     }

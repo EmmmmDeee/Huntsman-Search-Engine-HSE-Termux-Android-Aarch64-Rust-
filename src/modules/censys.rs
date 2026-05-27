@@ -133,9 +133,7 @@ impl Module for Censys {
 
             if !status.is_success() {
                 let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, api_id, ctx)
-                    .await
-                {
+                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, api_id, ctx).await {
                     continue;
                 }
                 return Err(Error::module(

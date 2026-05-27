@@ -93,8 +93,7 @@ impl Module for HudsonRock {
             _ => return Ok(ModuleResult::new()),
         };
 
-        let Some(data): Option<CavalierResp> =
-            fetch_json_or_404(&ctx.http, SRC, &url).await?
+        let Some(data): Option<CavalierResp> = fetch_json_or_404(&ctx.http, SRC, &url).await?
         else {
             return Ok(ModuleResult::new());
         };

@@ -255,10 +255,7 @@ fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleResult) {
     if !abn.is_empty() {
         let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, 0.95, scan_id);
         abn_entity.tag("abr");
-        abn_entity.add_evidence(Evidence::new(
-            SRC,
-            format!("ABN {abn} → {entity_name}"),
-        ));
+        abn_entity.add_evidence(Evidence::new(SRC, format!("ABN {abn} → {entity_name}")));
         result.push(abn_entity);
     }
 
@@ -288,10 +285,7 @@ fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleResult) {
                 let mut bn_entity = Entity::new(EntityKind::Organisation, name, 0.80, scan_id);
                 bn_entity.tag("abr");
                 bn_entity.tag("business-name");
-                bn_entity.add_evidence(Evidence::new(
-                    SRC,
-                    format!("Trading name for ABN {abn}"),
-                ));
+                bn_entity.add_evidence(Evidence::new(SRC, format!("Trading name for ABN {abn}")));
                 result.push(bn_entity);
             }
         }
@@ -359,10 +353,7 @@ fn parse_name_results(data: &Value, query: &str, scan_id: &str, result: &mut Mod
 
         let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, conf, scan_id);
         abn_entity.tag("abr");
-        abn_entity.add_evidence(Evidence::new(
-            SRC,
-            format!("{name} (score {score})"),
-        ));
+        abn_entity.add_evidence(Evidence::new(SRC, format!("{name} (score {score})")));
         result.push(abn_entity);
 
         if !state.is_empty() {

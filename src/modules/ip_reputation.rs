@@ -218,12 +218,9 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
         }
     }
 
-    let mut ev = Evidence::new(
-        SRC,
-        format!("OTX: {pulse_count} threat pulse(s)"),
-    )
-    .with_attr("pulse_count", pulse_count.to_string())
-    .with_attr("indicator_type", itype);
+    let mut ev = Evidence::new(SRC, format!("OTX: {pulse_count} threat pulse(s)"))
+        .with_attr("pulse_count", pulse_count.to_string())
+        .with_attr("indicator_type", itype);
     if !pulse_names.is_empty() {
         ev = ev.with_attr("recent_pulses", pulse_names.join(" | "));
     }

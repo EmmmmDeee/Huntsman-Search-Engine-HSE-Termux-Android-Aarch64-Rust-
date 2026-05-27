@@ -159,18 +159,15 @@ impl Module for CellIntel {
                 e.tag("cell-tower");
                 e.tag(format!("radio:{}", ctype.to_lowercase()));
                 e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Cell tower {radio} {tower_id} -> {coords}"),
-                    )
-                    .with_attr("tower_id", &tower_id)
-                    .with_attr("radio", radio)
-                    .with_attr("mcc", mcc.as_ref())
-                    .with_attr("mnc", mnc.as_ref())
-                    .with_attr("range_m", range.to_string())
-                    .with_attr("source", "OpenCelliD")
-                    .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
-                    .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
+                    Evidence::new(SRC, format!("Cell tower {radio} {tower_id} -> {coords}"))
+                        .with_attr("tower_id", &tower_id)
+                        .with_attr("radio", radio)
+                        .with_attr("mcc", mcc.as_ref())
+                        .with_attr("mnc", mnc.as_ref())
+                        .with_attr("range_m", range.to_string())
+                        .with_attr("source", "OpenCelliD")
+                        .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
+                        .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
                 );
                 result.push(e);
                 continue;

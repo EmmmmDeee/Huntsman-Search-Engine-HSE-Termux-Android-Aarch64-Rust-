@@ -98,13 +98,10 @@ impl Module for IpWhois {
                 e.tag(format!("country:{}", cc.to_uppercase()));
             }
 
-            let mut ev = Evidence::new(
-                SRC,
-                format!("IP geolocation for {}", target.value),
-            )
-            .with_attr("latitude", lat.to_string())
-            .with_attr("longitude", lon.to_string())
-            .with_attr("source", "ipwho.is");
+            let mut ev = Evidence::new(SRC, format!("IP geolocation for {}", target.value))
+                .with_attr("latitude", lat.to_string())
+                .with_attr("longitude", lon.to_string())
+                .with_attr("source", "ipwho.is");
 
             if let Some(c) = data.country.as_deref() {
                 ev = ev.with_attr("country", c);

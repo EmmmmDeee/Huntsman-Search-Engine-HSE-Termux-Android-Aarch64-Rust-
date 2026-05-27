@@ -123,9 +123,7 @@ impl Module for ThreatFox {
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx)
-                    .await
-                {
+                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
                 return Err(Error::module(
@@ -149,10 +147,7 @@ impl Module for ThreatFox {
             "no_result" => return Ok(ModuleResult::new()),
             "rate_limited" => {
                 ctx.report_key_exhausted(SRC, key, 429);
-                return Err(Error::module(
-                    SRC,
-                    "query_status=rate_limited".to_string(),
-                ));
+                return Err(Error::module(SRC, "query_status=rate_limited".to_string()));
             }
             other => {
                 return Err(Error::module(SRC, format!("query_status={other}")));

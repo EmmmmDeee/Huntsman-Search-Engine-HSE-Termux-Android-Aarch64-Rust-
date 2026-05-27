@@ -148,14 +148,11 @@ impl Module for UsernameSearch {
                 e.tag(format!("platform:{site_name}"));
                 e.tag(format!("cat:{site_cat}"));
                 e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("@{username} has a profile on {site_name}"),
-                    )
-                    .with_attr("platform", *site_name)
-                    .with_attr("category", *site_cat)
-                    .with_attr("username", username)
-                    .with_attr("url", url),
+                    Evidence::new(SRC, format!("@{username} has a profile on {site_name}"))
+                        .with_attr("platform", *site_name)
+                        .with_attr("category", *site_cat)
+                        .with_attr("username", username)
+                        .with_attr("url", url),
                 );
                 module_result.push(e);
             }

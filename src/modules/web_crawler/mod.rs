@@ -110,8 +110,8 @@ impl Module for WebCrawler {
             if raw.is_empty() {
                 return Ok(ModuleResult::new());
             }
-            let parsed = Url::parse(&raw)
-                .map_err(|e| Error::module(SRC, format!("bad URL target: {e}")))?;
+            let parsed =
+                Url::parse(&raw).map_err(|e| Error::module(SRC, format!("bad URL target: {e}")))?;
             let host = parsed
                 .host_str()
                 .ok_or_else(|| Error::module(SRC, "URL has no host"))?
@@ -137,8 +137,8 @@ impl Module for WebCrawler {
             MAX_DEPTH
         };
 
-        let seed_url = Url::parse(&seed)
-            .map_err(|e| Error::module(SRC, format!("bad seed URL: {e}")))?;
+        let seed_url =
+            Url::parse(&seed).map_err(|e| Error::module(SRC, format!("bad seed URL: {e}")))?;
         let base_host = seed_url.host_str().unwrap_or(&domain).to_lowercase();
 
         let mut state = CrawlState {
@@ -370,11 +370,8 @@ fn build_entities(
         e.tag(tags::WEB);
         e.tag(tags::SUBDOMAIN);
         e.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("Subdomain discovered by crawling {domain}"),
-            )
-            .with_attr("parent_domain", domain),
+            Evidence::new(SRC, format!("Subdomain discovered by crawling {domain}"))
+                .with_attr("parent_domain", domain),
         );
         state.result.push(e);
     }
@@ -384,11 +381,8 @@ fn build_entities(
         let mut e = Entity::new(EntityKind::Domain, ext.as_str(), 0.50, scan_id);
         e.tag(tags::EXTERNAL);
         e.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("External domain linked from {domain}"),
-            )
-            .with_attr("source_domain", domain),
+            Evidence::new(SRC, format!("External domain linked from {domain}"))
+                .with_attr("source_domain", domain),
         );
         state.result.push(e);
     }

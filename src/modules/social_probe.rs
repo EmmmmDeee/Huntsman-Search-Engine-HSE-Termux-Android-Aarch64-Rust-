@@ -248,13 +248,10 @@ impl Module for SocialProbe {
                 entity.tag("social-profile");
                 entity.tag(format!("platform:{}", platform.name));
                 entity.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Profile found on {}", platform.name),
-                    )
-                    .with_attr("platform", platform.name)
-                    .with_attr("http_status", code.to_string())
-                    .with_attr("profile_url", &url),
+                    Evidence::new(SRC, format!("Profile found on {}", platform.name))
+                        .with_attr("platform", platform.name)
+                        .with_attr("http_status", code.to_string())
+                        .with_attr("profile_url", &url),
                 );
                 result.push(entity);
 
@@ -268,7 +265,7 @@ impl Module for SocialProbe {
                     dom.tag("social-platform");
                     dom.add_evidence(
                         Evidence::new(
-                            "social_probe",
+                            SRC,
                             format!("Platform domain from {} profile", platform.name),
                         )
                         .with_attr("platform", platform.name),

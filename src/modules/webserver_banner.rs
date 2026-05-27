@@ -97,12 +97,9 @@ impl Module for WebserverBanner {
             entity.tag(crate::core::tags::WEB);
             apply_stack_tags(&mut entity, &captured);
 
-            let mut ev = Evidence::new(
-                SRC,
-                format!("HTTP headers from {scheme} HEAD of {host}"),
-            )
-            .with_attr("scheme", scheme)
-            .with_attr("status", status.as_u16().to_string());
+            let mut ev = Evidence::new(SRC, format!("HTTP headers from {scheme} HEAD of {host}"))
+                .with_attr("scheme", scheme)
+                .with_attr("status", status.as_u16().to_string());
             for (h, v) in &captured {
                 // Clip individual values so a verbose CSP doesn't bloat
                 // the evidence row past sanity.

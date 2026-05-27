@@ -147,13 +147,10 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
                 e.tag(format!("country:{}", cc.to_uppercase()));
             }
 
-            let mut ev = Evidence::new(
-                SRC,
-                format!("IP geo for {} via ipapi.co", target.value),
-            )
-            .with_attr("latitude", lat.to_string())
-            .with_attr("longitude", lon.to_string())
-            .with_attr("source", "ipapi.co");
+            let mut ev = Evidence::new(SRC, format!("IP geo for {} via ipapi.co", target.value))
+                .with_attr("latitude", lat.to_string())
+                .with_attr("longitude", lon.to_string())
+                .with_attr("source", "ipapi.co");
 
             if let Some(c) = data.city.as_deref() {
                 ev = ev.with_attr("city", c);

@@ -396,11 +396,8 @@ pub(super) fn extract_api_keys_from_item(
             entity.tag(format!("service:{service}"));
             entity.tag("oathnet-pro");
             entity.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("API key in username field ({service})"),
-                )
-                .with_attr("service", service),
+                Evidence::new(SRC, format!("API key in username field ({service})"))
+                    .with_attr("service", service),
             );
             result.push(entity);
 
