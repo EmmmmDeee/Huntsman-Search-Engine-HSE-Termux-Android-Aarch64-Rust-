@@ -156,6 +156,7 @@ fn rule_au_001_multi_breach(entities: &[Entity], scan_id: &str, ts: u64) -> Vec<
         "dehashed",
         "hibp",
         "oathnet_pro",
+        "search_engines:oathnet",
     ];
     let mut out = Vec::new();
     for e in entities.iter().filter(|e| e.kind == EntityKind::Email) {
