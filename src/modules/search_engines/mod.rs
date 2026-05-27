@@ -517,7 +517,7 @@ async fn generate_and_verify_emails(
         .map(|e| e.scan_id.clone())
         .unwrap_or_default();
 
-    for candidate in candidates.iter().take(20) {
+    for candidate in candidates.iter().take(8) {
         if ctx.cancel.is_cancelled() {
             break;
         }
@@ -635,7 +635,7 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult, targ
         .map(|e| e.scan_id.clone())
         .unwrap_or_default();
 
-    for email in &emails {
+    for email in emails.iter().take(5) {
         if ctx.cancel.is_cancelled() {
             break;
         }
@@ -644,7 +644,7 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult, targ
             crate::util::oathnet::paths::BREACH,
             "email",
             email,
-            20,
+            10,
         )
         .await
         {
@@ -652,7 +652,7 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult, targ
         }
     }
 
-    for uname in &usernames {
+    for uname in usernames.iter().take(3) {
         if ctx.cancel.is_cancelled() {
             break;
         }
@@ -661,7 +661,7 @@ async fn enrich_via_oathnet(ctx: &ModuleContext, result: &mut ModuleResult, targ
             crate::util::oathnet::paths::BREACH,
             "username",
             uname,
-            20,
+            10,
         )
         .await
         {

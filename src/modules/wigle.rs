@@ -94,19 +94,27 @@ impl Module for Wigle {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // WiGLE budget: cap at 10 geo queries + 5 BSSID queries per process
+        // lifetime. Each geo query uses 1-2 API calls (tight + optional wide).
+        static GEO_QUERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        static BSSID_QUERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
         let user = ctx.key_opt(USER_ENV).unwrap_or(HARDCODED_USER);
         let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);
 
-        // MacAddress target: BSSID detail lookup → coordinates
         if target.kind == TargetKind::MacAddress {
+            if BSSID_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 5 {
+                return Ok(ModuleResult::new());
+            }
             return self.bssid_lookup(user, token, &target.value, ctx).await;
+        }
+
+        if GEO_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 10 {
+            return Ok(ModuleResult::new());
         }
 
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
-        // Adaptive bounding box: try tight first, widen if empty.
-        // This saves API quota in dense areas while still finding
-        // results in sparse ones.
         let body = {
             let tight = fetch_wigle(&ctx.http, user, token, lat, lon, 0.002).await?;
             if tight.success == Some(true)

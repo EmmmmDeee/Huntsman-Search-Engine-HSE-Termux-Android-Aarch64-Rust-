@@ -319,7 +319,7 @@ async fn process_identity(target: &Target, ctx: &ModuleContext) -> Result<Module
     };
 
     // Phase 1: Geo-focused breach search — extract location fields
-    let items = match oathnet::search(key, paths::BREACH, field, &target.value, 50).await {
+    let items = match oathnet::search(key, paths::BREACH, field, &target.value, 20).await {
         Ok(items) => items,
         Err(_) => return Ok(result),
     };

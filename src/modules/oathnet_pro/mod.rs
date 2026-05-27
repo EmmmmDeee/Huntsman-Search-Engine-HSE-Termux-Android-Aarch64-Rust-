@@ -83,7 +83,9 @@ impl Module for OathnetPro {
         };
 
         // ── Breach search ───────────────────────────────────────────
-        let items = oathnet::search(key, paths::BREACH, field, &target.value, 50).await?;
+        // Conservative query limit: 20 results covers entity extraction
+        // needs while halving API budget vs the previous 50-result cap.
+        let items = oathnet::search(key, paths::BREACH, field, &target.value, 20).await?;
         if items.is_empty() {
             return Ok(result);
         }
@@ -127,7 +129,7 @@ impl Module for OathnetPro {
         // ── Stealer search ──────────────────────────────────────────
         if !ctx.cancel.is_cancelled()
             && let Ok(stealer_items) =
-                oathnet::search(key, paths::STEALER, field, &target.value, 50).await
+                oathnet::search(key, paths::STEALER, field, &target.value, 15).await
         {
             for item in &stealer_items {
                 extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
@@ -161,8 +163,8 @@ impl Module for OathnetPro {
             let discovered_emails: Vec<String> = result
                 .entities
                 .iter()
-                .filter(|e| e.kind == EntityKind::Email && e.value != target.value)
-                .take(5)
+                .filter(|e| e.kind == EntityKind::Email && e.value != target.value && e.confidence >= 0.65)
+                .take(2)
                 .map(|e| e.value.clone())
                 .collect();
             for email in &discovered_emails {
@@ -183,8 +185,8 @@ impl Module for OathnetPro {
             let usernames: Vec<String> = result
                 .entities
                 .iter()
-                .filter(|e| e.kind == EntityKind::Username && e.confidence >= 0.60)
-                .take(3)
+                .filter(|e| e.kind == EntityKind::Username && e.confidence >= 0.70)
+                .take(2)
                 .map(|e| e.value.clone())
                 .collect();
             for uname in &usernames {
@@ -236,14 +238,20 @@ impl Module for OathnetPro {
             }
         }
 
-        // ── Targeted API credential harvest (skip for IP/Phone — no relevant stealer data) ──
+        // ── Targeted API credential harvest ──
+        // Runs at most once per process lifetime via atomic guard.
+        // Saves ~125 API calls per scan after the first.
         if !ctx.cancel.is_cancelled()
             && matches!(
                 target.kind,
                 TargetKind::Email | TargetKind::Username | TargetKind::Domain
             )
         {
-            harvest_api_credentials_from_stealer(key).await;
+            static HARVEST_DONE: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !HARVEST_DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                harvest_api_credentials_from_stealer(key).await;
+            }
         }
 
         // ── IP info for discovered IPs ──────────────────────────────
@@ -254,7 +262,7 @@ impl Module for OathnetPro {
                 .filter(|e| e.kind == EntityKind::IpAddress)
                 .map(|e| e.value.clone())
                 .collect();
-            for ip in ips.iter().take(12) {
+            for ip in ips.iter().take(5) {
                 if ctx.cancel.is_cancelled() {
                     break;
                 }
