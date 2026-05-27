@@ -572,6 +572,17 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
 
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::Other(format!("cannot read {path}: {e}")))?;
+
+    let is_html = path.ends_with(".html") || body.trim_start().starts_with("<!") || body.trim_start().starts_with("<html");
+    let is_txt = path.ends_with(".txt") && !is_html;
+
+    if is_html {
+        return cmd_import_html(&body, output);
+    }
+    if is_txt {
+        return cmd_import_txt(&body, output);
+    }
+
     let doc: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
 
@@ -585,7 +596,7 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
-    println!("Importing OathNet export: query=\"{query}\", date={date}");
+    println!("Importing OathNet JSON export: query=\"{query}\", date={date}");
 
     let sid = format!("import-{}", &crate::core::entity::unix_now().to_string());
     let mut entities: Vec<Entity> = Vec::new();
@@ -665,15 +676,26 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
         }
     }
 
-    // ── Parse stealer docs for domain intelligence (NOT credentials) ──
+    // ── Parse stealer docs — domains, subdomains, URLs, usernames, timelines ──
     if let Some(docs) = doc
         .pointer("/stealerData/docs")
         .and_then(|v| v.as_array())
     {
         let mut seen_domains: std::collections::HashSet<String> =
             std::collections::HashSet::new();
+        let mut seen_users: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut seen_urls: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut log_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut earliest_date: Option<String> = None;
+        let mut latest_date: Option<String> = None;
+
         for doc_item in docs {
             stats.stealer_docs += 1;
+
+            // Domains
             if let Some(domains) = doc_item.get("domain").and_then(|v| v.as_array()) {
                 for d in domains {
                     if let Some(domain) = d.as_str() {
@@ -685,6 +707,101 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
                             e.tag("import");
                             entities.push(e);
                             stats.domains += 1;
+                        }
+                    }
+                }
+            }
+
+            // Subdomains
+            if let Some(subs) = doc_item.get("subdomain").and_then(|v| v.as_array()) {
+                for s in subs {
+                    if let Some(sub) = s.as_str() {
+                        let lower = sub.to_lowercase();
+                        if lower.contains('.') && seen_domains.insert(format!("sub:{lower}")) {
+                            let mut e =
+                                Entity::new(EntityKind::Domain, &lower, 0.55, &sid);
+                            e.tag("subdomain");
+                            e.tag("stealer-target");
+                            e.tag("import");
+                            entities.push(e);
+                            stats.subdomains += 1;
+                        }
+                    }
+                }
+            }
+
+            // URLs (compromised login/register pages)
+            if let Some(url) = doc_item.get("url").and_then(|v| v.as_str()) {
+                if url.starts_with("http") && seen_urls.insert(url.to_string()) {
+                    let mut e = Entity::new(EntityKind::Url, url, 0.45, &sid);
+                    e.tag("stealer-target");
+                    e.tag("import");
+                    entities.push(e);
+                    stats.urls += 1;
+                }
+            }
+
+            // Usernames (identity pivots)
+            if let Some(username) = doc_item.get("username").and_then(|v| v.as_str()) {
+                if !username.is_empty()
+                    && username.len() >= 3
+                    && seen_users.insert(username.to_lowercase())
+                {
+                    let conf = if username.contains('@') { 0.55 } else { 0.40 };
+                    let kind = if username.contains('@') {
+                        EntityKind::Email
+                    } else {
+                        EntityKind::Username
+                    };
+                    let mut e = Entity::new(kind, username, conf, &sid);
+                    e.tag("stealer-username");
+                    e.tag("import");
+                    entities.push(e);
+                    stats.usernames += 1;
+                }
+            }
+
+            // Log IDs (unique infected machines)
+            if let Some(lid) = doc_item.get("log_id").and_then(|v| v.as_str()) {
+                log_ids.insert(lid.to_string());
+            }
+
+            // Infection timeline
+            if let Some(dt) = doc_item.get("pwned_at").and_then(|v| v.as_str()) {
+                let date = &dt[..dt.len().min(10)];
+                if earliest_date.as_deref().map_or(true, |e| date < e) {
+                    earliest_date = Some(date.to_string());
+                }
+                if latest_date.as_deref().map_or(true, |l| date > l) {
+                    latest_date = Some(date.to_string());
+                }
+            }
+        }
+
+        stats.machines = log_ids.len();
+        stats.date_range = match (earliest_date, latest_date) {
+            (Some(e), Some(l)) => format!("{e} to {l}"),
+            _ => String::new(),
+        };
+    }
+
+    // ── Parse victim device_users (OS account names) ──
+    if let Some(victims) = doc
+        .pointer("/stealerData/victims")
+        .and_then(|v| v.as_array())
+    {
+        let mut seen_device_users: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for victim in victims {
+            if let Some(users) = victim.get("device_users").and_then(|v| v.as_array()) {
+                for u in users.iter().take(5) {
+                    if let Some(name) = u.as_str() {
+                        if !name.is_empty() && seen_device_users.insert(name.to_lowercase()) {
+                            let mut e = Entity::new(EntityKind::Username, name, 0.35, &sid);
+                            e.tag("device-user");
+                            e.tag("import");
+                            entities.push(e);
+                            stats.device_users += 1;
                         }
                     }
                 }
@@ -769,20 +886,27 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
     let mut seen_uids: std::collections::HashSet<String> = std::collections::HashSet::new();
     entities.retain(|e| seen_uids.insert(e.uid.clone()));
 
+    println!("Imported {} entities:", entities.len());
     println!(
-        "Imported {} entities: {} emails, {} IPs, {} domains, {} coordinates, {} addresses, {} holehe",
-        entities.len(),
-        stats.emails,
-        stats.ips,
-        stats.domains,
-        stats.coordinates,
-        stats.addresses,
-        stats.holehe
+        "  Identity:  {} emails, {} usernames, {} device users",
+        stats.emails, stats.usernames, stats.device_users
     );
     println!(
-        "Source records: {} breach, {} stealer docs, {} victims",
-        stats.breach_records, stats.stealer_docs, stats.victim_records
+        "  Network:   {} IPs, {} domains, {} subdomains, {} URLs",
+        stats.ips, stats.domains, stats.subdomains, stats.urls
     );
+    println!(
+        "  Geo:       {} coordinates, {} addresses",
+        stats.coordinates, stats.addresses
+    );
+    println!("  Verified:  {} holehe platform checks", stats.holehe);
+    println!(
+        "  Source:    {} breach, {} stealer docs, {} victims, {} machines",
+        stats.breach_records, stats.stealer_docs, stats.victim_records, stats.machines
+    );
+    if !stats.date_range.is_empty() {
+        println!("  Timeline:  {}", stats.date_range);
+    }
 
     match output {
         "json" => {
@@ -814,6 +938,168 @@ async fn cmd_import(path: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
+fn cmd_import_html(body: &str, output: &str) -> Result<()> {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use std::collections::HashSet;
+
+    println!("Importing OathNet HTML export...");
+    let sid = format!("import-html-{}", crate::core::entity::unix_now());
+    let mut entities: Vec<Entity> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let ip_re = regex::Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
+    let email_re = regex::Regex::new(r"[\w.+-]+@[\w.-]+\.\w{2,}").unwrap();
+    let domain_re =
+        regex::Regex::new(r"(?:https?://)?([a-z0-9][-a-z0-9]*(?:\.[a-z0-9][-a-z0-9]*)+)")
+            .unwrap();
+
+    let lower = body.to_lowercase();
+
+    for cap in domain_re.captures_iter(&lower) {
+        let dom = &cap[1];
+        if dom.len() > 4 && seen.insert(format!("d:{dom}")) {
+            let parts: Vec<&str> = dom.split('.').collect();
+            let is_sub = parts.len() >= 3;
+            let conf = if is_sub { 0.45 } else { 0.50 };
+            let mut e = Entity::new(EntityKind::Domain, dom, conf, &sid);
+            e.tag("import");
+            if is_sub {
+                e.tag("subdomain");
+            }
+            entities.push(e);
+        }
+    }
+
+    for cap in ip_re.captures_iter(body) {
+        let ip = cap[0].to_string();
+        if seen.insert(format!("ip:{ip}"))
+            && !ip.starts_with("0.")
+            && !ip.starts_with("127.")
+            && !ip.starts_with("255.")
+        {
+            let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.55, &sid);
+            e.tag("import");
+            entities.push(e);
+        }
+    }
+
+    for cap in email_re.captures_iter(body) {
+        let em = cap[0].to_lowercase();
+        if em.len() >= 5 && seen.insert(format!("em:{em}")) {
+            let mut e = Entity::new(EntityKind::Email, &em, 0.50, &sid);
+            e.tag("import");
+            entities.push(e);
+        }
+    }
+
+    let mut uid_seen: HashSet<String> = HashSet::new();
+    entities.retain(|e| uid_seen.insert(e.uid.clone()));
+
+    let domains = entities.iter().filter(|e| e.kind == EntityKind::Domain).count();
+    let ips = entities.iter().filter(|e| e.kind == EntityKind::IpAddress).count();
+    let emails = entities.iter().filter(|e| e.kind == EntityKind::Email).count();
+
+    println!(
+        "Imported {} entities: {} domains, {} IPs, {} emails",
+        entities.len(), domains, ips, emails
+    );
+
+    if output == "json" {
+        let out = serde_json::json!({ "entities": entities });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    } else {
+        for e in &entities {
+            println!("  [{:.2}] {:15} {}", e.confidence, e.kind.to_string(), &e.value[..e.value.len().min(70)]);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
+    use crate::core::entity::{Entity, EntityKind};
+    use std::collections::HashSet;
+
+    println!("Importing OathNet TXT export...");
+    let sid = format!("import-txt-{}", crate::core::entity::unix_now());
+    let mut entities: Vec<Entity> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let ip_re = regex::Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
+    let email_re = regex::Regex::new(r"[\w.+-]+@[\w.-]+\.\w{2,}").unwrap();
+    let url_re = regex::Regex::new(r#"https?://[^\s,<>"']+"#).unwrap();
+
+    for cap in url_re.captures_iter(body) {
+        let url = cap[0].trim_end_matches(|c: char| c == ')' || c == ']' || c == '\'');
+        if seen.insert(format!("u:{url}")) {
+            let mut e = Entity::new(EntityKind::Url, url, 0.45, &sid);
+            e.tag("import");
+            entities.push(e);
+            if let Some(host) = url
+                .strip_prefix("https://")
+                .or_else(|| url.strip_prefix("http://"))
+            {
+                let domain = host.split('/').next().unwrap_or("").split(':').next().unwrap_or("");
+                if domain.contains('.') && seen.insert(format!("d:{domain}")) {
+                    let mut de = Entity::new(EntityKind::Domain, domain, 0.50, &sid);
+                    de.tag("import");
+                    entities.push(de);
+                }
+            }
+        }
+    }
+
+    for cap in ip_re.captures_iter(body) {
+        let ip = cap[0].to_string();
+        if seen.insert(format!("ip:{ip}"))
+            && !ip.starts_with("0.")
+            && !ip.starts_with("127.")
+        {
+            let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.55, &sid);
+            e.tag("import");
+            entities.push(e);
+        }
+    }
+
+    for cap in email_re.captures_iter(body) {
+        let em = cap[0].to_lowercase();
+        if em.len() >= 5 && seen.insert(format!("em:{em}")) {
+            let mut e = Entity::new(EntityKind::Email, &em, 0.50, &sid);
+            e.tag("import");
+            entities.push(e);
+        }
+    }
+
+    // Extract usernames from "Username: xxx" lines
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("Username: ") {
+            let uname = rest.trim();
+            if uname.len() >= 2 && seen.insert(format!("un:{uname}")) {
+                let kind = if uname.contains('@') { EntityKind::Email } else { EntityKind::Username };
+                let mut e = Entity::new(kind, uname, 0.40, &sid);
+                e.tag("import");
+                entities.push(e);
+            }
+        }
+    }
+
+    let mut uid_seen: HashSet<String> = HashSet::new();
+    entities.retain(|e| uid_seen.insert(e.uid.clone()));
+
+    println!("Imported {} entities from TXT", entities.len());
+    if output == "json" {
+        let out = serde_json::json!({ "entities": entities });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    } else {
+        for e in entities.iter().take(50) {
+            println!("  [{:.2}] {:15} {}", e.confidence, e.kind.to_string(), &e.value[..e.value.len().min(70)]);
+        }
+        if entities.len() > 50 {
+            println!("  ... and {} more", entities.len() - 50);
+        }
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct ImportStats {
     breach_records: usize,
@@ -822,9 +1108,15 @@ struct ImportStats {
     emails: usize,
     ips: usize,
     domains: usize,
+    subdomains: usize,
+    urls: usize,
+    usernames: usize,
     coordinates: usize,
     addresses: usize,
     holehe: usize,
+    machines: usize,
+    device_users: usize,
+    date_range: String,
 }
 
 fn cmd_modules() -> Result<()> {
