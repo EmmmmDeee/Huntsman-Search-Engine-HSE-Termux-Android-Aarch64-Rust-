@@ -70,7 +70,7 @@ impl Module for EmailParse {
                 entity.tag("email-domain");
                 entity.add_evidence(
                     Evidence::new(
-                        "email_parse",
+                        SRC,
                         format!("Domain extracted from {}", target.value),
                     )
                     .with_attr("source_email", &target.value),

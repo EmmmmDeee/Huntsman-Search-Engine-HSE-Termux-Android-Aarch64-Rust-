@@ -3,14 +3,8 @@
 // Runs after all modules complete (engine hook). Loads the entities the
 // scan produced and evaluates a fixed set of declarative rules. Each
 // firing rule produces a [`Correlation`] record persisted alongside the
-// scan and emitted on the event bus.
-
-// Correlation rules — rule-based post-scan analysis.
-//
-// Each rule function receives the entity set and scan_id, returns
-// zero or more `Correlation` firings. Rules are deterministic —
-// no LLMs, no fuzzy matching. Adding a new rule is a 10-line
-// function plus one line in `evaluate_rules`.
+// scan and emitted on the event bus. Rules are deterministic — no LLMs,
+// no fuzzy matching.
 
 #[allow(unused_imports)]
 use std::collections::HashSet;
@@ -618,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_rules_total_count_15() {
+    fn evaluate_rules_fires_expected_subset() {
         let mut email = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
         email.add_evidence(Evidence::new("hudsonrock", "t"));
         email.add_evidence(Evidence::new("xposed_or_not", "t"));

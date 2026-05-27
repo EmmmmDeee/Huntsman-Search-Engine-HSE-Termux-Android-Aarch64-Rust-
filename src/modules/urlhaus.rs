@@ -21,6 +21,8 @@ use crate::core::{
 };
 use crate::util::http::error_snippet;
 
+const SRC: &str = "urlhaus";
+
 pub struct UrlHaus;
 
 #[derive(Deserialize)]
@@ -90,12 +92,12 @@ impl Module for UrlHaus {
             .form(&[("host", host)])
             .send()
             .await
-            .map_err(|e| Error::module("urlhaus", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         let status = resp.status();
         if !status.is_success() {
             return Err(Error::module(
-                "urlhaus",
+                SRC,
                 format!("HTTP {status}: {}", error_snippet(resp).await),
             ));
         }
@@ -103,7 +105,7 @@ impl Module for UrlHaus {
         let body: UrlhausResp = resp
             .json()
             .await
-            .map_err(|e| Error::module("urlhaus", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         // "no_results" is the common case for clean hosts — not an error.
         if body.query_status != "ok" {
@@ -124,7 +126,7 @@ impl Module for UrlHaus {
         entity.tag("urlhaus");
 
         let mut ev = Evidence::new(
-            "urlhaus",
+            SRC,
             format!("URLhaus reports {url_count} malicious URL(s) hosted on {host}"),
         )
         .with_attr("url_count", url_count.to_string());

@@ -28,6 +28,7 @@ use crate::core::{
 use crate::util::http::{error_snippet, handle_keyed_error};
 
 const KEY_ENV: &str = "HUNTSMAN_THREATFOX_KEY";
+const SRC: &str = "threatfox";
 
 #[derive(Deserialize)]
 struct Resp {
@@ -118,24 +119,24 @@ impl Module for ThreatFox {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| Error::module("threatfox", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, "threatfox", key, ctx)
+                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx)
                     .await
                 {
                     continue;
                 }
                 return Err(Error::module(
-                    "threatfox",
+                    SRC,
                     format!("HTTP {status}: {}", error_snippet(resp).await),
                 ));
             }
             break resp
                 .json()
                 .await
-                .map_err(|e| Error::module("threatfox", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
         };
 
         // abuse.ch's anonymous tier returns HTTP 200 + `query_status:
@@ -147,14 +148,14 @@ impl Module for ThreatFox {
             "ok" => {}
             "no_result" => return Ok(ModuleResult::new()),
             "rate_limited" => {
-                ctx.report_key_exhausted("threatfox", key, 429);
+                ctx.report_key_exhausted(SRC, key, 429);
                 return Err(Error::module(
-                    "threatfox",
+                    SRC,
                     "query_status=rate_limited".to_string(),
                 ));
             }
             other => {
-                return Err(Error::module("threatfox", format!("query_status={other}")));
+                return Err(Error::module(SRC, format!("query_status={other}")));
             }
         }
         if parsed.data.is_empty() {
@@ -215,7 +216,7 @@ impl Module for ThreatFox {
         }
 
         let mut ev = Evidence::new(
-            "threatfox",
+            SRC,
             format!(
                 "ThreatFox: {} IOC record(s) match {term}",
                 parsed.data.len()

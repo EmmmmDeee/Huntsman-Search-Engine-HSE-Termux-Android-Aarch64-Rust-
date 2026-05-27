@@ -21,6 +21,8 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
+const SRC: &str = "webserver_banner";
+
 pub struct WebserverBanner;
 
 /// Headers we surface as evidence. Lower-case because `reqwest`
@@ -96,7 +98,7 @@ impl Module for WebserverBanner {
             apply_stack_tags(&mut entity, &captured);
 
             let mut ev = Evidence::new(
-                "webserver_banner",
+                SRC,
                 format!("HTTP headers from {scheme} HEAD of {host}"),
             )
             .with_attr("scheme", scheme)

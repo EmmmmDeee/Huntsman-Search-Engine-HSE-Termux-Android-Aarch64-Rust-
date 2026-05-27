@@ -82,7 +82,7 @@ impl Module for GreyNoise {
         let url = format!("https://api.greynoise.io/v3/community/{}", urlencode(ip));
 
         let Some(data): Option<CommunityResp> =
-            fetch_json_or_404(&ctx.http, "greynoise", &url).await?
+            fetch_json_or_404(&ctx.http, SRC, &url).await?
         else {
             return Ok(ModuleResult::new());
         };

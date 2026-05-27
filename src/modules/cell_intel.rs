@@ -160,7 +160,7 @@ impl Module for CellIntel {
                 e.tag(format!("radio:{}", ctype.to_lowercase()));
                 e.add_evidence(
                     Evidence::new(
-                        "cell_intel",
+                        SRC,
                         format!("Cell tower {radio} {tower_id} -> {coords}"),
                     )
                     .with_attr("tower_id", &tower_id)
@@ -186,7 +186,7 @@ impl Module for CellIntel {
                 e.tag(format!("country:{country}"));
                 e.add_evidence(
                     Evidence::new(
-                        "cell_intel",
+                        SRC,
                         format!("Cell tower MCC {mcc} -> {country} (country centroid)"),
                     )
                     .with_attr("tower_id", &tower_id)

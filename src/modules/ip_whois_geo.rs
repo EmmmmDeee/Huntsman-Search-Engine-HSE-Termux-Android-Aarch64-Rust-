@@ -78,7 +78,7 @@ impl Module for IpWhois {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let url = format!("https://ipwho.is/{}", target.value);
-        let data: Resp = fetch_json(&ctx.http, "ip_whois_geo", &url).await?;
+        let data: Resp = fetch_json(&ctx.http, SRC, &url).await?;
 
         if data.success == Some(false) {
             return Ok(ModuleResult::new());
@@ -99,7 +99,7 @@ impl Module for IpWhois {
             }
 
             let mut ev = Evidence::new(
-                "ip_whois_geo",
+                SRC,
                 format!("IP geolocation for {}", target.value),
             )
             .with_attr("latitude", lat.to_string())

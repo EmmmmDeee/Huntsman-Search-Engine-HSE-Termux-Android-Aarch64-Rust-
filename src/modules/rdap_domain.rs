@@ -141,16 +141,15 @@ impl Module for RdapDomain {
             .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
             .send()
             .await
-            .map_err(|e| Error::module("rdap_domain", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         let status = resp.status();
         if status.as_u16() == 404 {
-            // Unregistered or not-in-rdap-bootstrap — clean no-result.
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
             return Err(Error::module(
-                "rdap_domain",
+                SRC,
                 format!("HTTP {status}: {}", error_snippet(resp).await),
             ));
         }
@@ -158,7 +157,7 @@ impl Module for RdapDomain {
         let body: RdapResp = resp
             .json()
             .await
-            .map_err(|e| Error::module("rdap_domain", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         let mut entity = Entity::new(EntityKind::Domain, domain, 0.88, &ctx.scan_id);
         entity.tag("rdap");

@@ -139,11 +139,11 @@ impl Module for CriminalIp {
                 .header("x-api-key", key)
                 .send()
                 .await
-                .map_err(|e| Error::module("criminal_ip", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, "criminal_ip", key, ctx)
+                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx)
                     .await
                 {
                     continue;
@@ -156,7 +156,7 @@ impl Module for CriminalIp {
             break resp
                 .json()
                 .await
-                .map_err(|e| Error::module("criminal_ip", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
         };
         if body.status != Some(200) {
             return Ok(ModuleResult::new());

@@ -601,16 +601,8 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
 
 /// Composite expansion weight: `geo_npv × c_eff × domain_factor`.
 ///
-/// Empirical analysis of JLM depth-2 scans (480 entities) revealed that
-/// 308 of 480 entities (64%) were domains, mostly generic mega-domains
-/// (reddit.com corr=111, whitepages.com corr=83) that consumed expansion
-/// budget before high-value Address/Coordinates entities. The old sort
-/// used `geo_npv(kind)` alone, so ALL domains (23.5) outranked ALL
-/// addresses (15.0) regardless of relevance.
-///
-/// The weighted score `geo_npv × c_eff × domain_factor` fixes this:
 /// - `c_eff` rewards entities confirmed by multiple sources
-/// - `domain_factor` dampens known-generic mega-domains (0.15×)
+/// - `domain_factor` dampens known-generic mega-domains (0.15x)
 ///   so target-specific domains and geo entities expand first
 pub fn expansion_weight(kind: TargetKind, c_eff: f64, value: &str, has_paid_keys: bool) -> f64 {
     let base = geo_npv(kind, has_paid_keys);
@@ -644,92 +636,99 @@ fn domain_expansion_factor(domain: &str) -> f64 {
 }
 
 const MEGA_DOMAINS: &[&str] = &[
-    "google.com",
-    "google.com.au",
-    "youtube.com",
-    "facebook.com",
-    "twitter.com",
-    "x.com",
-    "instagram.com",
-    "linkedin.com",
-    "reddit.com",
-    "wikipedia.org",
+    // Major platforms & social media
     "amazon.com",
     "amazon.com.au",
     "apple.com",
+    "discord.com",
+    "facebook.com",
+    "github.com",
+    "google.com",
+    "google.com.au",
+    "instagram.com",
+    "linkedin.com",
     "microsoft.com",
     "netflix.com",
-    "tiktok.com",
-    "yahoo.com",
-    "bing.com",
-    "duckduckgo.com",
     "pinterest.com",
-    "tumblr.com",
     "quora.com",
-    "stackoverflow.com",
-    "github.com",
-    "medium.com",
-    "wordpress.com",
-    "blogspot.com",
-    "whatsapp.com",
-    "telegram.org",
-    "discord.com",
-    "twitch.tv",
+    "reddit.com",
     "spotify.com",
-    "cnn.com",
-    "bbc.com",
+    "stackoverflow.com",
+    "tiktok.com",
+    "tumblr.com",
+    "twitch.tv",
+    "twitter.com",
+    "whatsapp.com",
+    "wikipedia.org",
+    "x.com",
+    "yahoo.com",
+    "youtube.com",
+    // Search engines & AI
+    "bing.com",
+    "chatgpt.com",
+    "duckduckgo.com",
+    "openai.com",
+    // Content platforms & blogs
+    "blogspot.com",
+    "medium.com",
+    "telegram.org",
+    "wordpress.com",
+    // News & media
     "bbc.co.uk",
-    "nytimes.com",
-    "washingtonpost.com",
-    "theguardian.com",
-    "reuters.com",
-    "forbes.com",
+    "bbc.com",
     "businessinsider.com",
+    "cnn.com",
+    "forbes.com",
+    "nytimes.com",
+    "reuters.com",
     "techcrunch.com",
-    "imdb.com",
+    "theguardian.com",
+    "washingtonpost.com",
+    // Commerce & entertainment
+    "aliexpress.com",
     "ebay.com",
     "ebay.com.au",
-    "aliexpress.com",
-    "cloudflare.com",
-    "akamai.com",
-    "fastly.com",
+    "imdb.com",
     "pornhub.com",
-    "xvideos.com",
     "xhamster.com",
-    "chatgpt.com",
-    "openai.com",
-    // People-search/OSINT aggregators (noise in person scans)
-    "whitepages.com",
-    "truepeoplesearch.com",
-    "nuwber.com",
-    "peekyou.com",
-    "radaris.com",
-    "idcrawl.com",
+    "xvideos.com",
+    // CDN / infrastructure
+    "akamai.com",
+    "cloudflare.com",
+    "fastly.com",
+    // People-search / OSINT aggregators
     "anywho.com",
-    "socialcatfish.com",
-    "spokeo.com",
-    "pipl.com",
     "beenverified.com",
+    "idcrawl.com",
     "intelius.com",
     "mylife.com",
-    "zabasearch.com",
+    "nuwber.com",
+    "peekyou.com",
+    "pipl.com",
+    "radaris.com",
+    "socialcatfish.com",
+    "spokeo.com",
+    "truepeoplesearch.com",
     "usphonebook.com",
-    // Generic infra/tools
+    "whitepages.com",
+    "zabasearch.com",
+    // Email providers
+    "gmail.com",
+    "hotmail.com",
+    "icloud.com",
+    "live.com",
     "office365.com",
     "outlook.com",
-    "live.com",
-    "hotmail.com",
-    "gmail.com",
-    "icloud.com",
     "protonmail.com",
-    "whois.com",
-    "domaintools.com",
+    // DNS / IP lookup tools
     "dnschecker.org",
-    "whatismyipaddress.com",
-    "whatismyip.com",
+    "domaintools.com",
+    "ip2location.com",
     "ipaddress.com",
     "iplocation.io",
-    "ip2location.com",
+    "whatismyip.com",
+    "whatismyipaddress.com",
+    "whois.com",
 ];
 
 #[cfg(test)]

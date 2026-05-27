@@ -75,6 +75,8 @@ struct FirstSeen {
     human: Option<String>,
 }
 
+const SRC: &str = "ipqs";
+
 pub struct IpQs;
 
 #[async_trait]
@@ -129,14 +131,14 @@ impl Module for IpQs {
                 .get(&url)
                 .send()
                 .await
-                .map_err(|e| Error::module("ipqs", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
             let status = resp.status();
             if status.as_u16() == 404 {
                 return Ok(ModuleResult::new());
             }
             if !status.is_success() {
                 let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, "ipqs", key, ctx).await {
+                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
                 return Err(Error::module(
@@ -147,7 +149,7 @@ impl Module for IpQs {
             break resp
                 .json()
                 .await
-                .map_err(|e| Error::module("ipqs", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
         };
         if body.success == Some(false) {
             return Ok(ModuleResult::new());
@@ -188,7 +190,7 @@ impl Module for IpQs {
         }
 
         let mut ev = Evidence::new(
-            "ipqs",
+            SRC,
             format!("IPQS {endpoint} reputation for {value} (fraud_score={score})"),
         )
         .with_attr("endpoint", endpoint)

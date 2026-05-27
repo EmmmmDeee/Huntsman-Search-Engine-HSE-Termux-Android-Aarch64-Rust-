@@ -179,7 +179,7 @@ impl Hibp {
                 }
                 404 => return Ok(None),
                 401 | 403 => {
-                    ctx.report_key_exhausted("hibp", key, status);
+                    ctx.report_key_exhausted(SRC, key, status);
                     return Err(Error::module(
                         SRC,
                         format!("HTTP {status}: invalid or expired API key"),
@@ -197,7 +197,7 @@ impl Hibp {
                     continue;
                 }
                 429 => {
-                    ctx.report_key_exhausted("hibp", key, status);
+                    ctx.report_key_exhausted(SRC, key, status);
                     let snippet = error_snippet(resp).await;
                     return Err(Error::module(
                         SRC,

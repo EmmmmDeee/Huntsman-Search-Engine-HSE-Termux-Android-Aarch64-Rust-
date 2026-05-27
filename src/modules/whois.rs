@@ -77,7 +77,7 @@ impl Module for Whois {
         // 1) Ask IANA who's authoritative for this name.
         let raw = query(IANA_WHOIS, &query_value)
             .await
-            .map_err(|e| Error::module("whois", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         // 2) If IANA's response references another whois server, follow once.
         let response = match find_referral(&raw) {
@@ -257,7 +257,7 @@ impl Module for Whois {
                 e.tag(format!("whois-{role}"));
                 e.add_evidence(
                     Evidence::new(
-                        "whois",
+                        SRC,
                         format!("WHOIS {role} contact for {}", target.value),
                     )
                     .with_attr("role", role)

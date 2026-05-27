@@ -24,6 +24,8 @@ use crate::core::{
 };
 use crate::util::http::fetch_json;
 
+const SRC: &str = "geo_intel";
+
 pub struct GeoIntel;
 
 // ─── ipapi.co response ─────────────────────────────────────────────────────
@@ -129,7 +131,7 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
     if !ctx.cancel.is_cancelled()
         && let Ok(data) = fetch_json::<IpApiCoResp>(
             &ctx.http,
-            "geo_intel",
+            SRC,
             &format!("https://ipapi.co/{}/json/", target.value),
         )
         .await
@@ -146,7 +148,7 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
             }
 
             let mut ev = Evidence::new(
-                "geo_intel",
+                SRC,
                 format!("IP geo for {} via ipapi.co", target.value),
             )
             .with_attr("latitude", lat.to_string())
@@ -184,7 +186,7 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
     if !ctx.cancel.is_cancelled()
         && let Ok(data) = fetch_json::<FreeIpApiResp>(
             &ctx.http,
-            "geo_intel",
+            SRC,
             &format!("https://freeipapi.com/api/json/{}", target.value),
         )
         .await
@@ -203,7 +205,7 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
             }
 
             let mut ev = Evidence::new(
-                "geo_intel",
+                SRC,
                 format!("IP geo for {} via freeipapi.com", target.value),
             )
             .with_attr("latitude", lat.to_string())

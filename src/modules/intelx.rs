@@ -90,6 +90,8 @@ struct Record {
     date: Option<String>,
 }
 
+const SRC: &str = "intelx";
+
 pub struct IntelX;
 
 /// Map IntelX `media` type codes to human-readable labels, per the official
@@ -192,13 +194,13 @@ impl Module for IntelX {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| Error::module("intelx", e.to_string()))?;
+                .map_err(|e| Error::module(SRC, e.to_string()))?;
             let status = resp.status();
             if status.is_success() {
                 break resp
                     .json()
                     .await
-                    .map_err(|e| Error::module("intelx", e.to_string()))?;
+                    .map_err(|e| Error::module(SRC, e.to_string()))?;
             }
             let code = status.as_u16();
             if code == 429 && retries < 2 {
@@ -213,7 +215,7 @@ impl Module for IntelX {
                 continue;
             }
             if code == 401 || code == 403 || code == 429 {
-                ctx.report_key_exhausted("intelx", key, code);
+                ctx.report_key_exhausted(SRC, key, code);
             }
             return Err(Error::module(
                 "intelx",
@@ -224,7 +226,7 @@ impl Module for IntelX {
             (Some(id), Some(0) | None) if !id.is_empty() => id,
             (_, Some(1)) => return Ok(ModuleResult::new()), // invalid term
             (_, Some(2)) => {
-                return Err(Error::module("intelx", "max concurrent searches reached"));
+                return Err(Error::module(SRC, "max concurrent searches reached"));
             }
             _ => return Ok(ModuleResult::new()),
         };
@@ -268,7 +270,7 @@ impl Module for IntelX {
                     tokio::time::sleep(Duration::from_secs(retry_secs)).await;
                 }
                 if code == 401 || code == 403 || (code == 429 && poll_retries >= 2) {
-                    ctx.report_key_exhausted("intelx", key, code);
+                    ctx.report_key_exhausted(SRC, key, code);
                 }
                 continue;
             }
@@ -365,7 +367,7 @@ impl Module for IntelX {
         let latest = all_records.iter().filter_map(|r| r.date.as_deref()).max();
 
         let mut ev = Evidence::new(
-            "intelx",
+            SRC,
             format!("IntelX: {} record(s) for {value}", all_records.len()),
         )
         .with_attr("records", all_records.len().to_string())

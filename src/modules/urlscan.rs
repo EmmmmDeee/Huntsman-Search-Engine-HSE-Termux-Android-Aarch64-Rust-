@@ -23,6 +23,8 @@ use crate::core::{
 };
 use crate::util::http::{fetch_json, urlencode};
 
+const SRC: &str = "urlscan";
+
 pub struct UrlScan;
 
 // ─── Response types ─────────────────────────────────────────────────────────
@@ -106,7 +108,7 @@ impl Module for UrlScan {
             _ => return Ok(ModuleResult::new()),
         };
 
-        let data: SearchResp = fetch_json(&ctx.http, "urlscan", &query).await?;
+        let data: SearchResp = fetch_json(&ctx.http, SRC, &query).await?;
 
         if data.results.is_empty() {
             return Ok(ModuleResult::new());
@@ -158,7 +160,7 @@ impl Module for UrlScan {
         // ── Evidence ────────────────────────────────────────────────────────
         let scan_count = data.results.len();
         let mut ev = Evidence::new(
-            "urlscan",
+            SRC,
             format!(
                 "URLScan.io: {scan_count} recent scan(s), {} unique IP(s)",
                 unique_ips.len()
@@ -192,7 +194,7 @@ impl Module for UrlScan {
                 let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, 0.65, &ctx.scan_id);
                 ip_entity.tag("urlscan");
                 ip_entity.add_evidence(Evidence::new(
-                    "urlscan",
+                    SRC,
                     format!("Resolved IP seen in URLScan.io scans of {}", &target.value),
                 ));
                 result.push(ip_entity);

@@ -24,6 +24,8 @@ use crate::core::{
 use crate::util::freq::top_n;
 use crate::util::http::{fetch_json, urlencode};
 
+const SRC: &str = "wayback";
+
 pub struct Wayback;
 
 /// CDX API returns a 2-D array; first row is the column header, the
@@ -80,7 +82,7 @@ impl Module for Wayback {
             urlencode(&domain)
         );
 
-        let rows: Vec<Row> = fetch_json(&ctx.http, "wayback", &url).await?;
+        let rows: Vec<Row> = fetch_json(&ctx.http, SRC, &url).await?;
 
         // First row is the column header; skip it. Avoid collecting into
         // an intermediate Vec — we only need the count and bookend timestamps.
@@ -107,7 +109,7 @@ impl Module for Wayback {
         let mut entity = target.to_entity(0.80, &ctx.scan_id);
         entity.tag("archived");
         let mut ev = Evidence::new(
-            "wayback",
+            SRC,
             format!("Wayback Machine: {count} archived snapshot(s)"),
         )
         .with_attr("snapshot_count", count.to_string())

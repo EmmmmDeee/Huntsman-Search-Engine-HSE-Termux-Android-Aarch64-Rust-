@@ -102,6 +102,8 @@ async fn exit_set(http: &reqwest::Client) -> Option<Arc<HashSet<String>>> {
 
 // ── Module ─────────────────────────────────────────────────────────
 
+const SRC: &str = "ip_reputation";
+
 pub struct IpReputation;
 
 #[async_trait]
@@ -156,7 +158,7 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
         urlencode(&target.value)
     );
 
-    let data: Option<OtxResp> = match fetch_json_or_404(&ctx.http, "ip_reputation", &url).await {
+    let data: Option<OtxResp> = match fetch_json_or_404(&ctx.http, SRC, &url).await {
         Ok(d) => d,
         Err(_) => return,
     };
@@ -217,7 +219,7 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
     }
 
     let mut ev = Evidence::new(
-        "ip_reputation",
+        SRC,
         format!("OTX: {pulse_count} threat pulse(s)"),
     )
     .with_attr("pulse_count", pulse_count.to_string())

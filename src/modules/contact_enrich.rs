@@ -189,7 +189,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
             .get(&url)
             .send()
             .await
-            .map_err(|e| Error::module("contact_enrich", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(None);
@@ -207,7 +207,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         let data: NumverifyResp = resp
             .json()
             .await
-            .map_err(|e| Error::module("contact_enrich", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
         Ok(Some(data))
     };
 
@@ -301,7 +301,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         .get(&url)
         .send()
         .await
-        .map_err(|e| Error::module("contact_enrich", e.to_string()))?;
+        .map_err(|e| Error::module(SRC, e.to_string()))?;
 
     let status = resp.status();
     if status.as_u16() == 404 {

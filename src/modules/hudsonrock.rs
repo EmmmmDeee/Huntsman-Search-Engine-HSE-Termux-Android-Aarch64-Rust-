@@ -21,6 +21,8 @@ use crate::core::{
 };
 use crate::util::http::{fetch_json_or_404, urlencode};
 
+const SRC: &str = "hudsonrock";
+
 pub struct HudsonRock;
 
 #[derive(Deserialize)]
@@ -92,7 +94,7 @@ impl Module for HudsonRock {
         };
 
         let Some(data): Option<CavalierResp> =
-            fetch_json_or_404(&ctx.http, "hudsonrock", &url).await?
+            fetch_json_or_404(&ctx.http, SRC, &url).await?
         else {
             return Ok(ModuleResult::new());
         };
@@ -121,7 +123,7 @@ impl Module for HudsonRock {
             }
 
             let mut ev = Evidence::new(
-                "hudsonrock",
+                SRC,
                 format!("Stealer log: {cred_count} credentials on compromised machine"),
             )
             .with_attr(

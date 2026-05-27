@@ -32,6 +32,8 @@ use crate::core::{
 };
 use crate::util::http::urlencode;
 
+const SRC: &str = "username_search";
+
 pub struct UsernameSearch;
 
 /// One site to probe. Kept inline (rather than loaded from a JSON file)
@@ -147,7 +149,7 @@ impl Module for UsernameSearch {
                 e.tag(format!("cat:{site_cat}"));
                 e.add_evidence(
                     Evidence::new(
-                        "username_search",
+                        SRC,
                         format!("@{username} has a profile on {site_name}"),
                     )
                     .with_attr("platform", *site_name)
@@ -199,7 +201,7 @@ impl Module for UsernameSearch {
                 .collect();
             summary.add_evidence(
                 Evidence::new(
-                    "username_search",
+                    SRC,
                     format!(
                         "@{username} found on {n} platform(s): {list}",
                         n = found_names.len(),

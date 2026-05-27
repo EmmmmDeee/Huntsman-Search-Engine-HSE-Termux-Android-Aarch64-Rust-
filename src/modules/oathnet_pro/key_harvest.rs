@@ -7,6 +7,8 @@ use crate::core::{
 };
 use crate::util::oathnet::val_str;
 
+use super::SRC;
+
 pub(super) struct KeyPattern {
     prefix: &'static str,
     service: &'static str,
@@ -354,7 +356,7 @@ pub(super) fn extract_api_keys_from_item(
             let db = val_str(item, "dbname").unwrap_or_default();
             entity.add_evidence(
                 Evidence::new(
-                    "oathnet_pro",
+                    SRC,
                     format!(
                         "API key discovered ({service}) in {}",
                         if db.is_empty() { "stealer log" } else { &db }
@@ -395,7 +397,7 @@ pub(super) fn extract_api_keys_from_item(
             entity.tag("oathnet-pro");
             entity.add_evidence(
                 Evidence::new(
-                    "oathnet_pro",
+                    SRC,
                     format!("API key in username field ({service})"),
                 )
                 .with_attr("service", service),

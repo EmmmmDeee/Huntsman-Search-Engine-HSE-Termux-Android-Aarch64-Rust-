@@ -75,7 +75,7 @@ impl Module for CertIntel {
         // IP targets skip straight to the live TLS probe.
         if target.kind == TargetKind::Domain {
             let ct_url = format!("https://crt.sh/?q=%.{domain}&output=json");
-            if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, "cert_intel", &ct_url).await
+            if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, SRC, &ct_url).await
             {
                 for entry in &entries {
                     for name in entry.name_value.split('\n') {
@@ -91,7 +91,7 @@ impl Module for CertIntel {
                             e.tag(tags::CT_LOG);
                             e.add_evidence(
                                 Evidence::new(
-                                    "cert_intel",
+                                    SRC,
                                     format!("Certificate transparency: {name}"),
                                 )
                                 .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))
@@ -117,7 +117,7 @@ impl Module for CertIntel {
             .head(&url)
             .send()
             .await
-            .map_err(|e| Error::module("cert_intel", format!("TLS connect: {e}")))
+            .map_err(|e| Error::module(SRC, format!("TLS connect: {e}")))
         {
             let mut entity = target.to_entity(0.88, &ctx.scan_id);
             entity.tag("tls");

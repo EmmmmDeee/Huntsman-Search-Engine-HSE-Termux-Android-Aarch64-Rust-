@@ -88,7 +88,7 @@ impl Module for GithubUser {
             .header("X-GitHub-Api-Version", "2022-11-28")
             .send()
             .await
-            .map_err(|e| Error::module("github_user", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         let status = resp.status();
         if status.as_u16() == 404 {
@@ -104,7 +104,7 @@ impl Module for GithubUser {
         let user: GhUser = resp
             .json()
             .await
-            .map_err(|e| Error::module("github_user", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         let mut result = ModuleResult::new();
 
@@ -174,7 +174,7 @@ impl Module for GithubUser {
             p.tag("derived");
             p.add_evidence(
                 Evidence::new(
-                    "github_user",
+                    SRC,
                     format!("Real name from GitHub profile @{}", user.login),
                 )
                 .with_attr("source", "github_profile")
@@ -191,7 +191,7 @@ impl Module for GithubUser {
             e.tag("public-profile");
             e.add_evidence(
                 Evidence::new(
-                    "github_user",
+                    SRC,
                     format!("Email published on GitHub profile @{}", user.login),
                 )
                 .with_attr("github_login", &user.login)
@@ -257,7 +257,7 @@ impl Module for GithubUser {
                         d.tag("personal-site");
                         d.add_evidence(
                             Evidence::new(
-                                "github_user",
+                                SRC,
                                 format!("Blog domain from @{}", user.login),
                             )
                             .with_attr("blog_url", blog)

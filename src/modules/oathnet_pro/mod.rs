@@ -94,7 +94,7 @@ impl Module for OathnetPro {
         parent.tag(tags::BREACH);
         parent.tag("oathnet-pro");
         let mut ev = Evidence::new(
-            "oathnet_pro",
+            SRC,
             format!("OathNet: {total} breach record(s) — {}", top_dbs.join(", ")),
         )
         .with_attr("hits", total.to_string())
@@ -485,7 +485,7 @@ fn extract_holehe(data: Value, email: &str, scan_id: &str, result: &mut ModuleRe
         parent.tag("holehe");
         parent.add_evidence(
             Evidence::new(
-                "oathnet_pro",
+                SRC,
                 format!("Holehe: email on {} service(s)", domains_str.len()),
             )
             .with_attr("holehe_domains", domains_str.join(", ")),

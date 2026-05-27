@@ -72,7 +72,7 @@ impl Module for IpGeo {
         // HTTP 429 with a JSON body when exceeded. `fetch_json` surfaces
         // the body as a `module_error`, keeping rate-limit conditions
         // visible (previous silent-empty behaviour hid them).
-        let data: IpApiResp = fetch_json(&ctx.http, "ip_geo", &url).await?;
+        let data: IpApiResp = fetch_json(&ctx.http, SRC, &url).await?;
 
         if data.status != "success" {
             return Ok(ModuleResult::new());

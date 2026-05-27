@@ -111,10 +111,10 @@ impl Module for WebCrawler {
                 return Ok(ModuleResult::new());
             }
             let parsed = Url::parse(&raw)
-                .map_err(|e| Error::module("web_crawler", format!("bad URL target: {e}")))?;
+                .map_err(|e| Error::module(SRC, format!("bad URL target: {e}")))?;
             let host = parsed
                 .host_str()
-                .ok_or_else(|| Error::module("web_crawler", "URL has no host"))?
+                .ok_or_else(|| Error::module(SRC, "URL has no host"))?
                 .to_lowercase();
             (raw, host)
         } else {
@@ -138,7 +138,7 @@ impl Module for WebCrawler {
         };
 
         let seed_url = Url::parse(&seed)
-            .map_err(|e| Error::module("web_crawler", format!("bad seed URL: {e}")))?;
+            .map_err(|e| Error::module(SRC, format!("bad seed URL: {e}")))?;
         let base_host = seed_url.host_str().unwrap_or(&domain).to_lowercase();
 
         let mut state = CrawlState {
@@ -283,7 +283,7 @@ fn build_entities(
         }
         url_entity.add_evidence(
             Evidence::new(
-                "web_crawler",
+                SRC,
                 format!(
                     "Single-page harvest of {seed_url}: {} pages",
                     state.pages_fetched
@@ -320,7 +320,7 @@ fn build_entities(
     }
 
     let mut ev = Evidence::new(
-        "web_crawler",
+        SRC,
         format!(
             "Crawled {domain}: {} pages, {} internal links, {} external links",
             state.pages_fetched, state.internal_links, state.external_links
@@ -371,7 +371,7 @@ fn build_entities(
         e.tag(tags::SUBDOMAIN);
         e.add_evidence(
             Evidence::new(
-                "web_crawler",
+                SRC,
                 format!("Subdomain discovered by crawling {domain}"),
             )
             .with_attr("parent_domain", domain),
@@ -385,7 +385,7 @@ fn build_entities(
         e.tag(tags::EXTERNAL);
         e.add_evidence(
             Evidence::new(
-                "web_crawler",
+                SRC,
                 format!("External domain linked from {domain}"),
             )
             .with_attr("source_domain", domain),

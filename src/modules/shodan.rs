@@ -169,7 +169,7 @@ impl Shodan {
             .collect::<Vec<_>>()
             .join(",");
         let mut ev = Evidence::new(
-            "shodan",
+            SRC,
             format!(
                 "Shodan InternetDB: {} port(s), {} CVE(s), {} hostname(s)",
                 body.ports.len(),
@@ -230,7 +230,7 @@ impl Shodan {
             d.tag("ptr");
             d.add_evidence(
                 Evidence::new(
-                    "shodan",
+                    SRC,
                     format!("Hostname associated with {ip} per Shodan InternetDB"),
                 )
                 .with_attr("ip", ip),
@@ -257,7 +257,7 @@ impl Shodan {
             .get(&url)
             .send()
             .await
-            .map_err(|e| Error::module("shodan", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(());
@@ -265,17 +265,17 @@ impl Shodan {
         if !status.is_success() {
             let code = status.as_u16();
             if code == 429 || code == 401 || code == 403 {
-                ctx.report_key_exhausted("shodan", key, code);
+                ctx.report_key_exhausted(SRC, key, code);
             }
             return Err(Error::module(
-                "shodan",
+                SRC,
                 format!("HTTP {status}: {}", error_snippet(resp).await),
             ));
         }
         let body: HostResp = resp
             .json()
             .await
-            .map_err(|e| Error::module("shodan", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         let mut entity = target_entity(ip, &ctx.scan_id);
         entity.tag("shodan");

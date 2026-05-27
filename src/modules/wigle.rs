@@ -161,7 +161,7 @@ impl Module for Wigle {
             .map(String::from);
 
         let mut ev = Evidence::new(
-            "wigle",
+            SRC,
             format!("WiGLE: {total} WiFi network(s) near {}", target.value),
         )
         .with_attr("total", total.to_string())
@@ -243,7 +243,7 @@ impl Module for Wigle {
             addr.tag("wifi-derived");
             addr.add_evidence(
                 Evidence::new(
-                    "wigle",
+                    SRC,
                     format!("Address from WiFi AP consensus near {}", target.value),
                 )
                 .with_attr("networks_sampled", total.to_string())
@@ -364,7 +364,7 @@ async fn fetch_wigle(
         .header("Accept", "application/json")
         .send()
         .await
-        .map_err(|e| Error::module("wigle", e.to_string()))?;
+        .map_err(|e| Error::module(SRC, e.to_string()))?;
 
     let status = resp.status();
     if status.as_u16() == 429 {
@@ -376,7 +376,7 @@ async fn fetch_wigle(
             .unwrap_or(60);
         tracing::warn!("WiGLE 429 — backing off {retry_secs}s");
         tokio::time::sleep(std::time::Duration::from_secs(retry_secs.min(120))).await;
-        return Err(Error::module("wigle", "rate-limited (429)"));
+        return Err(Error::module(SRC, "rate-limited (429)"));
     }
     if !status.is_success() {
         return Err(Error::module(
@@ -387,7 +387,7 @@ async fn fetch_wigle(
 
     resp.json()
         .await
-        .map_err(|e| Error::module("wigle", e.to_string()))
+        .map_err(|e| Error::module(SRC, e.to_string()))
 }
 
 impl Wigle {
@@ -408,7 +408,7 @@ impl Wigle {
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|e| Error::module("wigle", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());
@@ -425,7 +425,7 @@ impl Wigle {
         let body: DetailResp = resp
             .json()
             .await
-            .map_err(|e| Error::module("wigle", e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         if body.success != Some(true) {
             return Ok(ModuleResult::new());
