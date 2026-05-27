@@ -30,6 +30,7 @@ pub mod intelx;
 pub mod ip_geo;
 pub mod ipapi;
 pub mod ipinfo;
+pub mod ipquery;
 pub mod ip_registry;
 pub mod ip_reputation;
 pub mod ip_whois_geo;
@@ -89,6 +90,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(ipinfo::IpInfo),
         Arc::new(domainsdb::DomainsDb),
         Arc::new(ipapi::IpApi),
+        Arc::new(ipquery::IpQuery),
         Arc::new(ip_whois_geo::IpWhois),
         Arc::new(geo_intel::GeoIntel),
         Arc::new(geocode::Geocode),
