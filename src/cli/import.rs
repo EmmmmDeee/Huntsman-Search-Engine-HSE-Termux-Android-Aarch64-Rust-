@@ -285,14 +285,11 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
             if let Some(pw) = doc_item.get("password").and_then(|v| v.as_str())
                 && !pw.is_empty()
                 && pw.len() >= 16
-                && let Some(e) = detect_and_create_api_key_entity(pw, &sid, "import:oathnet")
+                && let Some((svc, e)) = detect_and_create_api_key_entity(pw, &sid, "import:oathnet")
             {
                 entities.push(e);
                 stats.api_keys += 1;
 
-                let svc = crate::modules::oathnet_pro::key_harvest::identify_api_key(pw)
-                    .map(|(s, _)| s)
-                    .unwrap_or("generic_key");
                 let valid = crate::util::key_pool::add_and_validate(
                     svc,
                     pw,
@@ -605,15 +602,12 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
             }
         } else if let Some(rest) = line.strip_prefix("Password: ")
             && rest.trim().len() >= 16
-            && let Some(e) = detect_and_create_api_key_entity(rest.trim(), &sid, "import:txt")
+            && let Some((svc, e)) =
+                detect_and_create_api_key_entity(rest.trim(), &sid, "import:txt")
         {
-            let pw = rest.trim();
             entities.push(e);
             stats.api_keys += 1;
-            let svc = crate::modules::oathnet_pro::key_harvest::identify_api_key(pw)
-                .map(|(s, _)| s)
-                .unwrap_or("generic_key");
-            store_key_in_pool(svc, pw, format!("TXT import: {svc} key"));
+            store_key_in_pool(svc, rest.trim(), format!("TXT import: {svc} key"));
         }
     }
 
@@ -824,7 +818,7 @@ fn detect_and_create_api_key_entity(
     pw: &str,
     sid: &str,
     source_label: &str,
-) -> Option<crate::core::entity::Entity> {
+) -> Option<(&'static str, crate::core::entity::Entity)> {
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use crate::modules::oathnet_pro::key_harvest::identify_api_key;
 
@@ -846,7 +840,7 @@ fn detect_and_create_api_key_entity(
         .with_attr("service", service)
         .with_attr("key_length", pw.len().to_string()),
     );
-    Some(e)
+    Some((service, e))
 }
 
 fn store_key_in_pool(service: &str, key: &str, notes: String) {
