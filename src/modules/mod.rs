@@ -6,7 +6,9 @@
 //! Nothing else in the codebase needs to know about the new module.
 
 pub mod abn_lookup;
+pub mod abuseipdb;
 pub mod api_key_probe;
+pub mod bgpview;
 pub mod breach_timezone;
 pub mod cell_intel;
 pub mod censys;
@@ -66,11 +68,13 @@ pub mod shodan;
 pub mod smtp_vrfy;
 pub mod social_location;
 pub mod social_probe;
+pub mod subdomain_takeover;
 pub mod sunrise_sunset;
 pub mod threatfox;
 pub mod urlhaus;
 pub mod urlscan;
 pub mod username_search;
+pub mod virustotal;
 pub mod wayback;
 pub mod web_crawler;
 pub mod webserver_banner;
@@ -157,6 +161,11 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(phone_carrier_geo::PhoneCarrierGeo),
         Arc::new(email_locale::EmailLocale),
         Arc::new(breach_timezone::BreachTimezone),
+        // Threat intel & infrastructure
+        Arc::new(virustotal::VirusTotal),
+        Arc::new(abuseipdb::AbuseIpDb),
+        Arc::new(subdomain_takeover::SubdomainTakeover),
+        Arc::new(bgpview::BgpView),
         // People-centric enrichment
         Arc::new(name_to_username::NameToUsername),
         Arc::new(social_location::SocialLocation),
