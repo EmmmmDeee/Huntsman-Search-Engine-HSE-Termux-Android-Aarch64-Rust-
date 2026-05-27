@@ -296,6 +296,334 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
         service: "discord_bot",
         min_len: 50,
     },
+    // ── OSINT / Security APIs ──────────────────────────────────
+    KeyPattern {
+        prefix: "d0a2df",
+        service: "shodan",
+        min_len: 32,
+    },
+    KeyPattern {
+        prefix: "aWD4bm",
+        service: "censys",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "bp0_",
+        service: "binaryedge",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "rl_",
+        service: "riskiq",
+        min_len: 30,
+    },
+    // ── Cloud / Infrastructure ─────────────────────────────────
+    KeyPattern {
+        prefix: "AZURE",
+        service: "azure",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "az_",
+        service: "azure_devops",
+        min_len: 50,
+    },
+    KeyPattern {
+        prefix: "AGC",
+        service: "alibaba_cloud",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "LTAI",
+        service: "alibaba_cloud",
+        min_len: 16,
+    },
+    KeyPattern {
+        prefix: "GOOG",
+        service: "gcp_service",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "glpat-",
+        service: "gitlab",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "gldt-",
+        service: "gitlab_deploy",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "glrt-",
+        service: "gitlab_runner",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "gloas-",
+        service: "gitlab_oauth",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "phc_",
+        service: "posthog",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "phx_",
+        service: "posthog",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "rnd_",
+        service: "render",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "tvly-",
+        service: "tavily",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "v2_",
+        service: "vercel_v2",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "nf_",
+        service: "netlify",
+        min_len: 36,
+    },
+    KeyPattern {
+        prefix: "re_",
+        service: "resend",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "mlc_",
+        service: "mailersend",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "aptible_",
+        service: "aptible",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "flg_",
+        service: "flagsmith",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "prj_",
+        service: "railway",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "fly_",
+        service: "flyio",
+        min_len: 30,
+    },
+    // ── AI / ML ────────────────────────────────────────────────
+    KeyPattern {
+        prefix: "sess-",
+        service: "openai_session",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "sk-or-",
+        service: "openrouter",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "gsk_",
+        service: "groq",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "LA-",
+        service: "lightning_ai",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "co-",
+        service: "cohere",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "pplx-",
+        service: "perplexity",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "ant-",
+        service: "anthropic",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "mis-",
+        service: "mistral",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "cmpl-",
+        service: "mistral",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "tok_",
+        service: "together_ai",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "fal_",
+        service: "fal_ai",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "w&b_",
+        service: "wandb",
+        min_len: 30,
+    },
+    // ── Payment / Fintech ──────────────────────────────────────
+    KeyPattern {
+        prefix: "pay_",
+        service: "paystack",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "rzp_",
+        service: "razorpay",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "pi_",
+        service: "stripe_pi",
+        min_len: 24,
+    },
+    KeyPattern {
+        prefix: "sub_",
+        service: "stripe_sub",
+        min_len: 24,
+    },
+    KeyPattern {
+        prefix: "cus_",
+        service: "stripe_customer",
+        min_len: 14,
+    },
+    KeyPattern {
+        prefix: "ch_",
+        service: "stripe_charge",
+        min_len: 20,
+    },
+    // ── Communication / Messaging ──────────────────────────────
+    KeyPattern {
+        prefix: "xoxe-",
+        service: "slack_enterprise",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "xoxr-",
+        service: "slack_refresh",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "Bearer fob-",
+        service: "fibery",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "api-",
+        service: "postmark",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "tgp_",
+        service: "telegram_bot",
+        min_len: 30,
+    },
+    // ── Database / Storage ─────────────────────────────────────
+    KeyPattern {
+        prefix: "mongodb+srv://",
+        service: "mongodb_atlas",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "postgres://",
+        service: "postgres_uri",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "redis://",
+        service: "redis_uri",
+        min_len: 15,
+    },
+    KeyPattern {
+        prefix: "mysql://",
+        service: "mysql_uri",
+        min_len: 15,
+    },
+    KeyPattern {
+        prefix: "amqp://",
+        service: "rabbitmq_uri",
+        min_len: 15,
+    },
+    // ── Mapping / OSINT Geolocation ────────────────────────────
+    KeyPattern {
+        prefix: "pk.eyJ",
+        service: "mapbox",
+        min_len: 60,
+    },
+    KeyPattern {
+        prefix: "sk.eyJ",
+        service: "mapbox_secret",
+        min_len: 60,
+    },
+    KeyPattern {
+        prefix: "geo_",
+        service: "geocodio",
+        min_len: 30,
+    },
+    // ── CI / DevOps ────────────────────────────────────────────
+    KeyPattern {
+        prefix: "circle_",
+        service: "circleci",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "dsn_",
+        service: "sentry_dsn",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "wrkr_",
+        service: "cloudflare_worker",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "aio_",
+        service: "adafruit_io",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "kf_",
+        service: "kinde",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "sk_prod_",
+        service: "clerk",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "pk_test_",
+        service: "clerk_pub",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "pk_live_",
+        service: "clerk_pub_live",
+        min_len: 30,
+    },
 ];
 
 pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
@@ -483,6 +811,67 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     ("app.netlify.com", "netlify"),
     ("heroku.com", "heroku"),
     ("dashboard.heroku.com", "heroku"),
+    // AI / ML platforms
+    ("openrouter.ai", "openrouter"),
+    ("console.groq.com", "groq"),
+    ("groq.com", "groq"),
+    ("cohere.ai", "cohere"),
+    ("dashboard.cohere.ai", "cohere"),
+    ("mistral.ai", "mistral"),
+    ("console.mistral.ai", "mistral"),
+    ("together.ai", "together_ai"),
+    ("api.together.xyz", "together_ai"),
+    ("fal.ai", "fal_ai"),
+    ("wandb.ai", "wandb"),
+    ("app.wandb.ai", "wandb"),
+    ("huggingface.co", "huggingface"),
+    ("replicate.com", "replicate"),
+    ("lightning.ai", "lightning_ai"),
+    ("perplexity.ai", "perplexity"),
+    // Cloud / hosting
+    ("railway.app", "railway"),
+    ("render.com", "render"),
+    ("dashboard.render.com", "render"),
+    ("supabase.com", "supabase"),
+    ("app.supabase.com", "supabase"),
+    ("clerk.com", "clerk"),
+    ("dashboard.clerk.com", "clerk"),
+    ("posthog.com", "posthog"),
+    ("app.posthog.com", "posthog"),
+    ("flagsmith.com", "flagsmith"),
+    ("resend.com", "resend"),
+    // Security / OSINT
+    ("greynoise.io", "greynoise"),
+    ("viz.greynoise.io", "greynoise"),
+    ("gitlab.com", "gitlab"),
+    ("riskiq.net", "riskiq"),
+    ("community.riskiq.com", "riskiq"),
+    ("spyse.com", "spyse"),
+    ("securitytrails.com", "securitytrails"),
+    ("app.securitytrails.com", "securitytrails"),
+    // Mapping
+    ("mapbox.com", "mapbox"),
+    ("account.mapbox.com", "mapbox"),
+    ("geocodio.io", "geocodio"),
+    // Payment
+    ("paystack.com", "paystack"),
+    ("dashboard.paystack.com", "paystack"),
+    ("razorpay.com", "razorpay"),
+    ("dashboard.razorpay.com", "razorpay"),
+    // Communication
+    ("postmarkapp.com", "postmark"),
+    ("account.postmarkapp.com", "postmark"),
+    ("mailersend.com", "mailersend"),
+    ("app.mailersend.com", "mailersend"),
+    // Database
+    ("cloud.mongodb.com", "mongodb_atlas"),
+    ("atlas.mongodb.com", "mongodb_atlas"),
+    ("neon.tech", "neon"),
+    ("console.neon.tech", "neon"),
+    ("planetscale.com", "planetscale"),
+    ("app.planetscale.com", "planetscale"),
+    ("upstash.com", "upstash"),
+    ("console.upstash.com", "upstash"),
 ];
 
 pub(super) fn identify_service_from_url(url: &str) -> &'static str {
