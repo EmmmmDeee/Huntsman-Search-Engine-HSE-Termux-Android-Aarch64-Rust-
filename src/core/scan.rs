@@ -349,8 +349,8 @@ pub struct ScanOptions {
     #[serde(default)]
     pub depth: u32,
 
-    /// Only expand entities whose `c_effective()` is at least this. Default 0.75
-    /// (Verified tier) — keeps expansion focused on the data the engine itself
+    /// Only expand entities whose `c_effective()` is at least this. Default 0.50
+    /// (Probable tier) — keeps expansion focused on the data the engine itself
     /// rates as solid. Stronger filter than `min_confidence`, which gates the
     /// base confidence at first encounter.
     #[serde(default = "default_min_expand_confidence")]

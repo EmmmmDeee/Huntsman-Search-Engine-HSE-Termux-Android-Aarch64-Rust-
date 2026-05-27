@@ -722,6 +722,10 @@ impl ScanEngine {
         while let Some(joined) = set.join_next().await {
             let outcome = match joined {
                 Ok(o) => o,
+                Err(e) if e.is_cancelled() => {
+                    tracing::debug!("concurrent module task cancelled");
+                    continue;
+                }
                 Err(e) => {
                     warn!(error = %e, "concurrent module task panicked");
                     self.emit(
