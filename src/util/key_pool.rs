@@ -51,6 +51,14 @@ pub struct KeyEntry {
     pub rate_limit_reset: Option<u64>,
     #[serde(default)]
     pub notes: Option<String>,
+    #[serde(default)]
+    pub discovered_at: Option<u64>,
+    #[serde(default)]
+    pub discovered_by: Option<String>,
+    #[serde(default)]
+    pub discovered_in_scan: Option<String>,
+    #[serde(default)]
+    pub source_entity: Option<String>,
 }
 
 impl KeyEntry {
@@ -63,6 +71,10 @@ impl KeyEntry {
             last_validated: None,
             rate_limit_reset: None,
             notes: None,
+            discovered_at: None,
+            discovered_by: None,
+            discovered_in_scan: None,
+            source_entity: None,
         }
     }
 

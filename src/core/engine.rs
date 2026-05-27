@@ -241,6 +241,14 @@ impl ScanEngine {
 
         self.run_correlator(&scan.id);
 
+        // Persist the key pool to disk after every scan. Keys discovered
+        // during this scan (from breach data, page bodies, entity values)
+        // are permanently stored with full provenance metadata.
+        let pool = crate::util::key_pool::global_pool();
+        if let Err(e) = crate::util::key_pool::save_pool(&pool) {
+            warn!("failed to save key pool after scan: {e}");
+        }
+
         self.emit(
             &scan.id,
             EventKind::ScanComplete {
@@ -824,15 +832,18 @@ fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
     use crate::modules::oathnet_pro::key_harvest::identify_api_key;
 
     let pool = crate::util::key_pool::global_pool();
+    let now = crate::core::entity::unix_now();
 
-    // Scan the entity value itself (e.g., ApiKey entities from oathnet_pro)
     if let Some((service, key_val)) = identify_api_key(&entity.value) {
         let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
         entry.status = crate::util::key_pool::KeyStatus::Untested;
+        entry.discovered_at = Some(now);
+        entry.discovered_by = Some("entity_value".to_string());
+        entry.discovered_in_scan = Some(entity.scan_id.clone());
+        entry.source_entity = Some(format!("{}:{}", entity.kind, &entity.uid[..8]));
         pool.add(service, entry);
     }
 
-    // Scan every evidence attribute value
     for ev in &entity.evidence {
         for val in ev.attributes.values() {
             if val.len() >= 16
@@ -841,7 +852,11 @@ fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
             {
                 let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
                 entry.status = crate::util::key_pool::KeyStatus::Untested;
-                entry.notes = Some(format!("Auto-discovered via {}", ev.source));
+                entry.discovered_at = Some(now);
+                entry.discovered_by = Some(ev.source.clone());
+                entry.discovered_in_scan = Some(entity.scan_id.clone());
+                entry.source_entity = Some(format!("{}:{}", entity.kind, &entity.uid[..8]));
+                entry.notes = Some(format!("Evidence attr from {}", ev.source));
                 pool.add(service, entry);
             }
         }

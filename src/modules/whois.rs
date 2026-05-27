@@ -92,7 +92,7 @@ impl Module for Whois {
             None => raw,
         };
 
-        crate::util::http::scan_for_api_keys(&response);
+        crate::util::http::scan_for_api_keys_with_source(&response, "whois");
 
         // 3) Parse the response into the fields we surface.
         let registrar = field(&response, &["Registrar:", "Sponsoring Registrar:"]);

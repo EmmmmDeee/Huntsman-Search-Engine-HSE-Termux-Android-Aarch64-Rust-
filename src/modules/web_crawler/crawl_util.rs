@@ -282,6 +282,8 @@ pub(super) fn extract_api_keys_from_body(body: &str, domain: &str) {
             let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
             entry.notes = Some(format!("Web-scraped from {domain}"));
             entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.discovered_at = Some(crate::core::entity::unix_now());
+            entry.discovered_by = Some(format!("web_crawler:{domain}"));
             if pool.add(service, entry) {
                 tracing::info!(
                     service,

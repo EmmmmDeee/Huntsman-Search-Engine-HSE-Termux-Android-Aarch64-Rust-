@@ -235,8 +235,13 @@ pub fn urlencode(s: &str) -> String {
 /// in the global key pool. Call on any raw text that passes through the
 /// system — HTTP response bodies, WHOIS output, certificate fields, etc.
 pub fn scan_for_api_keys(text: &str) {
+    scan_for_api_keys_with_source(text, "http_response");
+}
+
+pub fn scan_for_api_keys_with_source(text: &str, source: &str) {
     use crate::modules::oathnet_pro::key_harvest::identify_api_key;
     let pool = crate::util::key_pool::global_pool();
+    let now = crate::core::entity::unix_now();
     for word in text.split(|c: char| {
         c.is_whitespace()
             || c == '"'
@@ -254,6 +259,8 @@ pub fn scan_for_api_keys(text: &str) {
         {
             let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
             entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.discovered_at = Some(now);
+            entry.discovered_by = Some(source.to_string());
             pool.add(service, entry);
         }
     }
