@@ -307,8 +307,11 @@ async fn curl_get(url: &str, key: &str) -> Result<String> {
     let mut cmd = tokio::process::Command::new("curl");
     cmd.args([
         "-s",
+        "-L",
         "--max-time",
         &secs,
+        "-A",
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
         "-H",
         &header,
         "-H",
