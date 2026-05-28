@@ -1257,35 +1257,44 @@ mod tests {
     }
 
     // ── Account introspection helpers ──────────────────────────────────
+    //
+    // The cache is a process-wide `OnceLock<Mutex<...>>`. Running the
+    // four properties as four parallel `#[test]` fns races on CI's
+    // higher-parallelism runners (locally we got lucky). Consolidated
+    // into a single test that drives every state transition
+    // sequentially under one cache lock, then restores the default
+    // state in a guard so the rest of the test process sees an
+    // unpoisoned cache.
 
     #[test]
-    fn account_status_default_is_all_none() {
-        // Fresh process — no /profile/user call has run, so every
-        // optional field is `None` and `is_unverified()` is false
-        // (we don't false-alarm on a stale unknown).
+    fn account_status_state_transitions_and_unverified_detection() {
+        // Always restore the default at test exit, even on panic.
+        struct CacheGuard;
+        impl Drop for CacheGuard {
+            fn drop(&mut self) {
+                if let Ok(mut g) = account_status_cache().lock() {
+                    *g = WigleAccountStatus::default();
+                }
+            }
+        }
+        let _guard = CacheGuard;
+
+        // 1. Default struct: every optional field is None and
+        //    is_unverified() does NOT false-alarm on a stale unknown.
         let s = WigleAccountStatus::default();
         assert!(s.verified.is_none());
         assert!(s.user.is_none());
         assert!(s.daily_api_calls.is_none());
         assert!(s.monthly_api_calls.is_none());
         assert!(s.last_polled_ts.is_none());
-    }
 
-    #[test]
-    fn is_unverified_returns_false_when_status_is_unknown() {
-        // The cache starts at default (verified: None). We must NOT
-        // report unverified — that path should only fire when WiGLE
-        // confirms `verified == false`.
-        // Note: this test may interact with other tests that populate
-        // the cache (it's a process-wide static). Reset it first.
         if let Ok(mut g) = account_status_cache().lock() {
             *g = WigleAccountStatus::default();
         }
-        assert!(!is_unverified());
-    }
+        assert!(!is_unverified(), "default state must not report unverified");
 
-    #[test]
-    fn is_unverified_returns_true_when_wigle_reports_unverified() {
+        // 2. WiGLE-confirmed-unverified case: is_unverified() returns
+        //    true and the field surfaces verbatim through account_status.
         if let Ok(mut g) = account_status_cache().lock() {
             *g = WigleAccountStatus {
                 verified: Some(false),
@@ -1294,14 +1303,10 @@ mod tests {
             };
         }
         assert!(is_unverified());
-        // Cleanup so subsequent tests aren't poisoned.
-        if let Ok(mut g) = account_status_cache().lock() {
-            *g = WigleAccountStatus::default();
-        }
-    }
 
-    #[test]
-    fn account_status_round_trips_serialisable_snapshot() {
+        // 3. Snapshot round-trip through serde: the JSON wire shape
+        //    used by /api/v1/stats must include the right field names
+        //    and values.
         if let Ok(mut g) = account_status_cache().lock() {
             *g = WigleAccountStatus {
                 verified: Some(true),
@@ -1316,14 +1321,9 @@ mod tests {
         assert_eq!(s.user.as_deref(), Some("MattDieg"));
         assert_eq!(s.daily_api_calls, Some(42));
         assert_eq!(s.monthly_api_calls, Some(1337));
-        // JSON-serialise to confirm the wire shape used by
-        // /api/v1/stats works.
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"verified\":true"));
         assert!(json.contains("\"daily_api_calls\":42"));
-        if let Ok(mut g) = account_status_cache().lock() {
-            *g = WigleAccountStatus::default();
-        }
     }
 
     // ── BSSID dispatcher fallback chain ────────────────────────────────
