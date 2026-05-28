@@ -6,6 +6,7 @@
 //! `docs/USAGE.md` for the full reference.
 
 mod doctor;
+mod export;
 mod keys_cmd;
 mod live;
 mod provision;
@@ -263,6 +264,30 @@ pub enum Command {
         #[arg(long)]
         free_only: bool,
     },
+    /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report.
+    ///
+    /// JSON           — `[{ kind, value, ... }, ...]` flat entity list
+    /// CSV            — operator-friendly tabular form (same shape as
+    ///                  the `/api/v1/scans/{id}/entities.csv` endpoint)
+    /// GEXF           — Gephi/Cytoscape-importable graph with
+    ///                  scan-id + observed_at on every node
+    /// Report         — pretty-printed JSON dossier (scan + entities +
+    ///                  correlations + counts; same shape as
+    ///                  `/api/v1/scans/{id}/report.json`)
+    ///
+    /// Output goes to stdout by default; pass `--out <path>` to write
+    /// to a file.
+    Export {
+        /// Scan ID (or `latest` for the most-recent completed scan).
+        #[arg(short, long)]
+        scan_id: String,
+        /// Output format: json | csv | gexf | report. Default `json`.
+        #[arg(short, long, default_value = "json")]
+        format: String,
+        /// File path to write to. Omit for stdout.
+        #[arg(short, long)]
+        out: Option<String>,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -367,6 +392,11 @@ pub async fn run() -> Result<()> {
             sweeps,
             free_only,
         } => radar::cmd_radar(interval, depth, sweeps, free_only).await,
+        Command::Export {
+            scan_id,
+            format,
+            out,
+        } => export::cmd_export(scan_id, format, out).await,
     }
 }
 

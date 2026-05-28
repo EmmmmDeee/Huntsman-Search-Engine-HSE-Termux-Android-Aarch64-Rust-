@@ -14,6 +14,32 @@ mod service_domains;
 use patterns::KEY_PATTERNS;
 use service_domains::identify_service_from_url;
 
+/// Public, serializable view of one entry in the `KEY_PATTERNS` table.
+/// Exposed by `pattern_catalogue()` so the HTTP API can surface the
+/// detector's coverage at `/api/v1/keys/patterns`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PatternEntry {
+    pub prefix: &'static str,
+    pub service: &'static str,
+    pub min_len: usize,
+}
+
+/// Snapshot of the prefix-match table that drives `identify_api_key`.
+/// Returns one entry per declared pattern in declaration order
+/// (specific-before-generic), so callers can reason about override
+/// priority. ~167 entries today; cheap to build (no allocations beyond
+/// the Vec).
+pub fn pattern_catalogue() -> Vec<PatternEntry> {
+    KEY_PATTERNS
+        .iter()
+        .map(|p| PatternEntry {
+            prefix: p.prefix,
+            service: p.service,
+            min_len: p.min_len,
+        })
+        .collect()
+}
+
 pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
     let trimmed = value.trim();
     if trimmed.len() < 16 {
@@ -2062,5 +2088,43 @@ mod tests {
             .expect("decoded GH not found");
         assert!(!plaintext.has_tag("via-base64"));
         assert!(decoded.has_tag("via-base64"));
+    }
+
+    // ─── Public pattern catalogue (API surface) ──────────────────
+
+    #[test]
+    fn pattern_catalogue_round_trips_table_entries() {
+        let cat = pattern_catalogue();
+        assert_eq!(cat.len(), KEY_PATTERNS.len(), "size mismatch");
+        // Spot-check that a few well-known entries survive the
+        // mapping (prefix + service + min_len preserved).
+        assert!(
+            cat.iter()
+                .any(|p| p.prefix == "sk-ant-" && p.service == "anthropic" && p.min_len == 40),
+            "missing sk-ant-/anthropic/40 entry"
+        );
+        assert!(
+            cat.iter()
+                .any(|p| p.prefix == "AKIA" && p.service == "aws" && p.min_len == 16),
+            "missing AKIA/aws/16 entry"
+        );
+    }
+
+    #[test]
+    fn pattern_catalogue_preserves_declaration_order() {
+        let cat = pattern_catalogue();
+        let sk_svcacct_idx = cat
+            .iter()
+            .position(|p| p.prefix == "sk-svcacct-")
+            .expect("sk-svcacct- not found");
+        let sk_idx = cat
+            .iter()
+            .position(|p| p.prefix == "sk-")
+            .expect("sk- not found");
+        // Specific-before-generic: sk-svcacct- MUST come before sk-
+        assert!(
+            sk_svcacct_idx < sk_idx,
+            "specific-before-generic violated for sk- family"
+        );
     }
 }

@@ -170,6 +170,26 @@ pub async fn version() -> Json<Value> {
     Json(json!({ "version": crate::VERSION }))
 }
 
+/// Expose the API-key detector's prefix-match coverage. Returns the
+/// full ordered table from `key_harvest::patterns` so operators can
+/// see what shapes the scanner recognises — and so dashboards can
+/// surface per-service coverage stats.
+pub async fn keys_patterns() -> Json<Value> {
+    let patterns = crate::modules::oathnet_pro::key_harvest::pattern_catalogue();
+    let by_service: std::collections::BTreeMap<&str, usize> =
+        patterns
+            .iter()
+            .fold(std::collections::BTreeMap::new(), |mut acc, p| {
+                *acc.entry(p.service).or_default() += 1;
+                acc
+            });
+    Json(json!({
+        "patterns": patterns,
+        "count": patterns.len(),
+        "unique_services": by_service.len(),
+    }))
+}
+
 pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
     let mods: Vec<Value> = s
         .engine
