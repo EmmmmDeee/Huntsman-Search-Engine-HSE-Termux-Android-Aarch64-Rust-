@@ -31,6 +31,7 @@ pub mod emailrep;
 pub mod employer_pivot;
 pub mod epieos;
 pub mod exa_search;
+pub mod exif_geo;
 pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
@@ -162,6 +163,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(photon::Photon),
         Arc::new(mylnikov::Mylnikov),
         Arc::new(mls::Mls),
+        Arc::new(exif_geo::ExifGeo),
         Arc::new(overpass::Overpass),
         Arc::new(sunrise_sunset::SunriseSunset),
         // Geolocation enrichment (passive, zero-API)

@@ -422,10 +422,20 @@ impl Module for Wigle {
                 let mut e = Entity::new(EntityKind::MacAddress, *mac, 0.60, &ctx.scan_id);
                 e.tag("wigle");
                 e.tag("wifi-ap");
-                e.add_evidence(
-                    Evidence::new(SRC, format!("WiFi AP near {}", target.value))
-                        .with_attr("coordinates", &target.value),
-                );
+                let mut ev = Evidence::new(SRC, format!("WiFi AP near {}", target.value))
+                    .with_attr("coordinates", &target.value);
+                // OUI classification — same treatment as Bluetooth
+                // beacons. WiFi APs commonly resolve to a router
+                // brand (Netgear / TP-Link / Asus / etc.) which is
+                // useful operator context.
+                if let Some(oui) = crate::util::oui::classify_mac(mac) {
+                    e.tag(format!("vendor:{}", oui.vendor));
+                    e.tag(format!("device:{}", oui.class.as_str()));
+                    ev = ev
+                        .with_attr("vendor", oui.vendor)
+                        .with_attr("device_class", oui.class.as_str());
+                }
+                e.add_evidence(ev);
                 result.push(e);
             }
         }
@@ -561,14 +571,24 @@ fn extract_bluetooth_intel(
         let mut e = Entity::new(EntityKind::MacAddress, mac, 0.55, scan_id);
         e.tag("wigle");
         e.tag("bluetooth-beacon");
-        e.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("Bluetooth beacon observed near {target_value}"),
-            )
-            .with_attr("source", "wigle_bluetooth")
-            .with_attr("coordinates", target_value),
-        );
+        let mut ev = Evidence::new(
+            SRC,
+            format!("Bluetooth beacon observed near {target_value}"),
+        )
+        .with_attr("source", "wigle_bluetooth")
+        .with_attr("coordinates", target_value);
+        // OUI classification — surface the vendor + coarse device
+        // type (AirPods / Tesla / Hikvision camera / …) so
+        // downstream pivots can act on it. The check is cheap
+        // (linear over ~120 entries) and runs once per emission.
+        if let Some(oui) = crate::util::oui::classify_mac(mac) {
+            e.tag(format!("vendor:{}", oui.vendor));
+            e.tag(format!("device:{}", oui.class.as_str()));
+            ev = ev
+                .with_attr("vendor", oui.vendor)
+                .with_attr("device_class", oui.class.as_str());
+        }
+        e.add_evidence(ev);
         if let Some(ref ssid) = net.ssid {
             e.tag(format!("name:{}", ssid.trim()));
         }
