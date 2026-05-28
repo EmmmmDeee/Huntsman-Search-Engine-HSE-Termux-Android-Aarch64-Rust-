@@ -108,17 +108,12 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let modules = s.engine.modules().len();
     let live_sessions = s.live.list().len();
 
-    // Surface SeekNow budget consumption so operators can see how much
-    // of the daily 5000-lookup quota the current process has burned.
-    // Read-only snapshot of the atomic counters in util::see_know.
-    let seeknow = crate::util::see_know::budget_snapshot();
-    let seeknow_block = json!({
-        "scan_used":         seeknow.scan_used,
-        "scan_cap":          seeknow.scan_cap,
-        "session_used":      seeknow.session_used,
-        "session_cap":       seeknow.session_cap,
-        "quota_exhausted":   seeknow.quota_exhausted,
-    });
+    // Surface SeekNow + OathNet budget consumption so operators can see
+    // how much of each daily quota the current process has burned.
+    // Both providers share `util::budget::QuotaBudget` so the wire
+    // format is identical.
+    let seeknow = budget_block(crate::util::see_know::budget_snapshot());
+    let oathnet = budget_block(crate::util::oathnet::budget_snapshot());
 
     (
         StatusCode::OK,
@@ -130,10 +125,24 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             "modules": modules,
             "live_sessions": live_sessions,
             "version": crate::VERSION,
-            "seeknow": seeknow_block,
+            "seeknow": seeknow,
+            "oathnet": oathnet,
         })),
     )
         .into_response()
+}
+
+/// Convert a [`crate::util::budget::BudgetSnapshot`] into the
+/// JSON shape used by the `/api/v1/stats` endpoint. Centralised so
+/// every quota-spending provider serialises identically.
+fn budget_block(snap: crate::util::budget::BudgetSnapshot) -> Value {
+    json!({
+        "scan_used":       snap.scan_used,
+        "scan_cap":        snap.scan_cap,
+        "session_used":    snap.session_used,
+        "session_cap":     snap.session_cap,
+        "quota_exhausted": snap.quota_exhausted,
+    })
 }
 
 pub async fn version() -> Json<Value> {

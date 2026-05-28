@@ -28,68 +28,41 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::core::error::{Error, Result};
+use crate::util::budget::QuotaBudget;
+
+// Re-export the shared snapshot type so external consumers
+// (`api::handlers::stats`) keep working through the original path.
+pub use crate::util::budget::BudgetSnapshot;
 
 const HARDCODED_KEY: &str = "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
 
 pub const KEY_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";
 
-static QUOTA_EXHAUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 static RESPONSE_CACHE: std::sync::LazyLock<Mutex<std::collections::HashMap<String, Vec<Value>>>> =
     std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::with_capacity(256)));
 
-static QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-static SESSION_QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// SeekNow's premiumhq plan grants 5,000 daily lookups. Each scan now
-/// gets a richer per-scan envelope (default 24) so it can dispatch the
-/// universal search plus ~10 specialised endpoints across the pivot
-/// graph (Email + every discovered Username/Phone/Domain/IP in the
-/// scan). The session cap stays at 200 so long-running radar / live
-/// sessions stop short of the 5,000/day ceiling.
+/// Per-scan + per-session quota budget for SeekNow API calls.
 ///
-/// Both caps are tunable via `HUNTSMAN_SEEKNOW_SCAN_CAP` and
-/// `HUNTSMAN_SEEKNOW_SESSION_CAP` for operators with different plan
-/// tiers.
-const DEFAULT_MAX_QUERIES_PER_SCAN: u32 = 24;
-
-/// Per-process override of the scan cap, supplied at runtime by the
-/// engine when `ScanOptions::seeknow_scan_cap` is set. Falls back to
-/// the env / static default. Atomics rather than a lock — the engine
-/// writes this once per scan and every endpoint call reads it.
-static SCAN_CAP_OVERRIDE: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
+/// SeekNow's premiumhq plan grants 5,000 daily lookups. Each scan
+/// gets a 24-query envelope (env-tunable via `HUNTSMAN_SEEKNOW_SCAN_CAP`,
+/// runtime-overridable via `ScanOptions::seeknow_scan_cap`) so a
+/// single seed can dispatch the universal search plus ~10 specialised
+/// endpoints across the pivot graph. The 200-query session ceiling
+/// (env-tunable via `HUNTSMAN_SEEKNOW_SESSION_CAP`) stops long-running
+/// radar/live sessions short of the daily 5,000 ceiling.
+static BUDGET: QuotaBudget = QuotaBudget::new(
+    "seeknow",
+    24,
+    200,
+    "HUNTSMAN_SEEKNOW_SCAN_CAP",
+    "HUNTSMAN_SEEKNOW_SESSION_CAP",
+);
 
 /// Install a runtime per-scan cap. `0` clears the override (falls back
 /// to env + static default). The engine calls this once at scan start
 /// when the operator set `ScanOptions::seeknow_scan_cap`.
 pub fn set_scan_cap_override(cap: u32) {
-    SCAN_CAP_OVERRIDE.store(cap, std::sync::atomic::Ordering::Release);
-}
-
-fn max_queries_per_scan() -> u32 {
-    let override_value = SCAN_CAP_OVERRIDE.load(std::sync::atomic::Ordering::Acquire);
-    if override_value > 0 {
-        return override_value;
-    }
-    static CAP: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
-        std::env::var("HUNTSMAN_SEEKNOW_SCAN_CAP")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|&v: &u32| v > 0)
-            .unwrap_or(DEFAULT_MAX_QUERIES_PER_SCAN)
-    });
-    *CAP
-}
-
-fn max_queries_per_session() -> u32 {
-    static CAP: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
-        std::env::var("HUNTSMAN_SEEKNOW_SESSION_CAP")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(200)
-    });
-    *CAP
+    BUDGET.set_scan_cap_override(cap);
 }
 
 /// Cache key combining endpoint path, normalised query, and query
@@ -127,60 +100,35 @@ fn cache_put(key: String, items: Vec<Value>) {
 /// Public so the module layer can short-circuit endpoint plans before
 /// allocating per-endpoint futures.
 pub fn budget_remaining() -> bool {
-    QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire) < max_queries_per_scan()
-        && SESSION_QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire)
-            < max_queries_per_session()
+    BUDGET.remaining()
 }
 
 /// Remaining queries in the per-scan budget. Used by the module-layer
 /// planner to decide how many specialised endpoints to dispatch.
 pub fn scan_budget_remaining() -> u32 {
-    let cap = max_queries_per_scan();
-    let used = QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire);
-    cap.saturating_sub(used)
+    BUDGET.scan_remaining()
 }
 
 /// Snapshot of current per-scan + per-session budget consumption.
-/// Surfaced for diagnostics (`hse doctor`) and tests.
-#[derive(Debug, Clone, Copy)]
-pub struct BudgetSnapshot {
-    pub scan_used: u32,
-    pub scan_cap: u32,
-    pub session_used: u32,
-    pub session_cap: u32,
-    pub quota_exhausted: bool,
-}
-
+/// Surfaced for diagnostics (`hse doctor`) and `/api/v1/stats`.
 pub fn budget_snapshot() -> BudgetSnapshot {
-    BudgetSnapshot {
-        scan_used: QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire),
-        scan_cap: max_queries_per_scan(),
-        session_used: SESSION_QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire),
-        session_cap: max_queries_per_session(),
-        quota_exhausted: is_quota_exhausted(),
-    }
+    BUDGET.snapshot()
 }
 
 fn budget_increment() {
-    QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    SESSION_QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    BUDGET.increment();
 }
 
 pub fn is_quota_exhausted() -> bool {
-    QUOTA_EXHAUSTED.load(std::sync::atomic::Ordering::Acquire)
+    BUDGET.is_exhausted()
 }
 
 pub fn reset_budget() {
-    QUERY_COUNT.store(0, std::sync::atomic::Ordering::Release);
-    QUOTA_EXHAUSTED.store(false, std::sync::atomic::Ordering::Release);
-    // Clear any runtime per-scan cap so the next scan picks up the
-    // env / static default again unless the engine installs a fresh
-    // override at scan start.
-    SCAN_CAP_OVERRIDE.store(0, std::sync::atomic::Ordering::Release);
+    BUDGET.reset_scan();
 }
 
 fn mark_quota_exhausted() {
-    QUOTA_EXHAUSTED.store(true, std::sync::atomic::Ordering::Release);
+    BUDGET.mark_exhausted();
     tracing::warn!("SeekNow daily quota exhausted — skipping remaining queries");
 }
 
@@ -592,7 +540,7 @@ mod tests {
         // 8 lookups, leaving 99.84% of the daily quota unused. The new
         // default must be at least 16.
         reset_budget();
-        let cap = max_queries_per_scan();
+        let cap = budget_snapshot().scan_cap;
         assert!(
             cap >= 16,
             "scan cap dropped to {cap} — must remain ≥ 16 to leverage SeekNow quota"
@@ -602,21 +550,21 @@ mod tests {
     #[test]
     fn set_scan_cap_override_replaces_default_until_reset() {
         reset_budget();
-        let base = max_queries_per_scan();
+        let base = budget_snapshot().scan_cap;
         set_scan_cap_override(80);
-        assert_eq!(max_queries_per_scan(), 80);
+        assert_eq!(budget_snapshot().scan_cap, 80);
         reset_budget();
         // After reset, falls back to env / static default again.
-        assert_eq!(max_queries_per_scan(), base);
+        assert_eq!(budget_snapshot().scan_cap, base);
     }
 
     #[test]
     fn scan_cap_override_zero_falls_back_to_default() {
         reset_budget();
-        let base = max_queries_per_scan();
+        let base = budget_snapshot().scan_cap;
         set_scan_cap_override(0);
         assert_eq!(
-            max_queries_per_scan(),
+            budget_snapshot().scan_cap,
             base,
             "override of 0 must mean 'use default', not 'cap at zero'"
         );
@@ -630,5 +578,20 @@ mod tests {
         let snap = budget_snapshot();
         assert_eq!(snap.scan_cap, 99);
         reset_budget();
+    }
+
+    #[test]
+    fn reset_clears_override_too() {
+        // Regression guard: reset_scan must clear the cap override so
+        // the next scan picks up the env / default cap unless the
+        // engine installs a fresh override at scan start.
+        reset_budget();
+        set_scan_cap_override(99);
+        assert_eq!(budget_snapshot().scan_cap, 99);
+        reset_budget();
+        assert_ne!(
+            budget_snapshot().scan_cap, 99,
+            "reset_budget must clear the cap override"
+        );
     }
 }

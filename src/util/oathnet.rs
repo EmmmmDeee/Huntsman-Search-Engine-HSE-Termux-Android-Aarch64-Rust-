@@ -10,12 +10,11 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::error::{Error, Result};
+use crate::util::budget::QuotaBudget;
 
 const HARDCODED_KEY: &str = "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551409e4b47116f2";
 
 pub const KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
-
-static QUOTA_EXHAUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Per-process response cache: deduplicates identical (path, field, value)
 /// queries across modules. When oathnet_pro, geo_intel, and search_engines
@@ -25,25 +24,20 @@ static QUOTA_EXHAUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 static RESPONSE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CachedResponse>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::with_capacity(256)));
 
-/// Global query counter for budget tracking.
-static QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// Session-level query counter: tracks total queries across all scans in this
-/// process. NOT reset by `reset_budget()`. Prevents radar/live sessions from
-/// burning the entire daily OathNet quota across many pivot scans.
-static SESSION_QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-const MAX_QUERIES_PER_SCAN: u32 = 4;
-
-fn max_queries_per_session() -> u32 {
-    static CAP: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
-        std::env::var("HUNTSMAN_OATHNET_SESSION_CAP")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(30)
-    });
-    *CAP
-}
+/// Per-scan + per-session quota budget for OathNet API calls.
+///
+/// Default 4 queries per scan (the OathNet quota is tighter than
+/// SeekNow's) with a 30-query session ceiling that prevents
+/// radar/live sessions from burning the daily allowance. Both caps
+/// are env-tunable via `HUNTSMAN_OATHNET_SCAN_CAP` and
+/// `HUNTSMAN_OATHNET_SESSION_CAP`.
+static BUDGET: QuotaBudget = QuotaBudget::new(
+    "oathnet",
+    4,
+    30,
+    "HUNTSMAN_OATHNET_SCAN_CAP",
+    "HUNTSMAN_OATHNET_SESSION_CAP",
+);
 
 struct CachedResponse {
     items: Vec<Value>,
@@ -74,30 +68,33 @@ fn cache_put(key: String, items: &[Value]) {
 }
 
 fn budget_remaining() -> bool {
-    QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire) < MAX_QUERIES_PER_SCAN
-        && SESSION_QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire)
-            < max_queries_per_session()
+    BUDGET.remaining()
 }
 
 fn budget_increment() {
-    QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    SESSION_QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    BUDGET.increment();
 }
 
 pub fn is_quota_exhausted() -> bool {
-    QUOTA_EXHAUSTED.load(std::sync::atomic::Ordering::Acquire)
+    BUDGET.is_exhausted()
+}
+
+/// Snapshot of current per-scan + per-session OathNet budget consumption.
+/// Surfaced for diagnostics and `/api/v1/stats` so operators can see
+/// how much of the daily allowance has been spent.
+pub fn budget_snapshot() -> crate::util::budget::BudgetSnapshot {
+    BUDGET.snapshot()
 }
 
 /// Reset the per-scan budget counters. Must be called at the start of every
 /// scan so that `hse serve` / `hse live` (long-lived processes) get a fresh
 /// budget for each scan rather than accumulating across scans.
 pub fn reset_budget() {
-    QUERY_COUNT.store(0, std::sync::atomic::Ordering::Release);
-    QUOTA_EXHAUSTED.store(false, std::sync::atomic::Ordering::Release);
+    BUDGET.reset_scan();
 }
 
 fn mark_quota_exhausted() {
-    QUOTA_EXHAUSTED.store(true, std::sync::atomic::Ordering::Release);
+    BUDGET.mark_exhausted();
     tracing::warn!("OathNet daily quota exhausted — skipping remaining queries");
 }
 

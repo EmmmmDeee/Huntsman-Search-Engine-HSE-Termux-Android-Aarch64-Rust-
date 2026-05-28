@@ -289,6 +289,35 @@ async fn stats_endpoint_includes_seeknow_block() {
     assert!(cap >= 16, "scan_cap dropped below 16 — quota under-used");
 }
 
+#[tokio::test]
+async fn stats_endpoint_includes_oathnet_block() {
+    // After the budget consolidation, oathnet exposes the same wire
+    // shape as seeknow (both back-ended by util::budget::QuotaBudget).
+    let app = test_app("stats_oathnet");
+    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let on = json.get("oathnet").expect("stats must include oathnet block");
+    for field in [
+        "scan_used",
+        "scan_cap",
+        "session_used",
+        "session_cap",
+        "quota_exhausted",
+    ] {
+        assert!(
+            on.get(field).is_some(),
+            "oathnet block missing field {field}"
+        );
+    }
+    // OathNet default scan cap is 4 (much tighter than SeekNow's 24).
+    let cap = on["scan_cap"].as_u64().unwrap();
+    assert!(
+        cap >= 1,
+        "oathnet scan_cap must be positive (got {cap})"
+    );
+}
+
 // ── 4. Scan create (valid) ────────────────────────────────────────────────
 
 #[tokio::test]
