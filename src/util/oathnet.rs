@@ -194,6 +194,10 @@ pub async fn search(
 /// OSINT lookup (holehe, ip-info, discord, steam, etc.)
 /// Returns Null immediately if daily quota is exhausted.
 pub async fn osint(key: &str, path: &str, param: &str, value: &str) -> Result<Value> {
+    let ck = cache_key(path, param, value);
+    if let Some(cached) = cache_get(&ck) {
+        return Ok(cached.first().cloned().unwrap_or(Value::Null));
+    }
     if is_quota_exhausted() || !budget_remaining() {
         return Ok(Value::Null);
     }
@@ -201,12 +205,27 @@ pub async fn osint(key: &str, path: &str, param: &str, value: &str) -> Result<Va
     let encoded = crate::util::http::urlencode(value);
     let url = format!("{}{}?{}={}", base_url(), path, param, encoded);
     let body = curl_get(&url, key).await?;
+    if body.contains("\"left_today\":0")
+        || body.contains("limit exceeded")
+        || body.contains("quota")
+    {
+        mark_quota_exhausted();
+        return Ok(Value::Null);
+    }
     let env: Envelope =
         serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
     if !env.success {
+        if env.errors.as_ref().and_then(|e| e.status_code) == Some(429) {
+            mark_quota_exhausted();
+            return Ok(Value::Null);
+        }
         return Err(Error::module("oathnet", "OSINT lookup failed"));
     }
-    Ok(env.data.unwrap_or(Value::Null))
+    let data = env.data.unwrap_or(Value::Null);
+    if !data.is_null() {
+        cache_put(ck, &[data.clone()]);
+    }
+    Ok(data)
 }
 
 /// Extract a string field from a JSON Value.
