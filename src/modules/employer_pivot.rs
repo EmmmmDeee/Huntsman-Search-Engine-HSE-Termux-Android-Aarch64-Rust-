@@ -57,11 +57,7 @@ impl Module for EmployerPivot {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        match t.kind {
-            TargetKind::Email => true,
-            TargetKind::Domain => true,
-            _ => false,
-        }
+        matches!(t.kind, TargetKind::Email | TargetKind::Domain)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -118,7 +114,7 @@ impl Module for EmployerPivot {
             let mut e = Entity::new(EntityKind::Address, &canon, addr.confidence(), &ctx.scan_id);
             e.tag("business");
             e.tag("employer-pivot");
-            e.tag(format!("country:AU"));
+            e.tag("country:AU");
             e.tag(format!("state:{}", addr.state));
             e.tag(format!("postcode:{}", addr.postcode));
             let mut ev = Evidence::new(
@@ -139,7 +135,7 @@ impl Module for EmployerPivot {
                 ev = ev.with_attr("unit", unit);
             }
             ev = ev.with_attr("employer_domain", &domain);
-            ev = ev.with_attr("source_urls", &visited.join(" | "));
+            ev = ev.with_attr("source_urls", visited.join(" | "));
             e.add_evidence(ev);
             result.push(e);
         }
