@@ -206,7 +206,7 @@ impl ModuleGraph {
                 }
             })
             .collect();
-        consumers_by_kind.sort_by(|a, b| b.module_count.cmp(&a.module_count));
+        consumers_by_kind.sort_by_key(|n| std::cmp::Reverse(n.module_count));
 
         // Pivot edges: for each module, the (consumes → produces) pairs
         // it bridges. Lets the UI render a flow diagram.
