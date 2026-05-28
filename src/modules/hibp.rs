@@ -19,7 +19,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -100,6 +100,15 @@ impl Module for Hibp {
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email | TargetKind::Domain)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Breach
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Email, EntityKind::Domain, EntityKind::Credential];
+        KINDS
     }
 
     fn max_timeout_ms(&self) -> u64 {

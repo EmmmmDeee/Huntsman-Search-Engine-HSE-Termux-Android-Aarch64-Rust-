@@ -16,7 +16,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::urlencode;
@@ -81,6 +81,15 @@ impl Module for Geocode {
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Address | TargetKind::Coordinates)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Geo
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates, EntityKind::Address];
+        KINDS
     }
 
     fn max_timeout_ms(&self) -> u64 {

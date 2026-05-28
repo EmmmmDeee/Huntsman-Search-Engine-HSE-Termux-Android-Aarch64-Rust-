@@ -118,6 +118,11 @@ pub enum Command {
         /// floor (0.75). Lower = recurse further before giving up.
         #[arg(long)]
         min_marginal_yield: Option<f64>,
+        /// Expansion ordering strategy: `geo_converge` (default; legacy),
+        /// `breadth_first`, `depth_first`, `richest_first`. Changes how
+        /// the engine prioritises expansion candidates each round.
+        #[arg(long, default_value = "geo_converge")]
+        expansion_strategy: String,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(short, long, default_value = "table")]
         output: String,
@@ -333,6 +338,7 @@ pub async fn run() -> Result<()> {
             adaptive,
             max_roi,
             min_marginal_yield,
+            expansion_strategy,
             output,
         } => {
             cmd_scan(ScanCmd {
@@ -355,6 +361,7 @@ pub async fn run() -> Result<()> {
                 adaptive,
                 max_roi,
                 min_marginal_yield,
+                expansion_strategy,
                 output,
             })
             .await
@@ -1369,6 +1376,7 @@ struct ScanCmd {
     pub adaptive: bool,
     pub max_roi: bool,
     pub min_marginal_yield: Option<f64>,
+    pub expansion_strategy: String,
     pub output: String,
 }
 
@@ -1427,6 +1435,17 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             }
         }
     }
+    let expansion_strategy = match cmd.expansion_strategy.as_str() {
+        "geo_converge" | "" => crate::core::scan::ExpansionStrategy::GeoConverge,
+        "breadth_first" => crate::core::scan::ExpansionStrategy::BreadthFirst,
+        "depth_first" => crate::core::scan::ExpansionStrategy::DepthFirst,
+        "richest_first" => crate::core::scan::ExpansionStrategy::RichestFirst,
+        other => {
+            return Err(crate::core::error::Error::Other(format!(
+                "unknown --expansion-strategy '{other}'; expected one of: geo_converge, breadth_first, depth_first, richest_first"
+            )));
+        }
+    };
     let options = ScanOptions {
         modules: split_csv(cmd.modules),
         exclude_modules,
@@ -1446,6 +1465,7 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         profile: None,
         max_roi: cmd.max_roi,
         min_marginal_yield: cmd.min_marginal_yield,
+        expansion_strategy,
     };
     if cmd.max_roi {
         eprintln!(

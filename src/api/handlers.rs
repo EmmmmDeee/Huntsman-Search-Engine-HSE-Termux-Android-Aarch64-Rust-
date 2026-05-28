@@ -127,42 +127,57 @@ pub async fn version() -> Json<Value> {
 }
 
 pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
-    use crate::core::scan::TargetKind;
-    const ALL_KINDS: [TargetKind; 9] = [
-        TargetKind::Email,
-        TargetKind::Username,
-        TargetKind::Phone,
-        TargetKind::FullName,
-        TargetKind::IpAddress,
-        TargetKind::Domain,
-        TargetKind::Asn,
-        TargetKind::Coordinates,
-        TargetKind::Address,
-    ];
-
     let mods: Vec<Value> = s
         .engine
         .modules()
         .iter()
         .map(|m| {
             let cost = serde_json::to_value(m.cost()).unwrap_or(Value::Null);
-            let accepts: Vec<&'static str> = ALL_KINDS
+            // Pull declared consumes via the trait method — falls back to
+            // the probe-based default for legacy modules. Mirrors what the
+            // dispatch index and dependency graph see.
+            let accepts: Vec<&'static str> = m
+                .consumes()
                 .iter()
-                .filter(|k| m.accepts(&Target::new(**k, "probe")))
                 .map(super::super::core::scan::TargetKind::canonical_str)
+                .collect();
+            let produces: Vec<String> = m
+                .produces()
+                .iter()
+                .map(std::string::ToString::to_string)
                 .collect();
             json!({
                 "name":        m.name(),
                 "priority":    m.priority(),
                 "cost":        cost,
                 "passive":     m.is_passive(),
+                "category":    m.category().as_str(),
                 "accepts":     accepts,
+                "produces":    produces,
                 "description": m.description(),
             })
         })
         .collect();
     let count = mods.len();
     Json(json!({ "modules": mods, "count": count }))
+}
+
+/// `GET /api/v1/modules/graph` — pre-computed module dependency graph.
+///
+/// Returns the per-`TargetKind` dispatch index (with module counts and
+/// normalised richness scores) plus the per-module `consumes/produces`
+/// edges. The SPA renders this as a Sankey-style flow that shows
+/// "what does seed X unlock?" — a Spiderfoot 4.0 capability HSE
+/// surfaces with explicit data-flow declarations.
+pub async fn modules_graph(State(s): State<Arc<AppState>>) -> Json<Value> {
+    let graph = s.engine.graph();
+    let summary = graph.to_summary(s.engine.modules());
+    Json(json!({
+        "kinds":           summary.kinds,
+        "edges":           summary.edges,
+        "produced_kinds":  summary.produced_entity_kinds(),
+        "module_count":    s.engine.modules().len(),
+    }))
 }
 
 pub async fn entity_get(

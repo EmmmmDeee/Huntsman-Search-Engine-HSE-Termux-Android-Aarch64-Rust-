@@ -53,7 +53,7 @@ use async_trait::async_trait;
 
 use crate::core::{
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
 };
 
 pub struct SearchEngines;
@@ -121,6 +121,27 @@ impl Module for SearchEngines {
                 | TargetKind::Url
                 | TargetKind::Coordinates
         )
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Search
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        // 13-engine SERP scraping discovers a wide range of entity
+        // types: identity fragments (emails, usernames), infrastructure
+        // (domains, URLs, IPs), and geography (addresses).
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Url,
+            EntityKind::Domain,
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Phone,
+            EntityKind::Address,
+            EntityKind::Person,
+            EntityKind::Organisation,
+        ];
+        KINDS
     }
 
     fn max_timeout_ms(&self) -> u64 {

@@ -16,7 +16,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -91,6 +91,13 @@ impl Module for Shodan {
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)
+    }
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::Url, EntityKind::Asn];
+        KINDS
     }
     fn max_timeout_ms(&self) -> u64 {
         10_000

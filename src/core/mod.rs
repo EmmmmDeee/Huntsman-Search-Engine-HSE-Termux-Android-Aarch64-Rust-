@@ -4,6 +4,7 @@
 //! the other way around. This keeps the engine module-agnostic.
 
 pub mod correlator;
+pub mod dependency;
 pub mod engine;
 pub mod entity;
 pub mod gexf;
@@ -592,11 +593,14 @@ pub mod port {
 
 pub use cancel::CancelHandle;
 pub use correlator::{Correlation, Correlator, Severity};
+pub use dependency::{ModuleGraph, ModuleGraphSummary};
 pub use engine::ScanEngine;
 pub use entity::{Classification, Entity, EntityKind, Evidence, scan_id, unix_now};
 pub use error::{Error, Result};
 pub use event::{Event, EventBus, EventKind};
 pub use live::{LiveOptions, LiveRequest, LiveScanner, LiveSession, LiveStatus};
-pub use module::{Module, ModuleContext, ModuleCost, ModuleInfo, ModuleResult};
+pub use module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleInfo, ModuleResult};
 pub use port::StoragePort;
-pub use scan::{Scan, ScanOptions, ScanRequest, ScanStatus, Target, TargetKind};
+pub use scan::{
+    ExpansionStrategy, Scan, ScanOptions, ScanRequest, ScanStatus, Target, TargetKind,
+};

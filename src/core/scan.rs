@@ -393,6 +393,57 @@ pub struct ScanOptions {
     /// this floor. None = use [`crate::core::roi::DEFAULT_MIN_MARGINAL_YIELD`].
     #[serde(default)]
     pub min_marginal_yield: Option<f64>,
+
+    // ── Expansion strategy (v1.1+) ─────────────────────────────────────────
+    /// How the engine orders expansion candidates within each round.
+    /// Defaults to [`ExpansionStrategy::GeoConverge`] — the current
+    /// production behaviour. Selecting a different strategy changes
+    /// what's prioritised when many entities exceed the confidence
+    /// floor.
+    #[serde(default)]
+    pub expansion_strategy: ExpansionStrategy,
+}
+
+/// How the engine orders expansion candidates within a round.
+///
+/// All strategies still respect the `min_expand_confidence` floor and
+/// the ROI top-K gate; they only differ in the *primary sort key*.
+/// Spiderfoot 4.0 has a single hard-coded ordering (by event priority);
+/// HSE's selectable strategies let operators trade off pivot depth
+/// against breadth for the investigation at hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpansionStrategy {
+    /// Geographic-convergence weighting: `geo_npv × c_eff × domain_factor
+    /// × geo_proximity × richness`. Existing production default.
+    /// Prioritises entities one hop from Coordinates/Address.
+    #[default]
+    GeoConverge,
+    /// Breadth-first: every confident candidate gets one dispatch
+    /// before any candidate gets two. Sort key is `c_eff × richness`
+    /// only — no geo bias. Good for wide reconnaissance.
+    BreadthFirst,
+    /// Depth-first: the most-confident candidate dominates the queue;
+    /// secondary tiebreaker is richness. Good for verifying a single
+    /// high-confidence lead deeply before fanning out.
+    DepthFirst,
+    /// Richness-first: candidates that unlock the largest number of
+    /// modules expand first. Maximises *new modules touched per
+    /// dispatch* — the closest analogue to Spiderfoot's
+    /// `produced_events → watched_events` chain optimiser.
+    RichestFirst,
+}
+
+impl ExpansionStrategy {
+    /// Stable snake_case identifier — matches the serde-serialised form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GeoConverge => "geo_converge",
+            Self::BreadthFirst => "breadth_first",
+            Self::DepthFirst => "depth_first",
+            Self::RichestFirst => "richest_first",
+        }
+    }
 }
 
 impl Default for ScanOptions {
@@ -416,6 +467,7 @@ impl Default for ScanOptions {
             profile: None,
             max_roi: false,
             min_marginal_yield: None,
+            expansion_strategy: ExpansionStrategy::default(),
         }
     }
 }
@@ -649,6 +701,53 @@ pub fn expansion_weight(kind: TargetKind, c_eff: f64, value: &str, has_paid_keys
     };
     let geo_boost = geo_proximity_boost(kind);
     base * c_eff * dampener * geo_boost
+}
+
+/// Strategy-aware expansion weight.
+///
+/// Each variant of [`ExpansionStrategy`] computes a different primary
+/// score so the engine can sort the round's candidate queue with a
+/// single comparison. `richness ∈ [0.0, 1.0]` is the normalised
+/// module-count yield from [`crate::core::dependency::ModuleGraph`].
+///
+/// The legacy `expansion_weight()` corresponds exactly to
+/// `GeoConverge` with `richness = 1.0`, so callers that haven't
+/// migrated still get the established production behaviour.
+pub fn expansion_weight_for_strategy(
+    strategy: ExpansionStrategy,
+    kind: TargetKind,
+    c_eff: f64,
+    value: &str,
+    has_paid_keys: bool,
+    richness: f64,
+) -> f64 {
+    let r = richness.clamp(0.0, 1.0);
+    match strategy {
+        ExpansionStrategy::GeoConverge => {
+            // Established weight, plus a gentle (0.5–1.0) richness lift
+            // so two candidates with identical geo weight tie-break on
+            // module yield. Reaches 1.0 at the most-served kind.
+            expansion_weight(kind, c_eff, value, has_paid_keys) * (0.5 + 0.5 * r)
+        }
+        ExpansionStrategy::BreadthFirst => {
+            // Confidence × richness only. No geo bias, no domain
+            // dampener — every confident lead competes flat.
+            c_eff * (0.25 + 0.75 * r)
+        }
+        ExpansionStrategy::DepthFirst => {
+            // c_eff dominates; richness used only as a tiebreaker.
+            // Multiplying by 1.0 + 0.01·r keeps the order strictly by
+            // c_eff for distinct values but breaks ties deterministic-
+            // ally toward richer kinds.
+            c_eff * (1.0 + 0.01 * r)
+        }
+        ExpansionStrategy::RichestFirst => {
+            // Richness dominates. Confidence is the secondary key —
+            // we still gate by `min_expand_confidence` upstream, so
+            // letting it act here only as a tiebreaker is safe.
+            r * (0.5 + 0.5 * c_eff)
+        }
+    }
 }
 
 /// Multiplicative boost for entity types that are one hop from producing
@@ -1035,6 +1134,131 @@ mod tests {
                 .validate()
                 .is_err()
         );
+    }
+
+    // ── ExpansionStrategy ───────────────────────────────────────────────────
+
+    #[test]
+    fn expansion_strategy_default_is_geo_converge() {
+        assert_eq!(
+            ExpansionStrategy::default(),
+            ExpansionStrategy::GeoConverge
+        );
+        assert_eq!(ExpansionStrategy::default().as_str(), "geo_converge");
+    }
+
+    #[test]
+    fn expansion_strategy_round_trips_json() {
+        for s in [
+            ExpansionStrategy::GeoConverge,
+            ExpansionStrategy::BreadthFirst,
+            ExpansionStrategy::DepthFirst,
+            ExpansionStrategy::RichestFirst,
+        ] {
+            let json = serde_json::to_string(&s).unwrap();
+            assert_eq!(json.trim_matches('"'), s.as_str());
+            let back: ExpansionStrategy = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, s);
+        }
+    }
+
+    #[test]
+    fn strategy_geo_converge_matches_legacy_weight_at_full_richness() {
+        let legacy = expansion_weight(TargetKind::Domain, 0.8, "example.com", false);
+        let strat = expansion_weight_for_strategy(
+            ExpansionStrategy::GeoConverge,
+            TargetKind::Domain,
+            0.8,
+            "example.com",
+            false,
+            1.0,
+        );
+        assert!((legacy - strat).abs() < 1e-9);
+    }
+
+    #[test]
+    fn strategy_breadth_first_is_geo_agnostic() {
+        // BreadthFirst should rank IP and Domain similarly when c_eff
+        // matches — geo_proximity_boost no longer dominates.
+        let ip = expansion_weight_for_strategy(
+            ExpansionStrategy::BreadthFirst,
+            TargetKind::IpAddress,
+            0.8,
+            "1.1.1.1",
+            false,
+            0.5,
+        );
+        let domain = expansion_weight_for_strategy(
+            ExpansionStrategy::BreadthFirst,
+            TargetKind::Domain,
+            0.8,
+            "example.com",
+            false,
+            0.5,
+        );
+        // Same c_eff and richness → identical weight under BreadthFirst.
+        assert!((ip - domain).abs() < 1e-9);
+    }
+
+    #[test]
+    fn strategy_richest_first_prioritises_high_richness() {
+        let rich = expansion_weight_for_strategy(
+            ExpansionStrategy::RichestFirst,
+            TargetKind::Email,
+            0.6,
+            "a@b.com",
+            false,
+            1.0,
+        );
+        let poor = expansion_weight_for_strategy(
+            ExpansionStrategy::RichestFirst,
+            TargetKind::Email,
+            0.9,
+            "a@b.com",
+            false,
+            0.1,
+        );
+        // Richer entity wins despite lower confidence.
+        assert!(rich > poor);
+    }
+
+    #[test]
+    fn strategy_depth_first_sorts_by_confidence() {
+        let high = expansion_weight_for_strategy(
+            ExpansionStrategy::DepthFirst,
+            TargetKind::Domain,
+            0.95,
+            "example.com",
+            false,
+            0.5,
+        );
+        let low = expansion_weight_for_strategy(
+            ExpansionStrategy::DepthFirst,
+            TargetKind::Domain,
+            0.55,
+            "example.com",
+            false,
+            1.0,
+        );
+        // c_eff dominates even when low-confidence has max richness.
+        assert!(high > low);
+    }
+
+    #[test]
+    fn scan_options_default_uses_geo_converge() {
+        let opts = ScanOptions::default();
+        assert_eq!(opts.expansion_strategy, ExpansionStrategy::GeoConverge);
+    }
+
+    #[test]
+    fn scan_options_serde_round_trips_expansion_strategy() {
+        let opts = ScanOptions {
+            expansion_strategy: ExpansionStrategy::RichestFirst,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&opts).unwrap();
+        let back: ScanOptions = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.expansion_strategy, ExpansionStrategy::RichestFirst);
     }
 
     #[test]

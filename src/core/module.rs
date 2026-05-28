@@ -7,10 +7,10 @@ use async_trait::async_trait;
 use serde::Serialize;
 
 use crate::core::{
-    entity::Entity,
+    entity::{Entity, EntityKind},
     error::{Error, Result},
     event::EventBus,
-    scan::Target,
+    scan::{Target, TargetKind},
 };
 
 /// Module funding/access cost — drives the `free_only` filter on a scan.
@@ -23,6 +23,70 @@ pub enum ModuleCost {
     KeyGated,
     /// Requires a paid subscription.
     Paid,
+}
+
+/// Coarse functional category for a module. Drives UI grouping in the
+/// module-picker and the module-graph view. Spiderfoot 4.0 ships
+/// equivalent labels (`Footprint`, `Investigate`, `Passive`) attached
+/// to each `sfp_*` plugin; this enum is HSE's analogue.
+///
+/// Categories are derived metadata only — the engine does not gate
+/// dispatch on them. They exist so the operator can filter the module
+/// catalogue (`hse modules --category geo`) and so the SPA can render
+/// the registry as a tabbed grid rather than one long list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleCategory {
+    /// DNS, certificate transparency, WHOIS, subdomain enumeration.
+    DnsRecon,
+    /// Breach corpora, paste exposure, stealer logs, leaked credentials.
+    Breach,
+    /// IP / ASN / BGP / Shodan-style infrastructure intel.
+    Infrastructure,
+    /// Search-engine scraping (Google, Bing, DuckDuckGo, ...).
+    Search,
+    /// Geolocation, geocoding, address resolution, BSSID lookup.
+    Geo,
+    /// Social profiles and username-search across platforms.
+    Social,
+    /// Email parsing, header geo, locale, verification.
+    Email,
+    /// Phone-number metadata, carrier, area code geo.
+    Phone,
+    /// Corporate / company registry / business intel.
+    Corporate,
+    /// Threat intel: malware, C2, abuse lists.
+    Threat,
+    /// Local device sensors (GPS, WiFi, cell, ARP, local interfaces).
+    Sensor,
+    /// People-centric enrichment (proxycurl, keybase, epieos).
+    People,
+    /// Site / app web-crawling, web-server fingerprinting.
+    Web,
+    /// Anything that doesn't fit a more specific bucket.
+    Other,
+}
+
+impl ModuleCategory {
+    /// Stable snake_case identifier (matches serde output).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DnsRecon => "dns_recon",
+            Self::Breach => "breach",
+            Self::Infrastructure => "infrastructure",
+            Self::Search => "search",
+            Self::Geo => "geo",
+            Self::Social => "social",
+            Self::Email => "email",
+            Self::Phone => "phone",
+            Self::Corporate => "corporate",
+            Self::Threat => "threat",
+            Self::Sensor => "sensor",
+            Self::People => "people",
+            Self::Web => "web",
+            Self::Other => "other",
+        }
+    }
 }
 
 /// Public information about a module — exposed via `hse modules` and
@@ -44,6 +108,17 @@ pub struct ModuleInfo {
     /// `all_registered_modules_have_descriptions` regression test in
     /// `tests/smoke.rs` blocks that in CI.
     pub description: &'static str,
+    /// Functional category — group label for the UI module picker.
+    pub category: ModuleCategory,
+    /// `TargetKind`s this module dispatches on (the explicit declaration
+    /// from `Module::consumes()`, not the probed default). Drives the
+    /// dispatch index in `crate::core::dependency::ModuleGraph` and the
+    /// `/api/v1/modules/graph` payload.
+    pub consumes: Vec<&'static str>,
+    /// `EntityKind`s this module is documented to emit. Empty when the
+    /// module hasn't declared its output. Used by the UI to render the
+    /// pivot-chain flow.
+    pub produces: Vec<String>,
 }
 
 /// All modules implement this trait. Default methods give sensible answers
@@ -98,6 +173,50 @@ pub trait Module: Send + Sync {
         ""
     }
 
+    /// Functional category for the module-picker UI. Default `Other`.
+    ///
+    /// This is metadata only — the engine does not gate dispatch on
+    /// category. Override to group the module under one of the
+    /// named [`ModuleCategory`] buckets so it appears under the right
+    /// tab in the SPA's module grid.
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Other
+    }
+
+    /// The `TargetKind`s this module dispatches on.
+    ///
+    /// Default: probe every `TargetKind` against `accepts()` and
+    /// return the matches. Modules whose `accepts()` gate is purely
+    /// `matches!(t.kind, ...)` (the vast majority) get correct
+    /// behaviour for free. Modules that gate by value shape MUST
+    /// override this method explicitly so the dependency graph and
+    /// dispatch index reflect their true input set.
+    ///
+    /// Returned vec is small (≤ 14) so allocation cost is negligible
+    /// — this is invoked once per module at engine construction.
+    fn consumes(&self) -> Vec<TargetKind> {
+        crate::core::dependency::ALL_TARGET_KINDS
+            .iter()
+            .copied()
+            .filter(|k| {
+                self.accepts(&Target::new(
+                    *k,
+                    crate::core::dependency::PROBE_VALUE,
+                ))
+            })
+            .collect()
+    }
+
+    /// The `EntityKind`s this module is documented to emit.
+    ///
+    /// Default: empty. Override to document the module's outputs so
+    /// the dependency-graph view in the UI can render the full pivot
+    /// chain. Empty doesn't mean the module produces nothing — it
+    /// means the module hasn't declared its outputs yet (back-compat).
+    fn produces(&self) -> &'static [EntityKind] {
+        &[]
+    }
+
     /// Built from the other methods — don't override.
     fn info(&self) -> ModuleInfo {
         ModuleInfo {
@@ -106,6 +225,17 @@ pub trait Module: Send + Sync {
             cost: self.cost(),
             passive: self.is_passive(),
             description: self.description(),
+            category: self.category(),
+            consumes: self
+                .consumes()
+                .into_iter()
+                .map(|k| k.canonical_str())
+                .collect(),
+            produces: self
+                .produces()
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
         }
     }
 }
@@ -348,5 +478,65 @@ mod tests {
         assert_eq!(info.cost, ModuleCost::Free);
         assert!(!info.passive);
         assert_eq!(info.description, "");
+        assert_eq!(info.category, ModuleCategory::Other);
+        // StubModule.accepts() returns true for every kind, so the
+        // probe-based default surfaces every TargetKind in `consumes`.
+        assert_eq!(
+            info.consumes.len(),
+            crate::core::dependency::ALL_TARGET_KINDS.len()
+        );
+        assert!(info.produces.is_empty());
+    }
+
+    struct CategorisedModule;
+    #[async_trait]
+    impl Module for CategorisedModule {
+        fn name(&self) -> &'static str {
+            "categorised"
+        }
+        fn priority(&self) -> u8 {
+            10
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> Result<ModuleResult> {
+            Ok(ModuleResult::new())
+        }
+        fn category(&self) -> ModuleCategory {
+            ModuleCategory::DnsRecon
+        }
+        fn produces(&self) -> &'static [EntityKind] {
+            const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Domain];
+            KINDS
+        }
+    }
+
+    #[test]
+    fn override_category_and_produces_propagate_to_info() {
+        let m = CategorisedModule;
+        let info = m.info();
+        assert_eq!(info.category, ModuleCategory::DnsRecon);
+        assert_eq!(info.consumes, vec!["domain"]);
+        assert_eq!(info.produces, vec!["ip_address", "domain"]);
+    }
+
+    #[test]
+    fn module_category_as_str_round_trips_serde() {
+        for cat in [
+            ModuleCategory::DnsRecon,
+            ModuleCategory::Breach,
+            ModuleCategory::Geo,
+            ModuleCategory::Other,
+        ] {
+            let json = serde_json::to_string(&cat).unwrap();
+            // serde-snake_case strips quotes
+            let body = json.trim_matches('"');
+            assert_eq!(body, cat.as_str());
+        }
     }
 }

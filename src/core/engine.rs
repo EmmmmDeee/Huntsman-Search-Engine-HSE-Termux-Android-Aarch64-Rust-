@@ -30,6 +30,7 @@ use tokio::time::{sleep, timeout};
 use tracing::{info, warn};
 
 use crate::core::{
+    dependency::ModuleGraph,
     entity::{Entity, normalise},
     error::Result,
     event::{Event, EventBus, EventKind},
@@ -43,6 +44,11 @@ pub struct ScanEngine {
     store: Arc<dyn StoragePort>,
     bus: EventBus,
     emitter: EventEmitter,
+    /// Pre-computed dispatch index + richness scoring. Built once at
+    /// engine construction so the per-target dispatch loop can skip
+    /// the O(M) `accepts()` scan and so the expansion ranker can pull
+    /// the richness factor in constant time.
+    graph: Arc<ModuleGraph>,
 }
 
 /// Reason an expansion round stopped before depth was exhausted.
@@ -125,12 +131,21 @@ impl ScanEngine {
     ) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
         let emitter = EventEmitter::new(Arc::clone(&store), bus.clone());
+        let graph = Arc::new(ModuleGraph::build(&modules));
         Self {
             modules,
             store,
             bus,
             emitter,
+            graph,
         }
+    }
+
+    /// Read-only access to the pre-computed module dependency graph.
+    /// Used by the HTTP API to surface `/api/v1/modules/graph` and by
+    /// integration tests that need to introspect dispatch counts.
+    pub fn graph(&self) -> &ModuleGraph {
+        &self.graph
     }
 
     fn emit(&self, scan_id: &str, kind: EventKind) {
@@ -374,11 +389,14 @@ impl ScanEngine {
                 let new_target = Target::new(tk, entity.value.clone());
                 let key = visit_key(&new_target);
                 if visited.insert(key) {
-                    let weight = crate::core::scan::expansion_weight(
+                    let richness = self.graph.richness_for(tk);
+                    let weight = crate::core::scan::expansion_weight_for_strategy(
+                        opts.expansion_strategy,
                         tk,
                         entity.c_effective(),
                         &entity.value,
                         has_paid,
+                        richness,
                     );
                     next.push((new_target, weight));
                 }
@@ -666,7 +684,17 @@ impl ScanEngine {
         stats: &mut ModuleStats,
         dispatched: &mut DispatchLog,
     ) -> Result<()> {
-        for module in &self.modules {
+        // O(1) dispatch-index lookup replaces the O(M) accepts() scan.
+        // Modules are already priority-sorted within each bucket so we
+        // walk them in the same order the legacy `for module in &self.modules`
+        // loop did.
+        let candidates: Vec<Arc<dyn Module>> = self
+            .graph
+            .modules_for(target.kind)
+            .iter()
+            .filter_map(|&idx| self.modules.get(idx).map(Arc::clone))
+            .collect();
+        for module in &candidates {
             if ctx.cancel.is_cancelled() {
                 return Ok(());
             }
@@ -675,6 +703,9 @@ impl ScanEngine {
             }
             let name = module.name();
 
+            // Belt-and-braces: a module whose `consumes()` declaration
+            // diverges from its runtime `accepts()` would otherwise
+            // slip through. Cheap re-check on the hit path.
             if !module.accepts(target) {
                 continue;
             }
@@ -782,9 +813,18 @@ impl ScanEngine {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
 
+        // O(1) dispatch-index lookup — only modules accepting `target.kind`
+        // are even considered. Phase 1 then filters to Paid.
+        let candidates: Vec<Arc<dyn Module>> = self
+            .graph
+            .modules_for(target.kind)
+            .iter()
+            .filter_map(|&idx| self.modules.get(idx).map(Arc::clone))
+            .collect();
+
         // Phase 1: Run Paid modules synchronously so discovered keys are
         // available via hot-inject before the concurrent phase begins.
-        for module in &self.modules {
+        for module in &candidates {
             if !matches!(module.cost(), ModuleCost::Paid) {
                 continue;
             }
@@ -865,7 +905,7 @@ impl ScanEngine {
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
         let scan_id_arc: Arc<str> = scan_id.into();
 
-        for module in &self.modules {
+        for module in &candidates {
             if matches!(module.cost(), ModuleCost::Paid) {
                 continue;
             }
@@ -1004,7 +1044,14 @@ fn module_skip_reason(
     if is_expansion && module.is_passive() && SENSOR_MODULES.contains(&name) {
         return Some("sensor (already ran on seed round)");
     }
-    const SEED_ONLY_MODULES: &[&str] = &["oathnet_pro", "see_know"];
+    // oathnet_pro stays seed-only — it has the heaviest per-query weight
+    // and its own internal pivot logic. SeekNow (`see_know`) was previously
+    // gated here too, but the per-scan budget cap inside
+    // `util::see_know` (default 24, env-tunable) already protects the
+    // quota while letting expansion rounds pivot on newly-discovered
+    // identities. The /credits endpoint plus the `is_quota_exhausted`
+    // flag in the util layer collapse any post-quota calls to no-ops.
+    const SEED_ONLY_MODULES: &[&str] = &["oathnet_pro"];
     if is_expansion && SEED_ONLY_MODULES.contains(&name) {
         return Some("API-expensive (seed round only)");
     }

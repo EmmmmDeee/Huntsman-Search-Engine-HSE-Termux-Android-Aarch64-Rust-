@@ -7,6 +7,7 @@
 //! | GET    | `/api/v1/health`                  | `health`                 |
 //! | GET    | `/api/v1/version`                 | `version`                |
 //! | GET    | `/api/v1/modules`                 | `modules_list`           |
+//! | GET    | `/api/v1/modules/graph`           | `modules_graph` (v1.1+)  |
 //! | POST   | `/api/v1/scans`                   | `scan_create`            |
 //! | GET    | `/api/v1/scans`                   | `scan_list`              |
 //! | GET    | `/api/v1/scans/{id}`              | `scan_get`               |
@@ -127,6 +128,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/version", get(handlers::version))
         // ── modules ──
         .route("/modules", get(handlers::modules_list))
+        .route("/modules/graph", get(handlers::modules_graph))
         .route("/stats", get(handlers::stats))
         // ── scans ──
         .route(

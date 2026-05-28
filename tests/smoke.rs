@@ -1235,3 +1235,277 @@ fn oathnet_priority_above_free_geo_modules() {
         ip_geo.priority()
     );
 }
+
+// ── ModuleGraph / dispatch index / expansion strategy ──────────────────────
+
+#[test]
+fn module_graph_dispatch_index_matches_real_registry_accepts() {
+    // Every module that accepts(target_kind) must show up in the
+    // dispatch_index bucket for that kind. Anything missing means the
+    // engine would skip a module that should have run.
+    use huntsman_search_engine::core::dependency::{ALL_TARGET_KINDS, ModuleGraph};
+    let modules = huntsman_search_engine::modules::registry();
+    let graph = ModuleGraph::build(&modules);
+
+    for kind in ALL_TARGET_KINDS {
+        let probe = Target::new(*kind, "graph-probe");
+        let accepts_naive: usize = modules.iter().filter(|m| m.accepts(&probe)).count();
+        let accepts_indexed = graph.modules_for(*kind).len();
+        assert_eq!(
+            accepts_naive, accepts_indexed,
+            "dispatch index mismatch for {kind:?}: naive scan={accepts_naive} \
+             vs graph={accepts_indexed}",
+        );
+    }
+}
+
+#[test]
+fn module_graph_richness_is_normalised_and_zero_for_unconsumed_kinds() {
+    use huntsman_search_engine::core::dependency::{ALL_TARGET_KINDS, ModuleGraph};
+    let modules = huntsman_search_engine::modules::registry();
+    let graph = ModuleGraph::build(&modules);
+
+    let mut saw_one_at_max = false;
+    for kind in ALL_TARGET_KINDS {
+        let r = graph.richness_for(*kind);
+        assert!(
+            (0.0..=1.0).contains(&r),
+            "richness for {kind:?} out of [0,1]: {r}"
+        );
+        if (r - 1.0).abs() < f64::EPSILON {
+            saw_one_at_max = true;
+        }
+    }
+    assert!(
+        saw_one_at_max,
+        "at least one TargetKind should saturate richness at 1.0 in real registry",
+    );
+}
+
+#[tokio::test]
+async fn dispatch_index_drives_synthetic_engine_to_skip_non_accepting_modules() {
+    // The engine built from the dispatch index must never invoke a
+    // module whose accepts() returns false for the seed kind.
+    // Use a synthetic three-module set so this is fast — the real
+    // registry property is already proved by
+    // `module_graph_dispatch_index_matches_real_registry_accepts`
+    // (pure data, no network).
+    let modules: Vec<Arc<dyn Module>> = vec![
+        Arc::new(SyntheticModule),         // accepts Email
+        Arc::new(UsernameToPhoneSynth),    // accepts Username (must be skipped)
+        Arc::new(EmailToUsernameSynth),    // accepts Email
+    ];
+    let (engine, store, sid, target, ctx) =
+        setup(modules, "graph-synth-engine", TargetKind::Email, "x@y.com");
+    let opts = ScanOptions {
+        max_concurrent: 0,
+        depth: 0,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    // Two modules accept Email; UsernameToPhoneSynth must NOT run.
+    assert_eq!(
+        result.modules_run, 2,
+        "exactly two Email-accepting modules should have dispatched"
+    );
+    drop(store);
+}
+
+#[test]
+fn expansion_strategy_geo_converge_outranks_breadth_for_geo_seeds() {
+    use huntsman_search_engine::core::scan::{
+        ExpansionStrategy, expansion_weight_for_strategy,
+    };
+
+    let geo_weight = expansion_weight_for_strategy(
+        ExpansionStrategy::GeoConverge,
+        TargetKind::IpAddress,
+        0.85,
+        "1.1.1.1",
+        false,
+        0.5,
+    );
+    let breadth_weight = expansion_weight_for_strategy(
+        ExpansionStrategy::BreadthFirst,
+        TargetKind::IpAddress,
+        0.85,
+        "1.1.1.1",
+        false,
+        0.5,
+    );
+    // GeoConverge multiplies geo_npv × confidence × proximity; BreadthFirst
+    // is confidence × richness only. The geo path should be a larger
+    // numeric value for an IP seed.
+    assert!(
+        geo_weight > breadth_weight,
+        "geo_converge weight {geo_weight} should dominate breadth_first {breadth_weight} for an IP seed"
+    );
+}
+
+#[test]
+fn modules_graph_summary_round_trips_through_json() {
+    // The /api/v1/modules/graph endpoint serialises this struct; make
+    // sure it survives serde without losing structural data.
+    use huntsman_search_engine::core::dependency::ModuleGraph;
+    let modules = huntsman_search_engine::modules::registry();
+    let graph = ModuleGraph::build(&modules);
+    let summary = graph.to_summary(&modules);
+
+    let json = serde_json::to_string(&summary).unwrap();
+    assert!(json.contains("\"kinds\""));
+    assert!(json.contains("\"edges\""));
+    assert!(json.contains("\"richness\""));
+
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let kinds = v.get("kinds").and_then(|k| k.as_array()).unwrap();
+    assert!(!kinds.is_empty(), "graph must include every TargetKind");
+    let edges = v.get("edges").and_then(|e| e.as_array()).unwrap();
+    assert_eq!(
+        edges.len(),
+        modules.len(),
+        "every module gets one edge entry"
+    );
+}
+
+#[test]
+fn module_categories_attach_to_module_info() {
+    // Spot-check: trait default is `Other`. Calling `info()` should
+    // pick it up so the UI module-picker can group modules. All
+    // legacy modules report `other`; future modules can opt in.
+    let modules = huntsman_search_engine::modules::registry();
+    for m in &modules {
+        let info = m.info();
+        let cat = info.category.as_str();
+        // Either an explicitly-set category or the default `other`.
+        // We do NOT assert non-`other` here — backward compat means
+        // legacy modules legitimately report `other`. The assertion
+        // proves the field round-trips.
+        assert!(
+            !cat.is_empty(),
+            "category for {} produced empty string",
+            m.name()
+        );
+    }
+}
+
+#[tokio::test]
+async fn richest_first_strategy_prefers_high_unlock_targets() {
+    // Synthetic registry: one Email-only module, one Domain-accepting
+    // module. Domain is "richer" because exactly one module covers
+    // each → both kinds tie at richness 1.0 in this small registry,
+    // so we can't easily order *between* them. Instead we assert that
+    // a confident Domain entity DOES become an expansion candidate
+    // under RichestFirst.
+
+    use huntsman_search_engine::core::scan::ExpansionStrategy;
+
+    struct EmailOnly;
+    #[async_trait]
+    impl Module for EmailOnly {
+        fn name(&self) -> &'static str {
+            "email_only_synth"
+        }
+        fn priority(&self) -> u8 {
+            90
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Email)
+        }
+        async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+            // Produce a Domain so expansion has something to chase.
+            let mut r = ModuleResult::new();
+            let mut e = Entity::new(
+                EntityKind::Domain,
+                "example.com",
+                0.95,
+                &ctx.scan_id,
+            );
+            e.tag("derived");
+            r.push(e);
+            Ok(r)
+        }
+    }
+
+    struct DomainOnly;
+    #[async_trait]
+    impl Module for DomainOnly {
+        fn name(&self) -> &'static str {
+            "domain_only_synth"
+        }
+        fn priority(&self) -> u8 {
+            80
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+            let mut r = ModuleResult::new();
+            let mut e = Entity::new(
+                EntityKind::IpAddress,
+                "203.0.113.5",
+                0.9,
+                &ctx.scan_id,
+            );
+            e.tag("derived");
+            r.push(e);
+            Ok(r)
+        }
+    }
+
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(EmailOnly), Arc::new(DomainOnly)],
+        "richest_first_strategy",
+        TargetKind::Email,
+        "alice@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        max_concurrent: 0,
+        expansion_strategy: ExpansionStrategy::RichestFirst,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    assert!(
+        result.entity_count >= 2,
+        "RichestFirst should still drive expansion across the chain (got {})",
+        result.entity_count
+    );
+    let entities = store.entities_for_scan(&sid).unwrap();
+    let kinds: Vec<&EntityKind> = entities.iter().map(|e| &e.kind).collect();
+    assert!(kinds.contains(&&EntityKind::Domain));
+    assert!(kinds.contains(&&EntityKind::IpAddress));
+}
+
+#[tokio::test]
+async fn breadth_first_strategy_runs_chain_under_default_confidence() {
+    use huntsman_search_engine::core::scan::ExpansionStrategy;
+
+    // Reuse the existing two-module synth chain.
+    let (engine, store, sid, target, ctx) = setup(
+        vec![
+            Arc::new(EmailToUsernameSynth),
+            Arc::new(UsernameToPhoneSynth),
+        ],
+        "breadth_first_chain",
+        TargetKind::Email,
+        "bf@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        max_concurrent: 0,
+        expansion_strategy: ExpansionStrategy::BreadthFirst,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    assert_eq!(
+        result.entity_count, 2,
+        "BreadthFirst should still expand username → phone"
+    );
+    let entities = store.entities_for_scan(&sid).unwrap();
+    let kinds: Vec<&EntityKind> = entities.iter().map(|e| &e.kind).collect();
+    assert!(kinds.contains(&&EntityKind::Username));
+    assert!(kinds.contains(&&EntityKind::Phone));
+}

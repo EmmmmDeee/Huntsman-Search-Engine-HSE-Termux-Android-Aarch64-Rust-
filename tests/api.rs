@@ -187,6 +187,66 @@ async fn modules_list_returns_array() {
         json["count"].as_u64().unwrap() >= 1,
         "should have at least 1 module (the synthetic one)"
     );
+
+    // The v1.1+ schema adds category + produces; assert they're present.
+    let first = &modules[0];
+    assert!(
+        first.get("category").is_some(),
+        "every module entry must have a category"
+    );
+    assert!(
+        first.get("produces").is_some(),
+        "every module entry must have a produces array"
+    );
+    assert!(
+        first.get("accepts").is_some(),
+        "every module entry must have an accepts array"
+    );
+}
+
+#[tokio::test]
+async fn modules_graph_endpoint_returns_kinds_and_edges() {
+    // /api/v1/modules/graph — the dependency-graph view consumed by
+    // the SPA's pivot-chain visualisation.
+    let app = test_app("modules_graph");
+    let resp = app.oneshot(get("/api/v1/modules/graph")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+
+    let kinds = json["kinds"]
+        .as_array()
+        .expect("graph must include kinds array");
+    assert!(!kinds.is_empty(), "kinds array must be non-empty");
+    // First entry should expose richness, module_count, and modules.
+    let first = &kinds[0];
+    assert!(first.get("richness").is_some());
+    assert!(first.get("module_count").is_some());
+    assert!(first.get("modules").is_some());
+    assert!(first.get("kind").is_some());
+
+    let edges = json["edges"]
+        .as_array()
+        .expect("graph must include edges array");
+    assert!(!edges.is_empty());
+    assert!(edges[0].get("consumes").is_some());
+    assert!(edges[0].get("produces").is_some());
+    assert!(edges[0].get("category").is_some());
+
+    let module_count = json["module_count"].as_u64().unwrap();
+    assert!(module_count >= 1);
+}
+
+#[tokio::test]
+async fn scan_create_accepts_expansion_strategy_option() {
+    // The CLI/API surface for ExpansionStrategy must round-trip through
+    // the scan-create endpoint so the SPA can offer it as a setting.
+    let app = test_app("scan_strategy");
+    let body = r#"{
+        "kind":"domain","value":"example.com",
+        "options":{"expansion_strategy":"richest_first","depth":0}
+    }"#;
+    let resp = app.oneshot(post_json("/api/v1/scans", body)).await.unwrap();
+    assert_eq!(resp.status(), 202);
 }
 
 // ── 4. Scan create (valid) ────────────────────────────────────────────────

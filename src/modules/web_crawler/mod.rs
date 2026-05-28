@@ -35,7 +35,7 @@ use url::Url;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -96,6 +96,21 @@ impl Module for WebCrawler {
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain | TargetKind::Url)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Web
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Email,
+            EntityKind::Url,
+            EntityKind::Domain,
+            EntityKind::Phone,
+            EntityKind::ApiKey,
+        ];
+        KINDS
     }
 
     fn max_timeout_ms(&self) -> u64 {

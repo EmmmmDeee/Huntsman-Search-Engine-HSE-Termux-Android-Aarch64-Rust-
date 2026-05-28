@@ -41,11 +41,28 @@ static RESPONSE_CACHE: std::sync::LazyLock<Mutex<std::collections::HashMap<Strin
 static QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static SESSION_QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// SeekNow's premiumhq plan grants 5,000 daily lookups. We cap per-scan
-/// at 8 (universal search + up to 7 specialised endpoints per seed type)
-/// and per-process at 200 to support deep radar sessions while leaving
-/// daily-quota headroom.
-const MAX_QUERIES_PER_SCAN: u32 = 8;
+/// SeekNow's premiumhq plan grants 5,000 daily lookups. Each scan now
+/// gets a richer per-scan envelope (default 24) so it can dispatch the
+/// universal search plus ~10 specialised endpoints across the pivot
+/// graph (Email + every discovered Username/Phone/Domain/IP in the
+/// scan). The session cap stays at 200 so long-running radar / live
+/// sessions stop short of the 5,000/day ceiling.
+///
+/// Both caps are tunable via `HUNTSMAN_SEEKNOW_SCAN_CAP` and
+/// `HUNTSMAN_SEEKNOW_SESSION_CAP` for operators with different plan
+/// tiers.
+const DEFAULT_MAX_QUERIES_PER_SCAN: u32 = 24;
+
+fn max_queries_per_scan() -> u32 {
+    static CAP: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
+        std::env::var("HUNTSMAN_SEEKNOW_SCAN_CAP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&v: &u32| v > 0)
+            .unwrap_or(DEFAULT_MAX_QUERIES_PER_SCAN)
+    });
+    *CAP
+}
 
 fn max_queries_per_session() -> u32 {
     static CAP: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
@@ -57,8 +74,20 @@ fn max_queries_per_session() -> u32 {
     *CAP
 }
 
+/// Cache key combining endpoint path, normalised query, and query
+/// type (when applicable). Disambiguates the universal /search path
+/// — auto-detect ("") and typed ("email") on the same value previously
+/// collided, masking type-specific result variants.
 fn cache_key(path: &str, query: &str) -> String {
     format!("{path}:{}", query.to_lowercase())
+}
+
+fn typed_cache_key(path: &str, query: &str, query_type: &str) -> String {
+    if query_type.is_empty() {
+        cache_key(path, query)
+    } else {
+        format!("{path}#{query_type}:{}", query.to_lowercase())
+    }
 }
 
 fn cache_get(key: &str) -> Option<Vec<Value>> {
@@ -76,10 +105,42 @@ fn cache_put(key: String, items: Vec<Value>) {
     }
 }
 
-fn budget_remaining() -> bool {
-    QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire) < MAX_QUERIES_PER_SCAN
+/// True if there's room in both the per-scan and per-session budgets.
+/// Public so the module layer can short-circuit endpoint plans before
+/// allocating per-endpoint futures.
+pub fn budget_remaining() -> bool {
+    QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire) < max_queries_per_scan()
         && SESSION_QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire)
             < max_queries_per_session()
+}
+
+/// Remaining queries in the per-scan budget. Used by the module-layer
+/// planner to decide how many specialised endpoints to dispatch.
+pub fn scan_budget_remaining() -> u32 {
+    let cap = max_queries_per_scan();
+    let used = QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire);
+    cap.saturating_sub(used)
+}
+
+/// Snapshot of current per-scan + per-session budget consumption.
+/// Surfaced for diagnostics (`hse doctor`) and tests.
+#[derive(Debug, Clone, Copy)]
+pub struct BudgetSnapshot {
+    pub scan_used: u32,
+    pub scan_cap: u32,
+    pub session_used: u32,
+    pub session_cap: u32,
+    pub quota_exhausted: bool,
+}
+
+pub fn budget_snapshot() -> BudgetSnapshot {
+    BudgetSnapshot {
+        scan_used: QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire),
+        scan_cap: max_queries_per_scan(),
+        session_used: SESSION_QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire),
+        session_cap: max_queries_per_session(),
+        quota_exhausted: is_quota_exhausted(),
+    }
 }
 
 fn budget_increment() {
@@ -118,7 +179,10 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
 /// The `query_type` is one of: email, username, domain, ip, phone,
 /// discord_id, steam_id. Pass an empty string for auto-detect.
 pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Value>> {
-    let ck = cache_key("search", query);
+    // Disambiguated cache key — auto-detect ("") and typed ("email")
+    // queries on the same value used to collide, masking the typed
+    // variant's specialised result rows.
+    let ck = typed_cache_key("search", query, query_type);
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
@@ -140,6 +204,51 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     let items = extract_items(&resp);
     cache_put(ck, items.clone());
     Ok(items)
+}
+
+/// Steam profile lookup via GET /api/v1/gaming/steam?id=<value>
+///
+/// Some plans publish gaming/steam alongside roblox/xbox/minecraft;
+/// safe to call against arbitrary 17-digit Steam IDs surfaced from
+/// breach data.
+pub async fn steam_profile(key: &str, steam_id: &str) -> Result<Vec<Value>> {
+    get_path(key, "gaming/steam", &[("id", steam_id)]).await
+}
+
+/// Credits endpoint — returns the SeekNow account's remaining daily
+/// quota. Used by the module layer for proactive tier decisions:
+/// callers can skip optional endpoint plans when `remaining < N`.
+///
+/// Returns `Ok(None)` if the endpoint is missing or the response is
+/// not understood — callers should treat that as "quota unknown, keep
+/// going" so the budget atomic remains authoritative.
+///
+/// Does NOT consume any of the per-scan budget — credits-check is
+/// considered metadata, not a billable lookup.
+pub async fn credits(key: &str) -> Result<Option<u64>> {
+    if is_quota_exhausted() {
+        return Ok(Some(0));
+    }
+    let url = format!("{}/credits", base_url());
+    let body = match curl_exec(&url, key, None).await {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
+    let v: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    // Common shapes: { "credits_remaining": N }, { "remaining": N },
+    // { "data": { "credits": N } }.
+    let remaining = v
+        .get("credits_remaining")
+        .or_else(|| v.get("remaining"))
+        .or_else(|| v.get("credits"))
+        .or_else(|| v.pointer("/data/credits_remaining"))
+        .or_else(|| v.pointer("/data/credits"))
+        .or_else(|| v.pointer("/data/remaining"))
+        .and_then(|x| x.as_u64());
+    Ok(remaining)
 }
 
 /// Stealer-log search via GET /api/v1/stealer?q=<value>
@@ -416,5 +525,55 @@ mod tests {
     fn escape_json_handles_quotes_and_backslashes() {
         assert_eq!(escape_json(r#"hello"world"#), r#"hello\"world"#);
         assert_eq!(escape_json(r"path\to\file"), r"path\\to\\file");
+    }
+
+    #[test]
+    fn typed_cache_key_disambiguates_query_type_from_auto_detect() {
+        let auto = typed_cache_key("search", "alice", "");
+        let typed = typed_cache_key("search", "alice", "email");
+        assert_ne!(
+            auto, typed,
+            "auto-detect and typed search must NOT share a cache key"
+        );
+        // Without a type, falls back to the legacy key shape.
+        assert_eq!(auto, cache_key("search", "alice"));
+        // Typed form includes the type marker.
+        assert!(typed.contains("#email"));
+    }
+
+    #[test]
+    fn scan_budget_remaining_decreases_with_increments() {
+        reset_budget();
+        let start = scan_budget_remaining();
+        budget_increment();
+        let after = scan_budget_remaining();
+        assert_eq!(start, after + 1, "increment must consume exactly one credit");
+        reset_budget();
+    }
+
+    #[test]
+    fn budget_snapshot_reports_active_caps() {
+        reset_budget();
+        let snap = budget_snapshot();
+        assert_eq!(snap.scan_used, 0);
+        assert!(snap.scan_cap >= 1);
+        assert!(!snap.quota_exhausted);
+        budget_increment();
+        let snap2 = budget_snapshot();
+        assert_eq!(snap2.scan_used, 1);
+        reset_budget();
+    }
+
+    #[test]
+    fn default_scan_cap_is_higher_than_legacy_eight() {
+        // Regression guard for the seek-eu remodel: the legacy cap was
+        // 8 lookups, leaving 99.84% of the daily quota unused. The new
+        // default must be at least 16.
+        reset_budget();
+        let cap = max_queries_per_scan();
+        assert!(
+            cap >= 16,
+            "scan cap dropped to {cap} — must remain ≥ 16 to leverage SeekNow quota"
+        );
     }
 }
