@@ -1285,12 +1285,24 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let correlations = store.correlations_for_scan(&sid)?;
 
     if cmd.output == "json" {
+        // Full self-optimization payload — scan + entities + correlations
+        // + diagnostics (module ranking, confidence calibration, geo
+        // precision report, cross-source overlaps, optimization hints,
+        // enrichment lineage).
+        let wall_ms = scan
+            .finished_at
+            .and_then(|f| f.checked_sub(scan.started_at))
+            .unwrap_or(0)
+            .saturating_mul(1000);
+        let diag =
+            crate::util::diagnostics::analyse(&sid, &cmd.kind, &cmd.value, wall_ms, &entities);
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "scan": scan,
                 "entities": entities,
                 "correlations": correlations,
+                "diagnostics": diag,
             }))?
         );
     } else if cmd.output == "dossier" {

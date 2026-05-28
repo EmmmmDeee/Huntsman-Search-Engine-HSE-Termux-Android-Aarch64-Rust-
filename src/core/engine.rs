@@ -545,6 +545,8 @@ impl ScanEngine {
                         },
                     );
                     scan_entity_for_keys(&entity);
+                    let mut entity = entity;
+                    enrich_geospatial(&mut entity);
                     if let Some(existing) = entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
                     } else {
@@ -961,6 +963,70 @@ fn module_skip_reason(
         return Some("API-expensive (seed round only)");
     }
     None
+}
+
+/// Augment Coordinates entities with geohash + timezone, and Address
+/// entities with parsed admin-hierarchy components. Runs once per
+/// emission so downstream correlators see the enriched evidence.
+fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::util::geohash;
+    let _ = Entity::new(EntityKind::Email, "noop", 0.0, ""); // type fix
+    match entity.kind {
+        EntityKind::Coordinates => {
+            if let Some((lat, lon)) = geohash::parse_coords(&entity.value) {
+                let h = geohash::geohash(lat, lon, 7);
+                let tz = geohash::timezone_for(lat, lon);
+                let mut ev = Evidence::new("geo_normalize", "Geospatial enrichment");
+                if !h.is_empty() {
+                    ev = ev.with_attr("geohash", &h);
+                }
+                ev = ev.with_attr("timezone", tz);
+                ev = ev.with_attr("lat", format!("{lat:.6}"));
+                ev = ev.with_attr("lon", format!("{lon:.6}"));
+                // Hemisphere + rough region tags
+                let hemisphere = if lat >= 0.0 { "northern" } else { "southern" };
+                ev = ev.with_attr("hemisphere", hemisphere);
+                entity.add_evidence(ev);
+                entity.tag(format!("geohash:{}", &h[..h.len().min(5)]));
+                entity.tag(format!("tz:{tz}"));
+            }
+        }
+        EntityKind::Address => {
+            let parsed = geohash::parse_address(&entity.value);
+            let mut ev = Evidence::new("geo_normalize", "Address parse + normalization");
+            let mut any = false;
+            if let Some(s) = &parsed.street {
+                ev = ev.with_attr("addr_street", s);
+                any = true;
+            }
+            if let Some(c) = &parsed.city {
+                ev = ev.with_attr("addr_city", c);
+                any = true;
+            }
+            if let Some(s) = &parsed.state {
+                ev = ev.with_attr("addr_state", s);
+                any = true;
+            }
+            if let Some(p) = &parsed.postal_code {
+                ev = ev.with_attr("addr_postal", p);
+                any = true;
+            }
+            if let Some(c) = &parsed.country {
+                ev = ev.with_attr("addr_country", c);
+                any = true;
+            }
+            if let Some(iso) = &parsed.iso_country {
+                ev = ev.with_attr("addr_iso", iso);
+                entity.tag(format!("country:{iso}"));
+                any = true;
+            }
+            if any {
+                entity.add_evidence(ev);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
