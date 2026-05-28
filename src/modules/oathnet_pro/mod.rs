@@ -100,13 +100,15 @@ impl Module for OathnetPro {
         // ── Query 1: Breach search ──────────────────────────────────────
         // Highest value endpoint: single query returns emails, usernames,
         // phones, names, IPs, addresses, passwords, geo, DOB, social
-        // handles. Use full page for identity targets (high signal), small
-        // page for infra targets (noisy — many unrelated rows).
+        // handles. The API charges per QUERY not per record — larger
+        // page_size is free ROI. Docs default is 100, max is 1000.
+        // Use 100 for identity targets, 50 for noisy infra targets
+        // (non-matching rows still produce candidate entities).
         let page_size: u32 = match target.kind {
-            TargetKind::Email | TargetKind::Username => 15,
-            TargetKind::Phone | TargetKind::FullName => 10,
-            TargetKind::IpAddress | TargetKind::Domain => 5,
-            _ => 10,
+            TargetKind::Email | TargetKind::Username => 100,
+            TargetKind::Phone | TargetKind::FullName => 100,
+            TargetKind::IpAddress | TargetKind::Domain => 50,
+            _ => 50,
         };
         let items = oathnet::search(key, paths::BREACH, field, &target.value, page_size).await?;
         if items.is_empty() {
@@ -169,7 +171,7 @@ impl Module for OathnetPro {
         if matches!(target.kind, TargetKind::Email | TargetKind::Username)
             && !ctx.cancel.is_cancelled()
             && let Ok(stealer_items) =
-                oathnet::search(key, paths::STEALER, field, &target.value, 10).await
+                oathnet::search(key, paths::STEALER, field, &target.value, 100).await
         {
             for item in &stealer_items {
                 extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
@@ -476,6 +478,71 @@ fn extract_breach_entities(
         e.tag(tags::BREACH);
         e.tag("oathnet-pro");
         e.tag("instagram");
+        e.add_evidence(ev.clone());
+        result.push(e);
+    }
+
+    // LinkedIn handle — unlocks proxycurl (paid LinkedIn enrichment).
+    // The field may contain a URL or a bare handle. Emit as Url if it
+    // looks like a URL, else as Username with a linkedin: prefix.
+    if let Some(li) = val_str(item, "linkedin") {
+        let lower = li.to_lowercase();
+        if lower.contains("linkedin.com") {
+            if seen.insert(format!("@li:{lower}")) {
+                let url_val = if lower.starts_with("http") {
+                    li.clone()
+                } else {
+                    format!("https://{li}")
+                };
+                let mut e = Entity::new(EntityKind::Url, &url_val, 0.60, scan_id);
+                e.tag(tags::BREACH);
+                e.tag("oathnet-pro");
+                e.tag("linkedin");
+                e.add_evidence(ev.clone());
+                result.push(e);
+            }
+        } else if seen.insert(format!("@li-handle:{lower}")) {
+            let mut e = Entity::new(
+                EntityKind::Username,
+                format!("linkedin:{li}"),
+                0.55,
+                scan_id,
+            );
+            e.tag(tags::BREACH);
+            e.tag("oathnet-pro");
+            e.tag("linkedin");
+            e.add_evidence(ev.clone());
+            result.push(e);
+        }
+    }
+
+    // Email-domain → Domain entity. The breach record carries the
+    // sender/account email's host as a dedicated field. Emitting it
+    // unlocks dns_intel/cert_intel/securitytrails/wayback/cloud_storage
+    // — all free modules — for that domain without further cost.
+    if let Some(ed) = val_str(item, "email_domain") {
+        let lower = ed.to_lowercase();
+        if lower.contains('.') && !lower.contains('@') && seen.insert(format!("@edomain:{lower}")) {
+            let mut e = Entity::new(EntityKind::Domain, &lower, 0.55, scan_id);
+            e.tag(tags::BREACH);
+            e.tag("oathnet-pro");
+            e.tag("email-domain");
+            e.add_evidence(ev.clone());
+            result.push(e);
+        }
+    }
+
+    // Password hash → seed for pwned_passwords (free k-anonymity lookup
+    // confirms whether the hash is in known breach corpora). Emit as a
+    // low-confidence ApiKey entity tagged for that module.
+    if let Some(ph) = val_str(item, "password_hash")
+        && ph.len() >= 32
+        && seen.insert(format!("@pwhash:{}", &ph[..16.min(ph.len())]))
+    {
+        let mut e = Entity::new(EntityKind::Password, &ph, 0.50, scan_id);
+        e.tag(tags::BREACH);
+        e.tag("oathnet-pro");
+        e.tag("password-hash");
         e.add_evidence(ev);
         result.push(e);
     }
