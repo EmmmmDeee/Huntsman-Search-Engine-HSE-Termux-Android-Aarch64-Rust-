@@ -223,7 +223,7 @@ pub async fn osint(key: &str, path: &str, param: &str, value: &str) -> Result<Va
     }
     let data = env.data.unwrap_or(Value::Null);
     if !data.is_null() {
-        cache_put(ck, &[data.clone()]);
+        cache_put(ck, std::slice::from_ref(&data));
     }
     Ok(data)
 }
