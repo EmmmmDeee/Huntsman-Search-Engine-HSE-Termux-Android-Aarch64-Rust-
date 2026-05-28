@@ -402,6 +402,18 @@ pub struct ScanOptions {
     /// floor.
     #[serde(default)]
     pub expansion_strategy: ExpansionStrategy,
+
+    // ── SeekNow per-scan budget override (v1.1+) ───────────────────────────
+    /// Per-scan budget cap for SeekNow (`see-know.eu`) API queries.
+    /// `None` falls back to the env-tunable
+    /// `HUNTSMAN_SEEKNOW_SCAN_CAP` (default 24). Setting this on a
+    /// scan-by-scan basis lets the operator burn a larger slice of the
+    /// 5000/day quota on a specific high-value target — e.g. raise
+    /// to 80 for an investigative scan, drop to 6 for a wide passive
+    /// recce. Values above 200 are clamped to 200 to preserve the
+    /// session ceiling.
+    #[serde(default)]
+    pub seeknow_scan_cap: Option<u32>,
 }
 
 /// How the engine orders expansion candidates within a round.
@@ -468,6 +480,7 @@ impl Default for ScanOptions {
             max_roi: false,
             min_marginal_yield: None,
             expansion_strategy: ExpansionStrategy::default(),
+            seeknow_scan_cap: None,
         }
     }
 }

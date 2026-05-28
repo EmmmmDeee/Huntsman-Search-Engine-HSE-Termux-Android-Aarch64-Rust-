@@ -107,6 +107,19 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     }
     let modules = s.engine.modules().len();
     let live_sessions = s.live.list().len();
+
+    // Surface SeekNow budget consumption so operators can see how much
+    // of the daily 5000-lookup quota the current process has burned.
+    // Read-only snapshot of the atomic counters in util::see_know.
+    let seeknow = crate::util::see_know::budget_snapshot();
+    let seeknow_block = json!({
+        "scan_used":         seeknow.scan_used,
+        "scan_cap":          seeknow.scan_cap,
+        "session_used":      seeknow.session_used,
+        "session_cap":       seeknow.session_cap,
+        "quota_exhausted":   seeknow.quota_exhausted,
+    });
+
     (
         StatusCode::OK,
         Json(json!({
@@ -117,6 +130,7 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             "modules": modules,
             "live_sessions": live_sessions,
             "version": crate::VERSION,
+            "seeknow": seeknow_block,
         })),
     )
         .into_response()

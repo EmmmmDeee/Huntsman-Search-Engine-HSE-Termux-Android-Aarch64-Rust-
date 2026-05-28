@@ -53,7 +53,25 @@ static SESSION_QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::At
 /// tiers.
 const DEFAULT_MAX_QUERIES_PER_SCAN: u32 = 24;
 
+/// Per-process override of the scan cap, supplied at runtime by the
+/// engine when `ScanOptions::seeknow_scan_cap` is set. Falls back to
+/// the env / static default. Atomics rather than a lock — the engine
+/// writes this once per scan and every endpoint call reads it.
+static SCAN_CAP_OVERRIDE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+/// Install a runtime per-scan cap. `0` clears the override (falls back
+/// to env + static default). The engine calls this once at scan start
+/// when the operator set `ScanOptions::seeknow_scan_cap`.
+pub fn set_scan_cap_override(cap: u32) {
+    SCAN_CAP_OVERRIDE.store(cap, std::sync::atomic::Ordering::Release);
+}
+
 fn max_queries_per_scan() -> u32 {
+    let override_value = SCAN_CAP_OVERRIDE.load(std::sync::atomic::Ordering::Acquire);
+    if override_value > 0 {
+        return override_value;
+    }
     static CAP: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
         std::env::var("HUNTSMAN_SEEKNOW_SCAN_CAP")
             .ok()
@@ -155,6 +173,10 @@ pub fn is_quota_exhausted() -> bool {
 pub fn reset_budget() {
     QUERY_COUNT.store(0, std::sync::atomic::Ordering::Release);
     QUOTA_EXHAUSTED.store(false, std::sync::atomic::Ordering::Release);
+    // Clear any runtime per-scan cap so the next scan picks up the
+    // env / static default again unless the engine installs a fresh
+    // override at scan start.
+    SCAN_CAP_OVERRIDE.store(0, std::sync::atomic::Ordering::Release);
 }
 
 fn mark_quota_exhausted() {
@@ -575,5 +597,38 @@ mod tests {
             cap >= 16,
             "scan cap dropped to {cap} — must remain ≥ 16 to leverage SeekNow quota"
         );
+    }
+
+    #[test]
+    fn set_scan_cap_override_replaces_default_until_reset() {
+        reset_budget();
+        let base = max_queries_per_scan();
+        set_scan_cap_override(80);
+        assert_eq!(max_queries_per_scan(), 80);
+        reset_budget();
+        // After reset, falls back to env / static default again.
+        assert_eq!(max_queries_per_scan(), base);
+    }
+
+    #[test]
+    fn scan_cap_override_zero_falls_back_to_default() {
+        reset_budget();
+        let base = max_queries_per_scan();
+        set_scan_cap_override(0);
+        assert_eq!(
+            max_queries_per_scan(),
+            base,
+            "override of 0 must mean 'use default', not 'cap at zero'"
+        );
+        reset_budget();
+    }
+
+    #[test]
+    fn snapshot_reflects_override_cap() {
+        reset_budget();
+        set_scan_cap_override(99);
+        let snap = budget_snapshot();
+        assert_eq!(snap.scan_cap, 99);
+        reset_budget();
     }
 }

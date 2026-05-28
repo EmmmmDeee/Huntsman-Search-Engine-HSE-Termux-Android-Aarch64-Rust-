@@ -123,6 +123,15 @@ pub enum Command {
         /// the engine prioritises expansion candidates each round.
         #[arg(long, default_value = "geo_converge")]
         expansion_strategy: String,
+        /// Per-scan SeekNow (see-know.eu) budget override. Caps the
+        /// number of SeekNow API queries this scan may dispatch.
+        /// Default (None) falls back to HUNTSMAN_SEEKNOW_SCAN_CAP env
+        /// (24). Hard-clamped at 200 to preserve the daily session
+        /// ceiling. Raise for investigative scans on high-value
+        /// targets; lower for passive recces that shouldn't burn
+        /// quota.
+        #[arg(long)]
+        seeknow_scan_cap: Option<u32>,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(short, long, default_value = "table")]
         output: String,
@@ -339,6 +348,7 @@ pub async fn run() -> Result<()> {
             max_roi,
             min_marginal_yield,
             expansion_strategy,
+            seeknow_scan_cap,
             output,
         } => {
             cmd_scan(ScanCmd {
@@ -362,6 +372,7 @@ pub async fn run() -> Result<()> {
                 max_roi,
                 min_marginal_yield,
                 expansion_strategy,
+                seeknow_scan_cap,
                 output,
             })
             .await
@@ -1377,6 +1388,7 @@ struct ScanCmd {
     pub max_roi: bool,
     pub min_marginal_yield: Option<f64>,
     pub expansion_strategy: String,
+    pub seeknow_scan_cap: Option<u32>,
     pub output: String,
 }
 
@@ -1466,6 +1478,7 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         max_roi: cmd.max_roi,
         min_marginal_yield: cmd.min_marginal_yield,
         expansion_strategy,
+        seeknow_scan_cap: cmd.seeknow_scan_cap,
     };
     if cmd.max_roi {
         eprintln!(

@@ -249,6 +249,46 @@ async fn scan_create_accepts_expansion_strategy_option() {
     assert_eq!(resp.status(), 202);
 }
 
+#[tokio::test]
+async fn scan_create_accepts_seeknow_scan_cap_option() {
+    // The per-scan SeekNow budget override must round-trip through the
+    // scan-create endpoint so an operator can spend more of the daily
+    // quota on a single high-value scan.
+    let app = test_app("scan_seeknow_cap");
+    let body = r#"{
+        "kind":"email","value":"target@example.com",
+        "options":{"seeknow_scan_cap":80,"depth":0}
+    }"#;
+    let resp = app.oneshot(post_json("/api/v1/scans", body)).await.unwrap();
+    assert_eq!(resp.status(), 202);
+}
+
+#[tokio::test]
+async fn stats_endpoint_includes_seeknow_block() {
+    // /api/v1/stats must surface the SeekNow budget snapshot so the
+    // operator can see remaining quota at a glance from the UI.
+    let app = test_app("stats_seeknow");
+    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let sn = json.get("seeknow").expect("stats must include seeknow block");
+    for field in [
+        "scan_used",
+        "scan_cap",
+        "session_used",
+        "session_cap",
+        "quota_exhausted",
+    ] {
+        assert!(
+            sn.get(field).is_some(),
+            "seeknow block missing field {field}"
+        );
+    }
+    // scan_cap is a positive integer (default 24 unless env-tuned).
+    let cap = sn["scan_cap"].as_u64().unwrap();
+    assert!(cap >= 16, "scan_cap dropped below 16 — quota under-used");
+}
+
 // ── 4. Scan create (valid) ────────────────────────────────────────────────
 
 #[tokio::test]

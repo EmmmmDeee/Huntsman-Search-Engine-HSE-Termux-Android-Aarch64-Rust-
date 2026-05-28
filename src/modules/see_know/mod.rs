@@ -226,29 +226,33 @@ impl Module for SeekNow {
                 }
             }
 
-            // Discord-pivot: if any extracted entity is a Discord ID
-            // surfaced as `discord:<id>`, follow up with discord/user
-            // + discord/to-roblox so the gaming/identity graph closes.
-            // Budget-aware: only fires when scan budget remains.
+            // Identity-pivot pass: any Discord ID or Steam ID
+            // surfaced by the entity extractor triggers its respective
+            // gaming/identity endpoint so the graph closes within one
+            // scan. Both pivot kinds run concurrently and are bounded
+            // by the remaining per-scan budget.
             if !ctx.cancel.is_cancelled() && see_know::budget_remaining() {
+                let mut pivot_results: Vec<(&'static str, Vec<Value>)> = Vec::new();
                 let discord_pivots = discover_discord_pivots(&result);
                 if !discord_pivots.is_empty() {
-                    let calls: Vec<(&'static str, Vec<Value>)> = dispatch_discord_pivots(
-                        key,
-                        discord_pivots,
-                    )
-                    .await;
-                    for (endpoint, items) in &calls {
-                        for item in items {
-                            extract_entities(item, v, &ctx.scan_id, &mut seen, &mut result);
-                            extract_geo_entities(
-                                item,
-                                endpoint,
-                                &ctx.scan_id,
-                                &mut seen,
-                                &mut result,
-                            );
-                        }
+                    pivot_results.extend(
+                        dispatch_discord_pivots(key, discord_pivots).await,
+                    );
+                }
+                let steam_pivots = discover_steam_pivots(&result);
+                if !steam_pivots.is_empty() && see_know::budget_remaining() {
+                    pivot_results.extend(dispatch_steam_pivots(key, steam_pivots).await);
+                }
+                for (endpoint, items) in &pivot_results {
+                    for item in items {
+                        extract_entities(item, v, &ctx.scan_id, &mut seen, &mut result);
+                        extract_geo_entities(
+                            item,
+                            endpoint,
+                            &ctx.scan_id,
+                            &mut seen,
+                            &mut result,
+                        );
                     }
                 }
             }
@@ -290,6 +294,9 @@ fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
                 plan.insert(0, EndpointCall::DiscordUser);
                 plan.insert(1, EndpointCall::DiscordToRoblox);
             }
+            if looks_like_steam_id(value) {
+                plan.insert(0, EndpointCall::SteamProfile);
+            }
             plan
         }
         TargetKind::Phone => vec![EndpointCall::PhoneInfo, EndpointCall::BreachHub],
@@ -330,11 +337,29 @@ async fn dispatch_plan(
 /// by the entity extractor) → pairs of (id, EndpointCall) for the two
 /// discord pivots.
 fn discover_discord_pivots(result: &ModuleResult) -> Vec<String> {
+    discover_prefixed_ids(result, "discord:", looks_like_discord_id)
+}
+
+/// Steam ID64s surfaced from breach data — emitted by the entity
+/// extractor as `steam:<17-digit-id>` Username entities. Pivoted
+/// through gaming/steam to pull the public profile.
+fn discover_steam_pivots(result: &ModuleResult) -> Vec<String> {
+    discover_prefixed_ids(result, "steam:", looks_like_steam_id)
+}
+
+/// Generalised prefix-based ID collector. Iterates extracted Username
+/// entities, strips the prefix, validates the rest with `validator`,
+/// and dedupes preserving first-seen order.
+fn discover_prefixed_ids(
+    result: &ModuleResult,
+    prefix: &str,
+    validator: fn(&str) -> bool,
+) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
     for e in &result.entities {
         if matches!(e.kind, EntityKind::Username)
-            && let Some(rest) = e.value.strip_prefix("discord:")
-            && looks_like_discord_id(rest)
+            && let Some(rest) = e.value.strip_prefix(prefix)
+            && validator(rest)
             && !ids.iter().any(|x| x == rest)
         {
             ids.push(rest.to_string());
@@ -370,12 +395,49 @@ async fn dispatch_discord_pivots(
     join_all(futures).await
 }
 
+/// Concurrent gaming/steam dispatch for every discovered Steam ID.
+/// Mirrors the discord-pivot shape so the caller can compose both.
+async fn dispatch_steam_pivots(
+    key: &str,
+    ids: Vec<String>,
+) -> Vec<(&'static str, Vec<Value>)> {
+    let budget = see_know::scan_budget_remaining() as usize;
+    if budget == 0 || ids.is_empty() {
+        return Vec::new();
+    }
+    let mut futures = Vec::new();
+    for id in &ids {
+        if futures.len() >= budget {
+            break;
+        }
+        let call = {
+            let id = id.clone();
+            async move {
+                let items = see_know::steam_profile(key, &id).await.unwrap_or_default();
+                ("steam", items)
+            }
+        };
+        futures.push(call);
+    }
+    join_all(futures).await
+}
+
 /// Discord snowflake heuristic — 17 to 20 decimal digits, no leading
 /// zero. Strict enough to reject usernames that happen to be all
 /// digits (typical 6-12 chars).
 fn looks_like_discord_id(s: &str) -> bool {
     let len = s.len();
     (17..=20).contains(&len) && s.chars().all(|c| c.is_ascii_digit()) && !s.starts_with('0')
+}
+
+/// Steam ID64 heuristic — exactly 17 decimal digits, the public
+/// account universe always starts with "765611979..." (steamID64
+/// base = 76561197960265728). We don't enforce that prefix here so
+/// edge-case accounts still pivot, but the length + no-leading-zero
+/// pair is enough to reject usernames that happen to be 16-digit
+/// breach IDs.
+fn looks_like_steam_id(s: &str) -> bool {
+    s.len() == 17 && s.chars().all(|c| c.is_ascii_digit()) && !s.starts_with('0')
 }
 
 /// Enum of SeekNow endpoints the module can target. Centralising them
@@ -396,6 +458,7 @@ enum EndpointCall {
     RobloxProfile,
     XboxProfile,
     MinecraftProfile,
+    SteamProfile,
     DiscordUser,
     DiscordToRoblox,
     PhoneInfo,
@@ -421,6 +484,7 @@ impl EndpointCall {
             Self::RobloxProfile => "roblox",
             Self::XboxProfile => "xbox",
             Self::MinecraftProfile => "minecraft",
+            Self::SteamProfile => "steam",
             Self::DiscordUser => "discord_user",
             Self::DiscordToRoblox => "discord_to_roblox",
             Self::PhoneInfo => "phone_info",
@@ -444,6 +508,7 @@ impl EndpointCall {
             Self::RobloxProfile => see_know::roblox_profile(key, value).await,
             Self::XboxProfile => see_know::xbox_profile(key, value).await,
             Self::MinecraftProfile => see_know::minecraft_profile(key, value).await,
+            Self::SteamProfile => see_know::steam_profile(key, value).await,
             Self::DiscordUser => see_know::discord_user(key, value).await,
             Self::DiscordToRoblox => see_know::discord_to_roblox(key, value).await,
             Self::PhoneInfo => see_know::phone_info(key, value).await,
@@ -686,6 +751,28 @@ fn extract_entities(
         e.tag(tags::BREACH);
         e.tag("see-know");
         e.tag("discord");
+        e.add_evidence(ev.clone());
+        result.push(e);
+    }
+    // Steam ID — 17-digit 64-bit SteamIDs (steamID64). Surface as a
+    // Username with `steam:<id>` prefix so the gaming endpoint pivot
+    // can find it without colliding with normal usernames. Matches
+    // the discord-pivot pattern.
+    if let Some(sid) = val_str(item, "steam_id")
+        .or_else(|| val_str(item, "steamid"))
+        .or_else(|| val_str(item, "steam_id64"))
+        && looks_like_steam_id(&sid)
+        && seen.insert(format!("@steam:{sid}"))
+    {
+        let mut e = Entity::new(
+            EntityKind::Username,
+            format!("steam:{sid}"),
+            0.60,
+            scan_id,
+        );
+        e.tag(tags::BREACH);
+        e.tag("see-know");
+        e.tag("steam");
         e.add_evidence(ev.clone());
         result.push(e);
     }
@@ -952,5 +1039,82 @@ mod tests {
         r.push(Entity::new(EntityKind::Email, "discord:foo@bar", 0.5, "test"));
         let ids = discover_discord_pivots(&r);
         assert_eq!(ids, vec!["359023095012345678".to_string()]);
+    }
+
+    #[test]
+    fn looks_like_steam_id_strict_heuristic() {
+        // Exactly 17 digits, no leading zero.
+        assert!(looks_like_steam_id("76561198000000000"));
+        assert!(looks_like_steam_id("76561198123456789"));
+        // 16 / 18 digits, leading-zero, non-digit — all reject.
+        assert!(!looks_like_steam_id("7656119800000000")); // 16
+        assert!(!looks_like_steam_id("765611980000000000")); // 18
+        assert!(!looks_like_steam_id("07561198000000000")); // leading zero
+        assert!(!looks_like_steam_id("765611x8000000000"));
+        assert!(!looks_like_steam_id(""));
+    }
+
+    #[test]
+    fn discover_steam_pivots_extracts_unique_ids() {
+        let mut r = ModuleResult::new();
+        r.push(Entity::new(
+            EntityKind::Username,
+            "steam:76561198000000000",
+            0.6,
+            "test",
+        ));
+        r.push(Entity::new(
+            EntityKind::Username,
+            "steam:76561198000000000",
+            0.6,
+            "test",
+        ));
+        // Mixed-in discord entity — must be ignored by the steam
+        // pivot collector.
+        r.push(Entity::new(
+            EntityKind::Username,
+            "discord:359023095012345678",
+            0.6,
+            "test",
+        ));
+        let ids = discover_steam_pivots(&r);
+        assert_eq!(ids, vec!["76561198000000000".to_string()]);
+    }
+
+    #[test]
+    fn plan_username_with_steam_id_prepends_steam_endpoint() {
+        let plan = plan_endpoints(TargetKind::Username, "76561198000000000");
+        let first = plan.first().expect("steam plan must be non-empty");
+        assert_eq!(first.label(), "steam");
+    }
+
+    #[test]
+    fn endpoint_call_steam_round_trips_via_label() {
+        // Ensure the new variant appears in the unique-label set.
+        let labels: Vec<&str> = [
+            EndpointCall::Stealer,
+            EndpointCall::BreachHub,
+            EndpointCall::EmailCheck,
+            EndpointCall::SocialAggregate,
+            EndpointCall::GithubProfile,
+            EndpointCall::TwitterProfile,
+            EndpointCall::RedditProfile,
+            EndpointCall::TiktokProfile,
+            EndpointCall::UsernameHistory,
+            EndpointCall::RobloxProfile,
+            EndpointCall::XboxProfile,
+            EndpointCall::MinecraftProfile,
+            EndpointCall::SteamProfile,
+            EndpointCall::DiscordUser,
+            EndpointCall::DiscordToRoblox,
+            EndpointCall::PhoneInfo,
+            EndpointCall::IpInfo,
+            EndpointCall::DomainIntel,
+            EndpointCall::Whois,
+        ]
+        .iter()
+        .map(|c| c.label())
+        .collect();
+        assert!(labels.contains(&"steam"));
     }
 }
