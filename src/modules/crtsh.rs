@@ -101,7 +101,7 @@ impl Module for CrtSh {
         let mut result = ModuleResult::new();
         let mut seen_domains: HashSet<String> = HashSet::new();
         let mut seen_emails: HashSet<String> = HashSet::new();
-        let domain_base = target.value.trim().to_lowercase();
+        let domain_base = target.value.clone();
 
         for entry in &entries {
             if ctx.cancel.is_cancelled() {

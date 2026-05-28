@@ -44,7 +44,7 @@ impl Module for EmailHeaderGeo {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
 
-        let email = target.value.trim().to_lowercase();
+        let email = target.value.clone();
         let Some((_, domain)) = email.split_once('@') else {
             return Ok(result);
         };
