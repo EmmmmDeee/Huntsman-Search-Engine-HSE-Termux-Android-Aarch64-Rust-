@@ -107,7 +107,12 @@ impl Module for Hibp {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Email, EntityKind::Domain, EntityKind::Credential];
+        // HIBP returns breach metadata on the input Email/Domain — it
+        // does NOT emit standalone Credential entities (policy: leaked
+        // passwords are redacted, only the fact of the breach surfaces
+        // as tags/evidence on the seed). Declaration is therefore
+        // limited to the corroborated seed kinds.
+        const KINDS: &[EntityKind] = &[EntityKind::Email, EntityKind::Domain];
         KINDS
     }
 

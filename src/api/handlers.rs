@@ -108,12 +108,20 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let modules = s.engine.modules().len();
     let live_sessions = s.live.list().len();
 
-    // Surface SeekNow + OathNet budget consumption so operators can see
-    // how much of each daily quota the current process has burned.
-    // Both providers share `util::budget::QuotaBudget` so the wire
-    // format is identical.
+    // Surface SeekNow + OathNet + WiGLE budget consumption so operators
+    // can see how much of each daily quota the current process has
+    // burned. All providers share `util::budget::QuotaBudget` so the
+    // wire format is identical; WiGLE has four sub-budgets (geo /
+    // bssid / cell / bluetooth) so its block nests one level deeper.
     let seeknow = budget_block(crate::util::see_know::budget_snapshot());
     let oathnet = budget_block(crate::util::oathnet::budget_snapshot());
+    let wigle = crate::modules::wigle::budget_snapshot();
+    let wigle_block = json!({
+        "geo":       budget_block(wigle.geo),
+        "bssid":     budget_block(wigle.bssid),
+        "cell":      budget_block(wigle.cell),
+        "bluetooth": budget_block(wigle.bluetooth),
+    });
 
     (
         StatusCode::OK,
@@ -127,6 +135,7 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             "version": crate::VERSION,
             "seeknow": seeknow,
             "oathnet": oathnet,
+            "wigle":   wigle_block,
         })),
     )
         .into_response()

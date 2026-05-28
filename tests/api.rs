@@ -290,6 +290,38 @@ async fn stats_endpoint_includes_seeknow_block() {
 }
 
 #[tokio::test]
+async fn stats_endpoint_includes_wigle_sub_budgets() {
+    // WiGLE has four observation-type budgets (geo / bssid / cell /
+    // bluetooth). All four must surface on stats so operators can
+    // see remaining quota per observation type.
+    let app = test_app("stats_wigle");
+    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let wn = json.get("wigle").expect("stats must include wigle block");
+    for sub in ["geo", "bssid", "cell", "bluetooth"] {
+        let block = wn
+            .get(sub)
+            .unwrap_or_else(|| panic!("wigle block missing sub-budget {sub}"));
+        for field in [
+            "scan_used",
+            "scan_cap",
+            "session_used",
+            "session_cap",
+            "quota_exhausted",
+        ] {
+            assert!(
+                block.get(field).is_some(),
+                "wigle.{sub} missing field {field}"
+            );
+        }
+        // Every sub-budget must have a positive cap.
+        let cap = block["scan_cap"].as_u64().unwrap();
+        assert!(cap >= 1, "wigle.{sub}.scan_cap must be ≥ 1 (got {cap})");
+    }
+}
+
+#[tokio::test]
 async fn stats_endpoint_includes_oathnet_block() {
     // After the budget consolidation, oathnet exposes the same wire
     // shape as seeknow (both back-ended by util::budget::QuotaBudget).

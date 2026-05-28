@@ -2,15 +2,15 @@
 //! search_engines enrichment pass. Lives in util/ so any module can
 //! call it without violating the "no inter-module imports" invariant.
 
-use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::error::{Error, Result};
 use crate::util::budget::QuotaBudget;
+use crate::util::curl_client::{AuthScheme, CurlClient};
+use crate::util::response_cache::ResponseCache;
 
 const HARDCODED_KEY: &str = "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551409e4b47116f2";
 
@@ -21,8 +21,15 @@ pub const KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
 /// all query `search(BREACH, "email", "x@y.com")` for the same entity,
 /// only the first makes the HTTP call; subsequent modules get the cached
 /// response. Empirically saves ~60% of OathNet API calls on expansion scans.
-static RESPONSE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CachedResponse>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::with_capacity(256)));
+///
+/// Backed by the shared [`ResponseCache`] primitive (cap 1024).
+static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
+
+/// Shared curl-subprocess client. `x-api-key` auth, 12s curl timeout,
+/// 15s outer tokio timeout — same calibration as the SeekNow client
+/// since both providers' rate-limit responses arrive within this
+/// window.
+static CLIENT: CurlClient = CurlClient::new("oathnet", AuthScheme::XApiKey, 12, 15_000);
 
 /// Per-scan + per-session quota budget for OathNet API calls.
 ///
@@ -39,32 +46,16 @@ static BUDGET: QuotaBudget = QuotaBudget::new(
     "HUNTSMAN_OATHNET_SESSION_CAP",
 );
 
-struct CachedResponse {
-    items: Vec<Value>,
-}
-
 fn cache_key(path: &str, field: &str, value: &str) -> String {
     format!("{path}:{field}:{}", value.to_lowercase())
 }
 
 fn cache_get(key: &str) -> Option<Vec<Value>> {
-    RESPONSE_CACHE
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(key).map(|c| c.items.clone()))
+    RESPONSE_CACHE.get(key)
 }
 
 fn cache_put(key: String, items: &[Value]) {
-    if let Ok(mut cache) = RESPONSE_CACHE.lock()
-        && cache.len() < 1024
-    {
-        cache.insert(
-            key,
-            CachedResponse {
-                items: items.to_vec(),
-            },
-        );
-    }
+    RESPONSE_CACHE.put(key, items.to_vec());
 }
 
 fn budget_remaining() -> bool {
@@ -164,7 +155,7 @@ pub async fn search(
         url.push_str("&search_id=");
         url.push_str(&crate::util::http::urlencode(&sid));
     }
-    let body = curl_get(&url, key).await?;
+    let body = CLIENT.get(&url, key).await?;
     // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
     // which false-positives on legitimate metadata fields like `session_quota`
     // and `recommended_quota`. Match only true exhaustion signals.
@@ -255,36 +246,9 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
     }
     let url = format!("{}{}", base_url(), paths::SESSION_INIT);
     let body = format!(r#"{{"query":"{}"}}"#, value.replace('"', "\\\""));
-    let header = format!("x-api-key: {key}");
-    let secs = 10u64.to_string();
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args([
-        "-s",
-        "-L",
-        "--max-time",
-        &secs,
-        "-X",
-        "POST",
-        "-H",
-        &header,
-        "-H",
-        "Content-Type: application/json",
-        "-H",
-        "Accept: application/json",
-        "-d",
-        &body,
-        "--",
-        &url,
-    ]);
-    cmd.kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_millis(12_000), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8(output.stdout).ok()?;
+    // Routed through the shared CurlClient — same UA / Accept /
+    // auth-header layout as the GET path, just with a JSON body.
+    let text = CLIENT.post_json(&url, key, &body).await.ok()?;
     let parsed: Value = serde_json::from_str(&text).ok()?;
     let sid = parsed
         .pointer("/session/id")
@@ -389,36 +353,11 @@ pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, Stri
     creds
 }
 
-async fn curl_get(url: &str, key: &str) -> Result<String> {
-    let secs = 12u64.to_string();
-    let header = format!("x-api-key: {key}");
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args([
-        "-s",
-        "-L",
-        "--max-time",
-        &secs,
-        "-A",
-        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
-        "-H",
-        &header,
-        "-H",
-        "Accept: application/json",
-        "--",
-        url,
-    ]);
-    cmd.kill_on_drop(true);
-
-    let output = tokio::time::timeout(Duration::from_millis(15_000), cmd.output())
-        .await
-        .map_err(|_| Error::module("oathnet", "timeout"))?
-        .map_err(|e| Error::module("oathnet", e.to_string()))?;
-
-    if !output.status.success() {
-        return Err(Error::module("oathnet", "curl failed"));
-    }
-    String::from_utf8(output.stdout).map_err(|e| Error::module("oathnet", e.to_string()))
-}
+// The curl-subprocess transport now lives in `util::curl_client` —
+// shared with util::see_know via the per-provider `CLIENT` static
+// declared at the top of this file. The `Duration` re-export below
+// is no longer needed locally now that the timeout lives inside
+// CurlClient.
 
 #[cfg(test)]
 mod tests {

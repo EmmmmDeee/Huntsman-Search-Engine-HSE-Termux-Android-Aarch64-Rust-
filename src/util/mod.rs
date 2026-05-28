@@ -3,6 +3,7 @@
 pub mod address_au;
 pub mod budget;
 pub mod curl;
+pub mod curl_client;
 pub mod diagnostics;
 pub mod domains;
 pub mod geohash;
@@ -14,6 +15,7 @@ pub mod keys;
 pub mod oathnet;
 pub mod preflight;
 pub mod proxy;
+pub mod response_cache;
 pub mod see_know;
 pub mod service_defs;
 

@@ -22,13 +22,12 @@
 //! Quota model: 5000 daily lookups on premiumhq plan, resets at midnight UTC.
 //! Per-process budget mirrors the OathNet client's pattern.
 
-use std::sync::Mutex;
-use std::time::Duration;
-
 use serde_json::Value;
 
 use crate::core::error::{Error, Result};
 use crate::util::budget::QuotaBudget;
+use crate::util::curl_client::{AuthScheme, CurlClient};
+use crate::util::response_cache::ResponseCache;
 
 // Re-export the shared snapshot type so external consumers
 // (`api::handlers::stats`) keep working through the original path.
@@ -38,8 +37,15 @@ const HARDCODED_KEY: &str = "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a
 
 pub const KEY_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";
 
-static RESPONSE_CACHE: std::sync::LazyLock<Mutex<std::collections::HashMap<String, Vec<Value>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::with_capacity(256)));
+/// Per-process response cache backed by the shared
+/// [`ResponseCache`] primitive (cap 1024 — sized to comfortably hold
+/// every distinct endpoint × query a single scan generates).
+static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
+
+/// Shared curl-subprocess client. Bearer auth, 12s curl timeout
+/// (matches the legacy `--max-time 12`), 15s outer tokio timeout.
+static CLIENT: CurlClient =
+    CurlClient::new("seek_now", AuthScheme::Bearer, 12, 15_000);
 
 /// Per-scan + per-session quota budget for SeekNow API calls.
 ///
@@ -82,18 +88,11 @@ fn typed_cache_key(path: &str, query: &str, query_type: &str) -> String {
 }
 
 fn cache_get(key: &str) -> Option<Vec<Value>> {
-    RESPONSE_CACHE
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(key).cloned())
+    RESPONSE_CACHE.get(key)
 }
 
 fn cache_put(key: String, items: Vec<Value>) {
-    if let Ok(mut cache) = RESPONSE_CACHE.lock()
-        && cache.len() < 1024
-    {
-        cache.insert(key, items);
-    }
+    RESPONSE_CACHE.put(key, items);
 }
 
 /// True if there's room in both the per-scan and per-session budgets.
@@ -200,7 +199,7 @@ pub async fn credits(key: &str) -> Result<Option<u64>> {
         return Ok(Some(0));
     }
     let url = format!("{}/credits", base_url());
-    let body = match curl_exec(&url, key, None).await {
+    let body = match CLIENT.get(&url, key).await {
         Ok(s) => s,
         Err(_) => return Ok(None),
     };
@@ -364,12 +363,12 @@ fn escape_json(s: &str) -> String {
 }
 
 async fn get_json(url: &str, key: &str) -> Result<Value> {
-    let body = curl_exec(url, key, None).await?;
+    let body = CLIENT.get(url, key).await?;
     parse_response(&body)
 }
 
 async fn post_json(url: &str, key: &str, body: &str) -> Result<Value> {
-    let resp = curl_exec(url, key, Some(body)).await?;
+    let resp = CLIENT.post_json(url, key, body).await?;
     parse_response(&resp)
 }
 
@@ -387,45 +386,9 @@ fn parse_response(body: &str) -> Result<Value> {
     serde_json::from_str(body).map_err(|e| Error::module("seek_now", e.to_string()))
 }
 
-async fn curl_exec(url: &str, key: &str, post_body: Option<&str>) -> Result<String> {
-    let secs = 12u64.to_string();
-    let header = format!("Authorization: Bearer {key}");
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args([
-        "-s",
-        "-L",
-        "--max-time",
-        &secs,
-        "-A",
-        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
-        "-H",
-        &header,
-        "-H",
-        "Accept: application/json",
-    ]);
-    if let Some(body) = post_body {
-        cmd.args([
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-            "-d",
-            body,
-        ]);
-    }
-    cmd.args(["--", url]);
-    cmd.kill_on_drop(true);
-
-    let output = tokio::time::timeout(Duration::from_millis(15_000), cmd.output())
-        .await
-        .map_err(|_| Error::module("seek_now", "timeout"))?
-        .map_err(|e| Error::module("seek_now", e.to_string()))?;
-
-    if !output.status.success() {
-        return Err(Error::module("seek_now", "curl failed"));
-    }
-    String::from_utf8(output.stdout).map_err(|e| Error::module("seek_now", e.to_string()))
-}
+// The curl-subprocess transport now lives in `util::curl_client` —
+// shared with util::oathnet via the per-provider `CLIENT` static
+// declared at the top of this file.
 
 /// Extract a string field from a JSON Value.
 pub fn val_str(item: &Value, key: &str) -> Option<String> {

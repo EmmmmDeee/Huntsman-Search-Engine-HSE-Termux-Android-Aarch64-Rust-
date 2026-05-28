@@ -96,7 +96,18 @@ impl Module for Shodan {
         ModuleCategory::Infrastructure
     }
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::Url, EntityKind::Asn];
+        // Free + paid Shodan paths emit IP host context: domains, URLs,
+        // ASN labels, plus the dominant ISP/org as Organisation and
+        // the host's country as Address. The Organisation + Address
+        // emissions were previously undeclared, making the module
+        // graph under-report Shodan's downstream pivot value.
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Domain,
+            EntityKind::Url,
+            EntityKind::Asn,
+            EntityKind::Organisation,
+            EntityKind::Address,
+        ];
         KINDS
     }
     fn max_timeout_ms(&self) -> u64 {
