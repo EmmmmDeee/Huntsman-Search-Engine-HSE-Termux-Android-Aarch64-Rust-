@@ -45,6 +45,10 @@ futures            = "0.3"
 # zero transitive deps, no native libs — fits the project's
 # rustls-only / no-C-deps architecture invariant.
 kamadak-exif       = "0.6"
+# v1.3 — base64 decode-through scanning (keyhog port). Already in
+# the tree transitively via reqwest; declared directly so the
+# decode-through path doesn't break if reqwest drops it.
+base64             = "0.22"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

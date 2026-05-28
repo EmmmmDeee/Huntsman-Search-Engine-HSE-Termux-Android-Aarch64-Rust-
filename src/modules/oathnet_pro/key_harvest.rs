@@ -1078,16 +1078,32 @@ pub fn extract_api_keys_from_item(
     ];
 
     for field in &fields {
-        if let Some(val) = val_str(item, field)
-            && let Some((service, key_val)) = identify_api_key(&val)
-        {
-            let db = val_str(item, "dbname").unwrap_or_default();
-            let source = if db.is_empty() {
-                format!("{field} field")
-            } else {
-                format!("breach ({db})")
-            };
-            emit_key(service, key_val, &source, scan_id, seen, result);
+        if let Some(val) = val_str(item, field) {
+            if let Some((service, key_val)) = identify_api_key(&val) {
+                let db = val_str(item, "dbname").unwrap_or_default();
+                let source = if db.is_empty() {
+                    format!("{field} field")
+                } else {
+                    format!("breach ({db})")
+                };
+                emit_key(service, key_val, &source, scan_id, seen, result);
+            }
+            // Decode-through pass: same field, treat the value as
+            // base64 of a key and recurse through `identify_api_key`.
+            // Catches stealer-log entries that wrap the secret to
+            // sneak it past lazy regex scanners, plus genuine
+            // base64-encoded-credential field schemas.
+            if let Some((service, decoded_key, depth)) = try_decode_through_scan(&val) {
+                let pre = result.entities.len();
+                let source = format!("{field} (base64-decoded, depth={depth})");
+                emit_key(service, &decoded_key, &source, scan_id, seen, result);
+                if result.entities.len() > pre
+                    && let Some(last) = result.entities.last_mut()
+                {
+                    last.tag("via-base64");
+                    last.tag(format!("base64_depth:{depth}"));
+                }
+            }
         }
     }
 
@@ -1473,6 +1489,95 @@ pub(crate) fn identify_crypto_address(s: &str) -> Option<&'static str> {
     }
 
     None
+}
+
+// ── Base64 decode-through scanning (keyhog port) ──────────────────
+//
+// Stealer logs, ad-hoc credential dumps and CI-pipeline leaks often
+// wrap the raw secret in a single layer of base64 — sometimes to
+// fit it into a JSON-string field with awkward chars, sometimes to
+// hide it from the most superficial grep-based scanners. keyhog's
+// contribution to the corpus is treating every harvested string as
+// also-maybe-base64 and recursing through one or two layers of
+// decode before giving up.
+//
+// Bounded recursion: a layered-base64 payload is fair game, but
+// runaway recursion against a hostile blob isn't. Depth cap at 2
+// covers the realistic encode-twice case without enabling a DoS.
+
+const BASE64_DECODE_MAX_DEPTH: u8 = 2;
+const BASE64_MIN_ENCODED_LEN: usize = 24;
+const BASE64_MAX_ENCODED_LEN: usize = 8192;
+
+/// Cheap pre-check before attempting base64 decode. Filters obvious
+/// non-candidates (too short, too long, contains chars outside the
+/// unified standard + URL-safe alphabet) so the hot path doesn't
+/// run `base64::decode` against every harvested field.
+fn looks_like_base64(s: &str) -> bool {
+    if s.len() < BASE64_MIN_ENCODED_LEN || s.len() > BASE64_MAX_ENCODED_LEN {
+        return false;
+    }
+    let stripped = s.trim_end_matches('=');
+    if stripped.is_empty() {
+        return false;
+    }
+    // Reject anything that doesn't sit inside the union of the
+    // standard + URL-safe base64 alphabets. A single space, dot,
+    // colon or slash-with-protocol stem disqualifies — that's
+    // intentional: those characters reliably indicate the input
+    // is something else (URL, sentence, path) and not a raw blob.
+    stripped
+        .as_bytes()
+        .iter()
+        .all(|&b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'-' || b == b'_')
+}
+
+/// Attempt to decode `input` as base64 and recursively scan the
+/// decoded UTF-8 form for an API key. Returns the detected service,
+/// the decoded key value (owned, since the decode buffer doesn't
+/// outlive the call) and the depth at which the hit was found.
+///
+/// Bounded by [`BASE64_DECODE_MAX_DEPTH`] to prevent layered-base64
+/// DoS. Tries standard + URL-safe alphabets, with and without
+/// padding — covers every conformant encoding variant.
+pub(crate) fn try_decode_through_scan(input: &str) -> Option<(&'static str, String, u8)> {
+    decode_through_inner(input.trim(), 0)
+}
+
+fn decode_through_inner(input: &str, depth: u8) -> Option<(&'static str, String, u8)> {
+    use base64::Engine as _;
+    if depth >= BASE64_DECODE_MAX_DEPTH {
+        return None;
+    }
+    if !looks_like_base64(input) {
+        return None;
+    }
+    // Padding state determines which engine succeeds. Try each in
+    // sequence — they're cheap and short-circuit on first valid
+    // decode. URL-safe alphabet is a strict superset of the chars
+    // we admit, so the standard engine's first attempt covers
+    // 99%+ of stealer-log dumps; URL-safe is reserved for tokens
+    // copied out of OAuth callback URLs.
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(input)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(input))
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(input))
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(input))
+        .ok()?;
+    // The decode-through pipeline only chases UTF-8 payloads. A
+    // raw binary blob (compiled program, image, encrypted bytes)
+    // isn't going to round-trip back through identify_api_key.
+    let decoded_str = std::str::from_utf8(&decoded).ok()?;
+    let trimmed = decoded_str.trim();
+    if trimmed.len() < 16 {
+        return None;
+    }
+    if let Some((svc, key_val)) = identify_api_key(trimmed) {
+        return Some((svc, key_val.to_string(), depth + 1));
+    }
+    // Layered base64 — recurse once. Beyond depth 2 is
+    // pathological and we cap to keep the worst-case bounded.
+    decode_through_inner(trimmed, depth + 1)
 }
 
 /// Shannon entropy in bits per character. Empty input returns 0.
@@ -2859,5 +2964,207 @@ mod tests {
         assert!(services.contains(&"postman"));
         assert!(services.contains(&"readme"));
         assert!(services.contains(&"atlassian_config"));
+    }
+
+    // ─── Base64 decode-through scanning (keyhog port) ────────────
+
+    fn b64(s: &str) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
+    }
+
+    fn b64_urlsafe_nopad(s: &str) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s.as_bytes())
+    }
+
+    #[test]
+    fn decode_through_finds_plain_base64_of_openai_key() {
+        let plain = "sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
+        let wrapped = b64(plain);
+        let (svc, decoded, depth) = try_decode_through_scan(&wrapped).unwrap();
+        assert_eq!(svc, "openai");
+        assert_eq!(decoded, plain);
+        assert_eq!(depth, 1);
+    }
+
+    #[test]
+    fn decode_through_finds_nested_double_base64() {
+        let plain = "sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
+        let once = b64(plain);
+        let twice = b64(&once);
+        let (svc, decoded, depth) = try_decode_through_scan(&twice).unwrap();
+        assert_eq!(svc, "openai");
+        assert_eq!(decoded, plain);
+        assert_eq!(depth, 2);
+    }
+
+    #[test]
+    fn decode_through_caps_at_depth_two() {
+        // Triple-wrapping must NOT round-trip — the cap is 2.
+        let plain = "sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
+        let thrice = b64(&b64(&b64(plain)));
+        assert!(try_decode_through_scan(&thrice).is_none());
+    }
+
+    #[test]
+    fn decode_through_accepts_url_safe_no_pad_variant() {
+        // OAuth callback-style tokens land URL-safe + unpadded.
+        let plain = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+        let wrapped = b64_urlsafe_nopad(plain);
+        let (svc, decoded, _) = try_decode_through_scan(&wrapped).unwrap();
+        assert_eq!(svc, "github");
+        assert_eq!(decoded, plain);
+    }
+
+    #[test]
+    fn decode_through_rejects_short_base64() {
+        // Below 24-char minimum encoded length.
+        let short = b64("hello");
+        assert!(try_decode_through_scan(&short).is_none());
+    }
+
+    #[test]
+    fn decode_through_rejects_random_garbage() {
+        // High-entropy random alphanumeric that happens to look
+        // base64-ish but doesn't decode to a recognisable key.
+        let garbage = "kJh28slQqv61MnG9XwZpY7TfRbDvCsAoJkLp29slQqv61MnG9";
+        assert!(try_decode_through_scan(garbage).is_none());
+    }
+
+    #[test]
+    fn decode_through_rejects_non_utf8_decoded_bytes() {
+        // 0xFF 0xFE 0xFD ... decode is valid base64 but the bytes
+        // are not valid UTF-8 — must short-circuit.
+        use base64::Engine as _;
+        let raw = (0u8..32).map(|i| 0xFF ^ i).collect::<Vec<u8>>();
+        let wrapped = base64::engine::general_purpose::STANDARD.encode(&raw);
+        assert!(try_decode_through_scan(&wrapped).is_none());
+    }
+
+    #[test]
+    fn decode_through_rejects_input_with_invalid_chars() {
+        // A space, dot, or colon disqualifies the looks_like_base64
+        // pre-check — those reliably indicate the input is a URL,
+        // sentence or filepath, not a raw b64 blob.
+        assert!(try_decode_through_scan("hello world this is not base64").is_none());
+        assert!(try_decode_through_scan("https://example.com/path?key=value123").is_none());
+    }
+
+    #[test]
+    fn extract_orchestrator_finds_base64_wrapped_key_in_password_field() {
+        // End-to-end: a base64-wrapped AWS key in the `password`
+        // field should emit via the decode-through path, tagged
+        // `via-base64` so analysts can filter on it.
+        let plain = "AKIAJK28SLQQV61MNG9X";
+        let wrapped = b64(plain);
+        let item = serde_json::json!({ "password": wrapped });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_api_keys_from_item(&item, "test-b64-1", &mut seen, &mut result);
+        assert_eq!(result.entities.len(), 1);
+        let e = &result.entities[0];
+        assert_eq!(e.value, plain);
+        assert!(e.has_tag("service:aws"), "missing service:aws tag");
+        assert!(e.has_tag("via-base64"), "missing via-base64 tag");
+        assert!(
+            e.tags.iter().any(|t| t == "base64_depth:1"),
+            "missing base64_depth:1 tag; tags={:?}",
+            e.tags
+        );
+    }
+
+    #[test]
+    fn extract_orchestrator_finds_base64_in_app_data_field() {
+        // Stealer logs commonly drop the credential as base64
+        // inside the `app_data` blob. Should round-trip.
+        let plain = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+        let wrapped = b64(plain);
+        let item = serde_json::json!({ "app_data": wrapped });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_api_keys_from_item(&item, "test-b64-2", &mut seen, &mut result);
+        assert_eq!(result.entities.len(), 1);
+        assert_eq!(result.entities[0].value, plain);
+        assert!(result.entities[0].has_tag("service:github"));
+        assert!(result.entities[0].has_tag("via-base64"));
+    }
+
+    #[test]
+    fn extract_orchestrator_dedupes_plaintext_and_base64_of_same_key() {
+        // If `password` carries the plaintext and `notes` carries
+        // the base64, the dedup gate keyed on the DECODED value
+        // must collapse them to one entity.
+        let plain = "AKIAJK28SLQQV61MNG9X";
+        let item = serde_json::json!({
+            "password": plain,
+            "notes": b64(plain),
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_api_keys_from_item(&item, "test-b64-3", &mut seen, &mut result);
+        assert_eq!(
+            result.entities.len(),
+            1,
+            "dedup should collapse plaintext + base64-of-same-key, got {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| (e.value.clone(), e.tags.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn extract_orchestrator_finds_two_independent_base64_keys() {
+        // Two different fields, two different wrapped keys —
+        // both should land as distinct entities with via-base64.
+        let aws = "AKIAJK28SLQQV61MNG9X";
+        let gh = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+        let item = serde_json::json!({
+            "password": b64(aws),
+            "client_secret": b64(gh),
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_api_keys_from_item(&item, "test-b64-4", &mut seen, &mut result);
+        assert_eq!(result.entities.len(), 2);
+        let services: Vec<&str> = result
+            .entities
+            .iter()
+            .flat_map(|e| e.tags.iter().filter_map(|t| t.strip_prefix("service:")))
+            .collect();
+        assert!(services.contains(&"aws"));
+        assert!(services.contains(&"github"));
+        assert!(result.entities.iter().all(|e| e.has_tag("via-base64")));
+    }
+
+    #[test]
+    fn extract_orchestrator_emits_both_plaintext_and_base64_when_distinct_keys() {
+        // password = plaintext key A
+        // notes    = base64(key B)
+        // Two distinct keys, two entities, only the second tagged via-base64.
+        let aws = "AKIAJK28SLQQV61MNG9X";
+        let gh = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+        let item = serde_json::json!({
+            "password": aws,
+            "notes": b64(gh),
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_api_keys_from_item(&item, "test-b64-5", &mut seen, &mut result);
+        assert_eq!(result.entities.len(), 2);
+        let plaintext = result
+            .entities
+            .iter()
+            .find(|e| e.value == aws)
+            .expect("plaintext AWS not found");
+        let decoded = result
+            .entities
+            .iter()
+            .find(|e| e.value == gh)
+            .expect("decoded GH not found");
+        assert!(!plaintext.has_tag("via-base64"));
+        assert!(decoded.has_tag("via-base64"));
     }
 }
