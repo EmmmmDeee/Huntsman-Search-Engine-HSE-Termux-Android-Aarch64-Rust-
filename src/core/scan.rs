@@ -380,6 +380,19 @@ pub struct ScanOptions {
     /// When set, overrides individual option fields with the profile's values.
     #[serde(default)]
     pub profile: Option<String>,
+
+    // ── ROI-maximisation (v0.3+) ───────────────────────────────────────────
+    /// Enable the ROI bundle: convergence-pruning of saturated entities,
+    /// top-K candidate gating per round, and adaptive-depth termination.
+    /// Off by default (preserves v0.2 behaviour exactly).
+    #[serde(default)]
+    pub max_roi: bool,
+
+    /// When `max_roi` is on, terminate recursion as soon as a round's
+    /// marginal yield (`new_entities / dispatched_targets`) drops below
+    /// this floor. None = use [`crate::core::roi::DEFAULT_MIN_MARGINAL_YIELD`].
+    #[serde(default)]
+    pub min_marginal_yield: Option<f64>,
 }
 
 impl Default for ScanOptions {
@@ -401,6 +414,8 @@ impl Default for ScanOptions {
             notes: None,
             webhook_url: None,
             profile: None,
+            max_roi: false,
+            min_marginal_yield: None,
         }
     }
 }
