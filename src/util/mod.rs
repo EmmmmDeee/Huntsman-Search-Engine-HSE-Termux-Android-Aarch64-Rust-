@@ -3,7 +3,9 @@
 pub mod address_au;
 pub mod curl;
 pub mod diagnostics;
+pub mod domains;
 pub mod geohash;
+pub mod html;
 pub mod http;
 pub mod key_pool;
 pub mod key_roi;

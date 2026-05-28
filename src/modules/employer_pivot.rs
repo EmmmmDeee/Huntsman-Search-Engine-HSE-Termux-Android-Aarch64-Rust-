@@ -33,6 +33,8 @@ use crate::core::{
 };
 use crate::util::address_au;
 use crate::util::curl;
+use crate::util::domains::{is_freemail, is_social_platform};
+use crate::util::html::strip_html;
 
 const SRC: &str = "employer_pivot";
 
@@ -203,89 +205,6 @@ fn domain_for_target(t: &Target) -> Option<String> {
     }
 }
 
-const FREEMAIL: &[&str] = &[
-    "gmail.com",
-    "googlemail.com",
-    "yahoo.com",
-    "yahoo.com.au",
-    "outlook.com",
-    "hotmail.com",
-    "hotmail.com.au",
-    "live.com",
-    "live.com.au",
-    "icloud.com",
-    "me.com",
-    "mac.com",
-    "protonmail.com",
-    "proton.me",
-    "tutanota.com",
-    "tutanota.de",
-    "yandex.ru",
-    "yandex.com",
-    "mail.ru",
-    "gmx.com",
-    "gmx.de",
-    "fastmail.com",
-    "fastmail.fm",
-    "aol.com",
-    "comcast.net",
-    "verizon.net",
-    "bigpond.com",
-    "bigpond.net.au",
-    "optusnet.com.au",
-    "iinet.net.au",
-    "internode.on.net",
-    "tpg.com.au",
-];
-
-fn is_freemail(domain: &str) -> bool {
-    FREEMAIL.contains(&domain)
-}
-
-const SOCIAL: &[&str] = &[
-    "facebook.com",
-    "twitter.com",
-    "x.com",
-    "instagram.com",
-    "linkedin.com",
-    "tiktok.com",
-    "youtube.com",
-    "reddit.com",
-    "pinterest.com",
-    "github.com",
-    "gitlab.com",
-    "medium.com",
-];
-
-fn is_social_platform(domain: &str) -> bool {
-    SOCIAL
-        .iter()
-        .any(|s| domain == *s || domain.ends_with(&format!(".{}", s)))
-}
-
-fn strip_html(html: &str) -> String {
-    static SCRIPT: OnceLock<Regex> = OnceLock::new();
-    static STYLE: OnceLock<Regex> = OnceLock::new();
-    static TAG: OnceLock<Regex> = OnceLock::new();
-    let script = SCRIPT.get_or_init(|| Regex::new(r"(?is)<script[^>]*>.*?</script>").unwrap());
-    let style = STYLE.get_or_init(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").unwrap());
-    let tag = TAG.get_or_init(|| Regex::new(r"(?s)<[^>]+>").unwrap());
-    let no_script = script.replace_all(html, " ");
-    let no_style = style.replace_all(&no_script, " ");
-    let no_tags = tag.replace_all(&no_style, " ");
-    decode_entities(&no_tags)
-}
-
-fn decode_entities(s: &str) -> String {
-    s.replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-}
-
 fn extract_emails(text: &str, employer_domain: &str) -> Vec<String> {
     static R: OnceLock<Regex> = OnceLock::new();
     let re =
@@ -341,30 +260,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strips_html_tags_and_scripts() {
-        let html = "<html><script>alert(1)</script><body>Hello <b>world</b>!</body></html>";
-        let s = strip_html(html);
-        assert!(s.contains("Hello"));
-        assert!(s.contains("world"));
-        assert!(!s.contains("alert"));
-        assert!(!s.contains("<b>"));
-    }
-
-    #[test]
     fn extracts_same_domain_emails_only() {
         let text = "Contact info@acme.com or sales@acme.com but ignore noise@example.com";
         let v = extract_emails(text, "acme.com");
         assert!(v.contains(&"info@acme.com".to_string()));
         assert!(v.contains(&"sales@acme.com".to_string()));
         assert!(!v.iter().any(|e| e.ends_with("@example.com")));
-    }
-
-    #[test]
-    fn detects_freemail_and_social() {
-        assert!(is_freemail("gmail.com"));
-        assert!(!is_freemail("acme.com.au"));
-        assert!(is_social_platform("linkedin.com"));
-        assert!(is_social_platform("au.linkedin.com"));
-        assert!(!is_social_platform("acme.com.au"));
     }
 }
