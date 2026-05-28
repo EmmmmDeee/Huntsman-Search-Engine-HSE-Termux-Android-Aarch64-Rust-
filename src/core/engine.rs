@@ -969,9 +969,8 @@ fn module_skip_reason(
 /// entities with parsed admin-hierarchy components. Runs once per
 /// emission so downstream correlators see the enriched evidence.
 fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
-    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::entity::{EntityKind, Evidence};
     use crate::util::geohash;
-    let _ = Entity::new(EntityKind::Email, "noop", 0.0, ""); // type fix
     match entity.kind {
         EntityKind::Coordinates => {
             if let Some((lat, lon)) = geohash::parse_coords(&entity.value) {

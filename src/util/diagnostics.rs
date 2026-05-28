@@ -258,7 +258,7 @@ pub fn analyse(
     }
 
     let mut modules_by_yield: Vec<ModulePerformance> = by_source.into_values().collect();
-    modules_by_yield.sort_by(|a, b| b.entities_emitted.cmp(&a.entities_emitted));
+    modules_by_yield.sort_by_key(|m| std::cmp::Reverse(m.entities_emitted));
 
     // Cross-source overlaps with ≥2 distinct sources
     let mut cross_source_overlap: Vec<EntityOverlap> = entity_sources
@@ -277,7 +277,7 @@ pub fn analyse(
             }
         })
         .collect();
-    cross_source_overlap.sort_by(|a, b| b.sources.len().cmp(&a.sources.len()));
+    cross_source_overlap.sort_by_key(|o| std::cmp::Reverse(o.sources.len()));
     cross_source_overlap.truncate(50);
 
     // Optimization hints based on what we observed
