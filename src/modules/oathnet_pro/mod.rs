@@ -92,8 +92,18 @@ impl Module for OathnetPro {
             _ => return Ok(result),
         };
 
-        // ── Query 1: Breach search (highest value — entities + geo + identity) ──
-        let items = oathnet::search(key, paths::BREACH, field, &target.value, 15).await?;
+        // ── Query 1: Breach search ──────────────────────────────────────
+        // Highest value endpoint: single query returns emails, usernames,
+        // phones, names, IPs, addresses, passwords, geo, DOB, social
+        // handles. Use full page for identity targets (high signal), small
+        // page for infra targets (noisy — many unrelated rows).
+        let page_size: u32 = match target.kind {
+            TargetKind::Email | TargetKind::Username => 15,
+            TargetKind::Phone | TargetKind::FullName => 10,
+            TargetKind::IpAddress | TargetKind::Domain => 5,
+            _ => 10,
+        };
+        let items = oathnet::search(key, paths::BREACH, field, &target.value, page_size).await?;
         if items.is_empty() {
             return Ok(result);
         }
@@ -146,14 +156,12 @@ impl Module for OathnetPro {
             extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
         }
 
-        // ── Query 2: Stealer search (credential/device intelligence) ──
-        // Skip for IP/Domain targets: stealer logs are keyed on usernames and
-        // emails, so breach already captured the useful data for infra targets.
-        let is_identity_target = matches!(
-            target.kind,
-            TargetKind::Email | TargetKind::Username | TargetKind::Phone | TargetKind::FullName
-        );
-        if is_identity_target
+        // ── Query 2: Stealer search (Email/Username only) ───────────────
+        // Stealer logs are indexed by login credentials (username/email +
+        // password + URL). Only Email and Username targets have a direct
+        // index match. Phone/FullName use free-text "q" which is noisy and
+        // rarely productive. IP/Domain are already breach-only above.
+        if matches!(target.kind, TargetKind::Email | TargetKind::Username)
             && !ctx.cancel.is_cancelled()
             && let Ok(stealer_items) =
                 oathnet::search(key, paths::STEALER, field, &target.value, 10).await
@@ -165,20 +173,13 @@ impl Module for OathnetPro {
             }
         }
 
-        // ── Query 3: Holehe — only for Email targets (platform presence) ──
-        if target.kind == TargetKind::Email
-            && !ctx.cancel.is_cancelled()
-            && let Ok(holehe) = oathnet::osint(key, paths::HOLEHE, "email", &target.value).await
-        {
-            extract_holehe(holehe, &target.value, &ctx.scan_id, &mut result);
-        }
-
-        // No further OathNet queries — victims, recursive stealer,
-        // Discord, GHunt, IP info, and key harvest are all cut.
-        // The breach + stealer queries already extract IPs, emails,
-        // usernames, addresses, and credentials. Downstream free
-        // modules (ip_geo, dns_intel, geocode, etc.) handle the
-        // expansion from those entities without costing OathNet quota.
+        // Holehe, Discord, GHunt, IP info, Steam, Xbox, Roblox, and
+        // victims endpoints are intentionally not called. Breach is the
+        // highest-yield endpoint per query; stealer adds URL-specific
+        // credentials for indexed targets. Platform presence (holehe's
+        // output) is discovered for free by search_engines and
+        // username_search. Downstream free modules (ip_geo, dns_intel,
+        // geocode, etc.) handle expansion from extracted entities.
 
         Ok(result)
     }
@@ -569,26 +570,6 @@ fn extract_stealer_entities(
             e.add_evidence(ev);
             result.push(e);
         }
-    }
-}
-
-fn extract_holehe(data: Value, email: &str, scan_id: &str, result: &mut ModuleResult) {
-    if let Some(domains) = data.get("domains").and_then(|v| v.as_array()) {
-        if domains.is_empty() {
-            return;
-        }
-        let domains_str: Vec<&str> = domains.iter().filter_map(|v| v.as_str()).collect();
-        let mut parent = Entity::new(EntityKind::Email, email, 0.80, scan_id);
-        parent.tag("oathnet-pro");
-        parent.tag("holehe");
-        parent.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("Holehe: email on {} service(s)", domains_str.len()),
-            )
-            .with_attr("holehe_domains", domains_str.join(", ")),
-        );
-        result.push(parent);
     }
 }
 

@@ -33,14 +33,14 @@ static QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32:
 /// burning the entire daily OathNet quota across many pivot scans.
 static SESSION_QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-const MAX_QUERIES_PER_SCAN: u32 = 12;
+const MAX_QUERIES_PER_SCAN: u32 = 4;
 
 fn max_queries_per_session() -> u32 {
     static CAP: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
         std::env::var("HUNTSMAN_OATHNET_SESSION_CAP")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(50)
+            .unwrap_or(30)
     });
     *CAP
 }
@@ -191,43 +191,6 @@ pub async fn search(
     Ok(sd.items)
 }
 
-/// OSINT lookup (holehe, ip-info, discord, steam, etc.)
-/// Returns Null immediately if daily quota is exhausted.
-pub async fn osint(key: &str, path: &str, param: &str, value: &str) -> Result<Value> {
-    let ck = cache_key(path, param, value);
-    if let Some(cached) = cache_get(&ck) {
-        return Ok(cached.first().cloned().unwrap_or(Value::Null));
-    }
-    if is_quota_exhausted() || !budget_remaining() {
-        return Ok(Value::Null);
-    }
-    budget_increment();
-    let encoded = crate::util::http::urlencode(value);
-    let url = format!("{}{}?{}={}", base_url(), path, param, encoded);
-    let body = curl_get(&url, key).await?;
-    if body.contains("\"left_today\":0")
-        || body.contains("limit exceeded")
-        || body.contains("quota")
-    {
-        mark_quota_exhausted();
-        return Ok(Value::Null);
-    }
-    let env: Envelope =
-        serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
-    if !env.success {
-        if env.errors.as_ref().and_then(|e| e.status_code) == Some(429) {
-            mark_quota_exhausted();
-            return Ok(Value::Null);
-        }
-        return Err(Error::module("oathnet", "OSINT lookup failed"));
-    }
-    let data = env.data.unwrap_or(Value::Null);
-    if !data.is_null() {
-        cache_put(ck, std::slice::from_ref(&data));
-    }
-    Ok(data)
-}
-
 /// Extract a string field from a JSON Value.
 pub fn val_str(item: &Value, key: &str) -> Option<String> {
     item.get(key)
@@ -254,18 +217,13 @@ pub fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {
     sorted.into_iter().take(n).map(|(k, _)| k).collect()
 }
 
-/// API endpoint path constants.
+/// API endpoint path constants. Only endpoints that are actually called
+/// are kept — holehe, ip-info, ghunt, discord, steam, xbox, roblox, and
+/// victims were cut because breach + stealer yield strictly more data
+/// per query spent.
 pub mod paths {
     pub const BREACH: &str = "/service/v2/breach/search";
     pub const STEALER: &str = "/service/v2/stealer/search";
-    pub const HOLEHE: &str = "/service/holehe";
-    pub const IP_INFO: &str = "/service/ip-info";
-    pub const GHUNT: &str = "/service/ghunt";
-    pub const DISCORD_USER: &str = "/service/discord-userinfo";
-    pub const STEAM: &str = "/service/steam";
-    pub const XBOX: &str = "/service/xbox";
-    pub const ROBLOX: &str = "/service/roblox-userinfo";
-    pub const VICTIMS: &str = "/service/v2/victims/search";
 }
 
 /// Harvest API service credentials from OathNet stealer data.
@@ -468,6 +426,5 @@ mod tests {
     fn paths_are_non_empty() {
         assert!(!paths::BREACH.is_empty());
         assert!(!paths::STEALER.is_empty());
-        assert!(!paths::HOLEHE.is_empty());
     }
 }
