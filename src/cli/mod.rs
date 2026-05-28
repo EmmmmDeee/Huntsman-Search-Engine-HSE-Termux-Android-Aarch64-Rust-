@@ -1462,6 +1462,7 @@ async fn cmd_radar(interval: u64, depth: u32, sweeps: Option<u32>, free_only: bo
                 let mut exclude = Vec::new();
                 if is_infra {
                     exclude.push("oathnet_pro".to_string());
+                    exclude.push("see_know".to_string());
                 }
                 let pivot_opts = ScanOptions {
                     depth,

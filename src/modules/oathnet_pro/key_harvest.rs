@@ -685,7 +685,10 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
     None
 }
 
-pub(super) fn extract_api_keys_from_item(
+/// Scan a JSON record for API key patterns in password / URL-param / extra
+/// fields. Public so peer modules like `see_know` can use the same harvest
+/// pipeline against their own response schemas.
+pub fn extract_api_keys_from_item(
     item: &Value,
     scan_id: &str,
     seen: &mut HashSet<String>,
@@ -1012,7 +1015,10 @@ pub fn store_api_credential_from_item(item: &Value) {
     store_api_credential(item);
 }
 
-pub(super) fn store_api_credential(item: &Value) {
+/// Same as `store_api_credential_from_item` but pub for peer-module use.
+/// Routes a stealer/breach record to the key pool when the URL matches
+/// a known service domain.
+pub fn store_api_credential(item: &Value) {
     let url = val_str(item, "url")
         .or_else(|| val_str(item, "url_str"))
         .or_else(|| val_str(item, "domain"))

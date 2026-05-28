@@ -79,6 +79,8 @@ pub fn classify(service: &str) -> KeyRoi {
         | "hunter" | "proxycurl" | "epieos" | "emailrep" | "seon"
         // Source-code key leaks
         | "github" | "gitlab"
+        // Semantic search → URLs → web_crawler → leaked keys
+        | "exa"
         // Breach-with-credentials services (these directly contain creds
         // for OTHER services, leading to more keys)
         | "hibp" | "dehashed" | "intelx" | "hudsonrock" | "xposed_or_not"

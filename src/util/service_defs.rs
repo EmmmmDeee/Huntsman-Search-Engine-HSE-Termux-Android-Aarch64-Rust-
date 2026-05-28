@@ -336,6 +336,28 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         key_header: KeyPlacement::QueryParam("api_token"),
         rate_limit_reset_secs: 60,
     },
+    // SeekNow (see-know.eu) — direct OathNet competitor with 5000 daily
+    // lookups on premiumhq tier. Auth: Authorization: Bearer <key>.
+    // /credits is a free introspection endpoint for validation.
+    ServiceDef {
+        name: "see_know",
+        env_var: "HUNTSMAN_SEEKNOW_KEY",
+        category: "breach",
+        test_url: "https://see-know.eu/api/v1/credits",
+        key_header: KeyPlacement::BearerAuth,
+        rate_limit_reset_secs: 17,
+    },
+    // Exa AI neural search — semantic web search for entity discovery.
+    // x-api-key header. POST endpoint, but the GET /search?q=test path
+    // returns a usage stub that confirms key validity.
+    ServiceDef {
+        name: "exa",
+        env_var: "HUNTSMAN_EXA_KEY",
+        category: "search",
+        test_url: "https://api.exa.ai/search",
+        key_header: KeyPlacement::Header("x-api-key"),
+        rate_limit_reset_secs: 5,
+    },
 ];
 
 pub fn service_defs() -> &'static [ServiceDef] {

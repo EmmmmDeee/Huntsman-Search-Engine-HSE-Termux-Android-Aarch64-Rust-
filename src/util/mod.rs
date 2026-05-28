@@ -7,6 +7,7 @@ pub mod key_roi;
 pub mod keys;
 pub mod oathnet;
 pub mod proxy;
+pub mod see_know;
 pub mod service_defs;
 
 pub mod url_util {
