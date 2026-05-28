@@ -319,6 +319,24 @@ async fn stats_endpoint_includes_wigle_sub_budgets() {
         let cap = block["scan_cap"].as_u64().unwrap();
         assert!(cap >= 1, "wigle.{sub}.scan_cap must be ≥ 1 (got {cap})");
     }
+    // Account block must also be present — fields may be null until
+    // /profile/user is polled, but the keys must exist so the SPA can
+    // render placeholders without `undefined` reads.
+    let account = wn
+        .get("account")
+        .expect("wigle block must include account sub-object");
+    for field in [
+        "verified",
+        "user",
+        "daily_api_calls",
+        "monthly_api_calls",
+        "last_polled_ts",
+    ] {
+        assert!(
+            account.get(field).is_some(),
+            "wigle.account missing field {field}"
+        );
+    }
 }
 
 #[tokio::test]

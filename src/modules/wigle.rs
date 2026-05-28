@@ -672,91 +672,131 @@ impl Wigle {
         bssid: &str,
         ctx: &ModuleContext,
     ) -> Result<ModuleResult> {
-        let encoded = crate::util::http::urlencode(bssid);
-        let url = format!("https://api.wigle.net/api/v2/network/detail?netid={encoded}&type=wifi");
-
-        let resp = ctx
-            .http
-            .get(&url)
-            .basic_auth(user, Some(token))
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
-
-        if !resp.status().is_success() {
-            return Ok(ModuleResult::new());
-        }
-
-        #[derive(Deserialize)]
-        struct DetailResp {
-            #[serde(default)]
-            success: Option<bool>,
-            #[serde(default)]
-            results: Vec<Network>,
-        }
-
-        let body: DetailResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
-
-        if body.success != Some(true) {
-            return Ok(ModuleResult::new());
-        }
-
-        let mut result = ModuleResult::new();
-
-        if let Some(net) = body.results.first()
-            && let Some(lat) = net.trilat
-        {
-            let lon = net.trilong.unwrap_or(0.0);
-
-            // Only emit if we have location data from city/region/country
-            let parts: Vec<&str> = [
-                net.city.as_deref(),
-                net.region.as_deref(),
-                net.country.as_deref(),
-            ]
-            .iter()
-            .filter_map(|p| *p)
-            .filter(|p| !p.is_empty())
-            .collect();
-
-            if parts.len() >= 2 {
-                let addr_str = parts.join(", ");
-                let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.70, &ctx.scan_id);
-                addr.tag("wigle");
-                addr.tag("bssid-located");
-                addr.add_evidence(
-                    Evidence::new(SRC, format!("WiGLE BSSID lookup for {bssid}"))
-                        .with_attr("bssid", bssid),
-                );
-                result.push(addr);
-            }
-
-            if lat.abs() > 0.01 && lon.abs() > 0.01 {
-                let mut e = Entity::new(
-                    EntityKind::Coordinates,
-                    format!("{lat:.6},{lon:.6}"),
-                    0.75,
-                    &ctx.scan_id,
-                );
-                e.tag("geoint");
-                e.tag("wigle");
-                e.tag("bssid-located");
-                e.add_evidence(
-                    Evidence::new(SRC, format!("WiGLE BSSID {bssid} → coordinates"))
-                        .with_attr("bssid", bssid)
-                        .with_attr("latitude", lat.to_string())
-                        .with_attr("longitude", lon.to_string()),
-                );
-                result.push(e);
+        // BSSID detail lookup now tries WiFi first, then falls back
+        // through the cell and Bluetooth corpora — `network/detail`
+        // exposes a `type=` query param the legacy code never set
+        // for non-WiFi lookups. Modern Bluetooth MACs and cellular
+        // identifiers should land in their respective indexes;
+        // walking all three corpora ensures we surface a hit
+        // regardless of which observation type WiGLE catalogued the
+        // record under.
+        for kind in [NetworkKind::Wifi, NetworkKind::Cell, NetworkKind::Bluetooth] {
+            if let Some(body) = fetch_detail(&ctx.http, user, token, bssid, kind).await
+                && body.success == Some(true)
+                && !body.results.is_empty()
+            {
+                return Ok(emit_bssid_entities(bssid, kind, &body.results, &ctx.scan_id));
             }
         }
-
-        Ok(result)
+        Ok(ModuleResult::new())
     }
+}
+
+#[derive(Deserialize)]
+struct DetailResp {
+    #[serde(default)]
+    success: Option<bool>,
+    #[serde(default)]
+    results: Vec<Network>,
+}
+
+async fn fetch_detail(
+    http: &reqwest::Client,
+    user: &str,
+    token: &str,
+    bssid: &str,
+    kind: NetworkKind,
+) -> Option<DetailResp> {
+    let encoded = crate::util::http::urlencode(bssid);
+    let url = format!(
+        "https://api.wigle.net/api/v2/network/detail?netid={encoded}&type={kind}",
+        kind = kind.as_str(),
+    );
+    let resp = http
+        .get(&url)
+        .basic_auth(user, Some(token))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<DetailResp>().await.ok()
+}
+
+/// Emit Address + Coordinates entities for a successful BSSID
+/// detail lookup. Tags include the observation type so downstream
+/// correlators can distinguish a WiFi-located MAC from a
+/// cell-tower-located one.
+fn emit_bssid_entities(
+    bssid: &str,
+    kind: NetworkKind,
+    results: &[Network],
+    scan_id: &str,
+) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    let Some(net) = results.first() else {
+        return result;
+    };
+    let Some(lat) = net.trilat else {
+        return result;
+    };
+    let lon = net.trilong.unwrap_or(0.0);
+    let observation_tag = match kind {
+        NetworkKind::Wifi => "bssid-located",
+        NetworkKind::Cell => "cell-located",
+        NetworkKind::Bluetooth => "bluetooth-located",
+    };
+    let kind_label = kind.as_str();
+
+    let parts: Vec<&str> = [
+        net.city.as_deref(),
+        net.region.as_deref(),
+        net.country.as_deref(),
+    ]
+    .iter()
+    .filter_map(|p| *p)
+    .filter(|p| !p.is_empty())
+    .collect();
+    if parts.len() >= 2 {
+        let addr_str = parts.join(", ");
+        let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.70, scan_id);
+        addr.tag("wigle");
+        addr.tag(observation_tag);
+        addr.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("WiGLE {kind_label} BSSID lookup for {bssid}"),
+            )
+            .with_attr("bssid", bssid)
+            .with_attr("observation_type", kind_label),
+        );
+        result.push(addr);
+    }
+    if lat.abs() > 0.01 && lon.abs() > 0.01 {
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            format!("{lat:.6},{lon:.6}"),
+            0.75,
+            scan_id,
+        );
+        e.tag("geoint");
+        e.tag("wigle");
+        e.tag(observation_tag);
+        e.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("WiGLE {kind_label} BSSID {bssid} → coordinates"),
+            )
+            .with_attr("bssid", bssid)
+            .with_attr("latitude", lat.to_string())
+            .with_attr("longitude", lon.to_string())
+            .with_attr("observation_type", kind_label),
+        );
+        result.push(e);
+    }
+    result
 }
 
 /// Statistical mode: most common value in a slice.
@@ -785,6 +825,129 @@ const GENERIC_SSIDS: &[&str] = &[
     "free", "public", "open", "android", "iphone", "galaxy", "pixel", "setup", "config", "admin",
     "test", "hidden", "unknown", "unnamed",
 ];
+
+// ── Account introspection: profile/user + profile/apiUsage ─────────────────
+//
+// Two non-counting WiGLE endpoints that surface operator-visible state:
+//
+//   GET /api/v2/profile/user
+//     → returns { user, verified, ... }. The `verified: false` case
+//       means WiGLE throttles database queries until email confirm —
+//       a silent operational hazard the operator probably doesn't
+//       know about until queries start failing. `hse doctor` and
+//       the diagnostic block on `/api/v1/stats` surface this.
+//
+//   GET /api/v2/profile/apiUsage
+//     → returns { dailyApiCalls, monthlyApiCalls, ... }. Lets us
+//       expose authoritative remaining-quota numbers rather than
+//       relying solely on our local per-process counters.
+//
+// Both calls are intentionally NOT charged against any of the four
+// observation-type budgets — they're metadata, dispatched once per
+// process and cached in `ACCOUNT_STATUS_CACHE` for subsequent reads.
+
+/// Operator-visible WiGLE account state.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct WigleAccountStatus {
+    /// True if the `/profile/user` lookup confirmed `verified == true`.
+    /// `None` if the endpoint hasn't been polled this process.
+    pub verified: Option<bool>,
+    /// Username on the WiGLE side (matches the operator's account).
+    pub user: Option<String>,
+    /// Today's API calls so far (per the `apiUsage` endpoint).
+    pub daily_api_calls: Option<u64>,
+    /// This-month API calls so far.
+    pub monthly_api_calls: Option<u64>,
+    /// Last refresh time (unix seconds) — `None` if never polled.
+    pub last_polled_ts: Option<u64>,
+}
+
+static ACCOUNT_STATUS_CACHE: std::sync::OnceLock<std::sync::Mutex<WigleAccountStatus>> =
+    std::sync::OnceLock::new();
+
+fn account_status_cache() -> &'static std::sync::Mutex<WigleAccountStatus> {
+    ACCOUNT_STATUS_CACHE.get_or_init(|| std::sync::Mutex::new(WigleAccountStatus::default()))
+}
+
+/// Read the cached account status. `verified == None` means the
+/// `/profile/user` endpoint has not been polled yet this process.
+pub fn account_status() -> WigleAccountStatus {
+    account_status_cache()
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
+#[derive(serde::Deserialize)]
+struct ProfileUserResp {
+    #[serde(default)]
+    user: Option<String>,
+    #[serde(default)]
+    verified: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct ProfileApiUsageResp {
+    #[serde(default, rename = "dailyApiCalls")]
+    daily_api_calls: Option<u64>,
+    #[serde(default, rename = "monthlyApiCalls")]
+    monthly_api_calls: Option<u64>,
+}
+
+/// One-shot poll of `profile/user` + `profile/apiUsage`, caching
+/// results in `ACCOUNT_STATUS_CACHE`. Failures are silent — the
+/// cache stays empty (`verified: None`) and callers treat that as
+/// "unknown, keep going".
+///
+/// Does NOT consume any of the four observation-type budgets.
+pub async fn refresh_account_status(
+    http: &reqwest::Client,
+    user: &str,
+    token: &str,
+) -> WigleAccountStatus {
+    // profile/user
+    let mut status = WigleAccountStatus {
+        last_polled_ts: Some(crate::core::entity::unix_now()),
+        ..Default::default()
+    };
+    if let Ok(resp) = http
+        .get("https://api.wigle.net/api/v2/profile/user")
+        .basic_auth(user, Some(token))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        && resp.status().is_success()
+        && let Ok(body) = resp.json::<ProfileUserResp>().await
+    {
+        status.user = body.user;
+        status.verified = body.verified;
+    }
+    // profile/apiUsage
+    if let Ok(resp) = http
+        .get("https://api.wigle.net/api/v2/profile/apiUsage")
+        .basic_auth(user, Some(token))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        && resp.status().is_success()
+        && let Ok(body) = resp.json::<ProfileApiUsageResp>().await
+    {
+        status.daily_api_calls = body.daily_api_calls;
+        status.monthly_api_calls = body.monthly_api_calls;
+    }
+    if let Ok(mut g) = account_status_cache().lock() {
+        *g = status.clone();
+    }
+    status
+}
+
+/// True if the operator's WiGLE account is confirmed unverified
+/// (i.e. the email-verify step the user account page warns about
+/// hasn't been completed). `false` means "verified or unknown" so
+/// callers don't false-alarm on a stale cache.
+pub fn is_unverified() -> bool {
+    matches!(account_status().verified, Some(false))
+}
 
 #[cfg(test)]
 mod tests {
@@ -1105,5 +1268,159 @@ mod tests {
         assert_eq!(s.bssid.scan_used, 0);
         assert_eq!(s.cell.scan_used, 0);
         assert_eq!(s.bluetooth.scan_used, 0);
+    }
+
+    // ── Account introspection helpers ──────────────────────────────────
+
+    #[test]
+    fn account_status_default_is_all_none() {
+        // Fresh process — no /profile/user call has run, so every
+        // optional field is `None` and `is_unverified()` is false
+        // (we don't false-alarm on a stale unknown).
+        let s = WigleAccountStatus::default();
+        assert!(s.verified.is_none());
+        assert!(s.user.is_none());
+        assert!(s.daily_api_calls.is_none());
+        assert!(s.monthly_api_calls.is_none());
+        assert!(s.last_polled_ts.is_none());
+    }
+
+    #[test]
+    fn is_unverified_returns_false_when_status_is_unknown() {
+        // The cache starts at default (verified: None). We must NOT
+        // report unverified — that path should only fire when WiGLE
+        // confirms `verified == false`.
+        // Note: this test may interact with other tests that populate
+        // the cache (it's a process-wide static). Reset it first.
+        if let Ok(mut g) = account_status_cache().lock() {
+            *g = WigleAccountStatus::default();
+        }
+        assert!(!is_unverified());
+    }
+
+    #[test]
+    fn is_unverified_returns_true_when_wigle_reports_unverified() {
+        if let Ok(mut g) = account_status_cache().lock() {
+            *g = WigleAccountStatus {
+                verified: Some(false),
+                user: Some("MattDieg".into()),
+                ..Default::default()
+            };
+        }
+        assert!(is_unverified());
+        // Cleanup so subsequent tests aren't poisoned.
+        if let Ok(mut g) = account_status_cache().lock() {
+            *g = WigleAccountStatus::default();
+        }
+    }
+
+    #[test]
+    fn account_status_round_trips_serialisable_snapshot() {
+        if let Ok(mut g) = account_status_cache().lock() {
+            *g = WigleAccountStatus {
+                verified: Some(true),
+                user: Some("MattDieg".into()),
+                daily_api_calls: Some(42),
+                monthly_api_calls: Some(1337),
+                last_polled_ts: Some(1000),
+            };
+        }
+        let s = account_status();
+        assert_eq!(s.verified, Some(true));
+        assert_eq!(s.user.as_deref(), Some("MattDieg"));
+        assert_eq!(s.daily_api_calls, Some(42));
+        assert_eq!(s.monthly_api_calls, Some(1337));
+        // JSON-serialise to confirm the wire shape used by
+        // /api/v1/stats works.
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"verified\":true"));
+        assert!(json.contains("\"daily_api_calls\":42"));
+        if let Ok(mut g) = account_status_cache().lock() {
+            *g = WigleAccountStatus::default();
+        }
+    }
+
+    // ── BSSID dispatcher fallback chain ────────────────────────────────
+
+    #[test]
+    fn emit_bssid_entities_skips_when_no_location_data() {
+        // A detail response with no lat/lon at all must produce no
+        // entities — we don't manufacture coordinates from nothing.
+        let net = Network {
+            ssid: None,
+            netid: Some("AA:BB:CC:DD:EE:FF".into()),
+            encryption: None,
+            lastupdt: None,
+            trilat: None,
+            trilong: None,
+            city: None,
+            region: None,
+            country: None,
+            postalcode: None,
+        };
+        let r = emit_bssid_entities(
+            "AA:BB:CC:DD:EE:FF",
+            NetworkKind::Wifi,
+            &[net],
+            "test",
+        );
+        assert!(r.entities.is_empty());
+    }
+
+    #[test]
+    fn emit_bssid_entities_tags_cell_lookup_with_cell_located() {
+        let net = Network {
+            ssid: None,
+            netid: Some("AA:BB:CC:DD:EE:FF".into()),
+            encryption: None,
+            lastupdt: None,
+            trilat: Some(-27.4766),
+            trilong: Some(153.0166),
+            city: Some("Brisbane".into()),
+            region: Some("QLD".into()),
+            country: Some("AU".into()),
+            postalcode: None,
+        };
+        let r = emit_bssid_entities("310-410-12345", NetworkKind::Cell, &[net], "test");
+        assert!(r.entities.iter().any(|e| {
+            e.kind == EntityKind::Coordinates && e.has_tag("cell-located")
+        }));
+        assert!(r.entities.iter().any(|e| {
+            e.kind == EntityKind::Address && e.has_tag("cell-located")
+        }));
+    }
+
+    #[test]
+    fn emit_bssid_entities_tags_bluetooth_lookup_with_bluetooth_located() {
+        let net = Network {
+            ssid: Some("BeaconLabel".into()),
+            netid: Some("DD:EE:FF:00:11:22".into()),
+            encryption: None,
+            lastupdt: None,
+            trilat: Some(51.5074),
+            trilong: Some(-0.1278),
+            city: Some("London".into()),
+            region: Some("England".into()),
+            country: Some("GB".into()),
+            postalcode: None,
+        };
+        let r = emit_bssid_entities(
+            "DD:EE:FF:00:11:22",
+            NetworkKind::Bluetooth,
+            &[net],
+            "test",
+        );
+        assert!(r.entities.iter().any(|e| {
+            e.kind == EntityKind::Coordinates && e.has_tag("bluetooth-located")
+        }));
+        assert!(r.entities.iter().any(|e| {
+            e.kind == EntityKind::Address && e.has_tag("bluetooth-located")
+        }));
+    }
+
+    #[test]
+    fn emit_bssid_entities_emits_nothing_for_empty_results() {
+        let r = emit_bssid_entities("anything", NetworkKind::Wifi, &[], "test");
+        assert!(r.entities.is_empty());
     }
 }

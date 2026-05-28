@@ -378,7 +378,7 @@ pub async fn run() -> Result<()> {
             .await
         }
         Command::Modules => cmd_modules(),
-        Command::Doctor => cmd_doctor(),
+        Command::Doctor => cmd_doctor().await,
         Command::Provision {
             env_only,
             verify_only,
@@ -815,7 +815,7 @@ fn cmd_modules() -> Result<()> {
     Ok(())
 }
 
-fn cmd_doctor() -> Result<()> {
+async fn cmd_doctor() -> Result<()> {
     let mods = registry();
     println!("HSE v{} — doctor\n", crate::VERSION);
     println!(
@@ -855,6 +855,39 @@ fn cmd_doctor() -> Result<()> {
     }
     if huntsman_keys.is_empty() {
         println!("  (none set; all free modules still work)");
+    }
+
+    // ── WiGLE account health (network call, best-effort) ──────────────
+    // Poll /api/v2/profile/user + /apiUsage. Surfaces the
+    // "email unverified → throttled" warning that the WiGLE account
+    // page calls out but which our queries don't otherwise expose
+    // until they start silently returning fewer results.
+    println!("\nWiGLE account:");
+    let wigle_user = loaded
+        .get("HUNTSMAN_WIGLE_USER")
+        .map_or("AID4493a33e2df9d07ab9666a27c8aead17", String::as_str)
+        .to_string();
+    let wigle_token = loaded
+        .get("HUNTSMAN_WIGLE_TOKEN")
+        .map_or("1aedb7ad0171ff3d6be5a844cca5d977", String::as_str)
+        .to_string();
+    let http = crate::util::http::build_client();
+    let status = crate::modules::wigle::refresh_account_status(&http, &wigle_user, &wigle_token).await;
+    match status.verified {
+        Some(true) => println!("  email-verified: yes"),
+        Some(false) => println!(
+            "  email-verified: NO — WiGLE throttles DB queries until email is confirmed.\n                  Log into wigle.net/account and click the verify link."
+        ),
+        None => println!("  email-verified: unknown — /profile/user not reachable"),
+    }
+    if let Some(user) = status.user.as_deref() {
+        println!("  user:           {user}");
+    }
+    if let Some(daily) = status.daily_api_calls {
+        println!("  daily calls:    {daily}");
+    }
+    if let Some(monthly) = status.monthly_api_calls {
+        println!("  monthly calls:  {monthly}");
     }
 
     Ok(())

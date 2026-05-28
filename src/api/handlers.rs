@@ -116,11 +116,23 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let seeknow = budget_block(crate::util::see_know::budget_snapshot());
     let oathnet = budget_block(crate::util::oathnet::budget_snapshot());
     let wigle = crate::modules::wigle::budget_snapshot();
+    let wigle_account = crate::modules::wigle::account_status();
     let wigle_block = json!({
         "geo":       budget_block(wigle.geo),
         "bssid":     budget_block(wigle.bssid),
         "cell":      budget_block(wigle.cell),
         "bluetooth": budget_block(wigle.bluetooth),
+        "account":   {
+            // `verified == false` means the WiGLE account has not yet
+            // confirmed the email-verification step, which gates the
+            // database queries (operator-facing warning). `null` means
+            // we haven't polled `/profile/user` yet this process.
+            "verified":           wigle_account.verified,
+            "user":               wigle_account.user,
+            "daily_api_calls":    wigle_account.daily_api_calls,
+            "monthly_api_calls":  wigle_account.monthly_api_calls,
+            "last_polled_ts":     wigle_account.last_polled_ts,
+        },
     });
 
     (
