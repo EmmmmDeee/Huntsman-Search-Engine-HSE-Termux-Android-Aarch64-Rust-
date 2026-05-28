@@ -82,7 +82,10 @@ pub fn extract_all(text: &str) -> Vec<AuAddress> {
     let mut out = Vec::new();
     let re = full_pattern();
     for cap in re.captures_iter(text) {
-        let full = cap.get(0).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+        let full = cap
+            .get(0)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
         let level = cap.name("lvl").map(|m| m.as_str().trim().to_string());
         let unit = cap.name("unit").map(|m| m.as_str().trim().to_string());
         let num = cap
@@ -137,7 +140,9 @@ fn is_plausible_postcode(state: &str, postcode: &str) -> bool {
     };
     match state {
         "NSW" => (1000..=2999).contains(&pc) || (1000..=1999).contains(&pc),
-        "ACT" => (200..=299).contains(&pc) || (2600..=2618).contains(&pc) || (2900..=2920).contains(&pc),
+        "ACT" => {
+            (200..=299).contains(&pc) || (2600..=2618).contains(&pc) || (2900..=2920).contains(&pc)
+        }
         "VIC" => (3000..=3999).contains(&pc) || (8000..=8999).contains(&pc),
         "QLD" => (4000..=4999).contains(&pc) || (9000..=9999).contains(&pc),
         "SA" => (5000..=5999).contains(&pc),
@@ -151,7 +156,10 @@ fn is_plausible_postcode(state: &str, postcode: &str) -> bool {
 /// AU phone-number normaliser: returns E.164 form (+61...) when the
 /// input is a recognisable Australian number (08/02/03/04/07/13/1300/1800).
 pub fn normalise_phone(s: &str) -> Option<String> {
-    let digits: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect();
+    let digits: String = s
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '+')
+        .collect();
     if digits.starts_with("+61") {
         return Some(digits);
     }
@@ -161,9 +169,13 @@ pub fn normalise_phone(s: &str) -> Option<String> {
     if digits.starts_with('0') && digits.len() == 10 {
         return Some(format!("+61{}", &digits[1..]));
     }
-    if digits.len() == 9 && (digits.starts_with('2') || digits.starts_with('3') ||
-                              digits.starts_with('4') || digits.starts_with('7') ||
-                              digits.starts_with('8')) {
+    if digits.len() == 9
+        && (digits.starts_with('2')
+            || digits.starts_with('3')
+            || digits.starts_with('4')
+            || digits.starts_with('7')
+            || digits.starts_with('8'))
+    {
         return Some(format!("+61{}", digits));
     }
     if digits.starts_with("1300") || digits.starts_with("1800") {
@@ -234,9 +246,21 @@ mod tests {
 
     #[test]
     fn normalises_phone_e164() {
-        assert_eq!(normalise_phone("0410 959 140").as_deref(), Some("+61410959140"));
-        assert_eq!(normalise_phone("(07) 3739 4511").as_deref(), Some("+61737394511"));
-        assert_eq!(normalise_phone("+61 7 3739 4511").as_deref(), Some("+61737394511"));
-        assert_eq!(normalise_phone("1300 846 637").as_deref(), Some("+611300846637"));
+        assert_eq!(
+            normalise_phone("0410 959 140").as_deref(),
+            Some("+61410959140")
+        );
+        assert_eq!(
+            normalise_phone("(07) 3739 4511").as_deref(),
+            Some("+61737394511")
+        );
+        assert_eq!(
+            normalise_phone("+61 7 3739 4511").as_deref(),
+            Some("+61737394511")
+        );
+        assert_eq!(
+            normalise_phone("1300 846 637").as_deref(),
+            Some("+611300846637")
+        );
     }
 }

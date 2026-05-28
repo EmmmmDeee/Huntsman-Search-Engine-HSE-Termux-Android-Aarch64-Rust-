@@ -204,13 +204,38 @@ fn domain_for_target(t: &Target) -> Option<String> {
 }
 
 const FREEMAIL: &[&str] = &[
-    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.com.au", "outlook.com",
-    "hotmail.com", "hotmail.com.au", "live.com", "live.com.au", "icloud.com",
-    "me.com", "mac.com", "protonmail.com", "proton.me", "tutanota.com",
-    "tutanota.de", "yandex.ru", "yandex.com", "mail.ru", "gmx.com", "gmx.de",
-    "fastmail.com", "fastmail.fm", "aol.com", "comcast.net", "verizon.net",
-    "bigpond.com", "bigpond.net.au", "optusnet.com.au", "iinet.net.au",
-    "internode.on.net", "tpg.com.au",
+    "gmail.com",
+    "googlemail.com",
+    "yahoo.com",
+    "yahoo.com.au",
+    "outlook.com",
+    "hotmail.com",
+    "hotmail.com.au",
+    "live.com",
+    "live.com.au",
+    "icloud.com",
+    "me.com",
+    "mac.com",
+    "protonmail.com",
+    "proton.me",
+    "tutanota.com",
+    "tutanota.de",
+    "yandex.ru",
+    "yandex.com",
+    "mail.ru",
+    "gmx.com",
+    "gmx.de",
+    "fastmail.com",
+    "fastmail.fm",
+    "aol.com",
+    "comcast.net",
+    "verizon.net",
+    "bigpond.com",
+    "bigpond.net.au",
+    "optusnet.com.au",
+    "iinet.net.au",
+    "internode.on.net",
+    "tpg.com.au",
 ];
 
 fn is_freemail(domain: &str) -> bool {
@@ -218,23 +243,32 @@ fn is_freemail(domain: &str) -> bool {
 }
 
 const SOCIAL: &[&str] = &[
-    "facebook.com", "twitter.com", "x.com", "instagram.com", "linkedin.com",
-    "tiktok.com", "youtube.com", "reddit.com", "pinterest.com", "github.com",
-    "gitlab.com", "medium.com",
+    "facebook.com",
+    "twitter.com",
+    "x.com",
+    "instagram.com",
+    "linkedin.com",
+    "tiktok.com",
+    "youtube.com",
+    "reddit.com",
+    "pinterest.com",
+    "github.com",
+    "gitlab.com",
+    "medium.com",
 ];
 
 fn is_social_platform(domain: &str) -> bool {
-    SOCIAL.iter().any(|s| domain == *s || domain.ends_with(&format!(".{}", s)))
+    SOCIAL
+        .iter()
+        .any(|s| domain == *s || domain.ends_with(&format!(".{}", s)))
 }
 
 fn strip_html(html: &str) -> String {
     static SCRIPT: OnceLock<Regex> = OnceLock::new();
     static STYLE: OnceLock<Regex> = OnceLock::new();
     static TAG: OnceLock<Regex> = OnceLock::new();
-    let script = SCRIPT
-        .get_or_init(|| Regex::new(r"(?is)<script[^>]*>.*?</script>").unwrap());
-    let style = STYLE
-        .get_or_init(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").unwrap());
+    let script = SCRIPT.get_or_init(|| Regex::new(r"(?is)<script[^>]*>.*?</script>").unwrap());
+    let style = STYLE.get_or_init(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").unwrap());
     let tag = TAG.get_or_init(|| Regex::new(r"(?s)<[^>]+>").unwrap());
     let no_script = script.replace_all(html, " ");
     let no_style = style.replace_all(&no_script, " ");
@@ -254,9 +288,8 @@ fn decode_entities(s: &str) -> String {
 
 fn extract_emails(text: &str, employer_domain: &str) -> Vec<String> {
     static R: OnceLock<Regex> = OnceLock::new();
-    let re = R.get_or_init(|| {
-        Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}").unwrap()
-    });
+    let re =
+        R.get_or_init(|| Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}").unwrap());
     let mut out = Vec::new();
     for m in re.find_iter(text) {
         let s = m.as_str().to_lowercase();
