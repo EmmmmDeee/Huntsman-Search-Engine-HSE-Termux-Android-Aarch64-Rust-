@@ -563,11 +563,24 @@ fn build_queries(target: &Target) -> Vec<String> {
                      OR site:peoplefinder.com.au OR site:searchfind.com.au"
                 ));
 
-                // Australian public records — courts, electoral, property
+                // Australian public records — courts, electoral, property.
+                // QLD + NSW are the largest jurisdictions by population so
+                // they get the dedicated dork; the broader state coverage
+                // below catches VIC/WA/SA/TAS/ACT/NT court mentions.
                 q.push(format!(
                     "\"{v}\" site:courts.qld.gov.au OR site:ecourts.justice.nsw.gov.au \
                      OR site:austlii.edu.au OR site:jade.io"
                 ));
+                q.push(format!(
+                    "\"{v}\" site:supremecourt.vic.gov.au OR site:supremecourt.wa.gov.au \
+                     OR site:courts.sa.gov.au OR site:supremecourt.tas.gov.au \
+                     OR site:courts.act.gov.au OR site:supremecourt.nt.gov.au"
+                ));
+                // Health-practitioner registry — covers doctors, nurses,
+                // dentists, pharmacists, psychologists, physios across
+                // every AU state. High-yield when the seed is a medical
+                // professional's name.
+                q.push(format!("\"{v}\" site:ahpra.gov.au OR site:apra.gov.au"));
                 q.push(format!(
                     "\"{fl}\" Queensland OR Brisbane OR \"Gold Coast\" OR Cairns"
                 ));
@@ -632,6 +645,20 @@ fn build_queries(target: &Target) -> Vec<String> {
             q.push(format!(
                 "\"{v}\" site:realestate.com.au OR site:domain.com.au \
                  OR site:zillow.com OR site:trulia.com"
+            ));
+            // AU state land-registry surfaces (per-state title office +
+            // strata records). Picks up the formal property descriptor
+            // for an address — useful when the breach data has only the
+            // street and we need the lot / plan number.
+            q.push(format!(
+                "\"{v}\" site:nswlrs.com.au OR site:land.vic.gov.au \
+                 OR site:landgate.wa.gov.au OR site:landservices.sa.gov.au \
+                 OR site:thelist.tas.gov.au OR site:nt.gov.au"
+            ));
+            // Strata + body-corporate records — directors, occupants of
+            // multi-dwelling buildings.
+            q.push(format!(
+                "\"{v}\" strata OR \"body corporate\" OR \"owners corporation\""
             ));
             q.push(format!("\"{v}\" ABN OR business OR company OR shop"));
             q

@@ -155,7 +155,11 @@ impl Module for IpApi {
             && lon.abs() > 0.01
         {
             let coords = format!("{lat:.4},{lon:.4}");
-            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, &ctx.scan_id);
+            // Confidence recalibrated 0.70 → 0.60 — see ip_geo.rs for
+            // rationale (single-source free IP geo overstates
+            // residential precision; corroboration boost lifts the
+            // real value at the merge step).
+            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.60, &ctx.scan_id);
             ce.tag(tags::GEOINT);
             if data.mobile == Some(true) {
                 ce.tag("mobile");

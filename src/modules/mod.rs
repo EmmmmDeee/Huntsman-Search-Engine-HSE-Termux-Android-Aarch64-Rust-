@@ -52,6 +52,7 @@ pub mod ipquery;
 pub mod keybase;
 pub mod leakix;
 pub mod local_net;
+pub mod mls;
 pub mod mylnikov;
 pub mod name_to_username;
 pub mod oathnet_pro;
@@ -160,6 +161,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(proxycurl::Proxycurl),
         Arc::new(photon::Photon),
         Arc::new(mylnikov::Mylnikov),
+        Arc::new(mls::Mls),
         Arc::new(overpass::Overpass),
         Arc::new(sunrise_sunset::SunriseSunset),
         // Geolocation enrichment (passive, zero-API)

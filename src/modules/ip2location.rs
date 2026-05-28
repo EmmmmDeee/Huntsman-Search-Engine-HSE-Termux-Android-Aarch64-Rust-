@@ -105,7 +105,10 @@ impl Module for Ip2Location {
             && lon.abs() > 0.01
         {
             let coords = format!("{lat:.4},{lon:.4}");
-            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.72, &ctx.scan_id);
+            // Confidence recalibrated 0.72 → 0.62 — see ip_geo.rs. The
+            // ip2location commercial DB is marginally better than the
+            // freemium competitors so it stays slightly above ipinfo.
+            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.62, &ctx.scan_id);
             ce.tag(tags::GEOINT);
             ce.tag("ip2location");
             if data.is_proxy == Some(true) {
