@@ -5,7 +5,10 @@
 //! `live` re-runs the same scan on a fixed interval (v0.5+). See
 //! `docs/USAGE.md` for the full reference.
 
+mod doctor;
+mod live;
 mod provision;
+mod serve;
 
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -20,7 +23,7 @@ use crate::{
         module::{ModuleContext, ModuleCost},
         scan::{Scan, ScanOptions, Target, TargetKind},
     },
-    default_db_path, is_termux,
+    default_db_path,
     modules::registry,
     storage::Store,
     util::{http::build_client, keys, uid::scan_id},
@@ -378,7 +381,7 @@ pub async fn run() -> Result<()> {
             .await
         }
         Command::Modules => cmd_modules(),
-        Command::Doctor => cmd_doctor().await,
+        Command::Doctor => doctor::cmd_doctor().await,
         Command::Provision {
             env_only,
             verify_only,
@@ -390,7 +393,7 @@ pub async fn run() -> Result<()> {
         Command::Serve {
             bind,
             allow_key_write,
-        } => cmd_serve(bind, allow_key_write).await,
+        } => serve::cmd_serve(bind, allow_key_write).await,
         Command::Live {
             kind,
             value,
@@ -401,7 +404,7 @@ pub async fn run() -> Result<()> {
             passive_only,
             modules,
         } => {
-            cmd_live(LiveCmd {
+            live::cmd_live(live::LiveCmd {
                 kind,
                 value,
                 interval,
@@ -815,85 +818,6 @@ fn cmd_modules() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_doctor() -> Result<()> {
-    let mods = registry();
-    println!("HSE v{} — doctor\n", crate::VERSION);
-    println!(
-        "Termux:    {}",
-        if is_termux() {
-            "detected"
-        } else {
-            "not detected"
-        }
-    );
-    println!("DB path:   {}", default_db_path());
-    println!("Keys path: {}", keys::env_path());
-
-    println!("\nStorage:");
-    match Store::open(&default_db_path()) {
-        Ok(_) => println!("  ok — database opens cleanly"),
-        Err(e) => println!("  FAIL — {e}"),
-    }
-
-    println!("\nModules ({} registered):", mods.len());
-    let mut by_cost = std::collections::BTreeMap::<&str, usize>::new();
-    for m in &mods {
-        *by_cost.entry(cost_label(m.cost())).or_default() += 1;
-    }
-    for (cost, count) in &by_cost {
-        println!("  {cost:<10} {count}");
-    }
-
-    let loaded = keys::load();
-    let huntsman_keys: Vec<_> = loaded
-        .keys()
-        .filter(|k| k.starts_with("HUNTSMAN_"))
-        .collect();
-    println!("\nHUNTSMAN_* keys loaded: {}", huntsman_keys.len());
-    for k in &huntsman_keys {
-        println!("  - {k}");
-    }
-    if huntsman_keys.is_empty() {
-        println!("  (none set; all free modules still work)");
-    }
-
-    // ── WiGLE account health (network call, best-effort) ──────────────
-    // Poll /api/v2/profile/user + /apiUsage. Surfaces the
-    // "email unverified → throttled" warning that the WiGLE account
-    // page calls out but which our queries don't otherwise expose
-    // until they start silently returning fewer results.
-    println!("\nWiGLE account:");
-    let wigle_user = loaded
-        .get("HUNTSMAN_WIGLE_USER")
-        .map_or("AID4493a33e2df9d07ab9666a27c8aead17", String::as_str)
-        .to_string();
-    let wigle_token = loaded
-        .get("HUNTSMAN_WIGLE_TOKEN")
-        .map_or("1aedb7ad0171ff3d6be5a844cca5d977", String::as_str)
-        .to_string();
-    let http = crate::util::http::build_client();
-    let status =
-        crate::modules::wigle::refresh_account_status(&http, &wigle_user, &wigle_token).await;
-    match status.verified {
-        Some(true) => println!("  email-verified: yes"),
-        Some(false) => println!(
-            "  email-verified: NO — WiGLE throttles DB queries until email is confirmed.\n                  Log into wigle.net/account and click the verify link."
-        ),
-        None => println!("  email-verified: unknown — /profile/user not reachable"),
-    }
-    if let Some(user) = status.user.as_deref() {
-        println!("  user:           {user}");
-    }
-    if let Some(daily) = status.daily_api_calls {
-        println!("  daily calls:    {daily}");
-    }
-    if let Some(monthly) = status.monthly_api_calls {
-        println!("  monthly calls:  {monthly}");
-    }
-
-    Ok(())
-}
-
 // ─── Shared helpers (used by subcommand files) ─────────────────────────────
 
 pub fn parse_target_kind(s: &str) -> Result<TargetKind> {
@@ -918,7 +842,7 @@ pub fn parse_target_kind(s: &str) -> Result<TargetKind> {
     }
 }
 
-fn cost_label(c: ModuleCost) -> &'static str {
+pub(super) fn cost_label(c: ModuleCost) -> &'static str {
     match c {
         ModuleCost::Free => "free",
         ModuleCost::KeyGated => "key-gated",
@@ -930,7 +854,7 @@ fn split_csv(s: Option<String>) -> Option<Vec<String>> {
     s.map(|s| s.split(',').map(|m| m.trim().to_string()).collect())
 }
 
-fn build_runtime(
+pub(super) fn build_runtime(
     bus_capacity: usize,
 ) -> Result<(
     Arc<dyn crate::core::port::StoragePort>,
@@ -1234,169 +1158,6 @@ fn truncate(s: &str, max: usize) -> String {
         out.push('…');
         out
     }
-}
-
-// ─── serve command ─────────────────────────────────────────────────────────
-
-async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
-    use std::net::SocketAddr;
-
-    use crate::api::{AppState, routes::router};
-    use crate::core::live::LiveScanner;
-
-    let (store, bus, engine) = build_runtime(1024)?;
-    let http = build_client();
-    let live = LiveScanner::new(
-        Arc::clone(&engine),
-        bus.clone(),
-        http.clone(),
-        crate::util::keys::populate_and_load().await,
-    );
-    let state = Arc::new(AppState {
-        store,
-        engine,
-        bus,
-        live,
-        http,
-        allow_key_write,
-        cancellations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
-        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            crate::api::MAX_CONCURRENT_SCANS,
-        )),
-    });
-
-    let app = router(state, &bind);
-    let listener = tokio::net::TcpListener::bind(&bind)
-        .await
-        .map_err(|e| Error::Other(format!("bind {bind}: {e}")))?;
-
-    tracing::info!("hse v{} — listening on http://{}", crate::VERSION, bind);
-    tracing::info!("  open in Chrome / Firefox on this device");
-    if allow_key_write {
-        tracing::warn!("--allow-key-write: PUT /api/v1/settings/keys enabled (loopback only)");
-    }
-    tracing::info!("  Ctrl-C to stop");
-
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .map_err(|e| Error::Other(format!("serve: {e}")))?;
-
-    tracing::info!("server stopped");
-    Ok(())
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("install Ctrl-C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
-    }
-}
-
-// ─── live command ──────────────────────────────────────────────────────────
-
-struct LiveCmd {
-    pub kind: String,
-    pub value: String,
-    pub interval: u64,
-    pub iterations: Option<u32>,
-    pub depth: u32,
-    pub free_only: bool,
-    pub passive_only: bool,
-    pub modules: Option<String>,
-}
-
-async fn cmd_live(cmd: LiveCmd) -> Result<()> {
-    use crate::core::live::{LiveOptions, LiveScanner};
-    use tokio_stream::StreamExt;
-    use tokio_stream::wrappers::BroadcastStream;
-
-    let target_kind = parse_target_kind(&cmd.kind)?;
-    let target = Target::new(target_kind, cmd.value.clone());
-
-    let scan_options = ScanOptions {
-        modules: split_csv(cmd.modules),
-        free_only: cmd.free_only,
-        passive_only: cmd.passive_only,
-        depth: cmd.depth,
-        ..Default::default()
-    };
-    let live_options = LiveOptions {
-        interval_secs: cmd.interval,
-        iterations: cmd.iterations,
-    };
-
-    let (_store, bus, engine) = build_runtime(1024)?;
-    let scanner = LiveScanner::new(
-        Arc::clone(&engine),
-        bus.clone(),
-        crate::util::http::build_client(),
-        crate::util::keys::populate_and_load().await,
-    );
-
-    let live_id = scanner.start(target, scan_options, live_options);
-    eprintln!("live session {live_id} — Ctrl-C to stop");
-
-    let rx = bus.subscribe();
-    let scanner_clone = scanner.clone();
-    let target_lid = live_id.clone();
-    let mut stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event)
-            if event.scan_id == target_lid
-                || scanner_clone.session_owns_scan(&target_lid, &event.scan_id) =>
-        {
-            let is_terminator =
-                matches!(event.kind, crate::core::event::EventKind::LiveStop { .. });
-            let line = serde_json::to_string(&event.kind).unwrap_or_default();
-            Some((line, is_terminator))
-        }
-        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
-            eprintln!("warning: event stream lagged, {n} event(s) dropped");
-            None
-        }
-        _ => None,
-    });
-
-    loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                eprintln!("\nstopping live session…");
-                scanner.stop(&live_id);
-            }
-            line = stream.next() => match line {
-                Some((s, is_terminator)) => {
-                    println!("{s}");
-                    if is_terminator {
-                        break;
-                    }
-                }
-                None => break,
-            }
-        }
-    }
-
-    Ok(())
 }
 
 // ─── scan command ──────────────────────────────────────────────────────────
