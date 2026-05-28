@@ -41,7 +41,7 @@ impl Module for SubdomainTakeover {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
-        let domain = target.value.trim().to_lowercase();
+        let domain = target.value.clone();
 
         if domain.is_empty() || !domain.contains('.') {
             return Ok(result);
