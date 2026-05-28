@@ -718,7 +718,7 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) = module_skip_reason(&**module, opts, is_expansion) {
+            if let Some(reason) = module_skip_reason(&**module, target, opts, is_expansion) {
                 self.emit(
                     scan_id,
                     EventKind::ModuleSkipped {
@@ -844,7 +844,7 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) = module_skip_reason(&**module, opts, is_expansion) {
+            if let Some(reason) = module_skip_reason(&**module, target, opts, is_expansion) {
                 self.emit(
                     scan_id,
                     EventKind::ModuleSkipped {
@@ -935,7 +935,7 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) = module_skip_reason(&**module, opts, is_expansion) {
+            if let Some(reason) = module_skip_reason(&**module, target, opts, is_expansion) {
                 self.emit(
                     scan_id,
                     EventKind::ModuleSkipped {
@@ -1027,11 +1027,17 @@ impl ScanEngine {
     }
 }
 
+/// Modules that legitimately consume private IPs / local domains —
+/// sensor modules that run against the local network. Universal
+/// preflight (private-IP / local-domain rejection) skips these.
+const LOCAL_PASSIVE_MODULES: &[&str] = &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
+
 /// Returns `Some(reason)` if `module` should be skipped under `opts`.
 /// `accepts(target)` is intentionally NOT checked here — that case skips
 /// silently with no `ModuleSkipped` event, the others all emit one.
 fn module_skip_reason(
     module: &dyn Module,
+    target: &Target,
     opts: &ScanOptions,
     is_expansion: bool,
 ) -> Option<&'static str> {
@@ -1051,12 +1057,7 @@ fn module_skip_reason(
     if opts.passive_only && !module.is_passive() {
         return Some("not passive");
     }
-    // Skip "any-target" passive modules on expansion — device sensors
-    // produce the same local data regardless of the expansion target.
-    // Passive modules that accept specific target kinds (email_parse,
-    // phone_intl, abn_lookup) still run since their output varies.
-    const SENSOR_MODULES: &[&str] = &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
-    if is_expansion && module.is_passive() && SENSOR_MODULES.contains(&name) {
+    if is_expansion && module.is_passive() && LOCAL_PASSIVE_MODULES.contains(&name) {
         return Some("sensor (already ran on seed round)");
     }
     // oathnet_pro stays seed-only — it has the heaviest per-query weight
@@ -1069,6 +1070,28 @@ fn module_skip_reason(
     const SEED_ONLY_MODULES: &[&str] = &["oathnet_pro"];
     if is_expansion && SEED_ONLY_MODULES.contains(&name) {
         return Some("API-expensive (seed round only)");
+    }
+    // ── Universal preflight: reject private IPs / local domains for
+    // modules that talk to external APIs. Sensor modules opt out via
+    // LOCAL_PASSIVE_MODULES — they legitimately scan the local
+    // network. Every other module is treated as "may reach an external
+    // service" so we save its quota / suppress its "HTTP 400 invalid
+    // IP" responses before the dispatch even fires.
+    //
+    // Modules with non-IP/Domain accepts (Email, Phone, Username, etc.)
+    // fall through the `_` arm and run normally — there's no concept
+    // of a "private email".
+    if !LOCAL_PASSIVE_MODULES.contains(&name) {
+        use crate::util::preflight;
+        match target.kind {
+            TargetKind::IpAddress if preflight::should_skip_external_ipv4(&target.value) => {
+                return Some("private/local IP — external API would reject");
+            }
+            TargetKind::Domain if preflight::is_local_domain(&target.value) => {
+                return Some("local/reserved domain — external API would reject");
+            }
+            _ => {}
+        }
     }
     None
 }
@@ -1278,6 +1301,12 @@ mod tests {
         }
     }
 
+    /// Neutral public IP target used by skip-reason tests so the
+    /// universal preflight gate doesn't fire on the test fixture.
+    fn pub_target() -> Target {
+        Target::new(TargetKind::IpAddress, "1.1.1.1")
+    }
+
     fn free_active() -> StubModule {
         StubModule {
             name: "test_free",
@@ -1306,7 +1335,7 @@ mod tests {
     fn skip_reason_none_for_default_opts() {
         let m = free_active();
         let opts = ScanOptions::default();
-        assert!(module_skip_reason(&m, &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
     }
 
     #[test]
@@ -1317,7 +1346,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            module_skip_reason(&m, &opts, false),
+            module_skip_reason(&m, &pub_target(), &opts, false),
             Some("not in allowlist")
         );
     }
@@ -1329,7 +1358,7 @@ mod tests {
             modules: Some(vec!["test_free".into()]),
             ..Default::default()
         };
-        assert!(module_skip_reason(&m, &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
     }
 
     #[test]
@@ -1339,7 +1368,10 @@ mod tests {
             exclude_modules: vec!["test_free".into()],
             ..Default::default()
         };
-        assert_eq!(module_skip_reason(&m, &opts, false), Some("excluded"));
+        assert_eq!(
+            module_skip_reason(&m, &pub_target(), &opts, false),
+            Some("excluded")
+        );
     }
 
     #[test]
@@ -1350,7 +1382,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            module_skip_reason(&m, &opts, false),
+            module_skip_reason(&m, &pub_target(), &opts, false),
             Some("requires key/payment")
         );
     }
@@ -1362,7 +1394,7 @@ mod tests {
             free_only: true,
             ..Default::default()
         };
-        assert!(module_skip_reason(&m, &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
     }
 
     #[test]
@@ -1372,7 +1404,10 @@ mod tests {
             passive_only: true,
             ..Default::default()
         };
-        assert_eq!(module_skip_reason(&m, &opts, false), Some("not passive"));
+        assert_eq!(
+            module_skip_reason(&m, &pub_target(), &opts, false),
+            Some("not passive")
+        );
     }
 
     #[test]
@@ -1382,7 +1417,7 @@ mod tests {
             passive_only: true,
             ..Default::default()
         };
-        assert!(module_skip_reason(&m, &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
     }
 
     #[test]
@@ -1393,7 +1428,55 @@ mod tests {
             exclude_modules: vec!["test_free".into()],
             ..Default::default()
         };
-        assert_eq!(module_skip_reason(&m, &opts, false), Some("excluded"));
+        assert_eq!(
+            module_skip_reason(&m, &pub_target(), &opts, false),
+            Some("excluded")
+        );
+    }
+
+    // -- universal preflight gate (private IP / local domain) --
+
+    #[test]
+    fn skip_reason_rejects_private_ip_for_external_module() {
+        let m = free_active();
+        let private = Target::new(TargetKind::IpAddress, "192.168.1.1");
+        let opts = ScanOptions::default();
+        assert_eq!(
+            module_skip_reason(&m, &private, &opts, false),
+            Some("private/local IP — external API would reject")
+        );
+    }
+
+    #[test]
+    fn skip_reason_rejects_local_domain_for_external_module() {
+        let m = free_active();
+        let local = Target::new(TargetKind::Domain, "router.local");
+        let opts = ScanOptions::default();
+        assert_eq!(
+            module_skip_reason(&m, &local, &opts, false),
+            Some("local/reserved domain — external API would reject")
+        );
+    }
+
+    #[test]
+    fn skip_reason_lets_local_passive_module_see_private_ip() {
+        // local_net, device_sensors, wifi_intel, cell_intel are
+        // listed in LOCAL_PASSIVE_MODULES and bypass the preflight.
+        let m = StubModule {
+            name: "local_net",
+            cost: ModuleCost::Free,
+            passive: true,
+        };
+        let private = Target::new(TargetKind::IpAddress, "192.168.1.1");
+        let opts = ScanOptions::default();
+        assert!(module_skip_reason(&m, &private, &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_passes_public_ip_through() {
+        let m = free_active();
+        let opts = ScanOptions::default();
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
     }
 
     // -- dispatch dedup tests --

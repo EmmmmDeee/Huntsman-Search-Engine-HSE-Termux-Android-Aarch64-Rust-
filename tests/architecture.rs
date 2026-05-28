@@ -83,6 +83,7 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::key_pool")
                 && !line.contains("util::key_roi")
                 && !line.contains("util::geohash")
+                && !line.contains("util::preflight")
                 && !line.contains("util::oathnet::reset_budget")
                 && !line.contains("util::see_know::set_scan_cap_override")
                 && !line.contains("modules::wigle::reset_budget")
