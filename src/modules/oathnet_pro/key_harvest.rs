@@ -762,6 +762,15 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
             return Some((pat.service, trimmed));
         }
     }
+    // Cryptocurrency wallet addresses. Stealer logs from
+    // clipboard-hijacker malware carry these in volume — the
+    // public-apis lists surface Blockchain.com / Blockstream /
+    // Blockscout / CryptoCompare as free enrichment sources for
+    // any detected address. We detect-and-tag here; the lookup
+    // modules pivot from the emitted entities.
+    if let Some(service) = identify_crypto_address(trimmed) {
+        return Some((service, trimmed));
+    }
     // Generic hex key detection (32 or 64 char hex = potential API key)
     if (trimmed.len() == 32 || trimmed.len() == 64)
         && trimmed.chars().all(|c| c.is_ascii_hexdigit())
@@ -1087,6 +1096,121 @@ fn is_uuid(value: &str) -> bool {
             .chars()
             .filter(|c| *c != '-')
             .all(|c| c.is_ascii_hexdigit())
+}
+
+// ── Cryptocurrency wallet-address classifier ──────────────────────
+//
+// Stealer logs from clipboard-hijacker malware families
+// (RedLine "ClipBanker" stage, Vidar "wallet stealer" module,
+// AgentTesla "crypto-clipper" plugin) routinely carry these
+// addresses in their `app_data` / `notes` / `extras` fields
+// alongside the cracked credentials we already harvest.
+//
+// Each detection returns a `"crypto_<chain>"` service tag so
+// downstream lookups can pivot to the right free public API:
+//
+//   * BTC      → blockchain.info / blockstream.info
+//   * ETH      → blockscout.com / etherscan.io
+//   * SOL      → solana.fm (free tier)
+//   * XMR      → no public chain lookup; tag-only emission
+//   * LTC      → blockchain.info LTC endpoint
+//   * DOGE     → blockchain.info DOGE endpoint
+//
+// Address formats sourced from each chain's public docs +
+// Wikipedia. Length + alphabet checks tight enough to avoid
+// false-positives against random alphanumeric strings (which
+// otherwise drift into the generic-hex catch-all). Real
+// addresses pass entropy ≥ 3.5 trivially.
+
+/// True if `c` is a Base58 character (Bitcoin-style; excludes
+/// 0/O/I/l to avoid ambiguity).
+fn is_base58(c: char) -> bool {
+    matches!(c,
+        '1'..='9' | 'A'..='H' | 'J'..='N' | 'P'..='Z' | 'a'..='k' | 'm'..='z'
+    )
+}
+
+/// Try to classify a string as a cryptocurrency wallet address.
+/// Returns `Some(service_tag)` on a confident match, `None`
+/// otherwise. Confident-match thresholds are deliberately strict
+/// to avoid colliding with the generic-hex / prefix-table paths.
+pub(crate) fn identify_crypto_address(s: &str) -> Option<&'static str> {
+    let len = s.len();
+
+    // ── Bitcoin Bech32 (BIP-173): `bc1` + 39-59 char payload
+    if (39..=62).contains(&len)
+        && (s.starts_with("bc1") || s.starts_with("BC1"))
+        && s.chars().skip(3).all(|c| {
+            // Bech32 charset (RFC) — qpzry9x8gf2tvdw0s3jn54khce6mua7l
+            // plus the digits — lowercase alnum minus b/i/o/1.
+            matches!(c.to_ascii_lowercase(),
+                'a'..='h' | 'j'..='n' | 'p'..='z' | '0' | '2'..='9'
+            )
+        })
+    {
+        return Some("crypto_btc");
+    }
+
+    // ── Litecoin Bech32: `ltc1` + payload, otherwise base58 L/M-prefix
+    if (40..=62).contains(&len)
+        && (s.starts_with("ltc1") || s.starts_with("LTC1"))
+        && s.chars().skip(4).all(|c| {
+            matches!(c.to_ascii_lowercase(),
+                'a'..='h' | 'j'..='n' | 'p'..='z' | '0' | '2'..='9'
+            )
+        })
+    {
+        return Some("crypto_ltc");
+    }
+
+    // ── Ethereum / ERC-20 / Polygon / BSC: `0x` + 40 hex chars (160-bit)
+    // All EVM-compatible chains share the same address shape; the
+    // chain attribution happens at the lookup layer.
+    if len == 42
+        && (s.starts_with("0x") || s.starts_with("0X"))
+        && s.chars().skip(2).all(|c| c.is_ascii_hexdigit())
+    {
+        return Some("crypto_eth");
+    }
+
+    // ── Bitcoin P2PKH (legacy): starts `1`, 26-35 base58 chars
+    if (26..=35).contains(&len) && s.starts_with('1') && s.chars().all(is_base58) {
+        return Some("crypto_btc");
+    }
+
+    // ── Bitcoin P2SH (multisig): starts `3`, 26-35 base58 chars
+    if (26..=35).contains(&len) && s.starts_with('3') && s.chars().all(is_base58) {
+        return Some("crypto_btc");
+    }
+
+    // ── Litecoin legacy: starts `L` or `M`, 26-35 base58 chars
+    if (26..=35).contains(&len)
+        && (s.starts_with('L') || s.starts_with('M'))
+        && s.chars().all(is_base58)
+    {
+        return Some("crypto_ltc");
+    }
+
+    // ── Dogecoin: starts `D`, 34 base58 chars
+    if len == 34 && s.starts_with('D') && s.chars().all(is_base58) {
+        return Some("crypto_doge");
+    }
+
+    // ── Solana: 32-44 base58 chars, no fixed prefix. The shape
+    // overlaps with several BTC-style addresses so we require
+    // exactly the modern (post-2021) 43-44 char form to keep the
+    // false-positive surface tight.
+    if (43..=44).contains(&len) && s.chars().all(is_base58) {
+        return Some("crypto_sol");
+    }
+
+    // ── Monero (XMR): 95 chars, starts `4` or `8` (standard /
+    // subaddress), uses base58 charset
+    if len == 95 && (s.starts_with('4') || s.starts_with('8')) && s.chars().all(is_base58) {
+        return Some("crypto_xmr");
+    }
+
+    None
 }
 
 /// Shannon entropy in bits per character. Empty input returns 0.
@@ -1984,6 +2108,143 @@ mod tests {
         });
         let (mut seen, mut result) = empty_state();
         extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        assert!(result.entities.iter().any(|e| e.has_tag("service:aws")));
+    }
+
+    // ─── Cryptocurrency address detection ─────────────────────────
+
+    #[test]
+    fn detects_btc_p2pkh_address() {
+        // Genesis block address — the canonical P2PKH example.
+        let addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
+        let (svc, _) = identify_api_key(addr).unwrap();
+        assert_eq!(svc, "crypto_btc");
+    }
+
+    #[test]
+    fn detects_btc_p2sh_address() {
+        // Well-known multisig (BitGo cold storage).
+        let addr = "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy";
+        let (svc, _) = identify_api_key(addr).unwrap();
+        assert_eq!(svc, "crypto_btc");
+    }
+
+    #[test]
+    fn detects_btc_bech32_address() {
+        // Public Casa cold-storage example.
+        let addr = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+        let (svc, _) = identify_api_key(addr).unwrap();
+        assert_eq!(svc, "crypto_btc");
+    }
+
+    #[test]
+    fn detects_eth_address() {
+        // Vitalik's public ETH address — burn-the-house demo.
+        let addr = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
+        let (svc, _) = identify_api_key(addr).unwrap();
+        assert_eq!(svc, "crypto_eth");
+    }
+
+    #[test]
+    fn detects_ltc_legacy_and_bech32() {
+        // Litecoin Foundation cold storage (L-prefix).
+        let legacy = "LbXkRGUgcRk2xWJpgyaufxNS3GdvLh6ETh";
+        let (svc, _) = identify_api_key(legacy).unwrap();
+        assert_eq!(svc, "crypto_ltc");
+        // Bech32 form
+        let bech = "ltc1qd9mq4uxfqr3zdkugxg5p2hpzx5d3v6e4t9k0w7";
+        let (svc, _) = identify_api_key(bech).unwrap();
+        assert_eq!(svc, "crypto_ltc");
+    }
+
+    #[test]
+    fn detects_doge_address() {
+        // Dogecoin Foundation address — D-prefix, 34 chars.
+        let addr = "D8oXmDe2KEYxJPxhAcEfqGdxF2P7yctL5h";
+        let (svc, _) = identify_api_key(addr).unwrap();
+        assert_eq!(svc, "crypto_doge");
+    }
+
+    #[test]
+    fn detects_sol_address() {
+        // Solana public address — 44 chars base58.
+        let addr = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
+        let (svc, _) = identify_api_key(addr).unwrap();
+        assert_eq!(svc, "crypto_sol");
+    }
+
+    #[test]
+    fn detects_xmr_address() {
+        // Monero public address — exactly 95 chars, starts with 4.
+        // Real-shape synthetic (no actual funds); every char is
+        // in the Base58 set (no 0/O/I/l).
+        let addr = "4AdUndXHHZ9pfQj27iMrL2QM5nYpZ8AyL3VBmHuMrL8ZzgnsAbHjy8mhLHBP1J7yU3KqHzPaH6vGm1JZqfwLnFq8m1jBxwZ";
+        assert_eq!(addr.len(), 95, "synthetic XMR test fixture wrong length");
+        let (svc, _) = identify_api_key(addr).unwrap();
+        assert_eq!(svc, "crypto_xmr");
+    }
+
+    #[test]
+    fn crypto_addresses_dont_collide_with_eth_hex_prefix() {
+        // A 42-char string starting with `0x` but containing
+        // non-hex chars must NOT be detected as ETH.
+        let candidate = "0xGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG";
+        assert!(identify_crypto_address(candidate).is_none());
+    }
+
+    #[test]
+    fn crypto_address_wrong_length_rejected() {
+        // 41-char `0x` string: too short for ETH; must not match.
+        assert!(identify_crypto_address("0x123456789012345678901234567890123456789").is_none());
+        // 43-char `0x` string: too long for ETH; must not match.
+        assert!(identify_crypto_address("0x12345678901234567890123456789012345678901").is_none());
+    }
+
+    #[test]
+    fn crypto_btc_legacy_with_invalid_base58_char_rejected() {
+        // Base58 excludes 0, O, I, l — using `0` in the body
+        // disqualifies the candidate even with the `1` prefix
+        // and right length.
+        let bad = "10ABCDEFGHIJKLMNOPQRSTUVWXYZab"; // contains 0
+        assert!(identify_crypto_address(bad).is_none());
+    }
+
+    #[test]
+    fn extract_from_clipboard_hijacker_app_data_picks_up_btc() {
+        // Simulates a Vidar/RedLine clipboard-hijacker stage
+        // exporting captured wallet addresses as `app_data`.
+        let item = serde_json::json!({
+            "app_data": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+            "dbname": "ClipboardCapture2025",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+        assert_eq!(result.entities.len(), 1);
+        assert!(result.entities[0].has_tag("service:crypto_btc"));
+    }
+
+    #[test]
+    fn extract_from_dotenv_with_mixed_crypto_and_api_keys() {
+        // A `.env` dump from a `node` project doing Web3 work
+        // commonly mixes ETH wallet + Etherscan API key + RPC URL.
+        let blob = "OWNER_WALLET=0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045\n\
+                    ETHERSCAN_KEY=AKIAJK28SLQQV61MNG9X\n\
+                    INFURA_PROJECT=A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+        let item = serde_json::json!({ "env_content": blob });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+        // Both the ETH wallet and the AWS-shape impostor must surface
+        // (the latter is the operator's deliberate `ETHERSCAN_KEY=`
+        // mis-naming — real Etherscan keys are 34-char alphanumeric
+        // but the value here matches our AWS pattern).
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.has_tag("service:crypto_eth"))
+        );
         assert!(result.entities.iter().any(|e| e.has_tag("service:aws")));
     }
 }
