@@ -1,5 +1,6 @@
 //! Utilities: HTTP client, DNS resolver, key loading, UID generation, Termux helpers.
 
+pub mod address_au;
 pub mod curl;
 pub mod diagnostics;
 pub mod geohash;

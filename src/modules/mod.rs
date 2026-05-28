@@ -28,6 +28,7 @@ pub mod email_header_geo;
 pub mod email_locale;
 pub mod email_parse;
 pub mod emailrep;
+pub mod employer_pivot;
 pub mod epieos;
 pub mod exa_search;
 pub mod geo_domain_classifier;
@@ -139,6 +140,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(web_crawler::WebCrawler),
         Arc::new(urlscan::UrlScan),
         Arc::new(email_parse::EmailParse),
+        Arc::new(employer_pivot::EmployerPivot),
         Arc::new(social_probe::SocialProbe),
         Arc::new(username_search::UsernameSearch),
         Arc::new(github_user::GithubUser),
