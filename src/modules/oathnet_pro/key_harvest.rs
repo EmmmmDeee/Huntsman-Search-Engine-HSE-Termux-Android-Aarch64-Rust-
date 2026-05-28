@@ -479,6 +479,88 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
         service: "bitbucket_app_password",
         min_len: 32,
     },
+    // ── Prefixes from gitleaks default + Titus / apkscan rule sets ─────
+    // praetorian-inc/titus ships 487 rules from NoseyParker + Kingfisher;
+    // ~15 of its highest-leverage prefixes weren't in HSE's table.
+    // Each below is a high-signal token shape that frequently leaks via
+    // stealer logs and GitHub pushes (per GitGuardian SOSS-2025 + Titus
+    // empirical data).
+    KeyPattern {
+        prefix: "ATCT",
+        service: "atlassian_config",
+        min_len: 32,
+    },
+    KeyPattern {
+        prefix: "dt0c01.",
+        service: "dynatrace",
+        min_len: 60,
+    },
+    KeyPattern {
+        prefix: "fio-u-",
+        service: "frameio",
+        min_len: 30,
+    },
+    KeyPattern {
+        prefix: "PMAK-",
+        service: "postman",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "rzp_test_",
+        service: "razorpay_test",
+        min_len: 24,
+    },
+    KeyPattern {
+        prefix: "rzp_live_",
+        service: "razorpay_live",
+        min_len: 24,
+    },
+    KeyPattern {
+        prefix: "rdme_",
+        service: "readme",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "shippo_test_",
+        service: "shippo_test",
+        min_len: 32,
+    },
+    KeyPattern {
+        prefix: "shippo_live_",
+        service: "shippo_live",
+        min_len: 32,
+    },
+    // ── Shopify siblings (HSE has `shpat_` already)
+    KeyPattern {
+        prefix: "shppa_",
+        service: "shopify_partner",
+        min_len: 32,
+    },
+    KeyPattern {
+        prefix: "shpca_",
+        service: "shopify_custom_app",
+        min_len: 32,
+    },
+    KeyPattern {
+        prefix: "shpss_",
+        service: "shopify_shared_secret",
+        min_len: 32,
+    },
+    KeyPattern {
+        prefix: "NRJS-",
+        service: "newrelic_browser",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "sl.",
+        service: "dropbox_short_lived",
+        min_len: 45,
+    },
+    KeyPattern {
+        prefix: "CLOJARS_",
+        service: "clojars_deploy",
+        min_len: 60,
+    },
     // ── Database connection URIs (sibling of redis://, mysql://, etc.)
     // HSE already has `postgres://` and `mongodb+srv://`; these are
     // the bare-form variants KeyFinder also tracks.
@@ -2641,5 +2723,141 @@ mod tests {
         extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
         assert_eq!(result.entities.len(), 1);
         assert!(result.entities[0].has_tag("service:pem_openssh_private"));
+    }
+
+    // ─── Titus / gitleaks / apkscan-ported prefixes ───────────────
+
+    #[test]
+    fn detects_atlassian_config_token() {
+        let cand = "ATCTA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+        let (svc, _) = identify_api_key(cand).unwrap();
+        assert_eq!(svc, "atlassian_config");
+    }
+
+    #[test]
+    fn detects_dynatrace_token() {
+        // Dynatrace tokens have format `dt0c01.<32 alphanum>.<64 alphanum>`.
+        let cand = format!(
+            "dt0c01.{}.{}",
+            "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6",
+            "Q7r8S9t0U1v2W3x4Y5z6A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6"
+        );
+        let (svc, _) = identify_api_key(&cand).unwrap();
+        assert_eq!(svc, "dynatrace");
+    }
+
+    #[test]
+    fn detects_frameio_user_token() {
+        let cand = "fio-u-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+        let (svc, _) = identify_api_key(cand).unwrap();
+        assert_eq!(svc, "frameio");
+    }
+
+    #[test]
+    fn detects_postman_api_key() {
+        let cand = "PMAK-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4";
+        let (svc, _) = identify_api_key(cand).unwrap();
+        assert_eq!(svc, "postman");
+    }
+
+    #[test]
+    fn detects_razorpay_test_and_live() {
+        let test = "rzp_test_A1b2C3d4E5f6G7h8I9j0K1l2";
+        let (svc, _) = identify_api_key(test).unwrap();
+        assert_eq!(svc, "razorpay_test");
+
+        let live = "rzp_live_A1b2C3d4E5f6G7h8I9j0K1l2";
+        let (svc, _) = identify_api_key(live).unwrap();
+        assert_eq!(svc, "razorpay_live");
+    }
+
+    #[test]
+    fn detects_readme_api_key() {
+        let cand = "rdme_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
+        let (svc, _) = identify_api_key(cand).unwrap();
+        assert_eq!(svc, "readme");
+    }
+
+    #[test]
+    fn detects_shippo_test_and_live() {
+        let test = "shippo_test_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+        let (svc, _) = identify_api_key(test).unwrap();
+        assert_eq!(svc, "shippo_test");
+
+        let live = "shippo_live_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+        let (svc, _) = identify_api_key(live).unwrap();
+        assert_eq!(svc, "shippo_live");
+    }
+
+    #[test]
+    fn detects_shopify_partner_custom_app_and_shared_secret() {
+        let cases = [
+            ("shppa_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6", "shopify_partner"),
+            (
+                "shpca_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6",
+                "shopify_custom_app",
+            ),
+            (
+                "shpss_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6",
+                "shopify_shared_secret",
+            ),
+        ];
+        for (cand, expected) in cases {
+            let (svc, _) = identify_api_key(cand)
+                .unwrap_or_else(|| panic!("Shopify {expected} not detected for {cand}"));
+            assert_eq!(svc, expected);
+        }
+    }
+
+    #[test]
+    fn detects_newrelic_browser_token() {
+        let cand = "NRJS-A1b2C3d4E5f6G7h8I9j0K1l2";
+        let (svc, _) = identify_api_key(cand).unwrap();
+        assert_eq!(svc, "newrelic_browser");
+    }
+
+    #[test]
+    fn detects_dropbox_short_lived_token() {
+        // Dropbox SL tokens are `sl.<43+ chars>`.
+        let cand = "sl.A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4";
+        let (svc, _) = identify_api_key(cand).unwrap();
+        assert_eq!(svc, "dropbox_short_lived");
+    }
+
+    #[test]
+    fn detects_clojars_deploy_token() {
+        // Clojars deploy tokens are `CLOJARS_<60+ alphanumeric>`.
+        let cand = format!(
+            "CLOJARS_{}",
+            "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6A1b2C3d4"
+        );
+        let (svc, _) = identify_api_key(&cand).unwrap();
+        assert_eq!(svc, "clojars_deploy");
+    }
+
+    #[test]
+    fn ported_prefixes_route_through_stealer_log_orchestrator() {
+        // Integration: a single record with three of the new
+        // prefixes routed through `extract_api_keys_from_item`
+        // should emit three distinct entities with the right
+        // service tags.
+        let item = serde_json::json!({
+            "app_data": "PMAK-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4",
+            "notes": "rdme_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0",
+            "client_secret": "ATCTA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+            "dbname": "ContractorLeak2026",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+        assert_eq!(result.entities.len(), 3);
+        let services: Vec<&str> = result
+            .entities
+            .iter()
+            .flat_map(|e| e.tags.iter().filter_map(|t| t.strip_prefix("service:")))
+            .collect();
+        assert!(services.contains(&"postman"));
+        assert!(services.contains(&"readme"));
+        assert!(services.contains(&"atlassian_config"));
     }
 }
