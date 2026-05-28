@@ -6,6 +6,23 @@
 //! consistent across providers — a value that's a "placeholder
 //! username" for SeekNow must be one for OathNet too.
 
+/// True if `ip` should be skipped for an external IPv4-only lookup
+/// (rate-limited public APIs that don't yet support IPv6 — ip-api.com,
+/// ipinfo.io, ipquery.io etc.).
+///
+/// Combines the three rejection cases that every IPv4-targeting
+/// module previously hand-rolled inline: empty input, an IPv6 form
+/// the IPv4-only URL fmt would mangle, and any private / reserved
+/// range that won't return meaningful intel. Single call replaces
+/// the `if ip.is_empty() || ip.contains(':') { ... }` boilerplate.
+pub fn should_skip_external_ipv4(ip: &str) -> bool {
+    let trimmed = ip.trim();
+    if trimmed.is_empty() || trimmed.contains(':') {
+        return true;
+    }
+    is_private_ip(trimmed)
+}
+
 /// True if the IP string is one of the private / reserved ranges
 /// that won't yield meaningful intel from external lookup APIs.
 ///
@@ -146,6 +163,30 @@ mod tests {
         assert!(!is_private_ip(""));
         assert!(!is_private_ip("not-an-ip"));
         assert!(!is_private_ip("999.999.999.999"));
+    }
+
+    // ── should_skip_external_ipv4 ───────────────────────────────────────
+
+    #[test]
+    fn should_skip_combines_empty_v6_and_private_cases() {
+        // Empty / whitespace
+        assert!(should_skip_external_ipv4(""));
+        assert!(should_skip_external_ipv4("   "));
+        // IPv6 (URL-fmt would break on IPv4-only APIs)
+        assert!(should_skip_external_ipv4("::1"));
+        assert!(should_skip_external_ipv4("2001:db8::1"));
+        // Private v4
+        assert!(should_skip_external_ipv4("10.0.0.1"));
+        assert!(should_skip_external_ipv4("192.168.1.1"));
+        assert!(should_skip_external_ipv4("127.0.0.1"));
+        assert!(should_skip_external_ipv4("100.64.0.1")); // CGNAT
+    }
+
+    #[test]
+    fn should_skip_lets_public_v4_through() {
+        assert!(!should_skip_external_ipv4("1.1.1.1"));
+        assert!(!should_skip_external_ipv4("8.8.8.8"));
+        assert!(!should_skip_external_ipv4("13.107.42.14"));
     }
 
     // ── is_local_domain ────────────────────────────────────────────────────

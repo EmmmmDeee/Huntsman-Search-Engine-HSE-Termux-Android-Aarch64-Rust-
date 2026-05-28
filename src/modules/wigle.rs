@@ -649,14 +649,9 @@ async fn fetch_wigle_typed(
 
     let status = resp.status();
     if status.as_u16() == 429 {
-        let retry_secs = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(60);
+        let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 60);
         tracing::warn!("WiGLE 429 — backing off {retry_secs}s");
-        tokio::time::sleep(std::time::Duration::from_secs(retry_secs.min(120))).await;
+        tokio::time::sleep(std::time::Duration::from_secs(retry_secs)).await;
         return Err(Error::module(SRC, "rate-limited (429)"));
     }
     if !status.is_success() {

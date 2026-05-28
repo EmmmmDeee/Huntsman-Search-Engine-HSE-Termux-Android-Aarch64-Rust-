@@ -119,6 +119,12 @@ impl Module for IpQs {
         if value.is_empty() {
             return Ok(ModuleResult::new());
         }
+        // Skip private/v6 IPs — they'll just burn quota and return junk.
+        if target.kind == TargetKind::IpAddress
+            && crate::util::preflight::should_skip_external_ipv4(value)
+        {
+            return Ok(ModuleResult::new());
+        }
         let url = format!(
             "https://www.ipqualityscore.com/api/json/{endpoint}/{}/{}",
             urlencode(key),

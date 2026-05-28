@@ -70,10 +70,10 @@ impl Module for Ip2Location {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let ip = target.value.trim();
-        if ip.is_empty() || ip.contains(':') {
+        if crate::util::preflight::should_skip_external_ipv4(&target.value) {
             return Ok(ModuleResult::new());
         }
+        let ip = target.value.trim();
 
         let url = format!("https://api.ip2location.io/?ip={ip}");
         let resp = ctx

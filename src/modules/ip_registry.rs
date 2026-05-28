@@ -177,10 +177,10 @@ impl Module for IpRegistry {
 // ---------------------------------------------------------------------------
 
 async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-    let ip = target.value.trim();
-    if ip.is_empty() {
+    if crate::util::preflight::should_skip_external_ipv4(&target.value) {
         return Ok(ModuleResult::new());
     }
+    let ip = target.value.trim();
 
     // Run both lookups concurrently.
     let (rdap_res, bgp_res) = tokio::join!(rdap_lookup_ip(ip, ctx), bgp_lookup_ip(ip, ctx),);

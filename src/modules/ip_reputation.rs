@@ -129,6 +129,14 @@ impl Module for IpReputation {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // Skip private / v6 IPs without burning the OTX request.
+        // Domain targets pass through (no domain-side equivalent
+        // here yet; see batch 2).
+        if target.kind == TargetKind::IpAddress
+            && crate::util::preflight::should_skip_external_ipv4(&target.value)
+        {
+            return Ok(ModuleResult::new());
+        }
         let mut result = ModuleResult::new();
 
         // ── 1. AlienVault OTX (IpAddress + Domain) ─────────────────

@@ -1325,7 +1325,7 @@ fn is_uuid(value: &str) -> bool {
 /// The trailing block (`-----END ... PRIVATE KEY-----`) is not
 /// required — partial-paste in stealer dumps is common, and the
 /// header alone is high-signal.
-pub(crate) fn identify_pem_private_key(s: &str) -> Option<&'static str> {
+fn identify_pem_private_key(s: &str) -> Option<&'static str> {
     // Header layout: `-----BEGIN <class> [PRIVATE KEY]-----`.
     // Examples:
     //   -----BEGIN RSA PRIVATE KEY-----
@@ -1412,7 +1412,7 @@ fn is_base58(c: char) -> bool {
 /// Returns `Some(service_tag)` on a confident match, `None`
 /// otherwise. Confident-match thresholds are deliberately strict
 /// to avoid colliding with the generic-hex / prefix-table paths.
-pub(crate) fn identify_crypto_address(s: &str) -> Option<&'static str> {
+fn identify_crypto_address(s: &str) -> Option<&'static str> {
     let len = s.len();
 
     // ── Bitcoin Bech32 (BIP-173): `bc1` + 39-59 char payload
@@ -1540,7 +1540,7 @@ fn looks_like_base64(s: &str) -> bool {
 /// Bounded by [`BASE64_DECODE_MAX_DEPTH`] to prevent layered-base64
 /// DoS. Tries standard + URL-safe alphabets, with and without
 /// padding — covers every conformant encoding variant.
-pub(crate) fn try_decode_through_scan(input: &str) -> Option<(&'static str, String, u8)> {
+fn try_decode_through_scan(input: &str) -> Option<(&'static str, String, u8)> {
     decode_through_inner(input.trim(), 0)
 }
 

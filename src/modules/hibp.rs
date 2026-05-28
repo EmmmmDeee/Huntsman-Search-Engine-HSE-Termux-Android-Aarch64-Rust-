@@ -177,12 +177,7 @@ impl Hibp {
                     ));
                 }
                 429 if retries < 3 => {
-                    let retry_secs = resp
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(7);
+                    let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 7);
                     retries += 1;
                     tokio::time::sleep(Duration::from_secs(retry_secs)).await;
                     continue;

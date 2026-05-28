@@ -76,6 +76,9 @@ impl Module for IpGeo {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        if crate::util::preflight::should_skip_external_ipv4(&target.value) {
+            return Ok(ModuleResult::new());
+        }
         // ip-api.com free tier is HTTP only — HTTPS requires paid plan.
         let url = format!(
             "http://ip-api.com/json/{}?fields=status,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,mobile,proxy,hosting",

@@ -77,6 +77,9 @@ impl Module for IpWhois {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        if crate::util::preflight::should_skip_external_ipv4(&target.value) {
+            return Ok(ModuleResult::new());
+        }
         let url = format!("https://ipwho.is/{}", target.value);
         let data: Resp = fetch_json(&ctx.http, SRC, &url).await?;
 

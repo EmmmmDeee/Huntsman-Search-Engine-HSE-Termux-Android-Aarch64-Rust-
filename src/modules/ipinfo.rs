@@ -63,10 +63,10 @@ impl Module for IpInfo {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let ip = target.value.trim();
-        if ip.is_empty() || ip.contains(':') {
+        if crate::util::preflight::should_skip_external_ipv4(&target.value) {
             return Ok(ModuleResult::new());
         }
+        let ip = target.value.trim();
 
         let url = format!("https://ipinfo.io/{ip}/json");
         let resp = ctx
