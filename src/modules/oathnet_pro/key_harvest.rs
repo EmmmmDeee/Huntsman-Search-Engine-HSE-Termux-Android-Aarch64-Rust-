@@ -402,6 +402,115 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
         service: "twilio_api_sid",
         min_len: 34,
     },
+    // ── Modern SaaS prefixes ported from momenbasel/keyFinder ──────────
+    // 668-star browser extension claims 80+ patterns; ~17 of its
+    // service prefixes weren't in HSE's table prior to this commit.
+    // Each is a high-signal token format used by infrastructure /
+    // collaboration / DB SaaS that frequently leaks into stealer logs
+    // and GitHub pushes.
+    // ── Square (additional sibling prefixes — `sq0atp-` is above)
+    KeyPattern {
+        prefix: "sq0idp-",
+        service: "square_oauth_id",
+        min_len: 20,
+    },
+    KeyPattern {
+        prefix: "sq0csp-",
+        service: "square_app_secret",
+        min_len: 24,
+    },
+    // ── PlanetScale (DB platform) — password + token forms
+    KeyPattern {
+        prefix: "pscale_pw_",
+        service: "planetscale_password",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "pscale_tkn_",
+        service: "planetscale_token",
+        min_len: 40,
+    },
+    // ── Doppler (secrets manager) — 4 token classes
+    KeyPattern {
+        prefix: "dp.pt.",
+        service: "doppler_personal",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "dp.ct.",
+        service: "doppler_cli",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "dp.sa.",
+        service: "doppler_service_acct",
+        min_len: 40,
+    },
+    KeyPattern {
+        prefix: "dp.st.",
+        service: "doppler_service_token",
+        min_len: 40,
+    },
+    // ── Docker Hub PAT
+    KeyPattern {
+        prefix: "dckr_pat_",
+        service: "docker_hub_pat",
+        min_len: 36,
+    },
+    // ── HashiCorp Vault — service vs batch token classes
+    KeyPattern {
+        prefix: "hvs.",
+        service: "vault_service",
+        min_len: 90,
+    },
+    KeyPattern {
+        prefix: "hvb.",
+        service: "vault_batch",
+        min_len: 90,
+    },
+    // ── Bitbucket — OAuth + app-password tokens
+    KeyPattern {
+        prefix: "BBDC-",
+        service: "bitbucket_oauth",
+        min_len: 32,
+    },
+    KeyPattern {
+        prefix: "ATBB-",
+        service: "bitbucket_app_password",
+        min_len: 32,
+    },
+    // ── Database connection URIs (sibling of redis://, mysql://, etc.)
+    // HSE already has `postgres://` and `mongodb+srv://`; these are
+    // the bare-form variants KeyFinder also tracks.
+    KeyPattern {
+        prefix: "mongodb://",
+        service: "mongodb_uri",
+        min_len: 16,
+    },
+    KeyPattern {
+        prefix: "postgresql://",
+        service: "postgres_uri",
+        min_len: 16,
+    },
+    // ── Webhook URLs (operationally as sensitive as keys — anyone
+    // with the URL can post into the channel). Matched as bare-URL
+    // prefixes since they typically appear that way in app configs
+    // and cookie storage.
+    KeyPattern {
+        prefix: "https://hooks.slack.com/services/",
+        service: "slack_webhook_url",
+        min_len: 60,
+    },
+    KeyPattern {
+        prefix: "https://discord.com/api/webhooks/",
+        service: "discord_webhook_url",
+        min_len: 50,
+    },
+    KeyPattern {
+        prefix: "https://discordapp.com/api/webhooks/",
+        service: "discord_webhook_url",
+        min_len: 50,
+    },
     // ── OSINT / Security APIs ──────────────────────────────────
     KeyPattern {
         prefix: "d0a2df",
@@ -762,6 +871,13 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
             return Some((pat.service, trimmed));
         }
     }
+    // PEM private-key blocks (ported from KeyFinder coverage). Stealer
+    // logs that dump `id_rsa` / `id_ed25519` / OpenVPN configs land
+    // here. Multi-line; checked separately because the prefix-table
+    // requires single-token matches.
+    if let Some(service) = identify_pem_private_key(trimmed) {
+        return Some((service, trimmed));
+    }
     // Cryptocurrency wallet addresses. Stealer logs from
     // clipboard-hijacker malware carry these in volume — the
     // public-apis lists surface Blockchain.com / Blockstream /
@@ -1096,6 +1212,70 @@ fn is_uuid(value: &str) -> bool {
             .chars()
             .filter(|c| *c != '-')
             .all(|c| c.is_ascii_hexdigit())
+}
+
+// ── PEM private-key block classifier (KeyFinder port) ─────────────
+//
+// Stealer logs that dump `id_rsa`, `id_ed25519`, OpenVPN configs,
+// PGP keychains, or Bitcoin wallet WIF backups deliver these
+// verbatim into the `app_data` / `notes` / `extras` payloads.
+// Detection is shape-anchored on the BEGIN header — strict enough
+// that a base64 blob in the body alone won't false-positive.
+
+/// Try to classify `s` as a PEM-encoded private-key block. Returns
+/// `Some(service_tag)` when the BEGIN header matches a known class.
+/// The trailing block (`-----END ... PRIVATE KEY-----`) is not
+/// required — partial-paste in stealer dumps is common, and the
+/// header alone is high-signal.
+pub(crate) fn identify_pem_private_key(s: &str) -> Option<&'static str> {
+    // Header layout: `-----BEGIN <class> [PRIVATE KEY]-----`.
+    // Examples:
+    //   -----BEGIN RSA PRIVATE KEY-----
+    //   -----BEGIN OPENSSH PRIVATE KEY-----
+    //   -----BEGIN EC PRIVATE KEY-----
+    //   -----BEGIN DSA PRIVATE KEY-----
+    //   -----BEGIN PRIVATE KEY-----      (PKCS#8 generic)
+    //   -----BEGIN ENCRYPTED PRIVATE KEY-----  (PKCS#8 encrypted)
+    //   -----BEGIN PGP PRIVATE KEY BLOCK-----
+    //   -----BEGIN PGP MESSAGE-----      (often wraps a key body)
+    if !s.starts_with("-----BEGIN ") {
+        return None;
+    }
+    // Sanity check on length — a real PEM body is at least 100 chars
+    // of base64 even for the smallest key. This keeps a bare header
+    // string with no body from being mis-classified.
+    if s.len() < 80 {
+        return None;
+    }
+    let header_line = s.lines().next().unwrap_or("");
+    if header_line.starts_with("-----BEGIN RSA PRIVATE KEY") {
+        return Some("pem_rsa_private");
+    }
+    if header_line.starts_with("-----BEGIN OPENSSH PRIVATE KEY") {
+        return Some("pem_openssh_private");
+    }
+    if header_line.starts_with("-----BEGIN EC PRIVATE KEY") {
+        return Some("pem_ec_private");
+    }
+    if header_line.starts_with("-----BEGIN DSA PRIVATE KEY") {
+        return Some("pem_dsa_private");
+    }
+    if header_line.starts_with("-----BEGIN ENCRYPTED PRIVATE KEY") {
+        return Some("pem_pkcs8_encrypted");
+    }
+    if header_line.starts_with("-----BEGIN PRIVATE KEY") {
+        return Some("pem_pkcs8_private");
+    }
+    if header_line.starts_with("-----BEGIN PGP PRIVATE KEY BLOCK") {
+        return Some("pem_pgp_private");
+    }
+    if header_line.starts_with("-----BEGIN PGP MESSAGE") {
+        return Some("pem_pgp_message");
+    }
+    // Header was `-----BEGIN ` but didn't match a known class.
+    // Don't tag as a specific service — return None and let the
+    // caller fall through to other detectors.
+    None
 }
 
 // ── Cryptocurrency wallet-address classifier ──────────────────────
@@ -2246,5 +2426,220 @@ mod tests {
                 .any(|e| e.has_tag("service:crypto_eth"))
         );
         assert!(result.entities.iter().any(|e| e.has_tag("service:aws")));
+    }
+
+    // ─── KeyFinder-ported prefix coverage ──────────────────────────
+
+    #[test]
+    fn detects_square_oauth_id_and_app_secret() {
+        // Square OAuth ID + Application secret prefixes (sq0idp- /
+        // sq0csp-) — separate from the existing sq0atp- access token.
+        let oauth_id = "sq0idp-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5";
+        let (svc, _) = identify_api_key(oauth_id).unwrap();
+        assert_eq!(svc, "square_oauth_id");
+
+        let app_secret = "sq0csp-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+        let (svc, _) = identify_api_key(app_secret).unwrap();
+        assert_eq!(svc, "square_app_secret");
+    }
+
+    #[test]
+    fn detects_planetscale_password_and_token() {
+        let pw = "pscale_pw_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
+        let (svc, _) = identify_api_key(pw).unwrap();
+        assert_eq!(svc, "planetscale_password");
+
+        let tkn = "pscale_tkn_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
+        let (svc, _) = identify_api_key(tkn).unwrap();
+        assert_eq!(svc, "planetscale_token");
+    }
+
+    #[test]
+    fn detects_all_four_doppler_token_classes() {
+        let cases = [
+            (
+                "dp.pt.A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+                "doppler_personal",
+            ),
+            ("dp.ct.A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "doppler_cli"),
+            (
+                "dp.sa.A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+                "doppler_service_acct",
+            ),
+            (
+                "dp.st.A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+                "doppler_service_token",
+            ),
+        ];
+        for (cand, expected) in cases {
+            let (svc, _) = identify_api_key(cand)
+                .unwrap_or_else(|| panic!("Doppler {expected} not detected for {cand}"));
+            assert_eq!(svc, expected);
+        }
+    }
+
+    #[test]
+    fn detects_docker_hub_pat() {
+        let cand = "dckr_pat_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+        let (svc, _) = identify_api_key(cand).unwrap();
+        assert_eq!(svc, "docker_hub_pat");
+    }
+
+    #[test]
+    fn detects_vault_service_and_batch_tokens() {
+        // Vault tokens are notoriously long (90+ chars).
+        let svc_token = format!(
+            "hvs.{}",
+            "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        );
+        let (svc, _) = identify_api_key(&svc_token).unwrap();
+        assert_eq!(svc, "vault_service");
+
+        let batch_token = format!(
+            "hvb.{}",
+            "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        );
+        let (svc, _) = identify_api_key(&batch_token).unwrap();
+        assert_eq!(svc, "vault_batch");
+    }
+
+    #[test]
+    fn detects_bitbucket_oauth_and_app_password() {
+        let oauth = "BBDC-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5";
+        let (svc, _) = identify_api_key(oauth).unwrap();
+        assert_eq!(svc, "bitbucket_oauth");
+
+        let app_pw = "ATBB-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+        let (svc, _) = identify_api_key(app_pw).unwrap();
+        assert_eq!(svc, "bitbucket_app_password");
+    }
+
+    #[test]
+    fn detects_mongodb_and_postgresql_uris() {
+        // Note: host names are chosen to NOT contain any
+        // `CONTEXT_EXCLUSIONS` substring (no "example", "test",
+        // "sample", etc.) — those would correctly trip the FP gate
+        // and route this through the "wrong" path. Real production
+        // hosts like `cluster.mongodb.net` and `db.companyacme.com`
+        // pass cleanly.
+        let mongo = "mongodb://operator:Hunter2!@cluster.mongodb.net:27017/prod";
+        let (svc, _) = identify_api_key(mongo).unwrap();
+        assert_eq!(svc, "mongodb_uri");
+
+        let pg = "postgresql://operator:Hunter2!@db.companyacme.com:5432/prod";
+        let (svc, _) = identify_api_key(pg).unwrap();
+        assert_eq!(svc, "postgres_uri");
+    }
+
+    #[test]
+    fn detects_slack_webhook_url() {
+        let cand =
+            "https://hooks.slack.com/services/T01234567/B01234567/abcdefghij1234567890ABCDEFGHIJ";
+        let (svc, _) = identify_api_key(cand).unwrap();
+        assert_eq!(svc, "slack_webhook_url");
+    }
+
+    #[test]
+    fn detects_discord_webhook_url_both_hosts() {
+        let cand1 = "https://discord.com/api/webhooks/1234567890123456789/abcdefghij1234567890ABCDEFGHIJ-_xyz";
+        let (svc, _) = identify_api_key(cand1).unwrap();
+        assert_eq!(svc, "discord_webhook_url");
+
+        // discordapp.com is the legacy host — both still route.
+        let cand2 = "https://discordapp.com/api/webhooks/1234567890123456789/abcdefghij1234567890ABCDEFGHIJ-_xyz";
+        let (svc, _) = identify_api_key(cand2).unwrap();
+        assert_eq!(svc, "discord_webhook_url");
+    }
+
+    // ─── PEM private-key detection ────────────────────────────────
+
+    fn pem_with_header(header: &str) -> String {
+        let tail = header.trim_start_matches("-----BEGIN ");
+        format!(
+            "{header}\n\
+             MIIEpAIBAAKCAQEAxKHJvWqjzS0Mzqp7HhCJN4mxbXf8YzfvOLvhsZ7g9XKvz2fhQbX\n\
+             rs3Ws6MKw02xZJq8GbHnE7vU5oOnX0kJqLY8VBn5oZqvLPhqpJ04u3HoT5w1pqhTaZ\n\
+             ...truncated_body_padding_to_satisfy_the_80_char_floor...\n\
+             -----END {tail}"
+        )
+    }
+
+    #[test]
+    fn detects_rsa_private_key_header() {
+        let pem = pem_with_header("-----BEGIN RSA PRIVATE KEY-----");
+        let (svc, _) = identify_api_key(&pem).unwrap();
+        assert_eq!(svc, "pem_rsa_private");
+    }
+
+    #[test]
+    fn detects_openssh_private_key_header() {
+        let pem = pem_with_header("-----BEGIN OPENSSH PRIVATE KEY-----");
+        let (svc, _) = identify_api_key(&pem).unwrap();
+        assert_eq!(svc, "pem_openssh_private");
+    }
+
+    #[test]
+    fn detects_ec_private_key_header() {
+        let pem = pem_with_header("-----BEGIN EC PRIVATE KEY-----");
+        let (svc, _) = identify_api_key(&pem).unwrap();
+        assert_eq!(svc, "pem_ec_private");
+    }
+
+    #[test]
+    fn detects_dsa_private_key_header() {
+        let pem = pem_with_header("-----BEGIN DSA PRIVATE KEY-----");
+        let (svc, _) = identify_api_key(&pem).unwrap();
+        assert_eq!(svc, "pem_dsa_private");
+    }
+
+    #[test]
+    fn detects_pkcs8_private_and_encrypted_headers() {
+        let plain = pem_with_header("-----BEGIN PRIVATE KEY-----");
+        let (svc, _) = identify_api_key(&plain).unwrap();
+        assert_eq!(svc, "pem_pkcs8_private");
+
+        let enc = pem_with_header("-----BEGIN ENCRYPTED PRIVATE KEY-----");
+        let (svc, _) = identify_api_key(&enc).unwrap();
+        assert_eq!(svc, "pem_pkcs8_encrypted");
+    }
+
+    #[test]
+    fn detects_pgp_private_and_message_blocks() {
+        let priv_key = pem_with_header("-----BEGIN PGP PRIVATE KEY BLOCK-----");
+        let (svc, _) = identify_api_key(&priv_key).unwrap();
+        assert_eq!(svc, "pem_pgp_private");
+
+        let msg = pem_with_header("-----BEGIN PGP MESSAGE-----");
+        let (svc, _) = identify_api_key(&msg).unwrap();
+        assert_eq!(svc, "pem_pgp_message");
+    }
+
+    #[test]
+    fn pem_bare_header_without_body_is_rejected() {
+        // 80-char floor catches BEGIN-only strings.
+        let header = "-----BEGIN RSA PRIVATE KEY-----";
+        assert!(identify_pem_private_key(header).is_none());
+    }
+
+    #[test]
+    fn pem_unknown_class_returns_none() {
+        // `BEGIN FAKE...` shouldn't latch onto a service.
+        let bogus = format!("-----BEGIN FAKE FORMAT-----\n{}", "x".repeat(200));
+        assert!(identify_pem_private_key(&bogus).is_none());
+    }
+
+    #[test]
+    fn pem_extracted_from_stealer_app_data_emits_correct_service() {
+        // Stealer dump of an SSH id_rsa file pasted into app_data.
+        let pem = pem_with_header("-----BEGIN OPENSSH PRIVATE KEY-----");
+        let item = serde_json::json!({
+            "app_data": pem,
+            "dbname": "StealerLogV3",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+        assert_eq!(result.entities.len(), 1);
+        assert!(result.entities[0].has_tag("service:pem_openssh_private"));
     }
 }
