@@ -501,6 +501,24 @@ fn build_queries(target: &Target) -> Vec<String> {
                      OR site:peoplefinder.com.au OR site:searchfind.com.au"
                 ));
             }
+            // Breach-DB direct surfaces. HaveIBeenPwned + DeHashed +
+            // IntelX are already covered by their dedicated modules;
+            // dorking adds LeakCheck, Snusbase, BreachDirectory, and
+            // Scattered-Secrets as supplementary corpora that don't
+            // require keys to surface a hit count.
+            q.push(format!(
+                "\"{v}\" site:leakcheck.io OR site:snusbase.com \
+                 OR site:breachdirectory.org OR site:scatteredsecrets.com"
+            ));
+            // Paste-site dork — Pastebin, paste.ee, Ghostbin, GitHub
+            // gists. High-yield for leaked credentials and dumps.
+            q.push(format!(
+                "\"{v}\" site:pastebin.com OR site:paste.ee \
+                 OR site:ghostbin.co OR site:gist.github.com"
+            ));
+            // Direct credential / password presence indicator. Surfaces
+            // mentions where the email is next to a leaked credential.
+            q.push(format!("\"{v}\" password OR login OR credentials"));
             q
         }
         TargetKind::Username => vec![
@@ -511,6 +529,31 @@ fn build_queries(target: &Target) -> Vec<String> {
             format!(
                 "\"{v}\" site:peekyou.com OR site:nuwber.com \
                  OR site:spokeo.com OR site:pipl.com"
+            ),
+            // VK + OK (Odnoklassniki) — Russian-language social platforms
+            // with ~600M and ~70M users respectively. Significant diaspora
+            // presence in AU / EU / US makes this worth dorking even for
+            // English-language investigations.
+            format!("\"{v}\" site:vk.com OR site:ok.ru"),
+            // Telegram public-channel + username probe via Google. Direct
+            // URL probing (`t.me/<username>`) is handled by a future
+            // `social_probe`-style module; here we go through Google so
+            // we surface public mentions across channels and groups too.
+            format!("\"{v}\" site:t.me OR site:telegra.ph"),
+            // Gaming platforms — usernames here are often unique across
+            // a user's online identity. Steam community + Twitch + Discord
+            // public servers (via disboard / top.gg) caught via dork.
+            format!(
+                "\"{v}\" site:steamcommunity.com OR site:twitch.tv \
+                 OR site:disboard.org OR site:top.gg"
+            ),
+            // WhatsMyName + Namecheckr — community-maintained username
+            // aggregators that probe hundreds of sites in one search.
+            // Linking to them directly is cheaper than reimplementing
+            // their probe set inline.
+            format!(
+                "\"{v}\" site:whatsmyname.app OR site:namecheckr.com \
+                 OR site:check-username.com"
             ),
         ],
         TargetKind::FullName => {
@@ -601,6 +644,20 @@ fn build_queries(target: &Target) -> Vec<String> {
                     "\"{fl}\" site:whirlpool.net.au OR site:forums.realestate.com.au \
                      OR site:ozbargain.com.au"
                 ));
+
+                // Post-Soviet / European social platforms — VK + OK
+                // people search. Significant global diaspora presence
+                // (incl. ~70k VK users in AU per public estimates), so
+                // worth dorking even on Anglophone names.
+                q.push(format!("\"{fl}\" site:vk.com OR site:ok.ru"));
+
+                // Telegram public-presence + gaming-platform dorks.
+                // Names sometimes appear in channel descriptions,
+                // public group rosters, and Steam profile bios.
+                q.push(format!(
+                    "\"{fl}\" site:t.me OR site:steamcommunity.com \
+                     OR site:twitch.tv"
+                ));
             }
             q
         }
@@ -613,6 +670,23 @@ fn build_queries(target: &Target) -> Vec<String> {
                      OR site:whocalledme.com OR site:reversephonelookup.com"
                 ));
                 q.push(format!("\"{v}\" name OR address OR owner"));
+                // Additional reverse-phone OSINT surfaces (Sorrow et al.):
+                // NumBuster, GetContact, Sync.me, Callapp — all crowd-
+                // sourced caller-ID datasets with broader coverage than
+                // Truecaller for non-Anglosphere numbers.
+                q.push(format!(
+                    "\"{v}\" site:numbuster.com OR site:getcontact.com \
+                     OR site:sync.me OR site:callapp.com"
+                ));
+                // WhatsApp + Telegram presence — `wa.me/<digits>` redirects
+                // to a chat if the number is WhatsApp-registered; Telegram
+                // `t.me/<digits>` similar. Dorking via Google surfaces
+                // public mentions of the number on either platform.
+                q.push(format!("\"{v}\" site:wa.me OR site:t.me"));
+                // VK + Facebook by-phone search — both platforms let
+                // members register with a phone number and the public
+                // profile sometimes surfaces it.
+                q.push(format!("\"{v}\" site:vk.com OR site:facebook.com"));
             }
             q
         }
@@ -1374,12 +1448,91 @@ mod tests {
     fn build_queries_username_covers_social_platforms() {
         let t = Target::new(TargetKind::Username, "johndoe");
         let q = build_queries(&t);
-        assert_eq!(q.len(), 5);
+        // Now 9 queries: 5 legacy + VK/OK + Telegram + Steam/Twitch/
+        // gaming + WhatsMyName/Namecheckr aggregators.
+        assert_eq!(q.len(), 9, "expected 9 dorks, got {}", q.len());
         assert!(q[0].contains("github.com") && q[0].contains("linkedin.com"));
         assert!(q[1].contains("twitter.com") && q[1].contains("reddit.com"));
         assert!(q[2].contains("profile"));
         assert!(q[3].contains("email") || q[3].contains("contact"));
         assert!(q[4].contains("peekyou.com") || q[4].contains("nuwber.com"));
+        // New: VK + OK
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("vk.com") && qr.contains("ok.ru"))
+        );
+        // New: Telegram / telegra.ph
+        assert!(q.iter().any(|qr| qr.contains("t.me")));
+        // New: gaming
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("steamcommunity.com") || qr.contains("twitch.tv"))
+        );
+        // New: aggregators
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("whatsmyname.app") || qr.contains("namecheckr.com"))
+        );
+    }
+
+    #[test]
+    fn build_queries_username_avoids_blank_queries() {
+        let q = build_queries(&Target::new(TargetKind::Username, "alice"));
+        for qr in &q {
+            assert!(!qr.trim().is_empty(), "blank query in: {q:?}");
+            assert!(qr.contains("alice"), "missing target in: {qr}");
+        }
+    }
+
+    #[test]
+    fn build_queries_phone_includes_new_reverse_id_and_messengers() {
+        let t = Target::new(TargetKind::Phone, "+1-234-567-8900");
+        let q = build_queries(&t);
+        // Should include the new NumBuster / GetContact group and the
+        // WhatsApp / Telegram messenger dork.
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("numbuster.com") || qr.contains("getcontact.com"))
+        );
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("wa.me") || qr.contains("t.me"))
+        );
+    }
+
+    #[test]
+    fn build_queries_email_includes_new_breach_and_paste_dorks() {
+        let t = Target::new(TargetKind::Email, "alice@target-company.com.au");
+        let q = build_queries(&t);
+        // Breach corpora dork
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("leakcheck.io") || qr.contains("snusbase.com"))
+        );
+        // Paste-site dork
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("pastebin.com") || qr.contains("paste.ee"))
+        );
+        // Credential-presence dork
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("password") || qr.contains("credentials"))
+        );
+    }
+
+    #[test]
+    fn build_queries_fullname_includes_post_soviet_socials_and_gaming() {
+        let t = Target::new(TargetKind::FullName, "Ivan Petrov");
+        let q = build_queries(&t);
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("vk.com") && qr.contains("ok.ru"))
+        );
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("t.me") || qr.contains("steamcommunity.com"))
+        );
     }
 
     #[test]
