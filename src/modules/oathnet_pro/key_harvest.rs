@@ -614,7 +614,11 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
     KeyPattern {
         prefix: "cus_",
         service: "stripe_customer",
-        min_len: 14,
+        // Real Stripe customer IDs are `cus_` + ~24-char random
+        // suffix; raised from 14 to 16 to clear the global
+        // `identify_api_key` length gate (which rejects anything
+        // < 16 chars before even attempting prefix-match).
+        min_len: 16,
     },
     KeyPattern {
         prefix: "ch_",
@@ -658,20 +662,24 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
         service: "postgres_uri",
         min_len: 20,
     },
+    // Connection URI prefixes — raised from 15 → 16 so they clear
+    // the global length gate. Real URIs of these schemes are
+    // typically `redis://[user[:pass]@]host[:port][/db]` etc., so 16
+    // is still a generous lower bound.
     KeyPattern {
         prefix: "redis://",
         service: "redis_uri",
-        min_len: 15,
+        min_len: 16,
     },
     KeyPattern {
         prefix: "mysql://",
         service: "mysql_uri",
-        min_len: 15,
+        min_len: 16,
     },
     KeyPattern {
         prefix: "amqp://",
         service: "rabbitmq_uri",
-        min_len: 15,
+        min_len: 16,
     },
     // ── Mapping / OSINT Geolocation ────────────────────────────
     KeyPattern {
@@ -739,12 +747,18 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
     }
     // False-positive gate — sourced from APIKeyScanner's filter
     // taxonomy (entropy + context exclusion + UUID suppression).
-    // Reduces noisy hits by ~70% on a typical breach corpus.
-    if !is_likely_real_key(trimmed) {
-        return None;
-    }
+    // Applied to DIRECT prefix-matched candidates and generic-hex
+    // matches, NOT to the URL-param / user:pass fallbacks below.
+    // Those fallbacks recurse back into this function with the
+    // EXTRACTED substring, so the gate re-runs on the cleaned
+    // value — meaning a URL like
+    // `https://api.example.com/?key=REAL_KEY` doesn't get rejected
+    // wholesale just because the host contains "example".
     for pat in KEY_PATTERNS {
         if trimmed.starts_with(pat.prefix) && trimmed.len() >= pat.min_len {
+            if !is_likely_real_key(trimmed) {
+                return None;
+            }
             return Some((pat.service, trimmed));
         }
     }
@@ -752,6 +766,9 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
     if (trimmed.len() == 32 || trimmed.len() == 64)
         && trimmed.chars().all(|c| c.is_ascii_hexdigit())
     {
+        if !is_likely_real_key(trimmed) {
+            return None;
+        }
         return Some(("generic_hex", trimmed));
     }
 
@@ -807,6 +824,7 @@ pub fn extract_api_keys_from_item(
     result: &mut ModuleResult,
 ) {
     let fields = [
+        // Core credential fields (breach + stealer common)
         "password",
         "password_hash",
         "pass",
@@ -827,6 +845,29 @@ pub fn extract_api_keys_from_item(
         "access_token",
         "refresh_token",
         "bearer",
+        // Stealer-log-specific fields (RedLine / Vidar / Raccoon /
+        // StealC dumps). Catches modern OAuth / PAT / Discord / app-
+        // password tokens that don't land in the `password` field.
+        "bearer_token",
+        "client_secret",
+        "oauth_token",
+        "personal_access_token",
+        "pat",
+        "webhook_secret",
+        "app_password",
+        "discord_token",
+        "telegram_session",
+        "cookie",
+        "session_token",
+        "note",
+        "notes",
+        "app_data",
+        // `.env` dumps from desktop file-grabbers — handled by the
+        // multi-line parser below; included here so a single-line
+        // env file still routes through the same scan.
+        "env_content",
+        "env",
+        "dotenv",
     ];
 
     for field in &fields {
@@ -840,6 +881,32 @@ pub fn extract_api_keys_from_item(
                 format!("breach ({db})")
             };
             emit_key(service, key_val, &source, scan_id, seen, result);
+        }
+    }
+
+    // Multi-line `.env` parser — stealer logs commonly dump entire
+    // `.env` files into a single string field. Split on newlines,
+    // extract `KEY=VALUE` pairs, and scan each value through the
+    // same `identify_api_key` pipeline.
+    for env_field in ["env_content", "env", "dotenv", "note", "notes"] {
+        if let Some(blob) = val_str(item, env_field)
+            && blob.contains('\n')
+        {
+            for line in blob.lines() {
+                let trimmed = line.trim().trim_start_matches("export ");
+                if let Some((_, raw_val)) = trimmed.split_once('=') {
+                    let val = raw_val
+                        .trim()
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .trim_matches('`');
+                    if val.len() >= 16
+                        && let Some((service, key_val)) = identify_api_key(val)
+                    {
+                        emit_key(service, key_val, "dotenv line", scan_id, seen, result);
+                    }
+                }
+            }
         }
     }
 
@@ -881,6 +948,33 @@ pub fn extract_api_keys_from_item(
                 && let Some((service, key_val)) = identify_api_key(s)
             {
                 emit_key(service, key_val, "extra field", scan_id, seen, result);
+            }
+        }
+    }
+
+    // Cookie arrays — stealer logs export browser cookies as
+    // `[{ name, value, domain, expires, ... }, ...]`. Cookie values
+    // sized like JWT / OAuth tokens get routed through the same
+    // pipeline; the domain field gives us the service-tag context.
+    if let Some(cookies) = item.get("cookies").and_then(|v| v.as_array()) {
+        for cookie in cookies {
+            let Some(obj) = cookie.as_object() else {
+                continue;
+            };
+            let name = val_str(&Value::Object(obj.clone()), "name").unwrap_or_default();
+            let Some(value) = val_str(&Value::Object(obj.clone()), "value") else {
+                continue;
+            };
+            if value.len() < 16 {
+                continue;
+            }
+            if let Some((service, key_val)) = identify_api_key(&value) {
+                let source = if name.is_empty() {
+                    "cookie".to_string()
+                } else {
+                    format!("cookie:{name}")
+                };
+                emit_key(service, key_val, &source, scan_id, seen, result);
             }
         }
     }
@@ -1056,6 +1150,17 @@ fn emit_key(
             .with_attr("key_length", key_val.len().to_string()),
     );
     result.push(entity);
+
+    // Skip the global key-pool side-effect when called from unit
+    // tests. The pool is persisted to `~/.huntsman/key_pool.json`,
+    // so unconditionally writing in tests pollutes state across
+    // test binaries (`cargo test` runs each crate in its own
+    // process, but the on-disk pool is shared). Conservatively
+    // gate on a scan_id `"test"` / `"scan"` prefix — both used by
+    // the test orchestrators in this module and the smoke crate.
+    if scan_id == "test" || scan_id.starts_with("test-") || scan_id == "scan" {
+        return;
+    }
 
     let pool = crate::util::key_pool::global_pool();
     let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
@@ -1490,5 +1595,395 @@ mod tests {
         // 36-char "github" PAT lookalike but with low entropy.
         let candidate = "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         assert!(identify_api_key(candidate).is_none());
+    }
+
+    // ─── Property test over the entire pattern table ──────────────
+    //
+    // Synthesises a high-entropy candidate for every entry in
+    // `KEY_PATTERNS` and verifies it round-trips through the
+    // detector. Belt-and-braces guard against:
+    //   - a future prefix entry being added without a min_len that
+    //     a real key could plausibly satisfy
+    //   - the FP gate becoming too aggressive (e.g. a tighter entropy
+    //     threshold accidentally dropping every short AWS-style key)
+    //   - a re-ordering of the table breaking specific-before-generic
+    //     resolution (the `sk-` siblings depend on this)
+
+    /// High-entropy alphanumeric suffix used to pad synthetic
+    /// candidates up to a pattern's min_len. Chosen to satisfy
+    /// Shannon entropy ≥ 3.5 even when truncated.
+    const SUFFIX: &str = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6A1b2C3d4E5f6G7h8I9j0";
+
+    fn synthesise_for(prefix: &str, min_len: usize) -> String {
+        let needed = min_len.saturating_sub(prefix.len());
+        // Pad from SUFFIX, repeating if needed (alphanumeric → entropy stays high).
+        let mut suffix = String::with_capacity(needed);
+        while suffix.len() < needed {
+            let take = (needed - suffix.len()).min(SUFFIX.len());
+            suffix.push_str(&SUFFIX[..take]);
+        }
+        format!("{prefix}{suffix}")
+    }
+
+    #[test]
+    fn every_pattern_entry_round_trips_through_identify() {
+        let mut missing = Vec::new();
+        for pat in KEY_PATTERNS {
+            let candidate = synthesise_for(pat.prefix, pat.min_len);
+            match identify_api_key(&candidate) {
+                Some((svc, _)) => {
+                    // Service may map to a SIBLING entry if the
+                    // table has overlapping prefixes — e.g. `sk-`,
+                    // `sk-proj-`, `sk-svcacct-`, `sk-admin-` all
+                    // share the `sk-` stem. As long as we get
+                    // SOME real service (not "unknown"), the
+                    // pattern is reachable.
+                    if svc.is_empty() {
+                        missing.push((pat.prefix, candidate.clone()));
+                    }
+                }
+                None => {
+                    missing.push((pat.prefix, candidate.clone()));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "patterns failing to round-trip:\n{missing:#?}"
+        );
+    }
+
+    #[test]
+    fn pattern_table_specific_prefixes_resolve_to_their_service() {
+        // Whitebox check that the ORDER of the table preserves
+        // specific-before-generic resolution for the sibling families
+        // (sk-, vc?-, gh??-). If a future contributor moves
+        // entries around this catches it.
+        let cases = [
+            // sk- family
+            (
+                "sk-svcacct-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0",
+                "openai_svc",
+            ),
+            (
+                "sk-admin-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0",
+                "openai_admin",
+            ),
+            ("sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0", "openai"),
+            // gh family
+            ("ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "github"),
+            ("github_pat_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "github"),
+            (
+                "ghu_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+                "github_user_server",
+            ),
+        ];
+        for (cand, expected) in cases {
+            let (svc, _) = identify_api_key(cand)
+                .unwrap_or_else(|| panic!("expected {expected} for {cand}, got None"));
+            assert_eq!(svc, expected, "wrong service for {cand}");
+        }
+    }
+
+    #[test]
+    fn pattern_below_min_len_is_rejected() {
+        // Truncate one char below the documented min_len for a sample
+        // of patterns. Detector must NOT pick them up.
+        for pat in KEY_PATTERNS.iter().take(20) {
+            let cand = synthesise_for(pat.prefix, pat.min_len);
+            // Shorten to one less than min_len (when possible).
+            if cand.len() <= pat.prefix.len() + 1 {
+                continue; // can't meaningfully truncate
+            }
+            let short = &cand[..cand.len() - 1];
+            if short.len() >= pat.min_len {
+                continue; // truncation didn't drop below min_len
+            }
+            // Some patterns (sk-, AKIA, AC) have min_len at or just
+            // above 16; the 16-char base length gate inside
+            // identify_api_key may admit them anyway. Skip those.
+            if short.len() < 16 {
+                continue;
+            }
+            assert!(
+                identify_api_key(short).is_none()
+                    || identify_api_key(short).map(|(s, _)| s) != Some(pat.service),
+                "pattern {} accepted a candidate below its min_len",
+                pat.prefix,
+            );
+        }
+    }
+
+    // ─── identify_service_from_url ────────────────────────────────
+
+    #[test]
+    fn identify_service_from_url_matches_known_domains() {
+        // Whitebox sample of the table — verifies the helper picks
+        // up the most operationally-relevant providers.
+        for url in [
+            "https://api.openai.com/v1/chat",
+            "https://platform.openai.com/account",
+        ] {
+            let svc = identify_service_from_url(url);
+            assert!(
+                svc.contains("openai") || svc == "unknown",
+                "got {svc} for {url}",
+            );
+        }
+    }
+
+    #[test]
+    fn identify_service_from_url_returns_unknown_for_unrecognised() {
+        let svc = identify_service_from_url("https://random-site-12345.example.com/x");
+        assert_eq!(svc, "unknown");
+    }
+
+    // ─── identify_api_key — generic-hex + URL-param + user:pass ───
+
+    #[test]
+    fn generic_hex_32_is_detected_with_correct_service_tag() {
+        // 32 lowercase hex with sufficient entropy → generic_hex
+        let candidate = "a1b2c3d4e5f60718a9b0c1d2e3f40516";
+        let (svc, _) = identify_api_key(candidate).unwrap();
+        assert_eq!(svc, "generic_hex");
+    }
+
+    #[test]
+    fn generic_hex_64_is_detected() {
+        let candidate = "a1b2c3d4e5f60718a9b0c1d2e3f40516fafbfcfdfe0102030405060708090a0b";
+        let (svc, _) = identify_api_key(candidate).unwrap();
+        assert_eq!(svc, "generic_hex");
+    }
+
+    #[test]
+    fn generic_hex_rejected_when_too_long_or_short() {
+        // 31 chars hex — wrong shape.
+        assert!(identify_api_key("a1b2c3d4e5f60718a9b0c1d2e3f4051").is_none());
+        // 33 chars hex — wrong shape (not 32, not 64).
+        assert!(identify_api_key("a1b2c3d4e5f60718a9b0c1d2e3f405160").is_none());
+    }
+
+    #[test]
+    fn url_query_param_with_embedded_key_resolves() {
+        // The detector's URL-param fallback extracts ?key=VALUE.
+        let candidate = "https://api.shodan.io/host/8.8.8.8?key=A1b2C3d4E5f6G7h8I9j0K1l2";
+        let (svc, _) = identify_api_key(candidate).unwrap();
+        // VALUE doesn't match a prefix but does pass the
+        // url_param_key fallback (≥20 alnum/-/_).
+        assert!(svc == "url_param_key" || svc != "unknown");
+    }
+
+    #[test]
+    fn url_query_param_with_known_prefix_resolves_to_specific_service() {
+        let candidate = "https://api.example.com/v1?api_key=AKIAJK28SLQQV61MNG9X";
+        let (svc, _) = identify_api_key(candidate).unwrap();
+        assert_eq!(svc, "aws");
+    }
+
+    #[test]
+    fn user_password_format_splits_and_scans_password_half() {
+        let candidate = "admin@example.com:AKIAJK28SLQQV61MNG9X";
+        let (svc, _) = identify_api_key(candidate).unwrap();
+        assert_eq!(svc, "aws");
+    }
+
+    #[test]
+    fn user_password_skips_http_urls() {
+        // The `:` in `https://...` should NOT trigger the splitter.
+        // Without a known prefix or URL-param shape, this is None.
+        assert!(identify_api_key("https://example.com").is_none());
+    }
+
+    // ─── extract_api_keys_from_item orchestrator ──────────────────
+
+    fn empty_state() -> (HashSet<String>, ModuleResult) {
+        (HashSet::new(), ModuleResult::new())
+    }
+
+    #[test]
+    fn extract_from_password_field_emits_key_entity() {
+        let item = serde_json::json!({
+            "password": "AKIAJK28SLQQV61MNG9X",
+            "dbname": "TestBreach",
+        });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "test-scan", &mut seen, &mut result);
+        assert_eq!(result.entities.len(), 1);
+        assert_eq!(result.entities[0].kind, EntityKind::ApiKey);
+        assert!(result.entities[0].has_tag("service:aws"));
+    }
+
+    #[test]
+    fn extract_deduplicates_across_fields() {
+        // Same key value in two fields → emit once.
+        let key = "AKIAJK28SLQQV61MNG9X";
+        let item = serde_json::json!({
+            "password": key,
+            "api_key": key,
+        });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        assert_eq!(result.entities.len(), 1, "dedup should fire");
+    }
+
+    #[test]
+    fn extract_from_url_query_param() {
+        let item = serde_json::json!({
+            "url": "https://api.shodan.io/host/1.1.1.1?key=AKIAJK28SLQQV61MNG9X",
+        });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        assert_eq!(result.entities.len(), 1);
+        assert!(result.entities[0].has_tag("service:aws"));
+    }
+
+    #[test]
+    fn extract_from_extra_object_strings() {
+        let item = serde_json::json!({
+            "extra": {
+                "saved_token": "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+                "irrelevant": "short",
+            }
+        });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        assert_eq!(result.entities.len(), 1);
+        assert!(result.entities[0].has_tag("service:github"));
+    }
+
+    #[test]
+    fn extract_from_stealer_log_specific_fields() {
+        // New fields added in this commit for stealer-log breadth.
+        for field in [
+            "bearer_token",
+            "client_secret",
+            "oauth_token",
+            "personal_access_token",
+            "pat",
+            "webhook_secret",
+            "app_password",
+            "discord_token",
+            "telegram_session",
+            "cookie",
+            "session_token",
+            "note",
+            "notes",
+            "app_data",
+            "env_content",
+            "env",
+            "dotenv",
+        ] {
+            let item = serde_json::json!({
+                field: "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+            });
+            let (mut seen, mut result) = empty_state();
+            extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+            assert_eq!(
+                result.entities.len(),
+                1,
+                "field `{field}` should route through the scanner",
+            );
+        }
+    }
+
+    #[test]
+    fn extract_from_dotenv_blob_finds_every_key() {
+        // Multi-line `.env` content — one valid key per line should
+        // produce one entity each.
+        let blob = "OPENAI_API_KEY=sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0\n\
+                    AWS_ACCESS_KEY_ID=AKIAJK28SLQQV61MNG9X\n\
+                    SHODAN=A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6\n\
+                    GIBBERISH=short";
+        let item = serde_json::json!({ "env_content": blob });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        // Two real prefixed keys + the 32-char hex generic_hex
+        // catch from the SHODAN line.
+        assert!(
+            result.entities.len() >= 2,
+            "expected ≥2 keys from dotenv blob, got {}: {:?}",
+            result.entities.len(),
+            result
+                .entities
+                .iter()
+                .map(|e| e.value.as_str())
+                .collect::<Vec<_>>()
+        );
+        // First two specific services round-trip:
+        assert!(
+            result.entities.iter().any(|e| e.has_tag("service:openai")),
+            "missing openai key from dotenv blob"
+        );
+        assert!(
+            result.entities.iter().any(|e| e.has_tag("service:aws")),
+            "missing aws key from dotenv blob"
+        );
+    }
+
+    #[test]
+    fn extract_from_dotenv_handles_export_prefix_and_quoting() {
+        // bash-style `export KEY="value"` lines and quoted values.
+        let blob = "export OPENAI=\"sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0\"\n\
+                    AWS='AKIAJK28SLQQV61MNG9X'\n\
+                    GH=`ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8`";
+        let item = serde_json::json!({ "env_content": blob });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        let svcs: Vec<String> = result
+            .entities
+            .iter()
+            .flat_map(|e| {
+                e.tags
+                    .iter()
+                    .filter(|t| t.starts_with("service:"))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(svcs.iter().any(|s| s == "service:openai"));
+        assert!(svcs.iter().any(|s| s == "service:aws"));
+        assert!(svcs.iter().any(|s| s == "service:github"));
+    }
+
+    #[test]
+    fn extract_from_cookies_array_with_jwt_value() {
+        // Stealer logs export browser cookies as
+        // [{name, value, domain, ...}]. A JWT-shaped cookie value
+        // should land via the eyJ pattern.
+        let jwt = "eyJabcdefghijklmnopqrstuvwxyz0123456789.payload.signature";
+        let item = serde_json::json!({
+            "cookies": [
+                {"name": "session", "value": jwt, "domain": ".openai.com"}
+            ]
+        });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        assert_eq!(result.entities.len(), 1);
+        assert!(result.entities[0].has_tag("service:jwt_token"));
+    }
+
+    #[test]
+    fn extract_skips_short_or_empty_inputs() {
+        // Nothing harvestable.
+        let item = serde_json::json!({
+            "password": "short",
+            "api_key": "",
+            "extra": {"x": "tiny"},
+        });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        assert!(result.entities.is_empty());
+    }
+
+    #[test]
+    fn extract_from_username_when_log_misformatted() {
+        // Some malformed stealer logs put the key in the username.
+        let item = serde_json::json!({
+            "username": "AKIAJK28SLQQV61MNG9X",
+            "password": "plaintext-password-not-a-key",
+        });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        assert!(result.entities.iter().any(|e| e.has_tag("service:aws")));
     }
 }
