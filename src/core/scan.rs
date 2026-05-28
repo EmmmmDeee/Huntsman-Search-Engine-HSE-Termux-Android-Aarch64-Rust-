@@ -573,51 +573,59 @@ pub fn seed_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
 }
 
 /// Geo-specific NPV: expected Coordinates + Address entity yield.
-/// v1.0 recalibration accounts for photon (second geocoder),
-/// mylnikov (second BSSID→coords path), overpass (infra nodes),
-/// and identity→Address chains via proxycurl/opencorporates/epieos.
+///
+/// v2.0 recalibration for 79-module pipeline. New geo paths:
+///   Email: +email_header_geo, +email_locale, +seon, +epieos, +contact_enrich
+///   Phone: +phone_area_geo, +phone_carrier_geo
+///   Username: +social_location (GitHub/Reddit profile location extraction)
+///   Domain: +geo_domain_classifier (ccTLD/service → country)
+///   Organisation: +cloud_storage exposure scanning → domain → geo
+///   Address: +geocode/photon bidirectional, +overpass infrastructure
+///   IP: +abuseipdb country_code, +bgpview ASN→prefix→geo
 pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
     match kind {
         TargetKind::Email => {
             if has_paid_keys {
-                52.0
+                68.0
             } else {
-                14.2
+                22.5
             }
         }
-        TargetKind::Domain => 23.5,
         TargetKind::FullName => {
             if has_paid_keys {
-                46.0
+                58.0
             } else {
-                20.8
+                28.0
             }
         }
-        TargetKind::IpAddress => 13.2,
+        TargetKind::Domain => 32.0,
+        TargetKind::IpAddress => 18.5,
+        TargetKind::Username => 20.0,
         TargetKind::Phone => {
             if has_paid_keys {
-                11.5
+                16.0
             } else {
-                4.6
+                9.5
             }
         }
-        TargetKind::Asn => 7.1,
-        TargetKind::Username => 12.5,
-        TargetKind::Url => 9.2,
+        TargetKind::Address => 24.0,
+        TargetKind::MacAddress => 14.0,
+        TargetKind::Asn => 10.5,
+        TargetKind::Url => 12.0,
+        TargetKind::Organisation => 11.0,
+        TargetKind::Coordinates => 8.5,
+        TargetKind::AbnAcn => 7.0,
         TargetKind::ApiKey => 3.8,
-        TargetKind::MacAddress => 9.8,
-        TargetKind::AbnAcn => 4.0,
-        TargetKind::Organisation => 6.4,
-        TargetKind::Coordinates => 4.2,
-        TargetKind::Address => 15.0,
     }
 }
 
-/// Composite expansion weight: `geo_npv × c_eff × domain_factor`.
+/// Composite expansion weight: `geo_npv × c_eff × domain_factor × geo_proximity`.
 ///
 /// - `c_eff` rewards entities confirmed by multiple sources
 /// - `domain_factor` dampens known-generic mega-domains (0.15x)
-///   so target-specific domains and geo entities expand first
+/// - `geo_proximity` boosts entities one hop from Coordinates/Address
+///   (IpAddress 1.8x, MacAddress 2.0x, Address 2.2x, Phone 1.5x)
+///   so the pipeline converges on geolocation as fast as possible
 pub fn expansion_weight(kind: TargetKind, c_eff: f64, value: &str, has_paid_keys: bool) -> f64 {
     let base = geo_npv(kind, has_paid_keys);
     let dampener = if kind == TargetKind::Domain {
@@ -625,7 +633,23 @@ pub fn expansion_weight(kind: TargetKind, c_eff: f64, value: &str, has_paid_keys
     } else {
         1.0
     };
-    base * c_eff * dampener
+    let geo_boost = geo_proximity_boost(kind);
+    base * c_eff * dampener * geo_boost
+}
+
+/// Multiplicative boost for entity types that are one hop from producing
+/// Coordinates or Address entities. Ensures the expansion pipeline
+/// prioritises geo-convergent paths over non-geo paths at every round.
+fn geo_proximity_boost(kind: TargetKind) -> f64 {
+    match kind {
+        TargetKind::Address => 2.2,
+        TargetKind::MacAddress => 2.0,
+        TargetKind::IpAddress => 1.8,
+        TargetKind::Coordinates => 1.6,
+        TargetKind::Phone => 1.5,
+        TargetKind::Organisation => 1.3,
+        _ => 1.0,
+    }
 }
 
 /// Dampening factor for domain targets. Mega-domains (top internet
