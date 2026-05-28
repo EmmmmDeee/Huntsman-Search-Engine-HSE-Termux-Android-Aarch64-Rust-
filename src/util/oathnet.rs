@@ -153,7 +153,7 @@ pub async fn search(
     }
     budget_increment();
     let encoded = crate::util::http::urlencode(value);
-    let url = format!(
+    let mut url = format!(
         "{}{}?{}%5B%5D={}&page_size={}",
         base_url(),
         path,
@@ -161,6 +161,10 @@ pub async fn search(
         encoded,
         page_size
     );
+    if let Some(sid) = session_id_for(value) {
+        url.push_str("&search_id=");
+        url.push_str(&crate::util::http::urlencode(&sid));
+    }
     let body = curl_get(&url, key).await?;
     if body.contains("\"left_today\":0")
         || body.contains("limit exceeded")
@@ -217,13 +221,81 @@ pub fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {
     sorted.into_iter().take(n).map(|(k, _)| k).collect()
 }
 
-/// API endpoint path constants. Only endpoints that are actually called
-/// are kept — holehe, ip-info, ghunt, discord, steam, xbox, roblox, and
-/// victims were cut because breach + stealer yield strictly more data
-/// per query spent.
 pub mod paths {
     pub const BREACH: &str = "/service/v2/breach/search";
     pub const STEALER: &str = "/service/v2/stealer/search";
+    pub const SESSION_INIT: &str = "/service/search/init";
+}
+
+/// Per-scan search session ID. When set, breach and stealer queries for
+/// the same target value consume only ONE OathNet lookup instead of two.
+/// Sessions are valid for 60 minutes on the OathNet side.
+static SEARCH_SESSION: std::sync::LazyLock<Mutex<Option<(String, String)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+/// Initialise a search session for `value`. Returns the session ID on
+/// success, or None if the init call fails (non-fatal — queries still
+/// work without a session, they just cost more quota).
+pub async fn init_session(key: &str, value: &str) -> Option<String> {
+    if is_quota_exhausted() {
+        return None;
+    }
+    let url = format!("{}{}", base_url(), paths::SESSION_INIT);
+    let body = format!(r#"{{"query":"{}"}}"#, value.replace('"', "\\\""));
+    let header = format!("x-api-key: {key}");
+    let secs = 10u64.to_string();
+    let mut cmd = tokio::process::Command::new("curl");
+    cmd.args([
+        "-s",
+        "-L",
+        "--max-time",
+        &secs,
+        "-X",
+        "POST",
+        "-H",
+        &header,
+        "-H",
+        "Content-Type: application/json",
+        "-H",
+        "Accept: application/json",
+        "-d",
+        &body,
+        "--",
+        &url,
+    ]);
+    cmd.kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_millis(12_000), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let parsed: Value = serde_json::from_str(&text).ok()?;
+    let sid = parsed
+        .pointer("/session/id")
+        .or_else(|| parsed.pointer("/data/session/id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)?;
+    if let Ok(mut guard) = SEARCH_SESSION.lock() {
+        *guard = Some((value.to_lowercase(), sid.clone()));
+    }
+    tracing::info!(session_id = %sid, query = %value, "OathNet search session initialised");
+    Some(sid)
+}
+
+/// Return the cached session ID if it matches the given target value.
+pub fn session_id_for(value: &str) -> Option<String> {
+    SEARCH_SESSION.lock().ok().and_then(|guard| {
+        guard.as_ref().and_then(|(q, sid)| {
+            if q == &value.to_lowercase() {
+                Some(sid.clone())
+            } else {
+                None
+            }
+        })
+    })
 }
 
 /// Harvest API service credentials from OathNet stealer data.

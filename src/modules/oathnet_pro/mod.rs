@@ -92,6 +92,11 @@ impl Module for OathnetPro {
             _ => return Ok(result),
         };
 
+        // Initialise a search session so breach + stealer queries on the
+        // same target consume only ONE OathNet lookup instead of two.
+        // Non-fatal: if init fails, queries still work at higher quota cost.
+        let _ = oathnet::init_session(key, &target.value).await;
+
         // ── Query 1: Breach search ──────────────────────────────────────
         // Highest value endpoint: single query returns emails, usernames,
         // phones, names, IPs, addresses, passwords, geo, DOB, social

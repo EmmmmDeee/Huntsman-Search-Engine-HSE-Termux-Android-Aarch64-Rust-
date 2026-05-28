@@ -597,4 +597,346 @@ Common fields returned in stealer search items:
     log             Alternative log identifier
 
 
+19. CONSTRUCTING SEARCHES — SYNTAX REFERENCE
+----------------------------------------------
+
+19.1 SIMPLE QUERIES (auto-detected type)
+
+    The q parameter auto-detects: email, domain, IP, Discord ID,
+    Steam ID, username. Use it when the type is ambiguous:
+
+    GET /service/v2/breach/search?q=user@example.com
+    GET /service/v2/breach/search?q=example.com
+    GET /service/v2/breach/search?q=192.168.1.1
+    GET /service/v2/breach/search?q=johndoe
+
+19.2 TYPED ARRAY FILTERS (when you know the field)
+
+    Use field[] arrays for precision. Multiple values are OR'd:
+
+    GET /service/v2/breach/search?email[]=a@x.com&email[]=b@x.com
+    GET /service/v2/breach/search?domain[]=example.com&country[]=US
+    GET /service/v2/stealer/search?domain[]=shodan.io&username[]=admin
+
+    Breach arrays: email[], email_domain[], domain[], username[],
+    password[], password_hash[], ip[], phone[], first_name[],
+    last_name[], full_name[], city[], country[], state[],
+    postal_code[], dbname[], discord_id[], iban[], ssn[]
+
+    Stealer arrays: domain[], subdomain[], username[], password[],
+    path[], email[], ip[], hwid[], discord_id[]
+
+    Date range: date_birth_from, date_birth_to, from, to
+    Date field selector: date_field=indexed_at | date_field=pwned_at
+
+19.3 STRUCTURED FILTERS (complex logic)
+
+    Pass as ?filter={json} (GET) or in POST body.
+
+    Exact match:
+    {"field":"email","operator":"eq","value":"user@example.com"}
+
+    Substring:
+    {"field":"email","operator":"contains","value":"@gmail.com"}
+
+    Prefix:
+    {"field":"username","operator":"starts_with","value":"admin"}
+
+    Suffix:
+    {"field":"email_domain","operator":"ends_with","value":".gov"}
+
+    Wildcard (min 2 non-wildcard chars):
+    {"field":"password","operator":"wildcard","value":"pass*123"}
+
+    Range (dates, numbers):
+    {"and":[
+      {"field":"date_birth","operator":"gte","value":"1990-01-01"},
+      {"field":"date_birth","operator":"lt","value":"2000-01-01"}
+    ]}
+
+    Multi-value (IN):
+    {"field":"country","operator":"in","value":["US","AU","GB"]}
+
+    Field exists:
+    {"field":"phone_number","operator":"exists","value":true}
+
+    Combined AND+OR:
+    {"and":[
+      {"field":"dbname","operator":"eq","value":"linkedin"},
+      {"or":[
+        {"field":"country","operator":"eq","value":"US"},
+        {"field":"country","operator":"eq","value":"AU"}
+      ]}
+    ]}
+
+19.4 AI FILTERS (natural language → structured)
+
+    POST /service/v2/ai/filter
+    {"query":"emails from adobe breach in Australia","index":"breach"}
+
+    Response: { "filter_id": "abc123...", "filter": { ... } }
+
+    Use the returned filter_id in subsequent searches:
+    GET /service/v2/breach/search?filter_id=abc123
+
+19.5 COMBINING SESSIONS WITH FILTERS
+
+    Step 1: Init session for the target
+    POST /service/search/init  {"query":"user@example.com"}
+    → session_id
+
+    Step 2: Use session_id + filters together
+    GET /service/v2/breach/search?email[]=user@example.com
+        &dbname[]=linkedin&search_id=<session_id>
+
+    All queries with the same search_id cost only 1 lookup total.
+
+
+20. API KEY HUNTING — AUTOMATED CREDENTIAL DISCOVERY
+------------------------------------------------------
+
+The OathNet stealer database contains login credentials for OSINT
+service dashboards. When a target's credentials are found in stealer
+logs, those credentials often include API keys stored in browser
+sessions, cookies, or autofill data.
+
+20.1 HOW IT WORKS
+
+    1. Query stealer search for OSINT service domains:
+       GET /service/v2/stealer/search?domain[]=shodan.io&search_id=...
+
+    2. Each stealer record contains: username, password, URL
+       The URL reveals WHICH service dashboard was compromised.
+
+    3. Extract API keys from the password/credential fields using
+       prefix-pattern matching (see section 20.3).
+
+    4. Validate discovered keys against live service endpoints.
+
+    5. Store valid keys in the key pool for use by other modules.
+
+20.2 TARGET SERVICE DOMAINS (130+ monitored)
+
+    OSINT / Security:
+      shodan.io, virustotal.com, hunter.io, securitytrails.com,
+      dehashed.com, intelx.io, wigle.net, censys.io, binaryedge.io,
+      greynoise.io, fullhunt.io, urlscan.io, abuseipdb.com,
+      criminalip.io, onyphe.io, zoomeye.org, fofa.info, netlas.io,
+      pulsedive.com, builtwith.com, emailrep.io, seon.io, epieos.com,
+      passivetotal.org, breachdirectory.org, c99.nl, spyse.com,
+      haveibeenpwned.com, leakix.net, ipqualityscore.com
+
+    AI / ML Platforms:
+      openai.com, anthropic.com, openrouter.ai, groq.com, cohere.ai,
+      mistral.ai, together.ai, fal.ai, wandb.ai, huggingface.co,
+      replicate.com, lightning.ai, perplexity.ai
+
+    Cloud / Hosting:
+      heroku.com, digitalocean.com, vercel.com, netlify.com,
+      railway.app, render.com, supabase.com, ngrok.com, neon.tech,
+      planetscale.com, upstash.com
+
+    Communication:
+      twilio.com, mailchimp.com, postmarkapp.com, mailersend.com,
+      discord.com, slack (xoxb/xoxp tokens)
+
+    Payment:
+      stripe.com (sk_live_, pk_live_), paystack.com, razorpay.com
+
+    Package Registries:
+      npmjs.org (npm_), pypi.org (pypi-), gitlab.com (glpat-)
+
+20.3 API KEY PREFIX PATTERNS (80+ recognized)
+
+    Anthropic:       sk-ant-
+    OpenAI:          sk-proj-, sk- (32+ chars)
+    Google:          AIzaSy, ya29., goog_, GOOG
+    AWS:             AKIA, ASIA
+    GitHub:          ghp_, gho_, ghs_, github_pat_
+    GitLab:          glpat-, gldt-, glrt-, gloas-
+    SendGrid:        SG.
+    Stripe:          sk_live_, pk_live_, sk_test_, rk_live_, whsec_
+    Slack:           xoxb-, xoxp-, xapp-
+    HuggingFace:     hf_
+    Replicate:       r8_
+    Perplexity:      pplx-
+    Sentry:          sntrys_
+    Grafana:         glc_
+    New Relic:       NRAK-
+    Databricks:      dapi
+    Cloudflare:      cfut_, cfat_
+    Shopify:         shpat_
+    Notion:          ntn_
+    Linear:          lin_api_
+    Terraform:       tfp_
+    Fly.io:          fo1_
+    Supabase:        sbp_
+    Pulumi:          pul-
+    Atlassian:       ATATT3
+    Facebook:        EAA (long token)
+    Twilio:          AC (34-char SID)
+    DigitalOcean:    dop_v1_, do-api-
+    NVIDIA:          nvapi-
+    npm:             npm_
+    PyPI:            pypi-
+    1Password:       op_
+    Square:          sq0atp-
+    Mailchimp:       mc-
+    Discord Bot:     dcbot., ODk, MT (base64 tokens)
+    Azure:           AZURE, az_
+    Alibaba Cloud:   LTAI
+    PostHog:         phc_, phx_
+    Resend:          re_
+    JWT:             eyJ (base64-encoded JSON header)
+
+20.4 STEALER SEARCH STRATEGY FOR KEY HUNTING
+
+    Most efficient approach — use a single search session:
+
+    POST /service/search/init
+    {"query":"shodan.io"}
+    → session_id
+
+    GET /service/v2/stealer/search?domain[]=shodan.io
+        &search_id=<session_id>&page_size=25
+
+    For each result, extract username + password + URL.
+    If the password matches a known prefix pattern → API key found.
+    If the URL contains a dashboard path → credential for that service.
+
+    Cost: 1 lookup per service domain (with session).
+    Without session: 1 lookup per query.
+
+20.5 KEY VALIDATION
+
+    After discovering a potential key, validate it against the
+    service's test endpoint:
+
+    Shodan:    GET https://api.shodan.io/api-info?key=<KEY>
+    HIBP:      GET https://haveibeenpwned.com/api/v3/subscription
+    VT:        GET https://www.virustotal.com/api/v3/users/me
+    Censys:    GET https://search.censys.io/api/v2/metadata
+
+    A 200 response confirms the key is active.
+    A 401/403 means the key is expired or invalid.
+
+
+21. OSINT RATE LIMITS (per-service)
+-------------------------------------
+
+    Service          Req/min    Daily cap
+    ──────────────────────────────────────
+    IP Info          60         unlimited
+    Steam            30         1,000
+    Xbox             30         1,000
+    Discord          30         1,000
+    Roblox           30         1,000
+    Minecraft        30         1,000
+    Holehe           10         500
+    GHunt            10         500
+    Subdomains       30         1,000
+
+    V2 Search endpoints: governed by daily lookup quota (plan-dependent).
+    Failed requests (4xx/5xx) do NOT count against quota.
+
+
+22. COMPLETE ENDPOINT MAP
+--------------------------
+
+    SEARCH
+      POST /service/search/init                    Session init
+      GET  /service/v2/breach/search               Breach search (V2)
+      GET  /service/v2/stealer/search              Stealer search (V2)
+      GET  /service/v2/victims/search              Victims search (V2)
+      GET  /service/v2/stealer/subdomain           Subdomain extraction
+      GET  /service/search-breach                  Breach search (legacy)
+      GET  /service/search-stealer                 Stealer search (legacy)
+
+    VICTIMS
+      GET  /service/v2/victims/{log_id}            Manifest
+      GET  /service/v2/victims/{log_id}/files/{id} File content
+      GET  /service/v2/victims/{log_id}/archive    ZIP download
+
+    AUTOCOMPLETE
+      GET  /service/v2/breach/autocomplete         Field autocomplete
+      GET  /service/v2/breach/autocomplete/dbnames DB name autocomplete
+      GET  /service/v2/breach/autocomplete/fields  Field coverage
+      GET  /service/dbname-autocomplete            Legacy autocomplete
+
+    AI
+      POST /service/v2/ai/filter                   NL → filter
+      GET  /service/v2/ai/filter/{filter_id}       Get filter context
+
+    BULK
+      POST /service/v2/bulk-search                 Create bulk job
+      GET  /service/v2/bulk-search/list            List jobs
+      GET  /service/v2/bulk-search/{job_id}        Job status
+      GET  /service/v2/bulk-search/{id}/download   Download results
+
+    EXPORTS
+      POST /service/v2/exports                     Create export
+      GET  /service/v2/exports/list                List exports
+      GET  /service/v2/exports/{job_id}            Export status
+      GET  /service/v2/exports/{id}/download       Download file
+
+    FILE SEARCH
+      POST /service/v2/file-search                 Create file search
+      GET  /service/v2/file-search/{job_id}        File search status
+
+    SCANNERS
+      POST   /scanners/create                      Create scanner
+      GET    /scanners                             List scanners
+      GET    /scanners/{uid}                        Get details
+      GET    /scanners/{uid}/runs                   Run history
+      GET    /scanners/{uid}/runs/{run_id}          Run detail
+      POST   /scanners/{uid}/trigger                Force run
+      POST   /scanners/{uid}/pause                  Pause
+      POST   /scanners/{uid}/resume                 Resume
+      PUT    /scanners/{uid}                        Update
+      DELETE /scanners/{uid}                        Delete
+      GET    /scanners/quota                        Check quota
+      POST   /scanners/test-delivery                Test delivery
+      POST   /scanners/{uid}/test                   Test notification
+      POST   /scanners/{uid}/webhook/rotate         Rotate secret
+      GET    /scanners/{uid}/webhook/security        Webhook security
+
+    OSINT
+      GET  /service/holehe                          Email services
+      GET  /service/ip-info                         IP geolocation
+      GET  /service/ghunt                           Google OSINT
+      GET  /service/discord-userinfo                Discord profile
+      GET  /service/discord-username-history         Discord history
+      GET  /service/discord-to-roblox               Discord→Roblox
+      GET  /service/steam                           Steam profile
+      GET  /service/xbox                            Xbox profile
+      GET  /service/roblox-userinfo                 Roblox profile
+      GET  /service/mc-history                      Minecraft history
+      GET  /service/extract-subdomain               Subdomain finder
+
+    ANALYTICS
+      GET  /service/v2/analytics/stats              Public stats
+
+    HEALTH
+      GET  /service/v2/health                       Service health
+
+
+23. SOURCE REFERENCE
+---------------------
+
+    Documentation:  https://docs.oathnet.org
+    LLM index:      https://docs.oathnet.org/llms.txt
+    OpenAPI spec:   https://docs.oathnet.org/openapi.yaml
+    Dashboard:      https://oathnet.org/dashboard
+    Pricing:        https://oathnet.org/pricing
+    Support:        support@oathnet.org
+    Discord:        https://discord.gg/DCjnk9TAMK
+
+    SDKs:
+      Python:     https://docs.oathnet.org/sdks/python.md
+      JavaScript: https://docs.oathnet.org/sdks/javascript.md
+      Go:         https://docs.oathnet.org/sdks/go.md
+      CLI:        https://docs.oathnet.org/sdks/cli.md
+      cURL:       https://docs.oathnet.org/sdks/curl.md
+
+
 END OF GUIDE
