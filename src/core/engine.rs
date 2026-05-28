@@ -180,7 +180,7 @@ impl ScanEngine {
         self.dispatch_target(
             &scan.id,
             &target,
-            &ctx,
+            &mut ctx,
             &opts,
             &mut entity_map,
             false,
@@ -570,7 +570,7 @@ impl ScanEngine {
         &self,
         scan_id: &str,
         target: &Target,
-        ctx: &ModuleContext,
+        ctx: &mut ModuleContext,
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
         is_expansion: bool,
@@ -610,7 +610,7 @@ impl ScanEngine {
         &self,
         scan_id: &str,
         target: &Target,
-        ctx: &ModuleContext,
+        ctx: &mut ModuleContext,
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
         is_expansion: bool,
@@ -675,6 +675,21 @@ impl ScanEngine {
                 stats,
             );
 
+            // Hot-inject: if the module just run (e.g. oathnet_pro) discovered
+            // API keys and stored them in the global pool, push them into ctx
+            // immediately so later modules in THIS dispatch round can use them.
+            {
+                let pool = crate::util::key_pool::global_pool();
+                for svc in crate::util::key_pool::service_defs() {
+                    if ctx.keys.contains_key(svc.env_var) {
+                        continue;
+                    }
+                    if let Some(key) = pool.next_key(svc.name) {
+                        ctx.keys.insert(svc.env_var.to_string(), key);
+                    }
+                }
+            }
+
             // Re-check the cancel flag before the throttle sleep so an
             // operator cancel between modules doesn't pay the full
             // `throttle_ms` latency before the next gate at the top of
@@ -698,7 +713,7 @@ impl ScanEngine {
         &self,
         scan_id: &str,
         target: &Target,
-        ctx: &ModuleContext,
+        ctx: &mut ModuleContext,
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
         is_expansion: bool,
