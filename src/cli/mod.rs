@@ -107,6 +107,17 @@ pub enum Command {
         /// self-optimization feedback loop — every scan informs the next.
         #[arg(long)]
         adaptive: bool,
+        /// Maximise ROI per dispatch: skip already-saturated entities
+        /// (≥2 corroborating sources, c_eff ≥ 0.85), keep only top-K
+        /// candidates per round (K = 2×max_concurrent + 8), and
+        /// terminate recursion when marginal yield falls below floor
+        /// (default 0.75 new entities per dispatched target).
+        #[arg(long)]
+        max_roi: bool,
+        /// When `--max-roi` is set, override the default marginal-yield
+        /// floor (0.75). Lower = recurse further before giving up.
+        #[arg(long)]
+        min_marginal_yield: Option<f64>,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(short, long, default_value = "table")]
         output: String,
@@ -320,6 +331,8 @@ pub async fn run() -> Result<()> {
             max_wall_time,
             max_concurrent,
             adaptive,
+            max_roi,
+            min_marginal_yield,
             output,
         } => {
             cmd_scan(ScanCmd {
@@ -340,6 +353,8 @@ pub async fn run() -> Result<()> {
                 max_wall_time_secs: max_wall_time,
                 max_concurrent,
                 adaptive,
+                max_roi,
+                min_marginal_yield,
                 output,
             })
             .await
@@ -1352,6 +1367,8 @@ struct ScanCmd {
     pub max_wall_time_secs: Option<u64>,
     pub max_concurrent: usize,
     pub adaptive: bool,
+    pub max_roi: bool,
+    pub min_marginal_yield: Option<f64>,
     pub output: String,
 }
 
@@ -1427,7 +1444,16 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         notes: None,
         webhook_url: crate::core::webhook::webhook_url_from_env(),
         profile: None,
+        max_roi: cmd.max_roi,
+        min_marginal_yield: cmd.min_marginal_yield,
     };
+    if cmd.max_roi {
+        eprintln!(
+            "max-roi: convergence-pruning + top-K gate + adaptive-depth (floor={:.2})",
+            cmd.min_marginal_yield
+                .unwrap_or(crate::core::roi::DEFAULT_MIN_MARGINAL_YIELD)
+        );
+    }
 
     let sid = scan_id(target_kind.canonical_str(), &cmd.value);
     let (store, bus, engine) = build_runtime(64)?;

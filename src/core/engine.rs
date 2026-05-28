@@ -355,10 +355,17 @@ impl ScanEngine {
             // Snapshot the entity set at round start — entities discovered
             // during this round will be expansion candidates in the next round,
             // not this one.
+            let entities_at_round_start = entity_map.len();
             let has_paid = ctx.keys.contains_key("HUNTSMAN_OATHNET_KEY");
             let mut next: Vec<(Target, f64)> = Vec::new();
             for entity in entity_map.values() {
                 if entity.c_effective() < opts.min_expand_confidence {
+                    continue;
+                }
+                // ROI bundle: convergence-pruning. Once an entity has 2+
+                // corroborating sources at high confidence, further dispatch
+                // only re-confirms what we already know. Skip it.
+                if opts.max_roi && crate::core::roi::is_saturated(entity) {
                     continue;
                 }
                 let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
@@ -381,6 +388,18 @@ impl ScanEngine {
             // The weight combines geo_npv with entity confidence and
             // dampens generic mega-domains that waste expansion budget.
             next.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            // ROI bundle: top-K gate. Keep only the top candidates by
+            // weight, scaled with concurrency. Stops long-tail noise
+            // (e.g. 80 low-weight domains from a single SERP) from
+            // consuming the round.
+            if opts.max_roi {
+                let k = crate::core::roi::top_k_for_round(opts.max_concurrent);
+                if next.len() > k {
+                    next.truncate(k);
+                }
+            }
+            let dispatched_this_round = next.len();
             let next: Vec<Target> = next.into_iter().map(|(t, _)| t).collect();
 
             if next.is_empty() {
@@ -431,6 +450,33 @@ impl ScanEngine {
                     // ModuleError events; we keep going through the round.
                     warn!(scan_id, error = %e, "dispatch_target failed (continuing)");
                 }
+            }
+
+            // ROI bundle: adaptive-depth termination. After the round,
+            // measure new-entities-per-dispatched-target; if below floor,
+            // stop early. Marginal yield collapses near convergence.
+            let new_this_round = entity_map.len().saturating_sub(entities_at_round_start);
+            let floor = opts
+                .min_marginal_yield
+                .unwrap_or(crate::core::roi::DEFAULT_MIN_MARGINAL_YIELD);
+            if crate::core::roi::should_terminate_adaptive(
+                opts.max_roi,
+                new_this_round,
+                dispatched_this_round,
+                floor,
+            ) {
+                let stop = StopReason::NoMoreCandidates;
+                self.emit(
+                    scan_id,
+                    EventKind::ExpansionStop {
+                        reason: format!(
+                            "adaptive-depth: marginal yield {:.2} < floor {:.2}",
+                            crate::core::roi::marginal_yield(new_this_round, dispatched_this_round),
+                            floor
+                        ),
+                    },
+                );
+                return stop;
             }
         }
         StopReason::DepthExhausted

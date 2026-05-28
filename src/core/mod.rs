@@ -10,6 +10,7 @@ pub mod gexf;
 pub mod live;
 pub mod module;
 pub mod profiles;
+pub mod roi;
 pub mod scan;
 pub mod webhook;
 
