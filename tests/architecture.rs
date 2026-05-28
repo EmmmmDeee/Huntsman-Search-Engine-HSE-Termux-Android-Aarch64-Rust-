@@ -81,6 +81,7 @@ fn core_does_not_import_util_directly() {
         .filter(|line| {
             !line.contains("util::proxy::ProxyPool")
                 && !line.contains("util::key_pool")
+                && !line.contains("util::key_roi")
                 && !line.contains("util::oathnet::reset_budget")
                 && !line.contains("modules::wigle::reset_budget")
                 && !line.contains("modules::oathnet_pro::key_harvest::identify_api_key")

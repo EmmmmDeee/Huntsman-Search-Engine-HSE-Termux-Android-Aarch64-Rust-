@@ -791,9 +791,18 @@ fn emit_key(
     entity.tag(format!("service:{service}"));
     entity.tag("oathnet-pro");
     entity.tag("auto-discovered");
+    // Tag with ROI tier so operators can prioritise multiplier keys.
+    // Multiplier-tier keys discover infrastructure/identities that
+    // cascade into MORE keys via web_crawler and search_engines.
+    let roi = crate::util::key_roi::classify(service);
+    entity.tag(format!("roi:{}", roi.label()));
+    if roi == crate::util::key_roi::KeyRoi::Multiplier {
+        entity.tag("force-multiplier");
+    }
     entity.add_evidence(
         Evidence::new(SRC, format!("API key ({service}) from {source}"))
             .with_attr("service", service)
+            .with_attr("roi_tier", roi.label())
             .with_attr(
                 "key_prefix",
                 crate::util::str_util::truncate_safe(key_val, 8),
@@ -804,7 +813,10 @@ fn emit_key(
 
     let pool = crate::util::key_pool::global_pool();
     let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-    entry.notes = Some(format!("Auto-discovered {service} key from {source}"));
+    entry.notes = Some(format!(
+        "Auto-discovered {service} key from {source} ({} tier)",
+        roi.label()
+    ));
     pool.add(service, entry);
     let _ = crate::util::key_pool::save_pool(&pool);
 }

@@ -3,6 +3,7 @@
 pub mod curl;
 pub mod http;
 pub mod key_pool;
+pub mod key_roi;
 pub mod keys;
 pub mod oathnet;
 pub mod proxy;

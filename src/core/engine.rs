@@ -682,10 +682,13 @@ impl ScanEngine {
                         continue;
                     }
                     if let Some(key) = pool.next_key(svc.name) {
+                        let roi = crate::util::key_roi::classify(svc.name);
                         info!(
                             service = svc.name,
                             env_var = svc.env_var,
-                            "hot-inject: discovered key now available to subsequent modules"
+                            roi = roi.label(),
+                            "hot-inject: key available — {} tier",
+                            roi.label()
                         );
                         ctx.keys.insert(svc.env_var.to_string(), key);
                     }
@@ -784,6 +787,9 @@ impl ScanEngine {
                 stats,
             );
             // Hot-inject discovered keys so Phase 2 modules can use them.
+            // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
+            // cascade — their outputs feed web_crawler/search_engines, which
+            // discover MORE keys. Tier is logged for operator visibility.
             {
                 let pool = crate::util::key_pool::global_pool();
                 for svc in crate::util::key_pool::service_defs() {
@@ -791,9 +797,12 @@ impl ScanEngine {
                         continue;
                     }
                     if let Some(key) = pool.next_key(svc.name) {
+                        let roi = crate::util::key_roi::classify(svc.name);
                         info!(
                             service = svc.name,
-                            "hot-inject: key available for concurrent phase"
+                            roi = roi.label(),
+                            "hot-inject: key available for concurrent phase ({})",
+                            roi.label()
                         );
                         ctx.keys.insert(svc.env_var.to_string(), key);
                     }
