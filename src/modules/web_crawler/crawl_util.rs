@@ -5,93 +5,227 @@ use std::time::Duration;
 use url::Url;
 
 const CONFIG_LEAK_PATHS: &[&str] = &[
+    // Plain env files (highest yield in practice)
     "/.env",
     "/.env.local",
     "/.env.production",
+    "/.env.staging",
+    "/.env.development",
     "/.env.backup",
     "/.env.old",
+    "/.env.bak",
+    "/.env.save",
+    "/.env.dist",
+    "/.env.example",
+    "/.env.sample",
+    "/env.js",
+    "/api/.env",
+    "/admin/.env",
+    "/private/.env",
+    "/backend/.env",
+    "/server/.env",
+    // Generic config files often committed
     "/config.js",
     "/config.json",
     "/settings.json",
+    "/secrets.json",
+    "/secrets.yml",
+    "/secrets.yaml",
+    "/credentials.json",
+    "/credentials.yml",
+    "/keys.json",
+    "/keys.txt",
+    "/configuration.json",
+    // VCS / IDE leaks (often contain remote URLs with embedded credentials)
     "/.git/config",
     "/.git/HEAD",
+    "/.git/logs/HEAD",
+    "/.gitconfig",
+    "/.gitlab-ci.yml",
+    "/.svn/entries",
+    "/.hg/hgrc",
+    "/.vscode/settings.json",
+    "/.idea/workspace.xml",
+    // WordPress
     "/wp-config.php.bak",
     "/wp-config.php.old",
     "/wp-config.php.save",
+    "/wp-config.php.swp",
+    "/wp-config.php~",
+    // Cloud + container credentials
     "/.aws/credentials",
+    "/.aws/config",
     "/.docker/config.json",
+    "/.kube/config",
+    "/terraform.tfstate",
+    "/terraform.tfvars",
+    "/.terraform/terraform.tfstate",
+    "/serverless.yml",
+    // Framework-specific exposed config
     "/api/config",
     "/api/env",
+    "/api/v1/config",
+    "/api/settings",
+    "/_next/server/pages/_app.js",
+    "/build/.env",
+    "/dist/.env",
+    "/static/.env",
+    "/assets/.env",
+    "/.next/required-server-files.json",
+    // Debug + introspection endpoints (often leak env)
     "/debug",
     "/debug/vars",
     "/debug/pprof",
     "/server-status",
     "/server-info",
-    "/.well-known/security.txt",
     "/phpinfo.php",
     "/info.php",
+    "/.well-known/security.txt",
     "/.htpasswd",
     "/crossdomain.xml",
     "/clientaccesspolicy.xml",
+    // Package manifests (sometimes carry tokens in scripts/registries)
     "/package.json",
     "/composer.json",
     "/.npmrc",
     "/.yarnrc",
+    "/.yarnrc.yml",
+    "/pip.conf",
+    // CI/CD config
     "/Dockerfile",
     "/docker-compose.yml",
+    "/docker-compose.override.yml",
     "/.travis.yml",
     "/.circleci/config.yml",
     "/Jenkinsfile",
     "/.github/workflows",
+    "/.drone.yml",
+    "/buildspec.yml",
+    "/bitbucket-pipelines.yml",
+    // API surface (sometimes returns introspection / GraphQL schema with secrets)
     "/swagger.json",
     "/openapi.json",
     "/api-docs",
     "/graphql",
+    "/graphiql",
     "/actuator",
     "/actuator/env",
     "/actuator/health",
+    "/actuator/configprops",
+    "/actuator/heapdump",
+    // Backup files
+    "/backup.sql",
+    "/db.sql",
+    "/dump.sql",
+    "/backup.zip",
+    "/backup.tar.gz",
 ];
 
-pub(super) async fn probe_config_leaks(http: &reqwest::Client, seed_url: &str, domain: &str) {
-    let base = seed_url.trim_end_matches('/');
+/// One leak discovery: (path_relative_to_host_root, body_byte_count,
+/// list of (service_name, raw_key_value) found in the body).
+pub(super) type LeakHit = (String, usize, Vec<(&'static str, String)>);
+
+/// Probe ~100 common config-file paths in parallel for exposed secrets.
+///
+/// Returns the (path, byte_count, services_found) tuples for any paths
+/// that yielded data, so the caller can emit ApiKey entities and tag
+/// the parent Domain. Operates on the HOST ROOT regardless of the
+/// seed URL's path component — `/.env` is always at the host apex.
+///
+/// Bounded concurrency (16 simultaneous requests) prevents overwhelming
+/// the target or our own connection pool. Each request has a 3s budget.
+pub(super) async fn probe_config_leaks(
+    http: &reqwest::Client,
+    seed_url: &str,
+    domain: &str,
+) -> Vec<LeakHit> {
+    use tokio::sync::Semaphore;
+    use tokio::task::JoinSet;
+
+    // Always probe at the host root — extract scheme://host/ from seed.
+    let host_root = match url::Url::parse(seed_url) {
+        Ok(u) => format!("{}://{}", u.scheme(), u.host_str().unwrap_or(domain)),
+        Err(_) => seed_url.trim_end_matches('/').to_string(),
+    };
+
     let timeout = Duration::from_millis(3000);
+    let sem = std::sync::Arc::new(Semaphore::new(16));
+    let mut set: JoinSet<Option<LeakHit>> = JoinSet::new();
 
     for path in CONFIG_LEAK_PATHS {
-        let url = format!("{base}{path}");
-        let resp = match tokio::time::timeout(timeout, http.get(&url).send()).await {
-            Ok(Ok(r)) => r,
-            _ => continue,
-        };
-
-        let status = resp.status().as_u16();
-        if status != 200 {
-            continue;
-        }
-
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if ct.contains("text/html") && !path.ends_with(".html") {
-            continue;
-        }
-
-        let body = match resp.text().await {
-            Ok(b) if b.len() >= 10 && b.len() < 1_000_000 => b,
-            _ => continue,
-        };
-
-        if body.contains("<html") || body.contains("<!DOCTYPE") {
-            continue;
-        }
-
-        tracing::info!(domain, path, bytes = body.len(), "config file exposed");
-        crate::util::http::scan_for_api_keys_with_source(
-            &body,
-            &format!("config_leak:{domain}{path}"),
-        );
+        let url = format!("{host_root}{path}");
+        let http = http.clone();
+        let sem = std::sync::Arc::clone(&sem);
+        let path_static = *path;
+        let domain_owned = domain.to_string();
+        set.spawn(async move {
+            let _permit = sem.acquire_owned().await.ok()?;
+            let resp = tokio::time::timeout(timeout, http.get(&url).send())
+                .await
+                .ok()?
+                .ok()?;
+            if resp.status().as_u16() != 200 {
+                return None;
+            }
+            let ct = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            if ct.contains("text/html") && !path_static.ends_with(".html") {
+                return None;
+            }
+            let body = resp.text().await.ok()?;
+            if body.len() < 10 || body.len() > 1_000_000 {
+                return None;
+            }
+            if body.contains("<html") || body.contains("<!DOCTYPE") {
+                return None;
+            }
+            tracing::info!(
+                domain = %domain_owned, path = path_static, bytes = body.len(),
+                "config_leak: exposed file discovered"
+            );
+            // Scan body for keys AND emit any matches as (service, masked_key)
+            // tuples for the caller to convert into ApiKey entities.
+            let mut found = Vec::new();
+            for word in body.split(|c: char| {
+                c.is_whitespace()
+                    || c == '"'
+                    || c == '\''
+                    || c == '`'
+                    || c == '>'
+                    || c == '<'
+                    || c == '='
+                    || c == ';'
+            }) {
+                let t = word.trim();
+                if t.len() < 16 || t.len() > 200 {
+                    continue;
+                }
+                if let Some((service, key_val)) =
+                    crate::modules::oathnet_pro::key_harvest::identify_api_key(t)
+                {
+                    found.push((service, key_val.to_string()));
+                }
+            }
+            // Also feed the global pool (existing behaviour).
+            crate::util::http::scan_for_api_keys_with_source(
+                &body,
+                &format!("config_leak:{domain_owned}{path_static}"),
+            );
+            Some((path_static.to_string(), body.len(), found))
+        });
     }
+
+    let mut results = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        if let Ok(Some(r)) = joined {
+            results.push(r);
+        }
+    }
+    results
 }
 
 pub(super) async fn resolve_seed(http: &reqwest::Client, domain: &str) -> Result<String> {
