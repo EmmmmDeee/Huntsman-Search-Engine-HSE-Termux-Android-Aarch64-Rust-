@@ -77,9 +77,14 @@ impl Module for OathnetPro {
             TargetKind::Username => "username",
             TargetKind::Phone => "phone",
             TargetKind::FullName => "q",
-            TargetKind::IpAddress => "ip",
+            TargetKind::IpAddress => {
+                if is_private_ip(&target.value) {
+                    return Ok(result);
+                }
+                "ip"
+            }
             TargetKind::Domain => {
-                if is_social_platform(&target.value) {
+                if is_social_platform(&target.value) || is_local_domain(&target.value) {
                     return Ok(result);
                 }
                 "domain"
@@ -142,7 +147,14 @@ impl Module for OathnetPro {
         }
 
         // ── Query 2: Stealer search (credential/device intelligence) ──
-        if !ctx.cancel.is_cancelled()
+        // Skip for IP/Domain targets: stealer logs are keyed on usernames and
+        // emails, so breach already captured the useful data for infra targets.
+        let is_identity_target = matches!(
+            target.kind,
+            TargetKind::Email | TargetKind::Username | TargetKind::Phone | TargetKind::FullName
+        );
+        if is_identity_target
+            && !ctx.cancel.is_cancelled()
             && let Ok(stealer_items) =
                 oathnet::search(key, paths::STEALER, field, &target.value, 10).await
         {
@@ -170,6 +182,41 @@ impl Module for OathnetPro {
 
         Ok(result)
     }
+}
+
+fn is_private_ip(ip: &str) -> bool {
+    if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
+        match addr {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_broadcast()
+                    || v4.is_unspecified()
+                    || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64 // CGN 100.64/10
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback() || v6.is_unspecified() || v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xC0) == 0x80 // link-local fe80::/10
+                    || v6.octets()[0] == 0xfc || v6.octets()[0] == 0xfd // ULA fc00::/7
+            }
+        }
+    } else {
+        false
+    }
+}
+
+fn is_local_domain(domain: &str) -> bool {
+    let lower = domain.to_lowercase();
+    lower == "localhost"
+        || lower.ends_with(".local")
+        || lower.ends_with(".lan")
+        || lower.ends_with(".internal")
+        || lower.ends_with(".home")
+        || lower.ends_with(".arpa")
+        || lower.ends_with(".test")
+        || lower.ends_with(".invalid")
+        || lower.ends_with(".example")
+        || lower.ends_with(".localhost")
 }
 
 fn is_social_platform(domain: &str) -> bool {
@@ -579,5 +626,43 @@ mod tests {
             val_str_or(&item, &["display_name", "full_name"]).as_deref(),
             Some("Jerome Despal")
         );
+    }
+
+    #[test]
+    fn private_ips_are_detected() {
+        assert!(is_private_ip("192.168.1.1"));
+        assert!(is_private_ip("10.0.0.1"));
+        assert!(is_private_ip("172.16.0.1"));
+        assert!(is_private_ip("127.0.0.1"));
+        assert!(is_private_ip("169.254.1.1"));
+        assert!(is_private_ip("100.64.0.1"));
+        assert!(is_private_ip("::1"));
+        assert!(is_private_ip("fe80::1"));
+        assert!(is_private_ip("fd00::1"));
+    }
+
+    #[test]
+    fn public_ips_are_not_private() {
+        assert!(!is_private_ip("8.8.8.8"));
+        assert!(!is_private_ip("1.1.1.1"));
+        assert!(!is_private_ip("203.0.113.5"));
+        assert!(!is_private_ip("2606:4700::1111"));
+    }
+
+    #[test]
+    fn local_domains_are_detected() {
+        assert!(is_local_domain("localhost"));
+        assert!(is_local_domain("router.local"));
+        assert!(is_local_domain("mypc.lan"));
+        assert!(is_local_domain("host.internal"));
+        assert!(is_local_domain("gateway.home"));
+        assert!(is_local_domain("1.168.192.in-addr.arpa"));
+    }
+
+    #[test]
+    fn real_domains_are_not_local() {
+        assert!(!is_local_domain("example.com"));
+        assert!(!is_local_domain("oathnet.org"));
+        assert!(!is_local_domain("google.com.au"));
     }
 }

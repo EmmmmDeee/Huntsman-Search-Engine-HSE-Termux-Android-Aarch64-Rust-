@@ -1298,9 +1298,26 @@ async fn cmd_radar(interval: u64, depth: u32, sweeps: Option<u32>, free_only: bo
             for (tk, value) in &new_targets {
                 let pivot_sid = scan_id(tk.canonical_str(), value);
                 let pivot_target = Target::new(*tk, value.clone());
+                // Exclude oathnet_pro from radar pivots on infra/sensor entities
+                // (IPs, domains, coords, MACs). Sensor-discovered entities rarely
+                // yield OathNet breach results and the quota is better spent on
+                // identity-type entities discovered through other paths.
+                let is_infra = matches!(
+                    tk,
+                    crate::core::scan::TargetKind::IpAddress
+                        | crate::core::scan::TargetKind::Domain
+                        | crate::core::scan::TargetKind::Coordinates
+                        | crate::core::scan::TargetKind::MacAddress
+                        | crate::core::scan::TargetKind::Asn
+                );
+                let mut exclude = Vec::new();
+                if is_infra {
+                    exclude.push("oathnet_pro".to_string());
+                }
                 let pivot_opts = ScanOptions {
                     depth,
                     free_only,
+                    exclude_modules: exclude,
                     max_concurrent: 4,
                     min_expand_confidence: 0.50,
                     ..Default::default()

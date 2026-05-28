@@ -28,7 +28,19 @@ static RESPONSE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CachedResponse>
 /// Global query counter for budget tracking.
 static QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Session-level query counter: tracks total queries across all scans in this
+/// process. NOT reset by `reset_budget()`. Prevents radar/live sessions from
+/// burning the entire daily OathNet quota across many pivot scans.
+static SESSION_QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 const MAX_QUERIES_PER_SCAN: u32 = 12;
+
+fn max_queries_per_session() -> u32 {
+    std::env::var("HUNTSMAN_OATHNET_SESSION_CAP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50)
+}
 
 struct CachedResponse {
     items: Vec<Value>,
@@ -60,10 +72,13 @@ fn cache_put(key: String, items: &[Value]) {
 
 fn budget_remaining() -> bool {
     QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire) < MAX_QUERIES_PER_SCAN
+        && SESSION_QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire)
+            < max_queries_per_session()
 }
 
 fn budget_increment() {
     QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    SESSION_QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn is_quota_exhausted() -> bool {
