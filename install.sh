@@ -69,6 +69,17 @@ IS_TERMUX=0
 if [[ -n "${TERMUX_VERSION:-}" ]] || [[ -d /data/data/com.termux ]]; then
     IS_TERMUX=1
     ok "Termux ${TERMUX_VERSION:-(version unknown)}"
+
+    # Termux from the Play Store is abandoned (last build 2020) and will
+    # fail at `pkg update` because Google blocked it. Only F-Droid and
+    # GitHub releases ship a working build.
+    if [[ -f /data/data/com.termux/files/usr/etc/termux-build-info ]]; then
+        TBI="$(cat /data/data/com.termux/files/usr/etc/termux-build-info 2>/dev/null || echo '')"
+        if echo "$TBI" | grep -qi "playstore"; then
+            die "Play Store Termux detected (abandoned, broken since 2020). \
+Uninstall and reinstall from F-Droid: https://f-droid.org/packages/com.termux/"
+        fi
+    fi
 else
     ok "Standard Unix environment"
 fi
@@ -256,9 +267,138 @@ step "Installing binary to $HSE_BIN_DIR/hse"
 install -m 0755 "$BUILT" "$HSE_BIN_DIR/hse"
 ok "Installed"
 
+# ─── PATH persistence ────────────────────────────────────────────────────────
+# Termux's $PREFIX/bin is already in PATH by default; only patch shell-rc
+# when the user (or override) put the binary somewhere else.
 if ! echo ":$PATH:" | grep -q ":$HSE_BIN_DIR:"; then
-    log_warn "$HSE_BIN_DIR is not in your PATH"
-    hint "Add to ~/.bashrc or ~/.zshrc: export PATH=\"$HSE_BIN_DIR:\$PATH\""
+    log_warn "$HSE_BIN_DIR is not in current PATH"
+    PATH_LINE="export PATH=\"$HSE_BIN_DIR:\$PATH\""
+    PATH_TAG="# added by hse installer"
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+        if [[ -f "$rc" ]] && ! grep -qF "$PATH_TAG" "$rc"; then
+            {
+                printf '\n%s\n%s\n' "$PATH_TAG" "$PATH_LINE"
+            } >> "$rc"
+            ok "Added PATH to $rc — restart shell or: source $rc"
+            break
+        fi
+    done
+fi
+
+# ─── Termux-native setup (no-op on other Unix) ───────────────────────────────
+if [[ $IS_TERMUX -eq 1 ]]; then
+    step "Termux-native setup"
+
+    # Shared-storage symlink — needed for import command + sensor modules
+    # that read GPS NMEA logs / WiFi scans from external storage.
+    if [[ ! -d "$HOME/storage" ]]; then
+        if [[ -t 0 && -t 1 ]]; then
+            printf "  ${CYAN}?${NC} Grant shared-storage access now? (recommended for sensor modules) [y/N] "
+            read -r reply || reply=""
+            if [[ "${reply,,}" == "y" || "${reply,,}" == "yes" ]]; then
+                termux-setup-storage \
+                    && ok "Shared storage linked at $HOME/storage" \
+                    || log_warn "termux-setup-storage failed (denied permission?)"
+            else
+                hint "Skipped. Run later: termux-setup-storage"
+            fi
+        else
+            hint "Non-interactive install — run later: termux-setup-storage"
+        fi
+    else
+        ok "Shared storage already configured at $HOME/storage"
+    fi
+
+    # Background-scan wrapper. Wraps `hse serve` in nohup + wake-lock so
+    # the scan engine survives Android's aggressive process kills.
+    BG_WRAPPER="$HSE_BIN_DIR/hse-bg"
+    cat > "$BG_WRAPPER" <<'WRAPPER'
+#!/data/data/com.termux/files/usr/bin/bash
+# hse-bg — run `hse serve` in background with wake-lock so Android can't
+# kill the process when the screen turns off. Stop with: hse-bg stop
+set -e
+PID_FILE="$HOME/.cache/hse-bg.pid"
+LOG_FILE="$HOME/.cache/hse-bg.log"
+mkdir -p "$(dirname "$PID_FILE")"
+
+case "${1:-start}" in
+    start)
+        if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            echo "hse-bg already running (pid $(cat "$PID_FILE"))"
+            exit 0
+        fi
+        command -v termux-wake-lock >/dev/null && termux-wake-lock || true
+        nohup hse serve >> "$LOG_FILE" 2>&1 &
+        echo $! > "$PID_FILE"
+        echo "Started hse serve (pid $(cat "$PID_FILE"))"
+        echo "Logs: $LOG_FILE"
+        echo "Open: http://127.0.0.1:8080"
+        ;;
+    stop)
+        if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            kill "$(cat "$PID_FILE")"
+            rm -f "$PID_FILE"
+            command -v termux-wake-unlock >/dev/null && termux-wake-unlock || true
+            echo "Stopped"
+        else
+            echo "Not running"
+            rm -f "$PID_FILE"
+        fi
+        ;;
+    status)
+        if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            echo "Running: pid $(cat "$PID_FILE")"
+        else
+            echo "Not running"
+        fi
+        ;;
+    log)
+        tail -f "$LOG_FILE"
+        ;;
+    *)
+        echo "usage: hse-bg [start|stop|status|log]"
+        exit 1
+        ;;
+esac
+WRAPPER
+    chmod 0755 "$BG_WRAPPER"
+    ok "Installed hse-bg wrapper (start|stop|status|log)"
+
+    # Termux:Boot autostart — only set up if the boot dir already exists
+    # (created by Termux:Boot app). We don't force-create it because that
+    # implies the user installed the APK.
+    BOOT_DIR="$HOME/.termux/boot"
+    if [[ -d "$BOOT_DIR" ]]; then
+        BOOT_SCRIPT="$BOOT_DIR/hse-autostart"
+        if [[ ! -f "$BOOT_SCRIPT" ]]; then
+            cat > "$BOOT_SCRIPT" <<'BOOT'
+#!/data/data/com.termux/files/usr/bin/bash
+termux-wake-lock 2>/dev/null || true
+hse-bg start
+BOOT
+            chmod 0755 "$BOOT_SCRIPT"
+            ok "Termux:Boot autostart installed → ${BOOT_SCRIPT}"
+        fi
+    else
+        hint "Optional: install Termux:Boot from F-Droid for auto-start on device boot"
+        hint "  https://f-droid.org/packages/com.termux.boot/"
+    fi
+
+    # termux-api package + APK reminder. The package is the CLI tools;
+    # the APK from F-Droid is the actual sensor bridge.
+    if ! command -v termux-info >/dev/null 2>&1; then
+        if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
+            pkg install -y termux-api 2>/dev/null \
+                && ok "Installed termux-api package" \
+                || log_warn "Could not install termux-api (sensor modules will no-op)"
+        fi
+    else
+        ok "termux-api CLI present"
+    fi
+    if ! pm list packages 2>/dev/null | grep -q com.termux.api; then
+        hint "Install Termux:API APK from F-Droid for sensor access (GPS / WiFi / cell):"
+        hint "  https://f-droid.org/packages/com.termux.api/"
+    fi
 fi
 
 # ─── Keys template ───────────────────────────────────────────────────────────
@@ -314,23 +454,35 @@ echo
 # ─── Done ────────────────────────────────────────────────────────────────────
 echo
 printf '%s%sInstallation complete!%s\n\n' "$GREEN" "$BOLD" "$NC"
-printf '%sWeb UI (recommended on Termux):%s\n' "$CYAN" "$NC"
-printf '  hse serve                                           # binds 127.0.0.1:8080\n'
-printf '  Then open in Chrome (or Firefox) on the device:\n'
-printf '    %shttp://127.0.0.1:8080%s\n\n' "$BOLD" "$NC"
 printf '%sCLI quick start:%s\n' "$CYAN" "$NC"
 printf '  hse modules                                         # list available modules\n'
-printf '  hse scan --kind domain --value example.com          # one-shot scan\n'
-printf '  hse scan --kind domain --value example.com --depth 2 # autonomous expansion\n'
-printf '  hse live --kind domain --value example.com --interval 60  # re-scan every 60s\n'
+printf '  hse scan --kind domain --value example.com -A       # auto-depth scan\n'
+printf '  hse scan --kind email --value foo@bar.com --depth 5 # max expansion\n'
+printf '  hse live --kind domain --value example.com -i 60    # re-scan every 60s\n'
+printf '  hse keys status                                     # show key pool\n'
 printf '  hse doctor                                          # re-check environment\n\n'
+if [[ $IS_TERMUX -eq 1 ]]; then
+    printf '%sBackground operation (Termux):%s\n' "$CYAN" "$NC"
+    printf '  hse-bg start                                        # wake-lock + nohup\n'
+    printf '  hse-bg status                                       # is it running?\n'
+    printf '  hse-bg log                                          # tail the log\n'
+    printf '  hse-bg stop                                         # release wake-lock\n'
+    printf '  Then open: %shttp://127.0.0.1:8080%s in Chrome on the device\n\n' "$BOLD" "$NC"
+    printf '%sBattery & process survival:%s\n' "$CYAN" "$NC"
+    printf '  Android > Settings > Apps > Termux > Battery: unrestricted\n'
+    printf '  Android > Settings > Apps > Termux > Allow background data\n\n'
+else
+    printf '%sWeb UI:%s\n' "$CYAN" "$NC"
+    printf '  hse serve                                           # binds 127.0.0.1:8080\n\n'
+fi
 printf '%sLogs:%s\n' "$CYAN" "$NC"
 printf '  Install log:  %s\n' "$LOG_FILE"
 printf '  Build cache:  %s\n' "$CARGO_TARGET_DIR"
 printf '  Database:     %s/.huntsman/huntsman.db\n' "$HOME"
 printf '  Keys file:    %s\n\n' "$KEYS_PATH"
 printf '%sAdd an API key (optional):%s\n' "$CYAN" "$NC"
-printf '  edit %s and uncomment a line\n\n' "$KEYS_PATH"
+printf '  hse set-key HUNTSMAN_SHODAN_KEY <value>             # write to keys file\n'
+printf '  hse keys add shodan <value>                         # write to multi-key pool\n\n'
 printf '%sRe-install or upgrade:%s re-run the same curl-pipe command.\n' "$CYAN" "$NC"
 
 trap - EXIT
