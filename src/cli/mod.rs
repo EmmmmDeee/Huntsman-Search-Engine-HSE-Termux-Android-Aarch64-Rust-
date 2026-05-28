@@ -102,6 +102,11 @@ pub enum Command {
         /// sequential dispatch (v0.1 behaviour, best on low-power devices).
         #[arg(long, default_value_t = 4)]
         max_concurrent: usize,
+        /// Read ~/.huntsman/module_stats.json and skip modules with
+        /// historical zero-yield rate ≥80% over ≥5 scans. Closes the
+        /// self-optimization feedback loop — every scan informs the next.
+        #[arg(long)]
+        adaptive: bool,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(short, long, default_value = "table")]
         output: String,
@@ -314,6 +319,7 @@ pub async fn run() -> Result<()> {
             max_entities,
             max_wall_time,
             max_concurrent,
+            adaptive,
             output,
         } => {
             cmd_scan(ScanCmd {
@@ -333,6 +339,7 @@ pub async fn run() -> Result<()> {
                 max_entities,
                 max_wall_time_secs: max_wall_time,
                 max_concurrent,
+                adaptive,
                 output,
             })
             .await
@@ -1344,6 +1351,7 @@ struct ScanCmd {
     pub max_entities: Option<usize>,
     pub max_wall_time_secs: Option<u64>,
     pub max_concurrent: usize,
+    pub adaptive: bool,
     pub output: String,
 }
 
@@ -1369,9 +1377,42 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         (cmd.depth, cmd.min_expand_confidence, cmd.max_concurrent)
     };
 
+    let mut exclude_modules = split_csv(cmd.exclude).unwrap_or_default();
+    if cmd.adaptive {
+        // Closed feedback loop: read the ledger, skip historically
+        // zero-yield modules. Log the decision so the operator sees
+        // what the self-optimization actually did.
+        let routing = crate::util::diagnostics::read_adaptive_routing();
+        if routing.ledger_scans == 0 {
+            eprintln!(
+                "adaptive: no ledger yet (run a few scans first to populate ~/.huntsman/module_stats.json)"
+            );
+        } else {
+            let added: Vec<String> = routing
+                .recommended_skips
+                .iter()
+                .filter(|m| !exclude_modules.iter().any(|e| e == *m))
+                .cloned()
+                .collect();
+            if !added.is_empty() {
+                eprintln!(
+                    "adaptive: ledger has {} scans; skipping {} historically zero-yield modules: {}",
+                    routing.ledger_scans,
+                    added.len(),
+                    added.join(", ")
+                );
+                exclude_modules.extend(added);
+            } else {
+                eprintln!(
+                    "adaptive: ledger has {} scans; no skip recommendations",
+                    routing.ledger_scans
+                );
+            }
+        }
+    }
     let options = ScanOptions {
         modules: split_csv(cmd.modules),
-        exclude_modules: split_csv(cmd.exclude).unwrap_or_default(),
+        exclude_modules,
         throttle_ms: cmd.throttle_ms,
         max_concurrent,
         module_timeout_ms: cmd.module_timeout_ms,

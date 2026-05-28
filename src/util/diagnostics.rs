@@ -27,9 +27,76 @@ pub struct ScanDiagnostics {
     /// pair — top 25 closest. Reveals geo-convergence clusters and lone
     /// outliers in the same scan.
     pub proximity_graph: Vec<ProximityEdge>,
+    /// Spatial clustering: groups of coordinates within ~5km of each
+    /// other. Each cluster represents one "place" inferred from multiple
+    /// sources. Reduces 50 noisy points into N geographic claims.
+    pub coordinate_clusters: Vec<CoordinateCluster>,
+    /// Fuzzy clustering of Person and Address entities by normalized
+    /// string similarity. Resolves "Jordan Meyer" / "Jordan L Meyer" /
+    /// "J Meyer" into one cluster with a canonical representative.
+    pub entity_clusters: Vec<EntityCluster>,
     pub cross_source_overlap: Vec<EntityOverlap>,
+    /// Closed feedback loop: reads ~/.huntsman/module_stats.json and
+    /// produces per-module routing recommendations based on historical
+    /// yield for this target kind. The --adaptive flag acts on these.
+    pub adaptive_routing: AdaptiveRouting,
     pub optimization_hints: Vec<String>,
     pub enrichment_lineage: Vec<LineageNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CoordinateCluster {
+    /// Median lat/lon of cluster members.
+    pub centroid_lat: f64,
+    pub centroid_lon: f64,
+    pub centroid_geohash: String,
+    /// Member coordinate values (the original "lat,lon" strings).
+    pub members: Vec<String>,
+    pub member_count: usize,
+    /// Diameter in km — distance between the two farthest members.
+    pub diameter_km: f64,
+    pub country_iso: Option<String>,
+    pub timezone: String,
+    /// How many independent modules contributed coords to this cluster.
+    pub source_diversity: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityCluster {
+    pub kind: String,
+    /// Best representative value (longest member, ties broken alphabetically).
+    pub canonical_value: String,
+    /// All raw member values that fuzzy-matched.
+    pub members: Vec<String>,
+    pub member_count: usize,
+    /// Highest confidence across all members.
+    pub max_confidence: f64,
+    /// Total corroboration sum across members.
+    pub total_corroboration: u32,
+    /// Distinct sources contributing to any cluster member.
+    pub source_diversity: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AdaptiveRouting {
+    /// Total scans in the ledger.
+    pub ledger_scans: u64,
+    /// Modules ranked by historical mean_entities_per_scan, highest first.
+    pub historical_rank: Vec<ModuleHistoricalScore>,
+    /// Modules with high zero-yield rate (≥80%) over enough scans (≥5)
+    /// to be statistically meaningful. Candidates for --adaptive skip.
+    pub recommended_skips: Vec<String>,
+    /// Modules with consistently high yield (top-5 by mean_entities_per_scan).
+    /// Candidates for elevated priority.
+    pub recommended_priorities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModuleHistoricalScore {
+    pub name: String,
+    pub scans_present: u64,
+    pub mean_entities_per_scan: f64,
+    pub zero_yield_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +167,266 @@ pub struct LineageNode {
     pub corroboration: u32,
 }
 
+/// Normalise a name/address for fuzzy comparison — lowercase, strip
+/// punctuation, collapse whitespace, drop common stop tokens.
+fn normalize_for_fuzzy(s: &str) -> String {
+    let lower = s.to_lowercase();
+    let stripped: String = lower
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c.is_whitespace() {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let mut tokens: Vec<&str> = stripped
+        .split_whitespace()
+        .filter(|t| !matches!(*t, "mr" | "mrs" | "ms" | "dr" | "the" | "jr" | "sr"))
+        .collect();
+    tokens.sort_unstable();
+    tokens.dedup();
+    tokens.join(" ")
+}
+
+/// Token-set Jaccard similarity, with a substring-containment bonus for
+/// short tokens (e.g. middle initials).
+fn name_similarity(a: &str, b: &str) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let ta: std::collections::HashSet<&str> = a.split_whitespace().collect();
+    let tb: std::collections::HashSet<&str> = b.split_whitespace().collect();
+    if ta.is_empty() || tb.is_empty() {
+        return 0.0;
+    }
+    let intersection = ta.intersection(&tb).count();
+    let union = ta.union(&tb).count();
+    let jaccard = intersection as f64 / union as f64;
+    // Substring bonus: if every token in the shorter set is a prefix of
+    // some token in the longer set, treat as near-match.
+    let (short, long) = if ta.len() <= tb.len() {
+        (&ta, &tb)
+    } else {
+        (&tb, &ta)
+    };
+    let prefix_hits = short
+        .iter()
+        .filter(|t| long.iter().any(|l| l.starts_with(*t) || t.starts_with(l)))
+        .count();
+    let prefix_score = prefix_hits as f64 / short.len() as f64;
+    (jaccard * 0.7 + prefix_score * 0.3).min(1.0)
+}
+
+/// Cluster Person and Address entities by fuzzy name similarity.
+/// Threshold 0.6 = "Jordan Meyer" ↔ "Jordan L Meyer" match.
+fn cluster_entities_fuzzy(entities: &[Entity]) -> Vec<EntityCluster> {
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();
+
+    for e in entities {
+        if !matches!(
+            e.kind.to_string().as_str(),
+            "person" | "address" | "organisation"
+        ) {
+            continue;
+        }
+        let norm = normalize_for_fuzzy(&e.value);
+        if norm.is_empty() {
+            continue;
+        }
+        // Find an existing group whose centroid is similar enough.
+        let mut assigned = false;
+        let group_keys: Vec<String> = groups.keys().cloned().collect();
+        for key in group_keys {
+            if name_similarity(&key, &norm) >= 0.6 {
+                groups.entry(key).or_default().push(e);
+                assigned = true;
+                break;
+            }
+        }
+        if !assigned {
+            groups.entry(norm).or_default().push(e);
+        }
+    }
+
+    let mut clusters: Vec<EntityCluster> = groups
+        .into_iter()
+        .filter(|(_, members)| !members.is_empty())
+        .map(|(_, members)| {
+            // Canonical = longest value, tiebreak alphabetical
+            let mut canonical = members[0].value.clone();
+            for m in &members[1..] {
+                if m.value.len() > canonical.len()
+                    || (m.value.len() == canonical.len() && m.value < canonical)
+                {
+                    canonical = m.value.clone();
+                }
+            }
+            let max_conf = members.iter().map(|e| e.confidence).fold(0.0f64, f64::max);
+            let total_corr = members.iter().map(|e| e.corroboration).sum();
+            let mut sources: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for m in &members {
+                for ev in &m.evidence {
+                    sources.insert(ev.source.clone());
+                }
+            }
+            let raw_values: Vec<String> = members.iter().map(|e| e.value.clone()).collect();
+            EntityCluster {
+                kind: members[0].kind.to_string(),
+                canonical_value: canonical,
+                member_count: raw_values.len(),
+                members: raw_values,
+                max_confidence: max_conf,
+                total_corroboration: total_corr,
+                source_diversity: sources.len(),
+            }
+        })
+        .filter(|c| c.member_count >= 2)
+        .collect();
+
+    // Sort: most-corroborated clusters first
+    clusters.sort_by_key(|c| std::cmp::Reverse(c.total_corroboration));
+    clusters.truncate(30);
+    clusters
+}
+
+/// Cluster coordinates by ~5km proximity using single-linkage.
+fn cluster_coordinates(
+    coords: &[(f64, f64, String, std::collections::HashSet<String>)],
+) -> Vec<CoordinateCluster> {
+    const THRESHOLD_KM: f64 = 5.0;
+    let mut parent: Vec<usize> = (0..coords.len()).collect();
+    fn find(parent: &mut [usize], i: usize) -> usize {
+        if parent[i] != i {
+            parent[i] = find(parent, parent[i]);
+        }
+        parent[i]
+    }
+    for i in 0..coords.len() {
+        for j in (i + 1)..coords.len() {
+            let d = crate::util::geohash::haversine_km(
+                coords[i].0,
+                coords[i].1,
+                coords[j].0,
+                coords[j].1,
+            );
+            if d <= THRESHOLD_KM {
+                let ri = find(&mut parent, i);
+                let rj = find(&mut parent, j);
+                if ri != rj {
+                    parent[ri] = rj;
+                }
+            }
+        }
+    }
+
+    let mut groups: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for i in 0..coords.len() {
+        let root = find(&mut parent, i);
+        groups.entry(root).or_default().push(i);
+    }
+
+    let mut clusters: Vec<CoordinateCluster> = groups
+        .into_values()
+        .map(|indices| {
+            let lats: Vec<f64> = indices.iter().map(|&i| coords[i].0).collect();
+            let lons: Vec<f64> = indices.iter().map(|&i| coords[i].1).collect();
+            let n = lats.len();
+            let mut lat_sorted = lats.clone();
+            lat_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let mut lon_sorted = lons.clone();
+            lon_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let centroid_lat = lat_sorted[n / 2];
+            let centroid_lon = lon_sorted[n / 2];
+            // Diameter
+            let mut diameter = 0.0f64;
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let d = crate::util::geohash::haversine_km(lats[i], lons[i], lats[j], lons[j]);
+                    if d > diameter {
+                        diameter = d;
+                    }
+                }
+            }
+            let mut all_sources: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for &i in &indices {
+                for s in &coords[i].3 {
+                    all_sources.insert(s.clone());
+                }
+            }
+            CoordinateCluster {
+                centroid_lat,
+                centroid_lon,
+                centroid_geohash: crate::util::geohash::geohash(centroid_lat, centroid_lon, 7),
+                members: indices.iter().map(|&i| coords[i].2.clone()).collect(),
+                member_count: n,
+                diameter_km: (diameter * 1000.0).round() / 1000.0,
+                country_iso: crate::util::geohash::reverse_country_iso(centroid_lat, centroid_lon)
+                    .map(str::to_string),
+                timezone: crate::util::geohash::timezone_for(centroid_lat, centroid_lon)
+                    .to_string(),
+                source_diversity: all_sources.len(),
+            }
+        })
+        .collect();
+
+    clusters.sort_by_key(|c| std::cmp::Reverse(c.member_count));
+    clusters
+}
+
+/// Read the cross-scan ledger and produce per-module routing recommendations.
+pub fn read_adaptive_routing() -> AdaptiveRouting {
+    let path = ledger_path();
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return AdaptiveRouting::default();
+    };
+    let Ok(ledger): std::result::Result<ModuleLedger, _> = serde_json::from_str(&text) else {
+        return AdaptiveRouting::default();
+    };
+
+    let mut scores: Vec<ModuleHistoricalScore> = ledger
+        .per_module
+        .iter()
+        .map(|(name, e)| ModuleHistoricalScore {
+            name: name.clone(),
+            scans_present: e.scans_present,
+            mean_entities_per_scan: e.mean_entities_per_scan,
+            zero_yield_rate: e.zero_yield_rate,
+        })
+        .collect();
+    scores.sort_by(|a, b| {
+        b.mean_entities_per_scan
+            .partial_cmp(&a.mean_entities_per_scan)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Skip recommendations: ≥80% zero-yield over ≥5 scans.
+    let recommended_skips: Vec<String> = scores
+        .iter()
+        .filter(|s| s.scans_present >= 5 && s.zero_yield_rate >= 0.80)
+        .map(|s| s.name.clone())
+        .collect();
+
+    // Priority recommendations: top-5 by historical mean yield, scans ≥3.
+    let recommended_priorities: Vec<String> = scores
+        .iter()
+        .filter(|s| s.scans_present >= 3 && s.mean_entities_per_scan >= 5.0)
+        .take(5)
+        .map(|s| s.name.clone())
+        .collect();
+
+    AdaptiveRouting {
+        ledger_scans: ledger.total_scans,
+        historical_rank: scores,
+        recommended_skips,
+        recommended_priorities,
+    }
+}
+
 /// Compute full diagnostics from a finalised scan's entity set.
 pub fn analyse(
     scan_id: &str,
@@ -116,7 +443,7 @@ pub fn analyse(
     let mut geo = GeoPrecisionReport::default();
     let mut tz_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut iso_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut coord_pairs: Vec<(f64, f64, String)> = Vec::new();
+    let mut coord_pairs: Vec<(f64, f64, String, std::collections::HashSet<String>)> = Vec::new();
 
     for e in entities {
         *kind_counts.entry(e.kind.to_string()).or_insert(0) += 1;
@@ -188,7 +515,12 @@ pub fn analyse(
                     }
                 }
                 if let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value) {
-                    coord_pairs.push((lat, lon, e.value.clone()));
+                    let mut srcs: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    for ev in &e.evidence {
+                        srcs.insert(ev.source.clone());
+                    }
+                    coord_pairs.push((lat, lon, e.value.clone(), srcs));
                 }
             }
             "address" => {
@@ -217,8 +549,8 @@ pub fn analyse(
 
     // Pairwise Haversine distances — proximity graph (top-25 closest).
     let mut proximity_graph: Vec<ProximityEdge> = Vec::new();
-    for (i, (la1, lo1, v1)) in coord_pairs.iter().enumerate() {
-        for (la2, lo2, v2) in coord_pairs.iter().skip(i + 1) {
+    for (i, (la1, lo1, v1, _)) in coord_pairs.iter().enumerate() {
+        for (la2, lo2, v2, _) in coord_pairs.iter().skip(i + 1) {
             let d = crate::util::geohash::haversine_km(*la1, *lo1, *la2, *lo2);
             let from_country =
                 crate::util::geohash::reverse_country_iso(*la1, *lo1).map(str::to_string);
@@ -228,7 +560,7 @@ pub fn analyse(
             proximity_graph.push(ProximityEdge {
                 from_value: v1.clone(),
                 to_value: v2.clone(),
-                distance_km: (d * 1000.0).round() / 1000.0, // 3-decimal precision
+                distance_km: (d * 1000.0).round() / 1000.0,
                 from_country,
                 to_country,
                 same_country,
@@ -242,9 +574,18 @@ pub fn analyse(
     });
     proximity_graph.truncate(25);
 
+    // Spatial clustering: ~5km single-linkage groups into "places".
+    let coordinate_clusters = cluster_coordinates(&coord_pairs);
+
+    // Fuzzy entity resolution for Person/Address/Organisation.
+    let entity_clusters = cluster_entities_fuzzy(entities);
+
+    // Closed feedback loop: read the cross-scan ledger.
+    let adaptive_routing = read_adaptive_routing();
+
     // Multi-source convergence: any two coordinates within ~5km?
-    'outer: for (i, (la1, lo1, _)) in coord_pairs.iter().enumerate() {
-        for (la2, lo2, _) in coord_pairs.iter().skip(i + 1) {
+    'outer: for (i, (la1, lo1, _, _)) in coord_pairs.iter().enumerate() {
+        for (la2, lo2, _, _) in coord_pairs.iter().skip(i + 1) {
             let dist_deg = ((la1 - la2).powi(2) + (lo1 - lo2).powi(2)).sqrt();
             // ~0.045° ≈ 5km at the equator (rough)
             if dist_deg < 0.045 {
@@ -373,6 +714,38 @@ pub fn analyse(
     // Persist a digest to the cross-scan ledger
     persist_ledger(&modules_by_yield, &kind_counts);
 
+    // Adaptive hints from the closed feedback loop
+    if !adaptive_routing.recommended_skips.is_empty() {
+        hints.push(format!(
+            "adaptive-routing: {} module(s) historically zero-yield ≥80% of the time over ≥5 scans — candidates for --adaptive skip: {}",
+            adaptive_routing.recommended_skips.len(),
+            adaptive_routing.recommended_skips.join(", ")
+        ));
+    }
+    if !adaptive_routing.recommended_priorities.is_empty() {
+        hints.push(format!(
+            "adaptive-routing: high-yield modules from historical ledger: {}",
+            adaptive_routing.recommended_priorities.join(", ")
+        ));
+    }
+    if !entity_clusters.is_empty() {
+        let total: usize = entity_clusters.iter().map(|c| c.member_count).sum();
+        hints.push(format!(
+            "entity-resolution: {} fuzzy clusters collapse {} raw entities → {} resolved identities",
+            entity_clusters.len(),
+            total,
+            entity_clusters.len()
+        ));
+    }
+    if coordinate_clusters.len() < geo.coordinates_count && !coordinate_clusters.is_empty() {
+        hints.push(format!(
+            "spatial-clustering: {} raw coordinates collapse into {} geographic clusters (mean diameter {:.2}km)",
+            geo.coordinates_count,
+            coordinate_clusters.len(),
+            coordinate_clusters.iter().map(|c| c.diameter_km).sum::<f64>() / coordinate_clusters.len() as f64
+        ));
+    }
+
     ScanDiagnostics {
         scan_id: scan_id.into(),
         seed_kind: seed_kind.into(),
@@ -383,7 +756,10 @@ pub fn analyse(
         entity_kind_counts: kind_counts,
         geo_precision: geo,
         proximity_graph,
+        coordinate_clusters,
+        entity_clusters,
         cross_source_overlap,
+        adaptive_routing,
         optimization_hints: hints,
         enrichment_lineage: lineage,
     }
@@ -540,5 +916,65 @@ mod tests {
         let d = analyse("sid", "email", "x@y.com", 100, &[]);
         // empty entities → always at least one hint
         assert!(!d.optimization_hints.is_empty());
+    }
+
+    #[test]
+    fn name_similarity_matches_partial_names() {
+        let a = normalize_for_fuzzy("Jordan Meyer");
+        let b = normalize_for_fuzzy("Jordan L Meyer");
+        let c = normalize_for_fuzzy("J Meyer");
+        // Jordan Meyer ↔ Jordan L Meyer should be > 0.6
+        assert!(
+            name_similarity(&a, &b) >= 0.6,
+            "got {}",
+            name_similarity(&a, &b)
+        );
+        // Both should match J Meyer at least via prefix bonus
+        assert!(name_similarity(&a, &c) >= 0.4);
+    }
+
+    #[test]
+    fn name_similarity_rejects_unrelated() {
+        let a = normalize_for_fuzzy("Jordan Meyer");
+        let b = normalize_for_fuzzy("Sarah Connor");
+        assert!(name_similarity(&a, &b) < 0.3);
+    }
+
+    #[test]
+    fn cluster_entities_collapses_name_variants() {
+        let mut e1 = Entity::new(EntityKind::Person, "Jordan Meyer", 0.8, "sid");
+        e1.add_evidence(Evidence::new("oathnet_pro", "ev"));
+        let mut e2 = Entity::new(EntityKind::Person, "Jordan L Meyer", 0.75, "sid");
+        e2.add_evidence(Evidence::new("see_know", "ev"));
+        let mut e3 = Entity::new(EntityKind::Person, "Sarah Connor", 0.8, "sid");
+        e3.add_evidence(Evidence::new("oathnet_pro", "ev"));
+        let d = analyse("sid", "name", "Jordan Meyer", 100, &[e1, e2, e3]);
+        // First two should form a cluster; Sarah Connor stays singleton (skipped)
+        assert!(!d.entity_clusters.is_empty());
+        let cluster = &d.entity_clusters[0];
+        assert_eq!(cluster.member_count, 2);
+        assert_eq!(cluster.source_diversity, 2);
+    }
+
+    #[test]
+    fn cluster_coordinates_groups_nearby_points() {
+        // Sydney Opera House + Sydney Harbour Bridge (~600m apart) should cluster.
+        let mut e1 = Entity::new(EntityKind::Coordinates, "-33.8568,151.2153", 0.8, "sid");
+        e1.add_evidence(
+            Evidence::new("ip_geo", "ev")
+                .with_attr("geohash", "r3gx2f7")
+                .with_attr("timezone", "Australia/Sydney"),
+        );
+        let mut e2 = Entity::new(EntityKind::Coordinates, "-33.8523,151.2108", 0.7, "sid");
+        e2.add_evidence(
+            Evidence::new("ipinfo", "ev")
+                .with_attr("geohash", "r3gx2f7")
+                .with_attr("timezone", "Australia/Sydney"),
+        );
+        let d = analyse("sid", "ip", "1.1.1.1", 100, &[e1, e2]);
+        assert_eq!(d.coordinate_clusters.len(), 1);
+        assert_eq!(d.coordinate_clusters[0].member_count, 2);
+        assert!(d.coordinate_clusters[0].diameter_km < 1.0);
+        assert_eq!(d.coordinate_clusters[0].country_iso.as_deref(), Some("AU"));
     }
 }
