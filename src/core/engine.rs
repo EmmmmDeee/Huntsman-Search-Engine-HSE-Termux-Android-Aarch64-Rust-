@@ -710,6 +710,11 @@ impl ScanEngine {
 
     /// Concurrent dispatcher (max_concurrent > 0). Launches up to `opts.max_concurrent`
     /// modules at a time via a Semaphore; collects results as tasks complete.
+    ///
+    /// Paid modules run synchronously first (key-discovery-first pattern):
+    /// oathnet_pro, dehashed, intelx discover API keys that hot-inject into
+    /// ctx before the remaining modules are spawned concurrently. Without this,
+    /// all modules launch with a cloned ctx that lacks discovered keys.
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_target_concurrent(
         &self,
@@ -725,11 +730,87 @@ impl ScanEngine {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
 
+        // Phase 1: Run Paid modules synchronously so discovered keys are
+        // available via hot-inject before the concurrent phase begins.
+        for module in &self.modules {
+            if !matches!(module.cost(), ModuleCost::Paid) {
+                continue;
+            }
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+            let name = module.name();
+            if !module.accepts(target) {
+                continue;
+            }
+            if let Some(reason) = module_skip_reason(&**module, opts, is_expansion) {
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason: reason.into(),
+                    },
+                );
+                continue;
+            }
+            if !dispatched.insert(dispatch_key(name, target)) {
+                stats.deduped += 1;
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason: "already dispatched for this target".into(),
+                    },
+                );
+                continue;
+            }
+            self.emit(
+                scan_id,
+                EventKind::ModuleStart {
+                    module: name.into(),
+                },
+            );
+            let result = timeout(
+                Duration::from_millis(resolve_timeout(opts, &**module)),
+                module.process(target, ctx),
+            )
+            .await;
+            self.finalise_module_result(
+                scan_id,
+                name,
+                opts.min_confidence,
+                entity_map,
+                result,
+                stats,
+            );
+            // Hot-inject discovered keys so Phase 2 modules can use them.
+            {
+                let pool = crate::util::key_pool::global_pool();
+                for svc in crate::util::key_pool::service_defs() {
+                    if ctx.keys.contains_key(svc.env_var) {
+                        continue;
+                    }
+                    if let Some(key) = pool.next_key(svc.name) {
+                        info!(
+                            service = svc.name,
+                            "hot-inject: key available for concurrent phase"
+                        );
+                        ctx.keys.insert(svc.env_var.to_string(), key);
+                    }
+                }
+            }
+        }
+
+        // Phase 2: Spawn remaining (Free + KeyGated) modules concurrently.
+        // ctx now contains any keys discovered in Phase 1.
         let sem = Arc::new(Semaphore::new(opts.max_concurrent));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
         let scan_id_arc: Arc<str> = scan_id.into();
 
         for module in &self.modules {
+            if matches!(module.cost(), ModuleCost::Paid) {
+                continue;
+            }
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -765,10 +846,6 @@ impl ScanEngine {
                 continue;
             }
 
-            // Acquire BEFORE spawning so dispatch *launches* respect the
-            // concurrency cap (not just completions). The permit is held
-            // for the duration of the spawned task.
-            // semaphore closed — shouldn't happen
             let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
                 break;
             };
@@ -805,8 +882,6 @@ impl ScanEngine {
             });
         }
 
-        // Consume results as tasks finish. entity_map is single-owner
-        // in this loop, so no Mutex needed.
         while let Some(joined) = set.join_next().await {
             let outcome = match joined {
                 Ok(o) => o,
