@@ -1119,7 +1119,12 @@ pub(super) fn extract_addresses_from_text(text: &str) -> Vec<String> {
         if let Some(pos) = lower.find(&place_lower) {
             let after = &lower[pos + place_lower.len()..];
             let context: String = after.chars().take(60).collect();
-            let before_start = pos.saturating_sub(60);
+            // Walk back to a char boundary so multi-byte UTF-8 chars
+            // (e.g. '›' which spans 3 bytes) are never split mid-codepoint.
+            let mut before_start = pos.saturating_sub(60);
+            while before_start > 0 && !lower.is_char_boundary(before_start) {
+                before_start -= 1;
+            }
             let before: String = lower[before_start..pos].chars().collect();
             let combined = format!("{before} {context}");
             if combined.contains("australia")
