@@ -260,6 +260,31 @@ pub enum KeysAction {
     Status,
     /// List supported service names and their categories.
     Services,
+    /// Import candidate keys/credentials from a TSV file.
+    ///
+    /// Expected format (tab-separated, header optional):
+    ///   source_file\tfield\ttags\tvalue\turl_or_context
+    ///
+    /// This is the format produced by `extract_all.py` on OathNet
+    /// stealer/breach dumps. The value column is matched against the
+    /// 80+ API-key prefix patterns and the 165+ service-domain map;
+    /// only entries that classify as recognised keys are imported.
+    ///
+    /// The TSV stays on disk — no values are committed anywhere. The
+    /// pool file ($HOME/.huntsman_keys.json, chmod 0600) records the
+    /// imported entries with `discovered_by="tsv_import:<source>"`
+    /// provenance so they can be removed later.
+    ImportTsv {
+        /// Path to the TSV file.
+        file: String,
+        /// Validate each imported key against its service's live
+        /// endpoint after import (default: store as Untested).
+        #[arg(long)]
+        validate: bool,
+        /// Dry run — print what would be imported without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -571,6 +596,130 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
                     "{:<18} {:<14} {:<26} {}",
                     d.name, d.category, short_url, d.env_var
                 );
+            }
+        }
+
+        KeysAction::ImportTsv {
+            file,
+            validate,
+            dry_run,
+        } => {
+            use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+            let path = std::path::Path::new(&file);
+            if !path.exists() {
+                return Err(Error::Other(format!("TSV file not found: {file}")));
+            }
+            let content = std::fs::read_to_string(path)
+                .map_err(|e| Error::Other(format!("read {file}: {e}")))?;
+
+            let mut stats: std::collections::BTreeMap<&str, usize> =
+                std::collections::BTreeMap::new();
+            let mut imported = 0usize;
+            let mut skipped_nonkey = 0usize;
+            let mut skipped_dup = 0usize;
+            let pool_snapshot_before = pool.total_keys();
+
+            for (lineno, line) in content.lines().enumerate() {
+                if line.is_empty() {
+                    continue;
+                }
+                // Header: source_file\tfield\ttags\tvalue\turl_or_context
+                if lineno == 0
+                    && (line.starts_with("source_file\t") || line.starts_with("source\t"))
+                {
+                    continue;
+                }
+                let fields: Vec<&str> = line.split('\t').collect();
+                if fields.len() < 4 {
+                    continue;
+                }
+                let source = fields[0];
+                let field_name = fields[1];
+                let value = fields[3].trim();
+                if value.is_empty() {
+                    continue;
+                }
+                // Only import entries that classify as known API keys.
+                // Plaintext dashboard passwords are deliberately skipped —
+                // they're account credentials, not API keys, and using
+                // them would be account takeover rather than API use.
+                let Some((service, _)) = identify_api_key(value) else {
+                    skipped_nonkey += 1;
+                    continue;
+                };
+                if dry_run {
+                    println!(
+                        "would import: service={service:<18}  src={source:<32}  field={field_name}"
+                    );
+                    *stats.entry(service).or_insert(0) += 1;
+                    imported += 1;
+                    continue;
+                }
+                let mut entry = key_pool::KeyEntry::new(value);
+                entry.status = key_pool::KeyStatus::Untested;
+                entry.discovered_at = Some(crate::core::entity::unix_now());
+                entry.discovered_by = Some(format!("tsv_import:{source}"));
+                entry.notes = Some(format!(
+                    "Imported from TSV file: {file} (field={field_name})"
+                ));
+                if pool.add(service, entry) {
+                    imported += 1;
+                    *stats.entry(service).or_insert(0) += 1;
+                } else {
+                    skipped_dup += 1;
+                }
+            }
+
+            if !dry_run {
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save pool: {e}")))?;
+            }
+
+            let added = pool.total_keys() as i64 - pool_snapshot_before as i64;
+            println!(
+                "\nTSV import {}: {imported} key(s) recognised, {skipped_nonkey} non-key \
+                 values skipped (plaintext passwords / hashes / etc.), {skipped_dup} \
+                 duplicates, {added} net additions to pool.",
+                if dry_run { "DRY-RUN" } else { "complete" }
+            );
+            if !stats.is_empty() {
+                println!("\nBy service:");
+                for (svc, n) in &stats {
+                    let roi = crate::util::key_roi::classify(svc);
+                    println!("  {svc:<18}  {n:>4}  ({} tier)", roi.label());
+                }
+            }
+
+            if validate && !dry_run {
+                println!("\nValidating imported keys against live endpoints...");
+                let snap = pool.snapshot();
+                let mut active = 0u32;
+                let mut invalid = 0u32;
+                for (svc, entries) in &snap.services {
+                    for entry in entries {
+                        if entry.discovered_by.as_deref() != Some(&format!("tsv_import:{file}"))
+                            && !entry
+                                .discovered_by
+                                .as_deref()
+                                .map(|s| s.starts_with("tsv_import:"))
+                                .unwrap_or(false)
+                        {
+                            continue;
+                        }
+                        match key_pool::validate_key(svc, &entry.value).await {
+                            Some(true) => {
+                                pool.mark_validated(svc, &entry.value, true);
+                                active += 1;
+                            }
+                            Some(false) => {
+                                pool.mark_validated(svc, &entry.value, false);
+                                invalid += 1;
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save pool: {e}")))?;
+                println!("Validation done: {active} active, {invalid} invalid.");
             }
         }
     }
