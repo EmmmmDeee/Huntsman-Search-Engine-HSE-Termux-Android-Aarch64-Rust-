@@ -675,9 +675,6 @@ impl ScanEngine {
                 stats,
             );
 
-            // Hot-inject: if the module just run (e.g. oathnet_pro) discovered
-            // API keys and stored them in the global pool, push them into ctx
-            // immediately so later modules in THIS dispatch round can use them.
             {
                 let pool = crate::util::key_pool::global_pool();
                 for svc in crate::util::key_pool::service_defs() {
@@ -685,6 +682,11 @@ impl ScanEngine {
                         continue;
                     }
                     if let Some(key) = pool.next_key(svc.name) {
+                        info!(
+                            service = svc.name,
+                            env_var = svc.env_var,
+                            "hot-inject: discovered key now available to subsequent modules"
+                        );
                         ctx.keys.insert(svc.env_var.to_string(), key);
                     }
                 }

@@ -718,76 +718,88 @@ pub(super) fn extract_api_keys_from_item(
         if let Some(val) = val_str(item, field)
             && let Some((service, key_val)) = identify_api_key(&val)
         {
-            let dedup = format!(
-                "@apikey:{service}:{}",
-                crate::util::str_util::truncate_safe(key_val, 16)
-            );
-            if !seen.insert(dedup) {
-                continue;
-            }
-
-            // Emit as Credential entity tagged for api_key_probe expansion
-            let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.80, scan_id);
-            entity.tag("api-key");
-            entity.tag(format!("service:{service}"));
-            entity.tag("oathnet-pro");
-            entity.tag("auto-discovered");
-
             let db = val_str(item, "dbname").unwrap_or_default();
-            entity.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!(
-                        "API key discovered ({service}) in {}",
-                        if db.is_empty() { "stealer log" } else { &db }
-                    ),
-                )
-                .with_attr("service", service)
-                .with_attr(
-                    "key_prefix",
-                    crate::util::str_util::truncate_safe(key_val, 8),
-                )
-                .with_attr("key_length", key_val.len().to_string()),
-            );
-            result.push(entity);
-
-            // Auto-store in key pool
-            let pool = crate::util::key_pool::global_pool();
-            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-            entry.notes = Some(format!(
-                "Auto-discovered {service} key from OathNet breach/stealer data"
-            ));
-            pool.add(service, entry);
-            let _ = crate::util::key_pool::save_pool(&pool);
+            let source = if db.is_empty() {
+                format!("{field} field")
+            } else {
+                format!("breach ({db})")
+            };
+            emit_key(service, key_val, &source, scan_id, seen, result);
         }
     }
 
-    // Also scan the username field — some stealer logs store API keys as usernames
+    // Scan username field — some stealer logs store API keys as usernames
     if let Some(user) = val_str(item, "username")
         && let Some((service, key_val)) = identify_api_key(&user)
     {
-        let dedup = format!(
-            "@apikey:{service}:{}",
-            crate::util::str_util::truncate_safe(key_val, 16)
-        );
-        if seen.insert(dedup) {
-            let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.75, scan_id);
-            entity.tag("api-key");
-            entity.tag(format!("service:{service}"));
-            entity.tag("oathnet-pro");
-            entity.add_evidence(
-                Evidence::new(SRC, format!("API key in username field ({service})"))
-                    .with_attr("service", service),
-            );
-            result.push(entity);
+        emit_key(service, key_val, "username field", scan_id, seen, result);
+    }
 
-            let pool = crate::util::key_pool::global_pool();
-            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-            entry.notes = Some(format!("Auto-discovered {service} key (username field)"));
-            pool.add(service, entry);
-            let _ = crate::util::key_pool::save_pool(&pool);
+    // Scan URL query parameters — stealer URLs often embed API keys:
+    // https://api.shodan.io/host/1.1.1.1?key=ACTUAL_KEY
+    for url_field in ["url", "url_str"] {
+        if let Some(url) = val_str(item, url_field)
+            && let Some(qmark) = url.find('?')
+        {
+            for param in url[qmark + 1..].split('&') {
+                if let Some((_, pval)) = param.split_once('=')
+                    && pval.len() >= 16
+                    && let Some((service, key_val)) = identify_api_key(pval)
+                {
+                    emit_key(service, key_val, "URL query parameter", scan_id, seen, result);
+                }
+            }
         }
     }
+
+    if let Some(extra) = item.get("extra").and_then(|v| v.as_object()) {
+        for (_, eval) in extra {
+            if let Some(s) = eval.as_str()
+                && s.len() >= 16
+                && let Some((service, key_val)) = identify_api_key(s)
+            {
+                emit_key(service, key_val, "extra field", scan_id, seen, result);
+            }
+        }
+    }
+}
+
+fn emit_key(
+    service: &'static str,
+    key_val: &str,
+    source: &str,
+    scan_id: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let dedup = format!(
+        "@apikey:{service}:{}",
+        crate::util::str_util::truncate_safe(key_val, 16)
+    );
+    if !seen.insert(dedup) {
+        return;
+    }
+    let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.80, scan_id);
+    entity.tag("api-key");
+    entity.tag(format!("service:{service}"));
+    entity.tag("oathnet-pro");
+    entity.tag("auto-discovered");
+    entity.add_evidence(
+        Evidence::new(SRC, format!("API key ({service}) from {source}"))
+            .with_attr("service", service)
+            .with_attr(
+                "key_prefix",
+                crate::util::str_util::truncate_safe(key_val, 8),
+            )
+            .with_attr("key_length", key_val.len().to_string()),
+    );
+    result.push(entity);
+
+    let pool = crate::util::key_pool::global_pool();
+    let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+    entry.notes = Some(format!("Auto-discovered {service} key from {source}"));
+    pool.add(service, entry);
+    let _ = crate::util::key_pool::save_pool(&pool);
 }
 
 // ─── Automatic API credential storage ────────────────────────────────────────
