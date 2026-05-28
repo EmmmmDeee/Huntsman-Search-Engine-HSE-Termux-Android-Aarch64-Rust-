@@ -12,6 +12,7 @@ pub mod module;
 pub mod profiles;
 pub mod roi;
 pub mod scan;
+pub mod validation;
 pub mod webhook;
 
 pub mod tags {
