@@ -1082,3 +1082,58 @@ pub(super) fn rule_au_029_cloud_storage_exposure(
         ts,
     )]
 }
+
+pub(super) fn rule_au_030_geo_convergence_score(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let geo_entities: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates) && e.confidence >= 0.40
+        })
+        .collect();
+
+    if geo_entities.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut all_sources: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for e in &geo_entities {
+        for src in e.evidence_sources() {
+            all_sources.insert(src);
+        }
+    }
+
+    if all_sources.len() < 3 {
+        return Vec::new();
+    }
+
+    let mut sources: Vec<&str> = all_sources.into_iter().collect();
+    sources.sort_unstable();
+    let uids: Vec<String> = geo_entities.iter().map(|e| e.uid.clone()).collect();
+
+    let severity = if sources.len() >= 5 {
+        Severity::Critical
+    } else if sources.len() >= 4 {
+        Severity::High
+    } else {
+        Severity::Medium
+    };
+
+    vec![Correlation::new(
+        "AU-030",
+        "Multi-source geolocation convergence",
+        severity,
+        format!(
+            "{} independent sources produced {} geo entities: {}",
+            sources.len(),
+            geo_entities.len(),
+            sources.join(", ")
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}

@@ -145,6 +145,7 @@ const RULES: &[RuleFn] = &[
     rule_au_027_address_coordinates_chain,
     rule_au_028_subdomain_takeover_risk,
     rule_au_029_cloud_storage_exposure,
+    rule_au_030_geo_convergence_score,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
