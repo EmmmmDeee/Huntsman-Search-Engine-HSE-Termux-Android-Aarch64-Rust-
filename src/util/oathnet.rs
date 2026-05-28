@@ -166,9 +166,14 @@ pub async fn search(
         url.push_str(&crate::util::http::urlencode(&sid));
     }
     let body = curl_get(&url, key).await?;
+    // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
+    // which false-positives on legitimate metadata fields like `session_quota`
+    // and `recommended_quota`. Match only true exhaustion signals.
     if body.contains("\"left_today\":0")
         || body.contains("limit exceeded")
-        || body.contains("quota")
+        || body.contains("Daily quota exceeded")
+        || body.contains("quota exceeded")
+        || body.contains("\"is_unlimited\":false,\"left_today\":0")
     {
         mark_quota_exhausted();
         return Ok(Vec::new());

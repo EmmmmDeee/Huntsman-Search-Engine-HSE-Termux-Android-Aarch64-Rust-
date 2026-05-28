@@ -58,8 +58,19 @@ impl KeyRoi {
 pub fn classify(service: &str) -> KeyRoi {
     match service {
         // ── MULTIPLIER ──────────────────────────────────────────────
+        // Self-discovery: finding more OathNet keys directly scales our
+        // OathNet quota. Each discovered key is a parallel daily-lookup
+        // pool that costs us nothing.
+        "oathnet"
+        // OathNet competitors — same breach/stealer surface, separate
+        // quota pools. Finding a see-know.eu or snusbase key means we
+        // get their daily quota for free.
+        | "see_know" | "snusbase" | "leakcheck" | "leakpeek" | "leak_lookup"
+        | "hashes" | "psbdmp" | "ghostproject" | "scylla" | "weleakinfo"
+        | "hackcheck" | "scrubd" | "nuclearleaks" | "breachforums"
+        | "inteltechniques" | "breachdirectory"
         // Infrastructure → hostnames → web_crawler → leaked keys
-        "shodan" | "censys" | "securitytrails" | "fullhunt" | "binaryedge"
+        | "shodan" | "censys" | "securitytrails" | "fullhunt" | "binaryedge"
         | "passivetotal" | "onyphe" | "zoomeye" | "netlas" | "fofa"
         | "spyse" | "leakix" | "urlscan"
         // Domain/URL intelligence → more domains → more crawl surface
@@ -68,13 +79,18 @@ pub fn classify(service: &str) -> KeyRoi {
         | "hunter" | "proxycurl" | "epieos" | "emailrep" | "seon"
         // Source-code key leaks
         | "github" | "gitlab"
+        // Breach-with-credentials services (these directly contain creds
+        // for OTHER services, leading to more keys)
+        | "hibp" | "dehashed" | "intelx" | "hudsonrock" | "xposed_or_not"
         => KeyRoi::Multiplier,
 
         // ── EXPANSION ───────────────────────────────────────────────
-        // Many entities per target but no chain back to keys
-        "hibp" | "dehashed" | "intelx" | "breachdirectory" | "xposed_or_not"
-        | "hudsonrock" | "opencorporates" | "abn" | "wigle"
-        | "opencellid" | "mailchimp" | "twilio"
+        // Many entities per target but no chain back to keys.
+        // (HIBP/Dehashed/IntelX/HudsonRock/XposedOrNot were promoted
+        // to Multiplier — breach data contains credentials for OTHER
+        // services, which yields more keys via key_harvest.)
+        "opencorporates" | "abn" | "wigle" | "opencellid"
+        | "mailchimp" | "twilio"
         => KeyRoi::Expansion,
 
         // ── TERMINAL ────────────────────────────────────────────────
@@ -103,9 +119,23 @@ mod tests {
     }
 
     #[test]
-    fn expansion_includes_breach_services() {
-        assert_eq!(classify("hibp"), KeyRoi::Expansion);
-        assert_eq!(classify("dehashed"), KeyRoi::Expansion);
+    fn multipliers_include_self_and_competitors() {
+        // OathNet self-discovery — finding more OathNet keys scales
+        // our own quota.
+        assert_eq!(classify("oathnet"), KeyRoi::Multiplier);
+        // Competitors — same data surface, parallel quota pools.
+        assert_eq!(classify("see_know"), KeyRoi::Multiplier);
+        assert_eq!(classify("snusbase"), KeyRoi::Multiplier);
+        assert_eq!(classify("leakcheck"), KeyRoi::Multiplier);
+        assert_eq!(classify("dehashed"), KeyRoi::Multiplier);
+        assert_eq!(classify("hibp"), KeyRoi::Multiplier);
+        assert_eq!(classify("intelx"), KeyRoi::Multiplier);
+    }
+
+    #[test]
+    fn expansion_includes_non_key_services() {
+        assert_eq!(classify("opencorporates"), KeyRoi::Expansion);
+        assert_eq!(classify("wigle"), KeyRoi::Expansion);
     }
 
     #[test]
