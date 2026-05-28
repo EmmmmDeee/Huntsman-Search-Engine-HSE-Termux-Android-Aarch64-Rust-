@@ -114,6 +114,177 @@ impl Module for LowConfidenceModule {
     }
 }
 
+// ── Key-chaining harness ───────────────────────────────────────────────────
+//
+// These modules simulate the force-multiplication chain:
+//   1. KeyDiscovererModule (high priority) writes a fake key into the
+//      global key pool, mimicking oathnet_pro extracting a Shodan key
+//      from breach data.
+//   2. KeyConsumerModule (low priority) only emits an entity if the
+//      target key is present in ctx.keys.
+//
+// If the hot-inject works, KeyConsumerModule sees the key and the scan
+// produces the consumer's entity. If the hot-inject is broken, the
+// consumer sees a stale ctx clone with no key and emits nothing.
+
+const CHAIN_TEST_SERVICE: &str = "shodan";
+const CHAIN_TEST_ENV: &str = "HUNTSMAN_SHODAN_KEY";
+
+struct KeyDiscovererModule;
+
+#[async_trait]
+impl Module for KeyDiscovererModule {
+    fn name(&self) -> &'static str {
+        "key_discoverer"
+    }
+    fn priority(&self) -> u8 {
+        // Higher than KeyConsumerModule so it runs first.
+        // Also marked Paid so the concurrent dispatcher routes it into
+        // Phase 1 (synchronous) before Phase 2 spawns the consumer.
+        150
+    }
+    fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
+        huntsman_search_engine::core::module::ModuleCost::Paid
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // Simulate oathnet_pro discovering a key in breach data.
+        let pool = huntsman_search_engine::util::key_pool::global_pool();
+        let entry = huntsman_search_engine::util::key_pool::KeyEntry::new(
+            "test-shodan-key-chained-via-hot-inject",
+        );
+        pool.add(CHAIN_TEST_SERVICE, entry);
+
+        // Emit a marker entity proving this module ran.
+        let mut r = ModuleResult::new();
+        let mut e = Entity::new(EntityKind::Email, "discoverer@test", 0.95, &ctx.scan_id);
+        e.tag("key-discoverer-fired");
+        r.push(e);
+        Ok(r)
+    }
+}
+
+struct KeyConsumerModule;
+
+#[async_trait]
+impl Module for KeyConsumerModule {
+    fn name(&self) -> &'static str {
+        "key_consumer"
+    }
+    fn priority(&self) -> u8 {
+        // Lower than discoverer so it runs after the hot-inject fires.
+        50
+    }
+    fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
+        huntsman_search_engine::core::module::ModuleCost::KeyGated
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        // Only emit if the chained key reached us via hot-inject.
+        if let Some(key) = ctx.key_opt(CHAIN_TEST_ENV)
+            && key == "test-shodan-key-chained-via-hot-inject"
+        {
+            let mut e = Entity::new(EntityKind::Email, "consumer@test", 0.95, &ctx.scan_id);
+            e.tag("key-consumer-saw-key");
+            r.push(e);
+        }
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn key_chaining_sequential_dispatch() {
+    // Sequential mode (max_concurrent=0). The discoverer runs first,
+    // stores the key in the pool. The per-module hot-inject after
+    // finalise_module_result pushes it into ctx. The consumer then sees
+    // the key and emits its marker entity.
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(KeyDiscovererModule), Arc::new(KeyConsumerModule)],
+        "chain-seq",
+        TargetKind::Email,
+        "chain-seq@example.com",
+    );
+    let opts = ScanOptions {
+        max_concurrent: 0, // sequential
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+
+    let _ = engine.run(scan, target, ctx).await.unwrap();
+    let entities = store.entities_for_scan(&sid).unwrap();
+
+    let saw_discoverer = entities.iter().any(|e| e.has_tag("key-discoverer-fired"));
+    let saw_consumer = entities.iter().any(|e| e.has_tag("key-consumer-saw-key"));
+
+    assert!(saw_discoverer, "discoverer must run first");
+    assert!(
+        saw_consumer,
+        "consumer must see the key via hot-inject — chain is broken"
+    );
+}
+
+#[tokio::test]
+async fn key_chaining_concurrent_dispatch() {
+    // Concurrent mode (max_concurrent>0). Paid modules run in Phase 1
+    // synchronously; ctx is refreshed from the pool; THEN Free + KeyGated
+    // modules spawn in Phase 2 with the keys-rich ctx clone.
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(KeyDiscovererModule), Arc::new(KeyConsumerModule)],
+        "chain-conc",
+        TargetKind::Email,
+        "chain-conc@example.com",
+    );
+    let opts = ScanOptions {
+        max_concurrent: 4, // concurrent (default)
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+
+    let _ = engine.run(scan, target, ctx).await.unwrap();
+    let entities = store.entities_for_scan(&sid).unwrap();
+
+    let saw_discoverer = entities.iter().any(|e| e.has_tag("key-discoverer-fired"));
+    let saw_consumer = entities.iter().any(|e| e.has_tag("key-consumer-saw-key"));
+
+    assert!(saw_discoverer, "discoverer (Paid) must run in Phase 1");
+    assert!(
+        saw_consumer,
+        "consumer (KeyGated, Phase 2) must see the key via hot-inject — \
+         concurrent chain is broken"
+    );
+}
+
+#[tokio::test]
+async fn key_chaining_classifies_multiplier_tier() {
+    // Verify the ROI classification is wired up for the services that
+    // matter most. Shodan, Censys, Hunter, Proxycurl should all be
+    // Multiplier-tier (they discover infrastructure/identities that
+    // lead to more keys).
+    use huntsman_search_engine::util::key_roi::{KeyRoi, classify};
+
+    for svc in ["shodan", "censys", "securitytrails", "hunter", "proxycurl"] {
+        assert_eq!(
+            classify(svc),
+            KeyRoi::Multiplier,
+            "{svc} should be Multiplier-tier — it yields more keys"
+        );
+    }
+
+    // Pure scoring services produce no key chain.
+    for svc in ["abuseipdb", "greynoise", "ip2location"] {
+        assert_eq!(
+            classify(svc),
+            KeyRoi::Terminal,
+            "{svc} should be Terminal-tier — single-shot data"
+        );
+    }
+}
+
 #[test]
 fn all_registered_modules_have_descriptions() {
     // Regression guard for issue #28: every module shipped in the
