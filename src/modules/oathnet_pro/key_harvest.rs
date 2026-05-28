@@ -746,7 +746,14 @@ pub(super) fn extract_api_keys_from_item(
                     && pval.len() >= 16
                     && let Some((service, key_val)) = identify_api_key(pval)
                 {
-                    emit_key(service, key_val, "URL query parameter", scan_id, seen, result);
+                    emit_key(
+                        service,
+                        key_val,
+                        "URL query parameter",
+                        scan_id,
+                        seen,
+                        result,
+                    );
                 }
             }
         }
