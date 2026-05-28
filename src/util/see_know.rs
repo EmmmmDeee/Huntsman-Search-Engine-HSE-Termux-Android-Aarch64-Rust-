@@ -44,8 +44,7 @@ static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
 
 /// Shared curl-subprocess client. Bearer auth, 12s curl timeout
 /// (matches the legacy `--max-time 12`), 15s outer tokio timeout.
-static CLIENT: CurlClient =
-    CurlClient::new("seek_now", AuthScheme::Bearer, 12, 15_000);
+static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::Bearer, 12, 15_000);
 
 /// Per-scan + per-session quota budget for SeekNow API calls.
 ///
@@ -480,7 +479,11 @@ mod tests {
         let start = scan_budget_remaining();
         budget_increment();
         let after = scan_budget_remaining();
-        assert_eq!(start, after + 1, "increment must consume exactly one credit");
+        assert_eq!(
+            start,
+            after + 1,
+            "increment must consume exactly one credit"
+        );
         reset_budget();
     }
 
@@ -553,7 +556,8 @@ mod tests {
         assert_eq!(budget_snapshot().scan_cap, 99);
         reset_budget();
         assert_ne!(
-            budget_snapshot().scan_cap, 99,
+            budget_snapshot().scan_cap,
+            99,
             "reset_budget must clear the cap override"
         );
     }

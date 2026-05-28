@@ -215,7 +215,13 @@ mod tests {
 
     #[test]
     fn real_usernames_accepted() {
-        for u in ["alice", "jordanleighmeyers", "j_doe23", "h4ck3r", "BobSmith"] {
+        for u in [
+            "alice",
+            "jordanleighmeyers",
+            "j_doe23",
+            "h4ck3r",
+            "BobSmith",
+        ] {
             assert!(!is_placeholder_username(u), "expected {u} real");
         }
     }

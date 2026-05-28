@@ -252,13 +252,7 @@ mod tests {
 
     #[test]
     fn remaining_false_once_scan_cap_reached() {
-        let b = QuotaBudget::new(
-            "tiny",
-            2,
-            200,
-            "HUNTSMAN_TEST_TINY_NONEXISTENT",
-            "",
-        );
+        let b = QuotaBudget::new("tiny", 2, 200, "HUNTSMAN_TEST_TINY_NONEXISTENT", "");
         assert!(b.remaining());
         b.increment();
         b.increment();
@@ -317,13 +311,7 @@ mod tests {
 
     #[test]
     fn scan_remaining_clamps_at_zero() {
-        let b = QuotaBudget::new(
-            "tiny2",
-            1,
-            200,
-            "HUNTSMAN_TEST_TINY2_NONEXISTENT",
-            "",
-        );
+        let b = QuotaBudget::new("tiny2", 1, 200, "HUNTSMAN_TEST_TINY2_NONEXISTENT", "");
         assert_eq!(b.scan_remaining(), 1);
         b.increment();
         assert_eq!(b.scan_remaining(), 0);

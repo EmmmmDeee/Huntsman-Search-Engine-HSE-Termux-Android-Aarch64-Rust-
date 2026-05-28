@@ -198,12 +198,7 @@ pub trait Module: Send + Sync {
         crate::core::dependency::ALL_TARGET_KINDS
             .iter()
             .copied()
-            .filter(|k| {
-                self.accepts(&Target::new(
-                    *k,
-                    crate::core::dependency::PROBE_VALUE,
-                ))
-            })
+            .filter(|k| self.accepts(&Target::new(*k, crate::core::dependency::PROBE_VALUE)))
             .collect()
     }
 
@@ -500,11 +495,7 @@ mod tests {
         fn accepts(&self, t: &Target) -> bool {
             matches!(t.kind, TargetKind::Domain)
         }
-        async fn process(
-            &self,
-            _t: &Target,
-            _ctx: &ModuleContext,
-        ) -> Result<ModuleResult> {
+        async fn process(&self, _t: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
             Ok(ModuleResult::new())
         }
         fn category(&self) -> ModuleCategory {

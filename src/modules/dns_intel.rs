@@ -190,11 +190,8 @@ impl Module for DnsIntel {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[
-            EntityKind::IpAddress,
-            EntityKind::Domain,
-            EntityKind::Email,
-        ];
+        const KINDS: &[EntityKind] =
+            &[EntityKind::IpAddress, EntityKind::Domain, EntityKind::Email];
         KINDS
     }
 

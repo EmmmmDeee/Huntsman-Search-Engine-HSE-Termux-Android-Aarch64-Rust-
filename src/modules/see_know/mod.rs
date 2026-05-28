@@ -236,9 +236,7 @@ impl Module for SeekNow {
                 let mut pivot_results: Vec<(&'static str, Vec<Value>)> = Vec::new();
                 let discord_pivots = discover_discord_pivots(&result);
                 if !discord_pivots.is_empty() {
-                    pivot_results.extend(
-                        dispatch_discord_pivots(key, discord_pivots).await,
-                    );
+                    pivot_results.extend(dispatch_discord_pivots(key, discord_pivots).await);
                 }
                 let steam_pivots = discover_steam_pivots(&result);
                 if !steam_pivots.is_empty() && see_know::budget_remaining() {
@@ -247,13 +245,7 @@ impl Module for SeekNow {
                 for (endpoint, items) in &pivot_results {
                     for item in items {
                         extract_entities(item, v, &ctx.scan_id, &mut seen, &mut result);
-                        extract_geo_entities(
-                            item,
-                            endpoint,
-                            &ctx.scan_id,
-                            &mut seen,
-                            &mut result,
-                        );
+                        extract_geo_entities(item, endpoint, &ctx.scan_id, &mut seen, &mut result);
                     }
                 }
             }
@@ -308,23 +300,23 @@ fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
     }
 }
 
-/// Dispatch every endpoint in `plan` concurrently, bounded by the
-/// remaining per-scan budget. Returns `(endpoint_name, items)` pairs
-/// in plan order so downstream extractors stay deterministic.
+/// Dispatch every endpoint in `plan` concurrently. Returns
+/// `(endpoint_name, items)` pairs in plan order so downstream
+/// extractors stay deterministic.
+///
+/// Budget enforcement happens inside each endpoint helper at the
+/// `util::see_know` layer — both the response cache and the
+/// `budget_remaining` gate short-circuit before any HTTP call. The
+/// previous implementation pre-trimmed `plan[..budget]` here, but
+/// that suppressed legitimate cached calls when the scan was near
+/// (but not at) its budget. Letting the util layer enforce the
+/// budget restores that free corroboration.
 async fn dispatch_plan(
     key: &str,
     value: &str,
     plan: &[EndpointCall],
 ) -> Vec<(&'static str, Vec<Value>)> {
-    // Trim plan to the budget so we don't waste futures on calls that
-    // would no-op inside util::see_know.
-    let budget = see_know::scan_budget_remaining() as usize;
-    if budget == 0 {
-        return Vec::new();
-    }
-    let trimmed = &plan[..plan.len().min(budget)];
-
-    let futures = trimmed.iter().copied().map(|call| {
+    let futures = plan.iter().copied().map(|call| {
         let value_owned = value.to_string();
         async move {
             let items = call.invoke(key, &value_owned).await.unwrap_or_default();
@@ -370,38 +362,54 @@ fn discover_prefixed_ids(
 }
 
 /// Concurrent discord/user + discord/to-roblox dispatch for every
-/// discovered Discord ID.
-async fn dispatch_discord_pivots(
-    key: &str,
-    ids: Vec<String>,
-) -> Vec<(&'static str, Vec<Value>)> {
+/// discovered Discord ID. Each ID consumes up to two budget slots;
+/// when the budget can fit only one of the pair the `discord_user`
+/// call takes priority (it's higher-yield).
+///
+/// User and to-roblox calls are pushed to separate per-endpoint Vecs
+/// so each Vec is homogeneously typed for `join_all`; both vecs are
+/// then awaited concurrently via `tokio::join!`.
+async fn dispatch_discord_pivots(key: &str, ids: Vec<String>) -> Vec<(&'static str, Vec<Value>)> {
     let budget = see_know::scan_budget_remaining() as usize;
     if budget == 0 || ids.is_empty() {
         return Vec::new();
     }
-    let mut futures = Vec::new();
+    let mut user_futures = Vec::new();
+    let mut roblox_futures = Vec::new();
+    let mut used = 0usize;
     for id in &ids {
-        if futures.len() >= budget {
+        if used >= budget {
             break;
         }
-        let user_call = {
-            let id = id.clone();
-            async move {
-                let items = see_know::discord_user(key, &id).await.unwrap_or_default();
-                ("discord_user", items)
-            }
-        };
-        futures.push(user_call);
+        let id_for_user = id.clone();
+        user_futures.push(async move {
+            let items = see_know::discord_user(key, &id_for_user)
+                .await
+                .unwrap_or_default();
+            ("discord_user", items)
+        });
+        used += 1;
+        if used >= budget {
+            break;
+        }
+        let id_for_roblox = id.clone();
+        roblox_futures.push(async move {
+            let items = see_know::discord_to_roblox(key, &id_for_roblox)
+                .await
+                .unwrap_or_default();
+            ("discord_to_roblox", items)
+        });
+        used += 1;
     }
-    join_all(futures).await
+    let (mut user_results, roblox_results) =
+        tokio::join!(join_all(user_futures), join_all(roblox_futures));
+    user_results.extend(roblox_results);
+    user_results
 }
 
 /// Concurrent gaming/steam dispatch for every discovered Steam ID.
 /// Mirrors the discord-pivot shape so the caller can compose both.
-async fn dispatch_steam_pivots(
-    key: &str,
-    ids: Vec<String>,
-) -> Vec<(&'static str, Vec<Value>)> {
+async fn dispatch_steam_pivots(key: &str, ids: Vec<String>) -> Vec<(&'static str, Vec<Value>)> {
     let budget = see_know::scan_budget_remaining() as usize;
     if budget == 0 || ids.is_empty() {
         return Vec::new();
@@ -765,12 +773,7 @@ fn extract_entities(
         && looks_like_steam_id(&sid)
         && seen.insert(format!("@steam:{sid}"))
     {
-        let mut e = Entity::new(
-            EntityKind::Username,
-            format!("steam:{sid}"),
-            0.60,
-            scan_id,
-        );
+        let mut e = Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.60, scan_id);
         e.tag(tags::BREACH);
         e.tag("see-know");
         e.tag("steam");
@@ -937,21 +940,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_plan_returns_empty_when_budget_exhausted() {
-        // Drain the budget by storing the cap.
-        // The dispatch_plan helper must short-circuit cleanly.
-        // No HTTP calls are made — the budget gate intercepts.
-        for _ in 0..crate::util::see_know::scan_budget_remaining() {
-            // helper to consume budget — using the public scan_budget_remaining
-            // and the search() path so we don't introduce a new util API just
-            // for tests. Instead, drive `budget_remaining()` to false by
-            // forcing the atomic. (No public increment exists — we exercise
-            // the path through public `reset_budget` reset semantics: if the
-            // plan is empty, dispatch_plan returns Vec::new() immediately,
-            // which is the property we want to assert.)
-            break;
-        }
-        // Use an empty plan — same code path the budget check exercises.
+    async fn dispatch_plan_returns_empty_for_empty_plan() {
+        // An empty plan never reaches the util layer; this path must
+        // short-circuit without any HTTP regardless of budget state.
+        // (Per-endpoint budget gating is exercised by the util-level
+        // tests in `crate::util::see_know::tests`.)
         let out = dispatch_plan("key", "alice", &[]).await;
         assert!(out.is_empty());
     }
@@ -975,7 +968,12 @@ mod tests {
         // Non-Discord username — must be skipped.
         r.push(Entity::new(EntityKind::Username, "alice", 0.7, "test"));
         // Non-Username entity with `discord:` prefix — must be skipped.
-        r.push(Entity::new(EntityKind::Email, "discord:foo@bar", 0.5, "test"));
+        r.push(Entity::new(
+            EntityKind::Email,
+            "discord:foo@bar",
+            0.5,
+            "test",
+        ));
         let ids = discover_discord_pivots(&r);
         assert_eq!(ids, vec!["359023095012345678".to_string()]);
     }

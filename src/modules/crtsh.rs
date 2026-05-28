@@ -67,7 +67,11 @@ impl Module for CrtSh {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::Email, EntityKind::Organisation];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Domain,
+            EntityKind::Email,
+            EntityKind::Organisation,
+        ];
         KINDS
     }
 

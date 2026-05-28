@@ -601,6 +601,4 @@ pub use event::{Event, EventBus, EventKind};
 pub use live::{LiveOptions, LiveRequest, LiveScanner, LiveSession, LiveStatus};
 pub use module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleInfo, ModuleResult};
 pub use port::StoragePort;
-pub use scan::{
-    ExpansionStrategy, Scan, ScanOptions, ScanRequest, ScanStatus, Target, TargetKind,
-};
+pub use scan::{ExpansionStrategy, Scan, ScanOptions, ScanRequest, ScanStatus, Target, TargetKind};

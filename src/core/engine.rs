@@ -696,14 +696,14 @@ impl ScanEngine {
         // O(1) dispatch-index lookup replaces the O(M) accepts() scan.
         // Modules are already priority-sorted within each bucket so we
         // walk them in the same order the legacy `for module in &self.modules`
-        // loop did.
-        let candidates: Vec<Arc<dyn Module>> = self
-            .graph
-            .modules_for(target.kind)
-            .iter()
-            .filter_map(|&idx| self.modules.get(idx).map(Arc::clone))
-            .collect();
-        for module in &candidates {
+        // loop did. Iterating index-by-index (instead of pre-allocating
+        // a `Vec<Arc<dyn Module>>` and Arc-cloning per target) avoids
+        // a heap allocation + N atomic increments per dispatch — meaningful
+        // on the hot path that runs once per expansion candidate.
+        for &idx in self.graph.modules_for(target.kind) {
+            let Some(module) = self.modules.get(idx) else {
+                continue;
+            };
             if ctx.cancel.is_cancelled() {
                 return Ok(());
             }
@@ -823,17 +823,17 @@ impl ScanEngine {
         use tokio::task::JoinSet;
 
         // O(1) dispatch-index lookup — only modules accepting `target.kind`
-        // are even considered. Phase 1 then filters to Paid.
-        let candidates: Vec<Arc<dyn Module>> = self
-            .graph
-            .modules_for(target.kind)
-            .iter()
-            .filter_map(|&idx| self.modules.get(idx).map(Arc::clone))
-            .collect();
+        // are even considered. Phase 1 then filters to Paid. We iterate
+        // indices directly rather than allocating a `Vec<Arc<dyn Module>>`
+        // and Arc-cloning per target; on the hot path this saves a heap
+        // allocation + N atomic increments per dispatch.
 
         // Phase 1: Run Paid modules synchronously so discovered keys are
         // available via hot-inject before the concurrent phase begins.
-        for module in &candidates {
+        for &idx in self.graph.modules_for(target.kind) {
+            let Some(module) = self.modules.get(idx) else {
+                continue;
+            };
             if !matches!(module.cost(), ModuleCost::Paid) {
                 continue;
             }
@@ -909,12 +909,18 @@ impl ScanEngine {
         }
 
         // Phase 2: Spawn remaining (Free + KeyGated) modules concurrently.
-        // ctx now contains any keys discovered in Phase 1.
+        // ctx now contains any keys discovered in Phase 1. Same
+        // index-iteration pattern as Phase 1 — Arc::clone moves to the
+        // single spawn site below, instead of being paid for every
+        // candidate during candidate-list construction.
         let sem = Arc::new(Semaphore::new(opts.max_concurrent));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
         let scan_id_arc: Arc<str> = scan_id.into();
 
-        for module in &candidates {
+        for &idx in self.graph.modules_for(target.kind) {
+            let Some(module) = self.modules.get(idx) else {
+                continue;
+            };
             if matches!(module.cost(), ModuleCost::Paid) {
                 continue;
             }

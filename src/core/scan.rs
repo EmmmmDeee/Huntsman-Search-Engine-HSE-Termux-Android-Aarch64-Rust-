@@ -458,6 +458,29 @@ impl ExpansionStrategy {
     }
 }
 
+impl std::str::FromStr for ExpansionStrategy {
+    type Err = String;
+
+    /// Parse the same snake_case identifiers that `as_str()` emits
+    /// (and serde uses). Empty string is treated as the default
+    /// (`GeoConverge`) so callers don't need a separate guard for the
+    /// "unset" case. Any other input returns a human-readable error
+    /// listing the accepted variants — useful for the CLI's
+    /// `--expansion-strategy` argument and direct API consumers.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "geo_converge" | "" => Ok(Self::GeoConverge),
+            "breadth_first" => Ok(Self::BreadthFirst),
+            "depth_first" => Ok(Self::DepthFirst),
+            "richest_first" => Ok(Self::RichestFirst),
+            other => Err(format!(
+                "unknown expansion strategy '{other}'; expected one of: \
+                 geo_converge, breadth_first, depth_first, richest_first"
+            )),
+        }
+    }
+}
+
 impl Default for ScanOptions {
     fn default() -> Self {
         Self {
@@ -1153,10 +1176,7 @@ mod tests {
 
     #[test]
     fn expansion_strategy_default_is_geo_converge() {
-        assert_eq!(
-            ExpansionStrategy::default(),
-            ExpansionStrategy::GeoConverge
-        );
+        assert_eq!(ExpansionStrategy::default(), ExpansionStrategy::GeoConverge);
         assert_eq!(ExpansionStrategy::default().as_str(), "geo_converge");
     }
 
@@ -1173,6 +1193,35 @@ mod tests {
             let back: ExpansionStrategy = serde_json::from_str(&json).unwrap();
             assert_eq!(back, s);
         }
+    }
+
+    #[test]
+    fn expansion_strategy_from_str_accepts_every_variant() {
+        for s in [
+            ExpansionStrategy::GeoConverge,
+            ExpansionStrategy::BreadthFirst,
+            ExpansionStrategy::DepthFirst,
+            ExpansionStrategy::RichestFirst,
+        ] {
+            let parsed: ExpansionStrategy = s.as_str().parse().unwrap();
+            assert_eq!(parsed, s);
+        }
+    }
+
+    #[test]
+    fn expansion_strategy_from_str_treats_empty_as_default() {
+        let parsed: ExpansionStrategy = "".parse().unwrap();
+        assert_eq!(parsed, ExpansionStrategy::default());
+    }
+
+    #[test]
+    fn expansion_strategy_from_str_rejects_unknown_with_useful_message() {
+        let err = "wat".parse::<ExpansionStrategy>().unwrap_err();
+        assert!(err.contains("wat"));
+        assert!(err.contains("geo_converge"));
+        assert!(err.contains("breadth_first"));
+        assert!(err.contains("depth_first"));
+        assert!(err.contains("richest_first"));
     }
 
     #[test]

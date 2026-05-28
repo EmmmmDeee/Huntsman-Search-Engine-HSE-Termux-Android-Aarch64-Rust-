@@ -445,17 +445,9 @@ impl Module for Wigle {
         let cell_fut = async {
             if CELL_BUDGET.remaining() {
                 CELL_BUDGET.increment();
-                fetch_wigle_typed(
-                    &ctx.http,
-                    user,
-                    token,
-                    lat,
-                    lon,
-                    0.01,
-                    NetworkKind::Cell,
-                )
-                .await
-                .ok()
+                fetch_wigle_typed(&ctx.http, user, token, lat, lon, 0.01, NetworkKind::Cell)
+                    .await
+                    .ok()
             } else {
                 None
             }
@@ -514,12 +506,7 @@ impl NetworkKind {
 /// observation response. Each Network record's SSID-like field holds
 /// the operator/carrier name when WiGLE has it; we mode-rank to find
 /// the dominant carrier in the bbox.
-fn extract_cell_intel(
-    resp: &Resp,
-    target_value: &str,
-    scan_id: &str,
-    result: &mut ModuleResult,
-) {
+fn extract_cell_intel(resp: &Resp, target_value: &str, scan_id: &str, result: &mut ModuleResult) {
     if resp.success != Some(true) || resp.results.is_empty() {
         return;
     }
@@ -685,7 +672,12 @@ impl Wigle {
                 && body.success == Some(true)
                 && !body.results.is_empty()
             {
-                return Ok(emit_bssid_entities(bssid, kind, &body.results, &ctx.scan_id));
+                return Ok(emit_bssid_entities(
+                    bssid,
+                    kind,
+                    &body.results,
+                    &ctx.scan_id,
+                ));
             }
         }
         Ok(ModuleResult::new())
@@ -765,12 +757,9 @@ fn emit_bssid_entities(
         addr.tag("wigle");
         addr.tag(observation_tag);
         addr.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("WiGLE {kind_label} BSSID lookup for {bssid}"),
-            )
-            .with_attr("bssid", bssid)
-            .with_attr("observation_type", kind_label),
+            Evidence::new(SRC, format!("WiGLE {kind_label} BSSID lookup for {bssid}"))
+                .with_attr("bssid", bssid)
+                .with_attr("observation_type", kind_label),
         );
         result.push(addr);
     }
@@ -1145,10 +1134,7 @@ mod tests {
         // for Organisation may collapse case; we only care that the
         // dominant carrier landed on the entity, not the canonical
         // case shape.
-        assert_eq!(
-            r.entities[0].value.to_lowercase(),
-            "acmemobileops"
-        );
+        assert_eq!(r.entities[0].value.to_lowercase(), "acmemobileops");
         assert!(r.entities[0].has_tag("cell-carrier"));
     }
 
@@ -1358,12 +1344,7 @@ mod tests {
             country: None,
             postalcode: None,
         };
-        let r = emit_bssid_entities(
-            "AA:BB:CC:DD:EE:FF",
-            NetworkKind::Wifi,
-            &[net],
-            "test",
-        );
+        let r = emit_bssid_entities("AA:BB:CC:DD:EE:FF", NetworkKind::Wifi, &[net], "test");
         assert!(r.entities.is_empty());
     }
 
@@ -1382,12 +1363,16 @@ mod tests {
             postalcode: None,
         };
         let r = emit_bssid_entities("310-410-12345", NetworkKind::Cell, &[net], "test");
-        assert!(r.entities.iter().any(|e| {
-            e.kind == EntityKind::Coordinates && e.has_tag("cell-located")
-        }));
-        assert!(r.entities.iter().any(|e| {
-            e.kind == EntityKind::Address && e.has_tag("cell-located")
-        }));
+        assert!(
+            r.entities
+                .iter()
+                .any(|e| { e.kind == EntityKind::Coordinates && e.has_tag("cell-located") })
+        );
+        assert!(
+            r.entities
+                .iter()
+                .any(|e| { e.kind == EntityKind::Address && e.has_tag("cell-located") })
+        );
     }
 
     #[test]
@@ -1404,18 +1389,17 @@ mod tests {
             country: Some("GB".into()),
             postalcode: None,
         };
-        let r = emit_bssid_entities(
-            "DD:EE:FF:00:11:22",
-            NetworkKind::Bluetooth,
-            &[net],
-            "test",
+        let r = emit_bssid_entities("DD:EE:FF:00:11:22", NetworkKind::Bluetooth, &[net], "test");
+        assert!(
+            r.entities
+                .iter()
+                .any(|e| { e.kind == EntityKind::Coordinates && e.has_tag("bluetooth-located") })
         );
-        assert!(r.entities.iter().any(|e| {
-            e.kind == EntityKind::Coordinates && e.has_tag("bluetooth-located")
-        }));
-        assert!(r.entities.iter().any(|e| {
-            e.kind == EntityKind::Address && e.has_tag("bluetooth-located")
-        }));
+        assert!(
+            r.entities
+                .iter()
+                .any(|e| { e.kind == EntityKind::Address && e.has_tag("bluetooth-located") })
+        );
     }
 
     #[test]

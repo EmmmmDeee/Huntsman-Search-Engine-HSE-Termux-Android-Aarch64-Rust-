@@ -1291,9 +1291,9 @@ async fn dispatch_index_drives_synthetic_engine_to_skip_non_accepting_modules() 
     // `module_graph_dispatch_index_matches_real_registry_accepts`
     // (pure data, no network).
     let modules: Vec<Arc<dyn Module>> = vec![
-        Arc::new(SyntheticModule),         // accepts Email
-        Arc::new(UsernameToPhoneSynth),    // accepts Username (must be skipped)
-        Arc::new(EmailToUsernameSynth),    // accepts Email
+        Arc::new(SyntheticModule),      // accepts Email
+        Arc::new(UsernameToPhoneSynth), // accepts Username (must be skipped)
+        Arc::new(EmailToUsernameSynth), // accepts Email
     ];
     let (engine, store, sid, target, ctx) =
         setup(modules, "graph-synth-engine", TargetKind::Email, "x@y.com");
@@ -1314,9 +1314,7 @@ async fn dispatch_index_drives_synthetic_engine_to_skip_non_accepting_modules() 
 
 #[test]
 fn expansion_strategy_geo_converge_outranks_breadth_for_geo_seeds() {
-    use huntsman_search_engine::core::scan::{
-        ExpansionStrategy, expansion_weight_for_strategy,
-    };
+    use huntsman_search_engine::core::scan::{ExpansionStrategy, expansion_weight_for_strategy};
 
     let geo_weight = expansion_weight_for_strategy(
         ExpansionStrategy::GeoConverge,
@@ -1415,12 +1413,7 @@ async fn richest_first_strategy_prefers_high_unlock_targets() {
         async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
             // Produce a Domain so expansion has something to chase.
             let mut r = ModuleResult::new();
-            let mut e = Entity::new(
-                EntityKind::Domain,
-                "example.com",
-                0.95,
-                &ctx.scan_id,
-            );
+            let mut e = Entity::new(EntityKind::Domain, "example.com", 0.95, &ctx.scan_id);
             e.tag("derived");
             r.push(e);
             Ok(r)
@@ -1441,12 +1434,7 @@ async fn richest_first_strategy_prefers_high_unlock_targets() {
         }
         async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
             let mut r = ModuleResult::new();
-            let mut e = Entity::new(
-                EntityKind::IpAddress,
-                "203.0.113.5",
-                0.9,
-                &ctx.scan_id,
-            );
+            let mut e = Entity::new(EntityKind::IpAddress, "203.0.113.5", 0.9, &ctx.scan_id);
             e.tag("derived");
             r.push(e);
             Ok(r)

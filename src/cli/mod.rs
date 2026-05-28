@@ -872,7 +872,8 @@ async fn cmd_doctor() -> Result<()> {
         .map_or("1aedb7ad0171ff3d6be5a844cca5d977", String::as_str)
         .to_string();
     let http = crate::util::http::build_client();
-    let status = crate::modules::wigle::refresh_account_status(&http, &wigle_user, &wigle_token).await;
+    let status =
+        crate::modules::wigle::refresh_account_status(&http, &wigle_user, &wigle_token).await;
     match status.verified {
         Some(true) => println!("  email-verified: yes"),
         Some(false) => println!(
@@ -1480,17 +1481,13 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             }
         }
     }
-    let expansion_strategy = match cmd.expansion_strategy.as_str() {
-        "geo_converge" | "" => crate::core::scan::ExpansionStrategy::GeoConverge,
-        "breadth_first" => crate::core::scan::ExpansionStrategy::BreadthFirst,
-        "depth_first" => crate::core::scan::ExpansionStrategy::DepthFirst,
-        "richest_first" => crate::core::scan::ExpansionStrategy::RichestFirst,
-        other => {
-            return Err(crate::core::error::Error::Other(format!(
-                "unknown --expansion-strategy '{other}'; expected one of: geo_converge, breadth_first, depth_first, richest_first"
-            )));
-        }
-    };
+    // Parse the strategy via `FromStr` on `ExpansionStrategy` so the
+    // variant list lives in one place (core/scan.rs) — the previous
+    // duplicate match here drifted whenever a new variant was added.
+    let expansion_strategy: crate::core::scan::ExpansionStrategy =
+        cmd.expansion_strategy.parse().map_err(|e: String| {
+            crate::core::error::Error::Other(format!("--expansion-strategy: {e}"))
+        })?;
     let options = ScanOptions {
         modules: split_csv(cmd.modules),
         exclude_modules,

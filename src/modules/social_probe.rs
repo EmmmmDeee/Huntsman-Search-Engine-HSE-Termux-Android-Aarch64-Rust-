@@ -209,11 +209,7 @@ impl Module for SocialProbe {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[
-            EntityKind::Url,
-            EntityKind::Username,
-            EntityKind::Person,
-        ];
+        const KINDS: &[EntityKind] = &[EntityKind::Url, EntityKind::Username, EntityKind::Person];
         KINDS
     }
 

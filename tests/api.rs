@@ -271,7 +271,9 @@ async fn stats_endpoint_includes_seeknow_block() {
     let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
-    let sn = json.get("seeknow").expect("stats must include seeknow block");
+    let sn = json
+        .get("seeknow")
+        .expect("stats must include seeknow block");
     for field in [
         "scan_used",
         "scan_cap",
@@ -347,7 +349,9 @@ async fn stats_endpoint_includes_oathnet_block() {
     let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
-    let on = json.get("oathnet").expect("stats must include oathnet block");
+    let on = json
+        .get("oathnet")
+        .expect("stats must include oathnet block");
     for field in [
         "scan_used",
         "scan_cap",
@@ -362,10 +366,7 @@ async fn stats_endpoint_includes_oathnet_block() {
     }
     // OathNet default scan cap is 4 (much tighter than SeekNow's 24).
     let cap = on["scan_cap"].as_u64().unwrap();
-    assert!(
-        cap >= 1,
-        "oathnet scan_cap must be positive (got {cap})"
-    );
+    assert!(cap >= 1, "oathnet scan_cap must be positive (got {cap})");
 }
 
 // ── 4. Scan create (valid) ────────────────────────────────────────────────
