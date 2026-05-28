@@ -1119,7 +1119,12 @@ pub(super) fn extract_addresses_from_text(text: &str) -> Vec<String> {
         if let Some(pos) = lower.find(&place_lower) {
             let after = &lower[pos + place_lower.len()..];
             let context: String = after.chars().take(60).collect();
-            let before_start = pos.saturating_sub(60);
+            // Walk back to a char boundary; UTF-8 multi-byte chars
+            // (e.g. '>' substitutes spanning 3 bytes) must not be split.
+            let mut before_start = pos.saturating_sub(60);
+            while before_start > 0 && !lower.is_char_boundary(before_start) {
+                before_start -= 1;
+            }
             let before: String = lower[before_start..pos].chars().collect();
             let combined = format!("{before} {context}");
             if combined.contains("australia")
@@ -1177,7 +1182,13 @@ pub(super) fn extract_addresses_from_text(text: &str) -> Vec<String> {
     for r in &addrs.clone() {
         let after_idx = text.find(r.as_str()).unwrap_or(0) + r.len();
         if after_idx < text.len() {
-            let snippet = &text[after_idx..text.len().min(after_idx + 20)];
+            // Walk the end forward to a char boundary so multi-byte
+            // UTF-8 chars cannot be split mid-codepoint.
+            let mut end = text.len().min(after_idx + 20);
+            while end < text.len() && !text.is_char_boundary(end) {
+                end += 1;
+            }
+            let snippet = &text[after_idx..end];
             if let Some(pc) = postcode_re_like(snippet) {
                 let with_pc = format!("{r} {pc}");
                 if !addrs.contains(&with_pc) {
