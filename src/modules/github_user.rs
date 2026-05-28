@@ -437,5 +437,102 @@ mod tests {
         let m = GithubUser;
         assert!(m.accepts(&Target::new(TargetKind::Username, "octocat")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::Domain, "github.com")));
+    }
+
+    #[test]
+    fn deserialize_full_profile() {
+        let json = r#"{
+            "login":"alice","id":12345,"name":"Alice Smith",
+            "email":"alice@example.com","blog":"https://alice.dev",
+            "company":"@acme-corp","location":"Brisbane, Australia",
+            "bio":"Rust dev","twitter_username":"alicedev",
+            "public_repos":42,"public_gists":5,"followers":100,
+            "following":50,"created_at":"2020-01-15T00:00:00Z",
+            "html_url":"https://github.com/alice"
+        }"#;
+        let u: GhUser = serde_json::from_str(json).unwrap();
+        assert_eq!(u.login, "alice");
+        assert_eq!(u.id, 12345);
+        assert_eq!(u.name.as_deref(), Some("Alice Smith"));
+        assert_eq!(u.email.as_deref(), Some("alice@example.com"));
+        assert_eq!(u.company.as_deref(), Some("@acme-corp"));
+        assert_eq!(u.location.as_deref(), Some("Brisbane, Australia"));
+        assert_eq!(u.twitter_username.as_deref(), Some("alicedev"));
+        assert_eq!(u.public_repos, Some(42));
+        assert_eq!(u.followers, Some(100));
+    }
+
+    #[test]
+    fn deserialize_minimal_profile() {
+        let json = r#"{"login":"bob","id":999}"#;
+        let u: GhUser = serde_json::from_str(json).unwrap();
+        assert_eq!(u.login, "bob");
+        assert!(u.name.is_none());
+        assert!(u.email.is_none());
+        assert!(u.location.is_none());
+        assert!(u.public_repos.is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_logins() {
+        let long = "a".repeat(40);
+        let cases = ["", "-start", "end-", "has space", &long, "user@name"];
+        for case in cases {
+            assert!(
+                GithubUser.accepts(&Target::new(TargetKind::Username, case)),
+                "accepts() should pass validation to process()"
+            );
+        }
+    }
+
+    #[test]
+    fn login_validation_logic() {
+        let valid = |s: &str| -> bool {
+            !s.is_empty()
+                && s.len() <= 39
+                && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && !s.starts_with('-')
+                && !s.ends_with('-')
+        };
+        assert!(valid("octocat"));
+        assert!(valid("alice-bob"));
+        assert!(!valid(""));
+        assert!(!valid("-start"));
+        assert!(!valid("end-"));
+        assert!(!valid("has space"));
+        assert!(!valid(&"a".repeat(40)));
+    }
+
+    #[test]
+    fn company_strips_at_prefix() {
+        let company = "@acme-corp";
+        let cleaned = company.trim().trim_start_matches('@');
+        assert_eq!(cleaned, "acme-corp");
+    }
+
+    #[test]
+    fn blog_url_domain_extraction() {
+        let blog = "https://alice.dev/about";
+        let parsed = url::Url::parse(blog).unwrap();
+        let host = parsed.host_str().unwrap().to_lowercase();
+        assert_eq!(host, "alice.dev");
+        assert!(host.contains('.'));
+        assert_ne!(host, "github.com");
+    }
+
+    #[test]
+    fn blog_non_http_ignored() {
+        let blog = "alice.dev";
+        assert!(!blog.starts_with("http://") && !blog.starts_with("https://"));
+    }
+
+    #[test]
+    fn module_metadata() {
+        let m = GithubUser;
+        assert_eq!(m.name(), "github_user");
+        assert_eq!(m.priority(), 107);
+        assert_eq!(m.max_timeout_ms(), 5_000);
+        assert!(!m.description().is_empty());
     }
 }

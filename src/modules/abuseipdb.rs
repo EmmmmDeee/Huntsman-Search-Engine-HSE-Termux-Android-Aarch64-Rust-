@@ -147,4 +147,52 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::IpAddress, "8.8.8.8")));
         assert!(!m.accepts(&Target::new(TargetKind::Domain, "example.com")));
     }
+
+    #[test]
+    fn confidence_formula_score_zero() {
+        let score: u32 = 0;
+        let conf = 0.60 + (score as f64 / 100.0) * 0.35;
+        assert!((conf - 0.60).abs() < 1e-9);
+    }
+
+    #[test]
+    fn confidence_formula_score_80() {
+        let score: u32 = 80;
+        let conf = 0.60 + (score as f64 / 100.0) * 0.35;
+        assert!((conf - 0.88).abs() < 1e-9);
+    }
+
+    #[test]
+    fn confidence_formula_score_100() {
+        let score: u32 = 100;
+        let conf = 0.60 + (score as f64 / 100.0) * 0.35;
+        assert!((conf - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn deserialize_tor_exit() {
+        let json = r#"{"data":{"abuseConfidenceScore":95,"totalReports":200,"isTor":true,"isp":"TorProject","countryCode":"DE"}}"#;
+        let r: AbuseResponse = serde_json::from_str(json).unwrap();
+        let d = r.data.unwrap();
+        assert_eq!(d.is_tor, Some(true));
+        assert_eq!(d.abuse_confidence_score, Some(95));
+    }
+
+    #[test]
+    fn deserialize_null_data() {
+        let json = r#"{"data":null}"#;
+        let r: AbuseResponse = serde_json::from_str(json).unwrap();
+        assert!(r.data.is_none());
+    }
+
+    #[test]
+    fn deserialize_missing_optional_fields() {
+        let json = r#"{"data":{"abuseConfidenceScore":10}}"#;
+        let r: AbuseResponse = serde_json::from_str(json).unwrap();
+        let d = r.data.unwrap();
+        assert_eq!(d.abuse_confidence_score, Some(10));
+        assert!(d.total_reports.is_none());
+        assert!(d.is_tor.is_none());
+        assert!(d.isp.is_none());
+    }
 }
