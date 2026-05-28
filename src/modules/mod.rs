@@ -40,6 +40,7 @@ pub mod greynoise;
 pub mod hackertarget;
 pub mod hibp;
 pub mod hudsonrock;
+pub mod hunter_io;
 pub mod intelx;
 pub mod ip2location;
 pub mod ip_geo;
@@ -86,6 +87,7 @@ pub mod wayback;
 pub mod web_crawler;
 pub mod webserver_banner;
 pub mod whois;
+pub mod whoisxml;
 pub mod wifi_intel;
 pub mod wigle;
 pub mod xposed_or_not;
@@ -115,6 +117,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(criminal_ip::CriminalIp),
         Arc::new(ipqs::IpQs),
         Arc::new(contact_enrich::ContactEnrich),
+        Arc::new(hunter_io::HunterIo),
         Arc::new(disposable_check::DisposableCheck),
         Arc::new(wigle::Wigle),
         Arc::new(cert_intel::CertIntel),
@@ -124,6 +127,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(smtp_vrfy::SmtpVrfy),
         Arc::new(doh_resolver::DohResolver),
         Arc::new(whois::Whois),
+        Arc::new(whoisxml::WhoisXml),
         Arc::new(ip_registry::IpRegistry),
         Arc::new(ip2location::Ip2Location),
         Arc::new(ip_geo::IpGeo),

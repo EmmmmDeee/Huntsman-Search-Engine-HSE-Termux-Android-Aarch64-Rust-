@@ -146,7 +146,19 @@ pub enum Command {
         output: String,
     },
     /// List registered modules with their cost tier and accepted target kinds.
-    Modules,
+    ///
+    /// Filter with `--category <cat>` (dns_recon / breach / infrastructure /
+    /// search / geo / social / email / phone / corporate / threat / sensor
+    /// / people / web / other) or `--json` to get the machine-readable
+    /// shape that `/api/v1/modules` returns.
+    Modules {
+        /// Restrict listing to one module category.
+        #[arg(short, long)]
+        category: Option<String>,
+        /// Output as JSON (same shape as `/api/v1/modules`).
+        #[arg(long)]
+        json: bool,
+    },
     /// Verify environment: DB path, key file, Termux detection, module counts.
     Doctor,
     /// Provision the local environment: write/merge `$HOME/.huntsman.env`
@@ -350,7 +362,7 @@ pub async fn run() -> Result<()> {
             })
             .await
         }
-        Command::Modules => cmd_modules(),
+        Command::Modules { category, json } => cmd_modules(category, json),
         Command::Doctor => doctor::cmd_doctor().await,
         Command::Provision {
             env_only,
@@ -428,15 +440,39 @@ fn cmd_set_key(name: String, value: String) -> Result<()> {
 mod import;
 use import::cmd_import;
 
-fn cmd_modules() -> Result<()> {
+fn cmd_modules(category_filter: Option<String>, as_json: bool) -> Result<()> {
     let mut mods = registry();
     mods.sort_by_key(|m| std::cmp::Reverse(m.priority()));
 
+    // Optional category filter (case-insensitive substring match
+    // against the snake_case category name).
+    let category_filter_lc = category_filter.as_ref().map(|s| s.to_lowercase());
+    let filtered: Vec<_> = mods
+        .iter()
+        .filter(|m| match &category_filter_lc {
+            Some(needle) => m.category().as_str() == needle.as_str(),
+            None => true,
+        })
+        .collect();
+
+    if as_json {
+        // Same shape as /api/v1/modules — operators can `jq` the
+        // output the same way they'd `jq` the HTTP endpoint.
+        let infos: Vec<_> = filtered.iter().map(|m| m.info()).collect();
+        let body = serde_json::to_string_pretty(&serde_json::json!({
+            "modules": infos,
+            "count": infos.len(),
+        }))
+        .map_err(|e| Error::Other(format!("json: {e}")))?;
+        println!("{body}");
+        return Ok(());
+    }
+
     println!(
-        "{:<26} {:>4}  {:<10} {:<8} ACCEPTS",
-        "MODULE", "PRI", "COST", "PASSIVE"
+        "{:<26} {:>4}  {:<14} {:<10} {:<8} ACCEPTS",
+        "MODULE", "PRI", "CATEGORY", "COST", "PASSIVE"
     );
-    println!("{}", "-".repeat(80));
+    println!("{}", "-".repeat(96));
 
     let target_kinds = [
         ("email", TargetKind::Email),
@@ -454,7 +490,7 @@ fn cmd_modules() -> Result<()> {
         ("apikey", TargetKind::ApiKey),
     ];
 
-    for m in &mods {
+    for m in &filtered {
         let accepts: Vec<&str> = target_kinds
             .iter()
             .filter(|(_, k)| m.accepts(&Target::new(*k, "")))
@@ -463,13 +499,24 @@ fn cmd_modules() -> Result<()> {
         let cost = cost_label(m.cost());
         let passive = if m.is_passive() { "yes" } else { "no" };
         println!(
-            "{:<26} {:>4}  {:<10} {:<8} {}",
+            "{:<26} {:>4}  {:<14} {:<10} {:<8} {}",
             m.name(),
             m.priority(),
+            m.category().as_str(),
             cost,
             passive,
             accepts.join(",")
         );
+    }
+    if filtered.is_empty() {
+        if let Some(f) = category_filter {
+            eprintln!("\nNo modules in category '{f}'.");
+            eprintln!(
+                "Valid: dns_recon / breach / infrastructure / search / geo / social /\n       email / phone / corporate / threat / sensor / people / web / other"
+            );
+        }
+    } else {
+        println!("\n{} module(s) total.", filtered.len());
     }
     Ok(())
 }
