@@ -221,4 +221,67 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_FIREFOX,
     },
+    // ── Extended engines (2026 batch 2) ─────────────────────────────
+    // you.com is conversational but exposes a classic /search HTML view
+    // with referrer-style result anchors. Useful when other engines are
+    // CAPTCHA-blocked.
+    EngineSpec {
+        name: "you",
+        build_url: |q| {
+            format!(
+                "https://you.com/search?q={}&tbm=youchat",
+                crate::util::http::urlencode(q)
+            )
+        },
+        build_post: None,
+        paginate: None,
+        ua: crate::util::curl::UA_DESKTOP,
+        ua_alt: crate::util::curl::UA_FIREFOX,
+    },
+    // Presearch is a decentralised privacy engine that proxies to a
+    // configurable backend. The HTML view is parsable like DDG/Brave.
+    EngineSpec {
+        name: "presearch",
+        build_url: |q| {
+            format!(
+                "https://presearch.com/search?q={}",
+                crate::util::http::urlencode(q)
+            )
+        },
+        build_post: None,
+        paginate: None,
+        ua: crate::util::curl::UA_DESKTOP,
+        ua_alt: crate::util::curl::UA_FIREFOX,
+    },
+    // MetaGer (German non-profit) federates 50+ underlying engines and
+    // returns clean HTML; rarely CAPTCHA-blocked.
+    EngineSpec {
+        name: "metager",
+        build_url: |q| {
+            format!(
+                "https://metager.org/meta/meta.ger3?eingabe={}",
+                crate::util::http::urlencode(q)
+            )
+        },
+        build_post: None,
+        paginate: None,
+        ua: crate::util::curl::UA_FIREFOX,
+        ua_alt: crate::util::curl::UA_DESKTOP,
+    },
+    // SearXNG public instances aggregate dozens of engines. We point
+    // at the well-known etsi.org instance; if blocked, the engine
+    // falls back via the standard interstitial detector path.
+    EngineSpec {
+        name: "searx",
+        build_url: |q| {
+            format!(
+                "https://searx.be/search?q={}&format=html&categories=general",
+                crate::util::http::urlencode(q)
+            )
+        },
+        build_post: None,
+        paginate: None,
+        ua: crate::util::curl::UA_DESKTOP,
+        ua_alt: crate::util::curl::UA_FIREFOX,
+    },
 ];

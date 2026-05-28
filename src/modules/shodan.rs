@@ -104,12 +104,12 @@ impl Module for Shodan {
 
         let mut result = ModuleResult::new();
 
-        // ── 1. Free InternetDB (always) ──────────────────────────────
-        self.query_internetdb(ip, ctx, &mut result).await;
-
-        // ── 2. Paid host API (when key is present) ───────────────────
         if let Some(key) = ctx.key_opt(KEY_ENV) {
+            // Paid API returns a strict superset (org, ISP, ASN, OS,
+            // country + everything InternetDB has). Skip free path.
             self.query_paid(ip, key, ctx, &mut result).await?;
+        } else {
+            self.query_internetdb(ip, ctx, &mut result).await;
         }
 
         Ok(result)

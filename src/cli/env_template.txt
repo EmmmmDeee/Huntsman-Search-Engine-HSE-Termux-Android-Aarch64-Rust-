@@ -7,7 +7,12 @@
 
 # --- TIER 0: MASTER INTEGRATION EDGE ---
 # Primary Upstream Intelligence API Focus
+# Both pools run in parallel: 2x daily lookup capacity, overlapping but
+# distinct data corpora.
 HUNTSMAN_OATHNET_KEY="insert_oathnet_pro_key_here"
+HUNTSMAN_SEEKNOW_KEY="insert_see_know_eu_key_here"
+# Exa AI neural search — semantic OSINT discovery
+HUNTSMAN_EXA_KEY="insert_exa_ai_key_here"
 
 # --- TIER 1: THREAT INTEL, REPUTATION & AMBIENT NOISE FILTRATION ---
 HUNTSMAN_ALIENVAULT_KEY="insert_alienvault_otx_key_here"

@@ -641,12 +641,24 @@ pub fn expansion_weight(kind: TargetKind, c_eff: f64, value: &str, has_paid_keys
 /// prioritises geo-convergent paths over non-geo paths at every round.
 fn geo_proximity_boost(kind: TargetKind) -> f64 {
     match kind {
+        // Coordinates ARE the terminal node — promote them above Address
+        // so geo-rich entities resolve first when both appear in the
+        // expansion queue. Was 1.6 (below Address 2.2); now 2.5.
+        TargetKind::Coordinates => 2.5,
+        // Address with a string value → geocode/photon → Coordinates.
+        // Single hop, high reliability.
         TargetKind::Address => 2.2,
+        // MAC → wigle/mylnikov → Coordinates. Single hop.
         TargetKind::MacAddress => 2.0,
+        // IP → ip_geo/ipinfo → Coordinates. Single hop, highly reliable.
         TargetKind::IpAddress => 1.8,
-        TargetKind::Coordinates => 1.6,
+        // Phone → phone_area_geo/phone_carrier_geo → Country/State. Two hops.
         TargetKind::Phone => 1.5,
+        // Organisation → opencorporates → registered address → Coords. Two hops.
         TargetKind::Organisation => 1.3,
+        // ASN → bgpview → prefixes → IPs → Coords. Three hops, but each
+        // ASN often resolves to a fixed datacenter location.
+        TargetKind::Asn => 1.2,
         _ => 1.0,
     }
 }

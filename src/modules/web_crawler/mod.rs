@@ -160,7 +160,45 @@ impl Module for WebCrawler {
         };
 
         fetch_robots(&ctx.http, &seed_url, &mut state.disallow_rules).await;
-        probe_config_leaks(&ctx.http, seed_url.as_str(), &domain).await;
+        let leaks = probe_config_leaks(&ctx.http, seed_url.as_str(), &domain).await;
+
+        // Convert each discovered key into an ApiKey entity so it shows up
+        // in the operator's scan results and triggers AU-021 correlation.
+        // Also tag the parent Domain with config-leak so downstream rules
+        // can prioritise it.
+        let mut domain_was_leaky = false;
+        for (path, bytes, keys) in &leaks {
+            domain_was_leaky = true;
+            for (service, key_val) in keys {
+                let roi = crate::util::key_roi::classify(service);
+                let mut e = Entity::new(EntityKind::ApiKey, key_val, 0.90, &ctx.scan_id);
+                e.tag("api-key");
+                e.tag("config-leak");
+                e.tag("web-crawler");
+                e.tag(format!("service:{service}"));
+                e.tag(format!("roi:{}", roi.label()));
+                if roi == crate::util::key_roi::KeyRoi::Multiplier {
+                    e.tag("force-multiplier");
+                }
+                e.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("API key ({service}) exposed at {domain}{path}"),
+                    )
+                    .with_attr("service", *service)
+                    .with_attr("roi_tier", roi.label())
+                    .with_attr("exposure_path", path.as_str())
+                    .with_attr("file_size_bytes", bytes.to_string()),
+                );
+                state.result.push(e);
+            }
+        }
+        if domain_was_leaky {
+            // Emit a meta-evidence entry on the domain even before the
+            // main crawl runs. The Domain entity is still built below;
+            // we just remember to tag it.
+            state.frameworks.insert("config-leak-detected");
+        }
 
         let seed_for_entities = seed.clone();
         state.queue.push_back((seed, 0));

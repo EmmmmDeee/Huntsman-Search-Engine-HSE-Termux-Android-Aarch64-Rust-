@@ -170,6 +170,10 @@ fn ensure_hardcoded_keys() {
         ("HUNTSMAN_HIBP_KEY", "42587552dce6424a87312941c8a2c3c5"),
         ("HUNTSMAN_WIGLE_USER", "AID4493a33e2df9d07ab9666a27c8aead17"),
         ("HUNTSMAN_WIGLE_TOKEN", "1aedb7ad0171ff3d6be5a844cca5d977"),
+        (
+            "HUNTSMAN_SEEKNOW_KEY",
+            "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25",
+        ),
     ];
 
     let path = env_path();

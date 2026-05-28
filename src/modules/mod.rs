@@ -28,7 +28,9 @@ pub mod email_header_geo;
 pub mod email_locale;
 pub mod email_parse;
 pub mod emailrep;
+pub mod employer_pivot;
 pub mod epieos;
+pub mod exa_search;
 pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
@@ -64,6 +66,7 @@ pub mod pwned_passwords;
 pub mod rdap_domain;
 pub mod search_engines;
 pub mod securitytrails;
+pub mod see_know;
 pub mod seon;
 pub mod shodan;
 pub mod smtp_vrfy;
@@ -97,6 +100,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(xposed_or_not::XposedOrNot),
         Arc::new(ip_reputation::IpReputation),
         Arc::new(oathnet_pro::OathnetPro),
+        Arc::new(see_know::SeekNow),
+        Arc::new(exa_search::ExaSearch),
         Arc::new(urlhaus::UrlHaus),
         Arc::new(shodan::Shodan),
         Arc::new(censys::Censys),
@@ -135,6 +140,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(web_crawler::WebCrawler),
         Arc::new(urlscan::UrlScan),
         Arc::new(email_parse::EmailParse),
+        Arc::new(employer_pivot::EmployerPivot),
         Arc::new(social_probe::SocialProbe),
         Arc::new(username_search::UsernameSearch),
         Arc::new(github_user::GithubUser),

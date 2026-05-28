@@ -176,30 +176,10 @@ fn capitalise(s: &str) -> String {
     }
 }
 
+/// Re-export of the shared freemail check. Kept for backwards
+/// compatibility — new callers should use [`crate::util::domains::is_freemail`].
 pub fn is_freemail(domain: &str) -> bool {
-    const FREE: &[&str] = &[
-        "gmail.com",
-        "yahoo.com",
-        "hotmail.com",
-        "outlook.com",
-        "aol.com",
-        "icloud.com",
-        "mail.com",
-        "protonmail.com",
-        "proton.me",
-        "zoho.com",
-        "yandex.com",
-        "gmx.com",
-        "gmx.net",
-        "live.com",
-        "msn.com",
-        "me.com",
-        "mac.com",
-        "fastmail.com",
-        "tutanota.com",
-        "tuta.io",
-    ];
-    FREE.contains(&domain)
+    crate::util::domains::is_freemail(domain)
 }
 
 #[cfg(test)]

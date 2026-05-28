@@ -1,0 +1,942 @@
+OATHNET PRO API — LLM INTEGRATION GUIDE
+========================================
+
+This document is the authoritative reference for LLMs interacting with
+the OathNet Pro API. It incorporates every endpoint, parameter, response
+format, quota rule, error code, and best practice from the official
+OathNet documentation (https://docs.oathnet.org).
+
+
+1. OVERVIEW
+-----------
+
+OathNet is a data intelligence platform combining breach search, stealer
+log analysis, victim data access, OSINT lookups, and automated monitoring
+(scanners) into a single API.
+
+Base URL:       https://oathnet.org/api
+Documentation:  https://docs.oathnet.org
+LLM index:      https://docs.oathnet.org/llms.txt
+Support:        support@oathnet.org
+Discord:        https://discord.gg/DCjnk9TAMK
+
+
+2. AUTHENTICATION
+-----------------
+
+Every request MUST include the API key in a lowercase header:
+
+    x-api-key: YOUR_API_KEY
+
+Generate keys at: https://oathnet.org/dashboard?tab=account
+
+Rules:
+- NEVER hardcode API keys in source code. Use environment variables or
+  secret managers.
+- Rotate keys every 90 days.
+- Maintain separate credentials for dev, staging, and production.
+- NEVER use the API from browsers — this exposes the key.
+
+
+3. RESPONSE FORMATS
+--------------------
+
+OathNet uses three response patterns:
+
+3.1 ENVELOPE JSON (most endpoints)
+
+    {
+      "success": true,
+      "message": "OK",
+      "data": {
+        "items": [ ... ],
+        "_meta": {
+          "count": 15,
+          "total": 1234,
+          "took_ms": 42,
+          "has_more": true,
+          "total_pages": 83,
+          "lookups": {
+            "left_today": 487
+          }
+        }
+      }
+    }
+
+    On error:
+    {
+      "success": false,
+      "message": "Human-readable error description",
+      "errors": {
+        "field_name": "Specific error details"
+      }
+    }
+
+3.2 RAW JSON (health, autocomplete, job status, AI filters)
+
+    Direct payload without the success/message/data wrapper.
+
+3.3 FILE/TEXT STREAMS (victim archive downloads, file content)
+
+    Binary or text downloads. Check Content-Type header.
+
+IMPORTANT: Not every 2xx response includes a "success" field. Certain
+endpoint types (job status, autocomplete, bulk search) may omit it.
+Always prioritise HTTP status codes first, then check "success" when
+present.
+
+
+4. ENDPOINTS — V2 SEARCH SURFACES (PRIMARY)
+--------------------------------------------
+
+These are the highest-value endpoints. Prefer V2 over legacy.
+
+4.1 BREACH SEARCH
+
+    GET /service/v2/breach/search
+
+    Query parameters:
+      q              Free-text query (auto-detects email, domain, IP,
+                     username, Discord ID, Steam ID)
+      email[]        Email address filter
+      domain[]       Domain filter
+      username[]     Username filter
+      ip[]           IP address filter
+      phone[]        Phone number filter
+      country[]      Country code filter
+      dbname[]       Database/breach name filter
+      page_size      Results per page (default: 100, max: 1000)
+      cursor         Pagination cursor from previous response
+      filter         JSON structured filter object
+      filter_id      Saved filter context ID
+      search_id      Search session ID (for quota efficiency)
+
+    Returns: Breach records with email, username, password (may be
+    redacted with ***UPGRADE_TO_SEE***), phone, full_name, IP, country,
+    city, state, address, DOB, gender, dbname, and more.
+
+4.2 STEALER SEARCH
+
+    GET /service/v2/stealer/search
+
+    Query parameters: Same as breach search, plus:
+      url[]          URL/domain of the stolen credential
+      log_id[]       Stealer log identifier
+
+    page_size default: 25, max: 100
+
+    Returns: Credential records with username, password, URL, email[],
+    domain[], log_id, and device/session metadata.
+
+4.3 VICTIMS SEARCH
+
+    GET /service/v2/victims/search
+
+    Query parameters: Same pattern as stealer search.
+
+    page_size default: 25, max: 100
+
+    Returns: Compromised-device summaries keyed by log_id, with
+    aggregated credential counts, domains affected, and timestamps.
+
+4.4 VICTIM FILE ACCESS
+
+    GET /service/v2/victims/{log_id}           File tree manifest
+    GET /service/v2/victims/{log_id}/files/{file_id}   Raw text content
+    GET /service/v2/victims/{log_id}/archive   ZIP download
+
+    Workflow: search victims → get manifest → retrieve specific files
+    or download the complete archive.
+
+
+5. ENDPOINTS — OSINT LOOKUPS (LEGACY)
+--------------------------------------
+
+These endpoints use the legacy /service/* path. Still supported but
+new integrations should prefer V2 where equivalent exists.
+
+    GET /service/holehe        Email service enumeration
+        param: email           Returns: { domains: ["twitter.com", ...] }
+
+    GET /service/ip-info       IP geolocation and ISP data
+        param: ip              Returns: geo, ISP, ASN, org
+
+    GET /service/ghunt         Google account OSINT
+        param: email           Returns: Google account metadata
+
+    GET /service/discord-userinfo       Discord profile
+        param: id              Returns: username, avatar, badges, etc.
+
+    GET /service/discord-username-history   Discord username changes
+        param: id              Returns: historical usernames
+
+    GET /service/steam         Steam profile
+        param: steamid         Returns: profile data by Steam64 ID
+
+    GET /service/xbox          Xbox profile
+        param: gamertag        Returns: Xbox profile data
+
+    GET /service/roblox-userinfo   Roblox user
+        param: username        Returns: Roblox profile data
+
+
+6. ENDPOINTS — BULK OPERATIONS
+-------------------------------
+
+    POST /service/v2/bulk/search       Batch search across multiple terms
+    POST /service/v2/exports/create    Export results as CSV/JSON
+    POST /service/v2/file-search       Async search within victim archives
+
+    These are asynchronous job-based operations. Submit the job, receive
+    a job ID, poll for completion.
+
+
+7. ENDPOINTS — AI FILTERS
+--------------------------
+
+    POST /service/v2/ai/filter
+
+    Converts natural language queries to structured filter objects.
+    Returns a reusable filter_id for subsequent searches.
+
+    Example: "emails from adobe breach in 2023 containing @gmail.com"
+    → structured filter with dbname=adobe, date range, email contains
+
+
+8. ENDPOINTS — SCANNERS (AUTOMATED MONITORING)
+------------------------------------------------
+
+Scanners monitor newly indexed stealer or breach data on an hourly
+schedule. They only detect data indexed AFTER the scanner's baseline —
+they do NOT replay historical data.
+
+    POST /scanners/create              Create a scanner
+    GET  /scanners/{uid}               Get scanner details
+    GET  /scanners/{uid}/runs          Review run history
+    POST /scanners/{uid}/trigger       Force immediate run
+    POST /scanners/{uid}/pause         Pause monitoring
+    POST /scanners/{uid}/resume        Resume monitoring
+    DELETE /scanners/{uid}             Delete scanner
+    GET  /scanners/quota               Check scanner limits
+    POST /scanners/test-delivery       Test notification delivery
+
+    Scanner types: "stealer" (credentials, usernames, domains) or
+    "breach" (records, names, phone numbers).
+
+    Notification methods:
+    - Email delivery
+    - Discord webhooks
+    - Custom HTTP webhooks (signed_json, signed_encrypted, or api_key)
+
+    Webhook validation rejects:
+    - IP addresses as URLs
+    - localhost / internal hostnames
+    - Non-HTTP protocols
+
+    query_config accepts flat filters or structured filter objects.
+    Runtime parameters (from, to, cursor, page_size) are managed
+    automatically — do not set them manually.
+
+
+9. SEARCH SESSIONS (CRITICAL FOR QUOTA EFFICIENCY)
+----------------------------------------------------
+
+Search sessions allow MULTIPLE searches on the SAME query while
+consuming only ONE lookup from the daily quota.
+
+Without sessions: searching breach + stealer + holehe for the same
+email costs 3 lookups.
+With sessions: the same 3 searches cost 1 lookup.
+
+    POST /service/search/init
+    Body: { "query": "user@example.com" }
+    Header: x-api-key: YOUR_KEY
+
+    Response: { "search_id": "abc123..." }
+
+Usage: Add search_id to all subsequent requests for that query:
+
+    GET /service/v2/breach/search?email[]=user@example.com&search_id=abc123
+
+Rules:
+- Sessions are valid for 60 MINUTES.
+- The query type is auto-detected (email, domain, IP, Discord ID,
+  Steam ID, username).
+- Initialize ONE session per distinct query being investigated.
+- Reuse the session ID across all related search endpoints.
+
+THIS IS THE SINGLE MOST IMPORTANT OPTIMISATION. An LLM making multiple
+OathNet calls for the same target MUST use search sessions.
+
+
+10. STRUCTURED FILTERS
+-----------------------
+
+Filters enable complex query logic beyond simple field=value matching.
+
+10.1 THREE FILTER SHAPES
+
+    Leaf:   { "field": "email", "operator": "contains", "value": "@gmail.com" }
+    AND:    { "and": [ <leaf|and|or>, <leaf|and|or>, ... ] }
+    OR:     { "or":  [ <leaf|and|or>, <leaf|and|or>, ... ] }
+
+    Nesting: up to 2 levels deep.
+    Maximum: 50 leaf conditions per filter.
+
+10.2 OPERATORS
+
+    eq           Exact match
+    in           Match any value in a list
+    contains     Substring match
+    starts_with  Prefix match
+    ends_with    Suffix match
+    wildcard     Glob pattern (min 2 non-wildcard chars)
+    gt           Greater than
+    gte          Greater than or equal
+    lt           Less than
+    lte          Less than or equal
+    exists       Field is present (boolean)
+
+    Restrictions:
+    - Pattern operators (wildcard, contains, etc.) require at least 2
+      non-wildcard characters.
+    - Patterns like "*" or "*a*" are rejected.
+    - Pattern operators cannot be used on date or IP fields.
+    - Field names are validated against endpoint-specific schemas.
+
+10.3 FILTER DELIVERY METHODS
+
+    GET with URL encoding:
+      ?filter={"and":[{"field":"email","operator":"contains","value":"@gmail.com"}]}
+
+    POST with JSON body:
+      Content-Type: application/json
+      { "filter": { ... } }
+
+    Saved filter via AI endpoint:
+      ?filter_id=abc123
+
+    Merge priority: filter_id context → explicit filter → flat params.
+
+
+11. PAGINATION
+--------------
+
+OathNet uses CURSOR-BASED pagination. No offset/page-number support.
+
+    1. Make initial request.
+    2. Read next_cursor (V2) or nextCursorMark (legacy) from response.
+    3. Pass cursor=<value> in the next request.
+    4. Repeat until cursor is null.
+
+    Page size defaults and limits:
+
+    Endpoint             Default    Maximum
+    ────────────────────────────────────────
+    Breach Search        100        1000
+    V2 Stealer           25         100
+    V2 Victims           25         100
+
+RULES:
+- Do NOT change filters between pages. The cursor is bound to the
+  original query.
+- Cursors expire after inactivity. If expired, restart from the
+  beginning.
+- Process results incrementally — do not load all pages into memory.
+- Add delays between page requests to respect rate limits.
+- Persist cursor state if the job may be interrupted.
+
+
+12. QUOTAS
+----------
+
+Daily quotas reset 24 hours after the first lookup of the day.
+
+Monitor remaining quota via _meta.lookups.left_today in responses.
+
+Key quota facts:
+- Each API call deducts one lookup (unless using a search session).
+- Search sessions reduce cost: N calls for 1 query = 1 lookup.
+- Scanner quotas are separate from search quotas.
+- Plan tier determines daily lookup limit and feature access.
+
+Plan-gated features (require higher tiers):
+- File search
+- Exports
+- Bulk search
+- Archive downloads
+- AI filter creation
+- Scanner quotas
+
+When quota is exhausted:
+- HTTP 403 with message "You have reached your daily lookup limit"
+- All search endpoints return empty results
+- Scanners continue running on their own quota
+
+Set alerts when quota approaches critical thresholds. Monitor
+left_today after every response.
+
+
+13. ERROR HANDLING
+------------------
+
+Always check HTTP status code FIRST, then parse the JSON body.
+
+    200  Success
+    202  Async job accepted (poll for result)
+    400  Invalid parameters, malformed JSON, unsupported config
+    401  Missing or invalid API key
+    403  Quota exhausted or insufficient plan permissions
+    404  Resource not found or not owned by this key
+    429  Rate limited (too many requests per second)
+    5xx  Server-side error (retry with backoff)
+
+Retry strategy:
+- 429: Respect Retry-After header. Use exponential backoff.
+- 5xx: Retry up to 3 times with exponential backoff (2s, 4s, 8s).
+- 401/403: Do NOT retry. Check key validity or quota.
+- 400: Do NOT retry. Fix the request.
+
+Quota exhaustion detection:
+- HTTP 403 with "daily lookup limit" in message
+- Response body containing "left_today": 0
+- Response body containing "limit exceeded" or "quota"
+
+
+14. BEST PRACTICES FOR LLM INTEGRATIONS
+-----------------------------------------
+
+14.1 QUOTA CONSERVATION (highest priority)
+
+    1. ALWAYS use search sessions for multi-endpoint queries on the
+       same target. This is the #1 optimisation.
+    2. Cache responses locally. The same query returns the same data
+       within a short window — never re-query unnecessarily.
+    3. Request only the page_size you need. Don't fetch 1000 records
+       when 15 suffice.
+    4. Monitor left_today after every response. Stop gracefully when
+       quota is low.
+    5. Use the breach endpoint as your PRIMARY search. It returns the
+       richest data per query (emails, usernames, phones, names, IPs,
+       addresses, passwords, geo, DOB, social handles).
+    6. Only query stealer when the target is an email or username —
+       stealer logs are indexed by login credentials, not by phone/IP.
+
+14.2 REQUEST CONSTRUCTION
+
+    1. Use the q parameter for auto-detected queries when the type is
+       ambiguous. Use typed arrays (email[], domain[]) when you know
+       the exact field.
+    2. Structured filters give the best precision. Use them for
+       complex queries instead of multiple simple calls.
+    3. Always include Accept: application/json header.
+    4. URL-encode all query parameter values.
+
+14.3 ERROR HANDLING
+
+    1. Check HTTP status first, not the JSON "success" field.
+    2. On 429, read Retry-After and wait that many seconds.
+    3. On 403 with quota message, stop all queries — don't retry.
+    4. On 5xx, retry with exponential backoff (max 3 attempts).
+    5. Log the full response body on errors for debugging.
+
+14.4 SECURITY
+
+    1. Store keys in environment variables (HUNTSMAN_OATHNET_KEY).
+    2. Never log or emit the full API key in output.
+    3. Redact password fields from breach/stealer data before
+       displaying to users.
+    4. Use HTTPS exclusively. Verify TLS certificates.
+    5. Sanitise all user inputs before including in API requests.
+
+14.5 PERFORMANCE
+
+    1. Use cursor-based pagination for large result sets.
+    2. Stream and process results incrementally.
+    3. Add 200-500ms delays between paginated requests.
+    4. For bulk operations, use the async bulk search endpoint
+       rather than looping over individual queries.
+
+
+15. ENDPOINT QUICK REFERENCE
+------------------------------
+
+SEARCH (V2 — use these):
+  GET  /service/v2/breach/search     Breach records
+  GET  /service/v2/stealer/search    Stealer credentials
+  GET  /service/v2/victims/search    Compromised devices
+
+VICTIM FILES:
+  GET  /service/v2/victims/{log_id}                  Manifest
+  GET  /service/v2/victims/{log_id}/files/{file_id}  File content
+  GET  /service/v2/victims/{log_id}/archive          ZIP download
+
+BULK/ASYNC:
+  POST /service/v2/bulk/search       Batch search
+  POST /service/v2/exports/create    Export to CSV/JSON
+  POST /service/v2/file-search       Search within archives
+
+AI:
+  POST /service/v2/ai/filter         Natural language → filter
+
+SESSIONS:
+  POST /service/search/init          Create search session
+
+SCANNERS:
+  POST   /scanners/create            Create scanner
+  GET    /scanners/{uid}             Get details
+  GET    /scanners/{uid}/runs        Run history
+  POST   /scanners/{uid}/trigger     Force run
+  POST   /scanners/{uid}/pause       Pause
+  POST   /scanners/{uid}/resume      Resume
+  DELETE /scanners/{uid}             Delete
+  GET    /scanners/quota             Check limits
+  POST   /scanners/test-delivery     Test notifications
+
+OSINT (legacy):
+  GET  /service/holehe               Email service enumeration
+  GET  /service/ip-info              IP geolocation
+  GET  /service/ghunt                Google account OSINT
+  GET  /service/discord-userinfo     Discord profile
+  GET  /service/discord-username-history  Discord username history
+  GET  /service/steam                Steam profile
+  GET  /service/xbox                 Xbox profile
+  GET  /service/roblox-userinfo      Roblox profile
+
+
+16. EXAMPLE: OPTIMAL LLM WORKFLOW
+-----------------------------------
+
+Goal: Investigate user@example.com with minimum quota usage.
+
+Step 1 — Create a search session:
+
+    POST /service/search/init
+    x-api-key: $KEY
+    Content-Type: application/json
+    { "query": "user@example.com" }
+
+    → { "search_id": "sess_abc123" }
+
+Step 2 — Breach search (highest value endpoint):
+
+    GET /service/v2/breach/search?email[]=user@example.com&page_size=15&search_id=sess_abc123
+
+    → Breach records with emails, usernames, IPs, addresses, passwords,
+      phone numbers, DOB, gender, social handles.
+
+Step 3 — Stealer search (if email/username target):
+
+    GET /service/v2/stealer/search?email[]=user@example.com&page_size=10&search_id=sess_abc123
+
+    → Credential records with login URLs, passwords, domains.
+
+Total quota cost: 1 lookup (session covers both calls).
+
+Step 4 (optional) — If breach data reveals associated domains:
+
+    POST /service/search/init
+    { "query": "example.com" }
+
+    GET /service/v2/breach/search?domain[]=example.com&page_size=100&search_id=sess_domain
+
+    Total cost: 1 additional lookup.
+
+Grand total: 2 lookups for a comprehensive investigation that would
+have cost 4+ without sessions.
+
+
+17. FIELD REFERENCE — BREACH RECORDS
+--------------------------------------
+
+Common fields returned in breach search items:
+
+    email           Email address
+    username        Username / login handle
+    password        Password (may be redacted: ***UPGRADE_TO_SEE***)
+    password_hash   Hashed password
+    salt            Password salt
+    full_name       Full name
+    display_name    Display / screen name
+    phone_number    Phone number
+    phone_national  National-format phone
+    ip              IP address
+    country         Country name or code
+    city            City name
+    state           State / province
+    postal_code     Postal / ZIP code
+    address_street  Street address
+    date_birth      Date of birth
+    gender          Gender
+    age             Age (number or string)
+    language        Language preference
+    bio             Profile bio / description
+    location        Free-text location
+    account_id      Platform account ID
+    created_at      Account creation date
+    followers       Follower count
+    discordid       Discord user ID
+    instagram       Instagram handle
+    linkedin        LinkedIn handle / URL
+    iban            Bank IBAN
+    dbname          Source database / breach name
+
+
+18. FIELD REFERENCE — STEALER RECORDS
+---------------------------------------
+
+Common fields returned in stealer search items:
+
+    username        Login username (often an email address)
+    password        Login password (may be redacted)
+    url             URL of the service the credential is for
+    url_str         Alternative URL field
+    email           Array of associated email addresses
+    domain          Array of associated domains
+    log_id          Stealer log identifier
+    log             Alternative log identifier
+
+
+19. CONSTRUCTING SEARCHES — SYNTAX REFERENCE
+----------------------------------------------
+
+19.1 SIMPLE QUERIES (auto-detected type)
+
+    The q parameter auto-detects: email, domain, IP, Discord ID,
+    Steam ID, username. Use it when the type is ambiguous:
+
+    GET /service/v2/breach/search?q=user@example.com
+    GET /service/v2/breach/search?q=example.com
+    GET /service/v2/breach/search?q=192.168.1.1
+    GET /service/v2/breach/search?q=johndoe
+
+19.2 TYPED ARRAY FILTERS (when you know the field)
+
+    Use field[] arrays for precision. Multiple values are OR'd:
+
+    GET /service/v2/breach/search?email[]=a@x.com&email[]=b@x.com
+    GET /service/v2/breach/search?domain[]=example.com&country[]=US
+    GET /service/v2/stealer/search?domain[]=shodan.io&username[]=admin
+
+    Breach arrays: email[], email_domain[], domain[], username[],
+    password[], password_hash[], ip[], phone[], first_name[],
+    last_name[], full_name[], city[], country[], state[],
+    postal_code[], dbname[], discord_id[], iban[], ssn[]
+
+    Stealer arrays: domain[], subdomain[], username[], password[],
+    path[], email[], ip[], hwid[], discord_id[]
+
+    Date range: date_birth_from, date_birth_to, from, to
+    Date field selector: date_field=indexed_at | date_field=pwned_at
+
+19.3 STRUCTURED FILTERS (complex logic)
+
+    Pass as ?filter={json} (GET) or in POST body.
+
+    Exact match:
+    {"field":"email","operator":"eq","value":"user@example.com"}
+
+    Substring:
+    {"field":"email","operator":"contains","value":"@gmail.com"}
+
+    Prefix:
+    {"field":"username","operator":"starts_with","value":"admin"}
+
+    Suffix:
+    {"field":"email_domain","operator":"ends_with","value":".gov"}
+
+    Wildcard (min 2 non-wildcard chars):
+    {"field":"password","operator":"wildcard","value":"pass*123"}
+
+    Range (dates, numbers):
+    {"and":[
+      {"field":"date_birth","operator":"gte","value":"1990-01-01"},
+      {"field":"date_birth","operator":"lt","value":"2000-01-01"}
+    ]}
+
+    Multi-value (IN):
+    {"field":"country","operator":"in","value":["US","AU","GB"]}
+
+    Field exists:
+    {"field":"phone_number","operator":"exists","value":true}
+
+    Combined AND+OR:
+    {"and":[
+      {"field":"dbname","operator":"eq","value":"linkedin"},
+      {"or":[
+        {"field":"country","operator":"eq","value":"US"},
+        {"field":"country","operator":"eq","value":"AU"}
+      ]}
+    ]}
+
+19.4 AI FILTERS (natural language → structured)
+
+    POST /service/v2/ai/filter
+    {"query":"emails from adobe breach in Australia","index":"breach"}
+
+    Response: { "filter_id": "abc123...", "filter": { ... } }
+
+    Use the returned filter_id in subsequent searches:
+    GET /service/v2/breach/search?filter_id=abc123
+
+19.5 COMBINING SESSIONS WITH FILTERS
+
+    Step 1: Init session for the target
+    POST /service/search/init  {"query":"user@example.com"}
+    → session_id
+
+    Step 2: Use session_id + filters together
+    GET /service/v2/breach/search?email[]=user@example.com
+        &dbname[]=linkedin&search_id=<session_id>
+
+    All queries with the same search_id cost only 1 lookup total.
+
+
+20. API KEY HUNTING — AUTOMATED CREDENTIAL DISCOVERY
+------------------------------------------------------
+
+The OathNet stealer database contains login credentials for OSINT
+service dashboards. When a target's credentials are found in stealer
+logs, those credentials often include API keys stored in browser
+sessions, cookies, or autofill data.
+
+20.1 HOW IT WORKS
+
+    1. Query stealer search for OSINT service domains:
+       GET /service/v2/stealer/search?domain[]=shodan.io&search_id=...
+
+    2. Each stealer record contains: username, password, URL
+       The URL reveals WHICH service dashboard was compromised.
+
+    3. Extract API keys from the password/credential fields using
+       prefix-pattern matching (see section 20.3).
+
+    4. Validate discovered keys against live service endpoints.
+
+    5. Store valid keys in the key pool for use by other modules.
+
+20.2 TARGET SERVICE DOMAINS (130+ monitored)
+
+    OSINT / Security:
+      shodan.io, virustotal.com, hunter.io, securitytrails.com,
+      dehashed.com, intelx.io, wigle.net, censys.io, binaryedge.io,
+      greynoise.io, fullhunt.io, urlscan.io, abuseipdb.com,
+      criminalip.io, onyphe.io, zoomeye.org, fofa.info, netlas.io,
+      pulsedive.com, builtwith.com, emailrep.io, seon.io, epieos.com,
+      passivetotal.org, breachdirectory.org, c99.nl, spyse.com,
+      haveibeenpwned.com, leakix.net, ipqualityscore.com
+
+    AI / ML Platforms:
+      openai.com, anthropic.com, openrouter.ai, groq.com, cohere.ai,
+      mistral.ai, together.ai, fal.ai, wandb.ai, huggingface.co,
+      replicate.com, lightning.ai, perplexity.ai
+
+    Cloud / Hosting:
+      heroku.com, digitalocean.com, vercel.com, netlify.com,
+      railway.app, render.com, supabase.com, ngrok.com, neon.tech,
+      planetscale.com, upstash.com
+
+    Communication:
+      twilio.com, mailchimp.com, postmarkapp.com, mailersend.com,
+      discord.com, slack (xoxb/xoxp tokens)
+
+    Payment:
+      stripe.com (sk_live_, pk_live_), paystack.com, razorpay.com
+
+    Package Registries:
+      npmjs.org (npm_), pypi.org (pypi-), gitlab.com (glpat-)
+
+20.3 API KEY PREFIX PATTERNS (80+ recognized)
+
+    Anthropic:       sk-ant-
+    OpenAI:          sk-proj-, sk- (32+ chars)
+    Google:          AIzaSy, ya29., goog_, GOOG
+    AWS:             AKIA, ASIA
+    GitHub:          ghp_, gho_, ghs_, github_pat_
+    GitLab:          glpat-, gldt-, glrt-, gloas-
+    SendGrid:        SG.
+    Stripe:          sk_live_, pk_live_, sk_test_, rk_live_, whsec_
+    Slack:           xoxb-, xoxp-, xapp-
+    HuggingFace:     hf_
+    Replicate:       r8_
+    Perplexity:      pplx-
+    Sentry:          sntrys_
+    Grafana:         glc_
+    New Relic:       NRAK-
+    Databricks:      dapi
+    Cloudflare:      cfut_, cfat_
+    Shopify:         shpat_
+    Notion:          ntn_
+    Linear:          lin_api_
+    Terraform:       tfp_
+    Fly.io:          fo1_
+    Supabase:        sbp_
+    Pulumi:          pul-
+    Atlassian:       ATATT3
+    Facebook:        EAA (long token)
+    Twilio:          AC (34-char SID)
+    DigitalOcean:    dop_v1_, do-api-
+    NVIDIA:          nvapi-
+    npm:             npm_
+    PyPI:            pypi-
+    1Password:       op_
+    Square:          sq0atp-
+    Mailchimp:       mc-
+    Discord Bot:     dcbot., ODk, MT (base64 tokens)
+    Azure:           AZURE, az_
+    Alibaba Cloud:   LTAI
+    PostHog:         phc_, phx_
+    Resend:          re_
+    JWT:             eyJ (base64-encoded JSON header)
+
+20.4 STEALER SEARCH STRATEGY FOR KEY HUNTING
+
+    Most efficient approach — use a single search session:
+
+    POST /service/search/init
+    {"query":"shodan.io"}
+    → session_id
+
+    GET /service/v2/stealer/search?domain[]=shodan.io
+        &search_id=<session_id>&page_size=25
+
+    For each result, extract username + password + URL.
+    If the password matches a known prefix pattern → API key found.
+    If the URL contains a dashboard path → credential for that service.
+
+    Cost: 1 lookup per service domain (with session).
+    Without session: 1 lookup per query.
+
+20.5 KEY VALIDATION
+
+    After discovering a potential key, validate it against the
+    service's test endpoint:
+
+    Shodan:    GET https://api.shodan.io/api-info?key=<KEY>
+    HIBP:      GET https://haveibeenpwned.com/api/v3/subscription
+    VT:        GET https://www.virustotal.com/api/v3/users/me
+    Censys:    GET https://search.censys.io/api/v2/metadata
+
+    A 200 response confirms the key is active.
+    A 401/403 means the key is expired or invalid.
+
+
+21. OSINT RATE LIMITS (per-service)
+-------------------------------------
+
+    Service          Req/min    Daily cap
+    ──────────────────────────────────────
+    IP Info          60         unlimited
+    Steam            30         1,000
+    Xbox             30         1,000
+    Discord          30         1,000
+    Roblox           30         1,000
+    Minecraft        30         1,000
+    Holehe           10         500
+    GHunt            10         500
+    Subdomains       30         1,000
+
+    V2 Search endpoints: governed by daily lookup quota (plan-dependent).
+    Failed requests (4xx/5xx) do NOT count against quota.
+
+
+22. COMPLETE ENDPOINT MAP
+--------------------------
+
+    SEARCH
+      POST /service/search/init                    Session init
+      GET  /service/v2/breach/search               Breach search (V2)
+      GET  /service/v2/stealer/search              Stealer search (V2)
+      GET  /service/v2/victims/search              Victims search (V2)
+      GET  /service/v2/stealer/subdomain           Subdomain extraction
+      GET  /service/search-breach                  Breach search (legacy)
+      GET  /service/search-stealer                 Stealer search (legacy)
+
+    VICTIMS
+      GET  /service/v2/victims/{log_id}            Manifest
+      GET  /service/v2/victims/{log_id}/files/{id} File content
+      GET  /service/v2/victims/{log_id}/archive    ZIP download
+
+    AUTOCOMPLETE
+      GET  /service/v2/breach/autocomplete         Field autocomplete
+      GET  /service/v2/breach/autocomplete/dbnames DB name autocomplete
+      GET  /service/v2/breach/autocomplete/fields  Field coverage
+      GET  /service/dbname-autocomplete            Legacy autocomplete
+
+    AI
+      POST /service/v2/ai/filter                   NL → filter
+      GET  /service/v2/ai/filter/{filter_id}       Get filter context
+
+    BULK
+      POST /service/v2/bulk-search                 Create bulk job
+      GET  /service/v2/bulk-search/list            List jobs
+      GET  /service/v2/bulk-search/{job_id}        Job status
+      GET  /service/v2/bulk-search/{id}/download   Download results
+
+    EXPORTS
+      POST /service/v2/exports                     Create export
+      GET  /service/v2/exports/list                List exports
+      GET  /service/v2/exports/{job_id}            Export status
+      GET  /service/v2/exports/{id}/download       Download file
+
+    FILE SEARCH
+      POST /service/v2/file-search                 Create file search
+      GET  /service/v2/file-search/{job_id}        File search status
+
+    SCANNERS
+      POST   /scanners/create                      Create scanner
+      GET    /scanners                             List scanners
+      GET    /scanners/{uid}                        Get details
+      GET    /scanners/{uid}/runs                   Run history
+      GET    /scanners/{uid}/runs/{run_id}          Run detail
+      POST   /scanners/{uid}/trigger                Force run
+      POST   /scanners/{uid}/pause                  Pause
+      POST   /scanners/{uid}/resume                 Resume
+      PUT    /scanners/{uid}                        Update
+      DELETE /scanners/{uid}                        Delete
+      GET    /scanners/quota                        Check quota
+      POST   /scanners/test-delivery                Test delivery
+      POST   /scanners/{uid}/test                   Test notification
+      POST   /scanners/{uid}/webhook/rotate         Rotate secret
+      GET    /scanners/{uid}/webhook/security        Webhook security
+
+    OSINT
+      GET  /service/holehe                          Email services
+      GET  /service/ip-info                         IP geolocation
+      GET  /service/ghunt                           Google OSINT
+      GET  /service/discord-userinfo                Discord profile
+      GET  /service/discord-username-history         Discord history
+      GET  /service/discord-to-roblox               Discord→Roblox
+      GET  /service/steam                           Steam profile
+      GET  /service/xbox                            Xbox profile
+      GET  /service/roblox-userinfo                 Roblox profile
+      GET  /service/mc-history                      Minecraft history
+      GET  /service/extract-subdomain               Subdomain finder
+
+    ANALYTICS
+      GET  /service/v2/analytics/stats              Public stats
+
+    HEALTH
+      GET  /service/v2/health                       Service health
+
+
+23. SOURCE REFERENCE
+---------------------
+
+    Documentation:  https://docs.oathnet.org
+    LLM index:      https://docs.oathnet.org/llms.txt
+    OpenAPI spec:   https://docs.oathnet.org/openapi.yaml
+    Dashboard:      https://oathnet.org/dashboard
+    Pricing:        https://oathnet.org/pricing
+    Support:        support@oathnet.org
+    Discord:        https://discord.gg/DCjnk9TAMK
+
+    SDKs:
+      Python:     https://docs.oathnet.org/sdks/python.md
+      JavaScript: https://docs.oathnet.org/sdks/javascript.md
+      Go:         https://docs.oathnet.org/sdks/go.md
+      CLI:        https://docs.oathnet.org/sdks/cli.md
+      cURL:       https://docs.oathnet.org/sdks/curl.md
+
+
+END OF GUIDE

@@ -72,14 +72,57 @@ impl Module for OathnetPro {
         let mut seen: HashSet<String> = HashSet::new();
         seen.insert(target.value.to_lowercase());
 
+        // Pre-flight skips for inputs that empirically waste OathNet
+        // lookups. Catching these BEFORE the cache + budget check means
+        // a junk input never burns a query nor pollutes the cache.
+        let v = target.value.trim();
         let field = match target.kind {
-            TargetKind::Email => "email",
-            TargetKind::Username => "username",
-            TargetKind::Phone => "phone",
-            TargetKind::FullName => "q",
-            TargetKind::IpAddress => "ip",
+            TargetKind::Email => {
+                // Skip emails on test/example/invalid TLDs — never in
+                // real breach corpora.
+                if let Some((_, host)) = v.split_once('@')
+                    && is_local_domain(host)
+                {
+                    return Ok(result);
+                }
+                "email"
+            }
+            TargetKind::Username => {
+                // Usernames under 4 chars or all-digits or "anonymous"-
+                // style placeholders are noise. The breach corpora
+                // dedupe so well on these that hits are vanishingly rare.
+                if v.len() < 4
+                    || v.chars().all(|c| c.is_ascii_digit())
+                    || is_placeholder_username(v)
+                {
+                    return Ok(result);
+                }
+                "username"
+            }
+            TargetKind::Phone => {
+                // Phone < 6 digits or all-zeros = placeholder.
+                let digits = v.chars().filter(|c| c.is_ascii_digit()).count();
+                if digits < 6 || v.chars().filter(|c| c.is_ascii_digit()).all(|c| c == '0') {
+                    return Ok(result);
+                }
+                "phone"
+            }
+            TargetKind::FullName => {
+                // Single-word "names" are noise. Real full-name breach
+                // matches require at least one space.
+                if !v.contains(' ') || v.len() < 5 {
+                    return Ok(result);
+                }
+                "q"
+            }
+            TargetKind::IpAddress => {
+                if is_private_ip(v) {
+                    return Ok(result);
+                }
+                "ip"
+            }
             TargetKind::Domain => {
-                if is_social_platform(&target.value) {
+                if is_social_platform(v) || is_local_domain(v) {
                     return Ok(result);
                 }
                 "domain"
@@ -87,8 +130,25 @@ impl Module for OathnetPro {
             _ => return Ok(result),
         };
 
-        // ── Query 1: Breach search (highest value — entities + geo + identity) ──
-        let items = oathnet::search(key, paths::BREACH, field, &target.value, 15).await?;
+        // Initialise a search session so breach + stealer queries on the
+        // same target consume only ONE OathNet lookup instead of two.
+        // Non-fatal: if init fails, queries still work at higher quota cost.
+        let _ = oathnet::init_session(key, &target.value).await;
+
+        // ── Query 1: Breach search ──────────────────────────────────────
+        // Highest value endpoint: single query returns emails, usernames,
+        // phones, names, IPs, addresses, passwords, geo, DOB, social
+        // handles. The API charges per QUERY not per record — larger
+        // page_size is free ROI. Docs default is 100, max is 1000.
+        // Use 100 for identity targets, 50 for noisy infra targets
+        // (non-matching rows still produce candidate entities).
+        let page_size: u32 = match target.kind {
+            TargetKind::Email | TargetKind::Username => 100,
+            TargetKind::Phone | TargetKind::FullName => 100,
+            TargetKind::IpAddress | TargetKind::Domain => 50,
+            _ => 50,
+        };
+        let items = oathnet::search(key, paths::BREACH, field, &target.value, page_size).await?;
         if items.is_empty() {
             return Ok(result);
         }
@@ -141,10 +201,15 @@ impl Module for OathnetPro {
             extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
         }
 
-        // ── Query 2: Stealer search (credential/device intelligence) ──
-        if !ctx.cancel.is_cancelled()
+        // ── Query 2: Stealer search (Email/Username only) ───────────────
+        // Stealer logs are indexed by login credentials (username/email +
+        // password + URL). Only Email and Username targets have a direct
+        // index match. Phone/FullName use free-text "q" which is noisy and
+        // rarely productive. IP/Domain are already breach-only above.
+        if matches!(target.kind, TargetKind::Email | TargetKind::Username)
+            && !ctx.cancel.is_cancelled()
             && let Ok(stealer_items) =
-                oathnet::search(key, paths::STEALER, field, &target.value, 10).await
+                oathnet::search(key, paths::STEALER, field, &target.value, 100).await
         {
             for item in &stealer_items {
                 extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
@@ -153,23 +218,81 @@ impl Module for OathnetPro {
             }
         }
 
-        // ── Query 3: Holehe — only for Email targets (platform presence) ──
-        if target.kind == TargetKind::Email
-            && !ctx.cancel.is_cancelled()
-            && let Ok(holehe) = oathnet::osint(key, paths::HOLEHE, "email", &target.value).await
-        {
-            extract_holehe(holehe, &target.value, &ctx.scan_id, &mut result);
-        }
-
-        // No further OathNet queries — victims, recursive stealer,
-        // Discord, GHunt, IP info, and key harvest are all cut.
-        // The breach + stealer queries already extract IPs, emails,
-        // usernames, addresses, and credentials. Downstream free
-        // modules (ip_geo, dns_intel, geocode, etc.) handle the
-        // expansion from those entities without costing OathNet quota.
+        // Holehe, Discord, GHunt, IP info, Steam, Xbox, Roblox, and
+        // victims endpoints are intentionally not called. Breach is the
+        // highest-yield endpoint per query; stealer adds URL-specific
+        // credentials for indexed targets. Platform presence (holehe's
+        // output) is discovered for free by search_engines and
+        // username_search. Downstream free modules (ip_geo, dns_intel,
+        // geocode, etc.) handle expansion from extracted entities.
 
         Ok(result)
     }
+}
+
+fn is_private_ip(ip: &str) -> bool {
+    if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
+        match addr {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_broadcast()
+                    || v4.is_unspecified()
+                    || v4.is_multicast()
+                    || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64) // CGN 100.64/10
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    || (v6.octets()[0] == 0xfc || v6.octets()[0] == 0xfd) // ULA fc00::/7
+                    || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xC0) == 0x80) // link-local fe80::/10
+            }
+        }
+    } else {
+        false
+    }
+}
+
+fn is_placeholder_username(u: &str) -> bool {
+    let lower = u.to_lowercase();
+    matches!(
+        lower.as_str(),
+        "anonymous"
+            | "anon"
+            | "user"
+            | "admin"
+            | "test"
+            | "testing"
+            | "demo"
+            | "guest"
+            | "root"
+            | "username"
+            | "default"
+            | "example"
+            | "null"
+            | "undefined"
+            | "none"
+            | "n/a"
+            | "na"
+            | "unknown"
+            | "tbd"
+    )
+}
+
+fn is_local_domain(domain: &str) -> bool {
+    let d = domain.strip_suffix('.').unwrap_or(domain);
+    d.eq_ignore_ascii_case("localhost")
+        || d.ends_with(".local")
+        || d.ends_with(".lan")
+        || d.ends_with(".internal")
+        || d.ends_with(".home")
+        || d.ends_with(".arpa")
+        || d.ends_with(".test")
+        || d.ends_with(".invalid")
+        || d.ends_with(".example")
+        || d.ends_with(".localhost")
 }
 
 fn is_social_platform(domain: &str) -> bool {
@@ -419,6 +542,71 @@ fn extract_breach_entities(
         e.tag(tags::BREACH);
         e.tag("oathnet-pro");
         e.tag("instagram");
+        e.add_evidence(ev.clone());
+        result.push(e);
+    }
+
+    // LinkedIn handle — unlocks proxycurl (paid LinkedIn enrichment).
+    // The field may contain a URL or a bare handle. Emit as Url if it
+    // looks like a URL, else as Username with a linkedin: prefix.
+    if let Some(li) = val_str(item, "linkedin") {
+        let lower = li.to_lowercase();
+        if lower.contains("linkedin.com") {
+            if seen.insert(format!("@li:{lower}")) {
+                let url_val = if lower.starts_with("http") {
+                    li.clone()
+                } else {
+                    format!("https://{li}")
+                };
+                let mut e = Entity::new(EntityKind::Url, &url_val, 0.60, scan_id);
+                e.tag(tags::BREACH);
+                e.tag("oathnet-pro");
+                e.tag("linkedin");
+                e.add_evidence(ev.clone());
+                result.push(e);
+            }
+        } else if seen.insert(format!("@li-handle:{lower}")) {
+            let mut e = Entity::new(
+                EntityKind::Username,
+                format!("linkedin:{li}"),
+                0.55,
+                scan_id,
+            );
+            e.tag(tags::BREACH);
+            e.tag("oathnet-pro");
+            e.tag("linkedin");
+            e.add_evidence(ev.clone());
+            result.push(e);
+        }
+    }
+
+    // Email-domain → Domain entity. The breach record carries the
+    // sender/account email's host as a dedicated field. Emitting it
+    // unlocks dns_intel/cert_intel/securitytrails/wayback/cloud_storage
+    // — all free modules — for that domain without further cost.
+    if let Some(ed) = val_str(item, "email_domain") {
+        let lower = ed.to_lowercase();
+        if lower.contains('.') && !lower.contains('@') && seen.insert(format!("@edomain:{lower}")) {
+            let mut e = Entity::new(EntityKind::Domain, &lower, 0.55, scan_id);
+            e.tag(tags::BREACH);
+            e.tag("oathnet-pro");
+            e.tag("email-domain");
+            e.add_evidence(ev.clone());
+            result.push(e);
+        }
+    }
+
+    // Password hash → seed for pwned_passwords (free k-anonymity lookup
+    // confirms whether the hash is in known breach corpora). Emit as a
+    // low-confidence ApiKey entity tagged for that module.
+    if let Some(ph) = val_str(item, "password_hash")
+        && ph.len() >= 32
+        && seen.insert(format!("@pwhash:{}", &ph[..16.min(ph.len())]))
+    {
+        let mut e = Entity::new(EntityKind::Password, &ph, 0.50, scan_id);
+        e.tag(tags::BREACH);
+        e.tag("oathnet-pro");
+        e.tag("password-hash");
         e.add_evidence(ev);
         result.push(e);
     }
@@ -521,26 +709,6 @@ fn extract_stealer_entities(
     }
 }
 
-fn extract_holehe(data: Value, email: &str, scan_id: &str, result: &mut ModuleResult) {
-    if let Some(domains) = data.get("domains").and_then(|v| v.as_array()) {
-        if domains.is_empty() {
-            return;
-        }
-        let domains_str: Vec<&str> = domains.iter().filter_map(|v| v.as_str()).collect();
-        let mut parent = Entity::new(EntityKind::Email, email, 0.80, scan_id);
-        parent.tag("oathnet-pro");
-        parent.tag("holehe");
-        parent.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("Holehe: email on {} service(s)", domains_str.len()),
-            )
-            .with_attr("holehe_domains", domains_str.join(", ")),
-        );
-        result.push(parent);
-    }
-}
-
 // ─── API key pattern recognition ─────────────────────────────────────────────
 
 #[cfg(test)]
@@ -579,5 +747,78 @@ mod tests {
             val_str_or(&item, &["display_name", "full_name"]).as_deref(),
             Some("Jerome Despal")
         );
+    }
+
+    #[test]
+    fn private_ips_are_detected() {
+        assert!(is_private_ip("192.168.1.1"));
+        assert!(is_private_ip("10.0.0.1"));
+        assert!(is_private_ip("172.16.0.1"));
+        assert!(is_private_ip("127.0.0.1"));
+        assert!(is_private_ip("169.254.1.1"));
+        assert!(is_private_ip("100.64.0.1"));
+        assert!(is_private_ip("::1"));
+        assert!(is_private_ip("fe80::1"));
+        assert!(is_private_ip("fd00::1"));
+        assert!(is_private_ip("224.0.0.251"));
+        assert!(is_private_ip("239.255.255.250"));
+        assert!(is_private_ip("ff02::fb"));
+    }
+
+    #[test]
+    fn public_ips_are_not_private() {
+        assert!(!is_private_ip("8.8.8.8"));
+        assert!(!is_private_ip("1.1.1.1"));
+        assert!(!is_private_ip("203.0.113.5"));
+        assert!(!is_private_ip("2606:4700::1111"));
+    }
+
+    #[test]
+    fn local_domains_are_detected() {
+        assert!(is_local_domain("localhost"));
+        assert!(is_local_domain("router.local"));
+        assert!(is_local_domain("mypc.lan"));
+        assert!(is_local_domain("host.internal"));
+        assert!(is_local_domain("gateway.home"));
+        assert!(is_local_domain("1.168.192.in-addr.arpa"));
+        assert!(is_local_domain("router.local."));
+    }
+
+    #[test]
+    fn real_domains_are_not_local() {
+        assert!(!is_local_domain("example.com"));
+        assert!(!is_local_domain("oathnet.org"));
+        assert!(!is_local_domain("google.com.au"));
+    }
+
+    #[test]
+    fn placeholder_usernames_detected() {
+        for u in [
+            "anonymous",
+            "anon",
+            "user",
+            "admin",
+            "test",
+            "demo",
+            "guest",
+            "root",
+            "username",
+            "default",
+            "example",
+            "null",
+            "undefined",
+            "Anonymous",
+            "ADMIN",
+            "Test", // case insensitive
+        ] {
+            assert!(is_placeholder_username(u), "should skip: {u}");
+        }
+    }
+
+    #[test]
+    fn real_usernames_not_placeholders() {
+        for u in ["alice", "bob_smith", "matrix_neo", "trinity99", "jdoe2024"] {
+            assert!(!is_placeholder_username(u), "should NOT skip: {u}");
+        }
     }
 }

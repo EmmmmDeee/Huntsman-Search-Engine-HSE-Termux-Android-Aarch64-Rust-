@@ -28,7 +28,22 @@ static RESPONSE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CachedResponse>
 /// Global query counter for budget tracking.
 static QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-const MAX_QUERIES_PER_SCAN: u32 = 12;
+/// Session-level query counter: tracks total queries across all scans in this
+/// process. NOT reset by `reset_budget()`. Prevents radar/live sessions from
+/// burning the entire daily OathNet quota across many pivot scans.
+static SESSION_QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+const MAX_QUERIES_PER_SCAN: u32 = 4;
+
+fn max_queries_per_session() -> u32 {
+    static CAP: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
+        std::env::var("HUNTSMAN_OATHNET_SESSION_CAP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30)
+    });
+    *CAP
+}
 
 struct CachedResponse {
     items: Vec<Value>,
@@ -60,10 +75,13 @@ fn cache_put(key: String, items: &[Value]) {
 
 fn budget_remaining() -> bool {
     QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire) < MAX_QUERIES_PER_SCAN
+        && SESSION_QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire)
+            < max_queries_per_session()
 }
 
 fn budget_increment() {
     QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    SESSION_QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn is_quota_exhausted() -> bool {
@@ -126,27 +144,38 @@ pub async fn search(
     value: &str,
     page_size: u32,
 ) -> Result<Vec<Value>> {
-    if is_quota_exhausted() || !budget_remaining() {
-        return Ok(Vec::new());
-    }
     let ck = cache_key(path, field, value);
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
+    if is_quota_exhausted() || !budget_remaining() {
+        return Ok(Vec::new());
+    }
     budget_increment();
     let encoded = crate::util::http::urlencode(value);
-    let url = format!(
-        "{}{}?{}%5B%5D={}&page_size={}",
+    // sort=indexed_at:desc gives the freshest records first within
+    // the page_size cap, maximising data freshness per query.
+    let mut url = format!(
+        "{}{}?{}%5B%5D={}&page_size={}&sort=indexed_at:desc",
         base_url(),
         path,
         field,
         encoded,
         page_size
     );
+    if let Some(sid) = session_id_for(value) {
+        url.push_str("&search_id=");
+        url.push_str(&crate::util::http::urlencode(&sid));
+    }
     let body = curl_get(&url, key).await?;
+    // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
+    // which false-positives on legitimate metadata fields like `session_quota`
+    // and `recommended_quota`. Match only true exhaustion signals.
     if body.contains("\"left_today\":0")
         || body.contains("limit exceeded")
-        || body.contains("quota")
+        || body.contains("Daily quota exceeded")
+        || body.contains("quota exceeded")
+        || body.contains("\"is_unlimited\":false,\"left_today\":0")
     {
         mark_quota_exhausted();
         return Ok(Vec::new());
@@ -155,6 +184,11 @@ pub async fn search(
         serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
     if !env.success {
         if env.errors.as_ref().and_then(|e| e.status_code) == Some(404) {
+            // Negative-cache the clean miss so subsequent scans of the same
+            // dead target don't re-spend an OathNet lookup confirming it's
+            // still empty. The cache is per-process so this only affects
+            // within-session re-queries.
+            cache_put(ck, &[]);
             return Ok(Vec::new());
         }
         if env.errors.as_ref().and_then(|e| e.status_code) == Some(429) {
@@ -165,30 +199,16 @@ pub async fn search(
     }
     let data = match env.data {
         Some(d) => d,
-        None => return Ok(Vec::new()),
+        // Negative-cache empty data envelopes too.
+        None => {
+            cache_put(ck, &[]);
+            return Ok(Vec::new());
+        }
     };
     let sd: SearchData =
         serde_json::from_value(data).map_err(|e| Error::module("oathnet", e.to_string()))?;
     cache_put(ck, &sd.items);
     Ok(sd.items)
-}
-
-/// OSINT lookup (holehe, ip-info, discord, steam, etc.)
-/// Returns Null immediately if daily quota is exhausted.
-pub async fn osint(key: &str, path: &str, param: &str, value: &str) -> Result<Value> {
-    if is_quota_exhausted() || !budget_remaining() {
-        return Ok(Value::Null);
-    }
-    budget_increment();
-    let encoded = crate::util::http::urlencode(value);
-    let url = format!("{}{}?{}={}", base_url(), path, param, encoded);
-    let body = curl_get(&url, key).await?;
-    let env: Envelope =
-        serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
-    if !env.success {
-        return Err(Error::module("oathnet", "OSINT lookup failed"));
-    }
-    Ok(env.data.unwrap_or(Value::Null))
 }
 
 /// Extract a string field from a JSON Value.
@@ -217,18 +237,81 @@ pub fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {
     sorted.into_iter().take(n).map(|(k, _)| k).collect()
 }
 
-/// API endpoint path constants.
 pub mod paths {
     pub const BREACH: &str = "/service/v2/breach/search";
     pub const STEALER: &str = "/service/v2/stealer/search";
-    pub const HOLEHE: &str = "/service/holehe";
-    pub const IP_INFO: &str = "/service/ip-info";
-    pub const GHUNT: &str = "/service/ghunt";
-    pub const DISCORD_USER: &str = "/service/discord-userinfo";
-    pub const STEAM: &str = "/service/steam";
-    pub const XBOX: &str = "/service/xbox";
-    pub const ROBLOX: &str = "/service/roblox-userinfo";
-    pub const VICTIMS: &str = "/service/v2/victims/search";
+    pub const SESSION_INIT: &str = "/service/search/init";
+}
+
+/// Per-scan search session ID. When set, breach and stealer queries for
+/// the same target value consume only ONE OathNet lookup instead of two.
+/// Sessions are valid for 60 minutes on the OathNet side.
+static SEARCH_SESSION: std::sync::LazyLock<Mutex<Option<(String, String)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+/// Initialise a search session for `value`. Returns the session ID on
+/// success, or None if the init call fails (non-fatal — queries still
+/// work without a session, they just cost more quota).
+pub async fn init_session(key: &str, value: &str) -> Option<String> {
+    if is_quota_exhausted() {
+        return None;
+    }
+    let url = format!("{}{}", base_url(), paths::SESSION_INIT);
+    let body = format!(r#"{{"query":"{}"}}"#, value.replace('"', "\\\""));
+    let header = format!("x-api-key: {key}");
+    let secs = 10u64.to_string();
+    let mut cmd = tokio::process::Command::new("curl");
+    cmd.args([
+        "-s",
+        "-L",
+        "--max-time",
+        &secs,
+        "-X",
+        "POST",
+        "-H",
+        &header,
+        "-H",
+        "Content-Type: application/json",
+        "-H",
+        "Accept: application/json",
+        "-d",
+        &body,
+        "--",
+        &url,
+    ]);
+    cmd.kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_millis(12_000), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let parsed: Value = serde_json::from_str(&text).ok()?;
+    let sid = parsed
+        .pointer("/session/id")
+        .or_else(|| parsed.pointer("/data/session/id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)?;
+    if let Ok(mut guard) = SEARCH_SESSION.lock() {
+        *guard = Some((value.to_lowercase(), sid.clone()));
+    }
+    tracing::info!(session_id = %sid, query = %value, "OathNet search session initialised");
+    Some(sid)
+}
+
+/// Return the cached session ID if it matches the given target value.
+pub fn session_id_for(value: &str) -> Option<String> {
+    SEARCH_SESSION.lock().ok().and_then(|guard| {
+        guard.as_ref().and_then(|(q, sid)| {
+            if q == &value.to_lowercase() {
+                Some(sid.clone())
+            } else {
+                None
+            }
+        })
+    })
 }
 
 /// Harvest API service credentials from OathNet stealer data.
@@ -431,6 +514,5 @@ mod tests {
     fn paths_are_non_empty() {
         assert!(!paths::BREACH.is_empty());
         assert!(!paths::STEALER.is_empty());
-        assert!(!paths::HOLEHE.is_empty());
     }
 }

@@ -158,6 +158,7 @@ impl ScanEngine {
         // Reset per-scan budget counters so long-lived processes
         // (`hse serve` / `hse live`) get a fresh budget per scan.
         crate::modules::oathnet_pro::reset_budget();
+        crate::modules::see_know::reset_budget();
         crate::modules::wigle::reset_budget();
 
         self.emit(
@@ -180,7 +181,7 @@ impl ScanEngine {
         self.dispatch_target(
             &scan.id,
             &target,
-            &ctx,
+            &mut ctx,
             &opts,
             &mut entity_map,
             false,
@@ -544,6 +545,8 @@ impl ScanEngine {
                         },
                     );
                     scan_entity_for_keys(&entity);
+                    let mut entity = entity;
+                    enrich_geospatial(&mut entity);
                     if let Some(existing) = entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
                     } else {
@@ -570,7 +573,7 @@ impl ScanEngine {
         &self,
         scan_id: &str,
         target: &Target,
-        ctx: &ModuleContext,
+        ctx: &mut ModuleContext,
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
         is_expansion: bool,
@@ -610,7 +613,7 @@ impl ScanEngine {
         &self,
         scan_id: &str,
         target: &Target,
-        ctx: &ModuleContext,
+        ctx: &mut ModuleContext,
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
         is_expansion: bool,
@@ -675,6 +678,26 @@ impl ScanEngine {
                 stats,
             );
 
+            {
+                let pool = crate::util::key_pool::global_pool();
+                for svc in crate::util::key_pool::service_defs() {
+                    if ctx.keys.contains_key(svc.env_var) {
+                        continue;
+                    }
+                    if let Some(key) = pool.next_key(svc.name) {
+                        let roi = crate::util::key_roi::classify(svc.name);
+                        info!(
+                            service = svc.name,
+                            env_var = svc.env_var,
+                            roi = roi.label(),
+                            "hot-inject: key available — {} tier",
+                            roi.label()
+                        );
+                        ctx.keys.insert(svc.env_var.to_string(), key);
+                    }
+                }
+            }
+
             // Re-check the cancel flag before the throttle sleep so an
             // operator cancel between modules doesn't pay the full
             // `throttle_ms` latency before the next gate at the top of
@@ -693,12 +716,17 @@ impl ScanEngine {
 
     /// Concurrent dispatcher (max_concurrent > 0). Launches up to `opts.max_concurrent`
     /// modules at a time via a Semaphore; collects results as tasks complete.
+    ///
+    /// Paid modules run synchronously first (key-discovery-first pattern):
+    /// oathnet_pro, dehashed, intelx discover API keys that hot-inject into
+    /// ctx before the remaining modules are spawned concurrently. Without this,
+    /// all modules launch with a cloned ctx that lacks discovered keys.
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_target_concurrent(
         &self,
         scan_id: &str,
         target: &Target,
-        ctx: &ModuleContext,
+        ctx: &mut ModuleContext,
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
         is_expansion: bool,
@@ -708,11 +736,93 @@ impl ScanEngine {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
 
+        // Phase 1: Run Paid modules synchronously so discovered keys are
+        // available via hot-inject before the concurrent phase begins.
+        for module in &self.modules {
+            if !matches!(module.cost(), ModuleCost::Paid) {
+                continue;
+            }
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+            let name = module.name();
+            if !module.accepts(target) {
+                continue;
+            }
+            if let Some(reason) = module_skip_reason(&**module, opts, is_expansion) {
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason: reason.into(),
+                    },
+                );
+                continue;
+            }
+            if !dispatched.insert(dispatch_key(name, target)) {
+                stats.deduped += 1;
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason: "already dispatched for this target".into(),
+                    },
+                );
+                continue;
+            }
+            self.emit(
+                scan_id,
+                EventKind::ModuleStart {
+                    module: name.into(),
+                },
+            );
+            let result = timeout(
+                Duration::from_millis(resolve_timeout(opts, &**module)),
+                module.process(target, ctx),
+            )
+            .await;
+            self.finalise_module_result(
+                scan_id,
+                name,
+                opts.min_confidence,
+                entity_map,
+                result,
+                stats,
+            );
+            // Hot-inject discovered keys so Phase 2 modules can use them.
+            // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
+            // cascade — their outputs feed web_crawler/search_engines, which
+            // discover MORE keys. Tier is logged for operator visibility.
+            {
+                let pool = crate::util::key_pool::global_pool();
+                for svc in crate::util::key_pool::service_defs() {
+                    if ctx.keys.contains_key(svc.env_var) {
+                        continue;
+                    }
+                    if let Some(key) = pool.next_key(svc.name) {
+                        let roi = crate::util::key_roi::classify(svc.name);
+                        info!(
+                            service = svc.name,
+                            roi = roi.label(),
+                            "hot-inject: key available for concurrent phase ({})",
+                            roi.label()
+                        );
+                        ctx.keys.insert(svc.env_var.to_string(), key);
+                    }
+                }
+            }
+        }
+
+        // Phase 2: Spawn remaining (Free + KeyGated) modules concurrently.
+        // ctx now contains any keys discovered in Phase 1.
         let sem = Arc::new(Semaphore::new(opts.max_concurrent));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
         let scan_id_arc: Arc<str> = scan_id.into();
 
         for module in &self.modules {
+            if matches!(module.cost(), ModuleCost::Paid) {
+                continue;
+            }
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -748,10 +858,6 @@ impl ScanEngine {
                 continue;
             }
 
-            // Acquire BEFORE spawning so dispatch *launches* respect the
-            // concurrency cap (not just completions). The permit is held
-            // for the duration of the spawned task.
-            // semaphore closed — shouldn't happen
             let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
                 break;
             };
@@ -788,8 +894,6 @@ impl ScanEngine {
             });
         }
 
-        // Consume results as tasks finish. entity_map is single-owner
-        // in this loop, so no Mutex needed.
         while let Some(joined) = set.join_next().await {
             let outcome = match joined {
                 Ok(o) => o,
@@ -854,11 +958,90 @@ fn module_skip_reason(
     if is_expansion && module.is_passive() && SENSOR_MODULES.contains(&name) {
         return Some("sensor (already ran on seed round)");
     }
-    const SEED_ONLY_MODULES: &[&str] = &["oathnet_pro"];
+    const SEED_ONLY_MODULES: &[&str] = &["oathnet_pro", "see_know"];
     if is_expansion && SEED_ONLY_MODULES.contains(&name) {
         return Some("API-expensive (seed round only)");
     }
     None
+}
+
+/// Augment Coordinates entities with geohash + timezone, and Address
+/// entities with parsed admin-hierarchy components. Runs once per
+/// emission so downstream correlators see the enriched evidence.
+fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
+    use crate::core::entity::{EntityKind, Evidence};
+    use crate::util::geohash;
+    match entity.kind {
+        EntityKind::Coordinates => {
+            if let Some((lat, lon)) = geohash::parse_coords(&entity.value) {
+                let h = geohash::geohash(lat, lon, 7);
+                let tz = geohash::timezone_for(lat, lon);
+                let iso = geohash::reverse_country_iso(lat, lon);
+                let mut ev = Evidence::new("geo_normalize", "Geospatial enrichment");
+                if !h.is_empty() {
+                    ev = ev.with_attr("geohash", &h);
+                    // Multiple precision-tagged hashes for proximity matching
+                    // at different scales (region/city/suburb/street).
+                    ev = ev
+                        .with_attr("geohash_4", &h[..h.len().min(4)])
+                        .with_attr("geohash_5", &h[..h.len().min(5)])
+                        .with_attr("geohash_6", &h[..h.len().min(6)]);
+                    if let Ok(h9) = std::panic::catch_unwind(|| geohash::geohash(lat, lon, 9)) {
+                        ev = ev.with_attr("geohash_9", &h9);
+                    }
+                }
+                ev = ev.with_attr("timezone", tz);
+                ev = ev.with_attr("lat", format!("{lat:.6}"));
+                ev = ev.with_attr("lon", format!("{lon:.6}"));
+                let hemisphere = if lat >= 0.0 { "northern" } else { "southern" };
+                ev = ev.with_attr("hemisphere", hemisphere);
+                if let Some(iso) = iso {
+                    ev = ev.with_attr("country_iso", iso);
+                    if let Some(name) = geohash::country_name_for_iso(iso) {
+                        ev = ev.with_attr("country_name", name);
+                    }
+                    entity.tag(format!("country:{iso}"));
+                }
+                entity.add_evidence(ev);
+                entity.tag(format!("geohash:{}", &h[..h.len().min(5)]));
+                entity.tag(format!("tz:{tz}"));
+            }
+        }
+        EntityKind::Address => {
+            let parsed = geohash::parse_address(&entity.value);
+            let mut ev = Evidence::new("geo_normalize", "Address parse + normalization");
+            let mut any = false;
+            if let Some(s) = &parsed.street {
+                ev = ev.with_attr("addr_street", s);
+                any = true;
+            }
+            if let Some(c) = &parsed.city {
+                ev = ev.with_attr("addr_city", c);
+                any = true;
+            }
+            if let Some(s) = &parsed.state {
+                ev = ev.with_attr("addr_state", s);
+                any = true;
+            }
+            if let Some(p) = &parsed.postal_code {
+                ev = ev.with_attr("addr_postal", p);
+                any = true;
+            }
+            if let Some(c) = &parsed.country {
+                ev = ev.with_attr("addr_country", c);
+                any = true;
+            }
+            if let Some(iso) = &parsed.iso_country {
+                ev = ev.with_attr("addr_iso", iso);
+                entity.tag(format!("country:{iso}"));
+                any = true;
+            }
+            if any {
+                entity.add_evidence(ev);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {

@@ -30,8 +30,6 @@ const KEY_ENV: &str = "HUNTSMAN_HIBP_KEY";
 const HARDCODED_KEY: &str = "42587552dce6424a87312941c8a2c3c5";
 const BASE_URL: &str = "https://haveibeenpwned.com/api/v3";
 
-const RATE_LIMIT_DELAY: Duration = Duration::from_millis(6500);
-
 fn resolve_key(ctx_key: Option<&str>) -> &str {
     match ctx_key {
         Some(k) if !k.is_empty() => k,
@@ -78,22 +76,6 @@ struct Breach {
     logo_path: Option<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-#[allow(dead_code)]
-struct Paste {
-    #[serde(default)]
-    source: Option<String>,
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    date: Option<String>,
-    #[serde(default)]
-    email_count: Option<u64>,
-}
-
 // ── Module impl ─────────────────────────────────────────────────────
 
 pub struct Hibp;
@@ -132,11 +114,6 @@ impl Module for Hibp {
             TargetKind::Email => {
                 self.query_breached_account(key, target, ctx, &mut result)
                     .await?;
-                if !ctx.cancel.is_cancelled() {
-                    tokio::time::sleep(RATE_LIMIT_DELAY).await;
-                    self.query_paste_account(key, target, ctx, &mut result)
-                        .await?;
-                }
             }
             TargetKind::Domain => {
                 self.query_domain_breaches(key, target, ctx, &mut result)
@@ -342,69 +319,6 @@ impl Hibp {
         Ok(())
     }
 
-    /// GET /api/v3/pasteaccount/{email}
-    async fn query_paste_account(
-        &self,
-        key: &str,
-        target: &Target,
-        ctx: &ModuleContext,
-        result: &mut ModuleResult,
-    ) -> Result<()> {
-        let email = urlencode(target.value.trim());
-        let url = format!("{BASE_URL}/pasteaccount/{email}");
-        let pastes: Vec<Paste> = match self.api_get(key, &url, ctx).await? {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-
-        if pastes.is_empty() {
-            return Ok(());
-        }
-
-        let total = pastes.len();
-        let sources: Vec<String> = pastes
-            .iter()
-            .map(|p| {
-                let src = p.source.as_deref().unwrap_or("unknown");
-                let id = p.id.as_deref().unwrap_or("?");
-                format!("{src}:{id}")
-            })
-            .take(10)
-            .collect();
-
-        // Boost the existing email entity if present, otherwise create one
-        if let Some(existing) = result.entities.iter_mut().find(|e| {
-            e.kind == EntityKind::Email && e.value.eq_ignore_ascii_case(target.value.trim())
-        }) {
-            existing.tag(tags::PASTE_EXPOSED);
-            existing.confidence = (existing.confidence + 0.05).min(1.0);
-            existing.corroboration = existing.corroboration.saturating_add(1);
-            existing.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Found in {total} paste(s): {}", sources.join(", ")),
-                )
-                .with_attr("paste_count", total.to_string())
-                .with_attr("paste_sources", sources.join(", ")),
-            );
-        } else {
-            let mut e = Entity::new(EntityKind::Email, target.value.trim(), 0.60, &ctx.scan_id);
-            e.tag(tags::PASTE_EXPOSED);
-            e.tag("hibp");
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Found in {total} paste(s): {}", sources.join(", ")),
-                )
-                .with_attr("paste_count", total.to_string())
-                .with_attr("paste_sources", sources.join(", ")),
-            );
-            result.push(e);
-        }
-
-        Ok(())
-    }
-
     /// GET /api/v3/breaches?domain={domain}
     async fn query_domain_breaches(
         &self,
@@ -579,29 +493,5 @@ mod tests {
         assert_eq!(breaches[0].name, "Unknown");
         assert!(breaches[0].domain.is_none());
         assert!(breaches[0].data_classes.is_empty());
-    }
-
-    #[test]
-    fn paste_deser() {
-        let json = r#"[{
-            "Source": "Pastebin",
-            "Id": "Ab1cD2eF",
-            "Title": "test dump",
-            "Date": "2024-01-15T00:00:00",
-            "EmailCount": 42
-        }]"#;
-        let pastes: Vec<Paste> = serde_json::from_str(json).unwrap();
-        assert_eq!(pastes.len(), 1);
-        assert_eq!(pastes[0].source.as_deref(), Some("Pastebin"));
-        assert_eq!(pastes[0].id.as_deref(), Some("Ab1cD2eF"));
-        assert_eq!(pastes[0].email_count, Some(42));
-    }
-
-    #[test]
-    fn rate_limit_delay_respects_quota() {
-        assert!(
-            RATE_LIMIT_DELAY.as_millis() >= 6000,
-            "10 req/min = 6s between requests minimum"
-        );
     }
 }

@@ -1544,8 +1544,8 @@ mod tests {
     }
 
     #[test]
-    fn engine_count_is_thirteen() {
-        assert_eq!(ENGINES.len(), 13);
+    fn engine_count_is_seventeen() {
+        assert_eq!(ENGINES.len(), 17);
     }
 
     #[test]
@@ -1574,6 +1574,10 @@ mod tests {
             "qwant",
             "dogpile",
             "swisscows",
+            "you",
+            "presearch",
+            "metager",
+            "searx",
         ] {
             assert!(names.contains(&engine), "missing new engine: {engine}");
         }

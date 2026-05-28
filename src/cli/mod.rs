@@ -102,6 +102,11 @@ pub enum Command {
         /// sequential dispatch (v0.1 behaviour, best on low-power devices).
         #[arg(long, default_value_t = 4)]
         max_concurrent: usize,
+        /// Read ~/.huntsman/module_stats.json and skip modules with
+        /// historical zero-yield rate ≥80% over ≥5 scans. Closes the
+        /// self-optimization feedback loop — every scan informs the next.
+        #[arg(long)]
+        adaptive: bool,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(short, long, default_value = "table")]
         output: String,
@@ -260,6 +265,31 @@ pub enum KeysAction {
     Status,
     /// List supported service names and their categories.
     Services,
+    /// Import candidate keys/credentials from a TSV file.
+    ///
+    /// Expected format (tab-separated, header optional):
+    ///   source_file\tfield\ttags\tvalue\turl_or_context
+    ///
+    /// This is the format produced by `extract_all.py` on OathNet
+    /// stealer/breach dumps. The value column is matched against the
+    /// 80+ API-key prefix patterns and the 165+ service-domain map;
+    /// only entries that classify as recognised keys are imported.
+    ///
+    /// The TSV stays on disk — no values are committed anywhere. The
+    /// pool file ($HOME/.huntsman_keys.json, chmod 0600) records the
+    /// imported entries with `discovered_by="tsv_import:<source>"`
+    /// provenance so they can be removed later.
+    ImportTsv {
+        /// Path to the TSV file.
+        file: String,
+        /// Validate each imported key against its service's live
+        /// endpoint after import (default: store as Untested).
+        #[arg(long)]
+        validate: bool,
+        /// Dry run — print what would be imported without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -289,6 +319,7 @@ pub async fn run() -> Result<()> {
             max_entities,
             max_wall_time,
             max_concurrent,
+            adaptive,
             output,
         } => {
             cmd_scan(ScanCmd {
@@ -308,6 +339,7 @@ pub async fn run() -> Result<()> {
                 max_entities,
                 max_wall_time_secs: max_wall_time,
                 max_concurrent,
+                adaptive,
                 output,
             })
             .await
@@ -571,6 +603,130 @@ async fn cmd_keys(action: KeysAction) -> Result<()> {
                     "{:<18} {:<14} {:<26} {}",
                     d.name, d.category, short_url, d.env_var
                 );
+            }
+        }
+
+        KeysAction::ImportTsv {
+            file,
+            validate,
+            dry_run,
+        } => {
+            use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+            let path = std::path::Path::new(&file);
+            if !path.exists() {
+                return Err(Error::Other(format!("TSV file not found: {file}")));
+            }
+            let content = std::fs::read_to_string(path)
+                .map_err(|e| Error::Other(format!("read {file}: {e}")))?;
+
+            let mut stats: std::collections::BTreeMap<&str, usize> =
+                std::collections::BTreeMap::new();
+            let mut imported = 0usize;
+            let mut skipped_nonkey = 0usize;
+            let mut skipped_dup = 0usize;
+            let pool_snapshot_before = pool.total_keys();
+
+            for (lineno, line) in content.lines().enumerate() {
+                if line.is_empty() {
+                    continue;
+                }
+                // Header: source_file\tfield\ttags\tvalue\turl_or_context
+                if lineno == 0
+                    && (line.starts_with("source_file\t") || line.starts_with("source\t"))
+                {
+                    continue;
+                }
+                let fields: Vec<&str> = line.split('\t').collect();
+                if fields.len() < 4 {
+                    continue;
+                }
+                let source = fields[0];
+                let field_name = fields[1];
+                let value = fields[3].trim();
+                if value.is_empty() {
+                    continue;
+                }
+                // Only import entries that classify as known API keys.
+                // Plaintext dashboard passwords are deliberately skipped —
+                // they're account credentials, not API keys, and using
+                // them would be account takeover rather than API use.
+                let Some((service, _)) = identify_api_key(value) else {
+                    skipped_nonkey += 1;
+                    continue;
+                };
+                if dry_run {
+                    println!(
+                        "would import: service={service:<18}  src={source:<32}  field={field_name}"
+                    );
+                    *stats.entry(service).or_insert(0) += 1;
+                    imported += 1;
+                    continue;
+                }
+                let mut entry = key_pool::KeyEntry::new(value);
+                entry.status = key_pool::KeyStatus::Untested;
+                entry.discovered_at = Some(crate::core::entity::unix_now());
+                entry.discovered_by = Some(format!("tsv_import:{source}"));
+                entry.notes = Some(format!(
+                    "Imported from TSV file: {file} (field={field_name})"
+                ));
+                if pool.add(service, entry) {
+                    imported += 1;
+                    *stats.entry(service).or_insert(0) += 1;
+                } else {
+                    skipped_dup += 1;
+                }
+            }
+
+            if !dry_run {
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save pool: {e}")))?;
+            }
+
+            let added = pool.total_keys() as i64 - pool_snapshot_before as i64;
+            println!(
+                "\nTSV import {}: {imported} key(s) recognised, {skipped_nonkey} non-key \
+                 values skipped (plaintext passwords / hashes / etc.), {skipped_dup} \
+                 duplicates, {added} net additions to pool.",
+                if dry_run { "DRY-RUN" } else { "complete" }
+            );
+            if !stats.is_empty() {
+                println!("\nBy service:");
+                for (svc, n) in &stats {
+                    let roi = crate::util::key_roi::classify(svc);
+                    println!("  {svc:<18}  {n:>4}  ({} tier)", roi.label());
+                }
+            }
+
+            if validate && !dry_run {
+                println!("\nValidating imported keys against live endpoints...");
+                let snap = pool.snapshot();
+                let mut active = 0u32;
+                let mut invalid = 0u32;
+                for (svc, entries) in &snap.services {
+                    for entry in entries {
+                        if entry.discovered_by.as_deref() != Some(&format!("tsv_import:{file}"))
+                            && !entry
+                                .discovered_by
+                                .as_deref()
+                                .map(|s| s.starts_with("tsv_import:"))
+                                .unwrap_or(false)
+                        {
+                            continue;
+                        }
+                        match key_pool::validate_key(svc, &entry.value).await {
+                            Some(true) => {
+                                pool.mark_validated(svc, &entry.value, true);
+                                active += 1;
+                            }
+                            Some(false) => {
+                                pool.mark_validated(svc, &entry.value, false);
+                                invalid += 1;
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save pool: {e}")))?;
+                println!("Validation done: {active} active, {invalid} invalid.");
             }
         }
     }
@@ -851,8 +1007,12 @@ fn print_dossier(
 
             for ev in &e.evidence {
                 println!("    ├─ {} — {}", ev.source, ev.summary);
+                // Unredacted: print every non-empty attribute regardless
+                // of length. The dossier surface is for the operator only;
+                // truncation hides API-key context, multi-line bios, full
+                // breach passwords, complete addresses, etc.
                 for (k, v) in &ev.attributes {
-                    if !v.is_empty() && v.len() <= 120 {
+                    if !v.is_empty() {
                         println!("    │  {}: {}", k, v);
                     }
                 }
@@ -877,6 +1037,124 @@ fn print_dossier(
             println!();
         }
     }
+
+    // ─── DIAGNOSTICS & SELF-OPTIMIZATION ──────────────────────────────
+    // Surface the same data the JSON path exposes — module yield,
+    // confidence calibration, geo precision, proximity graph,
+    // optimization hints. Operator gets the full unredacted view.
+    let wall_ms = scan
+        .finished_at
+        .and_then(|f| f.checked_sub(scan.started_at))
+        .unwrap_or(0)
+        .saturating_mul(1000);
+    let diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
+
+    println!("━━━ DIAGNOSTICS ━━━");
+    println!();
+    println!("  Scan wall-time:  {} ms", diag.wall_time_ms);
+    println!("  Modules ranked by yield:");
+    for m in diag.modules_by_yield.iter().take(15) {
+        let kinds = m.unique_kinds.join(",");
+        println!(
+            "    {:4}  {:<22} conf={:.2}  novelty={:5.1}%  kinds={}",
+            m.entities_emitted,
+            m.name,
+            m.mean_confidence,
+            m.novelty_ratio * 100.0,
+            kinds
+        );
+    }
+    println!();
+
+    println!("  Source confidence (n / mean / p50 / p90):");
+    let mut srcs: Vec<_> = diag.source_confidence.iter().collect();
+    srcs.sort_by_key(|(_, s)| std::cmp::Reverse(s.n));
+    for (src, s) in srcs.iter().take(15) {
+        println!(
+            "    {:<22} n={:<4} mean={:.2}  p50={:.2}  p90={:.2}",
+            src, s.n, s.mean, s.p50, s.p90
+        );
+    }
+    println!();
+
+    // ─── GEO INTELLIGENCE ──────────────────────────────────────────────
+    let g = &diag.geo_precision;
+    println!("━━━ GEO INTELLIGENCE ━━━");
+    println!();
+    println!(
+        "  Coordinates: {} total ({} with geohash, {} with timezone)",
+        g.coordinates_count, g.coords_with_geohash, g.coords_with_timezone
+    );
+    println!(
+        "  Addresses:   {} total ({} state, {} country, {} ISO, {} postal)",
+        g.address_count,
+        g.addresses_with_state,
+        g.addresses_with_country,
+        g.addresses_with_iso,
+        g.addresses_with_postal
+    );
+    if !g.iso_countries.is_empty() {
+        println!("  ISO countries: {}", g.iso_countries.join(", "));
+    }
+    if !g.timezones.is_empty() {
+        println!("  Timezones:     {}", g.timezones.join(", "));
+    }
+    println!(
+        "  Multi-source convergence: {}",
+        if g.multi_source_convergence {
+            "YES (≥2 coords within 5km)"
+        } else {
+            "no"
+        }
+    );
+    println!();
+
+    if !diag.proximity_graph.is_empty() {
+        println!("  Proximity graph (top 15 closest coord pairs):");
+        for edge in diag.proximity_graph.iter().take(15) {
+            let label = if edge.same_country {
+                format!(
+                    " [same country: {}]",
+                    edge.from_country.as_deref().unwrap_or("?")
+                )
+            } else if edge.from_country.is_some() || edge.to_country.is_some() {
+                format!(
+                    " [{} ↔ {}]",
+                    edge.from_country.as_deref().unwrap_or("?"),
+                    edge.to_country.as_deref().unwrap_or("?")
+                )
+            } else {
+                String::new()
+            };
+            println!(
+                "    {:>10.3} km   {} ↔ {}{}",
+                edge.distance_km, edge.from_value, edge.to_value, label
+            );
+        }
+        println!();
+    }
+
+    // ─── ENRICHMENT LINEAGE (top 20 highest-corroboration entities) ───
+    println!("━━━ ENRICHMENT LINEAGE ━━━");
+    println!();
+    let mut lineage_sorted = diag.enrichment_lineage.clone();
+    lineage_sorted.sort_by_key(|n| std::cmp::Reverse(n.source_chain.len()));
+    for node in lineage_sorted.iter().take(20) {
+        println!(
+            "  [{}] {} (conf={:.2}, corr={})",
+            node.kind, node.value_preview, node.confidence, node.corroboration
+        );
+        println!("    sources: {}", node.source_chain.join(" → "));
+    }
+    println!();
+
+    // ─── OPTIMIZATION HINTS ────────────────────────────────────────────
+    println!("━━━ OPTIMIZATION HINTS ━━━");
+    println!();
+    for hint in &diag.optimization_hints {
+        println!("  • {}", hint);
+    }
+    println!();
 
     println!("━━━ END OF DOSSIER ━━━");
 }
@@ -1073,6 +1351,7 @@ struct ScanCmd {
     pub max_entities: Option<usize>,
     pub max_wall_time_secs: Option<u64>,
     pub max_concurrent: usize,
+    pub adaptive: bool,
     pub output: String,
 }
 
@@ -1098,9 +1377,42 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         (cmd.depth, cmd.min_expand_confidence, cmd.max_concurrent)
     };
 
+    let mut exclude_modules = split_csv(cmd.exclude).unwrap_or_default();
+    if cmd.adaptive {
+        // Closed feedback loop: read the ledger, skip historically
+        // zero-yield modules. Log the decision so the operator sees
+        // what the self-optimization actually did.
+        let routing = crate::util::diagnostics::read_adaptive_routing();
+        if routing.ledger_scans == 0 {
+            eprintln!(
+                "adaptive: no ledger yet (run a few scans first to populate ~/.huntsman/module_stats.json)"
+            );
+        } else {
+            let added: Vec<String> = routing
+                .recommended_skips
+                .iter()
+                .filter(|m| !exclude_modules.iter().any(|e| e == *m))
+                .cloned()
+                .collect();
+            if !added.is_empty() {
+                eprintln!(
+                    "adaptive: ledger has {} scans; skipping {} historically zero-yield modules: {}",
+                    routing.ledger_scans,
+                    added.len(),
+                    added.join(", ")
+                );
+                exclude_modules.extend(added);
+            } else {
+                eprintln!(
+                    "adaptive: ledger has {} scans; no skip recommendations",
+                    routing.ledger_scans
+                );
+            }
+        }
+    }
     let options = ScanOptions {
         modules: split_csv(cmd.modules),
-        exclude_modules: split_csv(cmd.exclude).unwrap_or_default(),
+        exclude_modules,
         throttle_ms: cmd.throttle_ms,
         max_concurrent,
         module_timeout_ms: cmd.module_timeout_ms,
@@ -1136,12 +1448,24 @@ async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let correlations = store.correlations_for_scan(&sid)?;
 
     if cmd.output == "json" {
+        // Full self-optimization payload — scan + entities + correlations
+        // + diagnostics (module ranking, confidence calibration, geo
+        // precision report, cross-source overlaps, optimization hints,
+        // enrichment lineage).
+        let wall_ms = scan
+            .finished_at
+            .and_then(|f| f.checked_sub(scan.started_at))
+            .unwrap_or(0)
+            .saturating_mul(1000);
+        let diag =
+            crate::util::diagnostics::analyse(&sid, &cmd.kind, &cmd.value, wall_ms, &entities);
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "scan": scan,
                 "entities": entities,
                 "correlations": correlations,
+                "diagnostics": diag,
             }))?
         );
     } else if cmd.output == "dossier" {
@@ -1298,9 +1622,27 @@ async fn cmd_radar(interval: u64, depth: u32, sweeps: Option<u32>, free_only: bo
             for (tk, value) in &new_targets {
                 let pivot_sid = scan_id(tk.canonical_str(), value);
                 let pivot_target = Target::new(*tk, value.clone());
+                // Exclude oathnet_pro from radar pivots on infra/sensor entities
+                // (IPs, domains, coords, MACs, ASNs). Sensor-discovered entities
+                // rarely yield OathNet breach results and the quota is better
+                // spent on identity-type entities discovered through other paths.
+                let is_infra = matches!(
+                    tk,
+                    crate::core::scan::TargetKind::IpAddress
+                        | crate::core::scan::TargetKind::Domain
+                        | crate::core::scan::TargetKind::Coordinates
+                        | crate::core::scan::TargetKind::MacAddress
+                        | crate::core::scan::TargetKind::Asn
+                );
+                let mut exclude = Vec::new();
+                if is_infra {
+                    exclude.push("oathnet_pro".to_string());
+                    exclude.push("see_know".to_string());
+                }
                 let pivot_opts = ScanOptions {
                     depth,
                     free_only,
+                    exclude_modules: exclude,
                     max_concurrent: 4,
                     min_expand_confidence: 0.50,
                     ..Default::default()
