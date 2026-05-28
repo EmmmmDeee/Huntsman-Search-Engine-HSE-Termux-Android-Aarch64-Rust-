@@ -153,8 +153,10 @@ pub async fn search(
     }
     budget_increment();
     let encoded = crate::util::http::urlencode(value);
+    // sort=indexed_at:desc gives the freshest records first within
+    // the page_size cap, maximising data freshness per query.
     let mut url = format!(
-        "{}{}?{}%5B%5D={}&page_size={}",
+        "{}{}?{}%5B%5D={}&page_size={}&sort=indexed_at:desc",
         base_url(),
         path,
         field,
@@ -182,6 +184,11 @@ pub async fn search(
         serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
     if !env.success {
         if env.errors.as_ref().and_then(|e| e.status_code) == Some(404) {
+            // Negative-cache the clean miss so subsequent scans of the same
+            // dead target don't re-spend an OathNet lookup confirming it's
+            // still empty. The cache is per-process so this only affects
+            // within-session re-queries.
+            cache_put(ck, &[]);
             return Ok(Vec::new());
         }
         if env.errors.as_ref().and_then(|e| e.status_code) == Some(429) {
@@ -192,7 +199,11 @@ pub async fn search(
     }
     let data = match env.data {
         Some(d) => d,
-        None => return Ok(Vec::new()),
+        // Negative-cache empty data envelopes too.
+        None => {
+            cache_put(ck, &[]);
+            return Ok(Vec::new());
+        }
     };
     let sd: SearchData =
         serde_json::from_value(data).map_err(|e| Error::module("oathnet", e.to_string()))?;

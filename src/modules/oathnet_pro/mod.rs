@@ -72,19 +72,57 @@ impl Module for OathnetPro {
         let mut seen: HashSet<String> = HashSet::new();
         seen.insert(target.value.to_lowercase());
 
+        // Pre-flight skips for inputs that empirically waste OathNet
+        // lookups. Catching these BEFORE the cache + budget check means
+        // a junk input never burns a query nor pollutes the cache.
+        let v = target.value.trim();
         let field = match target.kind {
-            TargetKind::Email => "email",
-            TargetKind::Username => "username",
-            TargetKind::Phone => "phone",
-            TargetKind::FullName => "q",
+            TargetKind::Email => {
+                // Skip emails on test/example/invalid TLDs — never in
+                // real breach corpora.
+                if let Some((_, host)) = v.split_once('@')
+                    && is_local_domain(host)
+                {
+                    return Ok(result);
+                }
+                "email"
+            }
+            TargetKind::Username => {
+                // Usernames under 4 chars or all-digits or "anonymous"-
+                // style placeholders are noise. The breach corpora
+                // dedupe so well on these that hits are vanishingly rare.
+                if v.len() < 4
+                    || v.chars().all(|c| c.is_ascii_digit())
+                    || is_placeholder_username(v)
+                {
+                    return Ok(result);
+                }
+                "username"
+            }
+            TargetKind::Phone => {
+                // Phone < 6 digits or all-zeros = placeholder.
+                let digits = v.chars().filter(|c| c.is_ascii_digit()).count();
+                if digits < 6 || v.chars().filter(|c| c.is_ascii_digit()).all(|c| c == '0') {
+                    return Ok(result);
+                }
+                "phone"
+            }
+            TargetKind::FullName => {
+                // Single-word "names" are noise. Real full-name breach
+                // matches require at least one space.
+                if !v.contains(' ') || v.len() < 5 {
+                    return Ok(result);
+                }
+                "q"
+            }
             TargetKind::IpAddress => {
-                if is_private_ip(&target.value) {
+                if is_private_ip(v) {
                     return Ok(result);
                 }
                 "ip"
             }
             TargetKind::Domain => {
-                if is_social_platform(&target.value) || is_local_domain(&target.value) {
+                if is_social_platform(v) || is_local_domain(v) {
                     return Ok(result);
                 }
                 "domain"
@@ -215,6 +253,32 @@ fn is_private_ip(ip: &str) -> bool {
     } else {
         false
     }
+}
+
+fn is_placeholder_username(u: &str) -> bool {
+    let lower = u.to_lowercase();
+    matches!(
+        lower.as_str(),
+        "anonymous"
+            | "anon"
+            | "user"
+            | "admin"
+            | "test"
+            | "testing"
+            | "demo"
+            | "guest"
+            | "root"
+            | "username"
+            | "default"
+            | "example"
+            | "null"
+            | "undefined"
+            | "none"
+            | "n/a"
+            | "na"
+            | "unknown"
+            | "tbd"
+    )
 }
 
 fn is_local_domain(domain: &str) -> bool {
@@ -725,5 +789,36 @@ mod tests {
         assert!(!is_local_domain("example.com"));
         assert!(!is_local_domain("oathnet.org"));
         assert!(!is_local_domain("google.com.au"));
+    }
+
+    #[test]
+    fn placeholder_usernames_detected() {
+        for u in [
+            "anonymous",
+            "anon",
+            "user",
+            "admin",
+            "test",
+            "demo",
+            "guest",
+            "root",
+            "username",
+            "default",
+            "example",
+            "null",
+            "undefined",
+            "Anonymous",
+            "ADMIN",
+            "Test", // case insensitive
+        ] {
+            assert!(is_placeholder_username(u), "should skip: {u}");
+        }
+    }
+
+    #[test]
+    fn real_usernames_not_placeholders() {
+        for u in ["alice", "bob_smith", "matrix_neo", "trinity99", "jdoe2024"] {
+            assert!(!is_placeholder_username(u), "should NOT skip: {u}");
+        }
     }
 }
