@@ -51,7 +51,7 @@ use crate::util::http::error_snippet;
 const KEY_ENV: &str = "HUNTSMAN_INTELX_KEY";
 const BASE: &str = "https://2.intelx.io";
 const MAX_RESULTS: u32 = 50;
-const POLL_ATTEMPTS: u32 = 6;
+const POLL_ATTEMPTS: u32 = 3;
 const POLL_INTERVAL_MS: u64 = 1_500;
 
 // --- Phase 1: search-start response ----------------------------------------
@@ -157,8 +157,7 @@ impl Module for IntelX {
         )
     }
     fn max_timeout_ms(&self) -> u64 {
-        // One start + up to POLL_ATTEMPTS poll iterations at POLL_INTERVAL_MS.
-        25_000
+        15_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
