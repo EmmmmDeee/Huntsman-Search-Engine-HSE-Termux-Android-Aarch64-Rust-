@@ -193,11 +193,15 @@ fn is_private_ip(ip: &str) -> bool {
                     || v4.is_link_local()
                     || v4.is_broadcast()
                     || v4.is_unspecified()
-                    || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64 // CGN 100.64/10
+                    || v4.is_multicast()
+                    || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64) // CGN 100.64/10
             }
             std::net::IpAddr::V6(v6) => {
-                v6.is_loopback() || v6.is_unspecified() || v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xC0) == 0x80 // link-local fe80::/10
-                    || v6.octets()[0] == 0xfc || v6.octets()[0] == 0xfd // ULA fc00::/7
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    || (v6.octets()[0] == 0xfc || v6.octets()[0] == 0xfd) // ULA fc00::/7
+                    || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xC0) == 0x80) // link-local fe80::/10
             }
         }
     } else {
@@ -206,17 +210,17 @@ fn is_private_ip(ip: &str) -> bool {
 }
 
 fn is_local_domain(domain: &str) -> bool {
-    let lower = domain.to_lowercase();
-    lower == "localhost"
-        || lower.ends_with(".local")
-        || lower.ends_with(".lan")
-        || lower.ends_with(".internal")
-        || lower.ends_with(".home")
-        || lower.ends_with(".arpa")
-        || lower.ends_with(".test")
-        || lower.ends_with(".invalid")
-        || lower.ends_with(".example")
-        || lower.ends_with(".localhost")
+    let d = domain.strip_suffix('.').unwrap_or(domain);
+    d.eq_ignore_ascii_case("localhost")
+        || d.ends_with(".local")
+        || d.ends_with(".lan")
+        || d.ends_with(".internal")
+        || d.ends_with(".home")
+        || d.ends_with(".arpa")
+        || d.ends_with(".test")
+        || d.ends_with(".invalid")
+        || d.ends_with(".example")
+        || d.ends_with(".localhost")
 }
 
 fn is_social_platform(domain: &str) -> bool {
@@ -639,6 +643,9 @@ mod tests {
         assert!(is_private_ip("::1"));
         assert!(is_private_ip("fe80::1"));
         assert!(is_private_ip("fd00::1"));
+        assert!(is_private_ip("224.0.0.251"));
+        assert!(is_private_ip("239.255.255.250"));
+        assert!(is_private_ip("ff02::fb"));
     }
 
     #[test]
@@ -657,6 +664,7 @@ mod tests {
         assert!(is_local_domain("host.internal"));
         assert!(is_local_domain("gateway.home"));
         assert!(is_local_domain("1.168.192.in-addr.arpa"));
+        assert!(is_local_domain("router.local."));
     }
 
     #[test]

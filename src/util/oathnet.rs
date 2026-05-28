@@ -36,10 +36,13 @@ static SESSION_QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::At
 const MAX_QUERIES_PER_SCAN: u32 = 12;
 
 fn max_queries_per_session() -> u32 {
-    std::env::var("HUNTSMAN_OATHNET_SESSION_CAP")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(50)
+    static CAP: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
+        std::env::var("HUNTSMAN_OATHNET_SESSION_CAP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50)
+    });
+    *CAP
 }
 
 struct CachedResponse {
@@ -141,12 +144,12 @@ pub async fn search(
     value: &str,
     page_size: u32,
 ) -> Result<Vec<Value>> {
-    if is_quota_exhausted() || !budget_remaining() {
-        return Ok(Vec::new());
-    }
     let ck = cache_key(path, field, value);
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
+    }
+    if is_quota_exhausted() || !budget_remaining() {
+        return Ok(Vec::new());
     }
     budget_increment();
     let encoded = crate::util::http::urlencode(value);
