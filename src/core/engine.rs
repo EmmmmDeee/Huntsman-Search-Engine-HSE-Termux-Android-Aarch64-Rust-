@@ -976,16 +976,32 @@ fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
             if let Some((lat, lon)) = geohash::parse_coords(&entity.value) {
                 let h = geohash::geohash(lat, lon, 7);
                 let tz = geohash::timezone_for(lat, lon);
+                let iso = geohash::reverse_country_iso(lat, lon);
                 let mut ev = Evidence::new("geo_normalize", "Geospatial enrichment");
                 if !h.is_empty() {
                     ev = ev.with_attr("geohash", &h);
+                    // Multiple precision-tagged hashes for proximity matching
+                    // at different scales (region/city/suburb/street).
+                    ev = ev
+                        .with_attr("geohash_4", &h[..h.len().min(4)])
+                        .with_attr("geohash_5", &h[..h.len().min(5)])
+                        .with_attr("geohash_6", &h[..h.len().min(6)]);
+                    if let Ok(h9) = std::panic::catch_unwind(|| geohash::geohash(lat, lon, 9)) {
+                        ev = ev.with_attr("geohash_9", &h9);
+                    }
                 }
                 ev = ev.with_attr("timezone", tz);
                 ev = ev.with_attr("lat", format!("{lat:.6}"));
                 ev = ev.with_attr("lon", format!("{lon:.6}"));
-                // Hemisphere + rough region tags
                 let hemisphere = if lat >= 0.0 { "northern" } else { "southern" };
                 ev = ev.with_attr("hemisphere", hemisphere);
+                if let Some(iso) = iso {
+                    ev = ev.with_attr("country_iso", iso);
+                    if let Some(name) = geohash::country_name_for_iso(iso) {
+                        ev = ev.with_attr("country_name", name);
+                    }
+                    entity.tag(format!("country:{iso}"));
+                }
                 entity.add_evidence(ev);
                 entity.tag(format!("geohash:{}", &h[..h.len().min(5)]));
                 entity.tag(format!("tz:{tz}"));

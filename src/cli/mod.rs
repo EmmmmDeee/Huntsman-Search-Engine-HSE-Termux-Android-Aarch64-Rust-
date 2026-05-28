@@ -1000,8 +1000,12 @@ fn print_dossier(
 
             for ev in &e.evidence {
                 println!("    ├─ {} — {}", ev.source, ev.summary);
+                // Unredacted: print every non-empty attribute regardless
+                // of length. The dossier surface is for the operator only;
+                // truncation hides API-key context, multi-line bios, full
+                // breach passwords, complete addresses, etc.
                 for (k, v) in &ev.attributes {
-                    if !v.is_empty() && v.len() <= 120 {
+                    if !v.is_empty() {
                         println!("    │  {}: {}", k, v);
                     }
                 }
@@ -1026,6 +1030,124 @@ fn print_dossier(
             println!();
         }
     }
+
+    // ─── DIAGNOSTICS & SELF-OPTIMIZATION ──────────────────────────────
+    // Surface the same data the JSON path exposes — module yield,
+    // confidence calibration, geo precision, proximity graph,
+    // optimization hints. Operator gets the full unredacted view.
+    let wall_ms = scan
+        .finished_at
+        .and_then(|f| f.checked_sub(scan.started_at))
+        .unwrap_or(0)
+        .saturating_mul(1000);
+    let diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
+
+    println!("━━━ DIAGNOSTICS ━━━");
+    println!();
+    println!("  Scan wall-time:  {} ms", diag.wall_time_ms);
+    println!("  Modules ranked by yield:");
+    for m in diag.modules_by_yield.iter().take(15) {
+        let kinds = m.unique_kinds.join(",");
+        println!(
+            "    {:4}  {:<22} conf={:.2}  novelty={:5.1}%  kinds={}",
+            m.entities_emitted,
+            m.name,
+            m.mean_confidence,
+            m.novelty_ratio * 100.0,
+            kinds
+        );
+    }
+    println!();
+
+    println!("  Source confidence (n / mean / p50 / p90):");
+    let mut srcs: Vec<_> = diag.source_confidence.iter().collect();
+    srcs.sort_by_key(|(_, s)| std::cmp::Reverse(s.n));
+    for (src, s) in srcs.iter().take(15) {
+        println!(
+            "    {:<22} n={:<4} mean={:.2}  p50={:.2}  p90={:.2}",
+            src, s.n, s.mean, s.p50, s.p90
+        );
+    }
+    println!();
+
+    // ─── GEO INTELLIGENCE ──────────────────────────────────────────────
+    let g = &diag.geo_precision;
+    println!("━━━ GEO INTELLIGENCE ━━━");
+    println!();
+    println!(
+        "  Coordinates: {} total ({} with geohash, {} with timezone)",
+        g.coordinates_count, g.coords_with_geohash, g.coords_with_timezone
+    );
+    println!(
+        "  Addresses:   {} total ({} state, {} country, {} ISO, {} postal)",
+        g.address_count,
+        g.addresses_with_state,
+        g.addresses_with_country,
+        g.addresses_with_iso,
+        g.addresses_with_postal
+    );
+    if !g.iso_countries.is_empty() {
+        println!("  ISO countries: {}", g.iso_countries.join(", "));
+    }
+    if !g.timezones.is_empty() {
+        println!("  Timezones:     {}", g.timezones.join(", "));
+    }
+    println!(
+        "  Multi-source convergence: {}",
+        if g.multi_source_convergence {
+            "YES (≥2 coords within 5km)"
+        } else {
+            "no"
+        }
+    );
+    println!();
+
+    if !diag.proximity_graph.is_empty() {
+        println!("  Proximity graph (top 15 closest coord pairs):");
+        for edge in diag.proximity_graph.iter().take(15) {
+            let label = if edge.same_country {
+                format!(
+                    " [same country: {}]",
+                    edge.from_country.as_deref().unwrap_or("?")
+                )
+            } else if edge.from_country.is_some() || edge.to_country.is_some() {
+                format!(
+                    " [{} ↔ {}]",
+                    edge.from_country.as_deref().unwrap_or("?"),
+                    edge.to_country.as_deref().unwrap_or("?")
+                )
+            } else {
+                String::new()
+            };
+            println!(
+                "    {:>10.3} km   {} ↔ {}{}",
+                edge.distance_km, edge.from_value, edge.to_value, label
+            );
+        }
+        println!();
+    }
+
+    // ─── ENRICHMENT LINEAGE (top 20 highest-corroboration entities) ───
+    println!("━━━ ENRICHMENT LINEAGE ━━━");
+    println!();
+    let mut lineage_sorted = diag.enrichment_lineage.clone();
+    lineage_sorted.sort_by_key(|n| std::cmp::Reverse(n.source_chain.len()));
+    for node in lineage_sorted.iter().take(20) {
+        println!(
+            "  [{}] {} (conf={:.2}, corr={})",
+            node.kind, node.value_preview, node.confidence, node.corroboration
+        );
+        println!("    sources: {}", node.source_chain.join(" → "));
+    }
+    println!();
+
+    // ─── OPTIMIZATION HINTS ────────────────────────────────────────────
+    println!("━━━ OPTIMIZATION HINTS ━━━");
+    println!();
+    for hint in &diag.optimization_hints {
+        println!("  • {}", hint);
+    }
+    println!();
 
     println!("━━━ END OF DOSSIER ━━━");
 }

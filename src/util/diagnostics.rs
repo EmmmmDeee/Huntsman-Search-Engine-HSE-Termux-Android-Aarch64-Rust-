@@ -23,9 +23,23 @@ pub struct ScanDiagnostics {
     pub source_confidence: HashMap<String, ConfidenceStats>,
     pub entity_kind_counts: HashMap<String, usize>,
     pub geo_precision: GeoPrecisionReport,
+    /// Pairwise Haversine distances (km) between every Coordinates entity
+    /// pair — top 25 closest. Reveals geo-convergence clusters and lone
+    /// outliers in the same scan.
+    pub proximity_graph: Vec<ProximityEdge>,
     pub cross_source_overlap: Vec<EntityOverlap>,
     pub optimization_hints: Vec<String>,
     pub enrichment_lineage: Vec<LineageNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProximityEdge {
+    pub from_value: String,
+    pub to_value: String,
+    pub distance_km: f64,
+    pub from_country: Option<String>,
+    pub to_country: Option<String>,
+    pub same_country: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -201,6 +215,33 @@ pub fn analyse(
     geo.timezones = tz_seen.into_iter().collect();
     geo.iso_countries = iso_seen.into_iter().collect();
 
+    // Pairwise Haversine distances — proximity graph (top-25 closest).
+    let mut proximity_graph: Vec<ProximityEdge> = Vec::new();
+    for (i, (la1, lo1, v1)) in coord_pairs.iter().enumerate() {
+        for (la2, lo2, v2) in coord_pairs.iter().skip(i + 1) {
+            let d = crate::util::geohash::haversine_km(*la1, *lo1, *la2, *lo2);
+            let from_country =
+                crate::util::geohash::reverse_country_iso(*la1, *lo1).map(str::to_string);
+            let to_country =
+                crate::util::geohash::reverse_country_iso(*la2, *lo2).map(str::to_string);
+            let same_country = from_country.is_some() && from_country == to_country;
+            proximity_graph.push(ProximityEdge {
+                from_value: v1.clone(),
+                to_value: v2.clone(),
+                distance_km: (d * 1000.0).round() / 1000.0, // 3-decimal precision
+                from_country,
+                to_country,
+                same_country,
+            });
+        }
+    }
+    proximity_graph.sort_by(|a, b| {
+        a.distance_km
+            .partial_cmp(&b.distance_km)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    proximity_graph.truncate(25);
+
     // Multi-source convergence: any two coordinates within ~5km?
     'outer: for (i, (la1, lo1, _)) in coord_pairs.iter().enumerate() {
         for (la2, lo2, _) in coord_pairs.iter().skip(i + 1) {
@@ -341,6 +382,7 @@ pub fn analyse(
         source_confidence,
         entity_kind_counts: kind_counts,
         geo_precision: geo,
+        proximity_graph,
         cross_source_overlap,
         optimization_hints: hints,
         enrichment_lineage: lineage,
