@@ -111,12 +111,11 @@ pub struct Target {
 
 impl Target {
     pub fn new(kind: TargetKind, value: impl Into<String>) -> Self {
+        let raw: String = value.into();
+        let normalised = crate::core::entity::normalise(&kind.to_entity_kind(), &raw);
         Self {
             kind,
-            value: {
-                let v: String = value.into();
-                v.trim().to_string()
-            },
+            value: normalised,
         }
     }
 
