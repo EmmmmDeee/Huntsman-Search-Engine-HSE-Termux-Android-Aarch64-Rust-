@@ -801,12 +801,10 @@ pub(super) fn known_city_coords(addr: &str) -> Option<(f64, f64)> {
 }
 
 pub(super) fn extract_registrable(host: &str) -> String {
-    let parts: Vec<&str> = host.split('.').collect();
-    if parts.len() >= 2 {
-        format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
-    } else {
-        host.to_string()
-    }
+    // Public-suffix-aware: "uni.edu.au" → "uni.edu.au" (not "edu.au"),
+    // "www.example.com.au" → "example.com.au". Falls back to the raw host
+    // only when it carries no registrable part (caller guards on that).
+    crate::util::domains::registrable_domain(host).unwrap_or_else(|| host.to_string())
 }
 
 /// Build a clean, structured evidence entry from a search result.

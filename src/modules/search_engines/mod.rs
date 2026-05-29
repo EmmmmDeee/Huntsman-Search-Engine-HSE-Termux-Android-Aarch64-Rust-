@@ -1005,6 +1005,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             e.add_evidence(build_search_evidence(r));
             result.push(e);
         } else if target_domain.as_ref().is_none_or(|td| domain != *td)
+            && crate::util::domains::is_registrable_domain(&domain)
             && !is_generic_domain(&domain)
             && seen_domains.insert(domain.clone())
         {
