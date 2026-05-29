@@ -46,12 +46,12 @@ property regresses.
 | 1 | **Zero-cost abstractions** | O(1) dispatch index replaces O(M) `accepts()` scan; index-iteration avoids per-target `Arc` clones | `core/dependency.rs` `ModuleGraph`; `engine.rs:703,833,920` |
 | 1 | **aarch64 / Termux / no root** | rustls-only (no OpenSSL/C), bundled SQLite, localhost bind, Termux sensors shell out to packaged binaries | `Cargo.toml:27-28`; `util::termux` |
 | 1 | **Low overhead / memory** | 2 tokio workers; sequential dispatch default; response cache; budget caps; `entity_map` capacity clamp; mmap-tunable SQLite | `main.rs:3`, `lib.rs:26`, `engine.rs:198-199` |
-| 1 | **Single-binary recursive SpiderFoot** | `default-run = "hse"`; embedded SPA; `run_expansion` recursive walk | `Cargo.toml:9`; `engine.rs:341` |
+| 1 | **Single-binary recursive SpiderFoot** | `default-run = "hse"`; embedded SPA; `run_expansion` recursive walk; **a bare `scan` auto-recurses by default** (depth resolved from seed type + keys) | `Cargo.toml:9`; `engine.rs:341`; `cli/scan.rs` |
 | 2 | **Shared data fabric** (instant framework-wide propagation) | per-scan `entity_map` (GREATEST-merge) + SQLite store + `entity_observations` junction + `EventBus` + **key-pool hot-inject** | `engine.rs:623,300-304,358-367` |
 | 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 32 rules (incl. **graph-aware AU-031/AU-032** that walk the edges), **and first-class typed `Relation` edges** (structural + expansion lineage + geo co-location + DNS resolution + WHOIS registration); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
 | 2 | **Discovery loops / adaptive pivoting** | `run_expansion`: depth-bounded DFS with ROI saturation-pruning, top-K gating, adaptive-depth termination, 4 expansion strategies | `engine.rs:341-510`, `core/roi.rs`, `core/scan.rs` |
 | 3 | **Code quality / static+dynamic verification** | CI: `fmt --check`, `check --locked`, `clippy -D warnings`, `test --all`, MSRV 1.88, shellcheck | `.github/workflows/ci.yml` |
-| 3 | **Resilience / regression testing** | 1,254 tests green (1173 lib + 36 API + 8 architecture + 37 smoke); per-module timeout; `panic = "abort"` | `tests/`, `engine.rs:752`, `Cargo.toml:64` |
+| 3 | **Resilience / regression testing** | 1,302 tests green (1217 lib + 37 API + 8 architecture + 40 smoke); per-module timeout; `panic = "abort"` | `tests/`, `engine.rs:752`, `Cargo.toml:64` |
 | 3 | **Hardening / deterministic execution** | SSRF preflight gate; private-IP/local-domain rejection; credential & key redaction; **no LLM/fuzzy** in correlator (open math only) | `engine.rs:1044-1141`, `SECURITY.md`, `core/correlator/` |
 
 ---
@@ -64,7 +64,9 @@ property regresses.
 src/main.rs
   └─ #[tokio::main(flavor = "multi_thread", worker_threads = 2)]   ← lib.rs:WORKER_THREADS
        └─ cli::run().await                                         ← single fallible entry; non-zero exit on Err
-            └─ clap parse → Commands::{ … }                        ← 11 subcommands
+            ├─ Cli::parse()  →  logging::init(verbose)             ← clap (–v/–vv); always-on debug file+bus sinks
+            ├─ first-run pre-configuration (idempotent)            ← ensure_first_run_scaffold() + ensure_hardcoded_keys()
+            └─ Commands::{ … }                                     ← 11 subcommands
                  └─ composition root: Store::open() → Arc<dyn StoragePort>
                       └─ registry() → Vec<Arc<dyn Module>>
                            └─ ScanEngine::new(modules, store, bus)  ← builds ModuleGraph once
@@ -73,6 +75,15 @@ src/main.rs
 The binary is intentionally thin (`main.rs` is 9 lines): it owns only the tokio
 runtime shape and the process exit contract. All policy lives behind
 `cli::run()`.
+
+**Two startup side-effects run once, before dispatch, and are idempotent:**
+(1) the layered `tracing` subscriber is initialised — stderr at `info`
+(`-v`→`debug`, `-vv`→`trace`), plus an always-on secret-redacted `debug` sink to
+`$HOME/.huntsman/logs/hse.log` and a broadcast bus the Web-UI **Logs** stream
+fans out; (2) **first-run pre-configuration** creates `$HOME/.huntsman/` + a
+`0600` key manifest if absent and fills the bundled always-on credentials
+(OathNet/HIBP/WiGLE/SeekNow) into empty/placeholder slots, so the tool works
+with zero setup. Neither clobbers real user state.
 
 **Runtime invariants** (`lib.rs`, asserted in `lib.rs` tests and
 `tests/architecture.rs`):
@@ -91,7 +102,7 @@ they are the *only* legitimate places the concrete SQLite type is named (see
 
 | Subcommand | Handler | Role |
 |------------|---------|------|
-| `scan` | `cli/scan.rs` | One target → entities; `--depth/--recursive/--auto`, `--max-roi`, `--output table\|json\|dossier`. |
+| `scan` | `cli/scan.rs` | One target → entities. **Auto-recurses by default** (optimal depth from seed type + keys); `--depth N` (incl. `0` = single round) / `--recursive` override; `--max-roi`, `--output table\|json\|dossier`. |
 | `modules` | `cli/mod.rs` | List the registry; `--category`, `--json`. |
 | `doctor` | `cli/doctor.rs` | Environment preflight (DB, keys, Termux, module count). |
 | `provision` / `set-key` / `keys` | `cli/provision.rs`, `cli/keys_cmd.rs` | Manage `~/.huntsman.env` and the multi-key pool. |
@@ -248,8 +259,8 @@ every read, never stored**, so tier labels can never go stale.
  (5) PROPAGATE   EntityFound event → EventBus → SSE/CLI tail;                 engine.rs:614
                  discovered keys hot-injected into ctx.keys for later modules engine.rs:767
  (6) PIVOT       run_expansion: C_eff-gated entities → new Targets (loop §5)  engine.rs:341
- (7) PERSIST     finalise_scan: upsert_entities_batch (1 txn; per-entity      engine.rs:236
-                 fallback) + entity_observations(uid, scan_id) + save key_pool storage.rs
+ (7) PERSIST     finalise_scan: upsert_entities_batch + upsert_relations_batch engine.rs:236
+                 (1 txn each; per-row fallback) + entity_observations + keys   storage.rs
  (8) CORRELATE   32 declarative rules link entities → Correlation records     correlator/rules.rs
                  + correlation_found events
  (9) SURFACE     CLI (table/json/dossier) · HTTP API · SSE · GEXF · D3 graph  api/, gexf.rs
@@ -328,7 +339,9 @@ entity, not on attribute-key names — robust across the modules that produce
 them. Each `Relation` has a
 deterministic SHA-256 id (so re-scans upsert idempotently), carries the weaker
 endpoint's confidence, and is persisted to the `relations` table via
-`StoragePort` (cascade-deleted with the scan). Edges are retrievable through
+`StoragePort::upsert_relations_batch` — all five families in a single WAL
+transaction (one fsync), with a per-relation fallback on error (cascade-deleted
+with the scan). Edges are retrievable through
 `relations_for_scan` and surfaced in `scan --output json`, the dossier's
 RELATIONS section, the GEXF export (typed edges labelled by kind for Gephi /
 Cytoscape), and the SPA's D3 force-graph (via `GET /api/v1/scans/{id}/relations`,
@@ -340,9 +353,9 @@ Alongside the structural edges, the expansion loop records **lineage**
 a parent entity), it diffs the entity map before/after and attributes every
 newly-surfaced entity back to that parent — the literal "recursive enumeration
 chain" made explicit as graph edges. Capture is a read-only side-effect
-localised to `run_expansion`; it changes no dispatch behaviour. (Evidence-derived
-semantic edges such as `resolves_to`/`registered_by` remain follow-on
-increments; see [§7 P2](#7-forward-optimization-levers).)
+localised to `run_expansion`; it changes no dispatch behaviour. This gives five
+edge families in total — structural, lineage, co-location, resolution, and
+registration — all deterministic and all surfaced through the same channels.
 
 ---
 
@@ -386,11 +399,19 @@ for depth in 1..=opts.depth:
 `breadth_first`, `depth_first`, `richest_first` (orders by module-graph
 richness). All respect the same `min_expand_confidence` floor.
 
-**Operator knobs** (`scan` subcommand): `--depth N` (0 = seed only),
-`--recursive` (depth 5), `--auto` (`optimal_depth()` by seed type + key tier),
-`--min-expand-confidence` (default **0.50**; set 0.75 for Verified-only),
-`--max-entities`, `--max-wall-time`, `--max-concurrent` (0 = sequential), and
-`--max-roi` / `--min-marginal-yield`.
+**Default depth resolution** (`cli/scan.rs`): `--depth` is `Option<u32>`, so the
+CLI can tell "omitted" from an explicit `0`. Precedence: an explicit `--depth N`
+wins (incl. `0` = seed only); else `--recursive` → depth 7 with a ≤0.40
+confidence bar; else (**the default, and what `--auto` requests**)
+`optimal_depth(seed_kind, has_paid_keys)` picks the rounds where marginal yield
+still justifies cost (3–5 for identity/domain seeds). So a bare `hse scan`
+recurses intelligently with no flags.
+
+**Operator knobs** (`scan` subcommand): `--depth N` (omit for auto-depth; `0` =
+seed only), `--recursive` (depth 7, low confidence bar), `--auto` (explicit
+`optimal_depth()`), `--min-expand-confidence` (default **0.50**; set 0.75 for
+Verified-only), `--max-entities`, `--max-wall-time`, `--max-concurrent`
+(0 = sequential), and `--max-roi` / `--min-marginal-yield`.
 
 ### 5.1 Dispatch concurrency & key-discovery-first
 
