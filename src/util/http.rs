@@ -82,6 +82,13 @@ fn resolve_proxy() -> Option<String> {
     }
     let chosen = if v.eq_ignore_ascii_case("auto") {
         let pool = crate::util::proxy::load_pool();
+        // Free proxies churn fast: surface a stale pool so failures are
+        // diagnosable (routing still proceeds — `hse proxies refresh` is the fix).
+        if let Some(age) = crate::util::proxy::pool_age_secs(&pool)
+            && age > crate::util::proxy::STALE_AFTER_SECS
+        {
+            tracing::warn!(target: "hse::proxy", age_secs = age, "proxy pool is stale; run `hse proxies refresh`");
+        }
         // Region-match: if HUNTSMAN_REGION is set, prefer a proxy egressing from
         // that country (the high-yield range for the locale) so the request and
         // the localised search results come from the same region. Falls back to

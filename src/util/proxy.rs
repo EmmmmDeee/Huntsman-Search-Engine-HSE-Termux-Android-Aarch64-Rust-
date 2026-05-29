@@ -136,6 +136,32 @@ pub struct Proxy {
     /// ASN org / ISP name, for display and corroboration.
     #[serde(default)]
     pub org: Option<String>,
+    /// Unix seconds when this proxy was last confirmed live. Free proxies churn
+    /// fast, so the pool's freshness gates whether `auto` should trust it.
+    #[serde(default)]
+    pub last_validated: u64,
+}
+
+/// Pool entries older than this are considered stale (free proxies die fast).
+pub const STALE_AFTER_SECS: u64 = 6 * 3600;
+
+/// Current Unix time in seconds (std-only; `util` must not depend on `core`).
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Age in seconds of the freshest proxy in `pool` (how long since the last
+/// successful refresh). `None` if the pool is empty or carries no timestamps
+/// (e.g. written before freshness tracking).
+pub fn pool_age_secs(pool: &[Proxy]) -> Option<u64> {
+    let newest = pool.iter().map(|p| p.last_validated).max()?;
+    if newest == 0 {
+        return None;
+    }
+    Some(now_secs().saturating_sub(newest))
 }
 
 impl Proxy {
@@ -435,6 +461,7 @@ pub async fn validate(addr: &str, proto: &str, real_ip: &str) -> Option<Proxy> {
         country: None,
         proxy_type: None, // filled by the batched classify step
         org: None,
+        last_validated: now_secs(),
     })
 }
 
@@ -589,10 +616,17 @@ pub fn save_pool(proxies: &[Proxy]) -> std::io::Result<()> {
 
 /// Load the persisted pool (best-first). Empty `Vec` if absent/unreadable.
 pub fn load_pool() -> Vec<Proxy> {
-    std::fs::read_to_string(pool_path())
+    let mut pool: Vec<Proxy> = std::fs::read_to_string(pool_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Defence-in-depth: never serve a proxy in a government/reserved range,
+    // even from a stale or hand-edited pool that predates the harvest filter.
+    pool.retain(|p| {
+        let ip = p.addr.split(':').next().unwrap_or("");
+        crate::util::preflight::sensitive_range_reason(ip).is_none()
+    });
+    pool
 }
 
 /// Fetch our own public IP (direct, no proxy) so transparent proxies can be
@@ -735,6 +769,7 @@ mod tests {
             country: Some("AU".into()),
             proxy_type: Some(ProxyType::Residential),
             org: Some("Telstra".into()),
+            last_validated: 1_700_000_000,
         }];
         let json = serde_json::to_string(&proxies).unwrap();
         let back: Vec<Proxy> = serde_json::from_str(&json).unwrap();
@@ -742,6 +777,28 @@ mod tests {
         assert_eq!(back[0].country.as_deref(), Some("AU"));
         assert_eq!(back[0].proxy_type, Some(ProxyType::Residential));
         assert_eq!(back[0].org.as_deref(), Some("Telstra"));
+        assert_eq!(back[0].last_validated, 1_700_000_000);
+    }
+
+    #[test]
+    fn pool_age_reports_freshness() {
+        let fresh = vec![Proxy {
+            last_validated: now_secs(),
+            ..Default::default()
+        }];
+        assert!(pool_age_secs(&fresh).unwrap() < 5);
+
+        // A pool with no timestamps (pre-freshness JSON) reports None.
+        let undated = vec![Proxy::default()];
+        assert_eq!(pool_age_secs(&undated), None);
+        assert_eq!(pool_age_secs(&[]), None);
+
+        // Old entry → stale.
+        let old = vec![Proxy {
+            last_validated: now_secs().saturating_sub(STALE_AFTER_SECS + 60),
+            ..Default::default()
+        }];
+        assert!(pool_age_secs(&old).unwrap() > STALE_AFTER_SECS);
     }
 
     #[test]

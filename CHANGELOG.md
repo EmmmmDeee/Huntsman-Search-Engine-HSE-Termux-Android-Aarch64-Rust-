@@ -10,6 +10,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **Proxy pool freshness + load-time safety.** Free proxies die within
+  minutes/hours, so each validated proxy now records `last_validated`; `hse
+  proxies list` shows pool age ("refreshed 12m ago" / "… — STALE; run
+  refresh"), and `HUNTSMAN_PROXY=auto` logs a warning when routing through a
+  stale pool (> 6 h) so dead-pool failures are diagnosable. `load_pool` also
+  re-applies the government/reserved-range filter, so even a stale or
+  hand-edited `proxies.json` can never serve a gov-range proxy. Pool JSON stays
+  backward-compatible (timestamp defaults to 0 → "freshness unknown").
+
 ### Security
 
 - **Government-network guardrail is now platform-wide.** Beyond the proxy

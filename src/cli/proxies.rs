@@ -105,7 +105,28 @@ fn list() {
         proxies.len(),
         proxy::pool_path().display()
     );
+    println!("  freshness: {}", freshness_line(&proxies));
     print_table(&proxies);
+}
+
+/// Human-readable pool age + a stale warning (free proxies churn fast).
+fn freshness_line(proxies: &[Proxy]) -> String {
+    match proxy::pool_age_secs(proxies) {
+        None => "unknown (pool predates freshness tracking) — consider `refresh`".to_string(),
+        Some(age) => {
+            let mins = age / 60;
+            let when = if mins < 60 {
+                format!("{mins}m ago")
+            } else {
+                format!("{}h{}m ago", mins / 60, mins % 60)
+            };
+            if age > proxy::STALE_AFTER_SECS {
+                format!("refreshed {when} — STALE; run `hse proxies refresh`")
+            } else {
+                format!("refreshed {when}")
+            }
+        }
+    }
 }
 
 /// True if `p`'s grade clears the requested floor (`elite` ⇒ Elite only;
