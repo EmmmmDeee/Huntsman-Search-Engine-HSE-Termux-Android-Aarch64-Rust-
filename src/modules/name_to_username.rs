@@ -88,23 +88,36 @@ fn parse_name_parts(raw: &str) -> Vec<NameParts> {
     }]
 }
 
+/// First Unicode scalar of `s` as an owned `String` (empty if `s` is empty).
+/// Char-boundary-safe: never slices inside a multi-byte codepoint.
+fn first_char(s: &str) -> String {
+    s.chars().next().map(String::from).unwrap_or_default()
+}
+
 fn derive_usernames(parts_list: &[NameParts]) -> Vec<String> {
     let mut out = Vec::with_capacity(MAX_DERIVATIONS);
     for p in parts_list {
         let f = &p.first;
         let l = &p.last;
-        let fi = &f[..f.len().min(1)];
+        // First *character* (not first byte) of each part. Slicing `&f[..1]`
+        // panics when the part begins with a multi-byte UTF-8 codepoint
+        // (e.g. "émile", "ñoño", "øystein") — `parse_name_parts` keeps all
+        // Unicode alphabetic chars, so international names reach here. Under
+        // the release profile's `panic = "abort"` such a panic aborts the
+        // entire binary, so a single foreign name would crash a whole scan.
+        let fi = first_char(f);
+        let li = first_char(l);
 
         out.push(format!("{f}{l}"));
         out.push(format!("{f}.{l}"));
         out.push(format!("{f}_{l}"));
         out.push(format!("{fi}{l}"));
-        out.push(format!("{f}{}", &l[..l.len().min(1)]));
+        out.push(format!("{f}{li}"));
         out.push(format!("{l}{f}"));
         out.push(format!("{l}.{f}"));
 
         if let Some(ref m) = p.middle {
-            let mi = &m[..m.len().min(1)];
+            let mi = first_char(m);
             out.push(format!("{f}{mi}{l}"));
             out.push(format!("{fi}{mi}{l}"));
         }
@@ -141,6 +154,29 @@ mod tests {
     #[test]
     fn single_word_returns_empty() {
         assert!(parse_name_parts("Jordan").is_empty());
+    }
+
+    #[test]
+    fn non_ascii_name_does_not_panic() {
+        // Regression: first-byte slicing (`&f[..1]`) panicked on multi-byte
+        // leading codepoints, aborting the whole binary under panic=abort.
+        // First-char extraction must produce well-formed handles instead.
+        let parts = parse_name_parts("Émile Zola");
+        let usernames = derive_usernames(&parts);
+        assert!(usernames.contains(&"émilezola".to_string()));
+        assert!(usernames.contains(&"ézola".to_string()), "fi+last form");
+        assert!(usernames.contains(&"émilez".to_string()), "first+li form");
+        // Every derivation is valid UTF-8 (guaranteed by String) and non-empty.
+        assert!(usernames.iter().all(|u| !u.is_empty()));
+    }
+
+    #[test]
+    fn non_ascii_middle_initial_is_char_safe() {
+        // Multi-byte middle name must not slice mid-codepoint either.
+        let parts = parse_name_parts("José Ángel Núñez");
+        let usernames = derive_usernames(&parts);
+        assert!(usernames.contains(&"joséánúñez".to_string()));
+        assert!(usernames.contains(&"jánúñez".to_string()));
     }
 
     #[test]

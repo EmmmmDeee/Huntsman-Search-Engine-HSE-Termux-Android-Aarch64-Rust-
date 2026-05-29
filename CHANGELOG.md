@@ -23,6 +23,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`name_to_username` no longer panics (and, under `panic = "abort"`,
+  crashes the whole binary) on non-ASCII names.** Initial-letter derivations
+  sliced the first *byte* (`&first[..1]`), which is not a char boundary when a
+  name part begins with a multi-byte UTF-8 codepoint — so a `name` seed like
+  `Émile Zola`, `José Ángel Núñez`, or `Øystein` aborted the scan mid-dispatch
+  (proven by execution: exit 101 at `name_to_username.rs:96`). Initials are now
+  extracted by Unicode scalar (`first_char`), producing well-formed handles
+  (`ézola`, `jánúñez`, …). ASCII output is byte-for-byte unchanged. Regression
+  tests: `non_ascii_name_does_not_panic`, `non_ascii_middle_initial_is_char_safe`.
 - **ROI top-K gate no longer permanently eliminates the long tail it trims.**
   In `--max-roi` expansion, every candidate was inserted into the per-scan
   `visited` set *during candidate construction*, but the top-K gate
