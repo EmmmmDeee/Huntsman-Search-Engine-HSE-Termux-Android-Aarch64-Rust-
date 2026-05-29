@@ -6,17 +6,21 @@
 //! fuzzy matching, no LLM. Every edge is derived from concrete, normalised
 //! entity values, so the same entity set always produces the same relations.
 //!
-//! # First slice
-//! This module ships the relation model + a post-scan **structural** builder
-//! that links entities by their canonical values:
+//! # Edge families
+//! Post-scan **structural** builder (`derive_structural`) links entities by
+//! canonical value:
 //!   - `SubdomainOf`     — Domain → its closest present parent Domain
 //!   - `BelongsToDomain` — Email  → the Domain of its address
 //!   - `HostedOn`        — Url    → the Domain of its host
 //!
-//! Lineage edges (`DerivedFrom`: child → the entity whose expansion surfaced
-//! it) require capturing parent context through the dispatch path and are a
-//! planned follow-on increment; the `RelationKind::DerivedFrom` variant is
-//! reserved here so the storage schema and API don't churn when it lands.
+//! `derive_colocation` links `CoLocatedWith` between Coordinates within
+//! `CO_LOCATION_KM` (Haversine via `util::geohash`). `derive_resolution` links
+//! `ResolvesTo` (Domain → IpAddress) by matching an IP entity's DNS evidence
+//! against present Domain nodes. All three run in `finalise_scan`.
+//!
+//! `DerivedFrom` (child → the entity whose expansion surfaced it) is **lineage**
+//! — recorded by the engine's `run_expansion` (not a post-scan builder) and
+//! persisted alongside the above.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -34,6 +38,9 @@ pub enum RelationKind {
     BelongsToDomain,
     /// `from` (a Url) is hosted on `to` (the Domain of its host).
     HostedOn,
+    /// `from` (a Domain) resolves to `to` (an IpAddress) — derived from DNS
+    /// evidence on the IP entity (A/AAAA records).
+    ResolvesTo,
     /// `from` and `to` are Coordinates within `CO_LOCATION_KM` of each other —
     /// the same locality, surfaced by independent sources.
     CoLocatedWith,
@@ -47,6 +54,7 @@ impl RelationKind {
             Self::SubdomainOf => "subdomain_of",
             Self::BelongsToDomain => "belongs_to_domain",
             Self::HostedOn => "hosted_on",
+            Self::ResolvesTo => "resolves_to",
             Self::CoLocatedWith => "co_located_with",
             Self::DerivedFrom => "derived_from",
         }
@@ -238,6 +246,56 @@ pub fn derive_colocation(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     relations
 }
 
+/// Derive `ResolvesTo` edges (Domain → IpAddress) from DNS evidence.
+///
+/// Robust by design: rather than coupling to a specific module's attribute
+/// key, it scans each IpAddress entity's evidence — both attribute *values*
+/// (e.g. `dns_intel`'s `domain` attr) and summary tokens (the shared
+/// "`<TYPE> record for <domain>`" convention used by `dns_intel` and
+/// `doh_resolver`) — and links any token that normalises to a present Domain
+/// entity. Only IpAddress entities are scanned and only exact matches against
+/// real Domain nodes fire, so non-domain tokens (record types, TTLs) can't
+/// produce false edges. Deterministic; one edge per (domain, ip) pair.
+pub fn derive_resolution(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::{HashMap, HashSet};
+
+    let domain_by_value: HashMap<&str, &Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .map(|e| (e.value.as_str(), e))
+        .collect();
+    if domain_by_value.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for ip in entities.iter().filter(|e| e.kind == EntityKind::IpAddress) {
+        for ev in &ip.evidence {
+            let candidates = ev
+                .attributes
+                .values()
+                .map(String::as_str)
+                .chain(ev.summary.split_whitespace());
+            for token in candidates {
+                let norm = crate::core::entity::normalise(&EntityKind::Domain, token);
+                if let Some(dom) = domain_by_value.get(norm.as_str())
+                    && seen.insert((dom.uid.clone(), ip.uid.clone()))
+                {
+                    out.push(Relation::new(
+                        dom.uid.as_str(),
+                        ip.uid.as_str(),
+                        RelationKind::ResolvesTo,
+                        ip.confidence.min(dom.confidence),
+                        scan_id,
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +461,78 @@ mod tests {
             derive_colocation(&[a, b], "s").len(),
             1,
             "one edge per pair, not two reversed"
+        );
+    }
+
+    // ── derive_resolution (Domain → Ip via DNS evidence) ───────────────────
+
+    #[test]
+    fn resolution_links_domain_to_ip_dns_intel_shape() {
+        use crate::core::entity::Evidence;
+        // Realistic dns_intel A-record fixture: IpAddress entity carrying a
+        // `domain` attribute + the "<TYPE> record for <domain>" summary.
+        let mut ip = Entity::new(EntityKind::IpAddress, "93.184.216.34", 0.95, "rel-scan");
+        ip.add_evidence(
+            Evidence::new("dns_intel", "A record for example.com")
+                .with_attr("record_type", "A")
+                .with_attr("domain", "example.com")
+                .with_attr("ttl_secs", "3600")
+                .with_attr("ip_version", "ipv4"),
+        );
+        let dom = ent(EntityKind::Domain, "example.com", 0.9);
+        let rels = derive_resolution(&[ip.clone(), dom.clone()], "s");
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].kind, RelationKind::ResolvesTo);
+        assert_eq!(rels[0].from_uid, dom.uid, "edge points domain -> ip");
+        assert_eq!(rels[0].to_uid, ip.uid);
+        assert!((rels[0].confidence - 0.9).abs() < 1e-9); // weaker endpoint
+    }
+
+    #[test]
+    fn resolution_links_via_summary_only_doh_shape() {
+        use crate::core::entity::Evidence;
+        // Realistic doh_resolver fixture: domain only in the summary, the sole
+        // attribute is record_type. The summary-token path must still link it.
+        let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "rel-scan");
+        ip.add_evidence(
+            Evidence::new("doh_resolver", "A record for example.com").with_attr("record_type", "A"),
+        );
+        let dom = ent(EntityKind::Domain, "example.com", 0.9);
+        let rels = derive_resolution(&[ip, dom], "s");
+        assert_eq!(rels.len(), 1, "summary-only domain must still link");
+        assert_eq!(rels[0].kind, RelationKind::ResolvesTo);
+    }
+
+    #[test]
+    fn resolution_no_edge_without_matching_domain_entity() {
+        use crate::core::entity::Evidence;
+        let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "rel-scan");
+        ip.add_evidence(
+            Evidence::new("dns_intel", "A record for absent.com").with_attr("domain", "absent.com"),
+        );
+        // Only an unrelated domain is present.
+        let other = ent(EntityKind::Domain, "example.com", 0.9);
+        assert!(derive_resolution(&[ip, other], "s").is_empty());
+    }
+
+    #[test]
+    fn resolution_dedups_repeated_domain_mentions() {
+        use crate::core::entity::Evidence;
+        let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "rel-scan");
+        // Domain appears in both an attr and the summary, across two records.
+        ip.add_evidence(
+            Evidence::new("dns_intel", "A record for example.com")
+                .with_attr("domain", "example.com"),
+        );
+        ip.add_evidence(
+            Evidence::new("dns_intel", "AAAA record for example.com")
+                .with_attr("domain", "example.com"),
+        );
+        let dom = ent(EntityKind::Domain, "example.com", 0.9);
+        assert_eq!(
+            derive_resolution(&[ip, dom], "s").len(),
+            1,
+            "one edge per (domain, ip) pair"
         );
     }
 }

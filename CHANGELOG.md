@@ -76,6 +76,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   draws the typed relation edges as distinct dashed links (relation kind shown
   on hover), alongside the seed-star and correlation links. The attribution
   graph is now visible in every read path — CLI dossier, JSON, GEXF, and web UI.
+- **DNS resolution relations (`ResolvesTo`).** `derive_resolution` links a
+  Domain to an IpAddress when the IP entity's DNS evidence references that
+  domain. Robust by design — it matches the IP's evidence attribute *values*
+  and summary tokens against known Domain entities rather than coupling to a
+  specific module's attribute key, so it captures both `dns_intel` (attribute)
+  and `doh_resolver` (summary) shapes. Completes the relation taxonomy
+  (structural + lineage + co-location + resolution).
 
 ## [1.0.0] — 2026-05-27
 
