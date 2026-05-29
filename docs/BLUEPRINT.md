@@ -52,7 +52,7 @@ property regresses.
 | 2 | **Discovery loops / adaptive pivoting** | `run_expansion`: depth-bounded DFS with ROI saturation-pruning, top-K gating, adaptive-depth termination, 4 expansion strategies | `engine.rs:341-510`, `core/roi.rs`, `core/scan.rs` |
 | 3 | **Code quality / static+dynamic verification** | CI: `fmt --check`, `check --locked`, `clippy -D warnings`, `test --all`, MSRV 1.88, shellcheck | `.github/workflows/ci.yml` |
 | 3 | **Resilience / regression testing** | 1,350 tests green; per-module timeout; `panic = "abort"`; offline `hse selftest` (5-stage health check); `tests/perf.rs` complexity gate + `benches/pipeline.rs` offline timing harness | `tests/`, `engine.rs:752`, `Cargo.toml:64`, `cli/selftest.rs`, `benches/` |
-| 3 | **Hardening / deterministic execution** | SSRF preflight gate; private-IP/local-domain rejection; credential & key redaction; **no LLM/fuzzy** in correlator (open math only) | `engine.rs:1044-1141`, `SECURITY.md`, `core/correlator/` |
+| 3 | **Hardening / deterministic execution** | SSRF preflight gate; private-IP/local-domain rejection; **government/military range guardrail** (`preflight::sensitive_range_reason` — DoD /8s etc.; enforced on scan targets, target-URLs, and the proxy retriever, so no gov network is ever probed/routed — ABN/ACN + search engines excepted as hostname APIs); credential & key redaction; **no LLM/fuzzy** in correlator (open math only) | `engine.rs` `module_skip_reason`, `util/preflight.rs`, `util/proxy.rs`, `SECURITY.md` |
 
 ---
 

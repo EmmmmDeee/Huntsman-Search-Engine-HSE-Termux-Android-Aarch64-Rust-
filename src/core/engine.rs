@@ -1233,6 +1233,15 @@ fn module_skip_reason(
             TargetKind::IpAddress if preflight::should_skip_external_ip(&target.value) => {
                 return Some("private/reserved IP — external API would reject");
             }
+            // HARD GUARDRAIL: never probe a government / military / reserved
+            // range (US-DoD /8s, 240/4, 198.18/15, documentation). This fires
+            // only for the gov-specific ranges the private check above misses.
+            // It gates scan *targets* (and target-derived URLs), not modules'
+            // own authorized API endpoints — so `abn_lookup` (ABR gov API, by
+            // hostname) and the search engines are unaffected.
+            TargetKind::IpAddress if preflight::sensitive_range_reason(&target.value).is_some() => {
+                return Some("government/reserved IP range — never probed");
+            }
             TargetKind::Domain if preflight::is_local_domain(&target.value) => {
                 return Some("local/reserved domain — external API would reject");
             }
@@ -1255,7 +1264,7 @@ fn module_skip_reason(
 /// a local-only domain. Mid-parse failures return false (let the
 /// module's own validation reject malformed URLs as usual).
 fn url_host_is_private(url: &str) -> bool {
-    use crate::util::preflight::{is_local_domain, is_private_ip};
+    use crate::util::preflight::{is_local_domain, is_private_ip, sensitive_range_reason};
     let Ok(parsed) = url::Url::parse(url.trim()) else {
         return false;
     };
@@ -1268,10 +1277,9 @@ fn url_host_is_private(url: &str) -> bool {
         .strip_prefix('[')
         .and_then(|s| s.strip_suffix(']'))
         .unwrap_or(host);
-    if is_private_ip(bare) {
-        return true;
-    }
-    is_local_domain(bare)
+    // Private/reserved OR government/military range (never probe a gov host),
+    // OR a local-only domain.
+    is_private_ip(bare) || sensitive_range_reason(bare).is_some() || is_local_domain(bare)
 }
 
 /// Augment Coordinates entities with geohash + timezone, and Address
@@ -1655,6 +1663,45 @@ mod tests {
         let m = free_active();
         let opts = ScanOptions::default();
         assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
+    }
+
+    // -- government-network hard guardrail --
+
+    #[test]
+    fn skip_reason_rejects_government_ip_range() {
+        // US DoD /8 (6/7/11/21/22/26/28/29/30/33/55/214/215) must never be probed.
+        let m = free_active();
+        let opts = ScanOptions::default();
+        for ip in ["6.1.2.3", "7.0.0.1", "214.9.9.9", "55.1.1.1"] {
+            let gov = Target::new(TargetKind::IpAddress, ip);
+            assert_eq!(
+                module_skip_reason(&m, &gov, &opts, false),
+                Some("government/reserved IP range — never probed"),
+                "{ip} must be blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn skip_reason_rejects_url_with_government_host() {
+        let m = free_active();
+        let opts = ScanOptions::default();
+        let url = Target::new(TargetKind::Url, "http://7.0.0.1/path");
+        assert_eq!(
+            module_skip_reason(&m, &url, &opts, false),
+            Some("URL with private host — external API would reject (SSRF gate)")
+        );
+    }
+
+    #[test]
+    fn skip_reason_does_not_gate_abn_acn_carveout() {
+        // The ABN/ACN gov-API carve-out: an AbnAcn target isn't an IP/URL/domain,
+        // so the gov guard never fires — abn_lookup still reaches the ABR API
+        // (abr.business.gov.au, contacted by hostname, not by probing a range).
+        let m = free_active();
+        let opts = ScanOptions::default();
+        let abn = Target::new(TargetKind::AbnAcn, "51824753556");
+        assert!(module_skip_reason(&m, &abn, &opts, false).is_none());
     }
 
     #[test]

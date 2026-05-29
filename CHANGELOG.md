@@ -10,6 +10,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Security
+
+- **Government-network guardrail is now platform-wide.** Beyond the proxy
+  retriever, the engine's universal preflight (`module_skip_reason`) now rejects
+  any scan target — or target-derived URL host — in a government/military or
+  reserved range (`preflight::sensitive_range_reason`: US-DoD `/8`s, 240/4,
+  198.18/15, documentation, plus all private/reserved space), so **no module
+  ever probes a government network**. The explicit carve-outs are preserved:
+  the ABN/ACN registry (`abn_lookup` → `abr.business.gov.au`) and the search
+  engines reach published gov endpoints **by hostname as authorized API/search
+  resources** — they take no IP/URL target, so the guard never fires on them.
+
 ### Added
 
 - **SOCKS proxies + statistically efficient retrieval + government-range
