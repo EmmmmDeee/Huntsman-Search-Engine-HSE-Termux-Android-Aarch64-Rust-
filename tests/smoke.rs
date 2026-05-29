@@ -1497,3 +1497,184 @@ async fn breadth_first_strategy_runs_chain_under_default_confidence() {
     assert!(kinds.contains(&&EntityKind::Username));
     assert!(kinds.contains(&&EntityKind::Phone));
 }
+
+/// Accepts a Domain seed and emits a subdomain + its apex. Drives the
+/// post-scan structural-relation builder.
+struct DomainPairModule;
+
+#[async_trait]
+impl Module for DomainPairModule {
+    fn name(&self) -> &'static str {
+        "synth_domain_pair"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Domain)
+    }
+    async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        r.push(Entity::new(
+            EntityKind::Domain,
+            "example.com",
+            0.9,
+            &ctx.scan_id,
+        ));
+        r.push(Entity::new(
+            EntityKind::Domain,
+            "blog.example.com",
+            0.8,
+            &ctx.scan_id,
+        ));
+        Ok(r)
+    }
+}
+
+/// End-to-end: a scan that yields a subdomain + apex must persist a
+/// `SubdomainOf` relation via `finalise_scan` → `persist_relations`. Guards
+/// the engine→relation-builder→store wiring against silent removal.
+#[tokio::test]
+async fn scan_persists_structural_subdomain_relation() {
+    use huntsman_search_engine::core::relation::RelationKind;
+
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(DomainPairModule)],
+        "rel-e2e",
+        TargetKind::Domain,
+        "example.com",
+    );
+    let scan = Scan::new(sid.clone(), target.clone());
+    let _ = engine.run(scan, target, ctx).await.unwrap();
+
+    let relations = store.relations_for_scan(&sid).unwrap();
+    let sub: Vec<_> = relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::SubdomainOf)
+        .collect();
+    assert_eq!(
+        sub.len(),
+        1,
+        "expected one SubdomainOf edge, got: {relations:?}"
+    );
+
+    // The edge must point child → parent (blog.example.com → example.com),
+    // with both endpoints resolving to persisted entities.
+    let entities = store.entities_for_scan(&sid).unwrap();
+    let by_uid = |uid: &str| {
+        entities
+            .iter()
+            .find(|e| e.uid == uid)
+            .map(|e| e.value.as_str())
+    };
+    assert_eq!(by_uid(&sub[0].from_uid), Some("blog.example.com"));
+    assert_eq!(by_uid(&sub[0].to_uid), Some("example.com"));
+}
+
+/// End-to-end: expansion must record `DerivedFrom` lineage edges attributing a
+/// child entity to the parent whose expansion surfaced it. Seed Email →
+/// (seed round) Username → (expansion round 1) Phone, so the engine should
+/// persist a Username ──DerivedFrom──▶ Phone edge.
+#[tokio::test]
+async fn expansion_records_derived_from_lineage() {
+    use huntsman_search_engine::core::relation::RelationKind;
+
+    let (engine, store, sid, target, ctx) = setup(
+        vec![
+            Arc::new(EmailToUsernameSynth),
+            Arc::new(UsernameToPhoneSynth),
+        ],
+        "rel-lineage",
+        TargetKind::Email,
+        "alice@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let entities = store.entities_for_scan(&sid).unwrap();
+    let uname = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("seed round should produce a username");
+    let phone = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Phone)
+        .expect("expansion should produce a phone");
+
+    let relations = store.relations_for_scan(&sid).unwrap();
+    let lineage: Vec<_> = relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::DerivedFrom)
+        .collect();
+    // Direction is child -> parent: the Phone was *derived from* the Username
+    // that was expanded to surface it.
+    assert!(
+        lineage
+            .iter()
+            .any(|r| r.from_uid == phone.uid && r.to_uid == uname.uid),
+        "expected a Phone ->(DerivedFrom) Username edge (child -> parent), got: {lineage:?}"
+    );
+}
+
+/// Emits a malicious apex domain + a benign subdomain. The structural
+/// `SubdomainOf` edge between them should drive the graph-aware AU-031 rule.
+struct MaliciousDomainModule;
+
+#[async_trait]
+impl Module for MaliciousDomainModule {
+    fn name(&self) -> &'static str {
+        "synth_mal_domain"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Domain)
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        // Use a .com domain: the preflight gate rejects reserved TLDs like
+        // .example/.test, which would skip this module before it runs.
+        let mut apex = Entity::new(EntityKind::Domain, "evilcorp.com", 0.9, &ctx.scan_id);
+        apex.tag("malicious");
+        r.push(apex);
+        r.push(Entity::new(
+            EntityKind::Domain,
+            "blog.evilcorp.com",
+            0.8,
+            &ctx.scan_id,
+        ));
+        Ok(r)
+    }
+}
+
+/// End-to-end: a benign subdomain of a malicious apex must surface AU-031
+/// (adjacency to known-bad) through the engine → relations → correlator chain —
+/// a finding the flat entity list / tag-only rules can't produce.
+#[tokio::test]
+async fn correlator_surfaces_malicious_adjacency_via_relations() {
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(MaliciousDomainModule)],
+        "rel-au031",
+        TargetKind::Domain,
+        "evilcorp.com",
+    );
+    let scan = Scan::new(sid.clone(), target.clone());
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let correlations = store.correlations_for_scan(&sid).unwrap();
+    let au031: Vec<_> = correlations
+        .iter()
+        .filter(|c| c.rule_id == "AU-031")
+        .collect();
+    assert_eq!(
+        au031.len(),
+        1,
+        "AU-031 should fire for the benign subdomain, got: {correlations:?}"
+    );
+    assert!(au031[0].description.contains("blog.evilcorp.com"));
+}

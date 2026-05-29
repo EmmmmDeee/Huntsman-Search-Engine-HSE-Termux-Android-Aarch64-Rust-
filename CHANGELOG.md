@@ -10,6 +10,86 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Performance
+
+- **Batched entity persistence.** `ScanEngine::finalise_scan` now writes a
+  scan's entities through `Store::upsert_entities_batch` in a single WAL
+  transaction instead of one transaction per entity, collapsing N fsyncs into
+  one — a material win on low-power aarch64. On a batch error it falls back to
+  per-entity upserts, preserving the prior continue-on-error resilience
+  semantics (partial persist → `Complete` with an error note; nothing
+  persisted → `Failed`). `StoragePort::upsert_entities_batch` now takes
+  `&[Entity]` so the caller retains ownership for the fallback.
+
+### Added
+
+- **Per-module cost telemetry in the dossier.** `hse scan --output dossier`
+  now shows each module's cost tier (`free` / `key` / `paid`) in the "modules
+  ranked by yield" table and flags keyed/paid modules that yielded nothing
+  this scan (`ROI: … consider --exclude …`), making the ROI tuning loop
+  self-explanatory to operators.
+- **`consumes()`/`accepts()` integrity test.** A registry-wide regression test
+  (`module_consumes_covers_probed_accepts`) now fails CI if any module's
+  `consumes()` declaration omits a `TargetKind` its `accepts()` matches —
+  closing a silent-under-dispatch gap where the O(1) dispatch index would
+  never serve a mis-declared module for that kind.
+- **Typed entity relations (graph engine, first slice).** New `core::relation`
+  module adds first-class attribution edges between entities: a `Relation`
+  model + `relations` table + `StoragePort::{upsert_relation,
+  relations_for_scan}` (idempotent on a deterministic edge id, cascade-deleted
+  with the scan). A deterministic post-scan builder derives `SubdomainOf`
+  (Domain→closest parent), `BelongsToDomain` (Email→Domain), and `HostedOn`
+  (Url→Domain) edges; these are persisted by `finalise_scan` and surfaced in
+  `hse scan --output json` and the dossier's RELATIONS section. Pure open math
+  — no inference.
+- **Lineage relations (`DerivedFrom`).** Autonomous expansion now records the
+  attribution chain as graph edges: as `run_expansion` dispatches each
+  candidate, it attributes every newly-surfaced entity back to the parent
+  entity it expanded (`child ──DerivedFrom──▶ parent`). Captured via a
+  read-only before/after diff localised to the expansion loop — no change to
+  dispatch behaviour — and persisted alongside the structural edges.
+  (Evidence-derived semantic edges remain a planned follow-on.)
+- **Typed edges in the GEXF export.** `hse export … --format gexf` and
+  `GET /api/v1/scans/{id}/graph.gexf` now emit the typed `Relation` edges
+  (labelled by kind, weighted by confidence) alongside the existing
+  shared-evidence co-occurrence edges, so the full attribution graph opens
+  directly in Gephi / Cytoscape.
+- **Geo co-location relations (`CoLocatedWith`).** `derive_colocation` links
+  Coordinates entities within 1 km of each other (Haversine via `util::geohash`)
+  with a `CoLocatedWith` edge — the same place surfaced by independent sources.
+  Self-contained deterministic geo math (no module coupling); one
+  canonically-directed edge per close pair, persisted with the other relations
+  and exported to GEXF.
+- **Graph-aware correlator rule (AU-031).** The correlator now runs a separate
+  pass over the typed relation edges. `AU-031 — Adjacency to known-bad
+  infrastructure` flags a benign entity one edge away from a node tagged
+  malicious / threat-intel / vulnerable (e.g. a subdomain of a malicious apex,
+  or an entity derived from a flagged node) — a finding the flat entity list
+  and tag-only rules can't produce. New graph rules slot into `RELATION_RULES`
+  without changing the 30 entity rules.
+- **Graph cluster rule (AU-032).** `AU-032 — Geographic co-location cluster`
+  walks the `CoLocatedWith` edges (connected components) and reports each
+  cluster of 3+ coordinates that transitively converge within 1 km — the
+  graph-structural signal the pairwise geo rules don't surface.
+- **Relation edges in the Web UI + `/relations` endpoint.** New
+  `GET /api/v1/scans/{id}/relations` JSON endpoint; the SPA's D3 force-graph now
+  draws the typed relation edges as distinct dashed links (relation kind shown
+  on hover), alongside the seed-star and correlation links. The attribution
+  graph is now visible in every read path — CLI dossier, JSON, GEXF, and web UI.
+- **DNS resolution relations (`ResolvesTo`).** `derive_resolution` links a
+  Domain to an IpAddress when the IP entity's DNS evidence references that
+  domain. Robust by design — it matches the IP's evidence attribute *values*
+  and summary tokens against known Domain entities rather than coupling to a
+  specific module's attribute key, so it captures both `dns_intel` (attribute)
+  and `doh_resolver` (summary) shapes.
+- **WHOIS registration relations (`RegisteredBy`).** `derive_registration`
+  links a Domain to its registrant Organisation/Email when the Domain's WHOIS
+  evidence references one that exists as an entity. Same value-match robustness
+  as resolution (matches entity values, not attribute keys); the registrar
+  self-excludes since `whois` only emits the registrant org/email as entities.
+  Closes the relation taxonomy (structural + lineage + co-location + resolution
+  + registration).
+
 ## [1.0.0] — 2026-05-27
 
 ### Added

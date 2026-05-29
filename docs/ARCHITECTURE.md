@@ -1,5 +1,10 @@
 # Architecture
 
+> **See also [`BLUEPRINT.md`](BLUEPRINT.md)** — the canonical, code-grounded
+> architectural blueprint (entry point, modular boundaries, graph data-fabric
+> lifecycle, constraint→implementation matrix). When the two disagree,
+> `BLUEPRINT.md` is authoritative.
+
 This document describes the engine's data flow, the invariants the codebase
 upholds, and the design decisions behind them. For module-author specifics,
 see [`MODULES.md`](MODULES.md). For the long-term north-star design (large
@@ -35,37 +40,42 @@ ScanRequest   │ └──────┬───────┘    │     co
 
 ```
 src/
-├── main.rs            – binary entry; wires tokio + cli::run()
-├── lib.rs             – constants, module roots, default_db_path, is_termux
+├── main.rs            – binary entry; tokio 2-worker runtime + cli::run()
+├── lib.rs             – constants (WORKER_THREADS, MODULE_TIMEOUT_MS, …), default_db_path, is_termux
 ├── core/
-│   ├── entity.rs      – Entity, Evidence, Classification, derive_uid, normalise
-│   ├── error.rs       – Error enum + From impls
-│   ├── scan.rs        – Target, TargetKind, Scan, ScanStatus, ScanOptions, ScanRequest
-│   ├── event.rs       – EventBus (broadcast), Event, EventKind
-│   ├── module.rs      – Module trait, ModuleContext, ModuleResult, ModuleCost
-│   └── engine.rs      – ScanEngine, dispatch_target, run_expansion
-├── util/
-│   ├── http.rs        – rustls-only reqwest client
-│   ├── keys.rs        – $HOME/.huntsman.env loader
-│   └── uid.rs         – scan-id SHA-256
-├── storage/
-│   └── store.rs       – SQLite WAL (scans + entities)
+│   ├── mod.rs         – re-exports + INLINE modules: error, event, port (StoragePort), cancel, tags
+│   ├── entity.rs      – Entity, Evidence, Classification, EntityKind, derive_uid, normalise
+│   ├── scan.rs        – Target, TargetKind, Scan, ScanStatus, ScanOptions, ScanRequest, ExpansionStrategy
+│   ├── module.rs      – Module trait, ModuleContext, ModuleResult, ModuleCost, ModuleCategory, ModuleInfo
+│   ├── engine.rs      – ScanEngine, dispatch_target (sequential/concurrent), run_expansion, finalise_scan
+│   ├── dependency.rs  – ModuleGraph (O(1) dispatch index + expansion "richness")
+│   ├── correlator/    – Correlator + 32 rules (AU-001..AU-032; 2 graph-aware)
+│   ├── roi.rs         – saturation pruning, top-K gating, adaptive-depth termination
+│   ├── live.rs        – LiveScanner / LiveSession (interval re-scan)
+│   ├── webhook.rs     – POST-on-completion notifier
+│   ├── gexf.rs        – GEXF graph export (Gephi/Cytoscape)
+│   ├── profiles.rs    – named scan presets (passive/footprint/investigate/fast)
+│   └── validation.rs  – entity invariant validators
+├── util/              – http, keys, key_pool, key_roi, budget, preflight, proxy, geohash,
+│                        response_cache, oui, html, domains, address_au, see_know, …
+├── storage.rs         – SQLite WAL Store (implements core::port::StoragePort)
 ├── modules/
-│   ├── mod.rs         – registry()
-│   ├── hudsonrock.rs
-│   ├── crtsh.rs
-│   ├── dns_resolver.rs
-│   ├── ip_geo.rs
-│   └── email_to_username.rs
-└── cli/
-    └── mod.rs         – clap-derived CLI; scan / modules / doctor
+│   ├── mod.rs         – registry() — the SINGLE source of the module list (85 modules)
+│   └── *.rs           – one file per module (+ subdirs: search_engines/, username_search/,
+│                        web_crawler/, oathnet_pro/, api_key_probe/, see_know/, exa_search/)
+├── api/               – axum routes, handlers, scan_handlers, AppState
+└── cli/               – clap dispatch (mod.rs) + one handler file per subcommand
 tests/
-└── smoke.rs           – end-to-end synthetic-module tests
+├── smoke.rs           – end-to-end synthetic-module engine tests
+├── architecture.rs    – boundary/invariant enforcement (fails CI on a forbidden import)
+└── api.rs             – axum HTTP integration tests
 ```
 
 `core` never imports from `modules/`. Modules depend on `core` only.
 `registry()` is the only place that knows the module list — adding or
-removing one is a one-file change.
+removing one is a two-file change (the new `modules/<name>.rs` plus its
+line in `registry()`). See [`BLUEPRINT.md`](BLUEPRINT.md) §3 for the full
+dependency DAG and the `StoragePort` boundary.
 
 ## Architecture invariants
 
@@ -80,8 +90,8 @@ justification in the PR summary.
   single self-contained file with no shared-library dependencies beyond libc.
 - `WORKER_THREADS = 2` (architecture invariant — tuned for low-power aarch64).
 - `MODULE_TIMEOUT_MS = 3000` (architecture invariant — bounded module wall-time).
-- Release profile is `opt-level = "z"`, `lto = true`, `codegen-units = 1`,
-  `strip = true`, `panic = "abort"` → 4.3 MB binary.
+- Release profile is `opt-level = "s"`, `lto = true`, `codegen-units = 1`,
+  `strip = true`, `panic = "abort"` → ~5 MB single-file binary.
 
 ### Data model
 
@@ -161,8 +171,8 @@ Bounded depth-first graph walk. For each round `1..=opts.depth`:
 - `visited` is a `HashSet<(TargetKind, String)>` per scan — same target is
   never dispatched twice.
 - `max_entities` and `max_wall_time_secs` are hard budget caps.
-- `min_expand_confidence` (default 0.75) prevents expansion of low-quality
-  finds.
+- `min_expand_confidence` (default 0.50 — Probable tier and above; set 0.75
+  for strict Verified-only expansion) prevents expansion of low-quality finds.
 
 Together these mean expansion always terminates, and the user can tune
 aggressiveness without changing the engine.

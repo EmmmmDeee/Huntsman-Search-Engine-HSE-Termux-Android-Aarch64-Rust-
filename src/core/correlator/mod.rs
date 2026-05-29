@@ -14,6 +14,7 @@ use tracing::debug;
 use crate::core::entity::Entity;
 use crate::core::error::Result;
 use crate::core::port::StoragePort;
+use crate::core::relation::Relation;
 
 // ─── Severity ──────────────────────────────────────────────────────────────
 
@@ -99,7 +100,17 @@ impl Correlator {
         if entities.is_empty() {
             return Ok(Vec::new());
         }
-        let firings = evaluate_rules(&entities, scan_id);
+        let mut firings = evaluate_rules(&entities, scan_id);
+
+        // Graph-aware pass: rules that need the typed relation edges (the
+        // attribution graph), not just the flat entity list. Relations are
+        // persisted by `finalise_scan` before the correlator runs.
+        let relations = self.store.relations_for_scan(scan_id)?;
+        if !relations.is_empty() {
+            let now = crate::core::entity::unix_now();
+            firings.extend(evaluate_relation_rules(&entities, &relations, scan_id, now));
+        }
+
         for c in &firings {
             self.store.upsert_correlation(c)?;
         }
@@ -153,6 +164,31 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     let mut out = Vec::new();
     for rule in RULES {
         out.extend(rule(entities, scan_id, now));
+    }
+    out
+}
+
+// ─── Graph-aware rules ───────────────────────────────────────────────────────
+// Rules that consume the typed `Relation` edge set in addition to entities.
+// Kept separate from `RULES` so the 30 entity-only rules need no signature
+// change.
+
+type RelationRuleFn = fn(&[Entity], &[Relation], &str, u64) -> Vec<Correlation>;
+
+const RELATION_RULES: &[RelationRuleFn] = &[
+    rule_au_031_malicious_adjacency,
+    rule_au_032_colocation_cluster,
+];
+
+fn evaluate_relation_rules(
+    entities: &[Entity],
+    relations: &[Relation],
+    scan_id: &str,
+    now: u64,
+) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    for rule in RELATION_RULES {
+        out.extend(rule(entities, relations, scan_id, now));
     }
     out
 }
@@ -674,5 +710,148 @@ mod tests {
         let c2 = Entity::new(EntityKind::Coordinates, "-33.86,151.20", 0.65, "s");
         let firings = rule_au_017_multi_geo_convergence(&[c1, c2], "s", 0);
         assert!(firings.is_empty());
+    }
+
+    // ── AU-031 (graph-aware: relation edges) ────────────────────────────
+
+    #[test]
+    fn au031_fires_on_edge_to_malicious_node() {
+        use crate::core::relation::{Relation, RelationKind};
+        let bad = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+        let benign = tagged(EntityKind::Domain, "blog.evil.example", &[]);
+        let rel = Relation::new(
+            benign.uid.clone(),
+            bad.uid.clone(),
+            RelationKind::SubdomainOf,
+            0.8,
+            "s",
+        );
+        let r = rule_au_031_malicious_adjacency(&[bad.clone(), benign.clone()], &[rel], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-031");
+        assert_eq!(r[0].severity, Severity::High);
+        assert!(r[0].entity_uids.contains(&benign.uid));
+        assert!(r[0].entity_uids.contains(&bad.uid));
+        assert!(r[0].description.contains("blog.evil.example"));
+        assert!(r[0].description.contains("malicious"));
+    }
+
+    #[test]
+    fn au031_no_fire_when_neither_endpoint_flagged() {
+        use crate::core::relation::{Relation, RelationKind};
+        let a = tagged(EntityKind::Domain, "a.example", &[]);
+        let b = tagged(EntityKind::Domain, "example", &[]);
+        let rel = Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::SubdomainOf,
+            0.8,
+            "s",
+        );
+        assert!(rule_au_031_malicious_adjacency(&[a, b], &[rel], "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au031_no_fire_when_both_endpoints_flagged() {
+        use crate::core::relation::{Relation, RelationKind};
+        let a = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+        let b = tagged(EntityKind::Domain, "bad.example", &["threat-intel"]);
+        let rel = Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::CoLocatedWith,
+            0.8,
+            "s",
+        );
+        assert!(rule_au_031_malicious_adjacency(&[a, b], &[rel], "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au031_skips_edges_with_missing_endpoints() {
+        use crate::core::relation::{Relation, RelationKind};
+        // Edge references a uid not in the entity set → no fire, no panic.
+        let bad = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+        let rel = Relation::new(
+            "ghost-uid",
+            bad.uid.clone(),
+            RelationKind::DerivedFrom,
+            0.8,
+            "s",
+        );
+        assert!(rule_au_031_malicious_adjacency(&[bad], &[rel], "s", 0).is_empty());
+    }
+
+    // ── AU-032 (graph-aware: co-location cluster) ───────────────────────
+
+    #[test]
+    fn au032_fires_on_three_node_colocation_cluster() {
+        use crate::core::relation::{Relation, RelationKind};
+        let c1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+        let c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+        let c3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+        // Chain c1–c2–c3 → one connected component of 3.
+        let rels = vec![
+            Relation::new(
+                c1.uid.clone(),
+                c2.uid.clone(),
+                RelationKind::CoLocatedWith,
+                0.9,
+                "s",
+            ),
+            Relation::new(
+                c2.uid.clone(),
+                c3.uid.clone(),
+                RelationKind::CoLocatedWith,
+                0.9,
+                "s",
+            ),
+        ];
+        let r = rule_au_032_colocation_cluster(&[c1, c2, c3], &rels, "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-032");
+        assert_eq!(r[0].severity, Severity::Medium);
+        assert_eq!(r[0].entity_uids.len(), 3);
+        assert!(r[0].description.contains("3 coordinates"));
+    }
+
+    #[test]
+    fn au032_no_fire_on_pair() {
+        use crate::core::relation::{Relation, RelationKind};
+        let c1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+        let c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+        let rels = vec![Relation::new(
+            c1.uid.clone(),
+            c2.uid.clone(),
+            RelationKind::CoLocatedWith,
+            0.9,
+            "s",
+        )];
+        assert!(rule_au_032_colocation_cluster(&[c1, c2], &rels, "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au032_ignores_non_colocation_edges() {
+        use crate::core::relation::{Relation, RelationKind};
+        // Three domains chained by SubdomainOf — not co-location → no cluster.
+        let a = Entity::new(EntityKind::Domain, "a.b.c.com", 0.9, "s");
+        let b = Entity::new(EntityKind::Domain, "b.c.com", 0.9, "s");
+        let c = Entity::new(EntityKind::Domain, "c.com", 0.9, "s");
+        let rels = vec![
+            Relation::new(
+                a.uid.clone(),
+                b.uid.clone(),
+                RelationKind::SubdomainOf,
+                0.9,
+                "s",
+            ),
+            Relation::new(
+                b.uid.clone(),
+                c.uid.clone(),
+                RelationKind::SubdomainOf,
+                0.9,
+                "s",
+            ),
+        ];
+        assert!(rule_au_032_colocation_cluster(&[a, b, c], &rels, "s", 0).is_empty());
     }
 }

@@ -191,3 +191,50 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(opencorporates::OpenCorporates),
     ]
 }
+
+#[cfg(test)]
+mod registry_invariants {
+    use super::registry;
+    use crate::core::dependency::{ALL_TARGET_KINDS, PROBE_VALUE};
+    use crate::core::scan::Target;
+
+    /// Every registered module's `consumes()` must cover every `TargetKind`
+    /// its `accepts()` matches against the canonical probe value.
+    ///
+    /// Why this is load-bearing: the engine builds its O(1) dispatch index
+    /// from `consumes()` (see `core::dependency::ModuleGraph`). A module that
+    /// hand-rolls `consumes()` and declares FEWER kinds than `accepts()`
+    /// actually matches is silently never indexed for the missing kind — so
+    /// it never dispatches there, and the engine's belt-and-braces `accepts()`
+    /// recheck never even runs (the module isn't in the candidate list). This
+    /// test turns that class of mis-declaration into a CI failure instead of a
+    /// silent loss of coverage.
+    ///
+    /// The default `consumes()` derives itself by probing `accepts()`, so
+    /// non-overriding modules satisfy this by construction; the test guards
+    /// the modules that override `consumes()` by hand. A `consumes()` that is
+    /// a strict *superset* of the probed-accepts set is fine (value-shape
+    /// gates legitimately declare kinds the generic probe value can't match).
+    #[test]
+    fn module_consumes_covers_probed_accepts() {
+        let mut violations = Vec::new();
+        for m in registry() {
+            let declared = m.consumes();
+            for &kind in ALL_TARGET_KINDS {
+                if m.accepts(&Target::new(kind, PROBE_VALUE)) && !declared.contains(&kind) {
+                    violations.push(format!(
+                        "  {}: accepts() matches {:?} (probe) but consumes() omits it \
+                         → dispatch index would never serve it for that kind",
+                        m.name(),
+                        kind
+                    ));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "consumes()/accepts() divergence detected:\n{}",
+            violations.join("\n")
+        );
+    }
+}

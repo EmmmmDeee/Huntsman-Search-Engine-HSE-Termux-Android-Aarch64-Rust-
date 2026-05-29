@@ -295,6 +295,7 @@ const S = {
   scan:     null,
   entities: null,
   correlations: null,
+  relations: null,
   settings: null,
   sse:      null,
   events:   [],
@@ -364,6 +365,7 @@ const API = {
   scan:      id=>API._req('/api/v1/scans/'+encodeURIComponent(id)),
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
   correlations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/correlations'),
+  relations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/relations'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
   rerun:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/rerun',{method:'POST'}),
   cancel:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/cancel',{method:'POST'}),
@@ -869,12 +871,13 @@ async function submitWizard(){
 /* ═══════════ Page: SCANINFO (#/scaninfo?id=X[&tab=Y]) ═══════════ */
 async function renderScanInfo(v){
   const {id, tab} = S.route.params;
-  const [scan, ents, corrs] = await Promise.all([
-    API.scan(id), API.entities(id), API.correlations(id)
+  const [scan, ents, corrs, rels] = await Promise.all([
+    API.scan(id), API.entities(id), API.correlations(id), API.relations(id)
   ]);
   S.scan = scan;
   S.entities = ents.entities||[];
   S.correlations = corrs.correlations||[];
+  S.relations = rels.relations||[];
 
   const dur = scan.finished_at && scan.started_at ? scan.finished_at - scan.started_at
             : scan.status==='running' ? nowSec() - (scan.started_at||nowSec()) : null;
@@ -1151,6 +1154,7 @@ function renderGraph(host){
         <div class="lr"><span class="sw" style="background:#2c7c40"></span>username</div>
         <div class="lr"><span class="sw" style="background:#8a6d3b"></span>phone</div>
         <div class="lr"><span class="sw" style="background:#9b1f9b"></span>credential</div>
+        <div class="lr"><span class="sw" style="background:#d9822b"></span>relation edge (hover for kind)</div>
       </div>
       <div class="graph-ctl">
         <button class="btn btn-default btn-xs" id="g-relayout"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Re-layout</button>
@@ -1189,6 +1193,10 @@ function buildD3Graph(){
     for (let i=0;i<uids.length;i++) for (let j=i+1;j<uids.length;j++)
       links.push({source:uids[i], target:uids[j], corr:true});
   }
+  // Typed attribution edges (subdomain_of / belongs_to_domain / hosted_on /
+  // derived_from / co_located_with) between entity nodes.
+  for (const r of (S.relations||[]))
+    links.push({source:r.from_uid, target:r.to_uid, rel:true, kind:r.kind});
 
   // Drop links to unknown nodes.
   const ids = new Set(nodes.map(n=>n.id));
@@ -1207,9 +1215,12 @@ function buildD3Graph(){
 
   const link = svg.append('g').selectAll('line')
     .data(validLinks).enter().append('line')
-    .style('stroke', d=>d.corr?'#9b1f9b':'#bbb')
-    .style('stroke-opacity', d=>d.corr?0.7:0.35)
-    .style('stroke-width', d=>d.corr?1.6:1);
+    .style('stroke', d=>d.rel?'#d9822b':(d.corr?'#9b1f9b':'#bbb'))
+    .style('stroke-opacity', d=>d.rel?0.85:(d.corr?0.7:0.3))
+    .style('stroke-width', d=>d.rel?2:(d.corr?1.6:1))
+    .style('stroke-dasharray', d=>d.rel?'5,3':'none');
+  // Hover a typed edge to see its relation kind.
+  link.append('title').text(d=>d.rel?('relation: '+d.kind):(d.corr?'correlation':'discovered from seed'));
 
   const drag = force.drag().on('dragstart', function(){ d3.select(this).style('cursor','grabbing'); });
 

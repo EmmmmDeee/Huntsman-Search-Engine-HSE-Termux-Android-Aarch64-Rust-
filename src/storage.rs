@@ -5,7 +5,8 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
 use crate::core::{
-    correlator::Correlation, entity::Entity, error::Result, event::Event, scan::Scan,
+    correlator::Correlation, entity::Entity, error::Result, event::Event, relation::Relation,
+    scan::Scan,
 };
 
 pub struct Store {
@@ -83,6 +84,17 @@ impl Store {
                 data_json   TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS relations (
+                id          TEXT PRIMARY KEY,
+                scan_id     TEXT NOT NULL,
+                from_uid    TEXT NOT NULL,
+                to_uid      TEXT NOT NULL,
+                kind        TEXT NOT NULL,
+                confidence  REAL NOT NULL,
+                observed_at INTEGER NOT NULL,
+                data_json   TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
@@ -90,6 +102,7 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
+            CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
             "
         ))?;
 
@@ -224,6 +237,46 @@ impl Store {
             .collect())
     }
 
+    // ── Relations ──────────────────────────────────────────────────────────
+    // Typed entity-to-entity edges. Idempotent on the deterministic `id` so a
+    // re-scan that re-derives the same edge does not duplicate it.
+
+    pub fn upsert_relation(&self, r: &Relation) -> Result<()> {
+        let json = serde_json::to_string(r)?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO relations(id, scan_id, from_uid, to_uid, kind, confidence, observed_at, data_json)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO NOTHING",
+            params![
+                r.id,
+                r.scan_id,
+                r.from_uid,
+                r.to_uid,
+                r.kind.as_str(),
+                r.confidence,
+                r.observed_at as i64,
+                json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>> {
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT data_json FROM relations WHERE scan_id = ?1 ORDER BY kind, id",
+            )?;
+            let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
+            rows.filter_map(std::result::Result::ok).collect()
+        };
+        Ok(raw
+            .into_iter()
+            .filter_map(|s| serde_json::from_str(&s).ok())
+            .collect())
+    }
+
     // ── Delete (cascade) ───────────────────────────────────────────────────
 
     pub fn delete_scan(&self, scan_id: &str) -> Result<bool> {
@@ -245,6 +298,7 @@ impl Store {
             params![scan_id],
         )?;
         tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
+        tx.execute("DELETE FROM relations WHERE scan_id = ?1", params![scan_id])?;
         tx.execute(
             "DELETE FROM entities
              WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
@@ -283,18 +337,20 @@ impl Store {
         Ok(())
     }
 
-    pub fn upsert_entities_batch(&self, entities: impl Iterator<Item = Entity>) -> Result<usize> {
+    /// Persist a batch of entities under one transaction. On the happy path
+    /// (every entity new or a clean merge) this collapses N per-entity
+    /// commits into a single WAL fsync — a material win on low-power aarch64.
+    /// All-or-nothing: any error rolls the whole batch back, and the caller
+    /// is expected to fall back to per-entity `upsert_entity` to salvage what
+    /// it can. Returns the number of entities persisted (== `entities.len()`).
+    pub fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
-        let mut count = 0usize;
-
         for entity in entities {
-            Self::merge_and_persist_entity(&tx, &entity)?;
-            count += 1;
+            Self::merge_and_persist_entity(&tx, entity)?;
         }
-
         tx.commit()?;
-        Ok(count)
+        Ok(entities.len())
     }
 
     fn merge_and_persist_entity(tx: &rusqlite::Transaction<'_>, entity: &Entity) -> Result<()> {
@@ -538,8 +594,8 @@ impl crate::core::port::StoragePort for Store {
         Store::upsert_entity(self, entity)
     }
 
-    fn upsert_entities_batch(&self, entities: Vec<Entity>) -> Result<usize> {
-        Store::upsert_entities_batch(self, entities.into_iter())
+    fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize> {
+        Store::upsert_entities_batch(self, entities)
     }
 
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
@@ -582,6 +638,14 @@ impl crate::core::port::StoragePort for Store {
 
     fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>> {
         Store::correlations_for_scan(self, scan_id)
+    }
+
+    fn upsert_relation(&self, r: &Relation) -> Result<()> {
+        Store::upsert_relation(self, r)
+    }
+
+    fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>> {
+        Store::relations_for_scan(self, scan_id)
     }
 
     fn insert_event(&self, event: &Event) -> Result<()> {
@@ -1261,6 +1325,131 @@ mod tests {
         );
         assert!(merged.has_tag("tag-a"), "tag-a must survive merge");
         assert!(merged.has_tag("tag-b"), "tag-b must survive merge");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── upsert_entities_batch ──────────────────────────────────────────────
+
+    #[test]
+    fn upsert_entities_batch_persists_all_and_records_observations() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "batch-scan");
+        let entities = vec![
+            Entity::new(EntityKind::Email, "a@x.com", 0.8, "batch-scan"),
+            Entity::new(EntityKind::Domain, "x.com", 0.7, "batch-scan"),
+            Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "batch-scan"),
+        ];
+        let n = store.upsert_entities_batch(&entities).unwrap();
+        assert_eq!(n, 3, "batch should report every entity persisted");
+        let got = store.entities_for_scan("batch-scan").unwrap();
+        assert_eq!(got.len(), 3);
+        // The observation junction must be populated for every entity, exactly
+        // as the per-entity upsert path does.
+        for e in &entities {
+            assert_eq!(store.observation_count(&e.uid).unwrap(), 1);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn upsert_entities_batch_merges_on_conflict() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "bm-scan");
+        let first = Entity::new(EntityKind::Email, "dup@x.com", 0.5, "bm-scan");
+        store.upsert_entity(&first).unwrap();
+        // Same uid, higher confidence → GREATEST-merge through the batch path.
+        let again = Entity::new(EntityKind::Email, "dup@x.com", 0.9, "bm-scan");
+        let n = store
+            .upsert_entities_batch(std::slice::from_ref(&again))
+            .unwrap();
+        assert_eq!(n, 1);
+        let merged = store.get_entity(&first.uid).unwrap().unwrap();
+        assert!(
+            (merged.confidence - 0.9).abs() < 1e-9,
+            "GREATEST-merge must apply inside the batch path"
+        );
+        assert_eq!(
+            merged.corroboration, 2,
+            "corroboration must accumulate through the batch path"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn upsert_entities_batch_empty_is_zero() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.upsert_entities_batch(&[]).unwrap(), 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── relations ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn relation_round_trip_and_idempotent_upsert() {
+        use crate::core::relation::{Relation, RelationKind};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "rel-scan");
+        let r = Relation::new(
+            "childUid",
+            "parentUid",
+            RelationKind::SubdomainOf,
+            0.8,
+            "rel-scan",
+        );
+        store.upsert_relation(&r).unwrap();
+        // Re-inserting the same deterministic id is a no-op (no duplicate row).
+        store.upsert_relation(&r).unwrap();
+        let got = store.relations_for_scan("rel-scan").unwrap();
+        assert_eq!(got.len(), 1, "idempotent on deterministic id");
+        assert_eq!(got[0].from_uid, "childUid");
+        assert_eq!(got[0].to_uid, "parentUid");
+        assert_eq!(got[0].kind, RelationKind::SubdomainOf);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn relations_for_scan_is_scan_scoped() {
+        use crate::core::relation::{Relation, RelationKind};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "rs-a");
+        insert_scan(&store, "rs-b");
+        store
+            .upsert_relation(&Relation::new(
+                "a",
+                "b",
+                RelationKind::HostedOn,
+                1.0,
+                "rs-a",
+            ))
+            .unwrap();
+        assert_eq!(store.relations_for_scan("rs-a").unwrap().len(), 1);
+        assert!(store.relations_for_scan("rs-b").unwrap().is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn delete_scan_cascades_to_relations() {
+        use crate::core::relation::{Relation, RelationKind};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "rd-scan");
+        store
+            .upsert_relation(&Relation::new(
+                "x",
+                "y",
+                RelationKind::BelongsToDomain,
+                0.9,
+                "rd-scan",
+            ))
+            .unwrap();
+        assert_eq!(store.relations_for_scan("rd-scan").unwrap().len(), 1);
+        assert!(store.delete_scan("rd-scan").unwrap());
+        assert!(store.relations_for_scan("rd-scan").unwrap().is_empty());
         let _ = std::fs::remove_file(&path);
     }
 }

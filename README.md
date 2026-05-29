@@ -124,7 +124,8 @@ jQuery, D3 v3, tablesorter, alertify):
 - **New Scan** — target input + module grid with tooltips + depth/throttle
   controls + use-case presets
 - **Scan Results** — tabbed: Status, Browse (sortable entity table with
-  inline expand), D3 Force Graph (entity relationship visualization),
+  inline expand), D3 Force Graph (entity relationship visualization, incl.
+  typed relation edges — subdomain/lineage/co-location — dashed, kind on hover),
   Correlations (severity-tagged), Event Log (real-time SSE), Info
 - **Settings** — API key management with validation
 - **Dark mode** toggle
@@ -176,7 +177,7 @@ Round 2: Discovered IPs → geo modules → coordinates → address.
 | Knob | Default | Purpose |
 |------|---------|---------|
 | `--depth N` | `0` | Max expansion rounds |
-| `--min-expand-confidence F` | `0.75` | Only Verified-tier entities expand |
+| `--min-expand-confidence F` | `0.50` | Min C_eff to expand (0.75 = Verified-only) |
 | `--max-entities N` | none | Stop at N total entities |
 | `--max-wall-time SECS` | none | Stop after SECS wall-time |
 | `--max-concurrent N` | `0` | Parallel module dispatch (0=sequential) |
@@ -189,7 +190,7 @@ Round 2: Discovered IPs → geo modules → coordinates → address.
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 700+ tests (unit + API integration + architecture boundary enforcement)
-- 27 correlator rules (AU-001 through AU-027)
+- 32 correlator rules (AU-001 through AU-032), incl. 2 graph-aware edge rules
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 
@@ -202,6 +203,7 @@ Round 2: Discovered IPs → geo modules → coordinates → address.
 | [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks |
 | [`docs/USAGE.md`](docs/USAGE.md) | Full CLI reference + HTTP API |
 | [`docs/MODULES.md`](docs/MODULES.md) | Module catalogue + synergy map |
+| [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) | Canonical architectural blueprint (entry point, boundaries, data-fabric lifecycle) |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Design invariants + data flow |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common errors + fixes |
 | [`CHANGELOG.md`](CHANGELOG.md) | Version history |

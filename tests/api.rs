@@ -490,6 +490,22 @@ async fn scan_correlations_empty() {
     assert_eq!(json["count"].as_u64().unwrap(), 0);
 }
 
+#[tokio::test]
+async fn scan_relations_endpoint_returns_list() {
+    let (app, scan_id) = create_scan("scan_rel").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{scan_id}/relations")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert!(
+        json.get("relations").is_some(),
+        "body must include 'relations'"
+    );
+    assert!(json["count"].as_u64().is_some());
+}
+
 // ── 13. API not found (JSON) ─────────────────────────────────────────────
 
 #[tokio::test]

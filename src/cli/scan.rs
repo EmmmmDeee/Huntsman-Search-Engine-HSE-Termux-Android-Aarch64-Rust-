@@ -147,6 +147,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let scan = engine.run(scan, target, ctx).await?;
     let entities = store.entities_for_scan(&sid)?;
     let correlations = store.correlations_for_scan(&sid)?;
+    let relations = store.relations_for_scan(&sid)?;
 
     if cmd.output == "json" {
         // Full self-optimization payload — scan + entities + correlations
@@ -166,11 +167,20 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 "scan": scan,
                 "entities": entities,
                 "correlations": correlations,
+                "relations": relations,
                 "diagnostics": diag,
             }))?
         );
     } else if cmd.output == "dossier" {
-        print_dossier(&scan, &entities, &correlations, &cmd.kind, &cmd.value, &sid);
+        print_dossier(
+            &scan,
+            &entities,
+            &correlations,
+            &relations,
+            &cmd.kind,
+            &cmd.value,
+            &sid,
+        );
     } else {
         let color = use_color();
         println!(
@@ -234,6 +244,7 @@ fn print_dossier(
     scan: &crate::core::scan::Scan,
     entities: &[crate::core::entity::Entity],
     correlations: &[crate::core::correlator::Correlation],
+    relations: &[crate::core::relation::Relation],
     kind: &str,
     value: &str,
     sid: &str,
@@ -358,6 +369,31 @@ fn print_dossier(
         }
     }
 
+    // Relations (typed attribution edges between entities)
+    if !relations.is_empty() {
+        use std::collections::HashMap;
+        let by_uid: HashMap<&str, &crate::core::entity::Entity> =
+            entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+        let label = |uid: &str| -> String {
+            by_uid
+                .get(uid)
+                .map(|e| truncate(&e.value, 40))
+                .unwrap_or_else(|| format!("{}…", &uid[..uid.len().min(8)]))
+        };
+        println!("━━━ RELATIONS ({}) ━━━", relations.len());
+        println!();
+        for r in relations {
+            println!(
+                "  {}  ──{}──▶  {}   (conf={:.2})",
+                label(&r.from_uid),
+                r.kind,
+                label(&r.to_uid),
+                r.confidence
+            );
+        }
+        println!();
+    }
+
     // ─── DIAGNOSTICS & SELF-OPTIMIZATION ──────────────────────────────
     // Surface the same data the JSON path exposes — module yield,
     // confidence calibration, geo precision, proximity graph,
@@ -372,16 +408,57 @@ fn print_dossier(
     println!("━━━ DIAGNOSTICS ━━━");
     println!();
     println!("  Scan wall-time:  {} ms", diag.wall_time_ms);
-    println!("  Modules ranked by yield:");
+
+    // Map each module name → cost tier so the yield table doubles as an ROI
+    // ledger: a zero-yield Paid/KeyGated module is a drop candidate, a
+    // zero-yield Free one is not. Built from the registry (the single source
+    // of the module list); non-module evidence sources (geo_normalize,
+    // entity_value, …) have no tier and render as "·". One-shot cost at
+    // dossier render time, off the scan hot path.
+    use crate::core::module::ModuleCost;
+    let cost_by_module: std::collections::HashMap<String, ModuleCost> = crate::modules::registry()
+        .iter()
+        .map(|m| (m.name().to_string(), m.cost()))
+        .collect();
+    let cost_label = |name: &str| match cost_by_module.get(name) {
+        Some(ModuleCost::Free) => "free",
+        Some(ModuleCost::KeyGated) => "key",
+        Some(ModuleCost::Paid) => "paid",
+        None => "·",
+    };
+
+    println!("  Modules ranked by yield (cost tier shown for ROI tuning):");
     for m in diag.modules_by_yield.iter().take(15) {
         let kinds = m.unique_kinds.join(",");
         println!(
-            "    {:4}  {:<22} conf={:.2}  novelty={:5.1}%  kinds={}",
+            "    {:4}  {:<5} {:<22} conf={:.2}  novelty={:5.1}%  kinds={}",
             m.entities_emitted,
+            cost_label(&m.name),
             m.name,
             m.mean_confidence,
             m.novelty_ratio * 100.0,
             kinds
+        );
+    }
+    // ROI hint: keyed/paid modules that produced nothing this scan are the
+    // levers an operator can pull with `--exclude` to conserve quota.
+    let wasted: Vec<&str> = diag
+        .modules_by_yield
+        .iter()
+        .filter(|m| {
+            m.entities_emitted == 0
+                && matches!(
+                    cost_by_module.get(&m.name),
+                    Some(ModuleCost::KeyGated | ModuleCost::Paid)
+                )
+        })
+        .map(|m| m.name.as_str())
+        .collect();
+    if !wasted.is_empty() {
+        println!(
+            "  ROI: {} keyed/paid module(s) yielded nothing — consider --exclude {}",
+            wasted.len(),
+            wasted.join(",")
         );
     }
     println!();
