@@ -98,7 +98,10 @@ the seed type (pass `--depth 0` for a single round).
   and username variant generation
 - **Breach/identity**: `hudsonrock`, `xposed_or_not`, `username_search`
   (150+ sites), `social_probe` (20+ platforms), `github_user`, `gravatar`,
-  `keybase`, `pwned_passwords`
+  `keybase`, `pwned_passwords`. **Stealer-log cross-correlation**: every
+  email/credential/domain/victim-IP from one infostealer log (`oathnet_pro`,
+  `hudsonrock`) is tied to a single infected machine via `CompromisedWith`
+  edges + rule AU-035 — a high-fidelity victim identity cluster
 - **DNS/domain**: `crtsh`, `dns_resolver`, `dns_brute`, `reverse_dns`,
   `ssl_probe`, `whois`, `rdap_domain`, `caa_records`, `wayback`
 - **IP/infrastructure**: `ip_geo`, `ip_whois_geo`, `ip_rdap`, `bgpview`,
@@ -212,7 +215,7 @@ pin a fixed depth, or `--recursive` for an aggressive deep sweep.
   dossier, `--output json`, GEXF export, the SPA D3 force-graph, and
   `GET /api/v1/scans/{id}/relations`
 - 1,300+ tests (unit + API integration + architecture boundary enforcement)
-- 34 correlator rules (AU-001 through AU-034), incl. 3 graph-aware edge rules
+- 35 correlator rules (AU-001 through AU-035), incl. 3 graph-aware edge rules
 - Always-on, secret-redacted debug log (`$HOME/.huntsman/logs/hse.log`) +
   live Web-UI **Logs** stream; `hse doctor --bundle` for one-paste diagnosis
 - 2 tokio worker threads (tuned for Termux low-power devices)

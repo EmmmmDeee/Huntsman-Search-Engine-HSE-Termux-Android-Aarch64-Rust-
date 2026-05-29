@@ -53,6 +53,11 @@ pub enum RelationKind {
     /// `phash::EQUIV_MAX_HAMMING` — the same picture surfaced from different
     /// sources, independent of (and often despite stripped) metadata.
     SameImageAs,
+    /// `from` and `to` were exposed in the **same stealer log / on the same
+    /// infected machine** (shared `log_id` / `computer_name` / victim IP) —
+    /// so they belong to one compromised victim. The single highest-fidelity
+    /// identity-clustering signal infostealer data provides.
+    CompromisedWith,
 }
 
 impl RelationKind {
@@ -66,6 +71,7 @@ impl RelationKind {
             Self::CoLocatedWith => "co_located_with",
             Self::DerivedFrom => "derived_from",
             Self::SameImageAs => "same_image_as",
+            Self::CompromisedWith => "compromised_with",
         }
     }
 }
@@ -422,6 +428,85 @@ pub fn derive_image_similarity(entities: &[Entity], scan_id: &str) -> Vec<Relati
                     a.confidence.min(b.confidence),
                     scan_id,
                 ));
+            }
+        }
+    }
+    out
+}
+
+/// Stealer-log origin keys an entity carries in its evidence, typed by source
+/// (`log:<id>` / `machine:<name>` / `vip:<addr>`). Two entities sharing a key
+/// were exposed in the same infostealer log / on the same infected machine.
+/// Empty for non-stealer entities. Shared with the AU-035 correlator rule so
+/// the edges and the finding always agree.
+pub fn stealer_origin_keys(e: &Entity) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let is_stealer = e.tags.iter().any(|t| t == "stealer" || t == "stealer-log");
+    if !is_stealer {
+        return Vec::new();
+    }
+    const SRCS: &[(&str, &str)] = &[
+        ("stealer_log_id", "log"),
+        ("log_id", "log"),
+        ("computer_name", "machine"),
+        ("machine", "machine"),
+        ("victim_ip", "vip"),
+    ];
+    let mut keys = BTreeSet::new();
+    for ev in &e.evidence {
+        for (attr, prefix) in SRCS {
+            if let Some(v) = ev.attributes.get(*attr) {
+                let v = v.trim();
+                if !v.is_empty() && v != "-" {
+                    keys.insert(format!("{prefix}:{}", v.to_lowercase()));
+                }
+            }
+        }
+    }
+    keys.into_iter().collect()
+}
+
+/// Derive `CompromisedWith` edges linking entities that share a stealer-log
+/// origin (same `log_id` / machine / victim IP). For each origin key with ≥2
+/// distinct entities we emit a star from the lexicographically-smallest UID to
+/// each other member (n-1 edges, not n²), deduped by deterministic edge id so a
+/// pair sharing two keys yields one edge. Pure open math over evidence the
+/// stealer modules already emit; deterministic.
+pub fn derive_stealer_cooccurrence(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::{BTreeMap, HashSet};
+
+    let mut groups: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();
+    for e in entities {
+        for key in stealer_origin_keys(e) {
+            groups.entry(key).or_default().push(e);
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    for members in groups.values() {
+        let mut uniq: Vec<&Entity> = Vec::new();
+        let mut seen_uid: HashSet<&str> = HashSet::new();
+        for &m in members {
+            if seen_uid.insert(m.uid.as_str()) {
+                uniq.push(m);
+            }
+        }
+        if uniq.len() < 2 {
+            continue;
+        }
+        uniq.sort_by(|a, b| a.uid.cmp(&b.uid));
+        let anchor = uniq[0];
+        for m in &uniq[1..] {
+            let r = Relation::new(
+                anchor.uid.as_str(),
+                m.uid.as_str(),
+                RelationKind::CompromisedWith,
+                anchor.confidence.min(m.confidence),
+                scan_id,
+            );
+            if seen_ids.insert(r.id.clone()) {
+                out.push(r);
             }
         }
     }
@@ -788,5 +873,42 @@ mod tests {
     fn image_similarity_ignores_entities_without_phash() {
         let plain = Entity::new(EntityKind::Url, "https://x/y.html", 0.6, "s");
         assert!(derive_image_similarity(&[plain], "s").is_empty());
+    }
+
+    #[test]
+    fn stealer_cooccurrence_links_same_log_entities() {
+        use crate::core::entity::Evidence;
+        let node = |kind: EntityKind, val: &str, log: &str| {
+            let mut e = Entity::new(kind, val, 0.6, "s");
+            e.tag("stealer");
+            e.add_evidence(Evidence::new("oathnet-pro", "stealer").with_attr("log_id", log));
+            e
+        };
+        let email = node(EntityKind::Email, "v@x.com", "LOG-1");
+        let dom = node(EntityKind::Domain, "bank.com", "LOG-1");
+        let other = node(EntityKind::Email, "z@y.com", "LOG-2"); // different log → no edge
+        let rels = derive_stealer_cooccurrence(&[email, dom, other], "s");
+        assert_eq!(rels.len(), 1, "only the two LOG-1 entities link");
+        assert_eq!(rels[0].kind, RelationKind::CompromisedWith);
+    }
+
+    #[test]
+    fn stealer_cooccurrence_star_topology_and_dedup() {
+        use crate::core::entity::Evidence;
+        // Three entities in one log → star = 2 edges (not 3 from a full mesh).
+        let node = |val: &str| {
+            let mut e = Entity::new(EntityKind::Email, val, 0.6, "s");
+            e.tag("stealer");
+            e.add_evidence(Evidence::new("oathnet-pro", "x").with_attr("log_id", "L"));
+            e
+        };
+        let rels = derive_stealer_cooccurrence(&[node("a@x"), node("b@x"), node("c@x")], "s");
+        assert_eq!(rels.len(), 2);
+    }
+
+    #[test]
+    fn stealer_cooccurrence_ignores_non_stealer_and_singletons() {
+        let plain = Entity::new(EntityKind::Email, "a@b.com", 0.6, "s"); // no `stealer` tag
+        assert!(derive_stealer_cooccurrence(&[plain], "s").is_empty());
     }
 }

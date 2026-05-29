@@ -15,7 +15,7 @@ HSE is a single-binary, pure-Rust, recursive OSINT/GEOINT platform built to run
 natively inside **Termux on Android (aarch64), no root**. It is a plugin-style
 registry of **86 modules** feeding a module-agnostic `ScanEngine` that merges
 their findings into a deterministic entity graph, pivots recursively on
-high-confidence nodes, correlates the result against 34 declarative rules, and
+high-confidence nodes, correlates the result against 35 declarative rules, and
 surfaces everything over a CLI, a localhost HTTP API, and an embedded SPA.
 
 ---
@@ -48,10 +48,10 @@ property regresses.
 | 1 | **Low overhead / memory** | 2 tokio workers; sequential dispatch default; response cache; budget caps; `entity_map` capacity clamp; mmap-tunable SQLite | `main.rs:3`, `lib.rs:26`, `engine.rs:198-199` |
 | 1 | **Single-binary recursive SpiderFoot** | `default-run = "hse"`; embedded SPA; `run_expansion` recursive walk; **a bare `scan` auto-recurses by default** (depth resolved from seed type + keys) | `Cargo.toml:9`; `engine.rs:341`; `cli/scan.rs` |
 | 2 | **Shared data fabric** (instant framework-wide propagation) | per-scan `entity_map` (GREATEST-merge) + SQLite store + `entity_observations` junction + `EventBus` + **key-pool hot-inject** | `engine.rs:623,300-304,358-367` |
-| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 34 rules (incl. **graph-aware AU-031/AU-032/AU-034** that walk the edges), **and first-class typed `Relation` edges** (structural + lineage + geo co-location + DNS resolution + WHOIS registration + image similarity); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
+| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 35 rules (incl. **graph-aware AU-031/AU-032/AU-034** that walk the edges), **and first-class typed `Relation` edges** (structural + lineage + geo co-location + DNS resolution + WHOIS registration + image similarity + stealer co-occurrence); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
 | 2 | **Discovery loops / adaptive pivoting** | `run_expansion`: depth-bounded DFS with ROI saturation-pruning, top-K gating, adaptive-depth termination, 4 expansion strategies | `engine.rs:341-510`, `core/roi.rs`, `core/scan.rs` |
 | 3 | **Code quality / static+dynamic verification** | CI: `fmt --check`, `check --locked`, `clippy -D warnings`, `test --all`, MSRV 1.88, shellcheck | `.github/workflows/ci.yml` |
-| 3 | **Resilience / regression testing** | 1,336 tests green; per-module timeout; `panic = "abort"` | `tests/`, `engine.rs:752`, `Cargo.toml:64` |
+| 3 | **Resilience / regression testing** | 1,342 tests green; per-module timeout; `panic = "abort"` | `tests/`, `engine.rs:752`, `Cargo.toml:64` |
 | 3 | **Hardening / deterministic execution** | SSRF preflight gate; private-IP/local-domain rejection; credential & key redaction; **no LLM/fuzzy** in correlator (open math only) | `engine.rs:1044-1141`, `SECURITY.md`, `core/correlator/` |
 
 ---
@@ -301,7 +301,7 @@ serialization of the full struct.
 ### 4.4 The correlation layer (`core/correlator/`)
 
 After the last module, `Correlator::run(scan_id)` loads the scan's entities and
-evaluates **34 deterministic rules** (`AU-001` … `AU-034`) — multi-source breach
+evaluates **35 deterministic rules** (`AU-001` … `AU-035`) — multi-source breach
 corroboration, identity clusters (email+username+phone co-location), malicious
 infrastructure, credential/key exposure, address chains, shared media origin
 (`AU-033` — one capture/authoring device or author linking multiple images or
@@ -360,15 +360,26 @@ localised to `run_expansion`; it changes no dispatch behaviour.
 A sixth family, **`SameImageAs`** (`derive_image_similarity`), links images
 whose DCT perceptual hashes (`util::phash`) are within `EQUIV_MAX_HAMMING` —
 the local, deterministic reverse-image-search that joins the *same picture*
-across different sources independent of metadata. This gives six edge families
-in total — structural, lineage, co-location, resolution, registration, and
-image similarity — all deterministic and all surfaced through the same
-channels. The image pipeline scores **content** and **metadata** confidence
-independently (`util::media_score`): a stripped image is still kept as a
-similarity anchor, while junk/low-relevance metadata is gated out of the graph
-so it can't drive runaway recursion; provenance is scrutinised at ingest and
-the graph-aware **AU-034** rule attributes a metadata-bearing copy's
-location/author across its near-duplicate cluster.
+across different sources independent of metadata. The image pipeline scores
+**content** and **metadata** confidence independently (`util::media_score`): a
+stripped image is still kept as a similarity anchor, while junk/low-relevance
+metadata is gated out of the graph so it can't drive runaway recursion;
+provenance is scrutinised at ingest and the graph-aware **AU-034** rule
+attributes a metadata-bearing copy's location/author across its near-duplicate
+cluster.
+
+A seventh family, **`CompromisedWith`** (`derive_stealer_cooccurrence`),
+exploits the single highest-fidelity signal in infostealer data: every email,
+credential, domain, and victim IP in one stealer log belongs to the *same
+infected machine*. Entities sharing a stealer-log origin key (`log_id` /
+`computer_name` / victim IP, via `stealer_origin_keys`) are star-linked into a
+victim cluster, and rule **AU-035** surfaces it (Critical when an Email pairs
+with a Credential/Domain). `oathnet_pro` and `hudsonrock` thread those origin
+keys onto every entity they emit so the cluster forms across modules.
+
+This gives seven edge families in total — structural, lineage, co-location,
+resolution, registration, image similarity, and stealer co-occurrence — all
+deterministic and all surfaced through the same channels.
 
 ---
 

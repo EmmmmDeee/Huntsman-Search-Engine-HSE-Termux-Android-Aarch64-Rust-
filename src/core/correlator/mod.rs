@@ -158,6 +158,7 @@ const RULES: &[RuleFn] = &[
     rule_au_029_cloud_storage_exposure,
     rule_au_030_geo_convergence_score,
     rule_au_033_shared_media_origin,
+    rule_au_035_stealer_victim_cluster,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -993,5 +994,48 @@ mod tests {
     fn au034_silent_without_similarity_edges() {
         let a = image_node("https://a/1.jpg", None);
         assert!(rule_au_034_cross_source_image(&[a], &[], "s", 0).is_empty());
+    }
+
+    // ── AU-035 (stealer-log victim cluster) ─────────────────────────────
+
+    fn stealer_node(kind: EntityKind, val: &str, log: &str) -> Entity {
+        let mut e = Entity::new(kind, val, 0.6, "s");
+        e.tag("stealer");
+        e.add_evidence(Evidence::new("oathnet-pro", "stealer").with_attr("log_id", log));
+        e
+    }
+
+    #[test]
+    fn au035_critical_when_email_and_domain_share_a_log() {
+        let email = stealer_node(EntityKind::Email, "v@x.com", "LOG-9");
+        let dom = stealer_node(EntityKind::Domain, "bank.com", "LOG-9");
+        let r = rule_au_035_stealer_victim_cluster(&[email, dom], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-035");
+        assert_eq!(r[0].severity, Severity::Critical); // email + domain = full profile
+        assert!(r[0].description.contains("compromised victim"));
+        assert!(r[0].description.contains("stealer log log-9")); // origin keys lowercase
+    }
+
+    #[test]
+    fn au035_high_when_no_full_profile() {
+        // Two emails on one machine, no credential/domain → High, not Critical.
+        let mut a = Entity::new(EntityKind::Email, "a@x.com", 0.6, "s");
+        a.tag("stealer-log");
+        a.add_evidence(Evidence::new("hudsonrock", "x").with_attr("computer_name", "DESKTOP-7"));
+        let mut b = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.6, "s");
+        b.tag("stealer-log");
+        b.add_evidence(Evidence::new("hudsonrock", "x").with_attr("computer_name", "DESKTOP-7"));
+        let r = rule_au_035_stealer_victim_cluster(&[a, b], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn au035_silent_on_singleton_or_non_stealer() {
+        let lone = stealer_node(EntityKind::Email, "v@x.com", "LOG-1");
+        assert!(rule_au_035_stealer_victim_cluster(&[lone], "s", 0).is_empty());
+        let plain = Entity::new(EntityKind::Email, "v@x.com", 0.6, "s");
+        assert!(rule_au_035_stealer_victim_cluster(&[plain], "s", 0).is_empty());
     }
 }

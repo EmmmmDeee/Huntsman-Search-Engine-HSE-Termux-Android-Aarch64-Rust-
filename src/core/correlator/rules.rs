@@ -1434,3 +1434,71 @@ pub(super) fn rule_au_034_cross_source_image(
     }
     out
 }
+
+/// AU-035 — Stealer-log victim identity cluster. Infostealer data is uniquely
+/// powerful for attribution: every credential, email, domain, and victim IP in
+/// one log belongs to the **same infected machine** — so they corroborate one
+/// another as a single compromised identity. This rule groups entities by their
+/// shared stealer-log origin (`log_id` / machine / victim IP, via
+/// `relation::stealer_origin_keys`) and surfaces each cluster of ≥2.
+///
+/// Severity is **Critical** when the cluster pairs an Email with a Credential
+/// or Domain (a full victim credential profile), else **High**. Deterministic;
+/// it reads the same evidence the `CompromisedWith` edges are built from, so
+/// the finding and the graph always agree.
+pub(super) fn rule_au_035_stealer_victim_cluster(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::{BTreeMap, HashSet};
+
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (i, e) in entities.iter().enumerate() {
+        for key in crate::core::relation::stealer_origin_keys(e) {
+            groups.entry(key).or_default().push(i);
+        }
+    }
+
+    let mut out = Vec::new();
+    for (key, idxs) in &groups {
+        let mut uids: Vec<String> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut kinds: HashSet<EntityKind> = HashSet::new();
+        for &i in idxs {
+            let e = &entities[i];
+            if seen.insert(e.uid.as_str()) {
+                uids.push(e.uid.clone());
+                kinds.insert(e.kind.clone());
+            }
+        }
+        if uids.len() < 2 {
+            continue;
+        }
+        let full_profile = kinds.contains(&EntityKind::Email)
+            && (kinds.contains(&EntityKind::Credential) || kinds.contains(&EntityKind::Domain));
+        let label = match key.split_once(':') {
+            Some(("log", v)) => format!("stealer log {v}"),
+            Some(("machine", v)) => format!("machine {v}"),
+            Some(("vip", v)) => format!("victim IP {v}"),
+            _ => key.clone(),
+        };
+        out.push(Correlation::new(
+            "AU-035",
+            "Stealer-log victim identity cluster",
+            if full_profile {
+                Severity::Critical
+            } else {
+                Severity::High
+            },
+            format!(
+                "{} entities share one infostealer origin ({label}) — same compromised victim",
+                uids.len()
+            ),
+            uids,
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}

@@ -179,10 +179,15 @@ impl Module for HudsonRock {
                 e.tag(tags::STEALER_LOG);
                 e.tag("hudsonrock");
                 e.tag(crate::core::tags::GEOLOCATION_LEAD);
-                e.add_evidence(Evidence::new(
-                    "hudsonrock",
-                    "Victim device IP from stealer log".to_string(),
-                ));
+                // Carry the machine + victim-IP origin keys so this IP clusters
+                // with the victim email (which records the same per-stealer
+                // attrs) via `CompromisedWith` / AU-035.
+                let mut ev = Evidence::new("hudsonrock", "Victim device IP from stealer log")
+                    .with_attr("victim_ip", ip);
+                if let Some(machine) = stealer.computer_name.as_deref().filter(|m| !m.is_empty()) {
+                    ev = ev.with_attr("computer_name", machine);
+                }
+                e.add_evidence(ev);
                 result.push(e);
             }
         }

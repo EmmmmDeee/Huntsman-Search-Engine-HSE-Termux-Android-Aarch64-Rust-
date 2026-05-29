@@ -358,27 +358,30 @@ impl ScanEngine {
         let resolution = crate::core::relation::derive_resolution(entities, scan_id);
         let registration = crate::core::relation::derive_registration(entities, scan_id);
         let similarity = crate::core::relation::derive_image_similarity(entities, scan_id);
+        let stealer = crate::core::relation::derive_stealer_cooccurrence(entities, scan_id);
         // Capture per-family counts before the vecs are moved into the batch.
-        let (n_lin, n_str, n_col, n_res, n_reg, n_img) = (
+        let (n_lin, n_str, n_col, n_res, n_reg, n_img, n_stl) = (
             lineage.len(),
             structural.len(),
             colocation.len(),
             resolution.len(),
             registration.len(),
             similarity.len(),
+            stealer.len(),
         );
 
         // Gather every edge into one batch so persistence is a single WAL
         // transaction (one fsync) instead of N — a material IO win on
         // high-relation scans on low-power aarch64.
         let mut all: Vec<Relation> =
-            Vec::with_capacity(n_lin + n_str + n_col + n_res + n_reg + n_img);
+            Vec::with_capacity(n_lin + n_str + n_col + n_res + n_reg + n_img + n_stl);
         all.extend(lineage.iter().cloned());
         all.extend(structural);
         all.extend(colocation);
         all.extend(resolution);
         all.extend(registration);
         all.extend(similarity);
+        all.extend(stealer);
         if all.is_empty() {
             return;
         }
@@ -409,6 +412,7 @@ impl ScanEngine {
             resolution = n_res,
             registration = n_reg,
             similarity = n_img,
+            stealer = n_stl,
             persisted,
             "entity relations persisted"
         );

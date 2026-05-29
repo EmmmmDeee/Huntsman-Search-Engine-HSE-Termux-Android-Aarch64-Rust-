@@ -563,8 +563,13 @@ fn extract_stealer_entities(
     if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
         ev = ev.with_attr("url", &url);
     }
-    if let Some(lid) = val_str(item, "log_id").or_else(|| val_str(item, "log")) {
-        ev = ev.with_attr("log_id", &lid);
+    // The stealer-log id ties every entity from this log to one infected
+    // machine — the cross-correlation key consumed by `CompromisedWith`
+    // edges + AU-035. Thread it onto ALL emitted entities, not just the
+    // credential, so the victim cluster forms.
+    let lid = val_str(item, "log_id").or_else(|| val_str(item, "log"));
+    if let Some(l) = &lid {
+        ev = ev.with_attr("log_id", l);
     }
     if let Some(pw) = val_str(item, "password") {
         ev = ev.with_attr("password", &pw);
@@ -610,10 +615,12 @@ fn extract_stealer_entities(
             e.tag("oathnet-pro");
             e.tag("stealer");
             e.tag("stealer-login");
-            e.add_evidence(
-                Evidence::new(SRC, "Stealer login email (username field)")
-                    .with_attr("source", "stealer"),
-            );
+            let mut lev = Evidence::new(SRC, "Stealer login email (username field)")
+                .with_attr("source", "stealer");
+            if let Some(l) = &lid {
+                lev = lev.with_attr("log_id", l);
+            }
+            e.add_evidence(lev);
             result.push(e);
         }
     }
@@ -627,10 +634,12 @@ fn extract_stealer_entities(
                 let mut e = Entity::new(EntityKind::Domain, dom, 0.50, scan_id);
                 e.tag("oathnet-pro");
                 e.tag("stealer");
-                e.add_evidence(
-                    Evidence::new(SRC, format!("Stealer credential for {dom}"))
-                        .with_attr("source", "stealer"),
-                );
+                let mut dev = Evidence::new(SRC, format!("Stealer credential for {dom}"))
+                    .with_attr("source", "stealer");
+                if let Some(l) = &lid {
+                    dev = dev.with_attr("log_id", l);
+                }
+                e.add_evidence(dev);
                 result.push(e);
             }
         }

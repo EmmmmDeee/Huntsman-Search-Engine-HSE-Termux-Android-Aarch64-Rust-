@@ -12,6 +12,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Stealer-log cross-correlation — victim identity clustering.** Infostealer
+  data is uniquely powerful for attribution: every email, credential, domain,
+  and victim IP in one log belongs to the *same infected machine*. A new
+  `RelationKind::CompromisedWith` + `relation::derive_stealer_cooccurrence`
+  link all entities sharing a stealer-log origin (`log_id` / `computer_name` /
+  victim IP — via `relation::stealer_origin_keys`), and the correlator rule
+  **AU-035 — Stealer-log victim identity cluster** surfaces each cluster
+  (Critical when an Email pairs with a Credential/Domain — a full victim
+  profile, else High). `oathnet_pro` now threads its `log_id` onto every
+  stealer entity (emails, domains, login-emails, credentials) and `hudsonrock`
+  tags victim-IP entities with the machine/IP origin keys, so the cluster
+  forms across modules. Star-topology edges (n-1, not n²) keyed by the
+  deterministic edge id; pure open math. Correlator 34→35 rules; 7 relation
+  edge families.
+
 - **Perceptual image hashing (DCT pHash) + dual confidence + cross-source
   equivalence.** Images are now fingerprinted with a robust 64-bit DCT
   perceptual hash (`util::phash`, pure-Rust `image` decoders — no C deps), the
