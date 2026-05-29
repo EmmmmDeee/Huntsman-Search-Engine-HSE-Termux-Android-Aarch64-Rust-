@@ -65,6 +65,9 @@
     .c-CANDIDATE{color:#a94442}
     .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;
          background:#eee;color:#666;margin-right:2px}
+    .tag.t-match{background:#dff0d8;color:#3c763d;font-weight:600}
+    .tag.t-conflict{background:#fcf0f0;color:#a94442}
+    .tag.t-cand{background:#fcf8e3;color:#8a6d3b}
     .src-pill{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;
               background:#e7f3fb;color:#31708f;margin-right:2px;font-family:monospace}
     .crumbs{color:#888;font-size:12px;margin-bottom:8px}
@@ -1055,7 +1058,7 @@ function renderBrowse(host){
   const qKind = S.route.query.k || '';
   host.innerHTML = `
     <div class="row" style="margin-bottom:12px">
-      <div class="col-sm-4">
+      <div class="col-sm-3">
         <input type="search" id="b-q" class="form-control input-sm" placeholder="Filter value, evidence, tags…">
       </div>
       <div class="col-sm-3">
@@ -1064,7 +1067,7 @@ function renderBrowse(host){
           ${kinds.map(k=>`<option value="${attr(k)}"${k===qKind?' selected':''}>${esc(k)} (${S.entities.filter(e=>e.kind===k).length})</option>`).join('')}
         </select>
       </div>
-      <div class="col-sm-3">
+      <div class="col-sm-2">
         <select id="b-cls" class="form-control input-sm">
           <option value="">All tiers</option>
           <option value="VERIFIED">Verified only</option>
@@ -1072,16 +1075,29 @@ function renderBrowse(host){
           <option value="CANDIDATE">Candidate only</option>
         </select>
       </div>
+      <div class="col-sm-2">
+        <select id="b-sig" class="form-control input-sm" title="Signal vs noise: hides out-of-region (geo-prior-conflict) and off-target breach (candidate) entities">
+          <option value="">Signal + noise</option>
+          <option value="signal">Signal only</option>
+          <option value="region">In-region only</option>
+          <option value="noise">Noise only</option>
+        </select>
+      </div>
       <div class="col-sm-2 text-right text-muted" style="padding-top:6px;font-size:11px" id="b-ct"></div>
     </div>
     <div id="b-table-host"></div>
   `;
+  const isNoise = e => (e.tags||[]).some(t=>t==='geo-prior-conflict'||t==='candidate');
+  const isInRegion = e => (e.tags||[]).some(t=>t==='geo-prior-match');
   function refresh(){
     const q = $('#b-q').value.trim().toLowerCase();
-    const ks = $('#b-kind').value, cs = $('#b-cls').value;
+    const ks = $('#b-kind').value, cs = $('#b-cls').value, sg = $('#b-sig').value;
     let rows = S.entities.slice();
     if (ks) rows = rows.filter(e=>e.kind===ks);
     if (cs) rows = rows.filter(e=>{const t=classify(effC(e)); return t===cs || (cs==='PROBABLE' && effC(e)>=0.40);});
+    if (sg==='signal') rows = rows.filter(e=>!isNoise(e));
+    else if (sg==='noise') rows = rows.filter(isNoise);
+    else if (sg==='region') rows = rows.filter(isInRegion);
     if (q)  rows = rows.filter(e =>
       (e.value||'').toLowerCase().includes(q)
       || (e.tags||[]).some(t=>t.toLowerCase().includes(q))
@@ -1095,6 +1111,7 @@ function renderBrowse(host){
   $('#b-q').addEventListener('input', refresh);
   $('#b-kind').addEventListener('change', refresh);
   $('#b-cls').addEventListener('change', refresh);
+  $('#b-sig').addEventListener('change', refresh);
   refresh();
 }
 function renderBrowseTable(rows){
@@ -1114,7 +1131,7 @@ function renderBrowseTable(rows){
       <td class="text-right"><code>${eff.toFixed(3)}</code></td>
       <td class="text-right">${e.corroboration||1}</td>
       <td><span class="cls c-${attr(tier)}">${tier}</span></td>
-      <td>${(e.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</td>
+      <td>${(e.tags||[]).map(t=>{const c=t==='geo-prior-match'?' t-match':t==='geo-prior-conflict'?' t-conflict':t==='candidate'?' t-cand':'';return `<span class="tag${c}">${esc(t)}</span>`;}).join('')}</td>
       <td>${sources.map(s=>`<span class="src-pill">${esc(s)}</span>`).join('')}</td>
       <td><span class="text-muted" style="font-family:monospace;font-size:11px">${esc(fmtDate(e.observed_at))}</span></td>
     </tr>
