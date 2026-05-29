@@ -178,6 +178,7 @@
         <li id="nav-dash"   ><a href="#/dash"   ><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Dashboard</a></li>
         <li id="nav-newscan"><a href="#/newscan"><i class="glyphicon glyphicon-screenshot"></i>&nbsp;New Scan</a></li>
         <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
+        <li id="nav-logs"   ><a href="#/logs"   ><i class="glyphicon glyphicon-console"></i>&nbsp;Logs</a></li>
         <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a></li>
       </ul>
       <form class="navbar-form navbar-left" style="margin-left:10px" onsubmit="globalSearch(event)">
@@ -389,6 +390,7 @@ function parseHash(){
   if (segs[0]==='scans')                    return {name:'scans', params:{}, query};
   if (segs[0]==='newscan')                  return {name:'newscan', params:{}, query};
   if (segs[0]==='opts'||segs[0]==='settings') return {name:'opts', params:{}, query};
+  if (segs[0]==='logs')                     return {name:'logs', params:{}, query};
   if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
   return {name:'dash', params:{}, query};
 }
@@ -400,7 +402,7 @@ async function render(){
   closeSse();
   S.route = parseHash();
   $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
-  const navMap = {dash:'nav-dash', scans:'nav-scans', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans'};
+  const navMap = {dash:'nav-dash', scans:'nav-scans', newscan:'nav-newscan', opts:'nav-opts', logs:'nav-logs', scaninfo:'nav-scans'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
   const v = $('#view');
@@ -410,6 +412,7 @@ async function render(){
     if (S.route.name==='scans')    return await renderScans(v);
     if (S.route.name==='newscan')  return await renderNewScan(v);
     if (S.route.name==='scaninfo') return await renderScanInfo(v);
+    if (S.route.name==='logs')     return await renderLogs(v);
     if (S.route.name==='opts')     return await renderOpts(v);
   } catch(e){
     v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
@@ -1415,6 +1418,60 @@ function openSse(scanId, onEv){
   S.sse = es;
 }
 function closeSse(){ if (S.sse){ S.sse.close(); S.sse = null; } }
+
+/* ── Logs view (live verbose debug stream — SpiderFoot-style console) ── */
+async function renderLogs(host){
+  host.innerHTML = `
+    <div class="page-head"><h2><i class="glyphicon glyphicon-console"></i> Debug Log
+      <small>live verbose stream &middot; also at <code>$HOME/.huntsman/logs/hse.log</code> &middot; <code>hse doctor --bundle</code> for a shareable report</small></h2></div>
+    <div style="margin-bottom:8px">
+      <button class="btn btn-default btn-xs" id="log-pause"><i class="glyphicon glyphicon-pause"></i> Pause</button>
+      <button class="btn btn-default btn-xs" id="log-clear"><i class="glyphicon glyphicon-trash"></i> Clear</button>
+      <label style="margin-left:10px;font-weight:normal"><input type="checkbox" id="log-autoscroll" checked> Auto-scroll</label>
+      <input type="search" id="log-filter" class="form-control input-sm" style="display:inline-block;width:240px;margin-left:10px" placeholder="filter (substring)…">
+      <span id="log-status" class="text-muted" style="margin-left:10px">connecting…</span>
+    </div>
+    <pre id="log-console" style="background:#0b0b0b;color:#cfcfcf;height:70vh;overflow:auto;font-size:12px;line-height:1.4;padding:10px;border:1px solid #222;border-radius:4px;white-space:pre-wrap;margin:0"></pre>
+  `;
+  const con = $('#log-console');
+  const MAX_LINES = 5000;
+  let paused = false, filter = '';
+  const lineColor = (l) =>
+    /\bERROR\b/.test(l) ? '#ff6b6b' :
+    /\bWARN\b/.test(l)  ? '#ffd166' :
+    /\bINFO\b/.test(l)  ? '#9ece6a' :
+    /\bTRACE\b/.test(l) ? '#6b6b6b' :
+    /\bDEBUG\b/.test(l) ? '#7aa6c2' : '#cfcfcf';
+  const append = (line) => {
+    if (filter && !line.toLowerCase().includes(filter)) return;
+    const div = document.createElement('div');
+    div.style.color = lineColor(line);
+    div.textContent = line;                       // textContent → XSS-safe
+    con.appendChild(div);
+    while (con.childElementCount > MAX_LINES) con.removeChild(con.firstChild);
+    if ($('#log-autoscroll').checked) con.scrollTop = con.scrollHeight;
+  };
+  // Backfill from the on-disk tail so the panel isn't empty on open.
+  try {
+    const recent = await fetch('/api/v1/logs/recent').then(r=>r.text());
+    recent.split('\n').filter(Boolean).forEach(append);
+  } catch {}
+  // Live stream. Stored in S.sse so closeSse() tears it down on navigation.
+  const es = new EventSource('/api/v1/logs/stream');
+  es.onopen    = ()=>{ const s=$('#log-status'); if(s) s.textContent='streaming live'; };
+  es.onerror   = ()=>{ const s=$('#log-status'); if(s) s.textContent='disconnected — reopen the Logs tab to retry'; };
+  es.onmessage = (e)=>{ if(!paused) append(e.data); };
+  S.sse = es;
+  $('#log-pause').addEventListener('click', ()=>{
+    paused = !paused;
+    $('#log-pause').innerHTML = paused
+      ? '<i class="glyphicon glyphicon-play"></i> Resume'
+      : '<i class="glyphicon glyphicon-pause"></i> Pause';
+    const s=$('#log-status'); if(s) s.textContent = paused ? 'paused' : 'streaming live';
+  });
+  $('#log-clear').addEventListener('click', ()=>{ con.innerHTML=''; });
+  $('#log-filter').addEventListener('input', (e)=>{ filter = e.target.value.toLowerCase(); });
+}
 
 /* ── Info / Scan Settings tab ── */
 function renderInfo(host, scan){

@@ -2,7 +2,7 @@
 # Huntsman Search Engine (HSE) — one-shot installer.
 #
 # Designed primarily for Termux on Android aarch64 (no root). Also works on
-# any Linux / macOS with rustc 1.85+ and git. Idempotent: re-running upgrades
+# any Linux / macOS with rustc 1.88+ and git. Idempotent: re-running upgrades
 # in place.
 #
 # Usage (Termux or any Unix):
@@ -51,7 +51,10 @@ hint()     { printf "    ${DIM}%s${NC}\n" "$*"; }
 on_exit() {
     local rc=$?
     if [[ $rc -ne 0 ]]; then
-        printf '\n%sInstallation failed (exit %d).%s\n  Full log: %s\n' "$RED" "$rc" "$NC" "$LOG_FILE" >&2
+        printf '\n%sInstallation failed (exit %d).%s\n' "$RED" "$rc" "$NC" >&2
+        printf '  Full log: %s\n' "$LOG_FILE" >&2
+        printf '  To get help fast, share that log with Claude Code. If the binary built,\n' >&2
+        printf '  a fuller redacted report is: %shse doctor --bundle%s\n' "$BOLD" "$NC" >&2
     fi
 }
 trap on_exit EXIT
@@ -93,6 +96,20 @@ case "$ARCH" in
     x86_64|amd64)  log_warn "Untested arch ($ARCH); proceeding — please report any issues" ;;
     *)             log_warn "Unusual arch ($ARCH); installation may not work" ;;
 esac
+
+# Diagnostic snapshot — written to the log (not the terminal) up front, so a
+# shared log is self-diagnosing when handed to Claude Code.
+{
+    echo "--- diagnostic snapshot ---"
+    echo "date:   $(date 2>/dev/null)"
+    echo "uname:  $(uname -a 2>/dev/null)"
+    echo "termux: ${TERMUX_VERSION:-(not termux)}  is_termux=$IS_TERMUX"
+    echo "HOME=$HOME  PREFIX=${PREFIX:-(unset)}  SHELL=${SHELL:-?}"
+    echo "PATH=$PATH"
+    command -v cargo >/dev/null 2>&1 && echo "cargo:  $(cargo --version 2>/dev/null)"
+    command -v rustc >/dev/null 2>&1 && echo "rustc:  $(rustc --version 2>/dev/null)"
+    echo "---------------------------"
+} >> "$LOG_FILE"
 
 # Termux quirks: PREFIX defaults to /data/data/com.termux/files/usr.
 if [[ $IS_TERMUX -eq 1 ]]; then

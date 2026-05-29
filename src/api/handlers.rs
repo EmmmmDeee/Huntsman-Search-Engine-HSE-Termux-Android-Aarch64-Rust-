@@ -336,6 +336,31 @@ pub async fn scan_events_sse(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// Live verbose-log SSE stream for the Web UI Event Log (SpiderFoot-style).
+/// Subscribes to the process-wide log bus (debug-level, secret-redacted) and
+/// streams each formatted line. No scan scoping — this is the whole-process
+/// diagnostic stream.
+pub async fn logs_stream() -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    let rx = crate::util::logging::subscribe();
+    let stream = BroadcastStream::new(rx)
+        .filter_map(|msg| match msg {
+            Ok(line) => Some(Ok(SseEvent::default().data(line))),
+            // A lagged subscriber dropped lines (capacity exceeded) — skip.
+            Err(_) => None,
+        })
+        .timeout(SSE_IDLE_TIMEOUT)
+        .take_while(std::result::Result::is_ok)
+        .filter_map(std::result::Result::ok);
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Redacted tail of the on-disk debug log, for the Web UI to backfill the
+/// Event Log on open (so the panel isn't empty until the next line streams).
+pub async fn logs_recent() -> String {
+    crate::util::logging::tail(64 * 1024)
+}
+
 // ─── Settings handlers ─────────────────────────────────────────────────────
 
 pub async fn settings_keys_get(State(s): State<Arc<AppState>>) -> impl IntoResponse {

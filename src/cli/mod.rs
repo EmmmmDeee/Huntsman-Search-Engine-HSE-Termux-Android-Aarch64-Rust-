@@ -20,7 +20,6 @@ use std::io::IsTerminal;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use tracing_subscriber::EnvFilter;
 
 use crate::{
     core::{
@@ -45,6 +44,12 @@ use crate::{
                   Docs: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-"
 )]
 pub struct Cli {
+    /// Verbose logging on stderr: -v = debug, -vv = trace. A full debug log is
+    /// ALWAYS written to $HOME/.huntsman/logs/hse.log and streamed to the Web
+    /// UI regardless of this flag (RUST_LOG still overrides stderr).
+    #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count)]
+    pub verbose: u8,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -303,14 +308,11 @@ pub enum Command {
 }
 
 pub async fn run() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_target(false)
-        .init();
-
+    // Parse first so the global -v flag can set stderr verbosity; the file +
+    // Web-UI log sinks always capture at debug regardless (see util::logging).
     let cli = Cli::parse();
+    crate::util::logging::init(cli.verbose);
+
     match cli.command {
         Command::Scan {
             kind,

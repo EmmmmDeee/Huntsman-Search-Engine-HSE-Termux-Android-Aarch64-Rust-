@@ -134,6 +134,9 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/stats", get(handlers::stats))
         // ── key-detector catalogue (v1.4+) ──
         .route("/keys/patterns", get(handlers::keys_patterns))
+        // ── live verbose debug-log stream (Web UI Event Log) ──
+        .route("/logs/stream", get(handlers::logs_stream))
+        .route("/logs/recent", get(handlers::logs_recent))
         // ── scans ──
         .route(
             "/scans",
