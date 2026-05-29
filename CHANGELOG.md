@@ -23,6 +23,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Correlator AU-019 breach clustering now uses exact calendar arithmetic.**
+  `date_diff_days` approximated with `y*365 + m*30 + d`, which drifts by up to
+  ~5 days near month/year boundaries (e.g. `2020-01-01 → 2020-12-31` computed
+  as 360 days instead of 365), mis-deciding the rule's "≤ 30 days apart"
+  threshold at exactly those edges. It now computes days since the civil
+  epoch (Howard Hinnant's `days_from_civil`, dependency-free, leap-year
+  correct) and rejects out-of-range month/day components so a malformed value
+  can't masquerade as a near neighbour and extend a cluster. The leading
+  `YYYY-MM-DD` is also now extracted with a char-safe `get(..10)` instead of a
+  raw byte slice. Regression tests: `date_diff_days_is_calendar_exact`,
+  `…is_symmetric`, `…rejects_malformed_or_out_of_range`,
+  `breach_cluster_uses_exact_30_day_boundary`.
 - **`opencorporates` treats auth failures as empty, not as module errors.**
   OpenCorporates retired its keyless free tier — the search endpoint now
   returns `401 Invalid Api Token` without a token (confirmed live). The module

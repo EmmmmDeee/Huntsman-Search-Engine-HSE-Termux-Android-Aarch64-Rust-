@@ -681,10 +681,14 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
         }
         for ev in &e.evidence {
             for field in ["breach_date", "not_before", "earliest_record", "date"] {
+                // `get(..10)` yields the leading `YYYY-MM-DD` only when byte 10
+                // is a char boundary — char-safe (a raw `&d[..10]` would panic
+                // on a multi-byte codepoint in untrusted breach data) and also
+                // subsumes the length check.
                 if let Some(d) = ev.attributes.get(field)
-                    && d.len() >= 10
+                    && let Some(date10) = d.get(..10)
                 {
-                    breach_dates.push((e, &d[..10]));
+                    breach_dates.push((e, date10));
                 }
             }
         }
@@ -730,16 +734,37 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
         .collect()
 }
 
+/// Days since 1970-01-01 in the proleptic Gregorian calendar. Exact —
+/// accounts for leap years and real month lengths — and dependency-free
+/// (Howard Hinnant's `days_from_civil`). Replaces the old
+/// `y*365 + m*30 + d` approximation, which drifted by up to ~5 days near
+/// year boundaries (e.g. 2020-01-01 → 2020-12-31 is 365 days, not 360) and
+/// so mis-decided AU-019's "≤ 30 days apart" breach clustering at month and
+/// year edges.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146097 + doe - 719468
+}
+
 pub(super) fn date_diff_days(a: &str, b: &str) -> u64 {
-    let parse = |s: &str| -> Option<u64> {
+    let parse = |s: &str| -> Option<i64> {
         let parts: Vec<&str> = s.split('-').collect();
         if parts.len() != 3 {
             return None;
         }
-        let y: u64 = parts[0].parse().ok()?;
-        let m: u64 = parts[1].parse().ok()?;
-        let d: u64 = parts[2].parse().ok()?;
-        Some(y * 365 + m * 30 + d)
+        let y: i64 = parts[0].parse().ok()?;
+        let m: i64 = parts[1].parse().ok()?;
+        let d: i64 = parts[2].parse().ok()?;
+        // Reject out-of-range components so a garbage "date" can't masquerade
+        // as a near neighbour and wrongly extend a cluster.
+        if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+            return None;
+        }
+        Some(days_from_civil(y, m, d))
     };
     match (parse(a), parse(b)) {
         (Some(da), Some(db)) => da.abs_diff(db),
@@ -1269,4 +1294,53 @@ pub(super) fn rule_au_032_colocation_cluster(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn date_diff_days_is_calendar_exact() {
+        // Same day.
+        assert_eq!(date_diff_days("2023-06-15", "2023-06-15"), 0);
+        // One month with a 30-day June.
+        assert_eq!(date_diff_days("2023-06-15", "2023-07-15"), 30);
+        // Full leap year: 2020-01-01 → 2020-12-31 is 365 days (old y*365+m*30+d
+        // gave 360 — the bug this fix removes).
+        assert_eq!(date_diff_days("2020-01-01", "2020-12-31"), 365);
+        // Full non-leap year span is 364 days end-to-end.
+        assert_eq!(date_diff_days("2023-01-01", "2023-12-31"), 364);
+        // Leap-day boundary: Feb 28 → Mar 1 is 2 days in 2020 (Feb 29 exists)…
+        assert_eq!(date_diff_days("2020-02-28", "2020-03-01"), 2);
+        // …and 1 day in a non-leap year.
+        assert_eq!(date_diff_days("2021-02-28", "2021-03-01"), 1);
+    }
+
+    #[test]
+    fn date_diff_days_is_symmetric() {
+        assert_eq!(
+            date_diff_days("2022-11-03", "2023-02-17"),
+            date_diff_days("2023-02-17", "2022-11-03")
+        );
+    }
+
+    #[test]
+    fn date_diff_days_rejects_malformed_or_out_of_range() {
+        // Unparseable / wrong arity / out-of-range → MAX, so it never reads as
+        // a near neighbour that could wrongly extend a breach cluster.
+        assert_eq!(date_diff_days("not-a-date", "2020-01-01"), u64::MAX);
+        assert_eq!(date_diff_days("2020-01", "2020-01-01"), u64::MAX);
+        assert_eq!(date_diff_days("2020-13-01", "2020-01-01"), u64::MAX);
+        assert_eq!(date_diff_days("2020-00-10", "2020-01-01"), u64::MAX);
+        assert_eq!(date_diff_days("2020-02-32", "2020-01-01"), u64::MAX);
+    }
+
+    #[test]
+    fn breach_cluster_uses_exact_30_day_boundary() {
+        // Exactly 30 days apart clusters; 31 does not. With the old
+        // approximation these month-crossing pairs were off by a day.
+        assert!(date_diff_days("2023-06-15", "2023-07-15") <= 30);
+        assert!(date_diff_days("2023-06-15", "2023-07-16") > 30);
+    }
 }
