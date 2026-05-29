@@ -1497,3 +1497,76 @@ async fn breadth_first_strategy_runs_chain_under_default_confidence() {
     assert!(kinds.contains(&&EntityKind::Username));
     assert!(kinds.contains(&&EntityKind::Phone));
 }
+
+/// Accepts a Domain seed and emits a subdomain + its apex. Drives the
+/// post-scan structural-relation builder.
+struct DomainPairModule;
+
+#[async_trait]
+impl Module for DomainPairModule {
+    fn name(&self) -> &'static str {
+        "synth_domain_pair"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Domain)
+    }
+    async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        r.push(Entity::new(
+            EntityKind::Domain,
+            "example.com",
+            0.9,
+            &ctx.scan_id,
+        ));
+        r.push(Entity::new(
+            EntityKind::Domain,
+            "blog.example.com",
+            0.8,
+            &ctx.scan_id,
+        ));
+        Ok(r)
+    }
+}
+
+/// End-to-end: a scan that yields a subdomain + apex must persist a
+/// `SubdomainOf` relation via `finalise_scan` → `persist_relations`. Guards
+/// the engine→relation-builder→store wiring against silent removal.
+#[tokio::test]
+async fn scan_persists_structural_subdomain_relation() {
+    use huntsman_search_engine::core::relation::RelationKind;
+
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(DomainPairModule)],
+        "rel-e2e",
+        TargetKind::Domain,
+        "example.com",
+    );
+    let scan = Scan::new(sid.clone(), target.clone());
+    let _ = engine.run(scan, target, ctx).await.unwrap();
+
+    let relations = store.relations_for_scan(&sid).unwrap();
+    let sub: Vec<_> = relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::SubdomainOf)
+        .collect();
+    assert_eq!(
+        sub.len(),
+        1,
+        "expected one SubdomainOf edge, got: {relations:?}"
+    );
+
+    // The edge must point child → parent (blog.example.com → example.com),
+    // with both endpoints resolving to persisted entities.
+    let entities = store.entities_for_scan(&sid).unwrap();
+    let by_uid = |uid: &str| {
+        entities
+            .iter()
+            .find(|e| e.uid == uid)
+            .map(|e| e.value.as_str())
+    };
+    assert_eq!(by_uid(&sub[0].from_uid), Some("blog.example.com"));
+    assert_eq!(by_uid(&sub[0].to_uid), Some("example.com"));
+}

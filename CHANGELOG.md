@@ -33,6 +33,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `consumes()` declaration omits a `TargetKind` its `accepts()` matches —
   closing a silent-under-dispatch gap where the O(1) dispatch index would
   never serve a mis-declared module for that kind.
+- **Typed entity relations (graph engine, first slice).** New `core::relation`
+  module adds first-class attribution edges between entities: a `Relation`
+  model + `relations` table + `StoragePort::{upsert_relation,
+  relations_for_scan}` (idempotent on a deterministic edge id, cascade-deleted
+  with the scan). A deterministic post-scan builder derives `SubdomainOf`
+  (Domain→closest parent), `BelongsToDomain` (Email→Domain), and `HostedOn`
+  (Url→Domain) edges; these are persisted by `finalise_scan` and surfaced in
+  `hse scan --output json` and the dossier's RELATIONS section. Pure open math
+  — no inference. (Lineage / evidence-derived semantic edges are planned
+  follow-ons.)
 
 ## [1.0.0] — 2026-05-27
 

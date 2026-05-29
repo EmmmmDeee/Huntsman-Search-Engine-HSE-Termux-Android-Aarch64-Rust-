@@ -313,6 +313,10 @@ impl ScanEngine {
         scan.finished_at = Some(crate::core::entity::unix_now());
         self.store.upsert_scan(scan)?;
 
+        // Derive + persist the typed entity-relation edges (attribution
+        // graph). Runs on the persisted entity set, like the correlator.
+        self.persist_relations(&scan.id, &entities);
+
         self.run_correlator(&scan.id);
 
         // Persist the key pool to disk after every scan. Keys discovered
@@ -332,6 +336,28 @@ impl ScanEngine {
         );
 
         Ok(scan.clone())
+    }
+
+    /// Derive the scan's deterministic structural relations and persist them.
+    /// Best-effort: a relation that fails to persist is logged, never fatal to
+    /// the scan. Edge endpoints are entity UIDs already persisted above.
+    fn persist_relations(&self, scan_id: &str, entities: &[Entity]) {
+        let relations = crate::core::relation::derive_structural(entities, scan_id);
+        if relations.is_empty() {
+            return;
+        }
+        let mut persisted = 0usize;
+        for r in &relations {
+            match self.store.upsert_relation(r) {
+                Ok(()) => persisted += 1,
+                Err(e) => warn!(scan_id, relation = %r.id, error = %e, "relation persist failed"),
+            }
+        }
+        info!(
+            scan_id,
+            relations = persisted,
+            "structural relations persisted"
+        );
     }
 
     fn run_correlator(&self, scan_id: &str) {

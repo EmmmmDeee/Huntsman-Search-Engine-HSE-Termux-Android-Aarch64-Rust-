@@ -48,7 +48,7 @@ property regresses.
 | 1 | **Low overhead / memory** | 2 tokio workers; sequential dispatch default; response cache; budget caps; `entity_map` capacity clamp; mmap-tunable SQLite | `main.rs:3`, `lib.rs:26`, `engine.rs:198-199` |
 | 1 | **Single-binary recursive SpiderFoot** | `default-run = "hse"`; embedded SPA; `run_expansion` recursive walk | `Cargo.toml:9`; `engine.rs:341` |
 | 2 | **Shared data fabric** (instant framework-wide propagation) | per-scan `entity_map` (GREATEST-merge) + SQLite store + `entity_observations` junction + `EventBus` + **key-pool hot-inject** | `engine.rs:623,300-304,358-367` |
-| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness) **and** the correlator's 30 entity-linking rules; GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/gexf.rs` |
+| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 30 entity-linking rules, **and first-class typed `Relation` edges** (`SubdomainOf` / `BelongsToDomain` / `HostedOn`); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
 | 2 | **Discovery loops / adaptive pivoting** | `run_expansion`: depth-bounded DFS with ROI saturation-pruning, top-K gating, adaptive-depth termination, 4 expansion strategies | `engine.rs:341-510`, `core/roi.rs`, `core/scan.rs` |
 | 3 | **Code quality / static+dynamic verification** | CI: `fmt --check`, `check --locked`, `clippy -D warnings`, `test --all`, MSRV 1.88, shellcheck | `.github/workflows/ci.yml` |
 | 3 | **Resilience / regression testing** | 1,254 tests green (1173 lib + 36 API + 8 architecture + 37 smoke); per-module timeout; `panic = "abort"` | `tests/`, `engine.rs:752`, `Cargo.toml:64` |
@@ -298,6 +298,22 @@ entity_uids, … }`, persisted and emitted as a `correlation_found` event. **No
 LLM, no fuzzy matching** — every finding is reproducible open math, satisfying
 the "deterministic execution" hardening constraint.
 
+### 4.5 The relation layer (`core/relation.rs`)
+
+Where the correlator emits *findings*, the relation layer emits *typed edges* —
+the explicit attribution graph. After entities are persisted, `finalise_scan`
+calls `derive_structural`, a pure builder that links entities by their canonical
+values: `SubdomainOf` (Domain → closest present parent), `BelongsToDomain`
+(Email → its Domain), `HostedOn` (Url → its Domain). Each `Relation` has a
+deterministic SHA-256 id (so re-scans upsert idempotently), carries the weaker
+endpoint's confidence, and is persisted to the `relations` table via
+`StoragePort` (cascade-deleted with the scan). Edges are retrievable through
+`relations_for_scan` and surfaced in `scan --output json` and the dossier's
+RELATIONS section. Like the correlator it is **deterministic open math** — no
+inference. (Lineage `DerivedFrom` edges and evidence-derived semantic edges
+such as `resolves_to`/`registered_by` are reserved follow-on increments; see
+[§7 P2](#7-forward-optimization-levers).)
+
 ---
 
 ## 5. Recursive discovery loop & adaptive pivoting
@@ -419,13 +435,22 @@ disturbing the invariants above.
   at runtime and fails the build instead. (The engine still re-checks
   `accepts()` on the hit path at `engine.rs:718` as belt-and-braces.)
 
-**P2 — fabric richness**
-- The entity graph currently edges entities implicitly (shared evidence
-  sources, exported in GEXF). Promoting these to first-class typed relations
-  (e.g. `resolves_to`, `registered_by`, `co_located_with`) persisted in a
-  `relations` table would let the correlator express path-based rules and let
-  the SPA render labelled edges — a natural extension that keeps the
-  deterministic-only guarantee.
+**P2 — fabric richness (first slice ✅)**
+- ✅ **Done (slice 1).** First-class typed entity relations now exist
+  (`core::relation`): a `Relation { from_uid, to_uid, kind, confidence }` model,
+  a `relations` table + `StoragePort::{upsert_relation, relations_for_scan}`
+  (idempotent on a deterministic edge id, cascade-deleted with the scan), and a
+  **deterministic post-scan structural builder** (`derive_structural`) that
+  emits `SubdomainOf` (Domain→closest parent), `BelongsToDomain` (Email→Domain),
+  and `HostedOn` (Url→Domain). Wired into `finalise_scan` and surfaced in the
+  `scan --output json` payload and the dossier's RELATIONS section. Pure open
+  math — no inference — preserving the deterministic-only guarantee.
+- _Remaining:_ (a) **lineage edges** (`DerivedFrom`: child → the entity whose
+  expansion surfaced it) — variant reserved; needs parent context threaded
+  through the dispatch path. (b) Evidence-derived semantic edges
+  (`resolves_to` from DNS, `registered_by` from WHOIS, `co_located_with` from
+  geo proximity). (c) Path-based correlator rules over the edge set and
+  labelled edges in the SPA force-graph / GEXF export.
 
 **P3 — performance on aarch64**
 - ✅ **Done.** `finalise_scan` now persists the scan's entities through

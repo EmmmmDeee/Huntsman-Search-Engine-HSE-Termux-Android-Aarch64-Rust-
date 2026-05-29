@@ -1,0 +1,324 @@
+//! `core::relation` — typed entity-to-entity edges: the attribution-pathway
+//! layer of the entity graph.
+//!
+//! # Determinism (architecture invariant)
+//! Like the correlator, this layer is **pure open math** — no inference, no
+//! fuzzy matching, no LLM. Every edge is derived from concrete, normalised
+//! entity values, so the same entity set always produces the same relations.
+//!
+//! # First slice
+//! This module ships the relation model + a post-scan **structural** builder
+//! that links entities by their canonical values:
+//!   - `SubdomainOf`     — Domain → its closest present parent Domain
+//!   - `BelongsToDomain` — Email  → the Domain of its address
+//!   - `HostedOn`        — Url    → the Domain of its host
+//!
+//! Lineage edges (`DerivedFrom`: child → the entity whose expansion surfaced
+//! it) require capturing parent context through the dispatch path and are a
+//! planned follow-on increment; the `RelationKind::DerivedFrom` variant is
+//! reserved here so the storage schema and API don't churn when it lands.
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::core::entity::{Entity, EntityKind, unix_now};
+
+/// The typed edge between two entities. Stable snake_case serde tags so the
+/// (future) SPA force-graph can switch on `rel.kind` directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationKind {
+    /// `from` (a Domain) is a subdomain of `to` (its closest present parent).
+    SubdomainOf,
+    /// `from` (an Email) belongs to `to` (the Domain of its address).
+    BelongsToDomain,
+    /// `from` (a Url) is hosted on `to` (the Domain of its host).
+    HostedOn,
+    /// `from` was discovered by pivoting on `to` during expansion. Reserved
+    /// for the lineage-capture increment; not emitted by the structural
+    /// builder.
+    DerivedFrom,
+}
+
+impl RelationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SubdomainOf => "subdomain_of",
+            Self::BelongsToDomain => "belongs_to_domain",
+            Self::HostedOn => "hosted_on",
+            Self::DerivedFrom => "derived_from",
+        }
+    }
+}
+
+impl std::fmt::Display for RelationKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A directed, typed edge between two entities (referenced by UID).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Relation {
+    /// Deterministic id: `hex(SHA-256("from|kind|to|scan"))`. Lets storage
+    /// upsert idempotently so re-scans don't duplicate edges.
+    pub id: String,
+    pub from_uid: String,
+    pub to_uid: String,
+    pub kind: RelationKind,
+    /// Edge confidence — the weaker of the two endpoints' base confidence,
+    /// clamped to [0, 1]. The structural fact itself is certain; this carries
+    /// the trust of the endpoints it connects.
+    pub confidence: f64,
+    pub scan_id: String,
+    pub observed_at: u64,
+}
+
+impl Relation {
+    pub fn new(
+        from_uid: impl Into<String>,
+        to_uid: impl Into<String>,
+        kind: RelationKind,
+        confidence: f64,
+        scan_id: impl Into<String>,
+    ) -> Self {
+        let from_uid = from_uid.into();
+        let to_uid = to_uid.into();
+        let scan_id = scan_id.into();
+        let mut h = Sha256::new();
+        h.update(from_uid.as_bytes());
+        h.update(b"|");
+        h.update(kind.as_str().as_bytes());
+        h.update(b"|");
+        h.update(to_uid.as_bytes());
+        h.update(b"|");
+        h.update(scan_id.as_bytes());
+        Self {
+            id: hex::encode(h.finalize()),
+            from_uid,
+            to_uid,
+            kind,
+            confidence: confidence.clamp(0.0, 1.0),
+            scan_id,
+            observed_at: unix_now(),
+        }
+    }
+}
+
+/// Normalise a host/domain string the same way `EntityKind::Domain` does for
+/// entity values: lowercase, strip a leading `www.`, strip a trailing dot.
+/// Used so an Email/Url's domain matches the stored Domain entity value.
+fn domain_key(raw: &str) -> String {
+    let mut s = raw.trim().to_ascii_lowercase();
+    if let Some(stripped) = s.strip_suffix('.') {
+        s = stripped.to_string();
+    }
+    if let Some(stripped) = s.strip_prefix("www.") {
+        s = stripped.to_string();
+    }
+    s
+}
+
+/// True if `child` is a proper subdomain of `parent` (label-aligned suffix).
+fn is_subdomain_of(child: &str, parent: &str) -> bool {
+    child.len() > parent.len()
+        && child.ends_with(parent)
+        && child.as_bytes()[child.len() - parent.len() - 1] == b'.'
+}
+
+/// Derive the deterministic structural relations for a scan's entity set.
+///
+/// Pure: depends only on the entities passed in. Edges only ever connect
+/// entities that are both present in the set (so every endpoint UID resolves).
+pub fn derive_structural(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::HashMap;
+
+    // Index Domain entities by their (already-normalised) value.
+    let domain_by_value: HashMap<&str, &Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .map(|e| (e.value.as_str(), e))
+        .collect();
+
+    let mut relations = Vec::new();
+    let conf = |a: &Entity, b: &Entity| a.confidence.min(b.confidence);
+
+    for e in entities {
+        match e.kind {
+            EntityKind::Domain => {
+                // Link to the closest (longest) present parent domain.
+                if let Some(&parent) = domain_by_value
+                    .values()
+                    .filter(|p| is_subdomain_of(&e.value, &p.value))
+                    .max_by_key(|p| p.value.len())
+                {
+                    relations.push(Relation::new(
+                        e.uid.as_str(),
+                        parent.uid.as_str(),
+                        RelationKind::SubdomainOf,
+                        conf(e, parent),
+                        scan_id,
+                    ));
+                }
+            }
+            EntityKind::Email => {
+                if let Some((_, dom)) = e.value.split_once('@')
+                    && let Some(&d) = domain_by_value.get(domain_key(dom).as_str())
+                {
+                    relations.push(Relation::new(
+                        e.uid.as_str(),
+                        d.uid.as_str(),
+                        RelationKind::BelongsToDomain,
+                        conf(e, d),
+                        scan_id,
+                    ));
+                }
+            }
+            EntityKind::Url => {
+                if let Some(host) = url::Url::parse(&e.value)
+                    .ok()
+                    .and_then(|u| u.host_str().map(domain_key))
+                    && let Some(&d) = domain_by_value.get(host.as_str())
+                {
+                    relations.push(Relation::new(
+                        e.uid.as_str(),
+                        d.uid.as_str(),
+                        RelationKind::HostedOn,
+                        conf(e, d),
+                        scan_id,
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    relations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::entity::{Entity, EntityKind};
+
+    fn ent(kind: EntityKind, value: &str, conf: f64) -> Entity {
+        Entity::new(kind, value, conf, "rel-scan")
+    }
+
+    #[test]
+    fn relation_id_is_deterministic_and_idempotent() {
+        let a = Relation::new("uidA", "uidB", RelationKind::SubdomainOf, 0.8, "s1");
+        let b = Relation::new("uidA", "uidB", RelationKind::SubdomainOf, 0.8, "s1");
+        assert_eq!(a.id, b.id, "same edge → same id (idempotent upsert)");
+        assert_eq!(a.id.len(), 64);
+    }
+
+    #[test]
+    fn relation_id_differs_by_kind_and_direction() {
+        let sub = Relation::new("a", "b", RelationKind::SubdomainOf, 1.0, "s");
+        let host = Relation::new("a", "b", RelationKind::HostedOn, 1.0, "s");
+        let rev = Relation::new("b", "a", RelationKind::SubdomainOf, 1.0, "s");
+        assert_ne!(sub.id, host.id);
+        assert_ne!(sub.id, rev.id);
+    }
+
+    #[test]
+    fn confidence_is_clamped() {
+        let r = Relation::new("a", "b", RelationKind::HostedOn, 1.5, "s");
+        assert!((r.confidence - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn subdomain_edge_links_to_closest_present_parent() {
+        // a.b.example.com, b.example.com, example.com all present →
+        // a.b.example.com should link to b.example.com (closest), not example.com.
+        let entities = vec![
+            ent(EntityKind::Domain, "a.b.example.com", 0.9),
+            ent(EntityKind::Domain, "b.example.com", 0.8),
+            ent(EntityKind::Domain, "example.com", 0.7),
+        ];
+        let rels = derive_structural(&entities, "s");
+        let subs: Vec<_> = rels
+            .iter()
+            .filter(|r| r.kind == RelationKind::SubdomainOf)
+            .collect();
+        // a.b.example.com → b.example.com ; b.example.com → example.com
+        assert_eq!(subs.len(), 2, "got: {subs:?}");
+        let a = &entities[0];
+        let b = &entities[1];
+        let apex = &entities[2];
+        assert!(
+            subs.iter()
+                .any(|r| r.from_uid == a.uid && r.to_uid == b.uid),
+            "a.b.example.com should link to closest parent b.example.com"
+        );
+        assert!(
+            subs.iter()
+                .any(|r| r.from_uid == b.uid && r.to_uid == apex.uid)
+        );
+        // It must NOT also link the deepest straight to the apex.
+        assert!(
+            !subs
+                .iter()
+                .any(|r| r.from_uid == a.uid && r.to_uid == apex.uid),
+            "should link to closest parent only, not skip-level to apex"
+        );
+    }
+
+    #[test]
+    fn email_links_to_present_domain_only() {
+        let entities = vec![
+            ent(EntityKind::Email, "alice@example.com", 0.8),
+            ent(EntityKind::Domain, "example.com", 0.9),
+            ent(EntityKind::Email, "bob@absent.com", 0.8), // domain not in set
+        ];
+        let rels = derive_structural(&entities, "s");
+        let belongs: Vec<_> = rels
+            .iter()
+            .filter(|r| r.kind == RelationKind::BelongsToDomain)
+            .collect();
+        assert_eq!(
+            belongs.len(),
+            1,
+            "only the email whose domain is present links"
+        );
+        assert_eq!(belongs[0].from_uid, entities[0].uid);
+        assert_eq!(belongs[0].to_uid, entities[1].uid);
+        // Edge confidence is the weaker endpoint (0.8).
+        assert!((belongs[0].confidence - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn url_links_to_domain_stripping_www() {
+        let entities = vec![
+            ent(EntityKind::Url, "https://www.example.com/path", 0.6),
+            ent(EntityKind::Domain, "example.com", 0.9),
+        ];
+        let rels = derive_structural(&entities, "s");
+        let hosted: Vec<_> = rels
+            .iter()
+            .filter(|r| r.kind == RelationKind::HostedOn)
+            .collect();
+        assert_eq!(hosted.len(), 1);
+        assert_eq!(hosted[0].from_uid, entities[0].uid);
+        assert_eq!(hosted[0].to_uid, entities[1].uid);
+    }
+
+    #[test]
+    fn no_edges_without_matching_endpoints() {
+        // No Domain entities at all → no structural edges.
+        let entities = vec![
+            ent(EntityKind::Email, "a@x.com", 0.8),
+            ent(EntityKind::Url, "https://y.com/", 0.7),
+        ];
+        let rels = derive_structural(&entities, "s");
+        assert!(rels.is_empty());
+    }
+
+    #[test]
+    fn is_subdomain_of_label_aligned() {
+        assert!(is_subdomain_of("a.example.com", "example.com"));
+        assert!(!is_subdomain_of("notexample.com", "example.com")); // not label-aligned
+        assert!(!is_subdomain_of("example.com", "example.com")); // not proper
+    }
+}

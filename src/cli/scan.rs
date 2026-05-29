@@ -147,6 +147,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let scan = engine.run(scan, target, ctx).await?;
     let entities = store.entities_for_scan(&sid)?;
     let correlations = store.correlations_for_scan(&sid)?;
+    let relations = store.relations_for_scan(&sid)?;
 
     if cmd.output == "json" {
         // Full self-optimization payload — scan + entities + correlations
@@ -166,11 +167,20 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 "scan": scan,
                 "entities": entities,
                 "correlations": correlations,
+                "relations": relations,
                 "diagnostics": diag,
             }))?
         );
     } else if cmd.output == "dossier" {
-        print_dossier(&scan, &entities, &correlations, &cmd.kind, &cmd.value, &sid);
+        print_dossier(
+            &scan,
+            &entities,
+            &correlations,
+            &relations,
+            &cmd.kind,
+            &cmd.value,
+            &sid,
+        );
     } else {
         let color = use_color();
         println!(
@@ -234,6 +244,7 @@ fn print_dossier(
     scan: &crate::core::scan::Scan,
     entities: &[crate::core::entity::Entity],
     correlations: &[crate::core::correlator::Correlation],
+    relations: &[crate::core::relation::Relation],
     kind: &str,
     value: &str,
     sid: &str,
@@ -356,6 +367,31 @@ fn print_dossier(
             println!("    {}", c.description);
             println!();
         }
+    }
+
+    // Relations (typed attribution edges between entities)
+    if !relations.is_empty() {
+        use std::collections::HashMap;
+        let by_uid: HashMap<&str, &crate::core::entity::Entity> =
+            entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+        let label = |uid: &str| -> String {
+            by_uid
+                .get(uid)
+                .map(|e| truncate(&e.value, 40))
+                .unwrap_or_else(|| format!("{}…", &uid[..uid.len().min(8)]))
+        };
+        println!("━━━ RELATIONS ({}) ━━━", relations.len());
+        println!();
+        for r in relations {
+            println!(
+                "  {}  ──{}──▶  {}   (conf={:.2})",
+                label(&r.from_uid),
+                r.kind,
+                label(&r.to_uid),
+                r.confidence
+            );
+        }
+        println!();
     }
 
     // ─── DIAGNOSTICS & SELF-OPTIMIZATION ──────────────────────────────

@@ -11,6 +11,7 @@ pub mod gexf;
 pub mod live;
 pub mod module;
 pub mod profiles;
+pub mod relation;
 pub mod roi;
 pub mod scan;
 pub mod validation;
@@ -454,7 +455,8 @@ pub mod port {
     // instance and immediately upcast to `Arc<dyn StoragePort>`.
 
     use crate::core::{
-        correlator::Correlation, entity::Entity, error::Result, event::Event, scan::Scan,
+        correlator::Correlation, entity::Entity, error::Result, event::Event, relation::Relation,
+        scan::Scan,
     };
 
     pub trait StoragePort: Send + Sync {
@@ -487,6 +489,10 @@ pub mod port {
         // ── Correlations ───────────────────────────────────────────────────────
         fn upsert_correlation(&self, c: &Correlation) -> Result<()>;
         fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>>;
+
+        // ── Relations (typed entity-to-entity edges) ────────────────────────────
+        fn upsert_relation(&self, r: &Relation) -> Result<()>;
+        fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>>;
 
         // ── Events ─────────────────────────────────────────────────────────────
         fn insert_event(&self, event: &Event) -> Result<()>;
@@ -604,4 +610,5 @@ pub use event::{Event, EventBus, EventKind};
 pub use live::{LiveOptions, LiveRequest, LiveScanner, LiveSession, LiveStatus};
 pub use module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleInfo, ModuleResult};
 pub use port::StoragePort;
+pub use relation::{Relation, RelationKind};
 pub use scan::{ExpansionStrategy, Scan, ScanOptions, ScanRequest, ScanStatus, Target, TargetKind};
