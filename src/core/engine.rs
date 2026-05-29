@@ -466,6 +466,21 @@ impl ScanEngine {
             // Each candidate carries the UID of the parent entity it was
             // derived from, so a `DerivedFrom` lineage edge can be recorded
             // for whatever new entities its dispatch surfaces.
+            // Candidates do NOT get marked `visited` here. The top-K / ROI
+            // gate below may *defer* a low-ranked candidate, and a deferred
+            // candidate must stay eligible for re-evaluation in a later round
+            // — by then it may have gained corroboration (raising its weight)
+            // or risen above the gate as higher-ranked siblings get consumed.
+            // Marking it visited before the relevance/elimination decision
+            // would turn a per-round deferral into permanent elimination,
+            // silently amputating the recursion tree. Targets are committed to
+            // `visited` only at dispatch time (see the dispatch loop below),
+            // which is what actually guarantees cycle termination.
+            //
+            // `seen_this_round` de-duplicates distinct entities that normalise
+            // to the same target within this round; `visited` skips targets
+            // already dispatched in a prior round.
+            let mut seen_this_round: HashSet<(TargetKind, String)> = HashSet::new();
             let mut next: Vec<(Target, f64, String)> = Vec::new();
             for entity in entity_map.values() {
                 if entity.c_effective() < opts.min_expand_confidence {
@@ -482,18 +497,19 @@ impl ScanEngine {
                 };
                 let new_target = Target::new(tk, entity.value.clone());
                 let key = visit_key(&new_target);
-                if visited.insert(key) {
-                    let richness = self.graph.richness_for(tk);
-                    let weight = crate::core::scan::expansion_weight_for_strategy(
-                        opts.expansion_strategy,
-                        tk,
-                        entity.c_effective(),
-                        &entity.value,
-                        has_paid,
-                        richness,
-                    );
-                    next.push((new_target, weight, entity.uid.clone()));
+                if visited.contains(&key) || !seen_this_round.insert(key) {
+                    continue;
                 }
+                let richness = self.graph.richness_for(tk);
+                let weight = crate::core::scan::expansion_weight_for_strategy(
+                    opts.expansion_strategy,
+                    tk,
+                    entity.c_effective(),
+                    &entity.value,
+                    has_paid,
+                    richness,
+                );
+                next.push((new_target, weight, entity.uid.clone()));
             }
 
             // Sort expansion candidates by weighted score (descending).
@@ -554,6 +570,12 @@ impl ScanEngine {
                     );
                     return stop;
                 }
+                // Commit: mark this target visited now that we are actually
+                // dispatching it. This is the single point where a target
+                // becomes permanently ineligible — guaranteeing cycle
+                // termination — while deferred (truncated) candidates, which
+                // never reach this loop, remain eligible for the next round.
+                visited.insert(visit_key(nt));
                 // Snapshot UIDs before dispatch so we can attribute the
                 // entities this candidate surfaces back to its parent.
                 before.clear();

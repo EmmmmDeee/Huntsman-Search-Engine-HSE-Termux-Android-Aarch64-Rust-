@@ -693,6 +693,96 @@ async fn expansion_visited_prevents_cycle() {
     assert_eq!(result.entity_count, 1, "cycle should terminate");
 }
 
+/// Fan-out harness for the ROI top-K *deferral* invariant.
+///
+/// On an Email seed it emits `FANOUT` high-confidence Username entities. On a
+/// Username it records the dispatched value in a shared set and emits nothing
+/// (so usernames are terminal — they never multiply the candidate pool, which
+/// keeps the test deterministic regardless of HashMap iteration order).
+struct FanoutSynth {
+    dispatched: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+}
+
+const FANOUT: usize = 12;
+
+#[async_trait]
+impl Module for FanoutSynth {
+    fn name(&self) -> &'static str {
+        "synth_fanout"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email | TargetKind::Username)
+    }
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        match target.kind {
+            TargetKind::Email => {
+                for i in 0..FANOUT {
+                    // High confidence so each clears min_expand_confidence.
+                    let mut e =
+                        Entity::new(EntityKind::Username, format!("user{i:02}"), 0.9, &ctx.scan_id);
+                    e.tag("fanout");
+                    r.push(e);
+                }
+            }
+            TargetKind::Username => {
+                self.dispatched
+                    .lock()
+                    .unwrap()
+                    .insert(target.value.clone());
+            }
+            _ => {}
+        }
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn roi_top_k_defers_rather_than_eliminates_candidates() {
+    // Regression: under max_roi the per-round top-K gate must DEFER the
+    // long-tail candidates it trims, not permanently eliminate them. The seed
+    // fans out to FANOUT (12) usernames; top_k_for_round(0) == 10, so round 1
+    // can only dispatch 10. The 2 trimmed usernames must be picked up in a
+    // later round — otherwise the recursion tree is silently amputated.
+    let dispatched: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let (engine, _store, sid, target, ctx) = setup(
+        vec![Arc::new(FanoutSynth {
+            dispatched: Arc::clone(&dispatched),
+        })],
+        "roi-defer",
+        TargetKind::Email,
+        "seed@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 2,
+        max_concurrent: 0,         // top_k_for_round(0) == 10 < FANOUT
+        max_roi: true,             // engage the top-K gate
+        min_marginal_yield: Some(0.0), // disable adaptive-depth termination
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let _ = engine.run(scan, target, ctx).await.unwrap();
+
+    let seen = dispatched.lock().unwrap();
+    assert_eq!(
+        seen.len(),
+        FANOUT,
+        "all {FANOUT} fanned-out usernames must eventually be dispatched; \
+         top-K trimming must defer (not eliminate) the long tail — saw {}",
+        seen.len()
+    );
+    for i in 0..FANOUT {
+        assert!(
+            seen.contains(&format!("user{i:02}")),
+            "username user{i:02} was trimmed by top-K and never reconsidered"
+        );
+    }
+}
+
 /// KeyGated module that accepts both Email and Username. Used to prove that
 /// the DispatchLog prevents a keyed module from being invoked twice on the
 /// same normalised target across expansion rounds.

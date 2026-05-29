@@ -21,6 +21,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
   persisted → `Failed`). `StoragePort::upsert_entities_batch` now takes
   `&[Entity]` so the caller retains ownership for the fallback.
 
+### Fixed
+
+- **ROI top-K gate no longer permanently eliminates the long tail it trims.**
+  In `--max-roi` expansion, every candidate was inserted into the per-scan
+  `visited` set *during candidate construction*, but the top-K gate
+  (`K = 2×max_concurrent + 8`) truncates the candidate list *afterward*.
+  Candidates ranked below K were therefore marked visited yet never
+  dispatched — silently and permanently amputated from the recursion tree,
+  so a target trimmed in round 1 could never be reconsidered in a later round
+  even after it gained corroboration that would have lifted it above the gate.
+  Targets are now committed to `visited` only at dispatch time, so the top-K
+  gate *defers* the long tail (its documented intent) instead of eliminating
+  it. Behaviour is unchanged when `--max-roi` is off (no truncation occurs).
+  Regression test: `roi_top_k_defers_rather_than_eliminates_candidates`.
+
 ### Added
 
 - **Per-module cost telemetry in the dossier.** `hse scan --output dossier`
