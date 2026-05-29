@@ -88,23 +88,32 @@ fn parse_name_parts(raw: &str) -> Vec<NameParts> {
     }]
 }
 
+/// First character of `s` as a `String`. Char-safe: byte-slicing (`&s[..1]`)
+/// panics mid-codepoint on non-ASCII initials ("Łukasz", "Ángel", Cyrillic /
+/// CJK names) — and with `panic = "abort"` in release that crashes the whole
+/// scan. OSINT names are frequently non-ASCII, so this path must be safe.
+fn initial(s: &str) -> String {
+    s.chars().take(1).collect()
+}
+
 fn derive_usernames(parts_list: &[NameParts]) -> Vec<String> {
     let mut out = Vec::with_capacity(MAX_DERIVATIONS);
     for p in parts_list {
         let f = &p.first;
         let l = &p.last;
-        let fi = &f[..f.len().min(1)];
+        let fi = initial(f);
+        let li = initial(l);
 
         out.push(format!("{f}{l}"));
         out.push(format!("{f}.{l}"));
         out.push(format!("{f}_{l}"));
         out.push(format!("{fi}{l}"));
-        out.push(format!("{f}{}", &l[..l.len().min(1)]));
+        out.push(format!("{f}{li}"));
         out.push(format!("{l}{f}"));
         out.push(format!("{l}.{f}"));
 
         if let Some(ref m) = p.middle {
-            let mi = &m[..m.len().min(1)];
+            let mi = initial(m);
             out.push(format!("{f}{mi}{l}"));
             out.push(format!("{fi}{mi}{l}"));
         }
@@ -141,6 +150,20 @@ mod tests {
     #[test]
     fn single_word_returns_empty() {
         assert!(parse_name_parts("Jordan").is_empty());
+    }
+
+    #[test]
+    fn non_ascii_names_do_not_panic() {
+        // Multi-byte initials would panic under byte-slicing (and abort the
+        // process in release). These must derive cleanly.
+        for name in ["Łukasz Nowak", "Ángel Núñez", "Œuvre Çelik", "Đorđe Ćosić"] {
+            let parts = parse_name_parts(name);
+            let usernames = derive_usernames(&parts);
+            assert!(!usernames.is_empty(), "no derivations for {name}");
+        }
+        // The first-initial form is built from the leading codepoint.
+        let u = derive_usernames(&parse_name_parts("Łukasz Nowak"));
+        assert!(u.contains(&"łnowak".to_string()), "got {u:?}");
     }
 
     #[test]
