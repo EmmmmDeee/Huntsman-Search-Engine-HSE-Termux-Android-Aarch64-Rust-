@@ -17,3 +17,7 @@
 *.db-shm
 .huntsman.env
 .claude/worktrees/
+
+# live investigation raw export (contains live-scraped public-web data)
+jlm_live.json
+*_live.json
