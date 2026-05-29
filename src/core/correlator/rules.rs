@@ -8,6 +8,24 @@ fn entities_of_kind(entities: &[Entity], kind: EntityKind) -> Vec<&Entity> {
     entities.iter().filter(|e| e.kind == kind).collect()
 }
 
+/// Evidence sources that are the engine's own internal enrichment passes, not
+/// independent external observations. They attach to (nearly) every entity of
+/// their kind — `geo_normalize` geocodes every coordinate/address — so counting
+/// them as corroboration trivially inflates "multi-source" signals. Live
+/// scrutiny: AU-014 was firing on every geocoded coordinate because
+/// `search_engines + geo_normalize` always reads as "2 geo sources".
+const ENRICHMENT_SOURCES: &[&str] = &["geo_normalize"];
+
+/// Distinct evidence sources for `e`, excluding internal enrichment passes —
+/// i.e. genuinely independent observations. Use this anywhere a rule treats
+/// "N sources agreed" as a confidence signal.
+fn independent_source_count(e: &Entity) -> usize {
+    e.evidence_sources()
+        .into_iter()
+        .filter(|s| !ENRICHMENT_SOURCES.contains(s))
+        .count()
+}
+
 /// Entities of a kind that are **attributable to the subject** — i.e.
 /// independently re-derived (`is_corroborated`). This is the precision gate
 /// for the co-location / cluster rules: it strips single-source, high-recall
@@ -474,16 +492,19 @@ pub(super) fn rule_au_014_geo_cluster(
         .into_iter()
         .filter_map(|e| {
             let hits: Vec<&str> = GEO_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
-            let sources = e.evidence_sources();
-            if hits.len() >= 2 || sources.len() >= 2 {
+            // Independent sources only — `geo_normalize` enriches every
+            // coordinate, so counting it made AU-014 fire on every single
+            // geocoded point rather than on genuine multi-source convergence.
+            let indep = independent_source_count(e);
+            if hits.len() >= 2 || indep >= 2 {
                 Some(Correlation {
                     rule_id: "AU-014".into(),
                     rule_name: "Geolocation cluster".into(),
                     severity: Severity::Medium,
                     description: format!(
-                        "Coordinates '{}' confirmed by {} geo source(s)",
+                        "Coordinates '{}' confirmed by {} independent geo source(s)",
                         e.value,
-                        sources.len().max(hits.len())
+                        indep.max(hits.len())
                     ),
                     entity_uids: vec![e.uid.clone()],
                     scan_id: scan_id.into(),
@@ -1134,10 +1155,15 @@ pub(super) fn rule_au_030_geo_convergence_score(
         return Vec::new();
     }
 
+    // Independent sources only: exclude internal enrichment passes
+    // (`geo_normalize`) that decorate every geo entity and would otherwise
+    // count as a phantom corroborating source toward the convergence score.
     let mut all_sources: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for e in &geo_entities {
         for src in e.evidence_sources() {
-            all_sources.insert(src);
+            if !ENRICHMENT_SOURCES.contains(&src) {
+                all_sources.insert(src);
+            }
         }
     }
 

@@ -693,6 +693,20 @@ mod tests {
         assert_eq!(r.len(), 1);
     }
 
+    #[test]
+    fn au014_does_not_fire_on_enrichment_only_second_source() {
+        // Live case: a coordinate found by ONE real module and decorated by the
+        // engine's geo_normalize pass must NOT read as 2-source convergence.
+        let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.6, "s");
+        e.tag("geoint");
+        e.add_evidence(Evidence::new("search_engines", "geocoded"));
+        e.add_evidence(Evidence::new("geo_normalize", "enrichment"));
+        assert!(
+            rule_au_014_geo_cluster(&[e], "s", 0).is_empty(),
+            "single real source + geo_normalize must not fire AU-014",
+        );
+    }
+
     // ── AU-015 ──────────────────────────────────────────────────────────
 
     #[test]
