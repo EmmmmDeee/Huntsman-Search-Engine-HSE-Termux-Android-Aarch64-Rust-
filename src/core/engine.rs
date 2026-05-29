@@ -1102,10 +1102,42 @@ fn module_skip_reason(
             TargetKind::Domain if preflight::is_local_domain(&target.value) => {
                 return Some("local/reserved domain — external API would reject");
             }
+            // SSRF gate: a URL whose host is a private IP or local
+            // domain must not reach a URL-accepting external module
+            // (dns_intel, doh_resolver, exif_geo, geo_domain_classifier,
+            // web_crawler). Without this, an autonomously-discovered
+            // `http://192.168.1.1/admin` would coerce HSE into
+            // hitting the operator's internal network.
+            TargetKind::Url if url_host_is_private(&target.value) => {
+                return Some("URL with private host — external API would reject (SSRF gate)");
+            }
             _ => {}
         }
     }
     None
+}
+
+/// True if `url` parses cleanly AND its host is a reserved IP or
+/// a local-only domain. Mid-parse failures return false (let the
+/// module's own validation reject malformed URLs as usual).
+fn url_host_is_private(url: &str) -> bool {
+    use crate::util::preflight::{is_local_domain, is_private_ip};
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    // url 2.5 returns IPv6 host_str WITH brackets (`[::1]`); strip
+    // them before passing to is_private_ip so the IpAddr parse fires.
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    if is_private_ip(bare) {
+        return true;
+    }
+    is_local_domain(bare)
 }
 
 /// Augment Coordinates entities with geohash + timezone, and Address
@@ -1509,6 +1541,49 @@ mod tests {
             assert!(
                 module_skip_reason(&m, &t, &opts, false).is_none(),
                 "public IPv6 {v6} should NOT be rejected by the universal gate",
+            );
+        }
+    }
+
+    #[test]
+    fn skip_reason_rejects_url_with_private_host_ssrf_gate() {
+        // SSRF gate: a Url target whose host parses as a private IP
+        // or a local domain must not reach external-API modules.
+        // Without this, autonomous expansion that yields
+        // `http://192.168.1.1/admin` would coerce HSE into hitting
+        // the operator's internal LAN.
+        let m = free_active();
+        let opts = ScanOptions::default();
+        for hostile in [
+            "http://192.168.1.1/admin",
+            "http://10.0.0.1:8080/",
+            "http://127.0.0.1/health",
+            "http://[::1]/",
+            "http://router.local/",
+            "https://intra.internal/api",
+        ] {
+            let t = Target::new(TargetKind::Url, hostile);
+            let reason = module_skip_reason(&m, &t, &opts, false);
+            assert!(
+                reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
+                "Url {hostile} should be SSRF-rejected, got {reason:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn skip_reason_lets_public_url_through() {
+        let m = free_active();
+        let opts = ScanOptions::default();
+        for benign in [
+            "https://example.com/",
+            "https://api.github.com/users/octocat",
+            "http://[2606:4700:4700::1111]/",
+        ] {
+            let t = Target::new(TargetKind::Url, benign);
+            assert!(
+                module_skip_reason(&m, &t, &opts, false).is_none(),
+                "Url {benign} should pass through",
             );
         }
     }

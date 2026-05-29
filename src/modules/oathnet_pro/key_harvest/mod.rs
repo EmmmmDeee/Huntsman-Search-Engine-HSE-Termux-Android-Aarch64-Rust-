@@ -101,6 +101,15 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
             let start = pos + param.len();
             let rest = &trimmed[start..];
             let end = rest.find(['&', ' ', '"']).unwrap_or(rest.len());
+            // Hard-cap the extracted value length. Without this, a
+            // malicious stealer-log record with `?key=` followed by
+            // hundreds of MB of base64-with-no-`&`-terminator would
+            // cascade through `contains_excluded_context` (full-string
+            // lowercase allocation) and `shannon_entropy` (full-string
+            // iteration) per item — a cheap DoS surface. 4 KiB is well
+            // above any real-world API-key length (longest known is
+            // GitLab's ~256 chars).
+            let end = end.min(EXTRACTED_VALUE_MAX);
             let val = &rest[..end];
             if val.len() >= 16 {
                 if let Some(hit) = identify_api_key(val) {
@@ -120,15 +129,24 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
     // user:password format — extract the password portion
     if trimmed.contains(':') && !trimmed.starts_with("http") {
         let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
-        if parts.len() == 2
-            && parts[1].len() >= 16
-            && let Some(hit) = identify_api_key(parts[1])
-        {
-            return Some(hit);
+        if parts.len() == 2 && parts[1].len() >= 16 {
+            // Same DoS cap as above — recurse on at most 4 KiB.
+            let pw = &parts[1][..parts[1].len().min(EXTRACTED_VALUE_MAX)];
+            if let Some(hit) = identify_api_key(pw) {
+                return Some(hit);
+            }
         }
     }
     None
 }
+
+/// Hard cap for the extracted `val` / `password` substring length
+/// in [`identify_api_key`]'s URL-param and user:pass fallbacks.
+/// Bounds the recursive cost on hostile or malformed inputs without
+/// rejecting any plausible real-world credential (longest known
+/// vendor key is ~256 chars; even base64-wrapped variants stay
+/// well under 4 KiB).
+const EXTRACTED_VALUE_MAX: usize = 4096;
 
 /// Scan a JSON record for API key patterns in password / URL-param / extra
 /// fields. Public so peer modules like `see_know` can use the same harvest

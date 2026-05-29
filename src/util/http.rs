@@ -60,14 +60,42 @@ pub fn build_client() -> reqwest::Client {
 /// Returns `"<empty>"` when the body is empty, `"<unreadable>"` if the
 /// body couldn't be decoded. Consumes the response.
 ///
+/// Common credential query-param values (`api_key=`, `apiKey=`,
+/// `key=`, `token=`, `secret=`, `access_token=`, `auth=`) are
+/// redacted before embedding. Several upstreams echo the request URL
+/// inside their error body (Cloudflare, AWS, many API gateways),
+/// which would otherwise leak the operator's key into the persisted
+/// ModuleError event and the SSE stream.
+///
 /// Use this everywhere a module returns `Error::module(name, "HTTP …")`
 /// so the user sees the upstream's actual error payload rather than a
 /// bare status code.
 pub async fn error_snippet(resp: reqwest::Response) -> String {
-    match resp.text().await {
-        Ok(body) => {
-            scan_for_api_keys(&body);
-            let trimmed = body.trim();
+    // Stream up to 8 KiB before deciding the snippet is "long
+    // enough" — a hostile or compromised upstream could otherwise
+    // return a multi-GB body that reqwest's `resp.text()` happily
+    // accumulates, exhausting RAM on a Termux device.
+    const SNIPPET_BYTES_CAP: usize = 8 * 1024;
+    use futures::StreamExt as _;
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(bytes) => {
+                buf.extend_from_slice(&bytes);
+                if buf.len() >= SNIPPET_BYTES_CAP {
+                    buf.truncate(SNIPPET_BYTES_CAP);
+                    break;
+                }
+            }
+            Err(_) => return "<unreadable>".to_string(),
+        }
+    }
+    match std::str::from_utf8(&buf).ok() {
+        Some(body) => {
+            scan_for_api_keys(body);
+            let redacted = redact_credentials(body);
+            let trimmed = redacted.trim();
             if trimmed.is_empty() {
                 "<empty>".to_string()
             } else {
@@ -78,7 +106,7 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
                     .collect()
             }
         }
-        Err(_) => "<unreadable>".to_string(),
+        None => "<unreadable>".to_string(),
     }
 }
 
@@ -151,6 +179,73 @@ async fn fetch_json_inner<T: DeserializeOwned>(
         }
         Err(_) => Ok(super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await),
     }
+}
+
+/// Mask values for common credential query-param names inside an
+/// arbitrary text blob. Used by [`error_snippet`] before embedding
+/// upstream error bodies in module errors — many providers echo the
+/// request URL in their error response, and HSE keys often ride in
+/// the URL as a `?api_key=…` / `?apiKey=…` query parameter.
+///
+/// The matched names (`api_key`, `apiKey`, `key`, `token`, `secret`,
+/// `access_token`, `auth`) cover the providers HSE keys directly
+/// (Hunter, WhoisXML, OpenCellID, Shodan, etc.). The redaction
+/// replaces the value with `***` and preserves the surrounding
+/// delimiters so the error message still reads naturally.
+pub(crate) fn redact_credentials(text: &str) -> String {
+    const CREDENTIAL_PARAMS: &[&str] = &[
+        "api_key",
+        "apiKey",
+        "access_token",
+        "accessToken",
+        "secret",
+        "token",
+        "auth",
+        // `key` is too aggressive on its own (would mask any `key=value`),
+        // but `key=` immediately followed by 12+ alphanumerics is almost
+        // certainly a credential. We accept a brief surface-area mismatch
+        // for clarity.
+        "key",
+    ];
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    let bytes = text.as_bytes();
+    'outer: while cursor < bytes.len() {
+        for name in CREDENTIAL_PARAMS {
+            let needle_eq = format!("{name}=");
+            if bytes[cursor..].starts_with(needle_eq.as_bytes()) {
+                // Boundary check: the preceding char (if any) should be
+                // a query separator or whitespace — `apiKey=` mid-word
+                // (`monKey=`) shouldn't trip.
+                let preceded_by_boundary = cursor == 0
+                    || matches!(
+                        bytes[cursor - 1],
+                        b'?' | b'&' | b' ' | b'\t' | b'\n' | b'\r' | b'"' | b'\''
+                    );
+                if !preceded_by_boundary {
+                    continue;
+                }
+                let val_start = cursor + needle_eq.len();
+                let mut end = val_start;
+                while end < bytes.len() {
+                    let b = bytes[end];
+                    if b == b'&' || b == b' ' || b == b'\n' || b == b'\r' || b == b'"' {
+                        break;
+                    }
+                    end += 1;
+                }
+                if end > val_start {
+                    out.push_str(&text[cursor..val_start]);
+                    out.push_str("***");
+                    cursor = end;
+                    continue 'outer;
+                }
+            }
+        }
+        out.push(bytes[cursor] as char);
+        cursor += 1;
+    }
+    out
 }
 
 /// Parse the `Retry-After` header from a response, returning the number
@@ -352,5 +447,57 @@ mod tests {
         assert!(encoded.contains("%2F"));
         assert!(encoded.contains("%26"));
         assert!(encoded.contains("%3D"));
+    }
+
+    // ── redact_credentials ─────────────────────────────────────────────
+
+    #[test]
+    fn redact_strips_api_key_query_param() {
+        let s = "HTTP 400: Invalid request: domain=&api_key=SECRET_KEY_123";
+        let r = redact_credentials(s);
+        assert!(!r.contains("SECRET_KEY_123"));
+        assert!(r.contains("api_key=***"));
+    }
+
+    #[test]
+    fn redact_strips_apikey_camel_case() {
+        let s = "Bad URL: ?apiKey=AbCdEf123&domain=example.com";
+        let r = redact_credentials(s);
+        assert!(!r.contains("AbCdEf123"));
+        assert!(r.contains("apiKey=***"));
+    }
+
+    #[test]
+    fn redact_strips_token_and_secret() {
+        let s = "?token=THEACTUALTOKEN&secret=ALSOSECRET&other=keep";
+        let r = redact_credentials(s);
+        assert!(!r.contains("THEACTUALTOKEN"));
+        assert!(!r.contains("ALSOSECRET"));
+        assert!(r.contains("other=keep"));
+    }
+
+    #[test]
+    fn redact_preserves_non_credential_text() {
+        let s = "Quota exhausted, contact support@example.com";
+        let r = redact_credentials(s);
+        assert_eq!(r, s);
+    }
+
+    #[test]
+    fn redact_does_not_match_substring_words() {
+        // `monKey=value` should NOT have `Key=value` matched —
+        // boundary check rejects mid-word matches.
+        let s = "monkey=banana";
+        let r = redact_credentials(s);
+        assert!(r.contains("monkey=banana"));
+    }
+
+    #[test]
+    fn redact_handles_multiple_credentials_on_one_line() {
+        let s = "url=https://api.example.com/?api_key=KEY1&token=KEY2&apiKey=KEY3";
+        let r = redact_credentials(s);
+        assert!(!r.contains("KEY1"));
+        assert!(!r.contains("KEY2"));
+        assert!(!r.contains("KEY3"));
     }
 }

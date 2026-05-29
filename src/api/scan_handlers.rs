@@ -397,10 +397,24 @@ fn download_response(
 }
 
 pub(crate) fn csv_escape(s: &str) -> String {
-    if s.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", s.replace('"', "\"\""))
+    // Formula-injection neutralization: a leading =/+/-/@/CR/TAB causes
+    // Excel and LibreOffice to interpret the cell as a formula on file
+    // open — a hostile API response with `first_name = "=cmd|'/c calc'!A1"`
+    // could otherwise turn an exported scan CSV into RCE on the operator's
+    // workstation. Prepend a single quote to defang per OWASP guidance.
+    let needs_formula_guard = s
+        .as_bytes()
+        .first()
+        .is_some_and(|b| matches!(*b, b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r'));
+    let body = if needs_formula_guard {
+        format!("'{s}")
     } else {
         s.to_string()
+    };
+    if body.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", body.replace('"', "\"\""))
+    } else {
+        body
     }
 }
 

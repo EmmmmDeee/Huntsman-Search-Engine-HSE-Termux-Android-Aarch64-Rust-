@@ -540,4 +540,46 @@ mod tests {
     fn csv_escape_empty() {
         assert_eq!(csv_escape(""), "");
     }
+
+    // ── Formula-injection neutralization ─────────────────────────────
+
+    #[test]
+    fn csv_escape_neutralizes_excel_formula() {
+        // Excel-style formula prefixes get a leading apostrophe
+        // prepended so Excel/LibreOffice render the cell as text
+        // instead of evaluating it. The apostrophe alone is enough —
+        // outer quoting fires only when the body also carries CSV
+        // metachars (comma, quote, CR, LF).
+        assert_eq!(csv_escape("=cmd|/c calc"), "'=cmd|/c calc");
+        assert_eq!(csv_escape("+1234"), "'+1234");
+        assert_eq!(csv_escape("-SUM(A1:A2)"), "'-SUM(A1:A2)");
+        assert_eq!(csv_escape("@evil"), "'@evil");
+        // Tab and CR are also formula triggers in some spreadsheet
+        // implementations. CR also forces outer quoting (CSV metachar).
+        assert_eq!(csv_escape("\tHELLO"), "'\tHELLO");
+        assert_eq!(csv_escape("\rDANGER"), "\"'\rDANGER\"");
+    }
+
+    #[test]
+    fn csv_escape_formula_with_comma_quotes_outer() {
+        // Leading `=` triggers the apostrophe guard, AND the embedded
+        // comma forces outer double-quoting.
+        assert_eq!(csv_escape("=A1,B2"), "\"'=A1,B2\"");
+    }
+
+    #[test]
+    fn csv_escape_keeps_negative_numbers_safe_but_escaped() {
+        // `-3.5` would be interpreted as a formula. Cell still
+        // round-trips to the same number after the apostrophe is
+        // stripped by spreadsheet apps.
+        let r = csv_escape("-3.5");
+        assert!(r.starts_with('\''));
+    }
+
+    #[test]
+    fn csv_escape_does_not_alter_safe_leading_chars() {
+        assert_eq!(csv_escape("hello"), "hello");
+        assert_eq!(csv_escape("3 apples"), "3 apples");
+        assert_eq!(csv_escape("Mr. Jones"), "Mr. Jones");
+    }
 }
