@@ -308,8 +308,9 @@ values: `SubdomainOf` (Domain → closest present parent), `BelongsToDomain`
 deterministic SHA-256 id (so re-scans upsert idempotently), carries the weaker
 endpoint's confidence, and is persisted to the `relations` table via
 `StoragePort` (cascade-deleted with the scan). Edges are retrievable through
-`relations_for_scan` and surfaced in `scan --output json` and the dossier's
-RELATIONS section. Like the correlator it is **deterministic open math** — no
+`relations_for_scan` and surfaced in `scan --output json`, the dossier's
+RELATIONS section, and the GEXF export (typed edges labelled by kind for
+Gephi / Cytoscape). Like the correlator it is **deterministic open math** — no
 inference.
 
 Alongside the structural edges, the expansion loop records **lineage**
@@ -456,10 +457,15 @@ disturbing the invariants above.
   before/after entity-map diff, localised to the expansion loop — no change to
   dispatch behaviour. Persisted alongside the structural edges in
   `finalise_scan`.
+- ✅ **Done (slice 3 — GEXF).** The GEXF export (`entities_to_gexf`) now emits
+  the typed `Relation` edges, labelled by kind and weighted by confidence,
+  alongside the existing shared-evidence co-occurrence edges — so the full
+  attribution graph opens directly in Gephi / Cytoscape (`hse export … --format
+  gexf` and `GET /api/v1/scans/{id}/graph.gexf`).
 - _Remaining:_ (a) Evidence-derived semantic edges (`resolves_to` from DNS,
   `registered_by` from WHOIS, `co_located_with` from geo proximity), parsed
   deterministically from evidence attributes. (b) Path-based correlator rules
-  over the edge set and labelled edges in the SPA force-graph / GEXF export.
+  over the edge set, and labelled edges in the SPA force-graph (`spa.html`).
 
 **P3 — performance on aarch64**
 - ✅ **Done.** `finalise_scan` now persists the scan's entities through

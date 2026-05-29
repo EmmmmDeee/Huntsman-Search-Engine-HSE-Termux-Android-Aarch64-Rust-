@@ -49,6 +49,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
   read-only before/after diff localised to the expansion loop — no change to
   dispatch behaviour — and persisted alongside the structural edges.
   (Evidence-derived semantic edges remain a planned follow-on.)
+- **Typed edges in the GEXF export.** `hse export … --format gexf` and
+  `GET /api/v1/scans/{id}/graph.gexf` now emit the typed `Relation` edges
+  (labelled by kind, weighted by confidence) alongside the existing
+  shared-evidence co-occurrence edges, so the full attribution graph opens
+  directly in Gephi / Cytoscape.
 
 ## [1.0.0] — 2026-05-27
 

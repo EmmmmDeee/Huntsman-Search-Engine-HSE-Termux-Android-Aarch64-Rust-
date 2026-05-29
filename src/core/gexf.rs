@@ -8,8 +8,17 @@
 use std::fmt::Write;
 
 use crate::core::entity::Entity;
+use crate::core::relation::Relation;
 
-pub fn entities_to_gexf(entities: &[Entity], scan_id: &str) -> String {
+/// Truncated node id — must match the form used when emitting `<node>`
+/// elements so relation edges reference existing nodes.
+fn short_uid(uid: &str) -> &str {
+    &uid[..uid.len().min(12)]
+}
+
+/// Serialize a scan's entities (nodes) and edges (typed `Relation` edges +
+/// shared-evidence co-occurrence edges) as GEXF for Gephi / Cytoscape.
+pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &str) -> String {
     let mut xml = String::with_capacity(entities.len() * 256);
 
     let _ = writeln!(xml, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
@@ -77,9 +86,24 @@ pub fn entities_to_gexf(entities: &[Entity], scan_id: &str) -> String {
     }
     let _ = writeln!(xml, r#"    </nodes>"#);
 
-    // Edges — connect entities that share evidence sources
+    // Edges. Two kinds:
+    //   1. Typed Relation edges (the explicit attribution graph), labelled by
+    //      relation kind (subdomain_of / belongs_to_domain / hosted_on /
+    //      derived_from), weighted by edge confidence.
+    //   2. Shared-evidence co-occurrence edges, labelled by the shared sources.
     let _ = writeln!(xml, r#"    <edges>"#);
     let mut edge_id = 0u64;
+    for r in relations {
+        let src = short_uid(&r.from_uid);
+        let tgt = short_uid(&r.to_uid);
+        let _ = writeln!(
+            xml,
+            r#"      <edge id="{edge_id}" source="{src}" target="{tgt}" weight="{:.3}" label="{}"/>"#,
+            r.confidence,
+            xml_escape(r.kind.as_str())
+        );
+        edge_id += 1;
+    }
     for (i, src) in entities.iter().enumerate() {
         let src_sources = src.evidence_sources();
         for tgt in entities.iter().skip(i + 1) {
@@ -120,7 +144,7 @@ mod tests {
 
     #[test]
     fn gexf_has_xml_header() {
-        let xml = entities_to_gexf(&[], "test-scan");
+        let xml = entities_to_gexf(&[], &[], "test-scan");
         assert!(xml.starts_with("<?xml"));
         assert!(xml.contains("<gexf"));
         assert!(xml.contains("</gexf>"));
@@ -129,7 +153,7 @@ mod tests {
     #[test]
     fn gexf_contains_nodes_for_entities() {
         let e = Entity::new(EntityKind::Email, "alice@example.com", 0.9, "s");
-        let xml = entities_to_gexf(&[e], "test-scan");
+        let xml = entities_to_gexf(&[e], &[], "test-scan");
         assert!(xml.contains("alice@example.com"));
         assert!(xml.contains("<node"));
     }
@@ -140,7 +164,7 @@ mod tests {
         a.add_evidence(Evidence::new("hibp", "breach"));
         let mut b = Entity::new(EntityKind::Domain, "x.com", 0.7, "s");
         b.add_evidence(Evidence::new("hibp", "domain breach"));
-        let xml = entities_to_gexf(&[a, b], "test-scan");
+        let xml = entities_to_gexf(&[a, b], &[], "test-scan");
         assert!(xml.contains("<edge"), "shared source should create edge");
         assert!(xml.contains("hibp"));
     }
@@ -151,8 +175,35 @@ mod tests {
         a.add_evidence(Evidence::new("hibp", "breach"));
         let mut b = Entity::new(EntityKind::Domain, "y.com", 0.7, "s");
         b.add_evidence(Evidence::new("dns_intel", "resolved"));
-        let xml = entities_to_gexf(&[a, b], "test-scan");
+        let xml = entities_to_gexf(&[a, b], &[], "test-scan");
         assert!(!xml.contains(r#"<edge "#));
+    }
+
+    #[test]
+    fn gexf_emits_typed_relation_edges() {
+        use crate::core::relation::{Relation, RelationKind};
+        let parent = Entity::new(EntityKind::Domain, "example.com", 0.9, "s");
+        let child = Entity::new(EntityKind::Domain, "blog.example.com", 0.8, "s");
+        let rel = Relation::new(
+            child.uid.clone(),
+            parent.uid.clone(),
+            RelationKind::SubdomainOf,
+            0.8,
+            "s",
+        );
+        let xml = entities_to_gexf(&[parent.clone(), child.clone()], &[rel], "test-scan");
+        // Typed edge labelled by kind…
+        assert!(
+            xml.contains(r#"label="subdomain_of""#),
+            "expected a kind-labelled edge, got:\n{xml}"
+        );
+        // …referencing the same truncated node ids the <node> elements use.
+        let src = &child.uid[..12];
+        let tgt = &parent.uid[..12];
+        assert!(
+            xml.contains(&format!(r#"source="{src}" target="{tgt}""#)),
+            "relation edge must reference existing (truncated) node ids"
+        );
     }
 
     #[test]

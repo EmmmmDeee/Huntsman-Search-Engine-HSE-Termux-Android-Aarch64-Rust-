@@ -371,7 +371,11 @@ pub async fn scan_export_gexf(
         Ok(entities) => entities,
         Err(e) => return internal_error(&e),
     };
-    let body = crate::core::gexf::entities_to_gexf(&entities, &id);
+    let relations = match s.store.relations_for_scan(&id) {
+        Ok(relations) => relations,
+        Err(e) => return internal_error(&e),
+    };
+    let body = crate::core::gexf::entities_to_gexf(&entities, &relations, &id);
     download_response(body, "application/xml; charset=utf-8", &id, "gexf")
 }
 

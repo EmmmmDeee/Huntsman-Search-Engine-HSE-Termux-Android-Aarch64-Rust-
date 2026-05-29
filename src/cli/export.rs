@@ -69,7 +69,10 @@ fn render_csv(store: &Store, sid: &str) -> Result<String> {
 
 fn render_gexf(store: &Store, sid: &str) -> Result<String> {
     let entities = store.entities_for_scan(sid)?;
-    Ok(crate::core::gexf::entities_to_gexf(&entities, sid))
+    let relations = store.relations_for_scan(sid)?;
+    Ok(crate::core::gexf::entities_to_gexf(
+        &entities, &relations, sid,
+    ))
 }
 
 fn render_report(store: &Store, sid: &str) -> Result<String> {
