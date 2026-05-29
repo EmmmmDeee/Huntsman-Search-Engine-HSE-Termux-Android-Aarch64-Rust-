@@ -86,6 +86,7 @@ pub mod virustotal;
 pub mod waf_detect;
 pub mod wayback;
 pub mod web_crawler;
+pub mod web_trackers;
 pub mod webserver_banner;
 pub mod whois;
 pub mod whoisxml;
@@ -145,6 +146,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(search_engines::SearchEngines),
         Arc::new(webserver_banner::WebserverBanner),
         Arc::new(web_crawler::WebCrawler),
+        Arc::new(web_trackers::WebTrackers),
         Arc::new(urlscan::UrlScan),
         Arc::new(email_parse::EmailParse),
         Arc::new(employer_pivot::EmployerPivot),

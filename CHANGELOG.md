@@ -12,6 +12,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Web-tracker operator fingerprinting (`web_trackers` module + `AU-037`).**
+  Operators paste the *same* analytics/ad snippet across every property they
+  run, so a shared tracking ID is a near-definitive "same operator" link — the
+  latent fingerprint that de-anonymises sites kept ostensibly separate. The new
+  `web_trackers` module extracts embedded tracking IDs from a Domain/Url
+  (Google Analytics UA / GA4, AdSense, Tag Manager, Meta Pixel, Yandex Metrika,
+  Hotjar) via a bounded, streamed body read, attaching each to the domain as
+  structured evidence. The correlator's new **AU-037 "shared web-tracker
+  operator cluster"** rule then deterministically clusters every domain sharing
+  an ID — the aggressive pivot from one site to an operator's whole footprint.
+  Registry now 87 modules; correlator now 37 rules (34 entity + 3 graph-aware).
+  The extraction core and the clustering rule are both unit-tested offline.
+
 - **Intelligent, resource-aware proxy rotation (`ProxyRouter`).** A free proxy
   is never globally "good" or "bad" — it's good *for a given resource right
   now*. A process-wide `proxy::global_router()` (lazily seeded from the

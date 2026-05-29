@@ -1582,6 +1582,57 @@ pub(super) fn rule_au_036_credential_reuse(
     out
 }
 
+/// AU-037 — shared web-tracker operator cluster.
+///
+/// Operators reuse the same analytics/ad ID across every property they run, so
+/// a tracking id shared by ≥2 domains is a strong "same operator" link — a
+/// latent fingerprint tying together sites kept ostensibly separate. Reads the
+/// structured evidence `web_trackers` attaches to each domain and clusters by
+/// `tracker_id`: the aggressive pivot from one site to an operator's footprint.
+pub(super) fn rule_au_037_shared_web_tracker(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // tracker_id -> distinct domain uids exhibiting it.
+    let mut groups: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Domain) {
+        for ev in &e.evidence {
+            if ev.source == "web_trackers"
+                && let Some(id) = ev.attributes.get("tracker_id")
+            {
+                groups
+                    .entry(id.as_str())
+                    .or_default()
+                    .insert(e.uid.as_str());
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for (tracker, uids) in &groups {
+        if uids.len() < 2 {
+            continue;
+        }
+        let entity_uids: Vec<String> = uids.iter().map(|u| (*u).to_string()).collect();
+        out.push(Correlation::new(
+            "AU-037",
+            "Shared web-tracker operator cluster",
+            Severity::High,
+            format!(
+                "{} domains share web tracker '{tracker}' — likely operated by the same entity",
+                entity_uids.len()
+            ),
+            entity_uids,
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1749,13 +1800,56 @@ mod tests {
         assert!(rule_au_036_credential_reuse(&[a, b], "s", 0).is_empty());
     }
 
+    // ── AU-037 shared web-tracker operator cluster ──────────────────────────
+
+    fn domain_with_tracker(dom: &str, tracker_id: &str) -> Entity {
+        let mut e = ent(EntityKind::Domain, dom);
+        e.tag("web-tracker");
+        e.add_evidence(
+            Evidence::new("web_trackers", "t")
+                .with_attr("tracker_type", "google-analytics")
+                .with_attr("tracker_id", tracker_id)
+                .with_attr("source_domain", dom),
+        );
+        e
+    }
+
+    #[test]
+    fn au_037_clusters_domains_sharing_a_tracker() {
+        let out = rule_au_037_shared_web_tracker(
+            &[
+                domain_with_tracker("a.com", "UA-99-1"),
+                domain_with_tracker("b.com", "UA-99-1"),
+            ],
+            "s",
+            0,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-037");
+        assert_eq!(out[0].severity, Severity::High);
+        assert_eq!(out[0].entity_uids.len(), 2);
+    }
+
+    #[test]
+    fn au_037_silent_when_trackers_differ() {
+        let out = rule_au_037_shared_web_tracker(
+            &[
+                domain_with_tracker("a.com", "UA-1-1"),
+                domain_with_tracker("b.com", "UA-2-1"),
+            ],
+            "s",
+            0,
+        );
+        assert!(out.is_empty());
+    }
+
     // ── Engine wiring: array invariants + dispatcher integration ────────────
 
     #[test]
     fn rule_arrays_match_documented_counts() {
         use super::super::{RELATION_RULES, RULES};
-        // 33 entity rules + 3 relation rules = the 36 documented in the blueprint.
-        assert_eq!(RULES.len(), 33, "entity-rule count drifted from docs");
+        // 34 entity rules + 3 relation rules = the 37 documented in the blueprint.
+        assert_eq!(RULES.len(), 34, "entity-rule count drifted from docs");
         assert_eq!(
             RELATION_RULES.len(),
             3,
