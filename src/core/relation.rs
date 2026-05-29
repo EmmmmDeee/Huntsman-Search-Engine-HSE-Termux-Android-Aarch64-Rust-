@@ -34,9 +34,10 @@ pub enum RelationKind {
     BelongsToDomain,
     /// `from` (a Url) is hosted on `to` (the Domain of its host).
     HostedOn,
-    /// `from` was discovered by pivoting on `to` during expansion. Reserved
-    /// for the lineage-capture increment; not emitted by the structural
-    /// builder.
+    /// `from` and `to` are Coordinates within `CO_LOCATION_KM` of each other —
+    /// the same locality, surfaced by independent sources.
+    CoLocatedWith,
+    /// `from` was discovered by pivoting on `to` during expansion (lineage).
     DerivedFrom,
 }
 
@@ -46,6 +47,7 @@ impl RelationKind {
             Self::SubdomainOf => "subdomain_of",
             Self::BelongsToDomain => "belongs_to_domain",
             Self::HostedOn => "hosted_on",
+            Self::CoLocatedWith => "co_located_with",
             Self::DerivedFrom => "derived_from",
         }
     }
@@ -196,6 +198,46 @@ pub fn derive_structural(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     relations
 }
 
+/// Distance (km) under which two Coordinates entities are treated as the same
+/// locality and linked with a `CoLocatedWith` edge. ~1 km bridges the scatter
+/// between independent geocoders pointing at one place while staying tight
+/// enough to be meaningful.
+pub const CO_LOCATION_KM: f64 = 1.0;
+
+/// Derive `CoLocatedWith` edges between Coordinates entities within
+/// `CO_LOCATION_KM` of each other. Pure + deterministic: reuses
+/// `util::geohash` for parsing and Haversine distance, emits one canonically-
+/// directed edge per close pair (smaller UID → larger), so re-scans upsert
+/// idempotently. O(k²) over the (typically few) Coordinates entities only.
+pub fn derive_colocation(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    let coords: Vec<(&Entity, f64, f64)> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .filter_map(|e| crate::util::geohash::parse_coords(&e.value).map(|(la, lo)| (e, la, lo)))
+        .collect();
+
+    let mut relations = Vec::new();
+    for i in 0..coords.len() {
+        for j in (i + 1)..coords.len() {
+            let (a, la1, lo1) = coords[i];
+            let (b, la2, lo2) = coords[j];
+            if crate::util::geohash::haversine_km(la1, lo1, la2, lo2) <= CO_LOCATION_KM {
+                // Canonical direction so the pair yields exactly one
+                // deterministic edge regardless of iteration order.
+                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
+                relations.push(Relation::new(
+                    from.uid.as_str(),
+                    to.uid.as_str(),
+                    RelationKind::CoLocatedWith,
+                    a.confidence.min(b.confidence),
+                    scan_id,
+                ));
+            }
+        }
+    }
+    relations
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +362,47 @@ mod tests {
         assert!(is_subdomain_of("a.example.com", "example.com"));
         assert!(!is_subdomain_of("notexample.com", "example.com")); // not label-aligned
         assert!(!is_subdomain_of("example.com", "example.com")); // not proper
+    }
+
+    #[test]
+    fn colocation_links_nearby_coordinates() {
+        // ~0.24 km apart (Brisbane CBD) → linked.
+        let a = ent(EntityKind::Coordinates, "-27.470000,153.020000", 0.9);
+        let b = ent(EntityKind::Coordinates, "-27.472000,153.021000", 0.7);
+        let rels = derive_colocation(&[a.clone(), b.clone()], "s");
+        assert_eq!(rels.len(), 1, "nearby coords should yield one edge");
+        assert_eq!(rels[0].kind, RelationKind::CoLocatedWith);
+        // Canonical direction: smaller uid → larger.
+        let (lo, hi) = if a.uid <= b.uid { (&a, &b) } else { (&b, &a) };
+        assert_eq!(rels[0].from_uid, lo.uid);
+        assert_eq!(rels[0].to_uid, hi.uid);
+        // Edge confidence is the weaker endpoint.
+        assert!((rels[0].confidence - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn colocation_skips_distant_coordinates() {
+        // Brisbane vs Sydney (~730 km) → no edge.
+        let a = ent(EntityKind::Coordinates, "-27.470000,153.020000", 0.9);
+        let b = ent(EntityKind::Coordinates, "-33.870000,151.210000", 0.9);
+        assert!(derive_colocation(&[a, b], "s").is_empty());
+    }
+
+    #[test]
+    fn colocation_ignores_non_coordinates() {
+        let a = ent(EntityKind::Email, "a@x.com", 0.9);
+        let b = ent(EntityKind::Domain, "x.com", 0.9);
+        assert!(derive_colocation(&[a, b], "s").is_empty());
+    }
+
+    #[test]
+    fn colocation_one_edge_per_pair() {
+        let a = ent(EntityKind::Coordinates, "-27.470000,153.020000", 0.9);
+        let b = ent(EntityKind::Coordinates, "-27.470500,153.020500", 0.8);
+        assert_eq!(
+            derive_colocation(&[a, b], "s").len(),
+            1,
+            "one edge per pair, not two reversed"
+        );
     }
 }

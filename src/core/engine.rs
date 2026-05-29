@@ -353,11 +353,16 @@ impl ScanEngine {
     /// idempotent on the deterministic edge id.
     fn persist_relations(&self, scan_id: &str, entities: &[Entity], lineage: &[Relation]) {
         let structural = crate::core::relation::derive_structural(entities, scan_id);
-        if lineage.is_empty() && structural.is_empty() {
+        let colocation = crate::core::relation::derive_colocation(entities, scan_id);
+        if lineage.is_empty() && structural.is_empty() && colocation.is_empty() {
             return;
         }
         let mut persisted = 0usize;
-        for r in lineage.iter().chain(structural.iter()) {
+        for r in lineage
+            .iter()
+            .chain(structural.iter())
+            .chain(colocation.iter())
+        {
             match self.store.upsert_relation(r) {
                 Ok(()) => persisted += 1,
                 Err(e) => warn!(scan_id, relation = %r.id, error = %e, "relation persist failed"),
@@ -367,6 +372,7 @@ impl ScanEngine {
             scan_id,
             lineage = lineage.len(),
             structural = structural.len(),
+            colocation = colocation.len(),
             persisted,
             "entity relations persisted"
         );

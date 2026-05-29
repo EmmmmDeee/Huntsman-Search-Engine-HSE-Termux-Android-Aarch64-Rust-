@@ -48,7 +48,7 @@ property regresses.
 | 1 | **Low overhead / memory** | 2 tokio workers; sequential dispatch default; response cache; budget caps; `entity_map` capacity clamp; mmap-tunable SQLite | `main.rs:3`, `lib.rs:26`, `engine.rs:198-199` |
 | 1 | **Single-binary recursive SpiderFoot** | `default-run = "hse"`; embedded SPA; `run_expansion` recursive walk | `Cargo.toml:9`; `engine.rs:341` |
 | 2 | **Shared data fabric** (instant framework-wide propagation) | per-scan `entity_map` (GREATEST-merge) + SQLite store + `entity_observations` junction + `EventBus` + **key-pool hot-inject** | `engine.rs:623,300-304,358-367` |
-| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 30 entity-linking rules, **and first-class typed `Relation` edges** (`SubdomainOf` / `BelongsToDomain` / `HostedOn`); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
+| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 30 entity-linking rules, **and first-class typed `Relation` edges** (structural + expansion lineage + geo co-location); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
 | 2 | **Discovery loops / adaptive pivoting** | `run_expansion`: depth-bounded DFS with ROI saturation-pruning, top-K gating, adaptive-depth termination, 4 expansion strategies | `engine.rs:341-510`, `core/roi.rs`, `core/scan.rs` |
 | 3 | **Code quality / static+dynamic verification** | CI: `fmt --check`, `check --locked`, `clippy -D warnings`, `test --all`, MSRV 1.88, shellcheck | `.github/workflows/ci.yml` |
 | 3 | **Resilience / regression testing** | 1,254 tests green (1173 lib + 36 API + 8 architecture + 37 smoke); per-module timeout; `panic = "abort"` | `tests/`, `engine.rs:752`, `Cargo.toml:64` |
@@ -302,9 +302,11 @@ the "deterministic execution" hardening constraint.
 
 Where the correlator emits *findings*, the relation layer emits *typed edges* —
 the explicit attribution graph. After entities are persisted, `finalise_scan`
-calls `derive_structural`, a pure builder that links entities by their canonical
-values: `SubdomainOf` (Domain → closest present parent), `BelongsToDomain`
-(Email → its Domain), `HostedOn` (Url → its Domain). Each `Relation` has a
+calls two pure builders: `derive_structural`, which links entities by their
+canonical values — `SubdomainOf` (Domain → closest present parent),
+`BelongsToDomain` (Email → its Domain), `HostedOn` (Url → its Domain) — and
+`derive_colocation`, which links Coordinates within `CO_LOCATION_KM` (1 km) via
+`util::geohash` Haversine distance as `CoLocatedWith`. Each `Relation` has a
 deterministic SHA-256 id (so re-scans upsert idempotently), carries the weaker
 endpoint's confidence, and is persisted to the `relations` table via
 `StoragePort` (cascade-deleted with the scan). Edges are retrievable through
@@ -462,10 +464,15 @@ disturbing the invariants above.
   alongside the existing shared-evidence co-occurrence edges — so the full
   attribution graph opens directly in Gephi / Cytoscape (`hse export … --format
   gexf` and `GET /api/v1/scans/{id}/graph.gexf`).
-- _Remaining:_ (a) Evidence-derived semantic edges (`resolves_to` from DNS,
-  `registered_by` from WHOIS, `co_located_with` from geo proximity), parsed
-  deterministically from evidence attributes. (b) Path-based correlator rules
-  over the edge set, and labelled edges in the SPA force-graph (`spa.html`).
+- ✅ **Done (slice 4 — co-location).** `derive_colocation` links Coordinates
+  entities within `CO_LOCATION_KM` (1 km) with `CoLocatedWith` edges, using
+  `util::geohash` Haversine distance — self-contained deterministic geo math,
+  no module coupling. One canonically-directed edge per close pair; persisted
+  with the other edges and exported to GEXF.
+- _Remaining:_ (a) The module-coupled semantic edges `resolves_to` (from DNS
+  evidence) and `registered_by` (from WHOIS evidence), parsed from specific
+  evidence attributes. (b) Path-based correlator rules over the edge set, and
+  labelled edges in the SPA force-graph (`spa.html`).
 
 **P3 — performance on aarch64**
 - ✅ **Done.** `finalise_scan` now persists the scan's entities through

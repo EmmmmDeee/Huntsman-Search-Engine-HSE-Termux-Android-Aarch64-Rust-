@@ -54,6 +54,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (labelled by kind, weighted by confidence) alongside the existing
   shared-evidence co-occurrence edges, so the full attribution graph opens
   directly in Gephi / Cytoscape.
+- **Geo co-location relations (`CoLocatedWith`).** `derive_colocation` links
+  Coordinates entities within 1 km of each other (Haversine via `util::geohash`)
+  with a `CoLocatedWith` edge — the same place surfaced by independent sources.
+  Self-contained deterministic geo math (no module coupling); one
+  canonically-directed edge per close pair, persisted with the other relations
+  and exported to GEXF.
 
 ## [1.0.0] — 2026-05-27
 
