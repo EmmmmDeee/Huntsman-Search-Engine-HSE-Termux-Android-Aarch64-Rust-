@@ -463,9 +463,12 @@ fn extract_breach_entities(
             .collect::<Vec<&str>>()
             .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
-            let mut e = Entity::new(EntityKind::Address, &addr, 0.65, scan_id);
+            let mut e = Entity::new(EntityKind::Address, &addr, conf(0.65), scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-pro");
+            if !is_target_row {
+                e.tag("candidate");
+            }
             e.add_evidence(ev.clone());
             result.push(e);
         }
@@ -539,10 +542,17 @@ fn extract_breach_entities(
     if let Some(ed) = val_str(item, "email_domain") {
         let lower = ed.to_lowercase();
         if lower.contains('.') && !lower.contains('@') && seen.insert(format!("@edomain:{lower}")) {
-            let mut e = Entity::new(EntityKind::Domain, &lower, 0.55, scan_id);
+            // Off-target rows contribute their (unrelated) employer/email
+            // domains — abrigo.com, capitalone.com, … from breach-dump
+            // victims. Gate to CANDIDATE so they don't rank as signal or seed
+            // expansion into dozens of irrelevant corporate domains.
+            let mut e = Entity::new(EntityKind::Domain, &lower, conf(0.55), scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-pro");
             e.tag("email-domain");
+            if !is_target_row {
+                e.tag("candidate");
+            }
             e.add_evidence(ev.clone());
             result.push(e);
         }
