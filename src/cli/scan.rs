@@ -36,6 +36,7 @@ pub(super) struct ScanCmd {
     pub expansion_strategy: String,
     pub seeknow_scan_cap: Option<u32>,
     pub output: String,
+    pub region: Option<String>,
 }
 
 pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
@@ -121,6 +122,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         min_marginal_yield: cmd.min_marginal_yield,
         expansion_strategy,
         seeknow_scan_cap: cmd.seeknow_scan_cap,
+        region_hint: cmd.region.clone(),
     };
     if cmd.max_roi {
         eprintln!(

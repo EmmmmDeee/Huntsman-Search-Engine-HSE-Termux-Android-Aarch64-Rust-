@@ -414,6 +414,18 @@ pub struct ScanOptions {
     /// session ceiling.
     #[serde(default)]
     pub seeknow_scan_cap: Option<u32>,
+
+    // ── Region prior (geolocation) ─────────────────────────────────────────
+    /// Known region/country of the target seed, e.g. `"AU"` / `"Australia"`.
+    /// When set, the engine re-weights geo-bearing entities by agreement with
+    /// this prior (see [`crate::core::geo::apply_region_prior`]): in-region
+    /// locations are boosted, out-of-region ones penalised. This is the
+    /// strongest geolocation signal when the operator already knows where the
+    /// target is, and it suppresses out-of-region breach-dump noise that would
+    /// otherwise dominate the geo ranking. `None` = no prior (geolocation runs
+    /// purely on collected evidence).
+    #[serde(default)]
+    pub region_hint: Option<String>,
 }
 
 /// How the engine orders expansion candidates within a round.
@@ -504,6 +516,7 @@ impl Default for ScanOptions {
             min_marginal_yield: None,
             expansion_strategy: ExpansionStrategy::default(),
             seeknow_scan_cap: None,
+            region_hint: None,
         }
     }
 }

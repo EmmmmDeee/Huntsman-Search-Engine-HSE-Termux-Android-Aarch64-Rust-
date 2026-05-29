@@ -144,6 +144,11 @@ pub enum Command {
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(short, long, default_value = "table")]
         output: String,
+        /// Known region/country of the target seed (e.g. "AU", "Australia").
+        /// Boosts in-region geo findings and penalises out-of-region ones —
+        /// the strongest geolocation signal when the target's region is known.
+        #[arg(long)]
+        region: Option<String>,
     },
     /// List registered modules with their cost tier and accepted target kinds.
     ///
@@ -335,6 +340,7 @@ pub async fn run() -> Result<()> {
             expansion_strategy,
             seeknow_scan_cap,
             output,
+            region,
         } => {
             scan::cmd_scan(scan::ScanCmd {
                 kind,
@@ -359,6 +365,7 @@ pub async fn run() -> Result<()> {
                 expansion_strategy,
                 seeknow_scan_cap,
                 output,
+                region,
             })
             .await
         }

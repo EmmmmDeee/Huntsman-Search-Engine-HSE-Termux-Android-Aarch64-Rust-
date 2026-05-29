@@ -256,7 +256,25 @@ impl ScanEngine {
         // granular `first_err`, preserving the prior continue-on-error
         // resilience semantics (partial persist → Complete-with-error;
         // nothing persisted → Failed).
-        let entities: Vec<Entity> = entity_map.into_values().collect();
+        let mut entities: Vec<Entity> = entity_map.into_values().collect();
+
+        // Region-prior geolocation re-weighting: if the operator supplied a
+        // known region for the seed, boost in-region geo entities and penalise
+        // out-of-region ones before persistence, so the target's true location
+        // outranks out-of-region breach-dump noise and the downstream geo
+        // convergence rules lock onto it. Runs once, on the final merged set.
+        if let Some(region) = scan.options.region_hint.as_deref()
+            && let Some(rep) = crate::core::geo::apply_region_prior(&mut entities, region)
+        {
+            info!(
+                scan_id = %scan.id,
+                prior = rep.prior_iso,
+                matched = rep.matched,
+                conflicted = rep.conflicted,
+                "applied region prior"
+            );
+        }
+
         let total = entities.len();
         let (persisted, first_err): (usize, Option<String>) = match self
             .store

@@ -10,6 +10,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **Region-prior geolocation (`--region`).** A new `core::geo` pass exploits a
+  known target region — the strongest geolocation signal when the operator
+  already knows where the seed is. `hse scan --region AU` (accepts ISO2,
+  alpha-3, or country names/aliases) re-weights every geo-bearing entity by
+  agreement with the prior in `finalise_scan`: in-region locations get a
+  confidence boost and a `geo-prior-match` tag, out-of-region ones a penalty
+  (`×0.55`, dropping a typical breach-dump address below the Probable/expansion
+  floors) and a `geo-prior-conflict` tag. This pushes the target's true region
+  to the top of the geo ranking and lets the convergence rules
+  (AU-014/017/030) lock onto it instead of out-of-region breach-dump noise.
+  Plumbed `ScanOptions::region_hint` end-to-end (CLI → engine); pure and
+  deterministic, depends only on `core::entity`.
+
 ### Changed
 
 - **Correlation precision: co-location / cluster rules now require
