@@ -10,6 +10,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Performance
+
+- **Batched entity persistence.** `ScanEngine::finalise_scan` now writes a
+  scan's entities through `Store::upsert_entities_batch` in a single WAL
+  transaction instead of one transaction per entity, collapsing N fsyncs into
+  one — a material win on low-power aarch64. On a batch error it falls back to
+  per-entity upserts, preserving the prior continue-on-error resilience
+  semantics (partial persist → `Complete` with an error note; nothing
+  persisted → `Failed`). `StoragePort::upsert_entities_batch` now takes
+  `&[Entity]` so the caller retains ownership for the fallback.
+
+### Added
+
+- **Per-module cost telemetry in the dossier.** `hse scan --output dossier`
+  now shows each module's cost tier (`free` / `key` / `paid`) in the "modules
+  ranked by yield" table and flags keyed/paid modules that yielded nothing
+  this scan (`ROI: … consider --exclude …`), making the ROI tuning loop
+  self-explanatory to operators.
+
 ## [1.0.0] — 2026-05-27
 
 ### Added

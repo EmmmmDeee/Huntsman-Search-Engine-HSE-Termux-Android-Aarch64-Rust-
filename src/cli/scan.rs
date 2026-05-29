@@ -372,16 +372,57 @@ fn print_dossier(
     println!("━━━ DIAGNOSTICS ━━━");
     println!();
     println!("  Scan wall-time:  {} ms", diag.wall_time_ms);
-    println!("  Modules ranked by yield:");
+
+    // Map each module name → cost tier so the yield table doubles as an ROI
+    // ledger: a zero-yield Paid/KeyGated module is a drop candidate, a
+    // zero-yield Free one is not. Built from the registry (the single source
+    // of the module list); non-module evidence sources (geo_normalize,
+    // entity_value, …) have no tier and render as "·". One-shot cost at
+    // dossier render time, off the scan hot path.
+    use crate::core::module::ModuleCost;
+    let cost_by_module: std::collections::HashMap<String, ModuleCost> = crate::modules::registry()
+        .iter()
+        .map(|m| (m.name().to_string(), m.cost()))
+        .collect();
+    let cost_label = |name: &str| match cost_by_module.get(name) {
+        Some(ModuleCost::Free) => "free",
+        Some(ModuleCost::KeyGated) => "key",
+        Some(ModuleCost::Paid) => "paid",
+        None => "·",
+    };
+
+    println!("  Modules ranked by yield (cost tier shown for ROI tuning):");
     for m in diag.modules_by_yield.iter().take(15) {
         let kinds = m.unique_kinds.join(",");
         println!(
-            "    {:4}  {:<22} conf={:.2}  novelty={:5.1}%  kinds={}",
+            "    {:4}  {:<5} {:<22} conf={:.2}  novelty={:5.1}%  kinds={}",
             m.entities_emitted,
+            cost_label(&m.name),
             m.name,
             m.mean_confidence,
             m.novelty_ratio * 100.0,
             kinds
+        );
+    }
+    // ROI hint: keyed/paid modules that produced nothing this scan are the
+    // levers an operator can pull with `--exclude` to conserve quota.
+    let wasted: Vec<&str> = diag
+        .modules_by_yield
+        .iter()
+        .filter(|m| {
+            m.entities_emitted == 0
+                && matches!(
+                    cost_by_module.get(&m.name),
+                    Some(ModuleCost::KeyGated | ModuleCost::Paid)
+                )
+        })
+        .map(|m| m.name.as_str())
+        .collect();
+    if !wasted.is_empty() {
+        println!(
+            "  ROI: {} keyed/paid module(s) yielded nothing — consider --exclude {}",
+            wasted.len(),
+            wasted.join(",")
         );
     }
     println!();

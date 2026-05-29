@@ -283,18 +283,20 @@ impl Store {
         Ok(())
     }
 
-    pub fn upsert_entities_batch(&self, entities: impl Iterator<Item = Entity>) -> Result<usize> {
+    /// Persist a batch of entities under one transaction. On the happy path
+    /// (every entity new or a clean merge) this collapses N per-entity
+    /// commits into a single WAL fsync — a material win on low-power aarch64.
+    /// All-or-nothing: any error rolls the whole batch back, and the caller
+    /// is expected to fall back to per-entity `upsert_entity` to salvage what
+    /// it can. Returns the number of entities persisted (== `entities.len()`).
+    pub fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
-        let mut count = 0usize;
-
         for entity in entities {
-            Self::merge_and_persist_entity(&tx, &entity)?;
-            count += 1;
+            Self::merge_and_persist_entity(&tx, entity)?;
         }
-
         tx.commit()?;
-        Ok(count)
+        Ok(entities.len())
     }
 
     fn merge_and_persist_entity(tx: &rusqlite::Transaction<'_>, entity: &Entity) -> Result<()> {
@@ -538,8 +540,8 @@ impl crate::core::port::StoragePort for Store {
         Store::upsert_entity(self, entity)
     }
 
-    fn upsert_entities_batch(&self, entities: Vec<Entity>) -> Result<usize> {
-        Store::upsert_entities_batch(self, entities.into_iter())
+    fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize> {
+        Store::upsert_entities_batch(self, entities)
     }
 
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
@@ -1261,6 +1263,63 @@ mod tests {
         );
         assert!(merged.has_tag("tag-a"), "tag-a must survive merge");
         assert!(merged.has_tag("tag-b"), "tag-b must survive merge");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── upsert_entities_batch ──────────────────────────────────────────────
+
+    #[test]
+    fn upsert_entities_batch_persists_all_and_records_observations() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "batch-scan");
+        let entities = vec![
+            Entity::new(EntityKind::Email, "a@x.com", 0.8, "batch-scan"),
+            Entity::new(EntityKind::Domain, "x.com", 0.7, "batch-scan"),
+            Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "batch-scan"),
+        ];
+        let n = store.upsert_entities_batch(&entities).unwrap();
+        assert_eq!(n, 3, "batch should report every entity persisted");
+        let got = store.entities_for_scan("batch-scan").unwrap();
+        assert_eq!(got.len(), 3);
+        // The observation junction must be populated for every entity, exactly
+        // as the per-entity upsert path does.
+        for e in &entities {
+            assert_eq!(store.observation_count(&e.uid).unwrap(), 1);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn upsert_entities_batch_merges_on_conflict() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "bm-scan");
+        let first = Entity::new(EntityKind::Email, "dup@x.com", 0.5, "bm-scan");
+        store.upsert_entity(&first).unwrap();
+        // Same uid, higher confidence → GREATEST-merge through the batch path.
+        let again = Entity::new(EntityKind::Email, "dup@x.com", 0.9, "bm-scan");
+        let n = store
+            .upsert_entities_batch(std::slice::from_ref(&again))
+            .unwrap();
+        assert_eq!(n, 1);
+        let merged = store.get_entity(&first.uid).unwrap().unwrap();
+        assert!(
+            (merged.confidence - 0.9).abs() < 1e-9,
+            "GREATEST-merge must apply inside the batch path"
+        );
+        assert_eq!(
+            merged.corroboration, 2,
+            "corroboration must accumulate through the batch path"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn upsert_entities_batch_empty_is_zero() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.upsert_entities_batch(&[]).unwrap(), 0);
         let _ = std::fs::remove_file(&path);
     }
 }

@@ -426,18 +426,27 @@ disturbing the invariants above.
   deterministic-only guarantee.
 
 **P3 — performance on aarch64**
-- `entity_map` is `HashMap<String, Entity>` keyed by 64-char hex UID. Interning
-  UIDs (or keying by the raw 32-byte digest) would cut hashing/allocation on
-  large scans. Measure first with a representative `--depth 3` scan.
-- `upsert_entity` is called per-entity in `finalise_scan`; `StoragePort` already
-  exposes `upsert_entities_batch` — routing finalisation through it would cut
-  per-row transaction overhead.
+- ✅ **Done.** `finalise_scan` now persists the scan's entities through
+  `upsert_entities_batch` in a single WAL transaction, collapsing N per-entity
+  commits into one fsync (`engine.rs`, `storage.rs`). On a batch error it falls
+  back to per-entity `upsert_entity`, so the prior continue-on-error resilience
+  semantics (partial persist → Complete-with-error; nothing persisted → Failed)
+  are preserved. `StoragePort::upsert_entities_batch` now takes `&[Entity]` so
+  the caller keeps ownership for the fallback.
+- _Remaining:_ `entity_map` is `HashMap<String, Entity>` keyed by 64-char hex
+  UID. Interning UIDs (or keying by the raw 32-byte digest) would cut
+  hashing/allocation on large scans. Measure first with a representative
+  `--depth 3` scan.
 
 **P4 — observability**
-- `ModuleStats` (run/errored/timed_out/deduped) is recorded on the `Scan`.
-  Surfacing a per-module yield/cost line in the `dossier` output would make the
-  ROI tuning loop (`--max-roi`, `--min-marginal-yield`) self-explanatory to
-  operators.
+- ✅ **Done.** The `dossier` "modules ranked by yield" table now prints each
+  module's cost tier (`free`/`key`/`paid`) and flags keyed/paid modules that
+  yielded nothing this scan (`ROI: … consider --exclude …`), making the ROI
+  tuning loop (`--max-roi`, `--exclude`) self-explanatory. Cost is looked up
+  from `registry()` at render time, off the scan hot path.
+- _Remaining:_ aggregate `ModuleStats` (run/errored/timed_out/deduped) is on the
+  `Scan`; a machine-readable per-module ledger in the `json` output would let
+  external tooling drive the `--adaptive` skip-list.
 
 ---
 

@@ -240,20 +240,40 @@ impl ScanEngine {
         ctx: &ModuleContext,
         stats: ModuleStats,
     ) -> Result<Scan> {
-        let total = entity_map.len();
-        let mut persisted = 0usize;
-        let mut first_err: Option<String> = None;
-        for entity in entity_map.into_values() {
-            match self.store.upsert_entity(&entity) {
-                Ok(()) => persisted += 1,
-                Err(e) => {
-                    warn!(scan_id = %scan.id, entity_uid = %entity.uid, error = %e, "entity persist failed");
-                    if first_err.is_none() {
-                        first_err = Some(e.to_string());
+        // Persist the scan's entities in a single transaction. On the common
+        // path (every entity is new or a clean GREATEST-merge) this collapses
+        // N per-entity commits into one WAL fsync — a material win on
+        // low-power aarch64 where each commit is the dominant cost. The batch
+        // is all-or-nothing, so on any error we fall back to per-entity
+        // upserts: this salvages whatever is persistable and recovers the
+        // granular `first_err`, preserving the prior continue-on-error
+        // resilience semantics (partial persist → Complete-with-error;
+        // nothing persisted → Failed).
+        let entities: Vec<Entity> = entity_map.into_values().collect();
+        let total = entities.len();
+        let (persisted, first_err): (usize, Option<String>) = match self
+            .store
+            .upsert_entities_batch(&entities)
+        {
+            Ok(n) => (n, None),
+            Err(batch_err) => {
+                warn!(scan_id = %scan.id, error = %batch_err, "batch entity persist rolled back; falling back to per-entity upserts");
+                let mut persisted = 0usize;
+                let mut first_err: Option<String> = None;
+                for entity in &entities {
+                    match self.store.upsert_entity(entity) {
+                        Ok(()) => persisted += 1,
+                        Err(e) => {
+                            warn!(scan_id = %scan.id, entity_uid = %entity.uid, error = %e, "entity persist failed");
+                            if first_err.is_none() {
+                                first_err = Some(e.to_string());
+                            }
+                        }
                     }
                 }
+                (persisted, first_err)
             }
-        }
+        };
         let entity_count = persisted;
         let failed = total - persisted;
 

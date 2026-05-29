@@ -466,7 +466,10 @@ pub mod port {
 
         // ── Entities ───────────────────────────────────────────────────────────
         fn upsert_entity(&self, entity: &Entity) -> Result<()>;
-        fn upsert_entities_batch(&self, entities: Vec<Entity>) -> Result<usize>;
+        /// Persist many entities in a single transaction. Takes a slice (not
+        /// an owned `Vec`) so the caller retains ownership and can fall back
+        /// to per-entity `upsert_entity` if the batch rolls back.
+        fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize>;
         fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>>;
         fn entities_filtered(
             &self,
