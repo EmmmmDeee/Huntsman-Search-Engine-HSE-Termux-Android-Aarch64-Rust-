@@ -23,6 +23,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **CLI logs no longer corrupt `--output json` on stdout.** The tracing
+  subscriber used `tracing_subscriber::fmt()`, whose default writer is
+  **stdout** — so `hse scan … --output json > file.json` (and other piped
+  output) had INFO log lines prepended, making the result fail every JSON
+  parser. Surfaced by live execution of a `"Jordan Meyer"` scan, where the
+  captured stdout began with a tracing timestamp instead of `{`. Logs now go
+  to **stderr** (`.with_writer(std::io::stderr)`); stdout carries only command
+  output. New integration test `scan_json_stdout_is_clean_and_parseable`
+  (tests/cli_io.rs) spawns the binary and asserts stdout is clean JSON while
+  the per-module INFO line appears on stderr — it fails on the old writer.
 - **Two more byte-slice panics on untrusted input (sweep, round 2).**
   - `search_engines::generate_username_variants` produced its truncation
     variant with `lower[..lower.len()-1]`. The `>= 5` guard stops an underflow

@@ -303,11 +303,16 @@ pub enum Command {
 }
 
 pub async fn run() -> Result<()> {
+    // Logs go to stderr so that stdout carries only command output. This
+    // keeps `hse scan --output json > file.json` (and the `export` paths)
+    // machine-parseable — the default `fmt()` writer is stdout, which
+    // prepends tracing lines to the JSON and breaks every downstream parser.
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_target(false)
+        .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
