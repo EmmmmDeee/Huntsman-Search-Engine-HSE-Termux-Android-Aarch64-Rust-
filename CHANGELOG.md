@@ -12,6 +12,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`install.sh` auto-captures a full diagnosis.** On a successful build the
+  installer now runs `hse selftest` (offline 5-stage check) **and**
+  `hse doctor --bundle` (offline, redacted) and tees both into
+  `~/.cache/hse-install.log`. That single file therefore contains the env/arch
+  snapshot, the build output, the health check, and the diagnostic bundle —
+  zero extra steps for the user; paste one file to Claude Code. Both verifiers
+  are non-fatal to the install (the binary is built; a failed stage is reported
+  loudly), and the failure footer now points at `hse selftest` + `doctor
+  --bundle`.
+
 - **`hse selftest` — offline, deterministic install health check.** One command
   to run first on a fresh Termux device: it exercises the whole stack with **no
   network and no keys** — bundled SQLite open/query, the pure-Rust image codec

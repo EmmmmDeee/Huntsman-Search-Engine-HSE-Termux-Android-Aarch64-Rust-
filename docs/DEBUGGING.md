@@ -33,6 +33,12 @@ If the **install** broke (before the binary exists), share
 `~/.cache/hse-install.log` instead — `install.sh` writes a self-diagnosing
 snapshot (OS/arch/Termux version/paths/toolchain) to the top of it.
 
+**You usually don't even need to run anything:** on a successful build
+`install.sh` *automatically* runs `hse selftest` **and** `hse doctor --bundle`
+and tees both into `~/.cache/hse-install.log`. So that one file already
+contains the env snapshot, the build output, the 5-stage health check, and the
+full redacted diagnostic bundle — paste it and Claude Code has everything.
+
 ---
 
 ## Where the logs live

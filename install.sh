@@ -54,7 +54,7 @@ on_exit() {
         printf '\n%sInstallation failed (exit %d).%s\n' "$RED" "$rc" "$NC" >&2
         printf '  Full log: %s\n' "$LOG_FILE" >&2
         printf '  To get help fast, share that log with Claude Code. If the binary built,\n' >&2
-        printf '  a fuller redacted report is: %shse doctor --bundle%s\n' "$BOLD" "$NC" >&2
+        printf '  run %shse selftest%s (offline) and %shse doctor --bundle%s and share their output.\n' "$BOLD" "$NC" "$BOLD" "$NC" >&2
     fi
 }
 trap on_exit EXIT
@@ -466,12 +466,33 @@ fi
 step "Verifying installation"
 "$HSE_BIN_DIR/hse" --version
 echo
-"$HSE_BIN_DIR/hse" doctor
+
+# Offline, deterministic health check. Because all stdout is tee'd to the
+# install log, running it here means the very first artefact you can share
+# already contains a full per-stage diagnosis. Never fatal to the install —
+# the binary is built; a failed stage is reported loudly but the script still
+# completes so you (and Claude Code) can diagnose from the captured output.
+# The `if` condition disables `set -e` for the call, so a non-zero exit is
+# handled here rather than aborting the install.
+printf '%s── hse selftest (offline, no network) ──%s\n' "$CYAN" "$NC"
+if "$HSE_BIN_DIR/hse" selftest; then
+    ok "selftest passed — core pipeline is healthy on this device"
+else
+    log_warn "selftest reported a FAILURE — the per-stage report above pinpoints it."
+    log_warn "Share $LOG_FILE with Claude Code; the bundle below has more detail."
+fi
+echo
+
+# Full redacted, offline diagnostic bundle — appended to the install log (and
+# written to ~/.huntsman/hse-debug-report.txt) so one file has everything.
+printf '%s── hse doctor --bundle (offline, redacted) ──%s\n' "$CYAN" "$NC"
+"$HSE_BIN_DIR/hse" doctor --bundle || log_warn "doctor --bundle returned non-zero"
 
 # ─── Done ────────────────────────────────────────────────────────────────────
 echo
 printf '%s%sInstallation complete!%s\n\n' "$GREEN" "$BOLD" "$NC"
 printf '%sCLI quick start:%s\n' "$CYAN" "$NC"
+printf '  hse selftest                                        # offline health check (run first)\n'
 printf '  hse modules                                         # list available modules\n'
 printf '  hse scan --kind domain --value example.com -A       # auto-depth scan\n'
 printf '  hse scan --kind email --value foo@bar.com --depth 5 # max expansion\n'
