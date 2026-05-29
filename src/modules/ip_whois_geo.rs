@@ -18,7 +18,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::fetch_json;
+use crate::util::http::fetch_json_rotating;
 
 const SRC: &str = "ip_whois_geo";
 
@@ -77,8 +77,11 @@ impl Module for IpWhois {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // ipwho.is is keyless and per-IP throttled; on a 429/transport failure
+        // `fetch_json_rotating` spreads the retry across the proxy pool (keyed
+        // on "ipwho.is"). Empty pool → identical to `fetch_json`.
         let url = format!("https://ipwho.is/{}", target.value);
-        let data: Resp = fetch_json(&ctx.http, SRC, &url).await?;
+        let data: Resp = fetch_json_rotating(&ctx.http, SRC, &url).await?;
 
         if data.success == Some(false) {
             return Ok(ModuleResult::new());

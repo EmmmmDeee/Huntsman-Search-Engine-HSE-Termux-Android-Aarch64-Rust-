@@ -12,7 +12,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::fetch_json;
+use crate::util::http::fetch_json_rotating;
 
 const SRC: &str = "ip_geo";
 
@@ -87,11 +87,12 @@ impl Module for IpGeo {
             target.value
         );
 
-        // ip-api.com free tier rate-limits at 45 req/min and returns
-        // HTTP 429 with a JSON body when exceeded. `fetch_json` surfaces
-        // the body as a `module_error`, keeping rate-limit conditions
-        // visible (previous silent-empty behaviour hid them).
-        let data: IpApiResp = fetch_json(&ctx.http, SRC, &url).await?;
+        // ip-api.com free tier rate-limits at 45 req/min per IP. On a 429 (or
+        // transport failure) `fetch_json_rotating` retries across the validated
+        // proxy pool keyed on "ip-api.com", so each egress IP carries its own
+        // 45/min slice — N live proxies ≈ N× the quota. With an empty pool it
+        // behaves exactly like `fetch_json` (surfaces the 429 as a module_error).
+        let data: IpApiResp = fetch_json_rotating(&ctx.http, SRC, &url).await?;
 
         if data.status != "success" {
             return Ok(ModuleResult::new());

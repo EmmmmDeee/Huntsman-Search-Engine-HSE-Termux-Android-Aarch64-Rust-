@@ -29,11 +29,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
   Wired into **search engines** (each engine rotates across up to 4 egress IPs,
   resting any it gets CAPTCHA'd on, region-matched via `HUNTSMAN_REGION`)
-  replacing the old "always reuse `load_pool().first()`" path, and into the
-  **Nominatim** geocoder's freemium fallback via the new
-  `curl::fetch_rotating(resource, …)` helper. With an empty pool every `pick`
-  returns `None`, so callers fall back to a direct connection — byte-identical
-  to pre-rotation behaviour when no proxies are available.
+  replacing the old "always reuse `load_pool().first()`" path; the **Nominatim**
+  geocoder's freemium fallback via the new `curl::fetch_rotating(resource, …)`
+  helper; and the **reqwest keyless-freemium path** via
+  `http::fetch_json_rotating` — a strict superset of `fetch_json` that retries
+  across the pool on a 429/transport failure — adopted by `ip_geo` (ip-api.com,
+  45 req/min per IP) and `ip_whois_geo` (ipwho.is). With an empty pool every
+  `pick` returns `None`, so callers fall back to a direct connection —
+  byte-identical to pre-rotation behaviour when no proxies are available.
 
 ### Changed
 

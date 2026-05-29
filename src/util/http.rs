@@ -254,6 +254,78 @@ async fn fetch_json_inner<T: DeserializeOwned>(
     }
 }
 
+/// Keyless per-IP freemium GET-JSON with intelligent egress rotation.
+///
+/// A strict superset of [`fetch_json`]: identical success / error contract, but
+/// when the per-IP rate limit is hit (HTTP 429) or the default transport fails,
+/// the request is retried across the validated proxy pool via
+/// [`crate::util::proxy::global_router`] (keyed on the URL host), so the
+/// endpoint's per-IP quota is spread over many egress IPs — *N* live proxies ≈
+/// *N×* the free-tier ceiling. With an empty pool the rotation is a no-op and
+/// behaviour is byte-identical to [`fetch_json`].
+///
+/// For **keyless, per-IP-limited** endpoints only (ip-api.com's 45 req/min,
+/// ipwho.is, …). Keyed APIs rate-limit per key, not per IP, so they gain
+/// nothing here — they use [`fetch_keyed_json`] + the key pool instead.
+pub async fn fetch_json_rotating<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    module: &'static str,
+    url: &str,
+) -> Result<T> {
+    let resource = super::url_util::host_from_url(url).unwrap_or_else(|| module.to_string());
+    match client.get(url).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(|e| Error::module(module, e.to_string()))?;
+                scan_for_api_keys(&text);
+                return serde_json::from_str(&text)
+                    .map_err(|e| Error::module(module, e.to_string()));
+            }
+            // Per-IP rate limit → multiply the quota by rotating egress IPs.
+            if status.as_u16() == 429
+                && let Some(v) = rotating_curl_json::<T>(&resource, url).await
+            {
+                return Ok(v);
+            }
+            Err(Error::module(
+                module,
+                format!("HTTP {status}: {}", error_snippet(resp).await),
+            ))
+        }
+        Err(_) => {
+            // Transport failure (Termux TLS, dead link): rotate first, then the
+            // plain single-curl fallback `fetch_json` has always used.
+            if let Some(v) = rotating_curl_json::<T>(&resource, url).await {
+                return Ok(v);
+            }
+            super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS)
+                .await
+                .ok_or_else(|| Error::module(module, format!("request failed for {url}")))
+        }
+    }
+}
+
+/// Rotating curl GET → JSON for [`fetch_json_rotating`]. `None` when the pool is
+/// empty, every egress fails, or the body doesn't parse as `T`.
+async fn rotating_curl_json<T: DeserializeOwned>(resource: &str, url: &str) -> Option<T> {
+    let region = std::env::var("HUNTSMAN_REGION").ok();
+    let body = super::curl::fetch_rotating(
+        resource,
+        url,
+        crate::MODULE_TIMEOUT_MS,
+        super::curl::UA_MOBILE,
+        region.as_deref(),
+        4,
+    )
+    .await?;
+    scan_for_api_keys(&body);
+    serde_json::from_str(&body).ok()
+}
+
 /// Mask values for common credential query-param names inside an
 /// arbitrary text blob. Used by [`error_snippet`] before embedding
 /// upstream error bodies in module errors — many providers echo the
