@@ -61,6 +61,14 @@ pub mod str_util {
         s.chars().next().map(String::from).unwrap_or_default()
     }
 
+    /// Last Unicode scalar of `s` as an owned `String` (empty if `s` is
+    /// empty). Char-boundary-safe counterpart to `first_char`; replaces the
+    /// `&s[s.len()-1..]` byte-slice idiom, which panics on a multi-byte
+    /// trailing codepoint.
+    pub fn last_char(s: &str) -> String {
+        s.chars().next_back().map(String::from).unwrap_or_default()
+    }
+
     /// Upper-case the first character and keep the remainder unchanged.
     /// Char-boundary-safe replacement for `s[..1].to_uppercase() + &s[1..]`,
     /// which panics on a multi-byte leading codepoint.
@@ -91,6 +99,14 @@ pub mod str_util {
             assert_eq!(first_char("jordan"), "j");
             assert_eq!(first_char(""), "");
             assert_eq!(first_char("中文"), "中");
+        }
+
+        #[test]
+        fn last_char_is_codepoint_safe() {
+            assert_eq!(last_char("andré"), "é");
+            assert_eq!(last_char("jordan"), "n");
+            assert_eq!(last_char(""), "");
+            assert_eq!(last_char("中文"), "文");
         }
 
         #[test]

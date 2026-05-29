@@ -822,9 +822,14 @@ fn generate_username_variants(base: &str) -> Vec<String> {
         variants.push(format!("{lower}2"));
     }
 
-    // Truncation: jdespal → jdespa (off-by-one typos / platform limits)
+    // Truncation: jdespal → jdespa (off-by-one typos / platform limits).
+    // Drop the last *character* via `pop()`, not the last byte —
+    // `lower[..lower.len() - 1]` panics (and aborts under panic=abort) when
+    // the handle ends in a multi-byte codepoint, e.g. "andré".
     if lower.len() >= 5 {
-        variants.push(lower[..lower.len() - 1].to_string());
+        let mut truncated = lower.clone();
+        truncated.pop();
+        variants.push(truncated);
     }
 
     variants
@@ -2136,6 +2141,16 @@ mod tests {
         assert!(v.contains(&"jdespal1".to_string()));
         assert!(v.contains(&"jdespal2".to_string()));
         assert!(v.contains(&"jdespa".to_string()));
+    }
+
+    #[test]
+    fn username_variant_non_ascii_truncation_does_not_panic() {
+        // Regression: the truncation variant sliced `lower[..lower.len()-1]`,
+        // which panics (aborts under panic=abort) when the handle ends in a
+        // multi-byte codepoint. `pop()` drops the last char safely.
+        let v = generate_username_variants("andré");
+        assert!(v.contains(&"andr".to_string()), "char-safe truncation, got {v:?}");
+        assert!(v.iter().all(|s| !s.is_empty()));
     }
 
     #[test]

@@ -23,6 +23,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Two more byte-slice panics on untrusted input (sweep, round 2).**
+  - `search_engines::generate_username_variants` produced its truncation
+    variant with `lower[..lower.len()-1]`. The `>= 5` guard stops an underflow
+    but not a mid-codepoint slice, so a pivoted handle ending in a multi-byte
+    char (e.g. `andré`) aborted the binary. Now drops the last *character* via
+    `String::pop()`. Proven by execution: the regression test panics at
+    `mod.rs:830` on the old slice and passes on the fix.
+  - `oathnet_pro` password-hint redaction read `&pw[..1]` / `&pw[pw.len()-1..]`
+    on untrusted breach-data passwords (frequently non-ASCII). Now uses
+    char-safe `str_util::{first_char,last_char}`.
+  Adds the `str_util::last_char` helper (unit-tested). Regression test:
+  `username_variant_non_ascii_truncation_does_not_panic`.
 - **Swept the byte-slice panic class across the codebase.** Following the
   `name_to_username` fix, three more sites sliced strings on raw byte indices
   that are not guaranteed char boundaries, each panicking — and under

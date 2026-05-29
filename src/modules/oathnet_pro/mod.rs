@@ -569,11 +569,14 @@ fn extract_stealer_entities(
     if let Some(pw) = val_str(item, "password") {
         ev = ev.with_attr("password", &pw);
         if pw.contains("UPGRADE_TO_SEE") && pw.len() >= 3 {
-            let first = &pw[..1];
-            let last = &pw[pw.len() - 1..];
+            // Char-safe first/last hint: breach passwords are untrusted and
+            // frequently non-ASCII, so `&pw[..1]` / `&pw[pw.len()-1..]` would
+            // slice mid-codepoint and abort the binary under panic=abort.
+            let first = crate::util::str_util::first_char(&pw);
+            let last = crate::util::str_util::last_char(&pw);
             ev = ev
-                .with_attr("password_hint_first", first)
-                .with_attr("password_hint_last", last)
+                .with_attr("password_hint_first", &first)
+                .with_attr("password_hint_last", &last)
                 .with_attr("password_redacted", "true");
         }
     }
