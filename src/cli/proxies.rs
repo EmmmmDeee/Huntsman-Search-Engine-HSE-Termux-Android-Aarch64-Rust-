@@ -11,7 +11,7 @@
 use clap::Subcommand;
 
 use crate::core::error::Result;
-use crate::util::proxy::{self, Grade, Proxy};
+use crate::util::proxy::{self, Grade, Proxy, ProxyType};
 
 #[derive(Subcommand)]
 pub enum ProxiesAction {
@@ -24,6 +24,9 @@ pub enum ProxiesAction {
         /// Keep only proxies of at least this anonymity grade.
         #[arg(long, value_parser = ["elite", "anonymous", "any"], default_value = "any")]
         grade: String,
+        /// Keep only proxies of this infrastructure type (by ASN).
+        #[arg(long, value_parser = ["mobile", "residential", "datacenter", "any"], default_value = "any")]
+        r#type: String,
         /// Keep only proxies from this ISO country code (e.g. `AU`, `US`).
         #[arg(long)]
         country: Option<String>,
@@ -37,8 +40,9 @@ pub(super) async fn cmd_proxies(action: ProxiesAction) -> Result<()> {
         ProxiesAction::Refresh {
             max,
             grade,
+            r#type,
             country,
-        } => refresh(max, &grade, country.as_deref()).await,
+        } => refresh(max, &grade, &r#type, country.as_deref()).await,
         ProxiesAction::List => {
             list();
             Ok(())
@@ -46,14 +50,19 @@ pub(super) async fn cmd_proxies(action: ProxiesAction) -> Result<()> {
     }
 }
 
-async fn refresh(max: usize, grade: &str, country: Option<&str>) -> Result<()> {
-    println!("Retrieving + validating + grading proxies (up to {max} candidates, network-bound)…");
+async fn refresh(max: usize, grade: &str, ty: &str, country: Option<&str>) -> Result<()> {
+    println!(
+        "Retrieving + validating + grading + typing proxies (up to {max} candidates, network-bound)…"
+    );
     let mut proxies = proxy::retrieve(max).await;
     let harvested = proxies.len();
 
-    // High-yield filters: anonymity grade floor + optional country.
+    // High-yield filters: anonymity grade floor + infrastructure type + country.
     if grade != "any" {
         proxies.retain(|p| meets_grade(p, grade));
+    }
+    if ty != "any" {
+        proxies.retain(|p| p.proxy_type.map(ProxyType::as_str) == Some(ty));
     }
     if let Some(cc) = country {
         let cc = cc.to_uppercase();
@@ -62,7 +71,7 @@ async fn refresh(max: usize, grade: &str, country: Option<&str>) -> Result<()> {
 
     if proxies.is_empty() {
         println!(
-            "No proxies passed (validated {harvested}, then grade='{grade}'{}). Pool left unchanged.",
+            "No proxies passed (validated {harvested}, then grade='{grade}', type='{ty}'{}). Pool left unchanged.",
             country
                 .map(|c| format!(", country={c}"))
                 .unwrap_or_default()
@@ -110,17 +119,18 @@ fn meets_grade(p: &Proxy, floor: &str) -> bool {
 
 fn print_table(proxies: &[Proxy]) {
     println!(
-        "  {:<24} {:<6} {:<11} {:<7} {:>10}",
-        "addr", "proto", "grade", "country", "latency"
+        "  {:<22} {:<10} {:<12} {:<4} {:>8}  org",
+        "addr", "grade", "type", "cc", "latency"
     );
     for p in proxies.iter().take(50) {
         println!(
-            "  {:<24} {:<6} {:<11} {:<7} {:>7} ms",
+            "  {:<22} {:<10} {:<12} {:<4} {:>5} ms  {}",
             p.addr,
-            p.proto,
             p.grade.map(Grade::as_str).unwrap_or("?"),
+            p.proxy_type.map(ProxyType::as_str).unwrap_or("?"),
             p.country.as_deref().unwrap_or("-"),
-            p.latency_ms
+            p.latency_ms,
+            p.org.as_deref().unwrap_or("")
         );
     }
     if proxies.len() > 50 {

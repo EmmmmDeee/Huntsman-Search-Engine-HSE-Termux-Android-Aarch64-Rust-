@@ -12,6 +12,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Proxy type classification (datacenter / residential / mobile).** The
+  retriever now determines each proxy's infrastructure type by **ASN
+  IP-intelligence** — the most accurate readily-available method: a single
+  batched `ip-api.com/batch` call (≤100 IPs, no per-proxy rate-limit) yields the
+  curated `hosting`/`mobile` flags plus ASN org, and `classify_type` maps them
+  (mobile → Mobile; hosting → Datacenter; neither → Residential, corroborated
+  against datacenter ASN-org keywords). The same call also fills an
+  authoritative country for *every* proxy (not just geonode's). High-yield
+  ordering is now grade → **type** (residential/mobile over datacenter) →
+  latency, so `HUNTSMAN_PROXY=auto` prefers least-blocked egress; `hse proxies
+  refresh --type <mobile|residential|datacenter>` filters, and `list` shows the
+  type + ASN org. Pure `classify_type` is unit-tested; pool JSON stays
+  backward-compatible.
+
 - **Regional search localisation (`HUNTSMAN_REGION`).** Search engines return
   different results by region; setting `HUNTSMAN_REGION` (e.g. `AU` or `au-en`)
   now localises every engine that exposes a safe locale parameter — Google

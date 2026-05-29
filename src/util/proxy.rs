@@ -42,6 +42,82 @@ impl Grade {
     }
 }
 
+/// Infrastructure type of a proxy's IP, by ASN/IP-intelligence. The strongest
+/// "high-yield" signal: **residential** and **mobile** egress is far less
+/// blocked than **datacenter** (which most free proxies are, and which anti-bot
+/// WAFs reject on sight).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyType {
+    Mobile,
+    Residential,
+    Datacenter,
+    Unknown,
+}
+
+impl ProxyType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mobile => "mobile",
+            Self::Residential => "residential",
+            Self::Datacenter => "datacenter",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// ASN-org substrings that mark a datacenter/hosting network — used to
+/// corroborate (or stand in for) the IP-intelligence `hosting` flag.
+const DATACENTER_ORG_HINTS: &[&str] = &[
+    "hosting",
+    "host",
+    "cloud",
+    "vps",
+    "server",
+    "data center",
+    "datacenter",
+    "colo",
+    "dedicated",
+    "ovh",
+    "amazon",
+    "aws",
+    "google",
+    "microsoft",
+    "azure",
+    "digitalocean",
+    "hetzner",
+    "vultr",
+    "linode",
+    "choopa",
+    "m247",
+    "leaseweb",
+    "contabo",
+    "scaleway",
+    "oracle",
+    "alibaba",
+    "tencent",
+    "gcore",
+];
+
+/// Classify an IP's infrastructure type. The curated `hosting`/`mobile` flags
+/// from IP-intelligence are authoritative; when both are false the IP is a
+/// residential/business ISP — corroborated against [`DATACENTER_ORG_HINTS`] to
+/// catch the rare mislabel. Pure — unit-tested without the network.
+pub fn classify_type(hosting: bool, mobile: bool, org: &str) -> ProxyType {
+    if mobile {
+        ProxyType::Mobile
+    } else if hosting {
+        ProxyType::Datacenter
+    } else {
+        let o = org.to_lowercase();
+        if DATACENTER_ORG_HINTS.iter().any(|k| o.contains(k)) {
+            ProxyType::Datacenter
+        } else {
+            ProxyType::Residential
+        }
+    }
+}
+
 /// A validated proxy entry.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Proxy {
@@ -51,9 +127,15 @@ pub struct Proxy {
     /// Anonymity grade; `None` when the echo response couldn't be classified.
     #[serde(default)]
     pub grade: Option<Grade>,
-    /// ISO country where the harvest source reported it; `None` otherwise.
+    /// ISO country (from IP-intelligence, else the harvest source).
     #[serde(default)]
     pub country: Option<String>,
+    /// Infrastructure type (datacenter / residential / mobile) by ASN.
+    #[serde(default)]
+    pub proxy_type: Option<ProxyType>,
+    /// ASN org / ISP name, for display and corroboration.
+    #[serde(default)]
+    pub org: Option<String>,
 }
 
 impl Proxy {
@@ -78,6 +160,17 @@ fn grade_rank(g: Option<Grade>) -> u8 {
         Some(Grade::Anonymous) => 1,
         None => 2,
         Some(Grade::Transparent) => 3,
+    }
+}
+
+/// Sort key: least-blocked infrastructure first (mobile < residential <
+/// unknown < datacenter) — the "high-yield range" ordering.
+fn type_rank(t: Option<ProxyType>) -> u8 {
+    match t {
+        Some(ProxyType::Mobile) => 0,
+        Some(ProxyType::Residential) => 1,
+        None | Some(ProxyType::Unknown) => 2,
+        Some(ProxyType::Datacenter) => 3,
     }
 }
 
@@ -243,6 +336,8 @@ pub async fn validate(addr: &str, real_ip: &str) -> Option<Proxy> {
         latency_ms,
         grade,
         country: None,
+        proxy_type: None, // filled by the batched classify step
+        org: None,
     })
 }
 
@@ -275,15 +370,97 @@ pub async fn retrieve(max_validate: usize) -> Vec<Proxy> {
             valid.push(proxy);
         }
     }
+    // Determine infrastructure type + authoritative country in one batched
+    // IP-intelligence call (best-effort).
+    classify_batch(&mut valid).await;
     sort_high_yield(&mut valid);
     valid
 }
 
-/// Order proxies best-first: anonymity grade, then latency.
+/// Enrich validated proxies with infrastructure **type** + authoritative
+/// **country** + ASN org via one batched IP-intelligence lookup
+/// (ip-api.com `/batch`, free, ≤100 IPs per call — so no per-proxy rate-limit).
+/// The curated `hosting`/`mobile` flags are the most accurate readily-available
+/// type signal. Best-effort: leaves fields untouched on any failure.
+async fn classify_batch(proxies: &mut [Proxy]) {
+    use std::collections::HashMap;
+    if proxies.is_empty() {
+        return;
+    }
+    // ip-result keyed by IP: (countryCode, type, org).
+    let mut info: HashMap<String, (Option<String>, ProxyType, Option<String>)> = HashMap::new();
+    let ips: Vec<String> = proxies
+        .iter()
+        .filter_map(|p| p.addr.split(':').next().map(str::to_string))
+        .collect();
+
+    for chunk in ips.chunks(100) {
+        let Ok(body) = serde_json::to_string(chunk) else {
+            continue;
+        };
+        let url =
+            "http://ip-api.com/batch?fields=status,countryCode,as,org,isp,hosting,mobile,query";
+        let Some(resp) = curl_post_json(url, &body).await else {
+            continue;
+        };
+        let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&resp) else {
+            continue;
+        };
+        for item in arr {
+            if item.get("status").and_then(|s| s.as_str()) != Some("success") {
+                continue;
+            }
+            let Some(ip) = item.get("query").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let hosting = item
+                .get("hosting")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let mobile = item
+                .get("mobile")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let org = item
+                .get("org")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .or_else(|| item.get("isp").and_then(|v| v.as_str()))
+                .or_else(|| item.get("as").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            let cc = item
+                .get("countryCode")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_uppercase);
+            let ty = classify_type(hosting, mobile, &org);
+            info.insert(ip.to_string(), (cc, ty, (!org.is_empty()).then_some(org)));
+        }
+    }
+
+    for p in proxies.iter_mut() {
+        if let Some(ip) = p.addr.split(':').next()
+            && let Some((cc, ty, org)) = info.get(ip)
+        {
+            if cc.is_some() {
+                p.country = cc.clone(); // ip-api country is authoritative
+            }
+            p.proxy_type = Some(*ty);
+            if p.org.is_none() {
+                p.org = org.clone();
+            }
+        }
+    }
+}
+
+/// Order proxies best-first: anonymity grade, then infrastructure type
+/// (residential/mobile over datacenter), then latency.
 pub fn sort_high_yield(proxies: &mut [Proxy]) {
     proxies.sort_by(|a, b| {
         grade_rank(a.grade)
             .cmp(&grade_rank(b.grade))
+            .then(type_rank(a.proxy_type).cmp(&type_rank(b.proxy_type)))
             .then(a.latency_ms.cmp(&b.latency_ms))
     });
 }
@@ -339,6 +516,33 @@ async fn curl_get(url: &str) -> Option<String> {
         .ok()?
         .ok()?;
 
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+/// POST a JSON `body` to `url` (no proxy), returning the response body.
+async fn curl_post_json(url: &str, body: &str) -> Option<String> {
+    let secs = 12u64.to_string();
+    let mut cmd = tokio::process::Command::new("curl");
+    cmd.args([
+        "-s",
+        "--max-time",
+        &secs,
+        "-H",
+        "Content-Type: application/json",
+        "-d",
+        body,
+        "--",
+        url,
+    ]);
+    cmd.kill_on_drop(true);
+
+    let output = tokio::time::timeout(Duration::from_secs(15), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -421,18 +625,63 @@ mod tests {
     }
 
     #[test]
-    fn pool_json_round_trips_with_grade_and_country() {
+    fn pool_json_round_trips_with_grade_country_and_type() {
         let proxies = vec![Proxy {
             addr: "1.2.3.4:8080".into(),
             proto: "http".into(),
             latency_ms: 100,
             grade: Some(Grade::Elite),
             country: Some("AU".into()),
+            proxy_type: Some(ProxyType::Residential),
+            org: Some("Telstra".into()),
         }];
         let json = serde_json::to_string(&proxies).unwrap();
         let back: Vec<Proxy> = serde_json::from_str(&json).unwrap();
         assert_eq!(back[0].grade, Some(Grade::Elite));
         assert_eq!(back[0].country.as_deref(), Some("AU"));
+        assert_eq!(back[0].proxy_type, Some(ProxyType::Residential));
+        assert_eq!(back[0].org.as_deref(), Some("Telstra"));
+    }
+
+    #[test]
+    fn classify_type_prefers_flags_then_org_keywords() {
+        // Curated flags are authoritative.
+        assert_eq!(classify_type(false, true, "Vodafone"), ProxyType::Mobile);
+        assert_eq!(
+            classify_type(true, false, "Amazon.com"),
+            ProxyType::Datacenter
+        );
+        assert_eq!(classify_type(true, true, "whatever"), ProxyType::Mobile); // mobile wins
+        // Neither flag set + ISP org → residential.
+        assert_eq!(
+            classify_type(false, false, "Telstra Internet"),
+            ProxyType::Residential
+        );
+        // Neither flag but org screams datacenter → corroborated as datacenter.
+        assert_eq!(
+            classify_type(false, false, "OVH SAS"),
+            ProxyType::Datacenter
+        );
+    }
+
+    #[test]
+    fn high_yield_prefers_residential_over_datacenter_at_equal_grade() {
+        let mk = |addr: &str, t: ProxyType, lat: u64| Proxy {
+            addr: addr.into(),
+            grade: Some(Grade::Elite),
+            proxy_type: Some(t),
+            latency_ms: lat,
+            ..Default::default()
+        };
+        let mut v = vec![
+            mk("dc", ProxyType::Datacenter, 10),
+            mk("res", ProxyType::Residential, 300),
+            mk("mob", ProxyType::Mobile, 500),
+        ];
+        sort_high_yield(&mut v);
+        let order: Vec<&str> = v.iter().map(|p| p.addr.as_str()).collect();
+        // Type beats latency at equal anonymity grade: mobile < residential < datacenter.
+        assert_eq!(order, ["mob", "res", "dc"]);
     }
 
     #[test]
