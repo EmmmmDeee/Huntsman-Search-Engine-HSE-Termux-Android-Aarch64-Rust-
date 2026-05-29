@@ -388,12 +388,20 @@ mod tests {
 
     // ── AU-002 ──────────────────────────────────────────────────────────
 
+    /// Build an entity that has been independently re-derived (corroborated),
+    /// so it passes the co-location rules' precision gate.
+    fn corroborated(kind: EntityKind, value: &str, conf: f64) -> Entity {
+        let mut e = Entity::new(kind, value, conf, "s");
+        e.corroboration = 2;
+        e
+    }
+
     #[test]
-    fn au002_fires_with_all_three_kinds() {
+    fn au002_fires_with_all_three_corroborated_kinds() {
         let entities = vec![
-            Entity::new(EntityKind::Email, "x@y.com", 0.9, "s"),
-            Entity::new(EntityKind::Username, "xuser", 0.8, "s"),
-            Entity::new(EntityKind::Phone, "+61400000000", 0.8, "s"),
+            corroborated(EntityKind::Email, "x@y.com", 0.9),
+            corroborated(EntityKind::Username, "xuser", 0.8),
+            corroborated(EntityKind::Phone, "+61400000000", 0.8),
         ];
         let r = rule_au_002_identity_cluster(&entities, "s", 0);
         assert_eq!(r.len(), 1);
@@ -404,10 +412,71 @@ mod tests {
     #[test]
     fn au002_no_fire_missing_kind() {
         let entities = vec![
-            Entity::new(EntityKind::Email, "x@y.com", 0.9, "s"),
-            Entity::new(EntityKind::Username, "xuser", 0.8, "s"),
+            corroborated(EntityKind::Email, "x@y.com", 0.9),
+            corroborated(EntityKind::Username, "xuser", 0.8),
         ];
         assert!(rule_au_002_identity_cluster(&entities, "s", 0).is_empty());
+    }
+
+    /// Precision regression: a breach-dump flood of single-source
+    /// (corroboration == 1) identifiers must NOT fire the CRITICAL identity
+    /// cluster, even though all three kinds are present in volume. This is the
+    /// exact false positive observed in the live full-API run.
+    #[test]
+    fn au002_no_fire_on_single_source_breach_dump() {
+        let mut entities = Vec::new();
+        for i in 0..50 {
+            entities.push(Entity::new(
+                EntityKind::Email,
+                &format!("user{i}@bank.com"),
+                0.7,
+                "s",
+            ));
+            entities.push(Entity::new(
+                EntityKind::Phone,
+                &format!("+1555000{i:04}"),
+                0.25,
+                "s",
+            ));
+        }
+        entities.push(Entity::new(EntityKind::Username, "someuser", 0.55, "s"));
+        assert!(
+            rule_au_002_identity_cluster(&entities, "s", 0).is_empty(),
+            "single-source breach dump must not satisfy the identity cluster",
+        );
+    }
+
+    // ── AU-018 (email ↔ location precision) ─────────────────────────────
+
+    #[test]
+    fn au018_fires_on_corroborated_email_and_location() {
+        let email = corroborated(EntityKind::Email, "jordan@example.com", 0.9);
+        let addr = corroborated(EntityKind::Address, "Brisbane, QLD", 0.8);
+        let r = rule_au_018_email_address_colocation(&[email, addr], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-018");
+    }
+
+    #[test]
+    fn au018_no_fire_on_single_source_dump() {
+        // Many single-source breach emails + geocoded addresses (corroboration
+        // 1) must not register as an identity↔location linkage.
+        let mut entities = Vec::new();
+        for i in 0..20 {
+            entities.push(Entity::new(
+                EntityKind::Email,
+                &format!("u{i}@bank.com"),
+                0.7,
+                "s",
+            ));
+            entities.push(Entity::new(
+                EntityKind::Address,
+                &format!("{i} Main St, Helena, MT"),
+                0.65,
+                "s",
+            ));
+        }
+        assert!(rule_au_018_email_address_colocation(&entities, "s", 0).is_empty());
     }
 
     // ── AU-003 ──────────────────────────────────────────────────────────

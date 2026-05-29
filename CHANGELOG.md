@@ -10,6 +10,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **Correlation precision: co-location / cluster rules now require
+  corroboration.** New `Entity::is_corroborated()` (`corroboration >= 2`, i.e.
+  independently re-derived by ≥2 module runs) gates the aggregation rules
+  **AU-002** (identity cluster, CRITICAL), **AU-018** (email↔location, HIGH),
+  **AU-020** (person cluster), and **AU-030** (geo convergence). Motivation,
+  from live testing: a high-recall breach query on a common name returns entire
+  breach corpora that merely co-occur with the query tokens — hundreds of
+  single-source (`corroboration == 1`) emails/phones/addresses that are not the
+  subject's. Those previously satisfied the one-subject co-location rules and
+  manufactured a CRITICAL identity-cluster + HIGH location-linkage alert out of
+  pure recall noise. Against the captured full-API corpus the gate drops 92
+  breach-dump emails to 0 and both false positives stop firing, while genuine
+  multi-source subject entities still pass. `Entity::distinct_source_count()`
+  is also added (and explicitly *not* used as the attribution signal, since
+  evidence-source count is inflated by in-place enrichment passes such as
+  `geo_normalize`).
+
 ### Fixed
 
 - **HTTP client now honours the system trust store.** `util::http::build_client`

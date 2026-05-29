@@ -8,6 +8,20 @@ fn entities_of_kind(entities: &[Entity], kind: EntityKind) -> Vec<&Entity> {
     entities.iter().filter(|e| e.kind == kind).collect()
 }
 
+/// Entities of a kind that are **attributable to the subject** — i.e.
+/// independently re-derived (`is_corroborated`). This is the precision gate
+/// for the co-location / cluster rules: it strips single-source, high-recall
+/// breach-dump records (common-name queries return entire breach corpora that
+/// merely co-occur with the query tokens) so they can't satisfy aggregation
+/// rules and fire false-positive identity/location alerts. Genuine subject
+/// entities, re-derived across modules, still pass.
+fn corroborated_of_kind(entities: &[Entity], kind: EntityKind) -> Vec<&Entity> {
+    entities
+        .iter()
+        .filter(|e| e.kind == kind && e.is_corroborated())
+        .collect()
+}
+
 fn tagged_matching_sources<'a>(entity: &'a Entity, allowed: &[&str]) -> HashSet<&'a str> {
     entity
         .evidence_sources()
@@ -61,9 +75,13 @@ pub(super) fn rule_au_002_identity_cluster(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let emails = entities_of_kind(entities, EntityKind::Email);
-    let usernames = entities_of_kind(entities, EntityKind::Username);
-    let phones = entities_of_kind(entities, EntityKind::Phone);
+    // Precision gate: only corroborated (independently re-derived) identifiers
+    // count. A high-recall breach query on a common name returns hundreds of
+    // single-source email/phone records that are not the subject's; counting
+    // them here manufactured a CRITICAL false positive in live testing.
+    let emails = corroborated_of_kind(entities, EntityKind::Email);
+    let usernames = corroborated_of_kind(entities, EntityKind::Username);
+    let phones = corroborated_of_kind(entities, EntityKind::Phone);
 
     if emails.is_empty() || usernames.is_empty() || phones.is_empty() {
         return Vec::new();
@@ -78,7 +96,7 @@ pub(super) fn rule_au_002_identity_cluster(
         rule_name: "Identity cluster".into(),
         severity: Severity::Critical,
         description: format!(
-            "Email + Username + Phone co-located: {} email(s), {} username(s), {} phone(s)",
+            "Corroborated Email + Username + Phone co-located: {} email(s), {} username(s), {} phone(s)",
             emails.len(),
             usernames.len(),
             phones.len()
@@ -639,14 +657,20 @@ pub(super) fn rule_au_018_email_address_colocation(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    // Both sides must be corroborated: a breach dump supplies hundreds of
+    // single-source emails and (geocoded) addresses that are co-located only
+    // in the sense of sharing one bulk record — not a real identity↔location
+    // linkage. Requiring re-derivation removes that false positive.
     let emails: Vec<&Entity> = entities_of_kind(entities, EntityKind::Email)
         .into_iter()
-        .filter(|e| e.confidence >= 0.60)
+        .filter(|e| e.confidence >= 0.60 && e.is_corroborated())
         .collect();
     let addresses: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
-            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates) && e.confidence >= 0.50
+            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)
+                && e.confidence >= 0.50
+                && e.is_corroborated()
         })
         .collect();
     if emails.is_empty() || addresses.is_empty() {
@@ -752,9 +776,12 @@ pub(super) fn rule_au_020_person_entity_cluster(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    // Corroborated persons only — a breach dump can list 100+ unrelated names
+    // at corroboration 1, which would otherwise spam a "disambiguation needed"
+    // alert. Genuine search/social-confirmed persons survive the gate.
     let persons: Vec<&Entity> = entities_of_kind(entities, EntityKind::Person)
         .into_iter()
-        .filter(|e| e.confidence >= 0.50)
+        .filter(|e| e.confidence >= 0.50 && e.is_corroborated())
         .collect();
     if persons.len() < 2 {
         return Vec::new();
@@ -1089,10 +1116,17 @@ pub(super) fn rule_au_030_geo_convergence_score(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    // Corroborated geo only: bulk-breach addresses (geocoded in-place by
+    // geo_normalize) carry two evidence rows but corroboration 1, so they are
+    // single observations, not multi-source convergence. Gating on
+    // re-derivation stops a breach dump's scattered US addresses from
+    // masquerading as a high-confidence location consensus.
     let geo_entities: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
-            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates) && e.confidence >= 0.40
+            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)
+                && e.confidence >= 0.40
+                && e.is_corroborated()
         })
         .collect();
 

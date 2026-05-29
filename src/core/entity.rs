@@ -289,6 +289,42 @@ impl Entity {
         self.evidence.iter().any(|ev| ev.source == source)
     }
 
+    /// Number of distinct evidence sources on this entity.
+    ///
+    /// Note: this counts *evidence rows*, which include in-place enrichment
+    /// passes (e.g. `geo_normalize` geocoding an address another module
+    /// found). It therefore over-counts independent observation and must
+    /// **not** be used as the attribution signal — use [`is_corroborated`]
+    /// for that.
+    ///
+    /// [`is_corroborated`]: Self::is_corroborated
+    pub fn distinct_source_count(&self) -> usize {
+        self.evidence_sources().len()
+    }
+
+    /// True when the entity has been **independently re-derived** by at least
+    /// two module runs (`corroboration >= 2`).
+    ///
+    /// # Why corroboration, not source count
+    ///
+    /// `corroboration` only increments when two modules independently produce
+    /// the *same* deterministic UID and the engine merges them — a genuine
+    /// second observation. Evidence-source count, by contrast, also rises from
+    /// enrichment passes that decorate an entity another module discovered
+    /// (geocoding, locale tagging), so it cannot distinguish "two sources
+    /// agreed" from "one source, then we annotated it".
+    ///
+    /// This is the precision gate behind the co-location / cluster rules: a
+    /// high-recall breach query on a common name floods the corpus with
+    /// single-source (`corroboration == 1`) records that are not attributable
+    /// to the subject. Requiring corroboration keeps those records from
+    /// satisfying aggregation rules and manufacturing false-positive alerts,
+    /// while genuine subject entities — re-derived across modules — still pass.
+    #[inline]
+    pub fn is_corroborated(&self) -> bool {
+        self.corroboration >= 2
+    }
+
     // ── GREATEST-semantics merge ─────────────────────────────────────────────
 
     /// Merge `other` into `self` using GREATEST-semantics.
@@ -545,6 +581,42 @@ mod tests {
     // helpers
     fn email(v: &str) -> Entity {
         Entity::new(EntityKind::Email, v, 0.6, "scan-test")
+    }
+
+    // ── Attributability (is_corroborated / distinct_source_count) ────────────
+
+    #[test]
+    fn fresh_entity_is_not_corroborated() {
+        // corroboration starts at 1 — a single observation.
+        assert!(!email("a@b.com").is_corroborated());
+    }
+
+    #[test]
+    fn corroboration_two_is_corroborated() {
+        let mut e = email("a@b.com");
+        e.corroboration = 2;
+        assert!(e.is_corroborated());
+    }
+
+    #[test]
+    fn merge_makes_entity_corroborated() {
+        // Two independent module observations of the same UID → corroborated.
+        let mut a = email("a@b.com");
+        let b = email("a@b.com");
+        assert!(!a.is_corroborated());
+        a.merge(b);
+        assert!(a.is_corroborated());
+    }
+
+    #[test]
+    fn distinct_source_count_counts_unique_sources_not_rows() {
+        let mut e = email("a@b.com");
+        e.add_evidence(Evidence::new("mod_a", "found"));
+        e.add_evidence(Evidence::new("mod_a", "found again")); // same source
+        e.add_evidence(Evidence::new("mod_b", "geocoded"));
+        assert_eq!(e.distinct_source_count(), 2);
+        // Source count rising via enrichment does NOT imply corroboration.
+        assert!(!e.is_corroborated());
     }
 
     // ── UID determinism ──────────────────────────────────────────────────────
