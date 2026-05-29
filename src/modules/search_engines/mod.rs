@@ -1566,15 +1566,15 @@ mod tests {
 
     #[test]
     fn build_queries_fullname_three_parts_generates_username_variants() {
-        let t = Target::new(TargetKind::FullName, "Jordan Leigh Meyers");
+        let t = Target::new(TargetKind::FullName, "Jane Leigh Public");
         let q = build_queries(&t);
         assert!(
             q.iter()
-                .any(|qr| qr.contains("jordanmeyers") || qr.contains("jleighmeyers")),
+                .any(|qr| qr.contains("janepublic") || qr.contains("jleighpublic")),
             "should generate username variants from 3-part name: {q:?}"
         );
         assert!(
-            q.iter().any(|qr| qr.contains("\"Jordan Meyers\"")),
+            q.iter().any(|qr| qr.contains("\"Jane Public\"")),
             "should search first+last without middle: {q:?}"
         );
         assert!(

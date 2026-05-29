@@ -7,6 +7,7 @@ pub mod correlator;
 pub mod dependency;
 pub mod engine;
 pub mod entity;
+pub mod exposure;
 pub mod gexf;
 pub mod live;
 pub mod module;

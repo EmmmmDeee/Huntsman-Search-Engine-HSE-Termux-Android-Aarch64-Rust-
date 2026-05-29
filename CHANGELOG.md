@@ -23,6 +23,30 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`hse exposure` — self-exposure assessment (defensive inversion of `scan`).**
+  Loads a stored scan's entities and reports how exposed the subject is, with
+  concrete remediation per finding and a single 0–100 exposure score (higher =
+  more exposed) plus an A–F grade. Built for the self-footprint use case: scan
+  your own identifiers, then shrink what's findable, re-run, watch the score
+  fall. The analysis (`core::exposure`) is pure, network-free, and
+  deterministic; `--redact` masks identifier values so a report can be shared
+  without re-exposing the data it is about. Findings cover surfaced
+  credentials/secrets (CRITICAL), breached vs merely-discoverable email,
+  inferable physical location, phone (SIM-swap), username cross-platform
+  correlation, hardware identifiers, IP, and infrastructure footprint.
+
+### Security / privacy
+
+- **Removed committed real-person intelligence artifacts.** Deleted
+  `DOSSIER_Jordan_Leigh_Meyer.md`, `DOSSIER_OSINT_Service_Usernames.md`, and the
+  two large `scan_*.json` dumps from the tree — these contained PII about real
+  individuals (home location, live account status, carrier IPs, breach history)
+  and have no place in a public repo. `.gitignore` now blocks `DOSSIER_*.md`,
+  `scan_*.json`, and exposure-report patterns so scan output stays in `$HOME` as
+  SECURITY.md requires. **Note:** these files remain in upstream git history;
+  treat the data in them as already-exposed (rotate/monitor accordingly) and
+  purge history separately if required.
+
 - **Per-module cost telemetry in the dossier.** `hse scan --output dossier`
   now shows each module's cost tier (`free` / `key` / `paid`) in the "modules
   ranked by yield" table and flags keyed/paid modules that yielded nothing

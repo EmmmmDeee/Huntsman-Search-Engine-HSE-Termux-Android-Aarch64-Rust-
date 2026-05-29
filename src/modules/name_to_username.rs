@@ -132,15 +132,15 @@ mod tests {
 
     #[test]
     fn three_part_name_includes_middle() {
-        let parts = parse_name_parts("Jordan Leigh Meyer");
+        let parts = parse_name_parts("Jane Leigh Public");
         let usernames = derive_usernames(&parts);
-        assert!(usernames.contains(&"jordanlmeyer".to_string()));
-        assert!(usernames.contains(&"jlmeyer".to_string()));
+        assert!(usernames.contains(&"janelpublic".to_string()));
+        assert!(usernames.contains(&"jlpublic".to_string()));
     }
 
     #[test]
     fn single_word_returns_empty() {
-        assert!(parse_name_parts("Jordan").is_empty());
+        assert!(parse_name_parts("Jane").is_empty());
     }
 
     #[test]

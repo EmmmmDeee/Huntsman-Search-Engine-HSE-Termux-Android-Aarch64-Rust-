@@ -7,6 +7,7 @@
 
 mod doctor;
 mod export;
+mod exposure;
 mod keys_cmd;
 mod live;
 mod provision;
@@ -276,6 +277,25 @@ pub enum Command {
         #[arg(long)]
         free_only: bool,
     },
+    /// Self-exposure assessment — the defensive inversion of `scan`.
+    ///
+    /// Loads a previous scan's entities and reports how exposed the
+    /// subject is, with concrete remediation per finding and a single
+    /// 0–100 exposure score (higher = more exposed). Intended for the
+    /// self-footprint use case: scan your own identifiers, then shrink
+    /// what's findable. Output is local-only; `--redact` masks
+    /// identifier values so the report can be shared safely.
+    Exposure {
+        /// Scan ID (or `latest` for the most-recent completed scan).
+        #[arg(short, long, default_value = "latest")]
+        scan_id: String,
+        /// Output format: table | json. Default `table`.
+        #[arg(short, long, default_value = "table")]
+        output: String,
+        /// Mask identifier values in the output (collection-limitation).
+        #[arg(long)]
+        redact: bool,
+    },
     /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report.
     ///
     /// JSON           — `[{ kind, value, ... }, ...]` flat entity list
@@ -409,6 +429,18 @@ pub async fn run() -> Result<()> {
             format,
             out,
         } => export::cmd_export(scan_id, format, out).await,
+        Command::Exposure {
+            scan_id,
+            output,
+            redact,
+        } => {
+            exposure::cmd_exposure(exposure::ExposureCmd {
+                scan_id,
+                output,
+                redact,
+            })
+            .await
+        }
     }
 }
 

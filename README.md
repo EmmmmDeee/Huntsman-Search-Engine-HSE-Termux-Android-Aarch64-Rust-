@@ -51,11 +51,12 @@ for all install paths and Termux quirks.
 ```bash
 hse doctor                                                  # verify environment
 hse modules                                                 # list all 60+ modules
-hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
+hse scan --kind name --value "Jane Q. Public" --depth 2     # person scan with expansion
 hse scan --kind domain --value example.com --depth 2        # domain recon
 hse scan --kind email --value user@example.com --free-only  # email pivot (free only)
 hse scan --kind ip --value 1.1.1.1                          # IP geolocation
 hse scan --kind domain --value example.com --output json    # machine-readable output
+hse exposure --scan-id latest --redact                      # self-footprint exposure report
 hse serve                                                   # Web UI → http://127.0.0.1:8080
 hse live --kind domain --value example.com --interval 60    # continuous monitoring
 ```
@@ -69,7 +70,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 | Email | `--kind email` | `user@example.com` | 34 |
 | Username | `--kind username` | `johndoe` | 13 |
 | Phone | `--kind phone` | `+61400000000` | 8 |
-| Full Name | `--kind name` | `Jordan Leigh Meyers` | 6 |
+| Full Name | `--kind name` | `Jane Q. Public` | 6 |
 | IP Address | `--kind ip` | `1.1.1.1` | 33 |
 | Domain | `--kind domain` | `example.com` | 39 |
 | ASN | `--kind asn` | `AS13335` | 1 |
@@ -167,10 +168,10 @@ extraction from search results.
 ## Autonomous Expansion
 
 ```bash
-hse scan --kind name --value "Jordan Leigh Meyers" --depth 2
+hse scan --kind name --value "Jane Q. Public" --depth 2
 ```
 
-Round 0 (seed): `"Jordan Leigh Meyers"` dispatched to all accepting modules.
+Round 0 (seed): `"Jane Q. Public"` dispatched to all accepting modules.
 Round 1: High-confidence entities (C_eff ≥ 0.75) become new targets.
 Round 2: Discovered IPs → geo modules → coordinates → address.
 

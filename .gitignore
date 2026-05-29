@@ -17,3 +17,13 @@
 *.db-shm
 .huntsman.env
 .claude/worktrees/
+
+# Scan output and intelligence artifacts — these contain PII about real
+# subjects and must never be committed to a public (or any shared) repo.
+# Treat scan output as confidential to the authorised investigation, per
+# SECURITY.md. Keep it in $HOME, export it locally, but keep it out of git.
+DOSSIER_*.md
+scan_*.json
+*.dossier.json
+*_dossier.md
+exposure_report_*.json
