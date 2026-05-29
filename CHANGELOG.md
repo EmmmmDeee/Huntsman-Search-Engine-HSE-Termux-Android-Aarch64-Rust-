@@ -23,6 +23,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`opencorporates` treats auth failures as empty, not as module errors.**
+  OpenCorporates retired its keyless free tier — the search endpoint now
+  returns `401 Invalid Api Token` without a token (confirmed live). The module
+  only soft-handled 404/429 and surfaced every other non-2xx as an error, so a
+  keyless `name`/`org`/`abn` scan logged a spurious `module error` and inflated
+  `modules_errored` on every run. 401/403 now degrade to an empty result (an
+  expected "needs key" outcome), via a unit-tested `status_is_soft_empty`
+  classifier; the stale "free tier is generous" doc note is corrected.
+  Regression test `auth_and_no_match_statuses_are_soft_empty` fails on the old
+  404/429-only behaviour and passes on the fix.
 - **CLI logs no longer corrupt `--output json` on stdout.** The tracing
   subscriber used `tracing_subscriber::fmt()`, whose default writer is
   **stdout** — so `hse scan … --output json > file.json` (and other piped

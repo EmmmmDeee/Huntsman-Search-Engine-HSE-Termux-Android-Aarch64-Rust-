@@ -1,7 +1,10 @@
 //! OpenCorporates — Australian company director and shell-company lookup.
 //!
 //! Endpoint: `GET https://api.opencorporates.com/v0.4/companies/search?q={name}&jurisdiction_code=au`
-//! Auth:     Optional API Token (`HUNTSMAN_OPENCORP_KEY`). Free tier is generous.
+//! Auth:     API Token (`HUNTSMAN_OPENCORP_KEY`). As of 2026 the keyless free
+//!           tier returns `401 Invalid Api Token`, so without a token the
+//!           endpoint yields no data — that 401/403 is treated as an empty
+//!           result, not a module error (an expected "needs key" condition).
 //!
 //! Cross-references company names, directors, and registration details
 //! against the global OpenCorporates dataset with Australian jurisdiction focus.
@@ -112,13 +115,15 @@ impl Module for OpenCorporates {
             .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         let status = resp.status();
-        if status.as_u16() == 404 {
-            return Ok(ModuleResult::new());
-        }
-        if status.as_u16() == 429 {
-            return Ok(ModuleResult::new());
-        }
         if !status.is_success() {
+            // 401/403 (auth required — the keyless free tier is gone), 404 (no
+            // match), and 429 (rate limited) are expected, non-fault outcomes:
+            // degrade to an empty result instead of inflating modules_errored
+            // and logging a WARN on every keyless name/org/abn scan. Any other
+            // status is a genuine error worth surfacing.
+            if status_is_soft_empty(status.as_u16()) {
+                return Ok(ModuleResult::new());
+            }
             return Err(Error::module(SRC, format!("HTTP {status}")));
         }
 
@@ -218,9 +223,31 @@ impl Module for OpenCorporates {
     }
 }
 
+/// Non-2xx statuses that are expected, non-fault outcomes and should degrade
+/// to an empty result rather than a module error:
+///   * 401 / 403 — auth required (the keyless free tier returns 401 as of 2026)
+///   * 404       — no company matched the query
+///   * 429       — rate limited
+fn status_is_soft_empty(code: u16) -> bool {
+    matches!(code, 401 | 403 | 404 | 429)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_and_no_match_statuses_are_soft_empty() {
+        // 401 is what the keyless free tier returns now — must not be a fault.
+        assert!(status_is_soft_empty(401));
+        assert!(status_is_soft_empty(403));
+        assert!(status_is_soft_empty(404));
+        assert!(status_is_soft_empty(429));
+        // Real server faults must still surface as errors.
+        assert!(!status_is_soft_empty(500));
+        assert!(!status_is_soft_empty(502));
+        assert!(!status_is_soft_empty(400));
+    }
 
     #[test]
     fn accepts_org_and_fullname() {
