@@ -1178,7 +1178,10 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
         } else {
             url_matches_target(&r.url, &terms)
         };
-        if url_relevant && seen_domains.insert(format!("@url:{}", canonicalize_url(&r.url))) {
+        if url_relevant
+            && !is_directory_url(&r.url)
+            && seen_domains.insert(format!("@url:{}", canonicalize_url(&r.url)))
+        {
             let mut e = Entity::new(EntityKind::Url, &r.url, 0.50, scan_id);
             e.tag("search-discovered");
             e.add_evidence(build_search_evidence(r));
@@ -1332,6 +1335,27 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_urls_rejected() {
+        // Live "Jordan Meyer" false-profile listings.
+        assert!(is_directory_url(
+            "https://www.linkedin.com/pub/dir/Jordan/Meyer"
+        ));
+        assert!(is_directory_url(
+            "https://www.instagram.com/popular/jordan-meyer-golf"
+        ));
+        assert!(is_directory_url(
+            "https://site.com/people-search/jordan-meyer"
+        ));
+        // Real profile pages are not directories.
+        assert!(!is_directory_url(
+            "https://www.linkedin.com/in/jordandmeyer"
+        ));
+        assert!(!is_directory_url(
+            "https://www.instagram.com/jordanmeyermusic"
+        ));
+    }
 
     #[test]
     fn url_matches_name_rejects_lone_given_name() {

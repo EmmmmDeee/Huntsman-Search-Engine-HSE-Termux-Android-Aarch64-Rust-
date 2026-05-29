@@ -450,6 +450,26 @@ pub(super) fn url_matches_target(url: &str, terms: &[String]) -> bool {
         .any(|w| path.contains(w.as_str()))
 }
 
+/// True for search / directory / listing URLs that aren't a specific person
+/// page — LinkedIn `/pub/dir/` disambiguation listings, Instagram `/popular/`
+/// & `/explore/`, generic `/search` results. They match a name in-path (and so
+/// pass the relevance gate) but enumerate many people, not the subject.
+/// Live "Jordan Meyer" run surfaced `linkedin.com/pub/dir/Jordan/Meyer` and
+/// `instagram.com/popular/...` as false "profile" signal.
+pub(super) fn is_directory_url(url: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "/pub/dir/",
+        "/popular/",
+        "/explore/",
+        "/dir/",
+        "/search?",
+        "/search/",
+        "/people-search",
+    ];
+    let l = url.to_lowercase();
+    MARKERS.iter().any(|m| l.contains(m))
+}
+
 /// Relevance gate for a person-name seed: the URL path must contain the
 /// **surname** (the distinctive term, taken as the last name token) or at
 /// least two distinct name terms. A lone common-given-name match — `/JORDAN`
