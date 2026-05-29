@@ -51,7 +51,7 @@ property regresses.
 | 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 35 rules (incl. **graph-aware AU-031/AU-032/AU-034** that walk the edges), **and first-class typed `Relation` edges** (structural + lineage + geo co-location + DNS resolution + WHOIS registration + image similarity + stealer co-occurrence); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
 | 2 | **Discovery loops / adaptive pivoting** | `run_expansion`: depth-bounded DFS with ROI saturation-pruning, top-K gating, adaptive-depth termination, 4 expansion strategies | `engine.rs:341-510`, `core/roi.rs`, `core/scan.rs` |
 | 3 | **Code quality / static+dynamic verification** | CI: `fmt --check`, `check --locked`, `clippy -D warnings`, `test --all`, MSRV 1.88, shellcheck | `.github/workflows/ci.yml` |
-| 3 | **Resilience / regression testing** | 1,343 tests green; per-module timeout; `panic = "abort"`; offline `hse selftest` (5-stage pipeline health check) | `tests/`, `engine.rs:752`, `Cargo.toml:64`, `cli/selftest.rs` |
+| 3 | **Resilience / regression testing** | 1,346 tests green; per-module timeout; `panic = "abort"`; offline `hse selftest` (5-stage health check); `tests/perf.rs` complexity gate + `benches/pipeline.rs` offline timing harness | `tests/`, `engine.rs:752`, `Cargo.toml:64`, `cli/selftest.rs`, `benches/` |
 | 3 | **Hardening / deterministic execution** | SSRF preflight gate; private-IP/local-domain rejection; credential & key redaction; **no LLM/fuzzy** in correlator (open math only) | `engine.rs:1044-1141`, `SECURITY.md`, `core/correlator/` |
 
 ---
@@ -570,10 +570,18 @@ disturbing the invariants above.
   semantics (partial persist → Complete-with-error; nothing persisted → Failed)
   are preserved. `StoragePort::upsert_entities_batch` now takes `&[Entity]` so
   the caller keeps ownership for the fallback.
+- ✅ **Done (measurement).** `benches/pipeline.rs` is an offline, deterministic
+  timing harness over the real stages (relation builders, batched persistence,
+  correlator) reporting per-stage medians, throughput, and peak RSS; baseline +
+  methodology in `benches/BASELINE.md`. `tests/perf.rs` hard-gates the
+  deterministic complexity invariants (star-not-mesh, closest-parent-only) plus
+  a generous catastrophe ceiling, so regressions fail CI without flaking on
+  wall-time. Reference: full 6-builder graph build ≈1.5 ms / ~300k entities·s⁻¹,
+  peak RSS ≈8 MiB on the dev host (record on-device aarch64 numbers next).
 - _Remaining:_ `entity_map` is `HashMap<String, Entity>` keyed by 64-char hex
   UID. Interning UIDs (or keying by the raw 32-byte digest) would cut
-  hashing/allocation on large scans. Measure first with a representative
-  `--depth 3` scan.
+  hashing/allocation on large scans — the harness above is now the tool to
+  prove it before/after.
 
 **P4 — observability**
 - ✅ **Done.** The `dossier` "modules ranked by yield" table now prints each

@@ -12,6 +12,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Performance benchmark harness + CI regression gate.** `benches/pipeline.rs`
+  (`cargo bench --bench pipeline`, dependency-free, `harness = false`) drives a
+  deterministic synthetic workload through the **real** stages — all six
+  relation builders, batched entity/relation persistence, and the 35-rule
+  correlator — and prints per-stage median timing, graph-build throughput, and
+  peak RSS (`/proc/self/status`). Offline, no external data. Baseline +
+  methodology in `benches/BASELINE.md` (dev host: full graph build ≈1.5 ms /
+  ~300k entities·s⁻¹, peak RSS ≈8 MiB). `tests/perf.rs` adds a non-flaky CI gate:
+  deterministic complexity invariants (stealer co-occurrence is a star not a
+  mesh; structural links closest-parent-only) plus a generous 30 s catastrophe
+  ceiling on a 1 000-entity pipeline — so an O(n²)+ regression fails CI without
+  wall-time flakiness.
+
 - **`install.sh` auto-captures a full diagnosis.** On a successful build the
   installer now runs `hse selftest` (offline 5-stage check) **and**
   `hse doctor --bundle` (offline, redacted) and tees both into

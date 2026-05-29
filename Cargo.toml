@@ -12,6 +12,12 @@ default-run = "hse"
 name = "hse"
 path = "src/main.rs"
 
+# Offline, dependency-free graph-pipeline benchmark (custom main).
+# Run: `cargo bench --bench pipeline`. The CI regression gate is `tests/perf.rs`.
+[[bench]]
+name = "pipeline"
+harness = false
+
 [lib]
 name = "huntsman_search_engine"
 path = "src/lib.rs"
