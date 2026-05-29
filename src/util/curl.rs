@@ -221,6 +221,43 @@ pub async fn fetch_pooled(
     }
 }
 
+/// Fetch `url` through the intelligent per-resource rotator
+/// ([`crate::util::proxy::global_router`]).
+///
+/// `resource` is a stable key (a search-engine name, an API host) so each
+/// resource rotates independently and keeps its own cooldowns. Tries up to
+/// `max_tries` distinct egress IPs, resting any that fail for this resource —
+/// so a per-IP-rate-limited freemium API is spread across the whole validated
+/// pool (*N* live proxies ≈ *N×* the free-tier ceiling). Region-matches the
+/// egress when `region` (e.g. `HUNTSMAN_REGION`) is given.
+///
+/// Returns the first non-empty body, or `None` if the pool is empty / every try
+/// failed — the caller then falls back to a direct fetch, byte-identical to the
+/// pre-rotation path when no proxies are available.
+pub async fn fetch_rotating(
+    resource: &str,
+    url: &str,
+    timeout_ms: u64,
+    ua: &str,
+    region: Option<&str>,
+    max_tries: usize,
+) -> Option<String> {
+    let router = super::proxy::global_router();
+    for _ in 0..max_tries {
+        let proxy = router.pick(resource, region)?;
+        match fetch_via_proxy(url, timeout_ms, ua, &proxy.url()).await {
+            Some(body) if !body.is_empty() => {
+                router.report_success(resource, &proxy.addr);
+                return Some(body);
+            }
+            // Dead / blocked / empty: rest this egress IP for the resource and
+            // rotate on. Short base cooldown; the router backs off repeats.
+            _ => router.report_block(resource, &proxy.addr, 60),
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

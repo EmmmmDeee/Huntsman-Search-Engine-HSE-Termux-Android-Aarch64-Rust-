@@ -10,6 +10,31 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **Intelligent, resource-aware proxy rotation (`ProxyRouter`).** A free proxy
+  is never globally "good" or "bad" — it's good *for a given resource right
+  now*. A process-wide `proxy::global_router()` (lazily seeded from the
+  persisted pool, mirroring `key_pool::global_pool()`) tracks usage per
+  `(resource, proxy)` and:
+  - **spreads load** across egress IPs — each resource hands its next request
+    to the proxy it used least recently, so a freemium API's per-IP quota
+    (ip-api's 45 req/min, Nominatim's ~1 req/s) is consumed in parallel: *N*
+    live proxies ≈ *N×* the free-tier ceiling;
+  - **rests blocked IPs per resource** with exponential backoff — a proxy a
+    search engine CAPTCHAs, or an API answers with 429, is cooled down *for that
+    resource only* and stays available everywhere else;
+  - **ranks** the eligible set by region match → least-recently-used →
+    high-yield (anonymity grade → infra type → latency).
+
+  Wired into **search engines** (each engine rotates across up to 4 egress IPs,
+  resting any it gets CAPTCHA'd on, region-matched via `HUNTSMAN_REGION`)
+  replacing the old "always reuse `load_pool().first()`" path, and into the
+  **Nominatim** geocoder's freemium fallback via the new
+  `curl::fetch_rotating(resource, …)` helper. With an empty pool every `pick`
+  returns `None`, so callers fall back to a direct connection — byte-identical
+  to pre-rotation behaviour when no proxies are available.
+
 ### Changed
 
 - **Proxy pool freshness + load-time safety.** Free proxies die within

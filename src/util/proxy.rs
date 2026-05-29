@@ -9,8 +9,9 @@
 //! Compatible with Termux aarch64 — uses the `curl` subprocess for all network
 //! calls (no native TLS dependency in this path).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -300,6 +301,160 @@ impl ProxyPool {
     }
 }
 
+// ── Intelligent, resource-aware rotation ─────────────────────────────────────
+
+/// Per-`(resource, proxy)` rotation bookkeeping.
+#[derive(Debug, Clone, Copy, Default)]
+struct UseRecord {
+    /// Unix seconds of the last pick — drives least-recently-used spreading.
+    last_used: u64,
+    /// Skip this proxy for this resource until `now ≥ this` (set on a block).
+    cooldown_until: u64,
+    /// Consecutive blocks for this resource — feeds exponential backoff.
+    failures: u32,
+}
+
+/// Selection sort key (lower = better): region miss, then least-recently-used,
+/// then high-yield rank (grade → infra type → latency).
+type RankKey = (u8, u64, u8, u8, u64);
+
+/// Intelligent, resource-aware proxy rotator.
+///
+/// A free proxy is never globally "good" or "bad" — it is good *for a given
+/// resource right now*. The router keeps usage per `(resource, proxy)` so it
+/// can:
+///
+/// * **Spread load** across egress IPs — each resource hands its next request
+///   to the proxy it used least recently, so a freemium API's per-IP quota
+///   (ip-api's 45 req/min, Nominatim's ~1 req/s) is consumed in parallel across
+///   the whole pool. *N* live proxies ≈ *N×* the free-tier ceiling.
+/// * **Rest blocked IPs per resource** — a proxy a search engine answered with
+///   a CAPTCHA, or an API answered with 429, is cooled down *for that resource
+///   only* (with exponential backoff on repeats) and stays available for every
+///   other resource.
+///
+/// Within the eligible set it prefers the least-recently-used proxy, breaking
+/// ties by high-yield rank (anonymity grade → infra type → latency); when a
+/// region is requested, a country-matched egress is preferred over all else.
+/// All selection logic is pure and unit-tested without the network.
+pub struct ProxyRouter {
+    proxies: Mutex<Vec<Proxy>>,
+    usage: Mutex<HashMap<String, HashMap<String, UseRecord>>>,
+}
+
+impl ProxyRouter {
+    /// Build a router over an explicit proxy set. Ordering does not matter —
+    /// the router re-ranks on every [`pick`](Self::pick).
+    pub fn from_proxies(proxies: Vec<Proxy>) -> Self {
+        Self {
+            proxies: Mutex::new(proxies),
+            usage: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Number of proxies available to rotate through.
+    pub fn len(&self) -> usize {
+        self.proxies.lock().len()
+    }
+
+    /// `true` when there are no proxies (every `pick` returns `None`).
+    pub fn is_empty(&self) -> bool {
+        self.proxies.lock().is_empty()
+    }
+
+    /// Pick the best eligible proxy for `resource`, optionally preferring an
+    /// egress in `region` (an ISO country `"AU"` or locale `"au-en"`). Marks it
+    /// used-now so the next pick rotates onward. `None` when the pool is empty
+    /// or every proxy is currently cooling down for this resource — the caller
+    /// should then fall back to a direct connection.
+    pub fn pick(&self, resource: &str, region: Option<&str>) -> Option<Proxy> {
+        let proxies = self.proxies.lock();
+        if proxies.is_empty() {
+            return None;
+        }
+        let now = now_secs();
+        let region_cc = region
+            .map(|r| r.trim().split('-').next().unwrap_or("").to_uppercase())
+            .filter(|c| c.len() == 2);
+
+        let mut usage = self.usage.lock();
+        let res = usage.entry(resource.to_string()).or_default();
+
+        // Lower key = better: region-matched first, then least-recently-used
+        // (the spread that multiplies free quota), then high-yield rank.
+        let mut best: Option<(usize, RankKey)> = None;
+        for (i, p) in proxies.iter().enumerate() {
+            let rec = res.get(&p.addr).copied().unwrap_or_default();
+            if rec.cooldown_until > now {
+                continue; // resting for this resource
+            }
+            let region_miss = match &region_cc {
+                Some(cc) => u8::from(p.country.as_deref() != Some(cc.as_str())),
+                None => 0,
+            };
+            let key = (
+                region_miss,
+                rec.last_used,
+                grade_rank(p.grade),
+                type_rank(p.proxy_type),
+                p.latency_ms,
+            );
+            let replace = match best {
+                Some((_, bk)) => key < bk,
+                None => true,
+            };
+            if replace {
+                best = Some((i, key));
+            }
+        }
+
+        let (idx, _) = best?;
+        let chosen = proxies[idx].clone();
+        res.entry(chosen.addr.clone()).or_default().last_used = now;
+        Some(chosen)
+    }
+
+    /// Record that `addr` served `resource` successfully — clears any cooldown
+    /// and the failure streak.
+    pub fn report_success(&self, resource: &str, addr: &str) {
+        let mut usage = self.usage.lock();
+        let rec = usage
+            .entry(resource.to_string())
+            .or_default()
+            .entry(addr.to_string())
+            .or_default();
+        rec.cooldown_until = 0;
+        rec.failures = 0;
+    }
+
+    /// Record that `addr` was blocked / rate-limited by `resource`, resting it
+    /// for at least `base_cooldown_secs`. Repeated blocks back off
+    /// exponentially (capped at one hour) so a persistently-flagged egress IP
+    /// leaves rotation for longer while a one-off blip recovers fast.
+    pub fn report_block(&self, resource: &str, addr: &str, base_cooldown_secs: u64) {
+        let mut usage = self.usage.lock();
+        let rec = usage
+            .entry(resource.to_string())
+            .or_default()
+            .entry(addr.to_string())
+            .or_default();
+        rec.failures = rec.failures.saturating_add(1);
+        let shift = rec.failures.min(4);
+        let backoff = base_cooldown_secs.saturating_mul(1u64 << shift).min(3600);
+        rec.cooldown_until = now_secs().saturating_add(backoff);
+    }
+}
+
+/// Process-wide rotator, lazily initialised from the persisted pool
+/// (`hse proxies refresh`). Mirrors `key_pool::global_pool()`. An empty pool
+/// makes every `pick` return `None`, so callers transparently fall back to a
+/// direct connection — byte-identical to pre-rotation behaviour when no proxies
+/// are available.
+pub fn global_router() -> &'static ProxyRouter {
+    static GLOBAL_ROUTER: OnceLock<ProxyRouter> = OnceLock::new();
+    GLOBAL_ROUTER.get_or_init(|| ProxyRouter::from_proxies(load_pool()))
+}
+
 /// Harvest candidate proxies from a **diverse** set of free public sources —
 /// HTTP *and* SOCKS4/SOCKS5, including broad community aggregations, so the pool
 /// isn't limited to the same few saturated scrape APIs. Candidates carry their
@@ -508,7 +663,6 @@ pub async fn retrieve(max_validate: usize) -> Vec<Proxy> {
 /// The curated `hosting`/`mobile` flags are the most accurate readily-available
 /// type signal. Best-effort: leaves fields untouched on any failure.
 async fn classify_batch(proxies: &mut [Proxy]) {
-    use std::collections::HashMap;
     if proxies.is_empty() {
         return;
     }
@@ -896,5 +1050,108 @@ mod tests {
         sort_high_yield(&mut v);
         let order: Vec<&str> = v.iter().map(|p| p.addr.as_str()).collect();
         assert_eq!(order, ["c", "b", "d", "a"]); // elite(fast), elite(slow), anon, transparent
+    }
+
+    // ── ProxyRouter (intelligent, resource-aware rotation) ─────────────────
+
+    fn rp(addr: &str, cc: Option<&str>, grade: Grade, ty: ProxyType, lat: u64) -> Proxy {
+        Proxy {
+            addr: addr.into(),
+            proto: "http".into(),
+            latency_ms: lat,
+            grade: Some(grade),
+            country: cc.map(str::to_string),
+            proxy_type: Some(ty),
+            org: None,
+            last_validated: now_secs(),
+        }
+    }
+
+    #[test]
+    fn router_spreads_picks_across_all_proxies() {
+        let r = ProxyRouter::from_proxies(vec![
+            rp("a", None, Grade::Elite, ProxyType::Residential, 10),
+            rp("b", None, Grade::Elite, ProxyType::Residential, 20),
+            rp("c", None, Grade::Elite, ProxyType::Residential, 30),
+        ]);
+        // Three picks for one resource must hit three distinct egress IPs —
+        // this LRU spread is what multiplies a per-IP free quota.
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..3 {
+            seen.insert(r.pick("res", None).unwrap().addr);
+        }
+        assert_eq!(seen.len(), 3);
+    }
+
+    #[test]
+    fn router_rests_blocked_proxy_per_resource_only() {
+        let r = ProxyRouter::from_proxies(vec![
+            rp("a", None, Grade::Elite, ProxyType::Residential, 10),
+            rp("b", None, Grade::Elite, ProxyType::Residential, 20),
+        ]);
+        // Block "a" for res1: it must not come back while cooling.
+        r.report_block("res1", "a", 100);
+        for _ in 0..4 {
+            assert_eq!(r.pick("res1", None).unwrap().addr, "b");
+        }
+        // A different resource is unaffected — "a" is still eligible there.
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..2 {
+            seen.insert(r.pick("res2", None).unwrap().addr);
+        }
+        assert!(seen.contains("a"));
+    }
+
+    #[test]
+    fn router_prefers_region_match_then_falls_back() {
+        let r = ProxyRouter::from_proxies(vec![
+            rp("us", Some("US"), Grade::Elite, ProxyType::Residential, 10),
+            rp("au", Some("AU"), Grade::Elite, ProxyType::Datacenter, 99),
+        ]);
+        // Region wins over high-yield: AU proxy chosen despite worse infra.
+        assert_eq!(r.pick("s", Some("AU")).unwrap().addr, "au");
+        assert_eq!(r.pick("s", Some("au-en")).unwrap().addr, "au");
+        // No region requested → high-yield ranking applies (US residential).
+        assert_eq!(r.pick("s2", None).unwrap().addr, "us");
+    }
+
+    #[test]
+    fn router_high_yield_breaks_ties_when_equally_fresh() {
+        let r = ProxyRouter::from_proxies(vec![
+            rp("dc", None, Grade::Elite, ProxyType::Datacenter, 10),
+            rp("res", None, Grade::Elite, ProxyType::Residential, 50),
+        ]);
+        // Both never used + no region → residential beats datacenter even
+        // though the datacenter proxy is lower-latency.
+        assert_eq!(r.pick("r", None).unwrap().addr, "res");
+    }
+
+    #[test]
+    fn router_success_clears_cooldown() {
+        let r = ProxyRouter::from_proxies(vec![rp(
+            "a",
+            None,
+            Grade::Elite,
+            ProxyType::Residential,
+            10,
+        )]);
+        r.report_block("res", "a", 100);
+        assert!(r.pick("res", None).is_none()); // sole proxy is cooling
+        r.report_success("res", "a");
+        assert_eq!(r.pick("res", None).unwrap().addr, "a"); // recovered
+    }
+
+    #[test]
+    fn router_empty_and_all_cooled_return_none() {
+        assert!(ProxyRouter::from_proxies(vec![]).pick("r", None).is_none());
+
+        let r = ProxyRouter::from_proxies(vec![
+            rp("a", None, Grade::Elite, ProxyType::Residential, 10),
+            rp("b", None, Grade::Elite, ProxyType::Residential, 20),
+        ]);
+        assert_eq!(r.len(), 2);
+        r.report_block("res", "a", 100);
+        r.report_block("res", "b", 100);
+        assert!(r.pick("res", None).is_none()); // both resting → caller goes direct
     }
 }

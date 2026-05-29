@@ -2,13 +2,18 @@ use super::helpers::*;
 use super::{EngineSpec, MAX_RESULTS_PER_ENGINE, SearchResult};
 use crate::modules::oathnet_pro::key_harvest::identify_api_key;
 
+/// How many distinct egress IPs to rotate through per engine before giving up
+/// on a blocked/unreachable fetch. Bounded so a scan stays fast even when a lot
+/// of pooled proxies have died.
+const MAX_PROXY_ROTATIONS: usize = 4;
+
 pub(super) async fn fetch_and_parse(
     url: &str,
     engine: &EngineSpec,
     query: &str,
     post_body: Option<&str>,
 ) -> Option<Vec<SearchResult>> {
-    match try_fetch(url, engine.ua, post_body).await {
+    match try_fetch(engine.name, url, engine.ua, post_body).await {
         FetchOutcome::Body(body) => {
             scan_body_for_keys(&body);
             let results = parse_results(&body, engine.name, query);
@@ -21,7 +26,8 @@ pub(super) async fn fetch_and_parse(
     }
 
     if engine.ua != engine.ua_alt
-        && let FetchOutcome::Body(body) = try_fetch(url, engine.ua_alt, post_body).await
+        && let FetchOutcome::Body(body) =
+            try_fetch(engine.name, url, engine.ua_alt, post_body).await
     {
         let results = parse_results(&body, engine.name, query);
         if !results.is_empty() {
@@ -32,45 +38,74 @@ pub(super) async fn fetch_and_parse(
     None
 }
 
-pub(super) async fn try_fetch(url: &str, ua: &str, post_body: Option<&str>) -> FetchOutcome {
+pub(super) async fn try_fetch(
+    resource: &str,
+    url: &str,
+    ua: &str,
+    post_body: Option<&str>,
+) -> FetchOutcome {
     let body = if let Some(data) = post_body {
         crate::util::curl::fetch_post_with_ua(url, data, 8_000, ua).await
     } else {
         crate::util::curl::fetch_with_ua(url, 8_000, ua).await
     };
 
-    // If direct fetch failed, retry through a proxy: an explicit
-    // `HUNTSMAN_SEARCH_PROXY` wins, else fall back to the fastest validated
-    // proxy from the persisted pool (`hse proxies refresh`).
-    let body = match body {
-        Some(b) if b.len() >= 500 => Some(b),
-        _ => {
-            let proxy = std::env::var("HUNTSMAN_SEARCH_PROXY")
-                .ok()
-                .filter(|p| !p.is_empty())
-                .or_else(|| crate::util::proxy::load_pool().first().map(|p| p.url()));
-            if let Some(proxy) = proxy {
-                return match crate::util::curl::fetch_via_proxy(url, 8_000, ua, &proxy).await {
-                    Some(b) if b.len() >= 500 && !is_captcha_page(&b) => FetchOutcome::Body(b),
-                    Some(_) => FetchOutcome::Blocked,
-                    None => FetchOutcome::Unreachable,
-                };
-            }
-            body
-        }
-    };
+    // Direct fetch decisive? (≥500 bytes of non-CAPTCHA HTML = real results.)
+    match body {
+        Some(b) if b.len() >= 500 && !is_captcha_page(&b) => return FetchOutcome::Body(b),
+        Some(b) if b.len() >= 500 => return FetchOutcome::Blocked, // CAPTCHA/interstitial
+        _ => {}
+    }
 
-    let body = match body {
-        Some(b) => b,
-        None => return FetchOutcome::Unreachable,
-    };
-    if body.len() < 500 {
-        return FetchOutcome::Unreachable;
+    // Direct failed/blocked → go through a proxy.
+    // 1) An explicit `HUNTSMAN_SEARCH_PROXY` always wins (single attempt).
+    if let Some(proxy) = std::env::var("HUNTSMAN_SEARCH_PROXY")
+        .ok()
+        .filter(|p| !p.is_empty())
+    {
+        return match crate::util::curl::fetch_via_proxy(url, 8_000, ua, &proxy).await {
+            Some(b) if b.len() >= 500 && !is_captcha_page(&b) => FetchOutcome::Body(b),
+            Some(_) => FetchOutcome::Blocked,
+            None => FetchOutcome::Unreachable,
+        };
     }
-    if is_captcha_page(&body) {
-        return FetchOutcome::Blocked;
+
+    // 2) Intelligent rotation: spread this engine's retries across the
+    //    validated pool, resting any egress IP the engine CAPTCHAs/blocks (so
+    //    we don't keep hammering a flagged IP), preferring a region-matched
+    //    proxy when `HUNTSMAN_REGION` is set.
+    let region = std::env::var("HUNTSMAN_REGION").ok();
+    let router = crate::util::proxy::global_router();
+    let mut rotated = false;
+    let mut saw_page = false;
+    for _ in 0..MAX_PROXY_ROTATIONS {
+        let Some(px) = router.pick(resource, region.as_deref()) else {
+            break; // pool empty or every proxy resting for this engine
+        };
+        rotated = true;
+        match crate::util::curl::fetch_via_proxy(url, 8_000, ua, &px.url()).await {
+            Some(b) if b.len() >= 500 && !is_captcha_page(&b) => {
+                router.report_success(resource, &px.addr);
+                return FetchOutcome::Body(b);
+            }
+            Some(_) => {
+                // Reached the engine but got a CAPTCHA/short page: this IP is
+                // flagged. Rest it ~10 min for this engine, then rotate on.
+                saw_page = true;
+                router.report_block(resource, &px.addr, 600);
+            }
+            None => router.report_block(resource, &px.addr, 120), // proxy dead
+        }
     }
-    FetchOutcome::Body(body)
+
+    // 3) Rotation exhausted (or no pool): blocked if any proxy reached the
+    //    engine, otherwise unreachable. With no pool this matches the old
+    //    no-proxy path exactly.
+    if rotated && saw_page {
+        FetchOutcome::Blocked
+    } else {
+        FetchOutcome::Unreachable
+    }
 }
 
 /// Detect CAPTCHA/interstitial pages that contain no real results.

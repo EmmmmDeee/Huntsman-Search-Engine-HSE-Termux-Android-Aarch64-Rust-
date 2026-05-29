@@ -134,11 +134,29 @@ impl Geocode {
                 .await
                 .unwrap_or_default(),
             _ => {
-                if let Some(body) = crate::util::curl::fetch(&url, crate::MODULE_TIMEOUT_MS).await {
-                    serde_json::from_str(&body).unwrap_or_default()
-                } else {
-                    return Ok(ModuleResult::new());
-                }
+                // Direct reqwest failed — often Nominatim's ~1 req/s per-IP
+                // throttle. Spread the retry across the validated proxy pool so
+                // each egress IP carries its own slice of the free quota; fall
+                // back to a plain direct curl when no proxies are available
+                // (byte-identical to the previous behaviour).
+                let region = std::env::var("HUNTSMAN_REGION").ok();
+                let body = match crate::util::curl::fetch_rotating(
+                    "nominatim",
+                    &url,
+                    crate::MODULE_TIMEOUT_MS,
+                    crate::util::curl::UA_MOBILE,
+                    region.as_deref(),
+                    3,
+                )
+                .await
+                {
+                    Some(b) => b,
+                    None => match crate::util::curl::fetch(&url, crate::MODULE_TIMEOUT_MS).await {
+                        Some(b) => b,
+                        None => return Ok(ModuleResult::new()),
+                    },
+                };
+                serde_json::from_str(&body).unwrap_or_default()
             }
         };
 
