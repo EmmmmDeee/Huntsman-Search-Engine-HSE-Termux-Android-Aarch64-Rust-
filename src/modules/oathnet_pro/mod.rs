@@ -361,12 +361,25 @@ fn extract_breach_entities(
     };
     let is_target_row = row_matches_target(item);
 
+    // Full confidence only for rows that actually match the target lookup;
+    // CANDIDATE confidence (0.25) for the rest. A high-recall breach query on
+    // a common name returns entire breach corpora — rows whose email/phone/
+    // name merely co-occur in the same dump but belong to other people. They
+    // are preserved for investigation (never silently discarded) but must not
+    // masquerade as the subject's verified identifiers. Applies uniformly to
+    // every emitted kind, including email/username (previously ungated — the
+    // origin of the 92-email common-name noise flood observed live).
+    let conf = |base: f64| -> f64 { if is_target_row { base } else { 0.25 } };
+
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
         if lower.contains('@') && seen.insert(lower) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, conf(0.70), scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-pro");
+            if !is_target_row {
+                e.tag("candidate");
+            }
             e.add_evidence(ev.clone());
             result.push(e);
         }
@@ -375,18 +388,16 @@ fn extract_breach_entities(
     if let Some(uname) = val_str(item, "username") {
         let lower = uname.to_lowercase();
         if lower.len() >= 3 && seen.insert(lower) {
-            let mut e = Entity::new(EntityKind::Username, &uname, 0.65, scan_id);
+            let mut e = Entity::new(EntityKind::Username, &uname, conf(0.65), scan_id);
             e.tag(tags::BREACH);
             e.tag("oathnet-pro");
+            if !is_target_row {
+                e.tag("candidate");
+            }
             e.add_evidence(ev.clone());
             result.push(e);
         }
     }
-
-    // Phone/Person/IP: full confidence for target-matching rows,
-    // CANDIDATE confidence for non-matching rows (preserved for
-    // investigation — never silently discarded).
-    let conf = |base: f64| -> f64 { if is_target_row { base } else { 0.25 } };
 
     if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
         && ph.len() >= 7
@@ -688,6 +699,48 @@ mod tests {
             val_str_or(&item, &["display_name", "full_name"]).as_deref(),
             Some("Jerome Despal")
         );
+    }
+
+    #[test]
+    fn breach_email_off_target_is_candidate_not_verified() {
+        // A breach row whose email shares nothing with the seed (common-name
+        // dump noise) must be emitted at CANDIDATE confidence + tag, not at
+        // the 0.70 verified tier — the 92-email flood fix.
+        let item = serde_json::json!({
+            "email": "max.morelli@abrigo.com",
+            "full_name": "Max Morelli",
+            "dbname": "abrigo.com"
+        });
+        let mut seen = std::collections::HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "Jordan Leigh Meyer", "s", &mut seen, &mut result);
+        let email = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email emitted");
+        assert!(
+            email.confidence < 0.40,
+            "off-target email should be candidate, got {}",
+            email.confidence
+        );
+        assert!(email.has_tag("candidate"));
+    }
+
+    #[test]
+    fn breach_email_on_target_keeps_full_confidence() {
+        // A row whose email contains a seed term stays at the verified tier.
+        let item = serde_json::json!({ "email": "jordanleigh.meyer@example.com" });
+        let mut seen = std::collections::HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "Jordan Leigh Meyer", "s", &mut seen, &mut result);
+        let email = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email emitted");
+        assert!((email.confidence - 0.70).abs() < 1e-9);
+        assert!(!email.has_tag("candidate"));
     }
 
     #[test]
