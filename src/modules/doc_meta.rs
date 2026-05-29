@@ -28,6 +28,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::media_score::{self, DocMetaSignals};
 use crate::util::metadata::parse_pdf;
 
 const SRC: &str = "doc_meta";
@@ -120,45 +121,77 @@ impl Module for DocMeta {
             return Ok(result);
         }
 
+        // Parse intelligently *before* continuing: confirm this is genuinely a
+        // PDF (a mislabelled HTML error page or login wall otherwise pollutes
+        // the graph). The `%PDF-` signature must appear in the first 1 KB.
+        if !is_pdf(&bytes) {
+            return Ok(result);
+        }
         let meta = parse_pdf(&bytes);
 
+        // ── Scrutinise source + score metadata trust. A real author is the
+        //    identity lead; generic/default authors ("user", "Administrator",
+        //    "Microsoft Office User") are filtered as junk. ──
+        let trust = media_score::source_trust(url);
+        let author = meta
+            .author
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| non_empty(a) && !media_score::is_generic_author(a));
+        let tool = meta
+            .creator
+            .as_deref()
+            .or(meta.producer.as_deref())
+            .map(str::trim)
+            .filter(|s| non_empty(s));
+
+        let doc_conf = media_score::doc_metadata_confidence(&DocMetaSignals {
+            author_ok: author.is_some(),
+            title: meta.title.as_deref().is_some_and(non_empty),
+            tool: tool.is_some(),
+            dated: meta
+                .created
+                .as_deref()
+                .or(meta.modified.as_deref())
+                .is_some_and(non_empty),
+        });
+
+        // Gate: low-confidence document metadata is junk — don't emit or recurse.
+        if doc_conf < media_score::DOC_META_EMIT_MIN {
+            return Ok(result);
+        }
+        let scale = (0.6 + 0.4 * doc_conf) * (0.7 + 0.3 * trust);
+
         // ── Author → Person ──
-        if let Some(author) = meta.author.as_deref().map(str::trim).filter(non_empty) {
-            let mut e = Entity::new(EntityKind::Person, author, 0.70, &ctx.scan_id);
+        if let Some(author) = author {
+            let mut e = Entity::new(EntityKind::Person, author, 0.70 * scale, &ctx.scan_id);
             e.tag("doc-author");
             e.tag("doc-derived");
-            let mut ev =
-                Evidence::new(SRC, format!("PDF author from {url}")).with_attr("doc_url", url);
-            if let Some(t) = meta.title.as_deref().filter(non_empty) {
+            let mut ev = Evidence::new(SRC, format!("PDF author from {url}"))
+                .with_attr("doc_url", url)
+                .with_attr("metadata_confidence", format!("{doc_conf:.2}"))
+                .with_attr("source_trust", format!("{trust:.2}"));
+            if let Some(t) = meta.title.as_deref().filter(|s| non_empty(s)) {
                 ev = ev.with_attr("title", t);
             }
-            if let Some(c) = meta.created.as_deref().filter(non_empty) {
+            if let Some(c) = meta.created.as_deref().filter(|s| non_empty(s)) {
                 ev = ev.with_attr("created", c);
             }
             e.add_evidence(ev);
             result.push(e);
         }
 
-        // ── Authoring/producing toolchain → DeviceId ──
-        // `/Creator` (authoring app) is preferred; fall back to `/Producer`
-        // (the rendering library). Same toolchain across many documents is a
-        // fingerprint that links them — tagged weak, like a cohort signal.
-        if let Some(tool) = meta
-            .creator
-            .as_deref()
-            .or(meta.producer.as_deref())
-            .map(str::trim)
-            .filter(non_empty)
-        {
-            let mut e = Entity::new(EntityKind::DeviceId, tool, 0.45, &ctx.scan_id);
+        // ── Authoring/producing toolchain → DeviceId (weak cohort fingerprint) ──
+        if let Some(tool) = tool {
+            let mut e = Entity::new(EntityKind::DeviceId, tool, 0.45 * scale, &ctx.scan_id);
             e.tag("authoring-tool");
             e.tag("weak-device-link");
             let mut ev = Evidence::new(SRC, format!("authoring toolchain for {url}"))
                 .with_attr("doc_url", url);
-            if let Some(c) = meta.creator.as_deref().filter(non_empty) {
+            if let Some(c) = meta.creator.as_deref().filter(|s| non_empty(s)) {
                 ev = ev.with_attr("creator", c);
             }
-            if let Some(p) = meta.producer.as_deref().filter(non_empty) {
+            if let Some(p) = meta.producer.as_deref().filter(|s| non_empty(s)) {
                 ev = ev.with_attr("producer", p);
             }
             e.add_evidence(ev);
@@ -166,9 +199,17 @@ impl Module for DocMeta {
         }
 
         // ── Embedded XMP GPS → Coordinates (rare, but free) ──
-        if let Some((lat, lon)) = meta.gps {
+        if let Some((lat, lon)) = meta
+            .gps
+            .filter(|&(la, lo)| media_score::gps_plausible(la, lo))
+        {
             let coord_str = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coord_str, 0.75, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Coordinates,
+                &coord_str,
+                0.75 * scale,
+                &ctx.scan_id,
+            );
             e.tag("geoint");
             e.tag("doc-derived");
             e.add_evidence(
@@ -181,9 +222,18 @@ impl Module for DocMeta {
     }
 }
 
-/// `true` if `s` is non-empty after trimming. Tiny helper used as a filter
-/// predicate, accepting `&&str` so it works inside `.filter(|s| …)`.
-fn non_empty(s: &&str) -> bool {
+/// Confirm a byte buffer is actually a PDF — the `%PDF-` signature appears at
+/// (or very near) the start of a conformant file. Guards against mislabelled
+/// HTML/login-wall responses served for a `.pdf` URL.
+fn is_pdf(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(1024)];
+    head.windows(5).any(|w| w == b"%PDF-")
+}
+
+/// `true` if `s` is non-empty after trimming. Takes `&str`; deref coercion
+/// lets it serve both `is_some_and(non_empty)` (over `Option<&str>`) and
+/// `.filter(|s| non_empty(s))` (where the closure arg is `&&str`).
+fn non_empty(s: &str) -> bool {
     !s.trim().is_empty()
 }
 

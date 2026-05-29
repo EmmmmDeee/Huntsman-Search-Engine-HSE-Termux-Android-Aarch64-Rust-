@@ -49,6 +49,11 @@ kamadak-exif       = "0.6"
 # the tree transitively via reqwest; declared directly so the
 # decode-through path doesn't break if reqwest drops it.
 base64             = "0.22"
+# v1.4 — perceptual image hashing (DCT pHash) for content-equivalence
+# linking. Pure-Rust decoders only (jpeg via zune, png via the `png`
+# crate + miniz_oxide) — no C/native libs, honouring the architecture
+# invariant. Default features disabled to keep the binary lean.
+image              = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

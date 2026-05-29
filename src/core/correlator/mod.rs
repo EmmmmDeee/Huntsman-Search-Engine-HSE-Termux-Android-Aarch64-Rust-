@@ -179,6 +179,7 @@ type RelationRuleFn = fn(&[Entity], &[Relation], &str, u64) -> Vec<Correlation>;
 const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_031_malicious_adjacency,
     rule_au_032_colocation_cluster,
+    rule_au_034_cross_source_image,
 ];
 
 fn evaluate_relation_rules(
@@ -934,5 +935,63 @@ mod tests {
         e.tag("local-interface"); // not a capture/authoring device
         e.add_evidence(Evidence::new("local_net", "iface").with_attr("media_url", "https://a/1"));
         assert!(rule_au_033_shared_media_origin(&[e], "s", 0).is_empty());
+    }
+
+    // ── AU-034 (cross-source image equivalence) ─────────────────────────
+
+    fn image_node(url: &str, meta_conf: Option<f64>) -> Entity {
+        let mut e = Entity::new(EntityKind::Url, url, 0.6, "s");
+        e.tag("image");
+        e.tag("phash");
+        let mut ev = Evidence::new("exif_geo", "img").with_attr("media_url", url);
+        if let Some(c) = meta_conf {
+            ev = ev.with_attr("metadata_confidence", format!("{c:.2}"));
+        }
+        e.add_evidence(ev);
+        e
+    }
+
+    #[test]
+    fn au034_fires_medium_on_duplicate_without_metadata() {
+        use crate::core::relation::{Relation, RelationKind};
+        let a = image_node("https://a/1.jpg", None);
+        let b = image_node("https://b/2.jpg", None);
+        let rels = vec![Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::SameImageAs,
+            0.6,
+            "s",
+        )];
+        let r = rule_au_034_cross_source_image(&[a, b], &rels, "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-034");
+        assert_eq!(r[0].severity, Severity::Medium);
+        assert!(r[0].description.contains("across 2 sources"));
+    }
+
+    #[test]
+    fn au034_is_high_when_a_copy_carries_metadata() {
+        use crate::core::relation::{Relation, RelationKind};
+        // One copy has trustworthy metadata → it applies to the whole cluster.
+        let a = image_node("https://a/1.jpg", Some(0.80));
+        let b = image_node("https://b/2.jpg", None);
+        let rels = vec![Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::SameImageAs,
+            0.6,
+            "s",
+        )];
+        let r = rule_au_034_cross_source_image(&[a, b], &rels, "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].severity, Severity::High);
+        assert!(r[0].description.contains("applies to all"));
+    }
+
+    #[test]
+    fn au034_silent_without_similarity_edges() {
+        let a = image_node("https://a/1.jpg", None);
+        assert!(rule_au_034_cross_source_image(&[a], &[], "s", 0).is_empty());
     }
 }

@@ -36,7 +36,9 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::media_score::{self, ImageMetaSignals};
 use crate::util::metadata::parse_image_xmp;
+use crate::util::phash;
 
 const SRC: &str = "exif_geo";
 
@@ -52,7 +54,7 @@ const MAX_BYTES: u64 = 8 * 1024 * 1024;
 /// rare cases but the vast majority don't, and we'd rather save the
 /// quota).
 const IMAGE_EXTS: &[&str] = &[
-    ".jpg", ".jpeg", ".jpe", ".jfif", ".tif", ".tiff", ".heic", ".heif", ".webp",
+    ".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".tif", ".tiff", ".heic", ".heif", ".webp",
 ];
 
 pub struct ExifGeo;
@@ -140,37 +142,23 @@ impl Module for ExifGeo {
             return Ok(result);
         }
 
-        // EXIF (binary IFD) and XMP (text packet) are complementary: many
-        // platforms strip one but pass the other through, so we read both and
-        // prefer EXIF where they overlap.
+        // EXIF (binary IFD) and XMP (text packet) are complementary: platforms
+        // often strip one but pass the other, so we read both and prefer EXIF.
         let exif = {
             let mut cursor = std::io::Cursor::new(bytes.as_ref());
             Reader::new().read_from_container(&mut cursor).ok()
         };
         let xmp = parse_image_xmp(&bytes);
-
         let ex = |tag: Tag| exif.as_ref().and_then(|x| read_str(x, tag));
 
-        // ── GPS → Coordinates (EXIF preferred, XMP fallback) ──
-        if let Some((lat, lon)) = exif.as_ref().and_then(extract_gps).or(xmp.gps) {
-            // EXIF/XMP GPS is empirically reliable to ~10–50 m on the source
-            // device — base confidence 0.80, above single-source IP-geo, below
-            // WiGLE multi-observer consensus (0.85).
-            let coord_str = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coord_str, 0.80, &ctx.scan_id);
-            e.tag("geoint");
-            e.tag("exif");
-            e.tag("photo-derived");
-            e.add_evidence(
-                Evidence::new(SRC, format!("photo GPS extracted from {url}"))
-                    .with_attr("media_url", url)
-                    .with_attr("latitude", lat.to_string())
-                    .with_attr("longitude", lon.to_string()),
-            );
-            result.push(e);
-        }
+        // Immediate source scrutiny + perceptual content fingerprint. The hash
+        // is computed independently of metadata — a stripped image is still a
+        // valuable content anchor for cross-source linking.
+        let trust = media_score::source_trust(url);
+        let phash = phash::hash_bytes(&bytes);
 
-        // Field harvest — EXIF first, XMP fallback.
+        // Harvest metadata fields once (EXIF first, XMP fallback). GPS must be
+        // plausible (rejects the Null-Island 0,0 default).
         let make = ex(Tag::Make).or(xmp.make);
         let model = ex(Tag::Model).or(xmp.model);
         let serial = ex(Tag::BodySerialNumber).or(xmp.serial);
@@ -179,18 +167,85 @@ impl Module for ExifGeo {
             .or_else(|| ex(Tag::Artist))
             .or(xmp.creator);
         let shot_time = ex(Tag::DateTimeOriginal).or_else(|| ex(Tag::DateTime));
+        let nonempty = |o: &Option<String>| o.as_deref().is_some_and(|s| !s.trim().is_empty());
+        let gps = exif
+            .as_ref()
+            .and_then(extract_gps)
+            .or(xmp.gps)
+            .filter(|&(la, lo)| media_score::gps_plausible(la, lo));
+
+        // ── Metadata confidence — scored independently of image content. ──
+        let meta_conf = media_score::image_metadata_confidence(&ImageMetaSignals {
+            gps_plausible: gps.is_some(),
+            make: nonempty(&make),
+            model: nonempty(&model),
+            serial: nonempty(&serial),
+            author: nonempty(&owner),
+            software: nonempty(&software),
+        });
+
+        // ── Image content anchor (kept even with no metadata so it can link by
+        //    perceptual hash — the local reverse-image-search role). ──
+        if let Some(h) = phash {
+            let area = u64::from(h.width) * u64::from(h.height);
+            let content_conf = media_score::image_content_confidence(h.detail, area, trust);
+            if content_conf >= media_score::IMAGE_KEEP_MIN {
+                let mut e = Entity::new(EntityKind::Url, url, content_conf, &ctx.scan_id);
+                e.tag("image");
+                e.tag("phash");
+                if trust < 0.40 {
+                    e.tag("low-trust-source");
+                }
+                e.add_evidence(
+                    Evidence::new(SRC, format!("image content fingerprint for {url}"))
+                        .with_attr("media_url", url)
+                        .with_attr("phash", h.hash.to_hex())
+                        .with_attr("detail", format!("{:.1}", h.detail))
+                        .with_attr("dimensions", format!("{}x{}", h.width, h.height))
+                        .with_attr("source_trust", format!("{trust:.2}"))
+                        .with_attr("content_confidence", format!("{content_conf:.2}"))
+                        .with_attr("metadata_confidence", format!("{meta_conf:.2}")),
+                );
+                result.push(e);
+            }
+        }
+
+        // ── Metadata entities are GATED: emit only when the embedded metadata
+        //    clears the trust threshold, so junk/default tags can't seed
+        //    excessive recursion. Below the gate the image still lives on as a
+        //    similarity anchor above, just without metadata-derived nodes. ──
+        if meta_conf < media_score::META_EMIT_MIN {
+            return Ok(result);
+        }
+        // Confidence of emitted nodes tracks metadata trust (0.78..1.0 here).
+        let meta_scale = 0.6 + 0.4 * meta_conf;
+
+        if let Some((lat, lon)) = gps {
+            let coord_str = format!("{lat:.6},{lon:.6}");
+            let mut e = Entity::new(
+                EntityKind::Coordinates,
+                &coord_str,
+                0.80 * meta_scale,
+                &ctx.scan_id,
+            );
+            e.tag("geoint");
+            e.tag("exif");
+            e.tag("photo-derived");
+            e.add_evidence(
+                Evidence::new(SRC, format!("photo GPS extracted from {url}"))
+                    .with_attr("media_url", url)
+                    .with_attr("latitude", lat.to_string())
+                    .with_attr("longitude", lon.to_string())
+                    .with_attr("metadata_confidence", format!("{meta_conf:.2}")),
+            );
+            result.push(e);
+        }
 
         // ── Camera → DeviceId (the device-linking node) ──
         if let Some(key) = device_key(make.as_deref(), model.as_deref(), serial.as_deref()) {
-            // A serial pins one physical body (strong link); make+model alone
-            // is only a cohort signal (weak).
-            let strong = serial.as_deref().is_some_and(|s| !s.trim().is_empty());
-            let mut e = Entity::new(
-                EntityKind::DeviceId,
-                &key,
-                if strong { 0.75 } else { 0.50 },
-                &ctx.scan_id,
-            );
+            let strong = nonempty(&serial);
+            let base = if strong { 0.75 } else { 0.50 };
+            let mut e = Entity::new(EntityKind::DeviceId, &key, base * meta_scale, &ctx.scan_id);
             e.tag("capture-device");
             e.tag("exif");
             if !strong {
@@ -215,7 +270,7 @@ impl Module for ExifGeo {
 
         // ── Owner / artist → Person ──
         if let Some(person) = owner.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            let mut e = Entity::new(EntityKind::Person, person, 0.70, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Person, person, 0.70 * meta_scale, &ctx.scan_id);
             e.tag("media-author");
             e.tag("photo-derived");
             e.add_evidence(

@@ -1338,3 +1338,99 @@ pub(super) fn rule_au_032_colocation_cluster(
     }
     out
 }
+
+/// AU-034 — Cross-source image equivalence (graph-aware). A `SameImageAs`
+/// cluster means the **same picture** surfaced from two or more distinct
+/// sources (perceptual-hash near-duplicates), independent of metadata. This is
+/// the local reverse-image-search payoff: it corroborates that an image is real
+/// and recurring, and — crucially — lets metadata on *one* copy be attributed
+/// to the metadata-stripped copies in the same cluster.
+///
+/// Fires once per connected `SameImageAs` component of ≥2 images. Severity is
+/// **High** when any member carries trustworthy embedded metadata
+/// (`metadata_confidence ≥ META_EMIT_MIN`) — the cluster then ties that
+/// location/device/author to every copy — otherwise **Medium**. Deterministic.
+pub(super) fn rule_au_034_cross_source_image(
+    entities: &[Entity],
+    relations: &[Relation],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    for r in relations {
+        if r.kind == RelationKind::SameImageAs {
+            adj.entry(r.from_uid.as_str()).or_default().push(&r.to_uid);
+            adj.entry(r.to_uid.as_str()).or_default().push(&r.from_uid);
+        }
+    }
+    if adj.is_empty() {
+        return Vec::new();
+    }
+
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    // An image node carries trustworthy metadata if its `metadata_confidence`
+    // evidence attribute clears the emit gate.
+    let has_meta = |uid: &str| -> bool {
+        by_uid.get(uid).is_some_and(|e| {
+            e.evidence.iter().any(|ev| {
+                ev.attributes
+                    .get("metadata_confidence")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .is_some_and(|c| c >= crate::util::media_score::META_EMIT_MIN)
+            })
+        })
+    };
+
+    let mut nodes: Vec<&str> = adj.keys().copied().collect();
+    nodes.sort_unstable();
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut out = Vec::new();
+    for &start in &nodes {
+        if !visited.insert(start) {
+            continue;
+        }
+        let mut comp = vec![start];
+        let mut stack = vec![start];
+        while let Some(n) = stack.pop() {
+            if let Some(neighbours) = adj.get(n) {
+                for &m in neighbours {
+                    if visited.insert(m) {
+                        comp.push(m);
+                        stack.push(m);
+                    }
+                }
+            }
+        }
+        if comp.len() >= 2 {
+            comp.sort_unstable();
+            let any_meta = comp.iter().any(|u| has_meta(u));
+            let sample = by_uid.get(comp[0]).map_or(comp[0], |e| e.value.as_str());
+            let uids: Vec<String> = comp.iter().map(|u| (*u).to_string()).collect();
+            out.push(Correlation::new(
+                "AU-034",
+                "Cross-source image equivalence",
+                if any_meta {
+                    Severity::High
+                } else {
+                    Severity::Medium
+                },
+                format!(
+                    "Same image found across {} sources{} (e.g. {})",
+                    comp.len(),
+                    if any_meta {
+                        "; embedded metadata on one copy applies to all"
+                    } else {
+                        ""
+                    },
+                    sample
+                ),
+                uids,
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}

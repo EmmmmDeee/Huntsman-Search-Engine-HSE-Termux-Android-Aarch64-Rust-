@@ -12,6 +12,32 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Perceptual image hashing (DCT pHash) + dual confidence + cross-source
+  equivalence.** Images are now fingerprinted with a robust 64-bit DCT
+  perceptual hash (`util::phash`, pure-Rust `image` decoders — no C deps), the
+  local deterministic stand-in for reverse-image search: it links the **same
+  picture across different sources independent of metadata**. New
+  `RelationKind::SameImageAs` edges (`derive_image_similarity`, Hamming
+  ≤ 10/64) join near-duplicates, and the graph-aware correlator rule **AU-034 —
+  Cross-source image equivalence** fires on a duplicate cluster spanning ≥2
+  sources (High when any copy carries trustworthy metadata, so a location/author
+  on one copy is attributed to the metadata-stripped twins).
+- **Independent content vs metadata confidence + recursion gating**
+  (`util::media_score`). Each image gets a `content_confidence` (visual detail +
+  source trust — kept even with no metadata, as a similarity anchor) and a
+  separate `metadata_confidence` (GPS plausibility + camera/serial/author
+  richness). Threshold consts (`IMAGE_KEEP_MIN`, `META_EMIT_MIN`,
+  `DOC_META_EMIT_MIN`) gate the pipeline so junk/low-relevance media can't
+  recurse and flood the graph, while high-value media drives expansion as
+  before. **Source/metadata are scrutinised immediately**: provenance trust
+  (https/shortener/junk-path), Null-Island GPS rejection, and emitted-node
+  confidence scaled by both scores.
+- **Documents parsed intelligently.** `doc_meta` now validates the `%PDF`
+  signature before trusting a `.pdf` response (rejects mislabelled HTML/login
+  walls), filters generic/default authors (`user`, `Administrator`, `Microsoft
+  Office User`, …), scores document metadata confidence, and gates emission on
+  it. `exif_geo` also reads PNG now and emits an image content anchor.
+
 - **Image + document metadata harvesting with cross-correlation.** `exif_geo`
   now reads both **EXIF and the XMP packet** (complementary — platforms often
   strip one but pass the other) and emits, beyond GPS `Coordinates`, a camera

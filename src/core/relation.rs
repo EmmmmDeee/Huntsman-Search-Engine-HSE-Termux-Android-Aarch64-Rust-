@@ -49,6 +49,10 @@ pub enum RelationKind {
     CoLocatedWith,
     /// `from` was discovered by pivoting on `to` during expansion (lineage).
     DerivedFrom,
+    /// `from` and `to` are images whose perceptual hashes are within
+    /// `phash::EQUIV_MAX_HAMMING` — the same picture surfaced from different
+    /// sources, independent of (and often despite stripped) metadata.
+    SameImageAs,
 }
 
 impl RelationKind {
@@ -61,6 +65,7 @@ impl RelationKind {
             Self::RegisteredBy => "registered_by",
             Self::CoLocatedWith => "co_located_with",
             Self::DerivedFrom => "derived_from",
+            Self::SameImageAs => "same_image_as",
         }
     }
 }
@@ -371,6 +376,52 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
                 if let Some(&em) = email_by_value.get(email_key.as_str()) {
                     link(dom, em, &mut out);
                 }
+            }
+        }
+    }
+    out
+}
+
+/// Derive `SameImageAs` edges between images whose perceptual hashes are within
+/// [`crate::util::phash::EQUIV_MAX_HAMMING`]. This is the local, deterministic
+/// reverse-image-search: it links the *same picture* across different source
+/// URLs regardless of (and despite stripped) metadata, so a metadata-bearing
+/// copy and a metadata-less copy become one cluster in the graph.
+///
+/// Reads the `phash` evidence attribute that the image modules attach. One
+/// canonically-directed edge per near-duplicate pair; deterministic.
+pub fn derive_image_similarity(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use crate::util::phash::{EQUIV_MAX_HAMMING, Phash};
+
+    // (entity, hash) for every entity carrying a parseable phash attribute.
+    let hashed: Vec<(&Entity, Phash)> = entities
+        .iter()
+        .filter_map(|e| {
+            e.evidence
+                .iter()
+                .find_map(|ev| ev.attributes.get("phash"))
+                .and_then(|h| Phash::from_hex(h))
+                .map(|p| (e, p))
+        })
+        .collect();
+
+    let mut out = Vec::new();
+    for i in 0..hashed.len() {
+        for j in (i + 1)..hashed.len() {
+            let (a, ha) = hashed[i];
+            let (b, hb) = hashed[j];
+            if a.uid == b.uid {
+                continue; // same node seen twice (defensive)
+            }
+            if ha.hamming(hb) <= EQUIV_MAX_HAMMING {
+                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
+                out.push(Relation::new(
+                    from.uid.as_str(),
+                    to.uid.as_str(),
+                    RelationKind::SameImageAs,
+                    a.confidence.min(b.confidence),
+                    scan_id,
+                ));
             }
         }
     }
@@ -714,5 +765,28 @@ mod tests {
             1,
             "one edge per (domain, registrant)"
         );
+    }
+
+    #[test]
+    fn image_similarity_links_only_near_duplicate_phashes() {
+        use crate::core::entity::Evidence;
+        let img = |url: &str, phash_hex: &str| {
+            let mut e = Entity::new(EntityKind::Url, url, 0.6, "s");
+            e.add_evidence(Evidence::new("exif_geo", "img").with_attr("phash", phash_hex));
+            e
+        };
+        // a,b within EQUIV_MAX_HAMMING (2 bits); c is far (all bits set).
+        let a = img("https://a.example/1.jpg", "0000000000000000");
+        let b = img("https://b.example/2.jpg", "0000000000000003");
+        let c = img("https://c.example/3.jpg", "ffffffffffffffff");
+        let rels = derive_image_similarity(&[a, b, c], "s");
+        assert_eq!(rels.len(), 1, "only the near-duplicate pair links");
+        assert_eq!(rels[0].kind, RelationKind::SameImageAs);
+    }
+
+    #[test]
+    fn image_similarity_ignores_entities_without_phash() {
+        let plain = Entity::new(EntityKind::Url, "https://x/y.html", 0.6, "s");
+        assert!(derive_image_similarity(&[plain], "s").is_empty());
     }
 }

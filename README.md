@@ -109,8 +109,11 @@ the seed type (pass `--depth 0` for a single round).
 - **Threat intel**: `alienvault_otx`, `threatfox`, `urlhaus`
 - **Web analysis**: `web_crawler`, `webserver_banner`, `search_engines`
 - **Media/document metadata**: `exif_geo` (image EXIF + XMP → GPS, capture
-  device, author), `doc_meta` (PDF author + authoring toolchain) — in-memory
-  only, never written to disk; cross-linked by correlator rule AU-033
+  device, author + **DCT perceptual hash** for content equivalence),
+  `doc_meta` (PDF author + authoring toolchain, `%PDF`-validated, junk-author
+  filtered) — in-memory only, never written to disk. Independent content vs
+  metadata confidence gates recursion; same-image and shared-origin clusters
+  cross-linked by correlator rules AU-033/AU-034
 - **Phone**: `phone_intl` (offline, 175 country prefixes)
 - **Corporate**: `opencorporates` (AU jurisdiction focus)
 - **Termux sensors**: `gps_fix`, `wifi_scan`, `wifi_connect`, `arp_scan`,
@@ -209,11 +212,12 @@ pin a fixed depth, or `--recursive` for an aggressive deep sweep.
   dossier, `--output json`, GEXF export, the SPA D3 force-graph, and
   `GET /api/v1/scans/{id}/relations`
 - 1,300+ tests (unit + API integration + architecture boundary enforcement)
-- 33 correlator rules (AU-001 through AU-033), incl. 2 graph-aware edge rules
+- 34 correlator rules (AU-001 through AU-034), incl. 3 graph-aware edge rules
 - Always-on, secret-redacted debug log (`$HOME/.huntsman/logs/hse.log`) +
   live Web-UI **Logs** stream; `hse doctor --bundle` for one-paste diagnosis
 - 2 tokio worker threads (tuned for Termux low-power devices)
-- Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
+- Release binary ~10 MB stripped (opt-level="s", LTO, codegen-units=1); the
+  pure-Rust image decoder for perceptual hashing accounts for ~half
 
 ---
 

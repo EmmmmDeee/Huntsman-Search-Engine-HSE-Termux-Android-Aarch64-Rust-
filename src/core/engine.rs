@@ -357,24 +357,28 @@ impl ScanEngine {
         let colocation = crate::core::relation::derive_colocation(entities, scan_id);
         let resolution = crate::core::relation::derive_resolution(entities, scan_id);
         let registration = crate::core::relation::derive_registration(entities, scan_id);
+        let similarity = crate::core::relation::derive_image_similarity(entities, scan_id);
         // Capture per-family counts before the vecs are moved into the batch.
-        let (n_lin, n_str, n_col, n_res, n_reg) = (
+        let (n_lin, n_str, n_col, n_res, n_reg, n_img) = (
             lineage.len(),
             structural.len(),
             colocation.len(),
             resolution.len(),
             registration.len(),
+            similarity.len(),
         );
 
         // Gather every edge into one batch so persistence is a single WAL
         // transaction (one fsync) instead of N — a material IO win on
         // high-relation scans on low-power aarch64.
-        let mut all: Vec<Relation> = Vec::with_capacity(n_lin + n_str + n_col + n_res + n_reg);
+        let mut all: Vec<Relation> =
+            Vec::with_capacity(n_lin + n_str + n_col + n_res + n_reg + n_img);
         all.extend(lineage.iter().cloned());
         all.extend(structural);
         all.extend(colocation);
         all.extend(resolution);
         all.extend(registration);
+        all.extend(similarity);
         if all.is_empty() {
             return;
         }
@@ -404,6 +408,7 @@ impl ScanEngine {
             colocation = n_col,
             resolution = n_res,
             registration = n_reg,
+            similarity = n_img,
             persisted,
             "entity relations persisted"
         );
