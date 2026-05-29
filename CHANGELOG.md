@@ -81,8 +81,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   domain. Robust by design — it matches the IP's evidence attribute *values*
   and summary tokens against known Domain entities rather than coupling to a
   specific module's attribute key, so it captures both `dns_intel` (attribute)
-  and `doh_resolver` (summary) shapes. Completes the relation taxonomy
-  (structural + lineage + co-location + resolution).
+  and `doh_resolver` (summary) shapes.
+- **WHOIS registration relations (`RegisteredBy`).** `derive_registration`
+  links a Domain to its registrant Organisation/Email when the Domain's WHOIS
+  evidence references one that exists as an entity. Same value-match robustness
+  as resolution (matches entity values, not attribute keys); the registrar
+  self-excludes since `whois` only emits the registrant org/email as entities.
+  Closes the relation taxonomy (structural + lineage + co-location + resolution
+  + registration).
 
 ## [1.0.0] — 2026-05-27
 

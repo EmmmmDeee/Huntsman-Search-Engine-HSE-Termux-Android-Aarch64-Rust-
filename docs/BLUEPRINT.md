@@ -48,7 +48,7 @@ property regresses.
 | 1 | **Low overhead / memory** | 2 tokio workers; sequential dispatch default; response cache; budget caps; `entity_map` capacity clamp; mmap-tunable SQLite | `main.rs:3`, `lib.rs:26`, `engine.rs:198-199` |
 | 1 | **Single-binary recursive SpiderFoot** | `default-run = "hse"`; embedded SPA; `run_expansion` recursive walk | `Cargo.toml:9`; `engine.rs:341` |
 | 2 | **Shared data fabric** (instant framework-wide propagation) | per-scan `entity_map` (GREATEST-merge) + SQLite store + `entity_observations` junction + `EventBus` + **key-pool hot-inject** | `engine.rs:623,300-304,358-367` |
-| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 32 rules (incl. **graph-aware AU-031/AU-032** that walk the edges), **and first-class typed `Relation` edges** (structural + expansion lineage + geo co-location + DNS resolution); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
+| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 32 rules (incl. **graph-aware AU-031/AU-032** that walk the edges), **and first-class typed `Relation` edges** (structural + expansion lineage + geo co-location + DNS resolution + WHOIS registration); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
 | 2 | **Discovery loops / adaptive pivoting** | `run_expansion`: depth-bounded DFS with ROI saturation-pruning, top-K gating, adaptive-depth termination, 4 expansion strategies | `engine.rs:341-510`, `core/roi.rs`, `core/scan.rs` |
 | 3 | **Code quality / static+dynamic verification** | CI: `fmt --check`, `check --locked`, `clippy -D warnings`, `test --all`, MSRV 1.88, shellcheck | `.github/workflows/ci.yml` |
 | 3 | **Resilience / regression testing** | 1,254 tests green (1173 lib + 36 API + 8 architecture + 37 smoke); per-module timeout; `panic = "abort"` | `tests/`, `engine.rs:752`, `Cargo.toml:64` |
@@ -313,15 +313,19 @@ signatures.
 
 Where the correlator emits *findings*, the relation layer emits *typed edges* —
 the explicit attribution graph. After entities are persisted, `finalise_scan`
-calls three pure builders: `derive_structural`, which links entities by their
+calls four pure builders: `derive_structural`, which links entities by their
 canonical values — `SubdomainOf` (Domain → closest present parent),
 `BelongsToDomain` (Email → its Domain), `HostedOn` (Url → its Domain);
 `derive_colocation`, which links Coordinates within `CO_LOCATION_KM` (1 km) via
-`util::geohash` Haversine distance as `CoLocatedWith`; and `derive_resolution`,
+`util::geohash` Haversine distance as `CoLocatedWith`; `derive_resolution`,
 which links a Domain to an IpAddress (`ResolvesTo`) by matching the IP entity's
-DNS evidence (attribute values + summary tokens) against present Domain nodes —
-robust across `dns_intel`/`doh_resolver` without coupling to attribute keys.
-Each `Relation` has a
+DNS evidence (attribute values + summary tokens) against present Domain nodes;
+and `derive_registration`, which links a Domain to its registrant Organisation
+or Email (`RegisteredBy`) by matching the Domain's WHOIS evidence values against
+present Organisation/Email nodes. The evidence-derived builders
+(`derive_resolution`/`derive_registration`) match on the *value* being a known
+entity, not on attribute-key names — robust across the modules that produce
+them. Each `Relation` has a
 deterministic SHA-256 id (so re-scans upsert idempotently), carries the weaker
 endpoint's confidence, and is persisted to the `relations` table via
 `StoragePort` (cascade-deleted with the scan). Edges are retrievable through
@@ -503,10 +507,14 @@ disturbing the invariants above.
   robust across `dns_intel`/`doh_resolver` because it keys on the value being a
   known domain, not on a specific attribute name. Covered by realistic-fixture
   regression tests for both module shapes.
-- _Remaining (optional):_ (a) `registered_by` (Domain → registrant from WHOIS
-  evidence) — the last conceivable edge family; deferred as it needs the WHOIS
-  parse surface. (b) Further graph rules (e.g. multi-hop reachability) on the
-  `RELATION_RULES` seam.
+- ✅ **Done (slice 9 — WHOIS registration edges).** `derive_registration` links
+  Domain → registrant Organisation/Email (`RegisteredBy`) by matching the
+  Domain's WHOIS evidence values against present Organisation/Email entities
+  (same value-match robustness as resolution; the registrar self-excludes since
+  it isn't emitted as an entity). **The relation taxonomy is now closed** —
+  structural, lineage, geo, resolution, and registration edges.
+- _Remaining (optional):_ Further graph rules (e.g. multi-hop reachability) on
+  the `RELATION_RULES` seam — composable, but increasingly marginal.
 
 **P3 — performance on aarch64**
 - ✅ **Done.** `finalise_scan` now persists the scan's entities through

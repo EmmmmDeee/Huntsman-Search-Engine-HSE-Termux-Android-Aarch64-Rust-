@@ -355,10 +355,12 @@ impl ScanEngine {
         let structural = crate::core::relation::derive_structural(entities, scan_id);
         let colocation = crate::core::relation::derive_colocation(entities, scan_id);
         let resolution = crate::core::relation::derive_resolution(entities, scan_id);
+        let registration = crate::core::relation::derive_registration(entities, scan_id);
         if lineage.is_empty()
             && structural.is_empty()
             && colocation.is_empty()
             && resolution.is_empty()
+            && registration.is_empty()
         {
             return;
         }
@@ -368,6 +370,7 @@ impl ScanEngine {
             .chain(structural.iter())
             .chain(colocation.iter())
             .chain(resolution.iter())
+            .chain(registration.iter())
         {
             match self.store.upsert_relation(r) {
                 Ok(()) => persisted += 1,
@@ -380,6 +383,7 @@ impl ScanEngine {
             structural = structural.len(),
             colocation = colocation.len(),
             resolution = resolution.len(),
+            registration = registration.len(),
             persisted,
             "entity relations persisted"
         );

@@ -41,6 +41,9 @@ pub enum RelationKind {
     /// `from` (a Domain) resolves to `to` (an IpAddress) — derived from DNS
     /// evidence on the IP entity (A/AAAA records).
     ResolvesTo,
+    /// `from` (a Domain) is registered by `to` (an Organisation or Email) —
+    /// derived from WHOIS registrant evidence on the Domain entity.
+    RegisteredBy,
     /// `from` and `to` are Coordinates within `CO_LOCATION_KM` of each other —
     /// the same locality, surfaced by independent sources.
     CoLocatedWith,
@@ -55,6 +58,7 @@ impl RelationKind {
             Self::BelongsToDomain => "belongs_to_domain",
             Self::HostedOn => "hosted_on",
             Self::ResolvesTo => "resolves_to",
+            Self::RegisteredBy => "registered_by",
             Self::CoLocatedWith => "co_located_with",
             Self::DerivedFrom => "derived_from",
         }
@@ -289,6 +293,67 @@ pub fn derive_resolution(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
                         ip.confidence.min(dom.confidence),
                         scan_id,
                     ));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Derive `RegisteredBy` edges (Domain → Organisation / Email) from WHOIS
+/// registrant evidence.
+///
+/// Robust by design, mirroring `derive_resolution`: it matches a Domain
+/// entity's evidence attribute *values* (e.g. `whois`'s `registrant_org` /
+/// `registrant_email` attrs) against present Organisation and Email entities,
+/// rather than coupling to attribute keys. `whois` emits the registrant org
+/// and contact emails as their own entities, so both endpoints are present;
+/// the registrar (not a registrant) is never emitted as an entity, so it
+/// self-excludes. Org names are matched as whole trimmed values (not tokenised)
+/// since they contain spaces. Deterministic; one edge per (domain, registrant).
+pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::{HashMap, HashSet};
+
+    let org_by_value: HashMap<&str, &Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation)
+        .map(|e| (e.value.as_str(), e))
+        .collect();
+    let email_by_value: HashMap<&str, &Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| (e.value.as_str(), e))
+        .collect();
+    if org_by_value.is_empty() && email_by_value.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    let mut link = |dom: &Entity, who: &Entity, out: &mut Vec<Relation>| {
+        if seen.insert((dom.uid.clone(), who.uid.clone())) {
+            out.push(Relation::new(
+                dom.uid.as_str(),
+                who.uid.as_str(),
+                RelationKind::RegisteredBy,
+                dom.confidence.min(who.confidence),
+                scan_id,
+            ));
+        }
+    };
+
+    for dom in entities.iter().filter(|e| e.kind == EntityKind::Domain) {
+        for ev in &dom.evidence {
+            for v in ev.attributes.values() {
+                // Organisation: whole trimmed value (org names contain spaces).
+                if let Some(&org) = org_by_value.get(v.trim()) {
+                    link(dom, org, &mut out);
+                    continue;
+                }
+                // Email: normalise the same way the Email entity value was.
+                let email_key = crate::core::entity::normalise(&EntityKind::Email, v);
+                if let Some(&em) = email_by_value.get(email_key.as_str()) {
+                    link(dom, em, &mut out);
                 }
             }
         }
@@ -533,6 +598,68 @@ mod tests {
             derive_resolution(&[ip, dom], "s").len(),
             1,
             "one edge per (domain, ip) pair"
+        );
+    }
+
+    // ── derive_registration (Domain → registrant via WHOIS evidence) ───────
+
+    #[test]
+    fn registration_links_domain_to_registrant_org_and_email() {
+        use crate::core::entity::Evidence;
+        // Realistic whois fixture: the Domain carries registrant_org +
+        // registrant_email attrs (and a registrar that is NOT a registrant),
+        // and whois also emits the Organisation + Email entities.
+        let mut dom = Entity::new(EntityKind::Domain, "example.com", 0.92, "rel-scan");
+        dom.add_evidence(
+            Evidence::new("whois", "WHOIS for example.com")
+                .with_attr("registrar", "MarkMonitor Inc.")
+                .with_attr("registrant_org", "Example Org LLC")
+                .with_attr("registrant_email", "admin@example.com"),
+        );
+        let org = ent(EntityKind::Organisation, "Example Org LLC", 0.72);
+        let email = ent(EntityKind::Email, "admin@example.com", 0.78);
+        let rels = derive_registration(&[dom.clone(), org.clone(), email.clone()], "s");
+        assert_eq!(
+            rels.len(),
+            2,
+            "registrant org + registrant email; not registrar"
+        );
+        assert!(rels.iter().all(|r| r.kind == RelationKind::RegisteredBy));
+        assert!(
+            rels.iter().all(|r| r.from_uid == dom.uid),
+            "domain -> registrant"
+        );
+        let targets: Vec<&str> = rels.iter().map(|r| r.to_uid.as_str()).collect();
+        assert!(targets.contains(&org.uid.as_str()));
+        assert!(targets.contains(&email.uid.as_str()));
+    }
+
+    #[test]
+    fn registration_no_edge_when_registrant_not_an_entity() {
+        use crate::core::entity::Evidence;
+        let mut dom = Entity::new(EntityKind::Domain, "example.com", 0.92, "rel-scan");
+        dom.add_evidence(
+            Evidence::new("whois", "WHOIS for example.com")
+                .with_attr("registrant_org", "Nonexistent Org"),
+        );
+        // No Organisation/Email entity matches → no edge.
+        assert!(derive_registration(&[dom], "s").is_empty());
+    }
+
+    #[test]
+    fn registration_dedups_repeated_registrant() {
+        use crate::core::entity::Evidence;
+        let mut dom = Entity::new(EntityKind::Domain, "example.com", 0.9, "rel-scan");
+        dom.add_evidence(
+            Evidence::new("whois", "WHOIS for example.com")
+                .with_attr("registrant_org", "Acme Inc")
+                .with_attr("admin_org", "Acme Inc"),
+        );
+        let org = ent(EntityKind::Organisation, "Acme Inc", 0.72);
+        assert_eq!(
+            derive_registration(&[dom, org], "s").len(),
+            1,
+            "one edge per (domain, registrant)"
         );
     }
 }
