@@ -41,28 +41,13 @@ pub fn is_saturated(entity: &Entity) -> bool {
         && entity.c_effective() >= SATURATION_CONFIDENCE
 }
 
-/// True if an entity is **breach-dump noise that should never seed expansion**.
-///
-/// A high-recall breach query on a common name returns entire breach corpora —
-/// hundreds of single-source emails/phones/persons/addresses that merely
-/// co-occur with the query tokens. Pivoting on each of those wastes the bulk
-/// of the expansion budget chasing unrelated identities (observed live: ~341
-/// such entities from one common-name query). This gate is *always on* (unlike
-/// the `max_roi` bundle): a breach/stealer-tagged PII entity that no
-/// independent source corroborated (`corroboration < 2`) is not pivot-worthy.
-/// The genuine subject — re-derived across modules — has `corroboration ≥ 2`
-/// and is unaffected.
-pub fn is_breach_dump_noise(entity: &Entity) -> bool {
-    use crate::core::entity::EntityKind;
-    let breach_sourced =
-        entity.has_tag("breach") || entity.has_tag("oathnet-pro") || entity.has_tag("stealer-log");
-    breach_sourced
-        && entity.corroboration < SATURATION_CORROBORATION
-        && matches!(
-            entity.kind,
-            EntityKind::Email | EntityKind::Phone | EntityKind::Person | EntityKind::Address
-        )
-}
+// NOTE (recursion scrutiny): a former `is_breach_dump_noise` gate skipped
+// expansion of any single-source (`corroboration < 2`) breach-tagged PII. That
+// was anti-recursive — it also blocked the subject's *own* breach email when
+// only one source found it, the exact pivot recursion needs to corroborate it
+// across modules. Off-target dump noise is now suppressed at the source
+// (producing modules tag it `candidate`, and the confidence floor drops it),
+// so the engine gates expansion on the `candidate` relevance tag instead.
 
 /// Top-K cap on expansion candidates per round. Scales with concurrency
 /// so a 16-worker scan keeps a deeper pool than a 4-worker scan.
@@ -108,29 +93,6 @@ mod tests {
         let mut e = Entity::new(EntityKind::Email, "x@y.com", conf, "scan");
         e.corroboration = corrob;
         e
-    }
-
-    #[test]
-    fn breach_dump_noise_is_single_source_breach_pii() {
-        let mut dump = Entity::new(EntityKind::Email, "rando@bank.com", 0.7, "s");
-        dump.tag("breach");
-        dump.tag("oathnet-pro");
-        assert!(is_breach_dump_noise(&dump)); // corroboration 1 + breach + email
-
-        // Corroborated subject email — not noise.
-        let mut real = Entity::new(EntityKind::Email, "subject@x.com", 0.7, "s");
-        real.tag("breach");
-        real.corroboration = 2;
-        assert!(!is_breach_dump_noise(&real));
-
-        // Non-PII kind (domain) — not gated as PII dump noise.
-        let mut dom = Entity::new(EntityKind::Domain, "x.com", 0.7, "s");
-        dom.tag("breach");
-        assert!(!is_breach_dump_noise(&dom));
-
-        // No breach provenance — never noise regardless of corroboration.
-        let plain = Entity::new(EntityKind::Email, "a@b.com", 0.7, "s");
-        assert!(!is_breach_dump_noise(&plain));
     }
 
     #[test]

@@ -495,12 +495,17 @@ impl ScanEngine {
                 if opts.max_roi && crate::core::roi::is_saturated(entity) {
                     continue;
                 }
-                // Pivot efficiency (always on): never spend expansion budget on
-                // single-source breach-dump PII. A common-name breach query
-                // floods the corpus with hundreds of unrelated identities;
-                // pivoting on each one squanders the round. The genuine subject
-                // is corroborated and unaffected.
-                if crate::core::roi::is_breach_dump_noise(entity) {
+                // Pivot relevance (always on): skip entities a producing module
+                // flagged as off-target (`candidate`) — common-name breach-dump
+                // co-occurrences that belong to other people. This gates on
+                // *relevance*, NOT corroboration: a single-source entity that IS
+                // on-target (the subject's own breach email, found once) must
+                // still expand — that pivot is exactly how recursion corroborates
+                // it across modules. Gating on corroboration instead was
+                // self-fulfilling (declare single-source = noise, then prevent
+                // the expansion that would make it multi-source) and crippled the
+                // engine's core recursive cross-correlation.
+                if entity.has_tag("candidate") {
                     continue;
                 }
                 // Pivot efficiency (region prior): don't chase leads whose own
