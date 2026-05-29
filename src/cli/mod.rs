@@ -5,7 +5,16 @@
 //! `live` re-runs the same scan on a fixed interval (v0.5+). See
 //! `docs/USAGE.md` for the full reference.
 
+mod doctor;
+mod export;
+mod keys_cmd;
+mod live;
 mod provision;
+mod radar;
+mod scan;
+mod serve;
+
+use keys_cmd::KeysAction;
 
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -17,13 +26,13 @@ use crate::{
     core::{
         engine::ScanEngine,
         error::{Error, Result},
-        module::{ModuleContext, ModuleCost},
-        scan::{Scan, ScanOptions, Target, TargetKind},
+        module::ModuleCost,
+        scan::{Target, TargetKind},
     },
-    default_db_path, is_termux,
+    default_db_path,
     modules::registry,
     storage::Store,
-    util::{http::build_client, keys, uid::scan_id},
+    util::keys,
 };
 
 #[derive(Parser)]
@@ -118,12 +127,38 @@ pub enum Command {
         /// floor (0.75). Lower = recurse further before giving up.
         #[arg(long)]
         min_marginal_yield: Option<f64>,
+        /// Expansion ordering strategy: `geo_converge` (default; legacy),
+        /// `breadth_first`, `depth_first`, `richest_first`. Changes how
+        /// the engine prioritises expansion candidates each round.
+        #[arg(long, default_value = "geo_converge")]
+        expansion_strategy: String,
+        /// Per-scan SeekNow (see-know.eu) budget override. Caps the
+        /// number of SeekNow API queries this scan may dispatch.
+        /// Default (None) falls back to HUNTSMAN_SEEKNOW_SCAN_CAP env
+        /// (24). Hard-clamped at 200 to preserve the daily session
+        /// ceiling. Raise for investigative scans on high-value
+        /// targets; lower for passive recces that shouldn't burn
+        /// quota.
+        #[arg(long)]
+        seeknow_scan_cap: Option<u32>,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(short, long, default_value = "table")]
         output: String,
     },
     /// List registered modules with their cost tier and accepted target kinds.
-    Modules,
+    ///
+    /// Filter with `--category <cat>` (dns_recon / breach / infrastructure /
+    /// search / geo / social / email / phone / corporate / threat / sensor
+    /// / people / web / other) or `--json` to get the machine-readable
+    /// shape that `/api/v1/modules` returns.
+    Modules {
+        /// Restrict listing to one module category.
+        #[arg(short, long)]
+        category: Option<String>,
+        /// Output as JSON (same shape as `/api/v1/modules`).
+        #[arg(long)]
+        json: bool,
+    },
     /// Verify environment: DB path, key file, Termux detection, module counts.
     Doctor,
     /// Provision the local environment: write/merge `$HOME/.huntsman.env`
@@ -241,65 +276,29 @@ pub enum Command {
         #[arg(long)]
         free_only: bool,
     },
-}
-
-#[derive(Subcommand)]
-pub enum KeysAction {
-    /// Add a key to the pool for a service.
-    Add {
-        /// Service name (shodan, intelx, dehashed, wigle, etc.)
-        service: String,
-        /// The API key value.
-        key: String,
-        /// Optional notes (e.g. "free tier", "expires 2026-12").
-        #[arg(long)]
-        notes: Option<String>,
-    },
-    /// List all keys in the pool.
-    List {
-        /// Filter by service name.
-        service: Option<String>,
-    },
-    /// Validate keys against live endpoints.
-    Validate {
-        /// Validate only this service. Omit to validate all.
-        service: Option<String>,
-    },
-    /// Remove a key from the pool.
-    Remove {
-        /// Service name.
-        service: String,
-        /// Key value to remove.
-        key: String,
-    },
-    /// Show pool status summary.
-    Status,
-    /// List supported service names and their categories.
-    Services,
-    /// Import candidate keys/credentials from a TSV file.
+    /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report.
     ///
-    /// Expected format (tab-separated, header optional):
-    ///   source_file\tfield\ttags\tvalue\turl_or_context
+    /// JSON           — `[{ kind, value, ... }, ...]` flat entity list
+    /// CSV            — operator-friendly tabular form (same shape as
+    ///                  the `/api/v1/scans/{id}/entities.csv` endpoint)
+    /// GEXF           — Gephi/Cytoscape-importable graph with
+    ///                  scan-id + observed_at on every node
+    /// Report         — pretty-printed JSON dossier (scan + entities +
+    ///                  correlations + counts; same shape as
+    ///                  `/api/v1/scans/{id}/report.json`)
     ///
-    /// This is the format produced by `extract_all.py` on OathNet
-    /// stealer/breach dumps. The value column is matched against the
-    /// 80+ API-key prefix patterns and the 165+ service-domain map;
-    /// only entries that classify as recognised keys are imported.
-    ///
-    /// The TSV stays on disk — no values are committed anywhere. The
-    /// pool file ($HOME/.huntsman_keys.json, chmod 0600) records the
-    /// imported entries with `discovered_by="tsv_import:<source>"`
-    /// provenance so they can be removed later.
-    ImportTsv {
-        /// Path to the TSV file.
-        file: String,
-        /// Validate each imported key against its service's live
-        /// endpoint after import (default: store as Untested).
-        #[arg(long)]
-        validate: bool,
-        /// Dry run — print what would be imported without writing.
-        #[arg(long)]
-        dry_run: bool,
+    /// Output goes to stdout by default; pass `--out <path>` to write
+    /// to a file.
+    Export {
+        /// Scan ID (or `latest` for the most-recent completed scan).
+        #[arg(short, long)]
+        scan_id: String,
+        /// Output format: json | csv | gexf | report. Default `json`.
+        #[arg(short, long, default_value = "json")]
+        format: String,
+        /// File path to write to. Omit for stdout.
+        #[arg(short, long)]
+        out: Option<String>,
     },
 }
 
@@ -333,9 +332,11 @@ pub async fn run() -> Result<()> {
             adaptive,
             max_roi,
             min_marginal_yield,
+            expansion_strategy,
+            seeknow_scan_cap,
             output,
         } => {
-            cmd_scan(ScanCmd {
+            scan::cmd_scan(scan::ScanCmd {
                 kind,
                 value,
                 modules,
@@ -355,24 +356,26 @@ pub async fn run() -> Result<()> {
                 adaptive,
                 max_roi,
                 min_marginal_yield,
+                expansion_strategy,
+                seeknow_scan_cap,
                 output,
             })
             .await
         }
-        Command::Modules => cmd_modules(),
-        Command::Doctor => cmd_doctor(),
+        Command::Modules { category, json } => cmd_modules(category, json),
+        Command::Doctor => doctor::cmd_doctor().await,
         Command::Provision {
             env_only,
             verify_only,
             dry_run,
         } => cmd_provision(env_only, verify_only, dry_run).await,
         Command::SetKey { name, value } => cmd_set_key(name, value),
-        Command::Keys { action } => cmd_keys(action).await,
+        Command::Keys { action } => keys_cmd::cmd_keys(action).await,
         Command::Import { file, output } => cmd_import(&file, &output).await,
         Command::Serve {
             bind,
             allow_key_write,
-        } => cmd_serve(bind, allow_key_write).await,
+        } => serve::cmd_serve(bind, allow_key_write).await,
         Command::Live {
             kind,
             value,
@@ -383,7 +386,7 @@ pub async fn run() -> Result<()> {
             passive_only,
             modules,
         } => {
-            cmd_live(LiveCmd {
+            live::cmd_live(live::LiveCmd {
                 kind,
                 value,
                 interval,
@@ -400,7 +403,12 @@ pub async fn run() -> Result<()> {
             depth,
             sweeps,
             free_only,
-        } => cmd_radar(interval, depth, sweeps, free_only).await,
+        } => radar::cmd_radar(interval, depth, sweeps, free_only).await,
+        Command::Export {
+            scan_id,
+            format,
+            out,
+        } => export::cmd_export(scan_id, format, out).await,
     }
 }
 
@@ -429,337 +437,44 @@ fn cmd_set_key(name: String, value: String) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_keys(action: KeysAction) -> Result<()> {
-    use crate::util::key_pool::{self, KeyEntry, KeyStatus};
-
-    let pool = key_pool::global_pool();
-
-    match action {
-        KeysAction::Add {
-            service,
-            key,
-            notes,
-        } => {
-            if key_pool::find_service(&service).is_none() {
-                let names: Vec<&str> = key_pool::service_defs().iter().map(|s| s.name).collect();
-                println!("Unknown service '{service}'. Known: {}", names.join(", "));
-                println!("Adding anyway — key will be stored but not auto-validated.");
-            }
-            let mut entry = KeyEntry::new(&key);
-            entry.notes = notes;
-            if pool.add(&service, entry) {
-                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
-                println!(
-                    "Added key to '{service}' pool ({} total)",
-                    pool.service_count(&service)
-                );
-            } else {
-                println!("Key already exists in '{service}' pool.");
-            }
-        }
-
-        KeysAction::List { service } => {
-            let snap = pool.snapshot();
-            let services: Vec<(&String, &Vec<KeyEntry>)> = if let Some(ref s) = service {
-                let lower = s.to_lowercase();
-                snap.services.iter().filter(|(k, _)| **k == lower).collect()
-            } else {
-                snap.services.iter().collect()
-            };
-
-            if services.is_empty() {
-                println!("No keys in pool.");
-                return Ok(());
-            }
-
-            for (svc, entries) in &services {
-                println!("\n[{svc}] ({} keys)", entries.len());
-                for (i, e) in entries.iter().enumerate() {
-                    let masked = if e.value.len() > 8 {
-                        format!("{}…{}", &e.value[..4], &e.value[e.value.len() - 4..])
-                    } else {
-                        e.value.clone()
-                    };
-                    let notes = e.notes.as_deref().unwrap_or("");
-                    println!(
-                        "  {}: {} [{}] uses={} {}",
-                        i + 1,
-                        masked,
-                        e.status.as_str(),
-                        e.use_count,
-                        notes
-                    );
-                    if let Some(ts) = e.discovered_at {
-                        let by = e.discovered_by.as_deref().unwrap_or("unknown");
-                        let scan = e
-                            .discovered_in_scan
-                            .as_deref()
-                            .map(|s| &s[..8.min(s.len())])
-                            .unwrap_or("-");
-                        let src = e.source_entity.as_deref().unwrap_or("-");
-                        println!("       discovered: ts={ts} by={by} scan={scan} entity={src}");
-                    }
-                }
-            }
-        }
-
-        KeysAction::Validate { service } => {
-            let snap = pool.snapshot();
-            let targets: Vec<(String, Vec<KeyEntry>)> = if let Some(ref s) = service {
-                let lower = s.to_lowercase();
-                snap.services
-                    .into_iter()
-                    .filter(|(k, _)| *k == lower)
-                    .collect()
-            } else {
-                snap.services.into_iter().collect()
-            };
-
-            if targets.is_empty() {
-                println!("No keys to validate.");
-                return Ok(());
-            }
-
-            let mut validated = 0u32;
-            let mut active = 0u32;
-            for (svc, entries) in &targets {
-                for entry in entries {
-                    print!(
-                        "  {svc}: testing {}… ",
-                        &entry.value[..entry.value.len().min(8)]
-                    );
-                    match key_pool::validate_key(svc, &entry.value).await {
-                        Some(true) => {
-                            pool.mark_validated(svc, &entry.value, true);
-                            println!("ACTIVE");
-                            active += 1;
-                        }
-                        Some(false) => {
-                            pool.mark_validated(svc, &entry.value, false);
-                            println!("INVALID");
-                        }
-                        None => {
-                            println!("UNKNOWN (no validator for service)");
-                        }
-                    }
-                    validated += 1;
-                }
-            }
-            key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
-            println!("\nValidated {validated} keys: {active} active.");
-        }
-
-        KeysAction::Remove { service, key } => {
-            if pool.remove(&service, &key) {
-                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
-                println!("Removed key from '{service}' pool.");
-            } else {
-                println!("Key not found in '{service}' pool.");
-            }
-        }
-
-        KeysAction::Status => {
-            let snap = pool.snapshot();
-            if snap.services.is_empty() {
-                println!("Key pool is empty. Use `hse keys add <service> <key>` to add keys.");
-                println!("\nPool file: {}", key_pool::pool_path().display());
-                return Ok(());
-            }
-
-            println!(
-                "{:<20} {:>5} {:>6} {:>7} {:>8}  CATEGORY",
-                "SERVICE", "TOTAL", "ACTIVE", "INVALID", "USED"
-            );
-            println!("{}", "-".repeat(65));
-
-            let mut sorted: Vec<_> = snap.services.iter().collect();
-            sorted.sort_by_key(|(a, _)| *a);
-
-            for (svc, entries) in &sorted {
-                let active = entries.iter().filter(|e| e.is_usable()).count();
-                let invalid = entries
-                    .iter()
-                    .filter(|e| e.status == KeyStatus::Invalid)
-                    .count();
-                let total_uses: u64 = entries.iter().map(|e| e.use_count).sum();
-                let cat = key_pool::find_service(svc).map_or("custom", |d| d.category);
-                println!(
-                    "{:<20} {:>5} {:>6} {:>7} {:>8}  {cat}",
-                    svc,
-                    entries.len(),
-                    active,
-                    invalid,
-                    total_uses
-                );
-            }
-            println!(
-                "\nTotal: {} keys ({} active) across {} services",
-                pool.total_keys(),
-                pool.total_active(),
-                snap.services.len()
-            );
-            println!("Pool file: {}", key_pool::pool_path().display());
-        }
-
-        KeysAction::Services => {
-            let defs = key_pool::service_defs();
-            println!(
-                "{:<18} {:<14} {:<26} ENV VAR",
-                "SERVICE", "CATEGORY", "TEST ENDPOINT"
-            );
-            println!("{}", "-".repeat(85));
-            for d in defs {
-                let short_url = if d.test_url.len() > 25 {
-                    format!("{}…", &d.test_url[..24])
-                } else {
-                    d.test_url.to_string()
-                };
-                println!(
-                    "{:<18} {:<14} {:<26} {}",
-                    d.name, d.category, short_url, d.env_var
-                );
-            }
-        }
-
-        KeysAction::ImportTsv {
-            file,
-            validate,
-            dry_run,
-        } => {
-            use crate::modules::oathnet_pro::key_harvest::identify_api_key;
-            let path = std::path::Path::new(&file);
-            if !path.exists() {
-                return Err(Error::Other(format!("TSV file not found: {file}")));
-            }
-            let content = std::fs::read_to_string(path)
-                .map_err(|e| Error::Other(format!("read {file}: {e}")))?;
-
-            let mut stats: std::collections::BTreeMap<&str, usize> =
-                std::collections::BTreeMap::new();
-            let mut imported = 0usize;
-            let mut skipped_nonkey = 0usize;
-            let mut skipped_dup = 0usize;
-            let pool_snapshot_before = pool.total_keys();
-
-            for (lineno, line) in content.lines().enumerate() {
-                if line.is_empty() {
-                    continue;
-                }
-                // Header: source_file\tfield\ttags\tvalue\turl_or_context
-                if lineno == 0
-                    && (line.starts_with("source_file\t") || line.starts_with("source\t"))
-                {
-                    continue;
-                }
-                let fields: Vec<&str> = line.split('\t').collect();
-                if fields.len() < 4 {
-                    continue;
-                }
-                let source = fields[0];
-                let field_name = fields[1];
-                let value = fields[3].trim();
-                if value.is_empty() {
-                    continue;
-                }
-                // Only import entries that classify as known API keys.
-                // Plaintext dashboard passwords are deliberately skipped —
-                // they're account credentials, not API keys, and using
-                // them would be account takeover rather than API use.
-                let Some((service, _)) = identify_api_key(value) else {
-                    skipped_nonkey += 1;
-                    continue;
-                };
-                if dry_run {
-                    println!(
-                        "would import: service={service:<18}  src={source:<32}  field={field_name}"
-                    );
-                    *stats.entry(service).or_insert(0) += 1;
-                    imported += 1;
-                    continue;
-                }
-                let mut entry = key_pool::KeyEntry::new(value);
-                entry.status = key_pool::KeyStatus::Untested;
-                entry.discovered_at = Some(crate::core::entity::unix_now());
-                entry.discovered_by = Some(format!("tsv_import:{source}"));
-                entry.notes = Some(format!(
-                    "Imported from TSV file: {file} (field={field_name})"
-                ));
-                if pool.add(service, entry) {
-                    imported += 1;
-                    *stats.entry(service).or_insert(0) += 1;
-                } else {
-                    skipped_dup += 1;
-                }
-            }
-
-            if !dry_run {
-                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save pool: {e}")))?;
-            }
-
-            let added = pool.total_keys() as i64 - pool_snapshot_before as i64;
-            println!(
-                "\nTSV import {}: {imported} key(s) recognised, {skipped_nonkey} non-key \
-                 values skipped (plaintext passwords / hashes / etc.), {skipped_dup} \
-                 duplicates, {added} net additions to pool.",
-                if dry_run { "DRY-RUN" } else { "complete" }
-            );
-            if !stats.is_empty() {
-                println!("\nBy service:");
-                for (svc, n) in &stats {
-                    let roi = crate::util::key_roi::classify(svc);
-                    println!("  {svc:<18}  {n:>4}  ({} tier)", roi.label());
-                }
-            }
-
-            if validate && !dry_run {
-                println!("\nValidating imported keys against live endpoints...");
-                let snap = pool.snapshot();
-                let mut active = 0u32;
-                let mut invalid = 0u32;
-                for (svc, entries) in &snap.services {
-                    for entry in entries {
-                        if entry.discovered_by.as_deref() != Some(&format!("tsv_import:{file}"))
-                            && !entry
-                                .discovered_by
-                                .as_deref()
-                                .map(|s| s.starts_with("tsv_import:"))
-                                .unwrap_or(false)
-                        {
-                            continue;
-                        }
-                        match key_pool::validate_key(svc, &entry.value).await {
-                            Some(true) => {
-                                pool.mark_validated(svc, &entry.value, true);
-                                active += 1;
-                            }
-                            Some(false) => {
-                                pool.mark_validated(svc, &entry.value, false);
-                                invalid += 1;
-                            }
-                            None => {}
-                        }
-                    }
-                }
-                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save pool: {e}")))?;
-                println!("Validation done: {active} active, {invalid} invalid.");
-            }
-        }
-    }
-    Ok(())
-}
-
 mod import;
 use import::cmd_import;
 
-fn cmd_modules() -> Result<()> {
+fn cmd_modules(category_filter: Option<String>, as_json: bool) -> Result<()> {
     let mut mods = registry();
     mods.sort_by_key(|m| std::cmp::Reverse(m.priority()));
 
+    // Optional category filter — case-insensitive exact match against
+    // the snake_case category name (e.g. `--category geo`, `--category
+    // dns_recon`). Pre-strip the operator's input to match the
+    // canonical form ModuleCategory::as_str returns.
+    let category_filter_lc = category_filter.as_ref().map(|s| s.to_lowercase());
+    let filtered: Vec<_> = mods
+        .iter()
+        .filter(|m| match &category_filter_lc {
+            Some(needle) => m.category().as_str() == needle.as_str(),
+            None => true,
+        })
+        .collect();
+
+    if as_json {
+        // Same shape as /api/v1/modules — operators can `jq` the
+        // output the same way they'd `jq` the HTTP endpoint.
+        let infos: Vec<_> = filtered.iter().map(|m| m.info()).collect();
+        let body = serde_json::to_string_pretty(&serde_json::json!({
+            "modules": infos,
+            "count": infos.len(),
+        }))
+        .map_err(|e| Error::Other(format!("json: {e}")))?;
+        println!("{body}");
+        return Ok(());
+    }
+
     println!(
-        "{:<26} {:>4}  {:<10} {:<8} ACCEPTS",
-        "MODULE", "PRI", "COST", "PASSIVE"
+        "{:<26} {:>4}  {:<14} {:<10} {:<8} ACCEPTS",
+        "MODULE", "PRI", "CATEGORY", "COST", "PASSIVE"
     );
-    println!("{}", "-".repeat(80));
+    println!("{}", "-".repeat(96));
 
     let target_kinds = [
         ("email", TargetKind::Email),
@@ -777,7 +492,7 @@ fn cmd_modules() -> Result<()> {
         ("apikey", TargetKind::ApiKey),
     ];
 
-    for m in &mods {
+    for m in &filtered {
         let accepts: Vec<&str> = target_kinds
             .iter()
             .filter(|(_, k)| m.accepts(&Target::new(*k, "")))
@@ -786,65 +501,31 @@ fn cmd_modules() -> Result<()> {
         let cost = cost_label(m.cost());
         let passive = if m.is_passive() { "yes" } else { "no" };
         println!(
-            "{:<26} {:>4}  {:<10} {:<8} {}",
+            "{:<26} {:>4}  {:<14} {:<10} {:<8} {}",
             m.name(),
             m.priority(),
+            m.category().as_str(),
             cost,
             passive,
             accepts.join(",")
         );
     }
-    Ok(())
-}
-
-fn cmd_doctor() -> Result<()> {
-    let mods = registry();
-    println!("HSE v{} — doctor\n", crate::VERSION);
-    println!(
-        "Termux:    {}",
-        if is_termux() {
-            "detected"
-        } else {
-            "not detected"
+    if filtered.is_empty() {
+        if let Some(f) = category_filter {
+            eprintln!("\nNo modules in category '{f}'.");
+            eprintln!(
+                "Valid: dns_recon / breach / infrastructure / search / geo / social /\n       email / phone / corporate / threat / sensor / people / web / other"
+            );
         }
-    );
-    println!("DB path:   {}", default_db_path());
-    println!("Keys path: {}", keys::env_path());
-
-    println!("\nStorage:");
-    match Store::open(&default_db_path()) {
-        Ok(_) => println!("  ok — database opens cleanly"),
-        Err(e) => println!("  FAIL — {e}"),
+    } else {
+        println!("\n{} module(s) total.", filtered.len());
     }
-
-    println!("\nModules ({} registered):", mods.len());
-    let mut by_cost = std::collections::BTreeMap::<&str, usize>::new();
-    for m in &mods {
-        *by_cost.entry(cost_label(m.cost())).or_default() += 1;
-    }
-    for (cost, count) in &by_cost {
-        println!("  {cost:<10} {count}");
-    }
-
-    let loaded = keys::load();
-    let huntsman_keys: Vec<_> = loaded
-        .keys()
-        .filter(|k| k.starts_with("HUNTSMAN_"))
-        .collect();
-    println!("\nHUNTSMAN_* keys loaded: {}", huntsman_keys.len());
-    for k in &huntsman_keys {
-        println!("  - {k}");
-    }
-    if huntsman_keys.is_empty() {
-        println!("  (none set; all free modules still work)");
-    }
-
     Ok(())
 }
 
 // ─── Shared helpers (used by subcommand files) ─────────────────────────────
 
-pub fn parse_target_kind(s: &str) -> Result<TargetKind> {
+pub(super) fn parse_target_kind(s: &str) -> Result<TargetKind> {
     match s.to_lowercase().trim() {
         "email" => Ok(TargetKind::Email),
         "username" => Ok(TargetKind::Username),
@@ -866,7 +547,7 @@ pub fn parse_target_kind(s: &str) -> Result<TargetKind> {
     }
 }
 
-fn cost_label(c: ModuleCost) -> &'static str {
+pub(super) fn cost_label(c: ModuleCost) -> &'static str {
     match c {
         ModuleCost::Free => "free",
         ModuleCost::KeyGated => "key-gated",
@@ -874,11 +555,11 @@ fn cost_label(c: ModuleCost) -> &'static str {
     }
 }
 
-fn split_csv(s: Option<String>) -> Option<Vec<String>> {
+pub(super) fn split_csv(s: Option<String>) -> Option<Vec<String>> {
     s.map(|s| s.split(',').map(|m| m.trim().to_string()).collect())
 }
 
-fn build_runtime(
+pub(super) fn build_runtime(
     bus_capacity: usize,
 ) -> Result<(
     Arc<dyn crate::core::port::StoragePort>,
@@ -893,14 +574,14 @@ fn build_runtime(
     Ok((store, bus, engine))
 }
 
-fn use_color() -> bool {
+pub(super) fn use_color() -> bool {
     if std::env::var_os("NO_COLOR").is_some() {
         return false;
     }
     std::io::stdout().is_terminal()
 }
 
-fn color_confidence(c_eff: f64, text: &str, color: bool) -> String {
+pub(super) fn color_confidence(c_eff: f64, text: &str, color: bool) -> String {
     if !color {
         return text.to_string();
     }
@@ -913,7 +594,7 @@ fn color_confidence(c_eff: f64, text: &str, color: bool) -> String {
     }
 }
 
-fn color_severity(severity: &str, color: bool) -> String {
+pub(super) fn color_severity(severity: &str, color: bool) -> String {
     if !color {
         return severity.to_string();
     }
@@ -925,256 +606,7 @@ fn color_severity(severity: &str, color: bool) -> String {
     }
 }
 
-fn print_dossier(
-    scan: &crate::core::scan::Scan,
-    entities: &[crate::core::entity::Entity],
-    correlations: &[crate::core::correlator::Correlation],
-    kind: &str,
-    value: &str,
-    sid: &str,
-) {
-    use std::collections::BTreeMap;
-
-    println!("\n╔══════════════════════════════════════════════════════════════╗");
-    println!("║  HUNTSMAN SEARCH ENGINE — INTELLIGENCE DOSSIER              ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
-    println!();
-    println!("  Target:    {} = {}", kind, value);
-    println!("  Scan ID:   {}", &sid[..16]);
-    println!("  Status:    {}", scan.status.as_str());
-    println!("  Entities:  {}", scan.entity_count);
-    println!(
-        "  Modules:   {} run, {} errored, {} deduped",
-        scan.modules_run, scan.modules_errored, scan.modules_deduped
-    );
-    println!();
-
-    // Group by kind
-    let mut by_kind: BTreeMap<String, Vec<&crate::core::entity::Entity>> = BTreeMap::new();
-    for e in entities {
-        by_kind.entry(e.kind.to_string()).or_default().push(e);
-    }
-
-    // Priority order for dossier
-    let kind_order = [
-        "person",
-        "email",
-        "phone",
-        "username",
-        "credential",
-        "api_key",
-        "password",
-        "address",
-        "coordinates",
-        "organisation",
-        "abn_acn",
-        "asn",
-        "domain",
-        "ip_address",
-        "url",
-        "mac_address",
-        "device_id",
-    ];
-
-    for kind_name in &kind_order {
-        let Some(group) = by_kind.get(*kind_name) else {
-            continue;
-        };
-        let header = match *kind_name {
-            "person" => "PERSONS",
-            "email" => "EMAIL ADDRESSES",
-            "phone" => "PHONE NUMBERS",
-            "username" => "USERNAMES / HANDLES",
-            "credential" => "CREDENTIALS (from breach/stealer data)",
-            "address" => "PHYSICAL ADDRESSES / LOCATIONS",
-            "coordinates" => "GPS COORDINATES",
-            "organisation" => "ORGANISATIONS",
-            "abn_acn" => "ABN / ACN (Australian Business Numbers)",
-            "domain" => "DOMAINS",
-            "ip_address" => "IP ADDRESSES",
-            "url" => "URLS / PROFILES",
-            "mac_address" => "MAC ADDRESSES (network devices)",
-            "device_id" => "DEVICE IDENTIFIERS",
-            other => other,
-        };
-
-        println!("━━━ {} ({}) ━━━", header, group.len());
-        println!();
-
-        let mut sorted = group.clone();
-        sorted.sort_by(|a, b| {
-            b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        for e in &sorted {
-            let c_eff = e.c_effective();
-            let class = e.classify();
-            println!(
-                "  {} [{}]  conf={:.2}  c_eff={:.2}  corr={}",
-                e.value, class, e.confidence, c_eff, e.corroboration
-            );
-
-            if !e.tags.is_empty() {
-                println!("    tags: {}", e.tags.join(", "));
-            }
-
-            for ev in &e.evidence {
-                println!("    ├─ {} — {}", ev.source, ev.summary);
-                // Unredacted: print every non-empty attribute regardless
-                // of length. The dossier surface is for the operator only;
-                // truncation hides API-key context, multi-line bios, full
-                // breach passwords, complete addresses, etc.
-                for (k, v) in &ev.attributes {
-                    if !v.is_empty() {
-                        println!("    │  {}: {}", k, v);
-                    }
-                }
-            }
-            println!();
-        }
-    }
-
-    // Correlations
-    if !correlations.is_empty() {
-        println!("━━━ CORRELATIONS ({}) ━━━", correlations.len());
-        println!();
-        for c in correlations {
-            let sev = match c.severity.to_string().as_str() {
-                "CRITICAL" => "🔴 CRITICAL",
-                "HIGH" => "🟠 HIGH",
-                "MEDIUM" => "🟡 MEDIUM",
-                _ => "🔵 LOW",
-            };
-            println!("  {} [{}] {}", c.rule_id, sev, c.rule_name);
-            println!("    {}", c.description);
-            println!();
-        }
-    }
-
-    // ─── DIAGNOSTICS & SELF-OPTIMIZATION ──────────────────────────────
-    // Surface the same data the JSON path exposes — module yield,
-    // confidence calibration, geo precision, proximity graph,
-    // optimization hints. Operator gets the full unredacted view.
-    let wall_ms = scan
-        .finished_at
-        .and_then(|f| f.checked_sub(scan.started_at))
-        .unwrap_or(0)
-        .saturating_mul(1000);
-    let diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
-
-    println!("━━━ DIAGNOSTICS ━━━");
-    println!();
-    println!("  Scan wall-time:  {} ms", diag.wall_time_ms);
-    println!("  Modules ranked by yield:");
-    for m in diag.modules_by_yield.iter().take(15) {
-        let kinds = m.unique_kinds.join(",");
-        println!(
-            "    {:4}  {:<22} conf={:.2}  novelty={:5.1}%  kinds={}",
-            m.entities_emitted,
-            m.name,
-            m.mean_confidence,
-            m.novelty_ratio * 100.0,
-            kinds
-        );
-    }
-    println!();
-
-    println!("  Source confidence (n / mean / p50 / p90):");
-    let mut srcs: Vec<_> = diag.source_confidence.iter().collect();
-    srcs.sort_by_key(|(_, s)| std::cmp::Reverse(s.n));
-    for (src, s) in srcs.iter().take(15) {
-        println!(
-            "    {:<22} n={:<4} mean={:.2}  p50={:.2}  p90={:.2}",
-            src, s.n, s.mean, s.p50, s.p90
-        );
-    }
-    println!();
-
-    // ─── GEO INTELLIGENCE ──────────────────────────────────────────────
-    let g = &diag.geo_precision;
-    println!("━━━ GEO INTELLIGENCE ━━━");
-    println!();
-    println!(
-        "  Coordinates: {} total ({} with geohash, {} with timezone)",
-        g.coordinates_count, g.coords_with_geohash, g.coords_with_timezone
-    );
-    println!(
-        "  Addresses:   {} total ({} state, {} country, {} ISO, {} postal)",
-        g.address_count,
-        g.addresses_with_state,
-        g.addresses_with_country,
-        g.addresses_with_iso,
-        g.addresses_with_postal
-    );
-    if !g.iso_countries.is_empty() {
-        println!("  ISO countries: {}", g.iso_countries.join(", "));
-    }
-    if !g.timezones.is_empty() {
-        println!("  Timezones:     {}", g.timezones.join(", "));
-    }
-    println!(
-        "  Multi-source convergence: {}",
-        if g.multi_source_convergence {
-            "YES (≥2 coords within 5km)"
-        } else {
-            "no"
-        }
-    );
-    println!();
-
-    if !diag.proximity_graph.is_empty() {
-        println!("  Proximity graph (top 15 closest coord pairs):");
-        for edge in diag.proximity_graph.iter().take(15) {
-            let label = if edge.same_country {
-                format!(
-                    " [same country: {}]",
-                    edge.from_country.as_deref().unwrap_or("?")
-                )
-            } else if edge.from_country.is_some() || edge.to_country.is_some() {
-                format!(
-                    " [{} ↔ {}]",
-                    edge.from_country.as_deref().unwrap_or("?"),
-                    edge.to_country.as_deref().unwrap_or("?")
-                )
-            } else {
-                String::new()
-            };
-            println!(
-                "    {:>10.3} km   {} ↔ {}{}",
-                edge.distance_km, edge.from_value, edge.to_value, label
-            );
-        }
-        println!();
-    }
-
-    // ─── ENRICHMENT LINEAGE (top 20 highest-corroboration entities) ───
-    println!("━━━ ENRICHMENT LINEAGE ━━━");
-    println!();
-    let mut lineage_sorted = diag.enrichment_lineage.clone();
-    lineage_sorted.sort_by_key(|n| std::cmp::Reverse(n.source_chain.len()));
-    for node in lineage_sorted.iter().take(20) {
-        println!(
-            "  [{}] {} (conf={:.2}, corr={})",
-            node.kind, node.value_preview, node.confidence, node.corroboration
-        );
-        println!("    sources: {}", node.source_chain.join(" → "));
-    }
-    println!();
-
-    // ─── OPTIMIZATION HINTS ────────────────────────────────────────────
-    println!("━━━ OPTIMIZATION HINTS ━━━");
-    println!();
-    for hint in &diag.optimization_hints {
-        println!("  • {}", hint);
-    }
-    println!();
-
-    println!("━━━ END OF DOSSIER ━━━");
-}
-
-fn truncate(s: &str, max: usize) -> String {
+pub(super) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
@@ -1182,563 +614,6 @@ fn truncate(s: &str, max: usize) -> String {
         out.push('…');
         out
     }
-}
-
-// ─── serve command ─────────────────────────────────────────────────────────
-
-async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
-    use std::net::SocketAddr;
-
-    use crate::api::{AppState, routes::router};
-    use crate::core::live::LiveScanner;
-
-    let (store, bus, engine) = build_runtime(1024)?;
-    let http = build_client();
-    let live = LiveScanner::new(
-        Arc::clone(&engine),
-        bus.clone(),
-        http.clone(),
-        crate::util::keys::populate_and_load().await,
-    );
-    let state = Arc::new(AppState {
-        store,
-        engine,
-        bus,
-        live,
-        http,
-        allow_key_write,
-        cancellations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
-        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            crate::api::MAX_CONCURRENT_SCANS,
-        )),
-    });
-
-    let app = router(state, &bind);
-    let listener = tokio::net::TcpListener::bind(&bind)
-        .await
-        .map_err(|e| Error::Other(format!("bind {bind}: {e}")))?;
-
-    tracing::info!("hse v{} — listening on http://{}", crate::VERSION, bind);
-    tracing::info!("  open in Chrome / Firefox on this device");
-    if allow_key_write {
-        tracing::warn!("--allow-key-write: PUT /api/v1/settings/keys enabled (loopback only)");
-    }
-    tracing::info!("  Ctrl-C to stop");
-
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .map_err(|e| Error::Other(format!("serve: {e}")))?;
-
-    tracing::info!("server stopped");
-    Ok(())
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("install Ctrl-C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
-    }
-}
-
-// ─── live command ──────────────────────────────────────────────────────────
-
-struct LiveCmd {
-    pub kind: String,
-    pub value: String,
-    pub interval: u64,
-    pub iterations: Option<u32>,
-    pub depth: u32,
-    pub free_only: bool,
-    pub passive_only: bool,
-    pub modules: Option<String>,
-}
-
-async fn cmd_live(cmd: LiveCmd) -> Result<()> {
-    use crate::core::live::{LiveOptions, LiveScanner};
-    use tokio_stream::StreamExt;
-    use tokio_stream::wrappers::BroadcastStream;
-
-    let target_kind = parse_target_kind(&cmd.kind)?;
-    let target = Target::new(target_kind, cmd.value.clone());
-
-    let scan_options = ScanOptions {
-        modules: split_csv(cmd.modules),
-        free_only: cmd.free_only,
-        passive_only: cmd.passive_only,
-        depth: cmd.depth,
-        ..Default::default()
-    };
-    let live_options = LiveOptions {
-        interval_secs: cmd.interval,
-        iterations: cmd.iterations,
-    };
-
-    let (_store, bus, engine) = build_runtime(1024)?;
-    let scanner = LiveScanner::new(
-        Arc::clone(&engine),
-        bus.clone(),
-        crate::util::http::build_client(),
-        crate::util::keys::populate_and_load().await,
-    );
-
-    let live_id = scanner.start(target, scan_options, live_options);
-    eprintln!("live session {live_id} — Ctrl-C to stop");
-
-    let rx = bus.subscribe();
-    let scanner_clone = scanner.clone();
-    let target_lid = live_id.clone();
-    let mut stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event)
-            if event.scan_id == target_lid
-                || scanner_clone.session_owns_scan(&target_lid, &event.scan_id) =>
-        {
-            let is_terminator =
-                matches!(event.kind, crate::core::event::EventKind::LiveStop { .. });
-            let line = serde_json::to_string(&event.kind).unwrap_or_default();
-            Some((line, is_terminator))
-        }
-        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
-            eprintln!("warning: event stream lagged, {n} event(s) dropped");
-            None
-        }
-        _ => None,
-    });
-
-    loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                eprintln!("\nstopping live session…");
-                scanner.stop(&live_id);
-            }
-            line = stream.next() => match line {
-                Some((s, is_terminator)) => {
-                    println!("{s}");
-                    if is_terminator {
-                        break;
-                    }
-                }
-                None => break,
-            }
-        }
-    }
-
-    Ok(())
-}
-
-// ─── scan command ──────────────────────────────────────────────────────────
-
-struct ScanCmd {
-    pub kind: String,
-    pub value: String,
-    pub modules: Option<String>,
-    pub exclude: Option<String>,
-    pub throttle_ms: u64,
-    pub min_confidence: Option<f64>,
-    pub free_only: bool,
-    pub passive_only: bool,
-    pub module_timeout_ms: Option<u64>,
-    pub depth: u32,
-    pub recursive: bool,
-    pub auto: bool,
-    pub min_expand_confidence: f64,
-    pub max_entities: Option<usize>,
-    pub max_wall_time_secs: Option<u64>,
-    pub max_concurrent: usize,
-    pub adaptive: bool,
-    pub max_roi: bool,
-    pub min_marginal_yield: Option<f64>,
-    pub output: String,
-}
-
-async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
-    let target_kind = parse_target_kind(&cmd.kind)?;
-    let target = Target::new(target_kind, cmd.value.clone());
-
-    let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth == 0 {
-        let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
-        let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
-        eprintln!(
-            "auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={})",
-            has_paid
-        );
-        (auto_depth, auto_conf, cmd.max_concurrent.max(4))
-    } else if cmd.recursive && cmd.depth == 0 {
-        (
-            7,
-            cmd.min_expand_confidence.min(0.40),
-            cmd.max_concurrent.max(4),
-        )
-    } else {
-        (cmd.depth, cmd.min_expand_confidence, cmd.max_concurrent)
-    };
-
-    let mut exclude_modules = split_csv(cmd.exclude).unwrap_or_default();
-    if cmd.adaptive {
-        // Closed feedback loop: read the ledger, skip historically
-        // zero-yield modules. Log the decision so the operator sees
-        // what the self-optimization actually did.
-        let routing = crate::util::diagnostics::read_adaptive_routing();
-        if routing.ledger_scans == 0 {
-            eprintln!(
-                "adaptive: no ledger yet (run a few scans first to populate ~/.huntsman/module_stats.json)"
-            );
-        } else {
-            let added: Vec<String> = routing
-                .recommended_skips
-                .iter()
-                .filter(|m| !exclude_modules.iter().any(|e| e == *m))
-                .cloned()
-                .collect();
-            if !added.is_empty() {
-                eprintln!(
-                    "adaptive: ledger has {} scans; skipping {} historically zero-yield modules: {}",
-                    routing.ledger_scans,
-                    added.len(),
-                    added.join(", ")
-                );
-                exclude_modules.extend(added);
-            } else {
-                eprintln!(
-                    "adaptive: ledger has {} scans; no skip recommendations",
-                    routing.ledger_scans
-                );
-            }
-        }
-    }
-    let options = ScanOptions {
-        modules: split_csv(cmd.modules),
-        exclude_modules,
-        throttle_ms: cmd.throttle_ms,
-        max_concurrent,
-        module_timeout_ms: cmd.module_timeout_ms,
-        min_confidence: cmd.min_confidence,
-        free_only: cmd.free_only,
-        passive_only: cmd.passive_only,
-        depth,
-        min_expand_confidence,
-        max_entities: cmd.max_entities,
-        max_wall_time_secs: cmd.max_wall_time_secs,
-        scan_tags: Vec::new(),
-        notes: None,
-        webhook_url: crate::core::webhook::webhook_url_from_env(),
-        profile: None,
-        max_roi: cmd.max_roi,
-        min_marginal_yield: cmd.min_marginal_yield,
-    };
-    if cmd.max_roi {
-        eprintln!(
-            "max-roi: convergence-pruning + top-K gate + adaptive-depth (floor={:.2})",
-            cmd.min_marginal_yield
-                .unwrap_or(crate::core::roi::DEFAULT_MIN_MARGINAL_YIELD)
-        );
-    }
-
-    let sid = scan_id(target_kind.canonical_str(), &cmd.value);
-    let (store, bus, engine) = build_runtime(64)?;
-
-    let scan = Scan::new(sid.clone(), target.clone()).with_options(options);
-    let keys = keys::populate_and_load().await;
-    let ctx = ModuleContext {
-        scan_id: sid.clone(),
-        bus,
-        http: build_client(),
-        keys,
-        cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
-    };
-
-    let scan = engine.run(scan, target, ctx).await?;
-    let entities = store.entities_for_scan(&sid)?;
-    let correlations = store.correlations_for_scan(&sid)?;
-
-    if cmd.output == "json" {
-        // Full self-optimization payload — scan + entities + correlations
-        // + diagnostics (module ranking, confidence calibration, geo
-        // precision report, cross-source overlaps, optimization hints,
-        // enrichment lineage).
-        let wall_ms = scan
-            .finished_at
-            .and_then(|f| f.checked_sub(scan.started_at))
-            .unwrap_or(0)
-            .saturating_mul(1000);
-        let diag =
-            crate::util::diagnostics::analyse(&sid, &cmd.kind, &cmd.value, wall_ms, &entities);
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "scan": scan,
-                "entities": entities,
-                "correlations": correlations,
-                "diagnostics": diag,
-            }))?
-        );
-    } else if cmd.output == "dossier" {
-        print_dossier(&scan, &entities, &correlations, &cmd.kind, &cmd.value, &sid);
-    } else {
-        let color = use_color();
-        println!(
-            "\nScan {} — {} entities for {}={}",
-            &sid[..8],
-            entities.len(),
-            cmd.kind,
-            cmd.value
-        );
-        if scan.modules_run > 0 {
-            println!(
-                "  modules: {} run, {} errored, {} timed out, {} deduped\n",
-                scan.modules_run,
-                scan.modules_errored,
-                scan.modules_timed_out,
-                scan.modules_deduped
-            );
-        } else {
-            println!();
-        }
-        println!(
-            "{:<16} {:<42} {:>6} {:>6}  {:<10} SRCS",
-            "KIND", "VALUE", "CONF", "C_EFF", "CLASS"
-        );
-        println!("{}", "-".repeat(90));
-        for e in &entities {
-            let val = truncate(&e.value, 42);
-            let c_eff = e.c_effective();
-            let class = e.classify();
-            let sources = e.evidence.len();
-            let row = format!(
-                "{:<16} {:<42} {:>6.3} {:>6.3}  {:<10} {}",
-                e.kind, val, e.confidence, c_eff, class, sources
-            );
-            println!("{}", color_confidence(c_eff, &row, color));
-        }
-        if !correlations.is_empty() {
-            println!("\n{} correlations:\n", correlations.len());
-            println!(
-                "{:<10} {:<10} {:<40} DESCRIPTION",
-                "RULE", "SEVERITY", "NAME"
-            );
-            println!("{}", "-".repeat(86));
-            for c in &correlations {
-                let sev_padded = format!("{:<10}", c.severity);
-                let sev_colored = color_severity(&sev_padded, color);
-                println!(
-                    "{:<10} {} {:<40} {}",
-                    c.rule_id,
-                    sev_colored,
-                    truncate(&c.rule_name, 40),
-                    c.description
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-// ─── Radar command ───────────────────────────────────────────────────────────
-
-const SENSOR_MODULES: &[&str] = &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
-
-async fn cmd_radar(interval: u64, depth: u32, sweeps: Option<u32>, free_only: bool) -> Result<()> {
-    use std::collections::HashSet;
-
-    let color = use_color();
-    eprintln!(
-        "{}",
-        color_confidence(
-            0.85,
-            &format!("HSE radar — sweep every {interval}s, depth={depth}, Ctrl-C to stop"),
-            color
-        )
-    );
-
-    let (store, bus, engine) = build_runtime(1024)?;
-    let mut seen_entities: HashSet<String> = HashSet::new();
-    let mut sweep_num = 0u32;
-
-    loop {
-        sweep_num += 1;
-        if let Some(max) = sweeps
-            && sweep_num > max
-        {
-            break;
-        }
-
-        eprintln!(
-            "\n{}",
-            color_confidence(0.85, &format!("── sweep {sweep_num} ──"), color)
-        );
-
-        // Phase 1: Sensor sweep (passive modules only, any target, depth=0)
-        let sweep_sid = scan_id("radar", &format!("sweep-{sweep_num}"));
-        let sweep_target = Target::new(crate::core::scan::TargetKind::Domain, "radar.local");
-        let sweep_opts = ScanOptions {
-            modules: Some(SENSOR_MODULES.iter().map(|s| (*s).to_string()).collect()),
-            passive_only: true,
-            depth: 0,
-            max_concurrent: 4,
-            ..Default::default()
-        };
-        let sweep_scan =
-            Scan::new(sweep_sid.clone(), sweep_target.clone()).with_options(sweep_opts);
-        let sweep_keys = keys::load();
-        let sweep_ctx = ModuleContext {
-            scan_id: sweep_sid.clone(),
-            bus: bus.clone(),
-            http: crate::util::http::build_client(),
-            keys: sweep_keys,
-            cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
-        };
-
-        let sweep_result = engine.run(sweep_scan, sweep_target, sweep_ctx).await?;
-        let sweep_entities = store.entities_for_scan(&sweep_sid)?;
-
-        // Phase 2: Identify NEW entities (not seen in previous sweeps)
-        let mut new_targets: Vec<(crate::core::scan::TargetKind, String)> = Vec::new();
-        for entity in &sweep_entities {
-            if seen_entities.insert(entity.uid.clone())
-                && let Some(tk) = crate::core::scan::TargetKind::from_entity_kind(&entity.kind)
-            {
-                eprintln!(
-                    "  {} new: {} = {}",
-                    color_confidence(0.85, "◉", color),
-                    entity.kind,
-                    entity.value
-                );
-                new_targets.push((tk, entity.value.clone()));
-            }
-        }
-
-        if new_targets.is_empty() {
-            eprintln!(
-                "  {} no new signals ({} entities, {} known)",
-                color_confidence(0.3, "○", color),
-                sweep_result.entity_count,
-                seen_entities.len()
-            );
-        } else {
-            eprintln!(
-                "  {} {} new signal(s) → pivoting at depth {depth}",
-                color_confidence(0.85, "▶", color),
-                new_targets.len()
-            );
-
-            // Phase 3: Pivot on each new discovery through the full pipeline
-            for (tk, value) in &new_targets {
-                let pivot_sid = scan_id(tk.canonical_str(), value);
-                let pivot_target = Target::new(*tk, value.clone());
-                // Exclude oathnet_pro from radar pivots on infra/sensor entities
-                // (IPs, domains, coords, MACs, ASNs). Sensor-discovered entities
-                // rarely yield OathNet breach results and the quota is better
-                // spent on identity-type entities discovered through other paths.
-                let is_infra = matches!(
-                    tk,
-                    crate::core::scan::TargetKind::IpAddress
-                        | crate::core::scan::TargetKind::Domain
-                        | crate::core::scan::TargetKind::Coordinates
-                        | crate::core::scan::TargetKind::MacAddress
-                        | crate::core::scan::TargetKind::Asn
-                );
-                let mut exclude = Vec::new();
-                if is_infra {
-                    exclude.push("oathnet_pro".to_string());
-                    exclude.push("see_know".to_string());
-                }
-                let pivot_opts = ScanOptions {
-                    depth,
-                    free_only,
-                    exclude_modules: exclude,
-                    max_concurrent: 4,
-                    min_expand_confidence: 0.50,
-                    ..Default::default()
-                };
-                let pivot_scan =
-                    Scan::new(pivot_sid.clone(), pivot_target.clone()).with_options(pivot_opts);
-                let pivot_keys = keys::load();
-                let pivot_ctx = ModuleContext {
-                    scan_id: pivot_sid.clone(),
-                    bus: bus.clone(),
-                    http: crate::util::http::build_client(),
-                    keys: pivot_keys,
-                    cancel: crate::core::cancel::CancelHandle::new(),
-                    proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
-                };
-
-                let result = engine.run(pivot_scan, pivot_target, pivot_ctx).await?;
-                let pivot_entities = store.entities_for_scan(&pivot_sid)?;
-
-                // Add pivot results to seen set
-                for e in &pivot_entities {
-                    seen_entities.insert(e.uid.clone());
-                }
-
-                eprintln!(
-                    "    {} {}={} → {} entities ({}run/{}err/{}to/{}dedup)",
-                    color_confidence(0.7, "↳", color),
-                    tk.canonical_str(),
-                    truncate(value, 30),
-                    result.entity_count,
-                    result.modules_run,
-                    result.modules_errored,
-                    result.modules_timed_out,
-                    result.modules_deduped,
-                );
-
-                // Stream key findings to stdout as JSON
-                for e in &pivot_entities {
-                    if e.c_effective() >= 0.50 {
-                        let json = serde_json::json!({
-                            "sweep": sweep_num,
-                            "kind": e.kind.to_string(),
-                            "value": e.value,
-                            "confidence": e.confidence,
-                            "c_eff": e.c_effective(),
-                            "sources": e.evidence.len(),
-                            "tags": e.tags,
-                        });
-                        println!("{}", serde_json::to_string(&json).unwrap_or_default());
-                    }
-                }
-            }
-        }
-
-        // Wait for next sweep
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                eprintln!("\nradar stopped");
-                break;
-            }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {}
-        }
-    }
-
-    eprintln!(
-        "\n{} sweeps, {} unique entities discovered",
-        sweep_num.min(sweeps.unwrap_or(sweep_num)),
-        seen_entities.len()
-    );
-    Ok(())
 }
 
 #[cfg(test)]

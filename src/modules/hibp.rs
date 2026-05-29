@@ -19,7 +19,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -102,6 +102,20 @@ impl Module for Hibp {
         matches!(t.kind, TargetKind::Email | TargetKind::Domain)
     }
 
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Breach
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        // HIBP returns breach metadata on the input Email/Domain — it
+        // does NOT emit standalone Credential entities (policy: leaked
+        // passwords are redacted, only the fact of the breach surfaces
+        // as tags/evidence on the seed). Declaration is therefore
+        // limited to the corroborated seed kinds.
+        const KINDS: &[EntityKind] = &[EntityKind::Email, EntityKind::Domain];
+        KINDS
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         60_000
     }
@@ -163,12 +177,7 @@ impl Hibp {
                     ));
                 }
                 429 if retries < 3 => {
-                    let retry_secs = resp
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(7);
+                    let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 7);
                     retries += 1;
                     tokio::time::sleep(Duration::from_secs(retry_secs)).await;
                     continue;

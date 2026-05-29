@@ -2,102 +2,90 @@
 //! search_engines enrichment pass. Lives in util/ so any module can
 //! call it without violating the "no inter-module imports" invariant.
 
-use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::error::{Error, Result};
+use crate::util::budget::QuotaBudget;
+use crate::util::curl_client::{AuthScheme, CurlClient};
+use crate::util::response_cache::ResponseCache;
 
 const HARDCODED_KEY: &str = "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551409e4b47116f2";
 
 pub const KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
-
-static QUOTA_EXHAUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Per-process response cache: deduplicates identical (path, field, value)
 /// queries across modules. When oathnet_pro, geo_intel, and search_engines
 /// all query `search(BREACH, "email", "x@y.com")` for the same entity,
 /// only the first makes the HTTP call; subsequent modules get the cached
 /// response. Empirically saves ~60% of OathNet API calls on expansion scans.
-static RESPONSE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CachedResponse>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::with_capacity(256)));
+///
+/// Backed by the shared [`ResponseCache`] primitive (cap 1024).
+static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
 
-/// Global query counter for budget tracking.
-static QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Shared curl-subprocess client. `x-api-key` auth, 12s curl timeout,
+/// 15s outer tokio timeout — same calibration as the SeekNow client
+/// since both providers' rate-limit responses arrive within this
+/// window.
+static CLIENT: CurlClient = CurlClient::new("oathnet", AuthScheme::XApiKey, 12, 15_000);
 
-/// Session-level query counter: tracks total queries across all scans in this
-/// process. NOT reset by `reset_budget()`. Prevents radar/live sessions from
-/// burning the entire daily OathNet quota across many pivot scans.
-static SESSION_QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-const MAX_QUERIES_PER_SCAN: u32 = 4;
-
-fn max_queries_per_session() -> u32 {
-    static CAP: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
-        std::env::var("HUNTSMAN_OATHNET_SESSION_CAP")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(30)
-    });
-    *CAP
-}
-
-struct CachedResponse {
-    items: Vec<Value>,
-}
+/// Per-scan + per-session quota budget for OathNet API calls.
+///
+/// Default 4 queries per scan (the OathNet quota is tighter than
+/// SeekNow's) with a 30-query session ceiling that prevents
+/// radar/live sessions from burning the daily allowance. Both caps
+/// are env-tunable via `HUNTSMAN_OATHNET_SCAN_CAP` and
+/// `HUNTSMAN_OATHNET_SESSION_CAP`.
+static BUDGET: QuotaBudget = QuotaBudget::new(
+    "oathnet",
+    4,
+    30,
+    "HUNTSMAN_OATHNET_SCAN_CAP",
+    "HUNTSMAN_OATHNET_SESSION_CAP",
+);
 
 fn cache_key(path: &str, field: &str, value: &str) -> String {
     format!("{path}:{field}:{}", value.to_lowercase())
 }
 
 fn cache_get(key: &str) -> Option<Vec<Value>> {
-    RESPONSE_CACHE
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(key).map(|c| c.items.clone()))
+    RESPONSE_CACHE.get(key)
 }
 
 fn cache_put(key: String, items: &[Value]) {
-    if let Ok(mut cache) = RESPONSE_CACHE.lock()
-        && cache.len() < 1024
-    {
-        cache.insert(
-            key,
-            CachedResponse {
-                items: items.to_vec(),
-            },
-        );
-    }
+    RESPONSE_CACHE.put(key, items.to_vec());
 }
 
 fn budget_remaining() -> bool {
-    QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire) < MAX_QUERIES_PER_SCAN
-        && SESSION_QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire)
-            < max_queries_per_session()
+    BUDGET.remaining()
 }
 
 fn budget_increment() {
-    QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    SESSION_QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    BUDGET.increment();
 }
 
 pub fn is_quota_exhausted() -> bool {
-    QUOTA_EXHAUSTED.load(std::sync::atomic::Ordering::Acquire)
+    BUDGET.is_exhausted()
+}
+
+/// Snapshot of current per-scan + per-session OathNet budget consumption.
+/// Surfaced for diagnostics and `/api/v1/stats` so operators can see
+/// how much of the daily allowance has been spent.
+pub fn budget_snapshot() -> crate::util::budget::BudgetSnapshot {
+    BUDGET.snapshot()
 }
 
 /// Reset the per-scan budget counters. Must be called at the start of every
 /// scan so that `hse serve` / `hse live` (long-lived processes) get a fresh
 /// budget for each scan rather than accumulating across scans.
 pub fn reset_budget() {
-    QUERY_COUNT.store(0, std::sync::atomic::Ordering::Release);
-    QUOTA_EXHAUSTED.store(false, std::sync::atomic::Ordering::Release);
+    BUDGET.reset_scan();
 }
 
 fn mark_quota_exhausted() {
-    QUOTA_EXHAUSTED.store(true, std::sync::atomic::Ordering::Release);
+    BUDGET.mark_exhausted();
     tracing::warn!("OathNet daily quota exhausted — skipping remaining queries");
 }
 
@@ -167,7 +155,7 @@ pub async fn search(
         url.push_str("&search_id=");
         url.push_str(&crate::util::http::urlencode(&sid));
     }
-    let body = curl_get(&url, key).await?;
+    let body = CLIENT.get(&url, key).await?;
     // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
     // which false-positives on legitimate metadata fields like `session_quota`
     // and `recommended_quota`. Match only true exhaustion signals.
@@ -258,36 +246,9 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
     }
     let url = format!("{}{}", base_url(), paths::SESSION_INIT);
     let body = format!(r#"{{"query":"{}"}}"#, value.replace('"', "\\\""));
-    let header = format!("x-api-key: {key}");
-    let secs = 10u64.to_string();
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args([
-        "-s",
-        "-L",
-        "--max-time",
-        &secs,
-        "-X",
-        "POST",
-        "-H",
-        &header,
-        "-H",
-        "Content-Type: application/json",
-        "-H",
-        "Accept: application/json",
-        "-d",
-        &body,
-        "--",
-        &url,
-    ]);
-    cmd.kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_millis(12_000), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8(output.stdout).ok()?;
+    // Routed through the shared CurlClient — same UA / Accept /
+    // auth-header layout as the GET path, just with a JSON body.
+    let text = CLIENT.post_json(&url, key, &body).await.ok()?;
     let parsed: Value = serde_json::from_str(&text).ok()?;
     let sid = parsed
         .pointer("/session/id")
@@ -392,36 +353,11 @@ pub async fn harvest_credentials(key: &str) -> Vec<(String, String, String, Stri
     creds
 }
 
-async fn curl_get(url: &str, key: &str) -> Result<String> {
-    let secs = 12u64.to_string();
-    let header = format!("x-api-key: {key}");
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args([
-        "-s",
-        "-L",
-        "--max-time",
-        &secs,
-        "-A",
-        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
-        "-H",
-        &header,
-        "-H",
-        "Accept: application/json",
-        "--",
-        url,
-    ]);
-    cmd.kill_on_drop(true);
-
-    let output = tokio::time::timeout(Duration::from_millis(15_000), cmd.output())
-        .await
-        .map_err(|_| Error::module("oathnet", "timeout"))?
-        .map_err(|e| Error::module("oathnet", e.to_string()))?;
-
-    if !output.status.success() {
-        return Err(Error::module("oathnet", "curl failed"));
-    }
-    String::from_utf8(output.stdout).map_err(|e| Error::module("oathnet", e.to_string()))
-}
+// The curl-subprocess transport now lives in `util::curl_client` —
+// shared with util::see_know via the per-provider `CLIENT` static
+// declared at the top of this file. The `Duration` re-export below
+// is no longer needed locally now that the timeout lives inside
+// CurlClient.
 
 #[cfg(test)]
 mod tests {

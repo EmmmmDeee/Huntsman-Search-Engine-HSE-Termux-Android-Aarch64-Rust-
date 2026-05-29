@@ -26,7 +26,7 @@ use tokio::sync::Semaphore;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::dns::shared_resolver;
@@ -183,6 +183,16 @@ impl Module for DnsIntel {
             t.kind,
             TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url
         )
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::DnsRecon
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] =
+            &[EntityKind::IpAddress, EntityKind::Domain, EntityKind::Email];
+        KINDS
     }
 
     fn max_timeout_ms(&self) -> u64 {

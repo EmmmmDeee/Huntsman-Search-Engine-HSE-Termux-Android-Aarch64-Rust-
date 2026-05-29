@@ -30,6 +30,7 @@ use tokio::time::{sleep, timeout};
 use tracing::{info, warn};
 
 use crate::core::{
+    dependency::ModuleGraph,
     entity::{Entity, normalise},
     error::Result,
     event::{Event, EventBus, EventKind},
@@ -43,6 +44,11 @@ pub struct ScanEngine {
     store: Arc<dyn StoragePort>,
     bus: EventBus,
     emitter: EventEmitter,
+    /// Pre-computed dispatch index + richness scoring. Built once at
+    /// engine construction so the per-target dispatch loop can skip
+    /// the O(M) `accepts()` scan and so the expansion ranker can pull
+    /// the richness factor in constant time.
+    graph: Arc<ModuleGraph>,
 }
 
 /// Reason an expansion round stopped before depth was exhausted.
@@ -125,12 +131,21 @@ impl ScanEngine {
     ) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
         let emitter = EventEmitter::new(Arc::clone(&store), bus.clone());
+        let graph = Arc::new(ModuleGraph::build(&modules));
         Self {
             modules,
             store,
             bus,
             emitter,
+            graph,
         }
+    }
+
+    /// Read-only access to the pre-computed module dependency graph.
+    /// Used by the HTTP API to surface `/api/v1/modules/graph` and by
+    /// integration tests that need to introspect dispatch counts.
+    pub fn graph(&self) -> &ModuleGraph {
+        &self.graph
     }
 
     fn emit(&self, scan_id: &str, kind: EventKind) {
@@ -160,6 +175,15 @@ impl ScanEngine {
         crate::modules::oathnet_pro::reset_budget();
         crate::modules::see_know::reset_budget();
         crate::modules::wigle::reset_budget();
+
+        // Apply per-scan SeekNow budget override if the operator asked
+        // for one. Capped at 200 so a single scan cannot blow the
+        // per-session ceiling. `reset_budget` above cleared any prior
+        // override; this re-installs it for the current scan only.
+        if let Some(cap) = scan.options.seeknow_scan_cap {
+            let clamped = cap.min(200);
+            crate::util::see_know::set_scan_cap_override(clamped);
+        }
 
         self.emit(
             &scan.id,
@@ -374,11 +398,14 @@ impl ScanEngine {
                 let new_target = Target::new(tk, entity.value.clone());
                 let key = visit_key(&new_target);
                 if visited.insert(key) {
-                    let weight = crate::core::scan::expansion_weight(
+                    let richness = self.graph.richness_for(tk);
+                    let weight = crate::core::scan::expansion_weight_for_strategy(
+                        opts.expansion_strategy,
                         tk,
                         entity.c_effective(),
                         &entity.value,
                         has_paid,
+                        richness,
                     );
                     next.push((new_target, weight));
                 }
@@ -666,7 +693,17 @@ impl ScanEngine {
         stats: &mut ModuleStats,
         dispatched: &mut DispatchLog,
     ) -> Result<()> {
-        for module in &self.modules {
+        // O(1) dispatch-index lookup replaces the O(M) accepts() scan.
+        // Modules are already priority-sorted within each bucket so we
+        // walk them in the same order the legacy `for module in &self.modules`
+        // loop did. Iterating index-by-index (instead of pre-allocating
+        // a `Vec<Arc<dyn Module>>` and Arc-cloning per target) avoids
+        // a heap allocation + N atomic increments per dispatch — meaningful
+        // on the hot path that runs once per expansion candidate.
+        for &idx in self.graph.modules_for(target.kind) {
+            let Some(module) = self.modules.get(idx) else {
+                continue;
+            };
             if ctx.cancel.is_cancelled() {
                 return Ok(());
             }
@@ -675,10 +712,13 @@ impl ScanEngine {
             }
             let name = module.name();
 
+            // Belt-and-braces: a module whose `consumes()` declaration
+            // diverges from its runtime `accepts()` would otherwise
+            // slip through. Cheap re-check on the hit path.
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) = module_skip_reason(&**module, opts, is_expansion) {
+            if let Some(reason) = module_skip_reason(&**module, target, opts, is_expansion) {
                 self.emit(
                     scan_id,
                     EventKind::ModuleSkipped {
@@ -782,9 +822,18 @@ impl ScanEngine {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
 
+        // O(1) dispatch-index lookup — only modules accepting `target.kind`
+        // are even considered. Phase 1 then filters to Paid. We iterate
+        // indices directly rather than allocating a `Vec<Arc<dyn Module>>`
+        // and Arc-cloning per target; on the hot path this saves a heap
+        // allocation + N atomic increments per dispatch.
+
         // Phase 1: Run Paid modules synchronously so discovered keys are
         // available via hot-inject before the concurrent phase begins.
-        for module in &self.modules {
+        for &idx in self.graph.modules_for(target.kind) {
+            let Some(module) = self.modules.get(idx) else {
+                continue;
+            };
             if !matches!(module.cost(), ModuleCost::Paid) {
                 continue;
             }
@@ -795,7 +844,7 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) = module_skip_reason(&**module, opts, is_expansion) {
+            if let Some(reason) = module_skip_reason(&**module, target, opts, is_expansion) {
                 self.emit(
                     scan_id,
                     EventKind::ModuleSkipped {
@@ -860,12 +909,18 @@ impl ScanEngine {
         }
 
         // Phase 2: Spawn remaining (Free + KeyGated) modules concurrently.
-        // ctx now contains any keys discovered in Phase 1.
+        // ctx now contains any keys discovered in Phase 1. Same
+        // index-iteration pattern as Phase 1 — Arc::clone moves to the
+        // single spawn site below, instead of being paid for every
+        // candidate during candidate-list construction.
         let sem = Arc::new(Semaphore::new(opts.max_concurrent));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
         let scan_id_arc: Arc<str> = scan_id.into();
 
-        for module in &self.modules {
+        for &idx in self.graph.modules_for(target.kind) {
+            let Some(module) = self.modules.get(idx) else {
+                continue;
+            };
             if matches!(module.cost(), ModuleCost::Paid) {
                 continue;
             }
@@ -880,7 +935,7 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) = module_skip_reason(&**module, opts, is_expansion) {
+            if let Some(reason) = module_skip_reason(&**module, target, opts, is_expansion) {
                 self.emit(
                     scan_id,
                     EventKind::ModuleSkipped {
@@ -972,11 +1027,23 @@ impl ScanEngine {
     }
 }
 
+/// Modules that legitimately consume private IPs / local domains —
+/// sensor modules that run against the local network. Universal
+/// preflight (private-IP / local-domain rejection) skips these.
+///
+/// Re-exposed at `pub(crate)` because `hse radar` drives the same
+/// set on every sweep — single source of truth, so adding a new
+/// sensor module here both bypasses preflight AND joins the radar
+/// loop in one edit.
+pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] =
+    &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
+
 /// Returns `Some(reason)` if `module` should be skipped under `opts`.
 /// `accepts(target)` is intentionally NOT checked here — that case skips
 /// silently with no `ModuleSkipped` event, the others all emit one.
 fn module_skip_reason(
     module: &dyn Module,
+    target: &Target,
     opts: &ScanOptions,
     is_expansion: bool,
 ) -> Option<&'static str> {
@@ -996,19 +1063,81 @@ fn module_skip_reason(
     if opts.passive_only && !module.is_passive() {
         return Some("not passive");
     }
-    // Skip "any-target" passive modules on expansion — device sensors
-    // produce the same local data regardless of the expansion target.
-    // Passive modules that accept specific target kinds (email_parse,
-    // phone_intl, abn_lookup) still run since their output varies.
-    const SENSOR_MODULES: &[&str] = &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
-    if is_expansion && module.is_passive() && SENSOR_MODULES.contains(&name) {
+    if is_expansion && module.is_passive() && LOCAL_PASSIVE_MODULES.contains(&name) {
         return Some("sensor (already ran on seed round)");
     }
-    const SEED_ONLY_MODULES: &[&str] = &["oathnet_pro", "see_know"];
+    // oathnet_pro stays seed-only — it has the heaviest per-query weight
+    // and its own internal pivot logic. SeekNow (`see_know`) was previously
+    // gated here too, but the per-scan budget cap inside
+    // `util::see_know` (default 24, env-tunable) already protects the
+    // quota while letting expansion rounds pivot on newly-discovered
+    // identities. The /credits endpoint plus the `is_quota_exhausted`
+    // flag in the util layer collapse any post-quota calls to no-ops.
+    const SEED_ONLY_MODULES: &[&str] = &["oathnet_pro"];
     if is_expansion && SEED_ONLY_MODULES.contains(&name) {
         return Some("API-expensive (seed round only)");
     }
+    // ── Universal preflight: reject private IPs / local domains for
+    // modules that talk to external APIs. Sensor modules opt out via
+    // LOCAL_PASSIVE_MODULES — they legitimately scan the local
+    // network. Every other module is treated as "may reach an external
+    // service" so we save its quota / suppress its "HTTP 400 invalid
+    // IP" responses before the dispatch even fires.
+    //
+    // Modules with non-IP/Domain accepts (Email, Phone, Username, etc.)
+    // fall through the `_` arm and run normally — there's no concept
+    // of a "private email".
+    if !LOCAL_PASSIVE_MODULES.contains(&name) {
+        use crate::util::preflight;
+        match target.kind {
+            // Use the v6-tolerant gate — public IPv6 must pass through
+            // (shodan, censys, RDAP, abuseipdb, etc. all support v6).
+            // `should_skip_external_ipv4` rejects ANY `:`-containing
+            // string and is reserved for the small set of IPv4-only
+            // modules (ipapi, ip-api.com, ipinfo.io, ipquery.io)
+            // that route through it inside their own `process`.
+            TargetKind::IpAddress if preflight::should_skip_external_ip(&target.value) => {
+                return Some("private/reserved IP — external API would reject");
+            }
+            TargetKind::Domain if preflight::is_local_domain(&target.value) => {
+                return Some("local/reserved domain — external API would reject");
+            }
+            // SSRF gate: a URL whose host is a private IP or local
+            // domain must not reach a URL-accepting external module
+            // (dns_intel, doh_resolver, exif_geo, geo_domain_classifier,
+            // web_crawler). Without this, an autonomously-discovered
+            // `http://192.168.1.1/admin` would coerce HSE into
+            // hitting the operator's internal network.
+            TargetKind::Url if url_host_is_private(&target.value) => {
+                return Some("URL with private host — external API would reject (SSRF gate)");
+            }
+            _ => {}
+        }
+    }
     None
+}
+
+/// True if `url` parses cleanly AND its host is a reserved IP or
+/// a local-only domain. Mid-parse failures return false (let the
+/// module's own validation reject malformed URLs as usual).
+fn url_host_is_private(url: &str) -> bool {
+    use crate::util::preflight::{is_local_domain, is_private_ip};
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    // url 2.5 returns IPv6 host_str WITH brackets (`[::1]`); strip
+    // them before passing to is_private_ip so the IpAddr parse fires.
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    if is_private_ip(bare) {
+        return true;
+    }
+    is_local_domain(bare)
 }
 
 /// Augment Coordinates entities with geohash + timezone, and Address
@@ -1216,6 +1345,12 @@ mod tests {
         }
     }
 
+    /// Neutral public IP target used by skip-reason tests so the
+    /// universal preflight gate doesn't fire on the test fixture.
+    fn pub_target() -> Target {
+        Target::new(TargetKind::IpAddress, "1.1.1.1")
+    }
+
     fn free_active() -> StubModule {
         StubModule {
             name: "test_free",
@@ -1244,7 +1379,7 @@ mod tests {
     fn skip_reason_none_for_default_opts() {
         let m = free_active();
         let opts = ScanOptions::default();
-        assert!(module_skip_reason(&m, &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
     }
 
     #[test]
@@ -1255,7 +1390,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            module_skip_reason(&m, &opts, false),
+            module_skip_reason(&m, &pub_target(), &opts, false),
             Some("not in allowlist")
         );
     }
@@ -1267,7 +1402,7 @@ mod tests {
             modules: Some(vec!["test_free".into()]),
             ..Default::default()
         };
-        assert!(module_skip_reason(&m, &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
     }
 
     #[test]
@@ -1277,7 +1412,10 @@ mod tests {
             exclude_modules: vec!["test_free".into()],
             ..Default::default()
         };
-        assert_eq!(module_skip_reason(&m, &opts, false), Some("excluded"));
+        assert_eq!(
+            module_skip_reason(&m, &pub_target(), &opts, false),
+            Some("excluded")
+        );
     }
 
     #[test]
@@ -1288,7 +1426,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            module_skip_reason(&m, &opts, false),
+            module_skip_reason(&m, &pub_target(), &opts, false),
             Some("requires key/payment")
         );
     }
@@ -1300,7 +1438,7 @@ mod tests {
             free_only: true,
             ..Default::default()
         };
-        assert!(module_skip_reason(&m, &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
     }
 
     #[test]
@@ -1310,7 +1448,10 @@ mod tests {
             passive_only: true,
             ..Default::default()
         };
-        assert_eq!(module_skip_reason(&m, &opts, false), Some("not passive"));
+        assert_eq!(
+            module_skip_reason(&m, &pub_target(), &opts, false),
+            Some("not passive")
+        );
     }
 
     #[test]
@@ -1320,7 +1461,7 @@ mod tests {
             passive_only: true,
             ..Default::default()
         };
-        assert!(module_skip_reason(&m, &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
     }
 
     #[test]
@@ -1331,7 +1472,135 @@ mod tests {
             exclude_modules: vec!["test_free".into()],
             ..Default::default()
         };
-        assert_eq!(module_skip_reason(&m, &opts, false), Some("excluded"));
+        assert_eq!(
+            module_skip_reason(&m, &pub_target(), &opts, false),
+            Some("excluded")
+        );
+    }
+
+    // -- universal preflight gate (private IP / local domain) --
+
+    #[test]
+    fn skip_reason_rejects_private_ip_for_external_module() {
+        let m = free_active();
+        let private = Target::new(TargetKind::IpAddress, "192.168.1.1");
+        let opts = ScanOptions::default();
+        assert_eq!(
+            module_skip_reason(&m, &private, &opts, false),
+            Some("private/reserved IP — external API would reject")
+        );
+    }
+
+    #[test]
+    fn skip_reason_rejects_local_domain_for_external_module() {
+        let m = free_active();
+        let local = Target::new(TargetKind::Domain, "router.local");
+        let opts = ScanOptions::default();
+        assert_eq!(
+            module_skip_reason(&m, &local, &opts, false),
+            Some("local/reserved domain — external API would reject")
+        );
+    }
+
+    #[test]
+    fn skip_reason_lets_local_passive_module_see_private_ip() {
+        // local_net, device_sensors, wifi_intel, cell_intel are
+        // listed in LOCAL_PASSIVE_MODULES and bypass the preflight.
+        let m = StubModule {
+            name: "local_net",
+            cost: ModuleCost::Free,
+            passive: true,
+        };
+        let private = Target::new(TargetKind::IpAddress, "192.168.1.1");
+        let opts = ScanOptions::default();
+        assert!(module_skip_reason(&m, &private, &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_passes_public_ip_through() {
+        let m = free_active();
+        let opts = ScanOptions::default();
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_passes_public_ipv6_through() {
+        // Regression: the universal preflight previously rejected
+        // every `:`-containing string via should_skip_external_ipv4,
+        // silently breaking IPv6 lookups for v6-capable modules
+        // (shodan, censys, abuseipdb, RDAP, etc.). The v6-tolerant
+        // gate must let public IPv6 pass through to module dispatch.
+        let m = free_active();
+        let opts = ScanOptions::default();
+        for v6 in [
+            "2606:4700:4700::1111", // Cloudflare
+            "2001:4860:4860::8888", // Google
+            "2620:fe::fe",          // Quad9
+        ] {
+            let t = Target::new(TargetKind::IpAddress, v6);
+            assert!(
+                module_skip_reason(&m, &t, &opts, false).is_none(),
+                "public IPv6 {v6} should NOT be rejected by the universal gate",
+            );
+        }
+    }
+
+    #[test]
+    fn skip_reason_rejects_url_with_private_host_ssrf_gate() {
+        // SSRF gate: a Url target whose host parses as a private IP
+        // or a local domain must not reach external-API modules.
+        // Without this, autonomous expansion that yields
+        // `http://192.168.1.1/admin` would coerce HSE into hitting
+        // the operator's internal LAN.
+        let m = free_active();
+        let opts = ScanOptions::default();
+        for hostile in [
+            "http://192.168.1.1/admin",
+            "http://10.0.0.1:8080/",
+            "http://127.0.0.1/health",
+            "http://[::1]/",
+            "http://router.local/",
+            "https://intra.internal/api",
+        ] {
+            let t = Target::new(TargetKind::Url, hostile);
+            let reason = module_skip_reason(&m, &t, &opts, false);
+            assert!(
+                reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
+                "Url {hostile} should be SSRF-rejected, got {reason:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn skip_reason_lets_public_url_through() {
+        let m = free_active();
+        let opts = ScanOptions::default();
+        for benign in [
+            "https://example.com/",
+            "https://api.github.com/users/octocat",
+            "http://[2606:4700:4700::1111]/",
+        ] {
+            let t = Target::new(TargetKind::Url, benign);
+            assert!(
+                module_skip_reason(&m, &t, &opts, false).is_none(),
+                "Url {benign} should pass through",
+            );
+        }
+    }
+
+    #[test]
+    fn skip_reason_still_rejects_private_ipv6() {
+        // Loopback / unique-local / link-local IPv6 are private and
+        // should still be skipped by the universal gate.
+        let m = free_active();
+        let opts = ScanOptions::default();
+        for private_v6 in ["::1", "fc00::1", "fe80::1"] {
+            let t = Target::new(TargetKind::IpAddress, private_v6);
+            assert!(
+                module_skip_reason(&m, &t, &opts, false).is_some(),
+                "private IPv6 {private_v6} should be rejected",
+            );
+        }
     }
 
     // -- dispatch dedup tests --

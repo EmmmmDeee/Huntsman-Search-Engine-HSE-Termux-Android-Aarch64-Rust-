@@ -22,7 +22,30 @@ use futures::future::join_all;
 use std::sync::Arc;
 use std::time::Duration;
 
-const MAX_CONCURRENT_PROBES: usize = 16;
+/// Concurrent probe ceiling. Each batch is bounded by `per_site_timeout`
+/// so the wall-time is `ceil(SITES.len()/MAX) × per_site_timeout`. At 32
+/// concurrent + 4.5s/probe + 334 sites that's ~47s — fits inside the
+/// 60s `max_timeout_ms` budget below with comfortable slack.
+const MAX_CONCURRENT_PROBES: usize = 32;
+
+/// Browser-shaped User-Agent for the per-site probes.
+///
+/// Until v1.2 the module used reqwest's default client UA
+/// (`huntsman-search-engine/x.y.z (+url)`), which Cloudflare /
+/// PerimeterX / Akamai-fronted social platforms routinely 403'd as a
+/// bot signal — meaning ~30% of the SITES table was returning Error
+/// even when the username existed. Sending a real Chrome-on-Android
+/// UA (chosen to match the `util::curl_client` fingerprint used by
+/// the paid OSINT modules) restores hit rate.
+const BROWSER_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) \
+    AppleWebKit/537.36 (KHTML, like Gecko) \
+    Chrome/125.0.0.0 Mobile Safari/537.36";
+
+/// Accept header — wide image/html/anything spec that matches what a
+/// browser sends. Some WAFs (notably Akamai Bot Manager) score
+/// requests with `accept: */*` as suspicious.
+const BROWSER_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;\
+    q=0.9,image/avif,image/webp,*/*;q=0.8";
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -67,6 +90,17 @@ impl Module for UsernameSearch {
         matches!(t.kind, TargetKind::Username)
     }
 
+    fn max_timeout_ms(&self) -> u64 {
+        // The previous default of 3_000 (inherited from
+        // `MODULE_TIMEOUT_MS`) was killing the module after ~2 probe
+        // batches of 16, surfacing only ~32 of 334 sites' results.
+        // 60s envelope gives 47s of probing wall-time + 13s of slack
+        // for slow Cloudflare / Akamai / PerimeterX challenges that
+        // social-analyzer's published research flags as the dominant
+        // failure mode for username-enumeration tools.
+        60_000
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let username = target.value.trim();
         if username.is_empty() || username.len() > 64 {
@@ -74,10 +108,13 @@ impl Module for UsernameSearch {
         }
 
         let encoded = urlencode(username);
-        // Per-site timeout deliberately tight: with 30 sites and a 3 s
-        // engine ceiling we'd otherwise blow the per-module budget.
-        // 2.5 s per site is generous for HEAD/GET against a CDN edge.
-        let per_site_timeout = Duration::from_millis(2_500);
+        // Per-site timeout raised from 2.5s → 4.5s to absorb the
+        // Cloudflare / Akamai / PerimeterX "checking your browser"
+        // challenges that flag the dominant failure mode for username-
+        // enumeration tools (per social-analyzer's published rate-
+        // limit research). The outer module envelope (60s) gives ~13s
+        // of slack on top of the worst-case batch wall-time.
+        let per_site_timeout = Duration::from_millis(4_500);
 
         let sem = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PROBES));
         let probes = SITES.iter().map(|site| {
@@ -90,6 +127,14 @@ impl Module for UsernameSearch {
                     Method::Get => client.get(&url),
                     Method::Head => client.head(&url),
                 };
+                // Browser-shaped UA + Accept headers — the tool-shaped
+                // default UA was being 403'd by Cloudflare-fronted
+                // platforms (~30% of SITES), masking real hits as
+                // Errors. See BROWSER_UA constant for rationale.
+                let req = req
+                    .header("User-Agent", BROWSER_UA)
+                    .header("Accept", BROWSER_ACCEPT)
+                    .header("Accept-Language", "en-US,en;q=0.9");
                 let resp = tokio::time::timeout(per_site_timeout, req.send()).await;
                 let resp = match resp {
                     Ok(Ok(r)) => r,
@@ -312,5 +357,35 @@ mod tests {
         for site in SITES {
             assert!(seen.insert(site.name), "duplicate site name: {}", site.name);
         }
+    }
+
+    #[test]
+    fn max_timeout_ms_budgeted_for_full_table_sweep() {
+        // Regression guard: with 334 sites and 32 concurrent probes,
+        // the module needs ~ceil(334/32) × 4.5s = 47s of probing
+        // wall-time. If a future contributor reverts to the default
+        // 3_000ms (MODULE_TIMEOUT_MS) the engine will kill the
+        // module after ~2 batches and surface only ~10% of real
+        // hits. 60s envelope leaves headroom for slow CDN probes.
+        let m = UsernameSearch;
+        let budget = m.max_timeout_ms();
+        let needed = ((SITES.len() as u64).div_ceil(MAX_CONCURRENT_PROBES as u64)) * 4_500;
+        assert!(
+            budget >= needed,
+            "max_timeout_ms ({budget}ms) too tight for full sweep of {} sites \
+             at {MAX_CONCURRENT_PROBES} concurrent probes (need ≥ {needed}ms)",
+            SITES.len(),
+        );
+    }
+
+    #[test]
+    fn browser_ua_is_chrome_shaped() {
+        // Regression guard: if a contributor reverts to the tool UA
+        // (`huntsman-search-engine/...`), Cloudflare-fronted sites
+        // will 403 ~30% of the table again. Lock in the shape so
+        // anyone changing it has to update this test too.
+        assert!(BROWSER_UA.contains("Mozilla/5.0"));
+        assert!(BROWSER_UA.contains("Chrome/"));
+        assert!(!BROWSER_UA.contains("huntsman-search-engine"));
     }
 }

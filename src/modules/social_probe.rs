@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -202,6 +202,15 @@ impl Module for SocialProbe {
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Username | TargetKind::FullName)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Social
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Url, EntityKind::Username, EntityKind::Person];
+        KINDS
     }
 
     fn max_timeout_ms(&self) -> u64 {

@@ -92,7 +92,11 @@ impl Module for IpWhois {
             }
 
             let coords = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.68, &ctx.scan_id);
+            // Confidence recalibrated 0.68 → 0.55 — WHOIS-based geo is
+            // particularly coarse (registrar address, not host
+            // location) so this provider should rank below the
+            // residential-DB-backed IP-geo modules.
+            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.55, &ctx.scan_id);
             e.tag("geoint");
             if let Some(cc) = data.country_code.as_deref() {
                 e.tag(format!("country:{}", cc.to_uppercase()));

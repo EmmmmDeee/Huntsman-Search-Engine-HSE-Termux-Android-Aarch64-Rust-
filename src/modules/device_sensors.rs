@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::Target,
 };
 use crate::util::termux::termux_cmd;
@@ -66,6 +66,15 @@ impl Module for DeviceSensors {
     }
     fn accepts(&self, _t: &Target) -> bool {
         true
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Sensor
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates, EntityKind::MacAddress];
+        KINDS
     }
 
     /// termux-location network provider typically returns in 1-5 s but

@@ -22,82 +22,111 @@
 //! Quota model: 5000 daily lookups on premiumhq plan, resets at midnight UTC.
 //! Per-process budget mirrors the OathNet client's pattern.
 
-use std::sync::Mutex;
-use std::time::Duration;
-
 use serde_json::Value;
 
 use crate::core::error::{Error, Result};
+use crate::util::budget::QuotaBudget;
+use crate::util::curl_client::{AuthScheme, CurlClient};
+use crate::util::response_cache::ResponseCache;
+
+// Re-export the shared snapshot type so external consumers
+// (`api::handlers::stats`) keep working through the original path.
+pub use crate::util::budget::BudgetSnapshot;
 
 const HARDCODED_KEY: &str = "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
 
 pub const KEY_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";
 
-static QUOTA_EXHAUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Per-process response cache backed by the shared
+/// [`ResponseCache`] primitive (cap 1024 — sized to comfortably hold
+/// every distinct endpoint × query a single scan generates).
+static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
 
-static RESPONSE_CACHE: std::sync::LazyLock<Mutex<std::collections::HashMap<String, Vec<Value>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::with_capacity(256)));
+/// Shared curl-subprocess client. Bearer auth, 12s curl timeout
+/// (matches the legacy `--max-time 12`), 15s outer tokio timeout.
+static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::Bearer, 12, 15_000);
 
-static QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-static SESSION_QUERY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Per-scan + per-session quota budget for SeekNow API calls.
+///
+/// SeekNow's premiumhq plan grants 5,000 daily lookups. Each scan
+/// gets a 24-query envelope (env-tunable via `HUNTSMAN_SEEKNOW_SCAN_CAP`,
+/// runtime-overridable via `ScanOptions::seeknow_scan_cap`) so a
+/// single seed can dispatch the universal search plus ~10 specialised
+/// endpoints across the pivot graph. The 200-query session ceiling
+/// (env-tunable via `HUNTSMAN_SEEKNOW_SESSION_CAP`) stops long-running
+/// radar/live sessions short of the daily 5,000 ceiling.
+static BUDGET: QuotaBudget = QuotaBudget::new(
+    "seeknow",
+    24,
+    200,
+    "HUNTSMAN_SEEKNOW_SCAN_CAP",
+    "HUNTSMAN_SEEKNOW_SESSION_CAP",
+);
 
-/// SeekNow's premiumhq plan grants 5,000 daily lookups. We cap per-scan
-/// at 8 (universal search + up to 7 specialised endpoints per seed type)
-/// and per-process at 200 to support deep radar sessions while leaving
-/// daily-quota headroom.
-const MAX_QUERIES_PER_SCAN: u32 = 8;
-
-fn max_queries_per_session() -> u32 {
-    static CAP: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
-        std::env::var("HUNTSMAN_SEEKNOW_SESSION_CAP")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(200)
-    });
-    *CAP
+/// Install a runtime per-scan cap. `0` clears the override (falls back
+/// to env + static default). The engine calls this once at scan start
+/// when the operator set `ScanOptions::seeknow_scan_cap`.
+pub fn set_scan_cap_override(cap: u32) {
+    BUDGET.set_scan_cap_override(cap);
 }
 
+/// Cache key combining endpoint path, normalised query, and query
+/// type (when applicable). Disambiguates the universal /search path
+/// — auto-detect ("") and typed ("email") on the same value previously
+/// collided, masking type-specific result variants.
 fn cache_key(path: &str, query: &str) -> String {
     format!("{path}:{}", query.to_lowercase())
 }
 
-fn cache_get(key: &str) -> Option<Vec<Value>> {
-    RESPONSE_CACHE
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(key).cloned())
-}
-
-fn cache_put(key: String, items: Vec<Value>) {
-    if let Ok(mut cache) = RESPONSE_CACHE.lock()
-        && cache.len() < 1024
-    {
-        cache.insert(key, items);
+fn typed_cache_key(path: &str, query: &str, query_type: &str) -> String {
+    if query_type.is_empty() {
+        cache_key(path, query)
+    } else {
+        format!("{path}#{query_type}:{}", query.to_lowercase())
     }
 }
 
-fn budget_remaining() -> bool {
-    QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire) < MAX_QUERIES_PER_SCAN
-        && SESSION_QUERY_COUNT.load(std::sync::atomic::Ordering::Acquire)
-            < max_queries_per_session()
+fn cache_get(key: &str) -> Option<Vec<Value>> {
+    RESPONSE_CACHE.get(key)
+}
+
+fn cache_put(key: String, items: Vec<Value>) {
+    RESPONSE_CACHE.put(key, items);
+}
+
+/// True if there's room in both the per-scan and per-session budgets.
+/// Public so the module layer can short-circuit endpoint plans before
+/// allocating per-endpoint futures.
+pub fn budget_remaining() -> bool {
+    BUDGET.remaining()
+}
+
+/// Remaining queries in the per-scan budget. Used by the module-layer
+/// planner to decide how many specialised endpoints to dispatch.
+pub fn scan_budget_remaining() -> u32 {
+    BUDGET.scan_remaining()
+}
+
+/// Snapshot of current per-scan + per-session budget consumption.
+/// Surfaced for diagnostics (`hse doctor`) and `/api/v1/stats`.
+pub fn budget_snapshot() -> BudgetSnapshot {
+    BUDGET.snapshot()
 }
 
 fn budget_increment() {
-    QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    SESSION_QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    BUDGET.increment();
 }
 
 pub fn is_quota_exhausted() -> bool {
-    QUOTA_EXHAUSTED.load(std::sync::atomic::Ordering::Acquire)
+    BUDGET.is_exhausted()
 }
 
 pub fn reset_budget() {
-    QUERY_COUNT.store(0, std::sync::atomic::Ordering::Release);
-    QUOTA_EXHAUSTED.store(false, std::sync::atomic::Ordering::Release);
+    BUDGET.reset_scan();
 }
 
 fn mark_quota_exhausted() {
-    QUOTA_EXHAUSTED.store(true, std::sync::atomic::Ordering::Release);
+    BUDGET.mark_exhausted();
     tracing::warn!("SeekNow daily quota exhausted — skipping remaining queries");
 }
 
@@ -118,7 +147,10 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
 /// The `query_type` is one of: email, username, domain, ip, phone,
 /// discord_id, steam_id. Pass an empty string for auto-detect.
 pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Value>> {
-    let ck = cache_key("search", query);
+    // Disambiguated cache key — auto-detect ("") and typed ("email")
+    // queries on the same value used to collide, masking the typed
+    // variant's specialised result rows.
+    let ck = typed_cache_key("search", query, query_type);
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
@@ -140,6 +172,51 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     let items = extract_items(&resp);
     cache_put(ck, items.clone());
     Ok(items)
+}
+
+/// Steam profile lookup via GET /api/v1/gaming/steam?id=<value>
+///
+/// Some plans publish gaming/steam alongside roblox/xbox/minecraft;
+/// safe to call against arbitrary 17-digit Steam IDs surfaced from
+/// breach data.
+pub async fn steam_profile(key: &str, steam_id: &str) -> Result<Vec<Value>> {
+    get_path(key, "gaming/steam", &[("id", steam_id)]).await
+}
+
+/// Credits endpoint — returns the SeekNow account's remaining daily
+/// quota. Used by the module layer for proactive tier decisions:
+/// callers can skip optional endpoint plans when `remaining < N`.
+///
+/// Returns `Ok(None)` if the endpoint is missing or the response is
+/// not understood — callers should treat that as "quota unknown, keep
+/// going" so the budget atomic remains authoritative.
+///
+/// Does NOT consume any of the per-scan budget — credits-check is
+/// considered metadata, not a billable lookup.
+pub async fn credits(key: &str) -> Result<Option<u64>> {
+    if is_quota_exhausted() {
+        return Ok(Some(0));
+    }
+    let url = format!("{}/credits", base_url());
+    let body = match CLIENT.get(&url, key).await {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
+    let v: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    // Common shapes: { "credits_remaining": N }, { "remaining": N },
+    // { "data": { "credits": N } }.
+    let remaining = v
+        .get("credits_remaining")
+        .or_else(|| v.get("remaining"))
+        .or_else(|| v.get("credits"))
+        .or_else(|| v.pointer("/data/credits_remaining"))
+        .or_else(|| v.pointer("/data/credits"))
+        .or_else(|| v.pointer("/data/remaining"))
+        .and_then(|x| x.as_u64());
+    Ok(remaining)
 }
 
 /// Stealer-log search via GET /api/v1/stealer?q=<value>
@@ -285,12 +362,12 @@ fn escape_json(s: &str) -> String {
 }
 
 async fn get_json(url: &str, key: &str) -> Result<Value> {
-    let body = curl_exec(url, key, None).await?;
+    let body = CLIENT.get(url, key).await?;
     parse_response(&body)
 }
 
 async fn post_json(url: &str, key: &str, body: &str) -> Result<Value> {
-    let resp = curl_exec(url, key, Some(body)).await?;
+    let resp = CLIENT.post_json(url, key, body).await?;
     parse_response(&resp)
 }
 
@@ -308,45 +385,9 @@ fn parse_response(body: &str) -> Result<Value> {
     serde_json::from_str(body).map_err(|e| Error::module("seek_now", e.to_string()))
 }
 
-async fn curl_exec(url: &str, key: &str, post_body: Option<&str>) -> Result<String> {
-    let secs = 12u64.to_string();
-    let header = format!("Authorization: Bearer {key}");
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args([
-        "-s",
-        "-L",
-        "--max-time",
-        &secs,
-        "-A",
-        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
-        "-H",
-        &header,
-        "-H",
-        "Accept: application/json",
-    ]);
-    if let Some(body) = post_body {
-        cmd.args([
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-            "-d",
-            body,
-        ]);
-    }
-    cmd.args(["--", url]);
-    cmd.kill_on_drop(true);
-
-    let output = tokio::time::timeout(Duration::from_millis(15_000), cmd.output())
-        .await
-        .map_err(|_| Error::module("seek_now", "timeout"))?
-        .map_err(|e| Error::module("seek_now", e.to_string()))?;
-
-    if !output.status.success() {
-        return Err(Error::module("seek_now", "curl failed"));
-    }
-    String::from_utf8(output.stdout).map_err(|e| Error::module("seek_now", e.to_string()))
-}
+// The curl-subprocess transport now lives in `util::curl_client` —
+// shared with util::oathnet via the per-provider `CLIENT` static
+// declared at the top of this file.
 
 /// Extract a string field from a JSON Value.
 pub fn val_str(item: &Value, key: &str) -> Option<String> {
@@ -416,5 +457,108 @@ mod tests {
     fn escape_json_handles_quotes_and_backslashes() {
         assert_eq!(escape_json(r#"hello"world"#), r#"hello\"world"#);
         assert_eq!(escape_json(r"path\to\file"), r"path\\to\\file");
+    }
+
+    #[test]
+    fn typed_cache_key_disambiguates_query_type_from_auto_detect() {
+        let auto = typed_cache_key("search", "alice", "");
+        let typed = typed_cache_key("search", "alice", "email");
+        assert_ne!(
+            auto, typed,
+            "auto-detect and typed search must NOT share a cache key"
+        );
+        // Without a type, falls back to the legacy key shape.
+        assert_eq!(auto, cache_key("search", "alice"));
+        // Typed form includes the type marker.
+        assert!(typed.contains("#email"));
+    }
+
+    #[test]
+    fn scan_budget_remaining_decreases_with_increments() {
+        reset_budget();
+        let start = scan_budget_remaining();
+        budget_increment();
+        let after = scan_budget_remaining();
+        assert_eq!(
+            start,
+            after + 1,
+            "increment must consume exactly one credit"
+        );
+        reset_budget();
+    }
+
+    #[test]
+    fn budget_snapshot_reports_active_caps() {
+        reset_budget();
+        let snap = budget_snapshot();
+        assert_eq!(snap.scan_used, 0);
+        assert!(snap.scan_cap >= 1);
+        assert!(!snap.quota_exhausted);
+        budget_increment();
+        let snap2 = budget_snapshot();
+        assert_eq!(snap2.scan_used, 1);
+        reset_budget();
+    }
+
+    #[test]
+    fn default_scan_cap_is_higher_than_legacy_eight() {
+        // Regression guard for the seek-eu remodel: the legacy cap was
+        // 8 lookups, leaving 99.84% of the daily quota unused. The new
+        // default must be at least 16.
+        reset_budget();
+        let cap = budget_snapshot().scan_cap;
+        assert!(
+            cap >= 16,
+            "scan cap dropped to {cap} — must remain ≥ 16 to leverage SeekNow quota"
+        );
+    }
+
+    #[test]
+    fn set_scan_cap_override_replaces_default_until_reset() {
+        reset_budget();
+        let base = budget_snapshot().scan_cap;
+        set_scan_cap_override(80);
+        assert_eq!(budget_snapshot().scan_cap, 80);
+        reset_budget();
+        // After reset, falls back to env / static default again.
+        assert_eq!(budget_snapshot().scan_cap, base);
+    }
+
+    #[test]
+    fn scan_cap_override_zero_falls_back_to_default() {
+        reset_budget();
+        let base = budget_snapshot().scan_cap;
+        set_scan_cap_override(0);
+        assert_eq!(
+            budget_snapshot().scan_cap,
+            base,
+            "override of 0 must mean 'use default', not 'cap at zero'"
+        );
+        reset_budget();
+    }
+
+    #[test]
+    fn snapshot_reflects_override_cap() {
+        reset_budget();
+        set_scan_cap_override(99);
+        let snap = budget_snapshot();
+        assert_eq!(snap.scan_cap, 99);
+        reset_budget();
+    }
+
+    #[test]
+    fn reset_clears_override_too() {
+        // Regression guard: reset_scan must clear the cap override so
+        // the next scan picks up the env / default cap unless the
+        // engine installs a fresh override at scan start.
+        reset_budget();
+        set_scan_cap_override(99);
+        assert_eq!(budget_snapshot().scan_cap, 99);
+        reset_budget();
+        assert_ne!(
+            budget_snapshot().scan_cap,
+            99,
+            "reset_budget must clear the cap override"
+        );
     }
 }

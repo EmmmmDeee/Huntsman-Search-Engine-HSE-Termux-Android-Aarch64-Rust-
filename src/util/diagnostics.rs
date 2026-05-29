@@ -219,6 +219,45 @@ fn name_similarity(a: &str, b: &str) -> f64 {
     (jaccard * 0.7 + prefix_score * 0.3).min(1.0)
 }
 
+/// Country-coherence score for a coordinate cluster relative to a
+/// previously anchored country (audit O-001). Returns a multiplier
+/// in [0.0, 1.0] that downweights coordinate clusters whose country
+/// differs from the scan's anchored country unless backed by multiple
+/// independent sources.
+///
+/// Rationale: SERP-derived coordinates often leak across borders
+/// (e.g. a US Philadelphia centroid surfacing on an AU-anchored
+/// subject scan). Single-source cross-border coordinates are almost
+/// always noise; multi-source cross-border coordinates may be real
+/// travel or a sibling entity and are kept at reduced weight.
+pub fn country_coherence_weight(cluster: &CoordinateCluster, anchor_iso: &str) -> f64 {
+    let Some(iso) = cluster.country_iso.as_deref() else {
+        // Unknown country: neutral.
+        return 0.7;
+    };
+    if iso.eq_ignore_ascii_case(anchor_iso) {
+        return 1.0;
+    }
+    match cluster.source_diversity {
+        0 | 1 => 0.05, // single-source cross-border is almost certainly noise
+        2 => 0.30,
+        _ => 0.60,
+    }
+}
+
+/// Filter a list of coordinate clusters down to those that pass the
+/// country-coherence threshold for the given anchor ISO.
+pub fn filter_country_coherent(
+    clusters: Vec<CoordinateCluster>,
+    anchor_iso: &str,
+    threshold: f64,
+) -> Vec<CoordinateCluster> {
+    clusters
+        .into_iter()
+        .filter(|c| country_coherence_weight(c, anchor_iso) >= threshold)
+        .collect()
+}
+
 /// Cluster Person and Address entities by fuzzy name similarity.
 /// Threshold 0.6 = "Jordan Meyer" ↔ "Jordan L Meyer" match.
 fn cluster_entities_fuzzy(entities: &[Entity]) -> Vec<EntityCluster> {
@@ -283,7 +322,11 @@ fn cluster_entities_fuzzy(entities: &[Entity]) -> Vec<EntityCluster> {
                 source_diversity: sources.len(),
             }
         })
-        .filter(|c| c.member_count >= 2)
+        // Diversity floor (audit O-002): a fuzzy-name cluster from a
+        // single source is identity-pollution risk unless deeply
+        // populated. Require either 2+ independent sources, OR 3+
+        // member records from the same source (frequency-as-signal).
+        .filter(|c| c.member_count >= 2 && (c.source_diversity >= 2 || c.member_count >= 3))
         .collect();
 
     // Sort: most-corroborated clusters first
@@ -976,5 +1019,99 @@ mod tests {
         assert_eq!(d.coordinate_clusters[0].member_count, 2);
         assert!(d.coordinate_clusters[0].diameter_km < 1.0);
         assert_eq!(d.coordinate_clusters[0].country_iso.as_deref(), Some("AU"));
+    }
+
+    fn make_cluster(iso: &str, diversity: usize) -> CoordinateCluster {
+        CoordinateCluster {
+            centroid_lat: 0.0,
+            centroid_lon: 0.0,
+            centroid_geohash: String::new(),
+            members: vec!["0.0,0.0".to_string()],
+            member_count: 1,
+            diameter_km: 0.0,
+            country_iso: Some(iso.to_string()),
+            timezone: String::new(),
+            source_diversity: diversity,
+        }
+    }
+
+    #[test]
+    fn country_coherence_keeps_anchor_match_at_full_weight() {
+        let c = make_cluster("AU", 1);
+        assert_eq!(country_coherence_weight(&c, "AU"), 1.0);
+    }
+
+    #[test]
+    fn country_coherence_downweights_single_source_cross_border() {
+        let c = make_cluster("US", 1);
+        assert_eq!(country_coherence_weight(&c, "AU"), 0.05);
+    }
+
+    #[test]
+    fn country_coherence_partially_keeps_multi_source_cross_border() {
+        assert_eq!(country_coherence_weight(&make_cluster("US", 2), "AU"), 0.30);
+        assert_eq!(country_coherence_weight(&make_cluster("US", 3), "AU"), 0.60);
+    }
+
+    #[test]
+    fn country_coherence_neutralises_unknown_country() {
+        let c = CoordinateCluster {
+            centroid_lat: 0.0,
+            centroid_lon: 0.0,
+            centroid_geohash: String::new(),
+            members: vec![],
+            member_count: 0,
+            diameter_km: 0.0,
+            country_iso: None,
+            timezone: String::new(),
+            source_diversity: 1,
+        };
+        assert_eq!(country_coherence_weight(&c, "AU"), 0.7);
+    }
+
+    #[test]
+    fn filter_country_coherent_drops_noise() {
+        let clusters = vec![
+            make_cluster("AU", 1), // 1.0 -> kept
+            make_cluster("US", 1), // 0.05 -> dropped at threshold 0.5
+            make_cluster("US", 3), // 0.60 -> kept at threshold 0.5
+        ];
+        let kept = filter_country_coherent(clusters, "AU", 0.5);
+        assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn fuzzy_cluster_drops_single_source_doublet() {
+        // Two address entities, both from the same source. With the
+        // diversity floor in place, this should NOT be reported as a
+        // cluster (member_count=2, source_diversity=1).
+        let mut e1 = Entity::new(EntityKind::Address, "Haigen Li", 0.3, "sid");
+        e1.add_evidence(Evidence::new("oathnet_pro", "ev"));
+        let mut e2 = Entity::new(EntityKind::Address, "Haigen Li, Pingan Asset", 0.3, "sid");
+        e2.add_evidence(Evidence::new("oathnet_pro", "ev"));
+        let d = analyse("sid", "name", "Haigen Bamford", 100, &[e1, e2]);
+        // Identity-pollution candidate filtered out.
+        let polluted = d
+            .entity_clusters
+            .iter()
+            .any(|c| c.canonical_value.contains("Pingan"));
+        assert!(!polluted);
+    }
+
+    #[test]
+    fn fuzzy_cluster_keeps_triplet_from_single_source() {
+        // Three same-source records is frequency-as-signal; kept.
+        let mut e1 = Entity::new(EntityKind::Person, "Haigen Bamford", 0.5, "sid");
+        e1.add_evidence(Evidence::new("oathnet_pro", "ev"));
+        let mut e2 = Entity::new(EntityKind::Person, "HAIGEN BAMFORD", 0.5, "sid");
+        e2.add_evidence(Evidence::new("oathnet_pro", "ev"));
+        let mut e3 = Entity::new(EntityKind::Person, "haigen bamford", 0.5, "sid");
+        e3.add_evidence(Evidence::new("oathnet_pro", "ev"));
+        let d = analyse("sid", "name", "Haigen Bamford", 100, &[e1, e2, e3]);
+        let found = d
+            .entity_clusters
+            .iter()
+            .any(|c| c.canonical_value.to_lowercase().contains("haigen"));
+        assert!(found);
     }
 }

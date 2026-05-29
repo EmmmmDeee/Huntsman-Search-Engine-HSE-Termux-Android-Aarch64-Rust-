@@ -178,9 +178,6 @@ impl Module for IpRegistry {
 
 async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let ip = target.value.trim();
-    if ip.is_empty() {
-        return Ok(ModuleResult::new());
-    }
 
     // Run both lookups concurrently.
     let (rdap_res, bgp_res) = tokio::join!(rdap_lookup_ip(ip, ctx), bgp_lookup_ip(ip, ctx),);

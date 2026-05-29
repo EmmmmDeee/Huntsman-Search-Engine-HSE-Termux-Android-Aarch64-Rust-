@@ -187,6 +187,186 @@ async fn modules_list_returns_array() {
         json["count"].as_u64().unwrap() >= 1,
         "should have at least 1 module (the synthetic one)"
     );
+
+    // The v1.1+ schema adds category + produces; assert they're present.
+    let first = &modules[0];
+    assert!(
+        first.get("category").is_some(),
+        "every module entry must have a category"
+    );
+    assert!(
+        first.get("produces").is_some(),
+        "every module entry must have a produces array"
+    );
+    assert!(
+        first.get("accepts").is_some(),
+        "every module entry must have an accepts array"
+    );
+}
+
+#[tokio::test]
+async fn modules_graph_endpoint_returns_kinds_and_edges() {
+    // /api/v1/modules/graph — the dependency-graph view consumed by
+    // the SPA's pivot-chain visualisation.
+    let app = test_app("modules_graph");
+    let resp = app.oneshot(get("/api/v1/modules/graph")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+
+    let kinds = json["kinds"]
+        .as_array()
+        .expect("graph must include kinds array");
+    assert!(!kinds.is_empty(), "kinds array must be non-empty");
+    // First entry should expose richness, module_count, and modules.
+    let first = &kinds[0];
+    assert!(first.get("richness").is_some());
+    assert!(first.get("module_count").is_some());
+    assert!(first.get("modules").is_some());
+    assert!(first.get("kind").is_some());
+
+    let edges = json["edges"]
+        .as_array()
+        .expect("graph must include edges array");
+    assert!(!edges.is_empty());
+    assert!(edges[0].get("consumes").is_some());
+    assert!(edges[0].get("produces").is_some());
+    assert!(edges[0].get("category").is_some());
+
+    let module_count = json["module_count"].as_u64().unwrap();
+    assert!(module_count >= 1);
+}
+
+#[tokio::test]
+async fn scan_create_accepts_expansion_strategy_option() {
+    // The CLI/API surface for ExpansionStrategy must round-trip through
+    // the scan-create endpoint so the SPA can offer it as a setting.
+    let app = test_app("scan_strategy");
+    let body = r#"{
+        "kind":"domain","value":"example.com",
+        "options":{"expansion_strategy":"richest_first","depth":0}
+    }"#;
+    let resp = app.oneshot(post_json("/api/v1/scans", body)).await.unwrap();
+    assert_eq!(resp.status(), 202);
+}
+
+#[tokio::test]
+async fn scan_create_accepts_seeknow_scan_cap_option() {
+    // The per-scan SeekNow budget override must round-trip through the
+    // scan-create endpoint so an operator can spend more of the daily
+    // quota on a single high-value scan.
+    let app = test_app("scan_seeknow_cap");
+    let body = r#"{
+        "kind":"email","value":"target@example.com",
+        "options":{"seeknow_scan_cap":80,"depth":0}
+    }"#;
+    let resp = app.oneshot(post_json("/api/v1/scans", body)).await.unwrap();
+    assert_eq!(resp.status(), 202);
+}
+
+#[tokio::test]
+async fn stats_endpoint_includes_seeknow_block() {
+    // /api/v1/stats must surface the SeekNow budget snapshot so the
+    // operator can see remaining quota at a glance from the UI.
+    let app = test_app("stats_seeknow");
+    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let sn = json
+        .get("seeknow")
+        .expect("stats must include seeknow block");
+    for field in [
+        "scan_used",
+        "scan_cap",
+        "session_used",
+        "session_cap",
+        "quota_exhausted",
+    ] {
+        assert!(
+            sn.get(field).is_some(),
+            "seeknow block missing field {field}"
+        );
+    }
+    // scan_cap is a positive integer (default 24 unless env-tuned).
+    let cap = sn["scan_cap"].as_u64().unwrap();
+    assert!(cap >= 16, "scan_cap dropped below 16 — quota under-used");
+}
+
+#[tokio::test]
+async fn stats_endpoint_includes_wigle_sub_budgets() {
+    // WiGLE has four observation-type budgets (geo / bssid / cell /
+    // bluetooth). All four must surface on stats so operators can
+    // see remaining quota per observation type.
+    let app = test_app("stats_wigle");
+    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let wn = json.get("wigle").expect("stats must include wigle block");
+    for sub in ["geo", "bssid", "cell", "bluetooth"] {
+        let block = wn
+            .get(sub)
+            .unwrap_or_else(|| panic!("wigle block missing sub-budget {sub}"));
+        for field in [
+            "scan_used",
+            "scan_cap",
+            "session_used",
+            "session_cap",
+            "quota_exhausted",
+        ] {
+            assert!(
+                block.get(field).is_some(),
+                "wigle.{sub} missing field {field}"
+            );
+        }
+        // Every sub-budget must have a positive cap.
+        let cap = block["scan_cap"].as_u64().unwrap();
+        assert!(cap >= 1, "wigle.{sub}.scan_cap must be ≥ 1 (got {cap})");
+    }
+    // Account block must also be present — fields may be null until
+    // /profile/user is polled, but the keys must exist so the SPA can
+    // render placeholders without `undefined` reads.
+    let account = wn
+        .get("account")
+        .expect("wigle block must include account sub-object");
+    for field in [
+        "verified",
+        "user",
+        "daily_api_calls",
+        "monthly_api_calls",
+        "last_polled_ts",
+    ] {
+        assert!(
+            account.get(field).is_some(),
+            "wigle.account missing field {field}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn stats_endpoint_includes_oathnet_block() {
+    // After the budget consolidation, oathnet exposes the same wire
+    // shape as seeknow (both back-ended by util::budget::QuotaBudget).
+    let app = test_app("stats_oathnet");
+    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let on = json
+        .get("oathnet")
+        .expect("stats must include oathnet block");
+    for field in [
+        "scan_used",
+        "scan_cap",
+        "session_used",
+        "session_cap",
+        "quota_exhausted",
+    ] {
+        assert!(
+            on.get(field).is_some(),
+            "oathnet block missing field {field}"
+        );
+    }
+    // OathNet default scan cap is 4 (much tighter than SeekNow's 24).
+    let cap = on["scan_cap"].as_u64().unwrap();
+    assert!(cap >= 1, "oathnet scan_cap must be positive (got {cap})");
 }
 
 // ── 4. Scan create (valid) ────────────────────────────────────────────────

@@ -160,6 +160,25 @@ impl Store {
             .collect())
     }
 
+    /// Return the most recent scan whose serialised status matches
+    /// `complete` (the lower-case canonical form used by ScanStatus::
+    /// as_str). Filters at the SQL layer using a JSON-extract probe
+    /// so we don't deserialise dozens of non-Complete rows just to
+    /// find one Complete record. Used by `hse export latest …` and
+    /// the SPA's "open latest scan" affordance.
+    pub fn latest_completed_scan(&self) -> Result<Option<Scan>> {
+        let raw: Option<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT data_json FROM scans
+                 WHERE json_extract(data_json, '$.status') = 'complete'
+                 ORDER BY started_at DESC LIMIT 1",
+            )?;
+            stmt.query_row(params![], |r| r.get::<_, String>(0)).ok()
+        };
+        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
     // ── Correlations ───────────────────────────────────────────────────────
 
     pub fn upsert_correlation(&self, c: &Correlation) -> Result<()> {

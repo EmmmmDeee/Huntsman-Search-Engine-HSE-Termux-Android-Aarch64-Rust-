@@ -230,70 +230,11 @@ impl Module for OathnetPro {
     }
 }
 
-fn is_private_ip(ip: &str) -> bool {
-    if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
-        match addr {
-            std::net::IpAddr::V4(v4) => {
-                v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_broadcast()
-                    || v4.is_unspecified()
-                    || v4.is_multicast()
-                    || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64) // CGN 100.64/10
-            }
-            std::net::IpAddr::V6(v6) => {
-                v6.is_loopback()
-                    || v6.is_unspecified()
-                    || v6.is_multicast()
-                    || (v6.octets()[0] == 0xfc || v6.octets()[0] == 0xfd) // ULA fc00::/7
-                    || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xC0) == 0x80) // link-local fe80::/10
-            }
-        }
-    } else {
-        false
-    }
-}
-
-fn is_placeholder_username(u: &str) -> bool {
-    let lower = u.to_lowercase();
-    matches!(
-        lower.as_str(),
-        "anonymous"
-            | "anon"
-            | "user"
-            | "admin"
-            | "test"
-            | "testing"
-            | "demo"
-            | "guest"
-            | "root"
-            | "username"
-            | "default"
-            | "example"
-            | "null"
-            | "undefined"
-            | "none"
-            | "n/a"
-            | "na"
-            | "unknown"
-            | "tbd"
-    )
-}
-
-fn is_local_domain(domain: &str) -> bool {
-    let d = domain.strip_suffix('.').unwrap_or(domain);
-    d.eq_ignore_ascii_case("localhost")
-        || d.ends_with(".local")
-        || d.ends_with(".lan")
-        || d.ends_with(".internal")
-        || d.ends_with(".home")
-        || d.ends_with(".arpa")
-        || d.ends_with(".test")
-        || d.ends_with(".invalid")
-        || d.ends_with(".example")
-        || d.ends_with(".localhost")
-}
+// Pre-flight validators (`is_private_ip`, `is_placeholder_username`,
+// `is_local_domain`) live in `crate::util::preflight` — both
+// oathnet_pro and see_know share the policy so a target rejected
+// by one provider is rejected by the other.
+use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
 
 fn is_social_platform(domain: &str) -> bool {
     const PLATFORMS: &[&str] = &[

@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::{error_snippet, handle_keyed_error, urlencode};
@@ -89,6 +89,20 @@ impl Module for Censys {
 
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
+    }
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        // Censys host search corroborates the IP and emits the host's
+        // Coordinates (data-centre lat/lon) and city/region/country
+        // as Address.
+        const KINDS: &[EntityKind] = &[
+            EntityKind::IpAddress,
+            EntityKind::Coordinates,
+            EntityKind::Address,
+        ];
+        KINDS
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)

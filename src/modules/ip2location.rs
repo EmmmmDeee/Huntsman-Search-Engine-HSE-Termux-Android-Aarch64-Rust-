@@ -70,10 +70,12 @@ impl Module for Ip2Location {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let ip = target.value.trim();
-        if ip.is_empty() || ip.contains(':') {
+        // ip2location.io free tier is IPv4-only — universal dispatcher
+        // gate lets public IPv6 through, so reject it here.
+        if crate::util::preflight::should_skip_external_ipv4(&target.value) {
             return Ok(ModuleResult::new());
         }
+        let ip = target.value.trim();
 
         let url = format!("https://api.ip2location.io/?ip={ip}");
         let resp = ctx
@@ -105,7 +107,10 @@ impl Module for Ip2Location {
             && lon.abs() > 0.01
         {
             let coords = format!("{lat:.4},{lon:.4}");
-            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.72, &ctx.scan_id);
+            // Confidence recalibrated 0.72 → 0.62 — see ip_geo.rs. The
+            // ip2location commercial DB is marginally better than the
+            // freemium competitors so it stays slightly above ipinfo.
+            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.62, &ctx.scan_id);
             ce.tag(tags::GEOINT);
             ce.tag("ip2location");
             if data.is_proxy == Some(true) {

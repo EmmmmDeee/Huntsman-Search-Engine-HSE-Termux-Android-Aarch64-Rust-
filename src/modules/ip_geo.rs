@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::fetch_json;
@@ -61,7 +61,26 @@ impl Module for IpGeo {
         matches!(t.kind, TargetKind::IpAddress)
     }
 
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Geo
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Asn,
+            EntityKind::Organisation,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // ip-api.com free tier is IPv4-only — universal dispatcher gate
+        // lets public IPv6 through, so reject it here.
+        if crate::util::preflight::should_skip_external_ipv4(&target.value) {
+            return Ok(ModuleResult::new());
+        }
         // ip-api.com free tier is HTTP only — HTTPS requires paid plan.
         let url = format!(
             "http://ip-api.com/json/{}?fields=status,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,mobile,proxy,hosting",
@@ -84,12 +103,18 @@ impl Module for IpGeo {
             let coords = format!("{lat:.6},{lon:.6}");
             // Confidence scaled by IP type: hosting/proxy locations are
             // datacenter-level (low geo value), mobile IPs are cell-tower-level.
+            // Recalibrated downward from the old 0.45 / 0.60 / 0.70 trio —
+            // free IP-geo providers routinely miss residential geolocation
+            // by 30–80 km even for "fixed" connections, which the prior
+            // confidence overstated. The engine relies on confidence to
+            // rank expansion candidates, and a single overstated IP-geo
+            // hit was outranking a corroborated WiGLE WiFi fix at 0.85.
             let base_conf = if data.hosting == Some(true) || data.proxy == Some(true) {
-                0.45
+                0.35
             } else if data.mobile == Some(true) {
-                0.60
+                0.50
             } else {
-                0.70
+                0.60
             };
             let mut e = Entity::new(EntityKind::Coordinates, &coords, base_conf, &ctx.scan_id);
             e.tag("geoint");

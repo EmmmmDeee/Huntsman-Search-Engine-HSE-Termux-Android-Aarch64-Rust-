@@ -64,9 +64,6 @@ impl Module for IpInfo {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let ip = target.value.trim();
-        if ip.is_empty() || ip.contains(':') {
-            return Ok(ModuleResult::new());
-        }
 
         let url = format!("https://ipinfo.io/{ip}/json");
         let resp = ctx
@@ -97,7 +94,8 @@ impl Module for IpInfo {
                 && lon.abs() > 0.01
             {
                 let coords = format!("{lat:.4},{lon:.4}");
-                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.68, &ctx.scan_id);
+                // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
+                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.58, &ctx.scan_id);
                 ce.tag(tags::GEOINT);
                 ce.tag("ipinfo");
                 let mut ev = Evidence::new(SRC, format!("IP geo for {ip}"));

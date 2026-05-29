@@ -107,6 +107,34 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     }
     let modules = s.engine.modules().len();
     let live_sessions = s.live.list().len();
+
+    // Surface SeekNow + OathNet + WiGLE budget consumption so operators
+    // can see how much of each daily quota the current process has
+    // burned. All providers share `util::budget::QuotaBudget` so the
+    // wire format is identical; WiGLE has four sub-budgets (geo /
+    // bssid / cell / bluetooth) so its block nests one level deeper.
+    let seeknow = budget_block(crate::util::see_know::budget_snapshot());
+    let oathnet = budget_block(crate::util::oathnet::budget_snapshot());
+    let wigle = crate::modules::wigle::budget_snapshot();
+    let wigle_account = crate::modules::wigle::account_status();
+    let wigle_block = json!({
+        "geo":       budget_block(wigle.geo),
+        "bssid":     budget_block(wigle.bssid),
+        "cell":      budget_block(wigle.cell),
+        "bluetooth": budget_block(wigle.bluetooth),
+        "account":   {
+            // `verified == false` means the WiGLE account has not yet
+            // confirmed the email-verification step, which gates the
+            // database queries (operator-facing warning). `null` means
+            // we haven't polled `/profile/user` yet this process.
+            "verified":           wigle_account.verified,
+            "user":               wigle_account.user,
+            "daily_api_calls":    wigle_account.daily_api_calls,
+            "monthly_api_calls":  wigle_account.monthly_api_calls,
+            "last_polled_ts":     wigle_account.last_polled_ts,
+        },
+    });
+
     (
         StatusCode::OK,
         Json(json!({
@@ -117,52 +145,103 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             "modules": modules,
             "live_sessions": live_sessions,
             "version": crate::VERSION,
+            "seeknow": seeknow,
+            "oathnet": oathnet,
+            "wigle":   wigle_block,
         })),
     )
         .into_response()
+}
+
+/// Convert a [`crate::util::budget::BudgetSnapshot`] into the
+/// JSON shape used by the `/api/v1/stats` endpoint. Centralised so
+/// every quota-spending provider serialises identically.
+fn budget_block(snap: crate::util::budget::BudgetSnapshot) -> Value {
+    json!({
+        "scan_used":       snap.scan_used,
+        "scan_cap":        snap.scan_cap,
+        "session_used":    snap.session_used,
+        "session_cap":     snap.session_cap,
+        "quota_exhausted": snap.quota_exhausted,
+    })
 }
 
 pub async fn version() -> Json<Value> {
     Json(json!({ "version": crate::VERSION }))
 }
 
-pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
-    use crate::core::scan::TargetKind;
-    const ALL_KINDS: [TargetKind; 9] = [
-        TargetKind::Email,
-        TargetKind::Username,
-        TargetKind::Phone,
-        TargetKind::FullName,
-        TargetKind::IpAddress,
-        TargetKind::Domain,
-        TargetKind::Asn,
-        TargetKind::Coordinates,
-        TargetKind::Address,
-    ];
+/// Expose the API-key detector's prefix-match coverage. Returns the
+/// full ordered table from `key_harvest::patterns` so operators can
+/// see what shapes the scanner recognises — and so dashboards can
+/// surface per-service coverage stats.
+pub async fn keys_patterns() -> Json<Value> {
+    let patterns = crate::modules::oathnet_pro::key_harvest::pattern_catalogue();
+    let by_service: std::collections::BTreeMap<&str, usize> =
+        patterns
+            .iter()
+            .fold(std::collections::BTreeMap::new(), |mut acc, p| {
+                *acc.entry(p.service).or_default() += 1;
+                acc
+            });
+    Json(json!({
+        "patterns": patterns,
+        "count": patterns.len(),
+        "unique_services": by_service.len(),
+    }))
+}
 
+pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
     let mods: Vec<Value> = s
         .engine
         .modules()
         .iter()
         .map(|m| {
             let cost = serde_json::to_value(m.cost()).unwrap_or(Value::Null);
-            let accepts: Vec<&'static str> = ALL_KINDS
+            // Pull declared consumes via the trait method — falls back to
+            // the probe-based default for legacy modules. Mirrors what the
+            // dispatch index and dependency graph see.
+            let accepts: Vec<&'static str> = m
+                .consumes()
                 .iter()
-                .filter(|k| m.accepts(&Target::new(**k, "probe")))
                 .map(super::super::core::scan::TargetKind::canonical_str)
+                .collect();
+            let produces: Vec<String> = m
+                .produces()
+                .iter()
+                .map(std::string::ToString::to_string)
                 .collect();
             json!({
                 "name":        m.name(),
                 "priority":    m.priority(),
                 "cost":        cost,
                 "passive":     m.is_passive(),
+                "category":    m.category().as_str(),
                 "accepts":     accepts,
+                "produces":    produces,
                 "description": m.description(),
             })
         })
         .collect();
     let count = mods.len();
     Json(json!({ "modules": mods, "count": count }))
+}
+
+/// `GET /api/v1/modules/graph` — pre-computed module dependency graph.
+///
+/// Returns the per-`TargetKind` dispatch index (with module counts and
+/// normalised richness scores) plus the per-module `consumes/produces`
+/// edges. The SPA renders this as a Sankey-style flow that shows
+/// "what does seed X unlock?" — a Spiderfoot 4.0 capability HSE
+/// surfaces with explicit data-flow declarations.
+pub async fn modules_graph(State(s): State<Arc<AppState>>) -> Json<Value> {
+    let graph = s.engine.graph();
+    let summary = graph.to_summary(s.engine.modules());
+    Json(json!({
+        "kinds":           summary.kinds,
+        "edges":           summary.edges,
+        "produced_kinds":  summary.produced_entity_kinds(),
+        "module_count":    s.engine.modules().len(),
+    }))
 }
 
 pub async fn entity_get(
@@ -460,5 +539,47 @@ mod tests {
     #[test]
     fn csv_escape_empty() {
         assert_eq!(csv_escape(""), "");
+    }
+
+    // ── Formula-injection neutralization ─────────────────────────────
+
+    #[test]
+    fn csv_escape_neutralizes_excel_formula() {
+        // Excel-style formula prefixes get a leading apostrophe
+        // prepended so Excel/LibreOffice render the cell as text
+        // instead of evaluating it. The apostrophe alone is enough —
+        // outer quoting fires only when the body also carries CSV
+        // metachars (comma, quote, CR, LF).
+        assert_eq!(csv_escape("=cmd|/c calc"), "'=cmd|/c calc");
+        assert_eq!(csv_escape("+1234"), "'+1234");
+        assert_eq!(csv_escape("-SUM(A1:A2)"), "'-SUM(A1:A2)");
+        assert_eq!(csv_escape("@evil"), "'@evil");
+        // Tab and CR are also formula triggers in some spreadsheet
+        // implementations. CR also forces outer quoting (CSV metachar).
+        assert_eq!(csv_escape("\tHELLO"), "'\tHELLO");
+        assert_eq!(csv_escape("\rDANGER"), "\"'\rDANGER\"");
+    }
+
+    #[test]
+    fn csv_escape_formula_with_comma_quotes_outer() {
+        // Leading `=` triggers the apostrophe guard, AND the embedded
+        // comma forces outer double-quoting.
+        assert_eq!(csv_escape("=A1,B2"), "\"'=A1,B2\"");
+    }
+
+    #[test]
+    fn csv_escape_keeps_negative_numbers_safe_but_escaped() {
+        // `-3.5` would be interpreted as a formula. Cell still
+        // round-trips to the same number after the apostrophe is
+        // stripped by spreadsheet apps.
+        let r = csv_escape("-3.5");
+        assert!(r.starts_with('\''));
+    }
+
+    #[test]
+    fn csv_escape_does_not_alter_safe_leading_chars() {
+        assert_eq!(csv_escape("hello"), "hello");
+        assert_eq!(csv_escape("3 apples"), "3 apples");
+        assert_eq!(csv_escape("Mr. Jones"), "Mr. Jones");
     }
 }
