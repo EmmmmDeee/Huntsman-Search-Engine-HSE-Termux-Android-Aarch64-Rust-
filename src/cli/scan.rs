@@ -14,7 +14,7 @@ use super::{
 };
 
 pub(super) struct ScanCmd {
-    pub kind: String,
+    pub kind: Option<String>,
     pub value: String,
     pub modules: Option<String>,
     pub exclude: Option<String>,
@@ -40,8 +40,30 @@ pub(super) struct ScanCmd {
 }
 
 pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
-    let target_kind = parse_target_kind(&cmd.kind)?;
-    let target = Target::new(target_kind, cmd.value.clone());
+    // Resolve the seed. With an explicit --kind we honour it verbatim;
+    // otherwise auto-detect kind + region prior from the raw value
+    // ("Jordan Leigh Meyer Australia" → full_name / AU).
+    let (target_kind, target_value, detected_region) = match &cmd.kind {
+        Some(k) => (parse_target_kind(k)?, cmd.value.clone(), None),
+        None => {
+            let s = crate::core::seed::detect(&cmd.value);
+            eprintln!(
+                "auto-seed: kind={} value={:?}{}",
+                s.kind.canonical_str(),
+                s.value,
+                s.region
+                    .as_deref()
+                    .map(|r| format!(" region={r}"))
+                    .unwrap_or_default()
+            );
+            (s.kind, s.value, s.region)
+        }
+    };
+    let target = Target::new(target_kind, target_value);
+    // Owned labels for diagnostics/output, captured before `target` is moved
+    // into the engine. Reflect the *resolved* seed, not the raw CLI string.
+    let kind_label = target.kind.canonical_str();
+    let value_label = target.value.clone();
 
     let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth == 0 {
         let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
@@ -122,7 +144,8 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         min_marginal_yield: cmd.min_marginal_yield,
         expansion_strategy,
         seeknow_scan_cap: cmd.seeknow_scan_cap,
-        region_hint: cmd.region.clone(),
+        // Explicit --region wins; otherwise fall back to the auto-detected one.
+        region_hint: cmd.region.clone().or(detected_region),
     };
     if cmd.max_roi {
         eprintln!(
@@ -162,7 +185,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             .unwrap_or(0)
             .saturating_mul(1000);
         let diag =
-            crate::util::diagnostics::analyse(&sid, &cmd.kind, &cmd.value, wall_ms, &entities);
+            crate::util::diagnostics::analyse(&sid, kind_label, &value_label, wall_ms, &entities);
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -179,8 +202,8 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             &entities,
             &correlations,
             &relations,
-            &cmd.kind,
-            &cmd.value,
+            kind_label,
+            &value_label,
             &sid,
         );
     } else {
@@ -189,8 +212,8 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             "\nScan {} — {} entities for {}={}",
             &sid[..8],
             entities.len(),
-            cmd.kind,
-            cmd.value
+            kind_label,
+            value_label
         );
         if scan.modules_run > 0 {
             println!(

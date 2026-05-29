@@ -57,8 +57,10 @@ pub enum Command {
     /// Run a single scan and print the entities found.
     Scan {
         /// Target kind: email, username, phone, name, ip, domain, asn, coords, address.
+        /// Omit to auto-detect the seed (kind + region) from the value, e.g.
+        /// `--value "Jordan Leigh Meyer Australia"`.
         #[arg(short, long)]
-        kind: String,
+        kind: Option<String>,
         /// Target value (e.g. example.com, foo@bar.com).
         #[arg(short, long)]
         value: String,
