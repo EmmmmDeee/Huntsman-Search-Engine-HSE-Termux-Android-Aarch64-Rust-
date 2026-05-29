@@ -39,8 +39,20 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// No client-level total timeout — see module docstring. A short
 /// `connect_timeout` is set so unreachable hosts fail fast.
+///
+/// # Trust store
+///
+/// rustls ships only the bundled Mozilla (webpki) roots, which is correct
+/// against the public CA ecosystem but breaks the moment the device sits
+/// behind a TLS-inspecting egress proxy — common on corporate Wi-Fi and in
+/// some Termux/Android deployments — where the proxy presents a leaf signed
+/// by a private root the bundle has never heard of (`UnknownIssuer`). `curl`
+/// and the OS work there because they read the *system* trust store. We do
+/// the same, **additively**: keep the webpki roots and also load any system
+/// CA bundle named by `SSL_CERT_FILE` (or a common default path). Failures
+/// are non-fatal — a missing/unparseable bundle just leaves the defaults.
 pub fn build_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .pool_max_idle_per_host(5)
         .pool_idle_timeout(Duration::from_secs(90))
@@ -49,9 +61,48 @@ pub fn build_client() -> reqwest::Client {
             "huntsman-search-engine/",
             env!("CARGO_PKG_VERSION"),
             " (+https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)"
-        ))
-        .build()
-        .expect("reqwest client build failed")
+        ));
+
+    for cert in system_root_certs() {
+        builder = builder.add_root_certificate(cert);
+    }
+
+    builder.build().expect("reqwest client build failed")
+}
+
+/// Load additional trust roots from the system CA bundle, if one is present.
+///
+/// Honours `SSL_CERT_FILE` first (the de-facto override respected by OpenSSL,
+/// curl, and most tooling), then a small set of well-known distro / Termux
+/// paths. Returns an empty vec when nothing is found or the bundle can't be
+/// parsed — the caller keeps the bundled webpki roots regardless.
+fn system_root_certs() -> Vec<reqwest::Certificate> {
+    const DEFAULT_PATHS: &[&str] = &[
+        "/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu/Alpine, Termux
+        "/etc/pki/tls/certs/ca-bundle.crt",   // Fedora/RHEL
+        "/etc/ssl/cert.pem",                  // macOS/BSD/some Termux
+        "/data/data/com.termux/files/usr/etc/tls/cert.pem", // Termux prefix
+    ];
+
+    let env_path = std::env::var("SSL_CERT_FILE")
+        .ok()
+        .filter(|p| !p.is_empty());
+    let candidates = env_path
+        .iter()
+        .map(String::as_str)
+        .chain(DEFAULT_PATHS.iter().copied());
+
+    for p in candidates {
+        let Ok(bytes) = std::fs::read(p) else {
+            continue;
+        };
+        if let Ok(certs) = reqwest::Certificate::from_pem_bundle(&bytes)
+            && !certs.is_empty()
+        {
+            return certs;
+        }
+    }
+    Vec::new()
 }
 
 /// Read up to 200 characters of a non-success response body, trim, and
@@ -412,6 +463,24 @@ mod tests {
     #[test]
     fn build_client_succeeds() {
         let _c = build_client();
+    }
+
+    #[test]
+    fn system_root_certs_never_panics() {
+        // Whatever the host environment, loading extra roots must be
+        // infallible — a missing or malformed bundle just yields none.
+        let _ = system_root_certs();
+    }
+
+    #[test]
+    fn system_root_certs_parses_a_real_bundle_when_present() {
+        // On a host with a standard CA bundle we expect a non-empty set;
+        // on a stripped image we expect an empty set — both are valid and
+        // must not panic. This asserts the parse path itself is sound.
+        let n = system_root_certs().len();
+        if std::path::Path::new("/etc/ssl/certs/ca-certificates.crt").exists() {
+            assert!(n > 0, "a present CA bundle should yield ≥1 trust root");
+        }
     }
 
     #[test]

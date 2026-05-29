@@ -10,6 +10,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+
+- **HTTP client now honours the system trust store.** `util::http::build_client`
+  additively loads the system CA bundle (`SSL_CERT_FILE`, else a common set of
+  distro / Termux paths) on top of the bundled webpki roots. Without this,
+  rustls rejected any device behind a TLS-inspecting egress proxy — corporate
+  Wi-Fi, some Termux/Android deployments, sandboxed CI — with
+  `UnknownIssuer`, even though `curl` and the OS worked. Still pure-rustls, no
+  native-TLS, no new deps; a missing/unparseable bundle is non-fatal and
+  leaves the defaults. Surfaced during a live end-to-end test of the
+  `hackernews` → `core::temporal` pipeline.
+
 ### Performance
 
 - **Batched entity persistence.** `ScanEngine::finalise_scan` now writes a
