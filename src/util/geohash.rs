@@ -372,6 +372,117 @@ fn au_state_norm(s: &str) -> Option<&'static str> {
     })
 }
 
+/// True for an *unambiguous* Australian state token — i.e. excluding the bare
+/// `"WA"` code, which collides with the USPS code for Washington. Full names
+/// ("western australia") are unambiguous and still count.
+fn is_au_state_unambiguous(token: &str) -> bool {
+    let t = token.trim();
+    if t.eq_ignore_ascii_case("wa") {
+        return false; // ambiguous code; "western australia" handled below
+    }
+    matches!(
+        t.to_lowercase().as_str(),
+        "nsw"
+            | "new south wales"
+            | "vic"
+            | "victoria"
+            | "qld"
+            | "queensland"
+            | "western australia"
+            | "sa"
+            | "south australia"
+            | "tas"
+            | "tasmania"
+            | "act"
+            | "australian capital territory"
+            | "nt"
+            | "northern territory"
+    )
+}
+
+/// US-state recogniser. Returns the USPS code for a full state name
+/// (case-insensitive) or for a bare 2-letter USPS code (only when uppercase,
+/// to avoid matching English words / lowercase noise). The ambiguous `"WA"`
+/// code is **not** matched here — it's resolved by surrounding context in
+/// [`parse_address`] — but the full name "washington" is, since it's
+/// unambiguous.
+fn us_state(token: &str) -> Option<&'static str> {
+    let t = token.trim();
+    let l = t.to_lowercase();
+    // Full names (unambiguous) → USPS code.
+    let by_name = match l.as_str() {
+        "alabama" => "AL",
+        "alaska" => "AK",
+        "arizona" => "AZ",
+        "arkansas" => "AR",
+        "california" => "CA",
+        "colorado" => "CO",
+        "connecticut" => "CT",
+        "delaware" => "DE",
+        "florida" => "FL",
+        "georgia" => "GA",
+        "hawaii" => "HI",
+        "idaho" => "ID",
+        "illinois" => "IL",
+        "indiana" => "IN",
+        "iowa" => "IA",
+        "kansas" => "KS",
+        "kentucky" => "KY",
+        "louisiana" => "LA",
+        "maine" => "ME",
+        "maryland" => "MD",
+        "massachusetts" => "MA",
+        "michigan" => "MI",
+        "minnesota" => "MN",
+        "mississippi" => "MS",
+        "missouri" => "MO",
+        "montana" => "MT",
+        "nebraska" => "NE",
+        "nevada" => "NV",
+        "new hampshire" => "NH",
+        "new jersey" => "NJ",
+        "new mexico" => "NM",
+        "new york" => "NY",
+        "north carolina" => "NC",
+        "north dakota" => "ND",
+        "ohio" => "OH",
+        "oklahoma" => "OK",
+        "oregon" => "OR",
+        "pennsylvania" => "PA",
+        "rhode island" => "RI",
+        "south carolina" => "SC",
+        "south dakota" => "SD",
+        "tennessee" => "TN",
+        "texas" => "TX",
+        "utah" => "UT",
+        "vermont" => "VT",
+        "virginia" => "VA",
+        "washington" => "WA",
+        "west virginia" => "WV",
+        "wisconsin" => "WI",
+        "wyoming" => "WY",
+        _ => "",
+    };
+    if !by_name.is_empty() {
+        return Some(by_name);
+    }
+    // Bare 2-letter USPS code, uppercase only. Exclude WA (ambiguous) and the
+    // codes that are also country ISO codes / AU state codes handled elsewhere
+    // (CA→Canada, IN→India, SA/NT→AU) to avoid cross-classification.
+    if t.len() == 2 && t.chars().all(|c| c.is_ascii_uppercase()) {
+        return match t {
+            "AL" | "AK" | "AZ" | "AR" | "CO" | "CT" | "FL" | "GA" | "HI" | "ID" | "IL" | "IA"
+            | "KS" | "KY" | "LA" | "MD" | "MA" | "MI" | "MN" | "MS" | "MO" | "MT" | "NE" | "NV"
+            | "NH" | "NJ" | "NM" | "NY" | "NC" | "ND" | "OH" | "OK" | "OR" | "PA" | "RI" | "SC"
+            | "SD" | "TN" | "TX" | "UT" | "VT" | "VA" | "WV" | "WI" | "WY" | "DE" | "ME" => {
+                Some("US")
+            }
+            _ => None,
+        };
+    }
+    None
+}
+
 /// Parse a comma-separated address into structured components.
 ///
 /// Handles common formats:
@@ -398,27 +509,88 @@ pub fn parse_address(input: &str) -> AddressComponents {
         out.iso_country = Some(iso.to_string());
     }
 
-    // Scan every part for state codes and postal patterns. A part like
-    // "QLD 4000" carries both — split on space and try each token.
-    for part in &parts {
+    // Gather country signals from the address *tail* — the last two
+    // comma-parts, where the state/postcode live ("city, STATE ZIP" /
+    // "STATE, COUNTRY"). Restricting to the tail avoids misreading street
+    // directionals ("800 NE Tenney Rd" → NE ≠ Nebraska). A bare "WA" is
+    // ambiguous (Washington vs Western Australia), so we collect all evidence
+    // first and resolve country once at the end rather than letting the first
+    // state token win — the bug that mis-tagged "Vancouver, WA" as Australian
+    // and let US breach-dump addresses escape the region prior (untagged).
+    let mut saw_au_unambiguous = false;
+    let mut saw_us_state = false;
+    let mut saw_wa = false;
+    let mut postal_us = false; // 5-digit (or 5+4) ZIP
+    let mut postal_au = false; // 4-digit postcode
+    let tail_start = parts.len().saturating_sub(2);
+    for part in &parts[tail_start..] {
+        // Whole-part checks first, for multi-word names ("western australia",
+        // "new south wales", "north carolina") that whitespace-tokenising
+        // would split apart.
+        if out.state.is_none()
+            && let Some(s) = au_state_norm(part)
+        {
+            out.state = Some(s.to_string());
+        }
+        if is_au_state_unambiguous(part) {
+            saw_au_unambiguous = true;
+        } else if part.eq_ignore_ascii_case("wa") {
+            saw_wa = true;
+        } else if us_state(part).is_some() {
+            saw_us_state = true;
+        }
+        // Token-level for "STATE ZIP"-style parts and bare codes.
         for token in part.split_whitespace() {
-            // Australian state code
             if out.state.is_none()
                 && let Some(s) = au_state_norm(token)
             {
                 out.state = Some(s.to_string());
-                if out.iso_country.is_none() {
-                    out.iso_country = Some("AU".to_string());
-                    out.country = Some("Australia".to_string());
+            }
+            if is_au_state_unambiguous(token) {
+                saw_au_unambiguous = true;
+            } else if token.eq_ignore_ascii_case("wa") {
+                saw_wa = true;
+            } else if us_state(token).is_some() {
+                saw_us_state = true;
+            }
+            // Postal code (bare digits, 4-10 chars). 4 → AU-leaning, 5 → US ZIP.
+            if token.chars().all(|c| c.is_ascii_digit()) && (4..=10).contains(&token.len()) {
+                if out.postal_code.is_none() {
+                    out.postal_code = Some(token.to_string());
+                }
+                match token.len() {
+                    4 => postal_au = true,
+                    5 => postal_us = true,
+                    _ => {}
                 }
             }
-            // Postal code (bare digits, 4-10 chars)
-            if out.postal_code.is_none()
-                && token.chars().all(|c| c.is_ascii_digit())
-                && (4..=10).contains(&token.len())
-            {
-                out.postal_code = Some(token.to_string());
+        }
+    }
+
+    // Resolve country only if an explicit ISO-country name didn't already set
+    // it. Precedence: unambiguous AU state > unambiguous US state > postal /
+    // WA tie-break. Conflicting unambiguous signals → leave undecided.
+    if out.iso_country.is_none() {
+        let (iso, name) = if saw_au_unambiguous && !saw_us_state {
+            (Some("AU"), Some("Australia"))
+        } else if saw_us_state && !saw_au_unambiguous {
+            (Some("US"), Some("United States"))
+        } else if saw_wa && !saw_au_unambiguous && !saw_us_state {
+            // Bare WA: disambiguate by postal shape; otherwise stay undecided
+            // rather than guess (an unknown beats a wrong country).
+            if postal_us {
+                (Some("US"), Some("United States"))
+            } else if postal_au {
+                (Some("AU"), Some("Australia"))
+            } else {
+                (None, None)
             }
+        } else {
+            (None, None)
+        };
+        if let Some(iso) = iso {
+            out.iso_country = Some(iso.to_string());
+            out.country = name.map(str::to_string);
         }
     }
 
@@ -539,5 +711,54 @@ mod tests {
         assert_eq!(a.city.as_deref(), Some("Brisbane"));
         assert_eq!(a.state.as_deref(), Some("QLD"));
         assert_eq!(a.postal_code.as_deref(), Some("4000"));
+        assert_eq!(a.iso_country.as_deref(), Some("AU"));
+    }
+
+    // ── US recognition (so the region prior can demote out-of-region) ────
+
+    #[test]
+    fn parse_address_us_full_state_name() {
+        let a = parse_address("Lihue, Hawaii");
+        assert_eq!(a.city.as_deref(), Some("Lihue"));
+        assert_eq!(a.iso_country.as_deref(), Some("US"));
+    }
+
+    #[test]
+    fn parse_address_us_state_code() {
+        let a = parse_address("100 W. Spruce, Dodge City, KS");
+        assert_eq!(a.iso_country.as_deref(), Some("US"));
+    }
+
+    #[test]
+    fn parse_address_us_full_washington_is_us_not_au() {
+        let a = parse_address("Spokane, Washington");
+        assert_eq!(a.iso_country.as_deref(), Some("US"));
+    }
+
+    // ── WA disambiguation (the Vancouver bug) ────────────────────────────
+
+    #[test]
+    fn parse_address_bare_wa_is_undecided_not_australia() {
+        // "Vancouver, WA" — WA alone is ambiguous; must NOT be tagged AU.
+        let a = parse_address("800 NE Tenney Rd, Vancouver, WA");
+        assert_eq!(a.iso_country.as_deref(), None);
+    }
+
+    #[test]
+    fn parse_address_wa_with_us_zip_is_us() {
+        let a = parse_address("800 NE Tenney Rd, Vancouver, WA 98661");
+        assert_eq!(a.iso_country.as_deref(), Some("US"));
+    }
+
+    #[test]
+    fn parse_address_western_australia_full_is_au() {
+        let a = parse_address("Perth, Western Australia");
+        assert_eq!(a.iso_country.as_deref(), Some("AU"));
+    }
+
+    #[test]
+    fn parse_address_wa_with_au_postcode_is_au() {
+        let a = parse_address("Perth, WA 6000");
+        assert_eq!(a.iso_country.as_deref(), Some("AU"));
     }
 }
