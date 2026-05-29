@@ -51,6 +51,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Security
 
+- **Proxy trust boundary enforced at the rotation choke point.** The free
+  proxy pool is a set of *untrusted intermediaries* — a hostile exit can read
+  and tamper with anything not end-to-end encrypted and learns what is being
+  investigated. Per *"if you don't own it end to end, don't trust it — mitigate
+  it"*: `curl::fetch_rotating` now refuses to egress a **credential-bearing URL**
+  (detected by `http::url_exposes_credentials`, sharing one `CREDENTIAL_PARAMS`
+  source of truth with the error-snippet redactor) through the pool — such
+  requests fall back to a direct connection so a free proxy can never harvest
+  the operator's key. The router's trust model (untrusted intermediaries;
+  quota-multiplier, *not* anonymity; treat proxied responses as lower-integrity)
+  is now documented explicitly on `ProxyRouter`.
+
 - **Government-network guardrail is now platform-wide.** Beyond the proxy
   retriever, the engine's universal preflight (`module_skip_reason`) now rejects
   any scan target — or target-derived URL host — in a government/military or

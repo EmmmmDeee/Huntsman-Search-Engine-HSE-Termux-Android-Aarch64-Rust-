@@ -326,32 +326,31 @@ async fn rotating_curl_json<T: DeserializeOwned>(resource: &str, url: &str) -> O
     serde_json::from_str(&body).ok()
 }
 
+/// Query-parameter names that carry operator secrets — the single source of
+/// truth for HSE's credential-aware paths: [`redact_credentials`] masks them in
+/// error snippets, and [`url_exposes_credentials`] refuses to egress them
+/// through an untrusted proxy. (`key` is the loosest and is treated specially
+/// by each caller, since a bare `key=` is frequently not a secret.)
+const CREDENTIAL_PARAMS: &[&str] = &[
+    "api_key",
+    "apiKey",
+    "access_token",
+    "accessToken",
+    "secret",
+    "token",
+    "auth",
+    "key",
+];
+
 /// Mask values for common credential query-param names inside an
 /// arbitrary text blob. Used by [`error_snippet`] before embedding
 /// upstream error bodies in module errors — many providers echo the
 /// request URL in their error response, and HSE keys often ride in
 /// the URL as a `?api_key=…` / `?apiKey=…` query parameter.
 ///
-/// The matched names (`api_key`, `apiKey`, `key`, `token`, `secret`,
-/// `access_token`, `auth`) cover the providers HSE keys directly
-/// (Hunter, WhoisXML, OpenCellID, Shodan, etc.). The redaction
-/// replaces the value with `***` and preserves the surrounding
-/// delimiters so the error message still reads naturally.
+/// Replaces the value with `***` and preserves the surrounding delimiters so
+/// the error message still reads naturally.
 pub(crate) fn redact_credentials(text: &str) -> String {
-    const CREDENTIAL_PARAMS: &[&str] = &[
-        "api_key",
-        "apiKey",
-        "access_token",
-        "accessToken",
-        "secret",
-        "token",
-        "auth",
-        // `key` is too aggressive on its own (would mask any `key=value`),
-        // but `key=` immediately followed by 12+ alphanumerics is almost
-        // certainly a credential. We accept a brief surface-area mismatch
-        // for clarity.
-        "key",
-    ];
     let mut out = String::with_capacity(text.len());
     let mut cursor = 0;
     let bytes = text.as_bytes();
@@ -391,6 +390,39 @@ pub(crate) fn redact_credentials(text: &str) -> String {
         cursor += 1;
     }
     out
+}
+
+/// Does this URL carry an operator secret in its query string?
+///
+/// A fail-secure guard for the untrusted-proxy path: per the maxim *"if you
+/// don't own the route end-to-end, don't send your secrets down it"*, a
+/// credential-bearing request must never be egressed through a free rotation
+/// proxy — a hostile exit would harvest the key. Conservative by design: a
+/// false positive only forces a direct connection, which is always safe.
+/// Bare `key=` is treated as a secret only when its value looks like a real
+/// token (≥12 chars, token alphabet), since `key=` is often benign.
+pub(crate) fn url_exposes_credentials(url: &str) -> bool {
+    let Some(query) = url.split(['?', '#']).nth(1) else {
+        return false;
+    };
+    query.split('&').any(|pair| {
+        let Some((name, value)) = pair.split_once('=') else {
+            return false;
+        };
+        if value.is_empty() {
+            return false;
+        }
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("key") {
+            return value.len() >= 12
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        }
+        CREDENTIAL_PARAMS
+            .iter()
+            .any(|p| !p.eq_ignore_ascii_case("key") && name.eq_ignore_ascii_case(p))
+    })
 }
 
 /// Parse the `Retry-After` header from a response, returning the number
@@ -644,5 +676,42 @@ mod tests {
         assert!(!r.contains("KEY1"));
         assert!(!r.contains("KEY2"));
         assert!(!r.contains("KEY3"));
+    }
+
+    // ── url_exposes_credentials (untrusted-proxy fail-secure guard) ─────────
+
+    #[test]
+    fn url_with_secret_params_is_flagged() {
+        assert!(url_exposes_credentials(
+            "https://api.example.com/v1?domain=x&api_key=SECRET123"
+        ));
+        assert!(url_exposes_credentials("http://x/?apiKey=abcDEF123456"));
+        assert!(url_exposes_credentials("https://x/?token=ghp_aaaaaaaaaaaa"));
+        assert!(url_exposes_credentials("https://x/?q=1&access_token=zzz"));
+        assert!(url_exposes_credentials("https://x/?secret=s"));
+    }
+
+    #[test]
+    fn keyless_public_url_is_not_flagged() {
+        // The exact shapes the rotation path actually sends — must stay direct-
+        // eligible so rotation still works for them.
+        assert!(!url_exposes_credentials(
+            "http://ip-api.com/json/8.8.8.8?fields=status,country,city"
+        ));
+        assert!(!url_exposes_credentials("https://ipwho.is/1.1.1.1"));
+        assert!(!url_exposes_credentials(
+            "https://nominatim.openstreetmap.org/search?q=London&format=json"
+        ));
+        // A URL with no query string at all.
+        assert!(!url_exposes_credentials("https://example.com/path"));
+    }
+
+    #[test]
+    fn bare_key_param_is_flagged_only_when_token_like() {
+        // Benign sort/lookup keys must not block rotation.
+        assert!(!url_exposes_credentials("https://x/?sort=name&key=id"));
+        assert!(!url_exposes_credentials("https://x/?key=London"));
+        // …but a token-shaped value is treated as a secret.
+        assert!(url_exposes_credentials("https://x/?key=AbCd1234EfGh5678"));
     }
 }

@@ -242,6 +242,20 @@ pub async fn fetch_rotating(
     region: Option<&str>,
     max_tries: usize,
 ) -> Option<String> {
+    // Fail-secure trust boundary: the rotation pool is built from UNTRUSTED
+    // free proxies. Never egress a credential-bearing URL through one — a
+    // hostile exit would harvest the operator's key. "If you don't own the
+    // route end-to-end, don't send your secrets down it." Such requests get
+    // `None` here and stay on the caller's direct path (keyed APIs rate-limit
+    // per key anyway, so they have no reason to rotate).
+    if super::http::url_exposes_credentials(url) {
+        tracing::warn!(
+            target: "hse::proxy",
+            resource,
+            "refusing to route a credential-bearing URL through the untrusted proxy pool; staying direct"
+        );
+        return None;
+    }
     let router = super::proxy::global_router();
     for _ in 0..max_tries {
         let proxy = router.pick(resource, region)?;

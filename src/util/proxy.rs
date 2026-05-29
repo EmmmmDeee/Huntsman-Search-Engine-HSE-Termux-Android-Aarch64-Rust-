@@ -337,6 +337,20 @@ type RankKey = (u8, u64, u8, u8, u64);
 /// ties by high-yield rank (anonymity grade → infra type → latency); when a
 /// region is requested, a country-matched egress is preferred over all else.
 /// All selection logic is pure and unit-tested without the network.
+///
+/// ## Trust model (read before extending the proxy paths)
+///
+/// The pool is a set of **untrusted intermediaries**. *"If you don't own it
+/// end to end, don't trust it — mitigate it."* A free proxy can read and
+/// **tamper with** anything not end-to-end encrypted (e.g. the cleartext-HTTP
+/// ip-api lookups) and it learns *what is being investigated* (the target in
+/// the URL). So:
+/// - **Secrets never go through the pool.** Credential-bearing URLs are refused
+///   at the rotation choke point (`curl::fetch_rotating` →
+///   `http::url_exposes_credentials`) and fall back to a direct connection.
+/// - **Rotation is a quota multiplier for keyless, public lookups — not an
+///   anonymity guarantee.** Low-latency proxies are trivially correlated by
+///   traffic analysis; treat any proxied response as lower-integrity input.
 pub struct ProxyRouter {
     proxies: Mutex<Vec<Proxy>>,
     usage: Mutex<HashMap<String, HashMap<String, UseRecord>>>,
