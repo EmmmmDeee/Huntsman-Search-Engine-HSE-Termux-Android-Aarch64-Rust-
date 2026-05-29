@@ -49,7 +49,7 @@ src/
 │   ├── module.rs      – Module trait, ModuleContext, ModuleResult, ModuleCost, ModuleCategory, ModuleInfo
 │   ├── engine.rs      – ScanEngine, dispatch_target (sequential/concurrent), run_expansion, finalise_scan
 │   ├── dependency.rs  – ModuleGraph (O(1) dispatch index + expansion "richness")
-│   ├── correlator/    – Correlator + 30 declarative rules (AU-001..AU-030)
+│   ├── correlator/    – Correlator + 32 rules (AU-001..AU-032; 2 graph-aware)
 │   ├── roi.rs         – saturation pruning, top-K gating, adaptive-depth termination
 │   ├── live.rs        – LiveScanner / LiveSession (interval re-scan)
 │   ├── webhook.rs     – POST-on-completion notifier

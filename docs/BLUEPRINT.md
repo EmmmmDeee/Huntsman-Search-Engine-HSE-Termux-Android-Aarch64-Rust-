@@ -15,7 +15,7 @@ HSE is a single-binary, pure-Rust, recursive OSINT/GEOINT platform built to run
 natively inside **Termux on Android (aarch64), no root**. It is a plugin-style
 registry of **85 modules** feeding a module-agnostic `ScanEngine` that merges
 their findings into a deterministic entity graph, pivots recursively on
-high-confidence nodes, correlates the result against 30 declarative rules, and
+high-confidence nodes, correlates the result against 32 declarative rules, and
 surfaces everything over a CLI, a localhost HTTP API, and an embedded SPA.
 
 ---
@@ -250,7 +250,7 @@ every read, never stored**, so tier labels can never go stale.
  (6) PIVOT       run_expansion: C_eff-gated entities → new Targets (loop §5)  engine.rs:341
  (7) PERSIST     finalise_scan: upsert_entities_batch (1 txn; per-entity      engine.rs:236
                  fallback) + entity_observations(uid, scan_id) + save key_pool storage.rs
- (8) CORRELATE   30 declarative rules link entities → Correlation records     correlator/rules.rs
+ (8) CORRELATE   32 declarative rules link entities → Correlation records     correlator/rules.rs
                  + correlation_found events
  (9) SURFACE     CLI (table/json/dossier) · HTTP API · SSE · GEXF · D3 graph  api/, gexf.rs
 ```
@@ -495,7 +495,7 @@ disturbing the invariants above.
   / vulnerable node. New graph rules slot into `RELATION_RULES` without changing
   the 30 entity rules' signatures.
 - ✅ **Done (slice 6 — graph cluster rule).** `AU-032 — Geographic co-location
-  cluster` walks the `CoLocatedWith` edges (connected components, BFS) and
+  cluster` walks the `CoLocatedWith` edges (connected components, DFS) and
   reports each cluster of 3+ transitively-converging coordinates.
 - ✅ **Done (slice 7 — SPA visualization).** The relation edges now render in
   the SPA's D3 force-graph as distinct dashed edges (kind shown on hover), fed

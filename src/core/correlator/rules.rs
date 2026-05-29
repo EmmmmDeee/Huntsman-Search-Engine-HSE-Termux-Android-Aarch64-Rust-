@@ -1226,8 +1226,8 @@ pub(super) fn rule_au_032_colocation_cluster(
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
-    // Connected components via BFS. Iterate seed nodes in sorted order so the
-    // emitted clusters are deterministic regardless of edge ordering.
+    // Connected components via DFS (stack). Iterate seed nodes in sorted order
+    // so the emitted clusters are deterministic regardless of edge ordering.
     let mut nodes: Vec<&str> = adj.keys().copied().collect();
     nodes.sort_unstable();
     let mut visited: HashSet<&str> = HashSet::new();

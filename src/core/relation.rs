@@ -133,17 +133,13 @@ fn domain_key(raw: &str) -> String {
     s
 }
 
-/// True if `child` is a proper subdomain of `parent` (label-aligned suffix).
-fn is_subdomain_of(child: &str, parent: &str) -> bool {
-    child.len() > parent.len()
-        && child.ends_with(parent)
-        && child.as_bytes()[child.len() - parent.len() - 1] == b'.'
-}
-
-/// Derive the deterministic structural relations for a scan's entity set.
+/// Derive the structural relations for a scan's entity set.
 ///
-/// Pure: depends only on the entities passed in. Edges only ever connect
-/// entities that are both present in the set (so every endpoint UID resolves).
+/// Deterministic in the edges it produces (set + ids) — it depends only on the
+/// entities passed in, and only connects entities both present in the set (so
+/// every endpoint UID resolves). (Each `Relation` carries a wall-clock
+/// `observed_at`, so the values aren't bit-identical across calls, but the edge
+/// set and their deterministic ids are.)
 pub fn derive_structural(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     use std::collections::HashMap;
 
@@ -160,19 +156,25 @@ pub fn derive_structural(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     for e in entities {
         match e.kind {
             EntityKind::Domain => {
-                // Link to the closest (longest) present parent domain.
-                if let Some(&parent) = domain_by_value
-                    .values()
-                    .filter(|p| is_subdomain_of(&e.value, &p.value))
-                    .max_by_key(|p| p.value.len())
-                {
-                    relations.push(Relation::new(
-                        e.uid.as_str(),
-                        parent.uid.as_str(),
-                        RelationKind::SubdomainOf,
-                        conf(e, parent),
-                        scan_id,
-                    ));
+                // Walk up one label at a time; the first present ancestor is
+                // the closest parent. O(labels) hash lookups instead of an
+                // O(N) scan over every domain — meaningful on subdomain-heavy
+                // scans (crt.sh-style expansions) on low-power devices.
+                // Stripping at '.' keeps matches label-aligned, so
+                // `notexample.com` never matches `example.com`.
+                let mut rest = e.value.as_str();
+                while let Some(dot) = rest.find('.') {
+                    rest = &rest[dot + 1..];
+                    if let Some(&parent) = domain_by_value.get(rest) {
+                        relations.push(Relation::new(
+                            e.uid.as_str(),
+                            parent.uid.as_str(),
+                            RelationKind::SubdomainOf,
+                            conf(e, parent),
+                            scan_id,
+                        ));
+                        break;
+                    }
                 }
             }
             EntityKind::Email => {
@@ -217,10 +219,11 @@ pub fn derive_structural(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 pub const CO_LOCATION_KM: f64 = 1.0;
 
 /// Derive `CoLocatedWith` edges between Coordinates entities within
-/// `CO_LOCATION_KM` of each other. Pure + deterministic: reuses
-/// `util::geohash` for parsing and Haversine distance, emits one canonically-
-/// directed edge per close pair (smaller UID → larger), so re-scans upsert
-/// idempotently. O(k²) over the (typically few) Coordinates entities only.
+/// `CO_LOCATION_KM` of each other. The edge set + ids are deterministic
+/// (`observed_at` aside): reuses `util::geohash` for parsing and Haversine
+/// distance, emits one canonically-directed edge per close pair (smaller UID →
+/// larger), so re-scans upsert idempotently. O(k²) over the (typically few)
+/// Coordinates entities only.
 pub fn derive_colocation(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     let coords: Vec<(&Entity, f64, f64)> = entities
         .iter()
@@ -282,7 +285,12 @@ pub fn derive_resolution(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
                 .map(String::as_str)
                 .chain(ev.summary.split_whitespace());
             for token in candidates {
-                let norm = crate::core::entity::normalise(&EntityKind::Domain, token);
+                // Strip surrounding punctuation that summary tokenisation can
+                // leave attached (e.g. "example.com," or "(example.com)"), but
+                // keep '-' / '_' which are valid in domain labels.
+                let cleaned =
+                    token.trim_matches(|c: char| c.is_ascii_punctuation() && c != '-' && c != '_');
+                let norm = crate::core::entity::normalise(&EntityKind::Domain, cleaned);
                 if let Some(dom) = domain_by_value.get(norm.as_str())
                     && seen.insert((dom.uid.clone(), ip.uid.clone()))
                 {
@@ -307,10 +315,11 @@ pub fn derive_resolution(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 /// entity's evidence attribute *values* (e.g. `whois`'s `registrant_org` /
 /// `registrant_email` attrs) against present Organisation and Email entities,
 /// rather than coupling to attribute keys. `whois` emits the registrant org
-/// and contact emails as their own entities, so both endpoints are present;
-/// the registrar (not a registrant) is never emitted as an entity, so it
-/// self-excludes. Org names are matched as whole trimmed values (not tokenised)
-/// since they contain spaces. Deterministic; one edge per (domain, registrant).
+/// and contact emails as their own entities, so both endpoints are present.
+/// `registrar`-keyed attributes are skipped, so a registrar that happens to be
+/// a present Organisation entity isn't mistaken for the registrant. Org names
+/// are matched as whole trimmed values (not tokenised) since they contain
+/// spaces. One edge per (domain, registrant).
 pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     use std::collections::{HashMap, HashSet};
 
@@ -344,7 +353,14 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
 
     for dom in entities.iter().filter(|e| e.kind == EntityKind::Domain) {
         for ev in &dom.evidence {
-            for v in ev.attributes.values() {
+            for (k, v) in &ev.attributes {
+                // Skip registrar fields: the registrar is not the registrant,
+                // and in a multi-domain / company scan it can itself be a
+                // present Organisation entity. ("registrant" does not contain
+                // "registrar", so registrant_* keys are kept.)
+                if k.contains("registrar") {
+                    continue;
+                }
                 // Organisation: whole trimmed value (org names contain spaces).
                 if let Some(&org) = org_by_value.get(v.trim()) {
                     link(dom, org, &mut out);
@@ -481,10 +497,21 @@ mod tests {
     }
 
     #[test]
-    fn is_subdomain_of_label_aligned() {
-        assert!(is_subdomain_of("a.example.com", "example.com"));
-        assert!(!is_subdomain_of("notexample.com", "example.com")); // not label-aligned
-        assert!(!is_subdomain_of("example.com", "example.com")); // not proper
+    fn subdomain_edges_are_label_aligned() {
+        // "notexample.com" must NOT be treated as a subdomain of "example.com"
+        // (the label-strip walks dot boundaries, so it never matches mid-label).
+        let entities = vec![
+            ent(EntityKind::Domain, "notexample.com", 0.9),
+            ent(EntityKind::Domain, "example.com", 0.8),
+        ];
+        let subs: Vec<_> = derive_structural(&entities, "s")
+            .into_iter()
+            .filter(|r| r.kind == RelationKind::SubdomainOf)
+            .collect();
+        assert!(
+            subs.is_empty(),
+            "notexample.com is not a subdomain of example.com, got: {subs:?}"
+        );
     }
 
     #[test]
@@ -601,6 +628,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resolution_trims_punctuation_from_summary_tokens() {
+        use crate::core::entity::Evidence;
+        let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "rel-scan");
+        // Domain appears wrapped in punctuation in the summary token.
+        ip.add_evidence(Evidence::new("doh_resolver", "A record for (example.com),"));
+        let dom = ent(EntityKind::Domain, "example.com", 0.9);
+        let rels = derive_resolution(&[ip, dom], "s");
+        assert_eq!(
+            rels.len(),
+            1,
+            "punctuation-wrapped domain token must still link"
+        );
+        assert_eq!(rels[0].kind, RelationKind::ResolvesTo);
+    }
+
     // ── derive_registration (Domain → registrant via WHOIS evidence) ───────
 
     #[test]
@@ -618,11 +661,17 @@ mod tests {
         );
         let org = ent(EntityKind::Organisation, "Example Org LLC", 0.72);
         let email = ent(EntityKind::Email, "admin@example.com", 0.78);
-        let rels = derive_registration(&[dom.clone(), org.clone(), email.clone()], "s");
+        // The registrar is ALSO present as an Organisation entity (as happens
+        // in multi-domain scans) — it must NOT be linked as the registrant.
+        let registrar = ent(EntityKind::Organisation, "MarkMonitor Inc.", 0.70);
+        let rels = derive_registration(
+            &[dom.clone(), org.clone(), email.clone(), registrar.clone()],
+            "s",
+        );
         assert_eq!(
             rels.len(),
             2,
-            "registrant org + registrant email; not registrar"
+            "registrant org + registrant email; NOT registrar"
         );
         assert!(rels.iter().all(|r| r.kind == RelationKind::RegisteredBy));
         assert!(
@@ -632,6 +681,10 @@ mod tests {
         let targets: Vec<&str> = rels.iter().map(|r| r.to_uid.as_str()).collect();
         assert!(targets.contains(&org.uid.as_str()));
         assert!(targets.contains(&email.uid.as_str()));
+        assert!(
+            !targets.contains(&registrar.uid.as_str()),
+            "registrar must be excluded from registered_by"
+        );
     }
 
     #[test]
