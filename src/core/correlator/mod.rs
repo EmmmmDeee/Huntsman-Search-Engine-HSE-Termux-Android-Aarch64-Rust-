@@ -384,16 +384,30 @@ mod tests {
 
     #[test]
     fn au003_fires_at_kind_specific_thresholds() {
+        use crate::core::entity::Evidence;
+        // AU-003 measures DISTINCT evidence sources, not the `corroboration`
+        // observation counter. An Email needs >=3 distinct sources to fire.
         let mut email = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
-        email.corroboration = 3;
+        email.corroboration = 99; // inflated counter must be irrelevant
+        for src in ["modA", "modB", "modC"] {
+            email.add_evidence(Evidence::new(src, "found"));
+        }
         let r = rule_au_003_high_corroboration(&[email], "s", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].rule_id, "AU-003");
 
+        // A Domain needs >=5 distinct sources.
         let mut domain = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
-        domain.corroboration = 5;
+        for src in ["m1", "m2", "m3", "m4", "m5"] {
+            domain.add_evidence(Evidence::new(src, "found"));
+        }
         let r = rule_au_003_high_corroboration(&[domain], "s", 0);
         assert_eq!(r.len(), 1);
+
+        // Counter alone (no distinct sources) must NOT fire — the inflation bug.
+        let mut bogus = Entity::new(EntityKind::Email, "z@y.com", 0.9, "s");
+        bogus.corroboration = 50;
+        assert!(rule_au_003_high_corroboration(&[bogus], "s", 0).is_empty());
     }
 
     #[test]

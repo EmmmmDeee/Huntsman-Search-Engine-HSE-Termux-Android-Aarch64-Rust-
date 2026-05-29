@@ -113,23 +113,36 @@ pub(super) fn rule_au_003_high_corroboration(
             _ => 3,
         }
     };
+    // Gate on the count of DISTINCT evidence sources, not `corroboration`.
+    // `corroboration` is a saturating observation counter that grows on every
+    // re-observation — including repeat runs of the *same* module and repeated
+    // scans of the same target — so it does not measure cross-source agreement.
+    // This rule is "High cross-source corroboration", so a single module that
+    // re-emits an entity 14 times must NOT read as "14 independent sources"
+    // (a false intelligence claim observed live: name_to_username alone drove
+    // corroboration=11 on derived usernames). Use the deduplicated source set.
     entities
         .iter()
-        .filter(|e| e.corroboration >= min_corr(&e.kind))
-        .map(|e| Correlation {
-            rule_id: "AU-003".into(),
-            rule_name: "High cross-source corroboration".into(),
-            severity: Severity::Medium,
-            description: format!(
-                "{} entity '{}' corroborated by {} independent sources (C_eff={:.3})",
-                e.kind,
-                e.value,
-                e.corroboration,
-                e.c_effective()
-            ),
-            entity_uids: vec![e.uid.clone()],
-            scan_id: scan_id.into(),
-            ts,
+        .filter_map(|e| {
+            let source_count = e.evidence_sources().len() as u32;
+            if source_count < min_corr(&e.kind) {
+                return None;
+            }
+            Some(Correlation {
+                rule_id: "AU-003".into(),
+                rule_name: "High cross-source corroboration".into(),
+                severity: Severity::Medium,
+                description: format!(
+                    "{} entity '{}' corroborated by {} independent source(s) (C_eff={:.3})",
+                    e.kind,
+                    e.value,
+                    source_count,
+                    e.c_effective()
+                ),
+                entity_uids: vec![e.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+            })
         })
         .collect()
 }
@@ -1450,6 +1463,75 @@ mod tests {
             out[0].entity_uids.len(),
             3,
             "low-confidence username must be excluded from the cluster"
+        );
+    }
+
+    fn ent_with_sources(kind: EntityKind, val: &str, sources: &[&str], corr: u32) -> Entity {
+        use crate::core::entity::Evidence;
+        let mut e = Entity::new(kind, val, 0.9, "sid");
+        for s in sources {
+            e.add_evidence(Evidence::new(*s, format!("seen by {s}")));
+        }
+        // Simulate an inflated observation counter (repeat scans / same-source
+        // re-emission) decoupled from the distinct-source count.
+        e.corroboration = corr;
+        e
+    }
+
+    #[test]
+    fn au_003_counts_distinct_sources_not_observation_tally() {
+        // A single source that bumped corroboration to 11 must NOT fire the
+        // "high cross-source corroboration" rule (min 3 sources for username).
+        let single = ent_with_sources(EntityKind::Username, "meyerjordan", &["name_to_username"], 11);
+        assert!(
+            rule_au_003_high_corroboration(std::slice::from_ref(&single), "sid", 0).is_empty(),
+            "1 distinct source must not satisfy the >=3 cross-source threshold"
+        );
+
+        // Three genuinely distinct sources fire, and the description reports
+        // the true source count (3), not the inflated corroboration (11).
+        let multi = ent_with_sources(
+            EntityKind::Username,
+            "jmeyer",
+            &["name_to_username", "see_know", "github_user"],
+            11,
+        );
+        let out = rule_au_003_high_corroboration(std::slice::from_ref(&multi), "sid", 0);
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].description.contains("3 independent source(s)"),
+            "must report 3 distinct sources, not 11; got: {}",
+            out[0].description
+        );
+        assert!(
+            !out[0].description.contains("11"),
+            "inflated observation tally must not appear: {}",
+            out[0].description
+        );
+    }
+
+    #[test]
+    fn au_003_respects_per_kind_source_thresholds() {
+        // Domain needs >=5 distinct sources; 4 must not fire.
+        let four = ent_with_sources(
+            EntityKind::Domain,
+            "peekyou.com",
+            &["a", "b", "c", "d"],
+            99,
+        );
+        assert!(
+            rule_au_003_high_corroboration(std::slice::from_ref(&four), "sid", 0).is_empty(),
+            "4 distinct sources is below the domain threshold of 5"
+        );
+        let five = ent_with_sources(
+            EntityKind::Domain,
+            "peekyou.com",
+            &["a", "b", "c", "d", "e"],
+            99,
+        );
+        assert_eq!(
+            rule_au_003_high_corroboration(std::slice::from_ref(&five), "sid", 0).len(),
+            1
         );
     }
 }

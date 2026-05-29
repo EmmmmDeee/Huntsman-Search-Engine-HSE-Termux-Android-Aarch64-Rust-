@@ -35,6 +35,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Correlator AU-003 counts distinct sources, not the observation tally (no
+  more inflated "N independent sources" claims).** "High cross-source
+  corroboration" gated on and reported `Entity::corroboration` — a saturating
+  counter that grows on every re-observation, including repeat runs of the
+  *same* module and repeated scans of the same target. Live execution showed
+  `name_to_username` alone driving `corroboration=11` on derived usernames,
+  which AU-003 then reported as "11 independent sources" — a false intelligence
+  claim. It now gates on and reports `evidence_sources().len()` (the
+  deduplicated distinct-source set), so a single module re-emitting an entity
+  can never read as cross-source agreement. Verified live: AU-003 now reports
+  source counts that exactly match each entity's distinct evidence sources.
+  Tests: `au_003_counts_distinct_sources_not_observation_tally`,
+  `au_003_respects_per_kind_source_thresholds`, and the `mod.rs` integration
+  test updated to build real evidence sources.
 - **Correlator AU-002 identity cluster gates on confidence (fewer false
   Criticals).** The rule raised a **Critical** "Email + Username + Phone
   co-located" correlation whenever a scan contained at least one of each kind,
