@@ -81,7 +81,22 @@ fn resolve_proxy() -> Option<String> {
         return None;
     }
     if v.eq_ignore_ascii_case("auto") {
-        return crate::util::proxy::load_pool().first().map(|p| p.url());
+        let pool = crate::util::proxy::load_pool();
+        // Region-match: if HUNTSMAN_REGION is set, prefer a proxy egressing from
+        // that country (the high-yield range for the locale) so the request and
+        // the localised search results come from the same region. Falls back to
+        // the best-graded proxy overall.
+        if let Ok(region) = std::env::var("HUNTSMAN_REGION") {
+            let cc = region.trim().split('-').next().unwrap_or("").to_uppercase();
+            if cc.len() == 2
+                && let Some(p) = pool
+                    .iter()
+                    .find(|p| p.country.as_deref() == Some(cc.as_str()))
+            {
+                return Some(p.url());
+            }
+        }
+        return pool.first().map(|p| p.url());
     }
     Some(v)
 }

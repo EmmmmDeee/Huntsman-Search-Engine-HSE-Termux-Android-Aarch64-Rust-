@@ -107,7 +107,7 @@ they are the *only* legitimate places the concrete SQLite type is named (see
 | `doctor` | `cli/doctor.rs` | Environment preflight (DB, keys, Termux, module count); `--bundle` = offline redacted diagnostic report + image-pipeline self-test. |
 | `selftest` | `cli/selftest.rs` | Offline, deterministic 5-stage health check (storage / image codec / parsers / a real offline engine scan / cross-correlation builders); exits non-zero on failure. |
 | `provision` / `set-key` / `keys` | `cli/provision.rs`, `cli/keys_cmd.rs` | Manage `~/.huntsman.env` and the multi-key pool. |
-| `proxies` | `cli/proxies.rs` | Proxy retriever: `refresh` harvests + validates + **anonymity-grades** (elite/anonymous/transparent) + captures country, persisting **best-first** (high-yield: grade then latency); `--grade`/`--country` filters; `list` shows the pool. Scans route through them with `HUNTSMAN_PROXY=auto` (picks the best). |
+| `proxies` | `cli/proxies.rs` | Proxy retriever: `refresh` harvests + validates + **anonymity-grades** (elite/anonymous/transparent) + captures country, persisting **best-first** (high-yield: grade then latency); `--grade`/`--country` filters; `list` shows the pool. Scans route through them with `HUNTSMAN_PROXY=auto` (picks the best, or a same-country one when `HUNTSMAN_REGION` is set — pairing with the search modules' regional result localisation). |
 | `serve` | `cli/serve.rs` | axum server + embedded SPA on `127.0.0.1:8080`. |
 | `live` | `cli/live.rs` | Re-scan one target on an interval (continuous monitoring). |
 | `radar` | `cli/radar.rs` | Continuous local-sensor sweep → auto-pivot on new findings. |

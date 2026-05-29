@@ -12,6 +12,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Regional search localisation (`HUNTSMAN_REGION`).** Search engines return
+  different results by region; setting `HUNTSMAN_REGION` (e.g. `AU` or `au-en`)
+  now localises every engine that exposes a safe locale parameter — Google
+  `gl`/`hl`, Bing `cc`/`setlang`, DuckDuckGo `kl`, Brave `country`, Ecosia
+  `gl`, Qwant `locale` — applied to first-page, paginated, and pivot fetches
+  (engines without a stable param are left untouched). It also ties into the
+  proxy retriever: with `HUNTSMAN_PROXY=auto`, a region prefers a **same-country
+  proxy** (the high-yield range for that locale) so request egress and results
+  share the region, falling back to the best-graded proxy overall. New pure,
+  unit-tested `search_engines::region` (parse + per-engine localisation).
+  Completes the "regional search differences" follow-on; opt-in (unset = no
+  change).
+
 - **Proxy grading, geo-targeting, and high-yield ranking.** The retriever now
   **grades each proxy's anonymity** — elite / anonymous / transparent — by
   inspecting a header-echo response (and comparing the server-seen origin to our

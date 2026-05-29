@@ -393,6 +393,7 @@ spawns no subprocess** — pure introspection + local file reads. See
 | `HUNTSMAN_*` | Per-module API keys (loaded from `$HOME/.huntsman.env`); never logged |
 | `HUNTSMAN_PROXY` | Route all module HTTP through a proxy: an explicit `scheme://host:port`, or `auto` to use the fastest validated proxy from the pool (`hse proxies refresh`). Unset → direct. |
 | `HUNTSMAN_SEARCH_PROXY` | Proxy used by the search-engine modules when a direct fetch is blocked (falls back to the validated pool if unset). |
+| `HUNTSMAN_REGION` | Localise search results to a country, e.g. `AU` or `au-en`. Adds each engine's locale param (Google `gl`/`hl`, Bing `cc`, DuckDuckGo `kl`, Brave/Ecosia/Qwant). With `HUNTSMAN_PROXY=auto` it also prefers a same-country proxy, so request egress and results share the region. |
 
 ---
 

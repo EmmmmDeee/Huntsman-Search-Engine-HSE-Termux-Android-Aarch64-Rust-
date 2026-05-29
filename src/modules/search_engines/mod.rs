@@ -43,6 +43,7 @@ use std::collections::HashSet;
 mod engines;
 mod fetch;
 mod helpers;
+mod region;
 
 use engines::{ENGINES, EngineSpec};
 use fetch::*;
@@ -180,8 +181,10 @@ impl Module for SearchEngines {
                 if qi > 0 && dead_engines.contains(engine.name) {
                     continue;
                 }
-                let url = (engine.build_url)(query);
-                let post_body = engine.build_post.map(|f| f(query));
+                let url = region::localize_url(engine.name, &(engine.build_url)(query));
+                let post_body = engine
+                    .build_post
+                    .map(|f| region::localize_post(engine.name, &f(query)));
                 if all_results.len() >= MAX_ACCUMULATED_RESULTS {
                     break;
                 }
@@ -204,7 +207,8 @@ impl Module for SearchEngines {
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS))
                                 .await;
-                            let page_url = paginate_fn(query, page);
+                            let page_url =
+                                region::localize_url(engine.name, &paginate_fn(query, page));
                             if let Some(mut pr) =
                                 fetch_and_parse(&page_url, engine, query, None).await
                             {
@@ -257,7 +261,8 @@ impl Module for SearchEngines {
                         if dead_engines.contains(engine.name) {
                             continue;
                         }
-                        let url = (engine.build_url)(pivot_query);
+                        let url =
+                            region::localize_url(engine.name, &(engine.build_url)(pivot_query));
                         if let Some(mut results) =
                             fetch_and_parse(&url, engine, pivot_query, None).await
                         {
@@ -368,7 +373,7 @@ async fn recycle_entities(
             if dead_engines.contains(engine.name) {
                 continue;
             }
-            let url = (engine.build_url)(query);
+            let url = region::localize_url(engine.name, &(engine.build_url)(query));
             if let Some(mut results) = fetch_and_parse(&url, engine, query, None).await {
                 recycled_results.append(&mut results);
             }
