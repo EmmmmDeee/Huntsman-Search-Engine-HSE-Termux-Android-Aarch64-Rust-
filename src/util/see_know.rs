@@ -49,11 +49,15 @@ static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
 /// auto-detect — fans out to external aggregators (Snusbase, BreachHub, …)
 /// and measured ~25-55s wall. The old 12s curl cap killed every one with
 /// "curl failed", so SeekNow yielded nothing despite a valid key and quota.
-/// Curl is now capped at 58s + 2s grace (60s outer), clearing the observed
-/// cold-path p100 (~55s) while staying inside the module's declared
-/// `max_timeout_ms()` of 65s so the engine-level wrapper never fires first.
-/// After the first call the server caches the result (~1.4s on repeat).
-static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::Bearer, 58, 60_000);
+/// Timeout sizing (measured live): the universal `/search` auto-detect / name
+/// path has a server-side ~55s response cap, so total round-trips were
+/// observed up to ~65s including network overhead. A 58s curl cap therefore
+/// still killed the slowest name queries. Curl is capped at 75s + 3s grace
+/// (78s outer), clearing the observed p100 with margin; the module declares
+/// `max_timeout_ms() = 80s` so the engine wrapper sits just above and never
+/// fires first. Typed and GET endpoints stay fast (~1-4s); only the name /
+/// auto-detect path approaches the ceiling.
+static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::Bearer, 75, 78_000);
 
 /// Per-scan + per-session quota budget for SeekNow API calls.
 ///
@@ -177,9 +181,26 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
             query_type
         )
     };
-    let resp = post_json(&url, key, &body).await?;
-    let items = extract_items(&resp);
-    cache_put(ck, items.clone());
+
+    // The name / auto-detect path fans out to external aggregators behind a
+    // server-side ~55s cap and intermittently returns `total:0` when that
+    // fan-out loses the race (verified live: the same query alternates between
+    // 120 and 0 results). One bounded retry recovers the transient empties
+    // without burning quota on the fast typed paths, which never flake.
+    let retry_on_empty = query_type.is_empty() || query_type == "name";
+    let mut items = extract_items(&post_json(&url, key, &body).await?);
+    if items.is_empty()
+        && retry_on_empty
+        && let Ok(resp) = post_json(&url, key, &body).await
+    {
+        items = extract_items(&resp);
+    }
+
+    // Only cache a non-empty result: caching a transient empty would pin the
+    // failure for the rest of the scan/session and defeat the retry.
+    if !items.is_empty() {
+        cache_put(ck, items.clone());
+    }
     Ok(items)
 }
 
@@ -228,14 +249,45 @@ pub async fn credits(key: &str) -> Result<Option<u64>> {
     Ok(remaining)
 }
 
-/// Stealer-log search via GET /api/v1/stealer?q=<value>
+/// Stealer-log search via POST /api/v1/stealer with `{"query": <value>}`.
+///
+/// The endpoint is POST-only: a `GET /stealer?q=` 404s (verified live). The
+/// previous GET form silently returned nothing on every Email/Username scan.
 pub async fn stealer(key: &str, query: &str) -> Result<Vec<Value>> {
-    get_path(key, "stealer", &[("q", query)]).await
+    let ck = format!("stealer:{}", query.to_lowercase());
+    if let Some(cached) = cache_get(&ck) {
+        return Ok(cached);
+    }
+    if is_quota_exhausted() || !budget_remaining() {
+        return Ok(Vec::new());
+    }
+    budget_increment();
+    let url = format!("{}/stealer", base_url());
+    let body = format!(r#"{{"query":"{}"}}"#, escape_json(query));
+    let resp = post_json(&url, key, &body).await?;
+    let items = extract_items(&resp);
+    cache_put(ck, items.clone());
+    Ok(items)
 }
 
-/// Breach record search via GET /api/v1/breachhub/search?q=<value>
+/// Breach-record search. The standalone `/breachhub/search` path 404s
+/// (verified live); the breach corpus is exposed through the typed
+/// universal `/search` endpoint instead, so route there. Using the typed
+/// query keeps it on the fast (~1-4s) path rather than the slow external
+/// auto-detect fan-out.
 pub async fn breachhub(key: &str, query: &str) -> Result<Vec<Value>> {
-    get_path(key, "breachhub/search", &[("q", query)]).await
+    // Heuristic type hint: an '@' means email, a digit-run means phone,
+    // otherwise let the server auto-detect (empty type).
+    let qtype = if query.contains('@') {
+        "email"
+    } else if query.chars().filter(|c| c.is_ascii_digit()).count() >= 6
+        && query.chars().all(|c| c.is_ascii_digit() || "+ -()".contains(c))
+    {
+        "phone"
+    } else {
+        ""
+    };
+    search(key, query, qtype).await
 }
 
 /// Domain intel via GET /api/v1/domain/intel?domain=<value>
@@ -253,9 +305,11 @@ pub async fn phone_info(key: &str, phone: &str) -> Result<Vec<Value>> {
     get_path(key, "network/phone", &[("phone", phone)]).await
 }
 
-/// Email-check via GET /api/v1/network/email-check?email=<value>
+/// Email enrichment. The `/network/email-check` path 404s (verified live);
+/// email records are served by the typed universal `/search` endpoint, which
+/// returns on the fast path for a typed email query.
 pub async fn email_check(key: &str, email: &str) -> Result<Vec<Value>> {
-    get_path(key, "network/email-check", &[("email", email)]).await
+    search(key, email, "email").await
 }
 
 // ── Username-side identity-to-geolocation bridges ───────────────────────

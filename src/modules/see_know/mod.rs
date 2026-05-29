@@ -101,11 +101,11 @@ impl Module for SeekNow {
     fn max_timeout_ms(&self) -> u64 {
         // Concurrent endpoint dispatch lets us call ~10 endpoints in
         // ~the time of one — but the upper bound is still gated by the
-        // slowest individual lookup. The cold `/search` fan-out to external
-        // aggregators measured ~25-55s wall against the live key (the server
-        // caches afterwards, ~1.4s on repeat), so the engine wrapper must sit
-        // above the curl client's 58s/60s envelope to never fire first.
-        65_000
+        // slowest individual lookup. The universal `/search` name/auto path
+        // has a server-side ~55s cap (round-trips up to ~65s live), so the
+        // engine wrapper must sit above the curl client's 75s/78s envelope to
+        // never fire first.
+        80_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -167,7 +167,7 @@ impl Module for SeekNow {
             TargetKind::Phone => "phone",
             TargetKind::Domain => "domain",
             TargetKind::IpAddress => "ip",
-            TargetKind::FullName => "", // auto-detect
+            TargetKind::FullName => "name", // explicit name search (server routes to people corpus)
             _ => "",
         };
         let items = see_know::search(key, v, qtype).await?;
@@ -297,7 +297,10 @@ fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
         TargetKind::Phone => vec![EndpointCall::PhoneInfo, EndpointCall::BreachHub],
         TargetKind::IpAddress => vec![EndpointCall::IpInfo],
         TargetKind::Domain => vec![EndpointCall::DomainIntel, EndpointCall::Whois],
-        TargetKind::FullName => vec![EndpointCall::BreachHub],
+        // FullName is fully served by the universal typed `/search` (type=name)
+        // issued in Query 1; a second BreachHub call would only re-hit the slow
+        // ~55s name path under a different cache key. Empty plan avoids that.
+        TargetKind::FullName => Vec::new(),
         _ => Vec::new(),
     }
 }
