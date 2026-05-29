@@ -248,8 +248,8 @@ every read, never stored**, so tier labels can never go stale.
  (5) PROPAGATE   EntityFound event → EventBus → SSE/CLI tail;                 engine.rs:614
                  discovered keys hot-injected into ctx.keys for later modules engine.rs:767
  (6) PIVOT       run_expansion: C_eff-gated entities → new Targets (loop §5)  engine.rs:341
- (7) PERSIST     finalise_scan: upsert_entity (data_json authoritative)       engine.rs:236
-                 + entity_observations(uid, scan_id) + save key_pool          storage.rs
+ (7) PERSIST     finalise_scan: upsert_entities_batch (1 txn; per-entity      engine.rs:236
+                 fallback) + entity_observations(uid, scan_id) + save key_pool storage.rs
  (8) CORRELATE   30 declarative rules link entities → Correlation records     correlator/rules.rs
                  + correlation_found events
  (9) SURFACE     CLI (table/json/dossier) · HTTP API · SSE · GEXF · D3 graph  api/, gexf.rs
@@ -410,12 +410,14 @@ each item is scoped so it can land behind the existing CI gates without
 disturbing the invariants above.
 
 **P1 — correctness/consistency**
-- Resolve the `consumes()`/`accepts()` divergence risk structurally: the engine
-  already re-checks `accepts()` on the hit path (`engine.rs:718`) as
-  belt-and-braces. Consider a debug-only assertion at `ScanEngine::new` that
-  every module's probed `consumes()` is a superset of the kinds its dispatch
-  index will feed it, surfacing mis-declared modules at construction rather
-  than silently under-dispatching.
+- ✅ **Done.** The `consumes()`/`accepts()` divergence is now a CI-enforced
+  regression test (`modules::registry_invariants::module_consumes_covers_probed_accepts`):
+  for every registered module and every `TargetKind` its `accepts()` matches
+  against the canonical probe value, that kind must appear in `consumes()` —
+  otherwise the O(1) dispatch index silently never serves it there. Encoded as
+  a registry-wide test rather than a runtime `debug_assert` so it costs nothing
+  at runtime and fails the build instead. (The engine still re-checks
+  `accepts()` on the hit path at `engine.rs:718` as belt-and-braces.)
 
 **P2 — fabric richness**
 - The entity graph currently edges entities implicitly (shared evidence

@@ -28,6 +28,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
   ranked by yield" table and flags keyed/paid modules that yielded nothing
   this scan (`ROI: … consider --exclude …`), making the ROI tuning loop
   self-explanatory to operators.
+- **`consumes()`/`accepts()` integrity test.** A registry-wide regression test
+  (`module_consumes_covers_probed_accepts`) now fails CI if any module's
+  `consumes()` declaration omits a `TargetKind` its `accepts()` matches —
+  closing a silent-under-dispatch gap where the O(1) dispatch index would
+  never serve a mis-declared module for that kind.
 
 ## [1.0.0] — 2026-05-27
 
