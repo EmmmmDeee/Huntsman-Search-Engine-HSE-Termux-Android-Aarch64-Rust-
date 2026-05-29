@@ -460,22 +460,15 @@ pub async fn validate_key(service: &str, key: &str) -> Option<bool> {
 
 async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
     let timeout_ms = 10_000u64;
-    let secs = (timeout_ms / 1000).to_string();
 
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args([
-        "-s",
-        "-o",
-        "/dev/null",
-        "-w",
-        "%{http_code}",
-        "--max-time",
-        &secs,
-    ]);
-
-    match sdef.key_header {
+    // Pre-render the owned arg strings (query URL / header line) so the `&str`
+    // slice can borrow them past the match. `--` is always appended last so
+    // curl never mistakes a later option for a URL operand.
+    let query_url;
+    let header;
+    let tail: Vec<&str> = match sdef.key_header {
         KeyPlacement::QueryParam(param) => {
-            let url = if sdef.test_url.contains('?') {
+            query_url = if sdef.test_url.contains('?') {
                 if sdef.test_url.ends_with('=') {
                     format!("{}{}", sdef.test_url, key)
                 } else {
@@ -484,27 +477,23 @@ async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
             } else {
                 format!("{}?{}={}", sdef.test_url, param, key)
             };
-            cmd.args(["--", &url]);
+            vec!["--", query_url.as_str()]
         }
-        KeyPlacement::Header(header) => {
-            let h = format!("{header}: {key}");
-            cmd.args(["-H", &h, "--", sdef.test_url]);
+        KeyPlacement::Header(header_name) => {
+            header = format!("{header_name}: {key}");
+            vec!["-H", header.as_str(), "--", sdef.test_url]
         }
-        KeyPlacement::BasicAuth => {
-            cmd.args(["-u", key, "--", sdef.test_url]);
-        }
+        KeyPlacement::BasicAuth => vec!["-u", key, "--", sdef.test_url],
         KeyPlacement::BearerAuth => {
-            let h = format!("Authorization: bearer {key}");
-            cmd.args(["-H", &h, "--", sdef.test_url]);
+            header = format!("Authorization: bearer {key}");
+            vec!["-H", header.as_str(), "--", sdef.test_url]
         }
-    }
+    };
 
-    cmd.kill_on_drop(true);
+    let mut args: Vec<&str> = vec!["-o", "/dev/null", "-w", "%{http_code}", "--max-time", "10"];
+    args.extend(tail);
 
-    let output = tokio::time::timeout(Duration::from_millis(timeout_ms + 2000), cmd.output())
-        .await
-        .ok()
-        .and_then(std::result::Result::ok);
+    let output = crate::util::curl::run_raw(&args, Duration::from_millis(timeout_ms + 2000)).await;
 
     let Some(output) = output else { return false };
     let code = String::from_utf8_lossy(&output.stdout);

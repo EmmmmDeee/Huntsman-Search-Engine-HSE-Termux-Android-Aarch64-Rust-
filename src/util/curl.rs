@@ -86,22 +86,45 @@ async fn curl_exec(
     Some(body)
 }
 
+/// Why a low-level curl spawn failed, for callers that need to tell a hard
+/// timeout apart from an actual spawn/io error. The typed `curl_client`
+/// transport uses this to keep its distinct `"timeout"` vs io-error module
+/// log messages; the common `run_raw` path collapses both into `None`.
+pub(crate) enum CurlSpawnError {
+    /// The outer hard timeout fired before curl exited.
+    Timeout,
+    /// curl could not be spawned, or collecting its output failed.
+    Spawn(std::io::Error),
+}
+
 /// The single point where the `curl` subprocess is spawned. Always passes
 /// `-s`, sets `kill_on_drop`, and enforces a hard outer timeout so a wedged
-/// curl can never hold a concurrency slot. Returns the raw captured output —
-/// the caller decides how to interpret the exit status / stdout (e.g. a
-/// `-w %{http_code}` probe needs the body even on non-2xx). `None` if curl
-/// couldn't be spawned or the outer timeout fired. The canonical low-level
-/// curl spawn: the HTTP-fetch helpers here and the proxy retriever route
-/// through it so subprocess hardening (`-s` + `kill_on_drop` + outer timeout)
-/// lives in one spot. (A few modules with dynamically-built header args still
-/// construct their own one-shot probes.)
-pub(crate) async fn run_raw(args: &[&str], hard_timeout: Duration) -> Option<std::process::Output> {
+/// curl can never hold a concurrency slot. Distinguishes a timeout from a
+/// spawn/io failure for callers that report them differently (most callers
+/// use the `run_raw` wrapper, which discards that distinction). The caller
+/// interprets the exit status / stdout — a `-w %{http_code}` probe needs the
+/// body even on a non-2xx. Every curl invocation in the crate routes through
+/// here, so subprocess hardening lives in exactly one place.
+pub(crate) async fn run_raw_result(
+    args: &[&str],
+    hard_timeout: Duration,
+) -> std::result::Result<std::process::Output, CurlSpawnError> {
     let mut cmd = Command::new("curl");
     cmd.arg("-s");
     cmd.args(args);
     cmd.kill_on_drop(true);
-    timeout(hard_timeout, cmd.output()).await.ok()?.ok()
+    match timeout(hard_timeout, cmd.output()).await {
+        Err(_) => Err(CurlSpawnError::Timeout),
+        Ok(Err(e)) => Err(CurlSpawnError::Spawn(e)),
+        Ok(Ok(out)) => Ok(out),
+    }
+}
+
+/// `run_raw_result` reduced to an `Option` — the common case where the caller
+/// treats "timed out" and "couldn't spawn" identically and only needs the
+/// captured output (or nothing).
+pub(crate) async fn run_raw(args: &[&str], hard_timeout: Duration) -> Option<std::process::Output> {
+    run_raw_result(args, hard_timeout).await.ok()
 }
 
 /// Fetch a URL via curl subprocess. Returns the response body on

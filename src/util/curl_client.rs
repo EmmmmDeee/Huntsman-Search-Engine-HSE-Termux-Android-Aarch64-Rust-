@@ -23,10 +23,8 @@
 
 use std::time::Duration;
 
-use tokio::process::Command;
-use tokio::time::timeout;
-
 use crate::core::error::{Error, Result};
+use crate::util::curl::{CurlSpawnError, run_raw_result};
 
 /// Default User-Agent for paid OSINT API calls. Mobile Chrome on
 /// Android 14 — matches what an operator's Termux-launched browser
@@ -119,14 +117,16 @@ impl CurlClient {
         let secs = self.curl_timeout_secs.to_string();
         let auth_header = self.auth.header_line(key);
 
-        let mut cmd = Command::new("curl");
-        cmd.args(["-s", "-L", "--max-time", &secs, "-A", DEFAULT_UA]);
+        // `-s` is supplied by `run_raw_result`; the rest matches the previous
+        // arg order exactly (`-s -L --max-time … -A … [-H auth] -H accept
+        // [POST] -- url`).
+        let mut args: Vec<&str> = vec!["-L", "--max-time", secs.as_str(), "-A", DEFAULT_UA];
         if let Some(ref h) = auth_header {
-            cmd.args(["-H", h]);
+            args.extend(["-H", h.as_str()]);
         }
-        cmd.args(["-H", "Accept: application/json"]);
+        args.extend(["-H", "Accept: application/json"]);
         if let Some(body) = post_body {
-            cmd.args([
+            args.extend([
                 "-X",
                 "POST",
                 "-H",
@@ -135,14 +135,16 @@ impl CurlClient {
                 body,
             ]);
         }
-        cmd.args(["--", url]);
-        cmd.kill_on_drop(true);
+        args.extend(["--", url]);
 
-        let output = timeout(Duration::from_millis(self.outer_timeout_ms), cmd.output())
-            .await
-            .map_err(|_| Error::module(self.module, "timeout"))?
-            .map_err(|e| Error::module(self.module, e.to_string()))?;
-
+        let output = match run_raw_result(&args, Duration::from_millis(self.outer_timeout_ms)).await
+        {
+            Ok(o) => o,
+            Err(CurlSpawnError::Timeout) => return Err(Error::module(self.module, "timeout")),
+            Err(CurlSpawnError::Spawn(e)) => {
+                return Err(Error::module(self.module, e.to_string()));
+            }
+        };
         if !output.status.success() {
             return Err(Error::module(self.module, "curl failed"));
         }

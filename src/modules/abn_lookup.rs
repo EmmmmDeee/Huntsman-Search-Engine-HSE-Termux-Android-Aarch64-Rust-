@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::process::Command;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -117,11 +116,13 @@ async fn fetch_name(guid: &str, name: &str) -> Result<Option<Value>> {
 
 async fn curl_with_status(url: &str, timeout_ms: u64) -> Option<(String, u16)> {
     let secs = (timeout_ms / 1000).max(3).to_string();
-    let mut cmd = Command::new("curl");
-    cmd.args([
-        "-s",
+    let proxy = std::env::var("HUNTSMAN_SEARCH_PROXY")
+        .ok()
+        .filter(|p| !p.is_empty());
+
+    let mut args: Vec<&str> = vec![
         "--max-time",
-        &secs,
+        secs.as_str(),
         "-A",
         crate::util::curl::UA_MOBILE,
         "-H",
@@ -131,22 +132,16 @@ async fn curl_with_status(url: &str, timeout_ms: u64) -> Option<(String, u16)> {
         "-w",
         "\n%{http_code}",
         "-L",
-        "--",
-        url,
-    ]);
-
-    if let Ok(proxy) = std::env::var("HUNTSMAN_SEARCH_PROXY")
-        && !proxy.is_empty()
-    {
-        cmd.args(["-x", &proxy]);
+    ];
+    // `-x <proxy>` must precede the `--` terminator, or curl treats it as a
+    // URL operand and silently ignores the proxy.
+    if let Some(p) = proxy.as_deref() {
+        args.extend(["-x", p]);
     }
+    args.extend(["--", url]);
 
-    cmd.kill_on_drop(true);
-
-    let output = tokio::time::timeout(Duration::from_millis(timeout_ms + 2000), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
+    let output =
+        crate::util::curl::run_raw(&args, Duration::from_millis(timeout_ms + 2000)).await?;
 
     if !output.status.success() {
         return None;

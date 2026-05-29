@@ -206,32 +206,34 @@ impl Module for ApiKeyProbe {
 }
 
 async fn probe_endpoint(url: &str, key: &str, headers: &[(&str, String)]) -> Option<String> {
-    let secs = 10u64.to_string();
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args(["-s", "--max-time", &secs]);
-
+    // Pre-render the dynamic `Name: value` header lines so the `&str` arg
+    // slice can borrow them; track basic-auth separately. `-u` and `-H`
+    // ordering is irrelevant to curl, so hoisting `-u` is behaviour-equal.
+    let mut header_lines: Vec<String> = Vec::new();
+    let mut basic_auth = false;
     for (name, prefix) in headers {
         if *name == "_basic_auth" {
-            cmd.args(["-u", key]);
+            basic_auth = true;
             continue;
         }
-        let val = if !prefix.is_empty() {
-            format!("{prefix} {key}")
-        } else {
+        let val = if prefix.is_empty() {
             key.to_string()
+        } else {
+            format!("{prefix} {key}")
         };
-        let h = format!("{name}: {val}");
-        cmd.args(["-H", &h]);
+        header_lines.push(format!("{name}: {val}"));
     }
 
-    cmd.args(["-H", "Accept: application/json"]);
-    cmd.args(["--", url]);
-    cmd.kill_on_drop(true);
+    let mut args: Vec<&str> = vec!["--max-time", "10"];
+    if basic_auth {
+        args.extend(["-u", key]);
+    }
+    for h in &header_lines {
+        args.extend(["-H", h.as_str()]);
+    }
+    args.extend(["-H", "Accept: application/json", "--", url]);
 
-    let output = tokio::time::timeout(Duration::from_secs(12), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
+    let output = crate::util::curl::run_raw(&args, Duration::from_secs(12)).await?;
 
     if !output.status.success() {
         return None;
