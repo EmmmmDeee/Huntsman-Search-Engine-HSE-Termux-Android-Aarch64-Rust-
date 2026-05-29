@@ -51,7 +51,7 @@ property regresses.
 | 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 35 rules (incl. **graph-aware AU-031/AU-032/AU-034** that walk the edges), **and first-class typed `Relation` edges** (structural + lineage + geo co-location + DNS resolution + WHOIS registration + image similarity + stealer co-occurrence); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
 | 2 | **Discovery loops / adaptive pivoting** | `run_expansion`: depth-bounded DFS with ROI saturation-pruning, top-K gating, adaptive-depth termination, 4 expansion strategies | `engine.rs:341-510`, `core/roi.rs`, `core/scan.rs` |
 | 3 | **Code quality / static+dynamic verification** | CI: `fmt --check`, `check --locked`, `clippy -D warnings`, `test --all`, MSRV 1.88, shellcheck | `.github/workflows/ci.yml` |
-| 3 | **Resilience / regression testing** | 1,342 tests green; per-module timeout; `panic = "abort"` | `tests/`, `engine.rs:752`, `Cargo.toml:64` |
+| 3 | **Resilience / regression testing** | 1,343 tests green; per-module timeout; `panic = "abort"`; offline `hse selftest` (5-stage pipeline health check) | `tests/`, `engine.rs:752`, `Cargo.toml:64`, `cli/selftest.rs` |
 | 3 | **Hardening / deterministic execution** | SSRF preflight gate; private-IP/local-domain rejection; credential & key redaction; **no LLM/fuzzy** in correlator (open math only) | `engine.rs:1044-1141`, `SECURITY.md`, `core/correlator/` |
 
 ---
@@ -66,7 +66,7 @@ src/main.rs
        └─ cli::run().await                                         ← single fallible entry; non-zero exit on Err
             ├─ Cli::parse()  →  logging::init(verbose)             ← clap (–v/–vv); always-on debug file+bus sinks
             ├─ first-run pre-configuration (idempotent)            ← ensure_first_run_scaffold() + ensure_hardcoded_keys()
-            └─ Commands::{ … }                                     ← 11 subcommands
+            └─ Commands::{ … }                                     ← 12 subcommands
                  └─ composition root: Store::open() → Arc<dyn StoragePort>
                       └─ registry() → Vec<Arc<dyn Module>>
                            └─ ScanEngine::new(modules, store, bus)  ← builds ModuleGraph once
@@ -104,7 +104,8 @@ they are the *only* legitimate places the concrete SQLite type is named (see
 |------------|---------|------|
 | `scan` | `cli/scan.rs` | One target → entities. **Auto-recurses by default** (optimal depth from seed type + keys); `--depth N` (incl. `0` = single round) / `--recursive` override; `--max-roi`, `--output table\|json\|dossier`. |
 | `modules` | `cli/mod.rs` | List the registry; `--category`, `--json`. |
-| `doctor` | `cli/doctor.rs` | Environment preflight (DB, keys, Termux, module count). |
+| `doctor` | `cli/doctor.rs` | Environment preflight (DB, keys, Termux, module count); `--bundle` = offline redacted diagnostic report + image-pipeline self-test. |
+| `selftest` | `cli/selftest.rs` | Offline, deterministic 5-stage health check (storage / image codec / parsers / a real offline engine scan / cross-correlation builders); exits non-zero on failure. |
 | `provision` / `set-key` / `keys` | `cli/provision.rs`, `cli/keys_cmd.rs` | Manage `~/.huntsman.env` and the multi-key pool. |
 | `serve` | `cli/serve.rs` | axum server + embedded SPA on `127.0.0.1:8080`. |
 | `live` | `cli/live.rs` | Re-scan one target on an interval (continuous monitoring). |
