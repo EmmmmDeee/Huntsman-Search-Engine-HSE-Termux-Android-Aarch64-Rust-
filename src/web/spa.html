@@ -307,7 +307,7 @@ const S = {
     showAdv:false,
     options:{ exclude_modules:[], throttle_ms:0, module_timeout_ms:null, depth:0,
               min_expand_confidence:0.75, max_entities:null, max_wall_time_secs:null,
-              max_concurrent:0, min_confidence:null, free_only:false }
+              max_concurrent:0, min_confidence:null, free_only:false, region_hint:null }
   }
 };
 
@@ -703,6 +703,13 @@ async function renderNewScan(v){
         </div>
         <div class="row" style="margin-top:8px">
           <div class="col-sm-3">
+            <label>Region prior</label>
+            <input type="text" class="form-control input-sm" id="w-region" placeholder="e.g. AU / Australia" value="${attr(W.options.region_hint??'')}">
+            <span class="help-block">Boosts in-region geo, demotes out-of-region noise.</span>
+          </div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <div class="col-sm-3">
             <label>Throttle (ms)</label>
             <input type="number" class="form-control input-sm" id="w-throttle" min="0" value="${W.options.throttle_ms}">
           </div>
@@ -774,6 +781,8 @@ async function renderNewScan(v){
     });
   });
   $('#w-free').addEventListener('change', e=>{ W.options.free_only = e.target.checked; });
+  { const rg = $('#w-region'); if (rg) rg.addEventListener('input', e=>{
+      const v = e.target.value.trim(); W.options.region_hint = v===''?null:v; }); }
   $('#btn-select-all').addEventListener('click', e=>{
     e.preventDefault();
     const accepting = S.modules.filter(m=>!m.accepts || m.accepts.includes(W.kind));
@@ -849,6 +858,7 @@ async function submitWizard(){
   if (W.options.max_entities!=null && W.options.max_entities!=='') opts.max_entities = Number(W.options.max_entities);
   if (W.options.max_wall_time_secs!=null && W.options.max_wall_time_secs!=='') opts.max_wall_time_secs = Number(W.options.max_wall_time_secs);
   if (W.options.min_confidence!=null && W.options.min_confidence!=='') opts.min_confidence = Number(W.options.min_confidence);
+  if (W.options.region_hint!=null && W.options.region_hint!=='') opts.region_hint = W.options.region_hint;
   if (W.modules!==null) opts.modules = W.modules.length?W.modules:null;
   const tagsStr = ($('#w-tags')||{}).value||'';
   if (tagsStr.trim()) opts.scan_tags = tagsStr.split(',').map(t=>t.trim()).filter(Boolean);
