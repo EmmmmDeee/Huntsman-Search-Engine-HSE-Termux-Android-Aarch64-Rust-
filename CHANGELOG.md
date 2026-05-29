@@ -35,6 +35,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Correlator AU-002 identity cluster gates on confidence (fewer false
+  Criticals).** The rule raised a **Critical** "Email + Username + Phone
+  co-located" correlation whenever a scan contained at least one of each kind,
+  with no confidence floor — so a scan that surfaced an unrelated email and
+  phone alongside `name_to_username`'s speculative 0.35-confidence derived
+  usernames produced a Critical false positive, and dumped every low-quality
+  lead into the cluster. It now requires each facet at Probable confidence
+  (≥0.50, matching AU-020) and includes only qualifying entities in the
+  cluster. Regression tests: `au_002_ignores_speculative_low_confidence_leads`
+  (proven to fail without the gate), `au_002_fires_and_includes_only_qualifying_entities`.
 - **Correlator AU-019 breach clustering now uses exact calendar arithmetic.**
   `date_diff_days` approximated with `y*365 + m*30 + d`, which drifts by up to
   ~5 days near month/year boundaries (e.g. `2020-01-01 → 2020-12-31` computed

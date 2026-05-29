@@ -61,9 +61,21 @@ pub(super) fn rule_au_002_identity_cluster(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let emails = entities_of_kind(entities, EntityKind::Email);
-    let usernames = entities_of_kind(entities, EntityKind::Username);
-    let phones = entities_of_kind(entities, EntityKind::Phone);
+    // Relevance gate: only Probable-or-better (≥0.50) entities may anchor a
+    // Critical identity cluster. Without it, speculative leads — notably
+    // `name_to_username`'s 0.35-confidence derived usernames — would raise a
+    // Critical correlation on any scan that also surfaced an unrelated email
+    // and phone, a false positive. Mirrors the ≥0.50 floor used by AU-020.
+    const MIN_CONF: f64 = 0.50;
+    let pick = |kind| -> Vec<&Entity> {
+        entities_of_kind(entities, kind)
+            .into_iter()
+            .filter(|e| e.confidence >= MIN_CONF)
+            .collect()
+    };
+    let emails = pick(EntityKind::Email);
+    let usernames = pick(EntityKind::Username);
+    let phones = pick(EntityKind::Phone);
 
     if emails.is_empty() || usernames.is_empty() || phones.is_empty() {
         return Vec::new();
@@ -1398,5 +1410,46 @@ mod tests {
             breach_entity("b", "2023-01-10"),
         ];
         assert!(rule_au_019_temporal_breach_cluster(&entities, "sid", 0).is_empty());
+    }
+
+    fn ent(kind: EntityKind, val: &str, conf: f64) -> Entity {
+        Entity::new(kind, val, conf, "sid")
+    }
+
+    #[test]
+    fn au_002_ignores_speculative_low_confidence_leads() {
+        // A real email + phone plus only a speculative 0.35 derived username
+        // (what name_to_username emits) must NOT raise a Critical identity
+        // cluster — the username is below the Probable floor.
+        let entities = vec![
+            ent(EntityKind::Email, "a@x.com", 0.9),
+            ent(EntityKind::Phone, "+15551234567", 0.9),
+            ent(EntityKind::Username, "jmeyer", 0.35),
+        ];
+        assert!(
+            rule_au_002_identity_cluster(&entities, "sid", 0).is_empty(),
+            "0.35 username must not anchor a Critical cluster"
+        );
+    }
+
+    #[test]
+    fn au_002_fires_and_includes_only_qualifying_entities() {
+        // All three facets present at/above the floor → one Critical cluster.
+        // A second, low-confidence username must be excluded from the uids.
+        let entities = vec![
+            ent(EntityKind::Email, "a@x.com", 0.9),
+            ent(EntityKind::Username, "realhandle", 0.7),
+            ent(EntityKind::Username, "speculative", 0.30),
+            ent(EntityKind::Phone, "+15551234567", 0.8),
+        ];
+        let out = rule_au_002_identity_cluster(&entities, "sid", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].severity, Severity::Critical);
+        // email + 1 qualifying username + phone = 3 (the 0.30 username dropped).
+        assert_eq!(
+            out[0].entity_uids.len(),
+            3,
+            "low-confidence username must be excluded from the cluster"
+        );
     }
 }
