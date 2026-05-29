@@ -9,6 +9,7 @@ suitable for scripting.
 hse scan      Run a single scan, print results
 hse live      Re-run a scan periodically (v0.5+)
 hse modules   List registered modules with cost / target / passive flags
+hse selftest  Offline 5-stage install health check (no network); run it first
 hse doctor    Verify environment (DB, keys, Termux, modules)
 hse serve     Start the HTTP server + SPA (browse to http://127.0.0.1:8080)
 hse --help    Top-level help

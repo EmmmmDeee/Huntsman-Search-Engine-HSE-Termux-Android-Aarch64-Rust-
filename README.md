@@ -49,6 +49,7 @@ for all install paths and Termux quirks.
 ## Quick Start
 
 ```bash
+hse selftest                                                # offline install health check (run first)
 hse doctor                                                  # verify environment
 hse modules                                                 # list all 86 modules
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion

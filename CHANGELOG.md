@@ -10,6 +10,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **`hse selftest` — offline, deterministic install health check.** One command
+  to run first on a fresh Termux device: it exercises the whole stack with **no
+  network and no keys** — bundled SQLite open/query, the pure-Rust image codec
+  (PNG encode→decode→pHash), the EXIF/XMP + PDF parsers, a **real offline scan**
+  through the engine (`phone_intl`, dispatch→persist→correlate→relations), and
+  the cross-correlation edge builders — and prints a per-stage `[ok]`/`[FAIL]`
+  report (timed, logged under `hse::selftest`), exiting non-zero if any stage
+  fails. It isolates install/build problems (a broken bundled SQLite or `image`
+  decoder on aarch64) from scan-time problems (network/keys), so a failing run
+  pastes straight to Claude Code. `docs/DEBUGGING.md` makes it step 0 of the
+  loop.
+
 ### Fixed
 
 - **`-v` collided with `scan/live --value` (debug-build panic).** The global

@@ -12,6 +12,7 @@ mod live;
 mod provision;
 mod radar;
 mod scan;
+mod selftest;
 mod serve;
 
 use keys_cmd::KeysAction;
@@ -175,6 +176,11 @@ pub enum Command {
         #[arg(long)]
         bundle: bool,
     },
+    /// Offline, deterministic install health check — exercises storage, the
+    /// image codec, the parsers, a real offline scan, and the cross-correlation
+    /// builders, printing a per-stage pass/fail report. No network. Run it
+    /// first on a fresh device; exits non-zero if any stage fails.
+    Selftest,
     /// Provision the local environment: write/merge `$HOME/.huntsman.env`
     /// from the canonical template and run a diagnostic smoke test.
     ///
@@ -389,6 +395,7 @@ pub async fn run() -> Result<()> {
         }
         Command::Modules { category, json } => cmd_modules(category, json),
         Command::Doctor { bundle } => doctor::cmd_doctor(bundle).await,
+        Command::Selftest => selftest::cmd_selftest().await,
         Command::Provision {
             env_only,
             verify_only,

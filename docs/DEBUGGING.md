@@ -14,11 +14,20 @@ credentials before they're ever written or shared.
 ## TL;DR — the loop
 
 ```
+0. Right after install:  hse selftest      # offline, 5-stage health check
 1. It broke.
 2. Run:   hse doctor --bundle
 3. Paste the output (or ~/.huntsman/hse-debug-report.txt) to Claude Code.
 4. Apply the fix, re-run. Repeat.
 ```
+
+**`hse selftest`** is the fast first check on a fresh device: it runs storage,
+the image codec, the parsers, a **real offline scan** (`phone_intl`, no
+network), and the cross-correlation builders, printing a per-stage `[ok]`/
+`[FAIL]` report and exiting non-zero if anything is wrong. It needs no keys and
+makes no network calls, so it isolates *install/build* problems (a broken
+bundled SQLite or `image` decoder on this aarch64 device) from *scan-time*
+problems (network, keys). Paste a failing `selftest` straight to Claude Code.
 
 If the **install** broke (before the binary exists), share
 `~/.cache/hse-install.log` instead — `install.sh` writes a self-diagnosing
