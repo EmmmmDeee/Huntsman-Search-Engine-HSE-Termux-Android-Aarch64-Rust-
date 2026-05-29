@@ -29,6 +29,20 @@ pub struct HunterIo;
 struct Wrap {
     #[serde(default)]
     data: Option<HunterData>,
+    /// Hunter occasionally returns HTTP 200 with an `errors` array
+    /// instead of `data` when the key is rate-limited or out of
+    /// quota for the current plan. Capture so we report the key
+    /// exhausted rather than silently emitting an empty result.
+    #[serde(default)]
+    errors: Vec<HunterApiError>,
+}
+
+#[derive(Deserialize)]
+struct HunterApiError {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    details: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -134,7 +148,10 @@ impl Module for HunterIo {
             .get(&url)
             .send()
             .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            // `without_url()` strips the URL (which carries the API key
+            // as a query param) before formatting, so transport errors
+            // don't leak the key into logs / events.
+            .map_err(|e| Error::module(SRC, e.without_url().to_string()))?;
         let status = resp.status();
         if status.as_u16() == 401 || status.as_u16() == 403 {
             ctx.report_key_exhausted(SRC, key, status.as_u16());
@@ -158,6 +175,19 @@ impl Module for HunterIo {
             .json()
             .await
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
+        // HTTP-200-with-errors array: Hunter signals quota / scope /
+        // plan problems out-of-band of the HTTP status. Mark the
+        // key exhausted instead of silently returning empty.
+        if !wrap.errors.is_empty() {
+            let first = &wrap.errors[0];
+            let detail = first
+                .details
+                .as_deref()
+                .or(first.id.as_deref())
+                .unwrap_or("api error");
+            ctx.report_key_exhausted(SRC, key, 200);
+            return Err(Error::module(SRC, format!("api 200 error: {detail}")));
+        }
         let Some(data) = wrap.data else {
             return Ok(ModuleResult::new());
         };
@@ -186,13 +216,7 @@ impl Module for HunterIo {
             let Some(addr) = entry.value.as_deref().filter(|s| !s.is_empty()) else {
                 continue;
             };
-            let conf = match entry.confidence {
-                Some(c) if c >= 90 => 0.85,
-                Some(c) if c >= 70 => 0.70,
-                Some(c) if c >= 40 => 0.55,
-                Some(_) => 0.45,
-                None => 0.50,
-            };
+            let conf = confidence_from_hunter_score(entry.confidence);
             let mut ee = Entity::new(EntityKind::Email, addr, conf, &ctx.scan_id);
             ee.tag("hunter-io");
             ee.tag("email-finder");
@@ -243,6 +267,22 @@ impl Module for HunterIo {
     }
 }
 
+/// Map Hunter's 0-100 confidence score to an HSE confidence in
+/// [0.0, 1.0]. Buckets follow Hunter's own tier semantics:
+/// 90+ verified, 70-89 high, 40-69 medium, 1-39 low, explicit 0 or
+/// missing → uncertain (None and Some(0) collapse to the same
+/// floor — an explicit 0 from Hunter means "no signal", which
+/// shouldn't outrank a missing field).
+fn confidence_from_hunter_score(score: Option<u8>) -> f64 {
+    match score {
+        Some(c) if c >= 90 => 0.85,
+        Some(c) if c >= 70 => 0.70,
+        Some(c) if c >= 40 => 0.55,
+        Some(c) if c > 0 => 0.45,
+        _ => 0.50,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,24 +320,20 @@ mod tests {
 
     #[test]
     fn confidence_mapping_for_hunter_confidence_score() {
-        // Round-trip the mapping table the module uses internally:
-        //   90+ → 0.85, 70-89 → 0.70, 40-69 → 0.55, 1-39 → 0.45,
-        //   None → 0.50
-        let cases: [(Option<u8>, f64); 5] = [
+        // Drive the public helper so the test catches threshold drift
+        // (previously the test re-implemented the match arms and
+        // asserted against its own copy).
+        let cases: [(Option<u8>, f64); 7] = [
             (Some(95), 0.85),
             (Some(75), 0.70),
             (Some(50), 0.55),
             (Some(20), 0.45),
+            (Some(1), 0.45),
+            (Some(0), 0.50), // explicit 0 collapses to unknown floor
             (None, 0.50),
         ];
         for (input, expected) in cases {
-            let got: f64 = match input {
-                Some(c) if c >= 90 => 0.85,
-                Some(c) if c >= 70 => 0.70,
-                Some(c) if c >= 40 => 0.55,
-                Some(_) => 0.45,
-                None => 0.50,
-            };
+            let got = confidence_from_hunter_score(input);
             assert!(
                 (got - expected).abs() < f64::EPSILON,
                 "confidence {input:?} → {got} (expected {expected})"

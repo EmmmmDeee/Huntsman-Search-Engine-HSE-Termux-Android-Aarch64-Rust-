@@ -1030,7 +1030,13 @@ impl ScanEngine {
 /// Modules that legitimately consume private IPs / local domains —
 /// sensor modules that run against the local network. Universal
 /// preflight (private-IP / local-domain rejection) skips these.
-const LOCAL_PASSIVE_MODULES: &[&str] = &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
+///
+/// Re-exposed at `pub(crate)` because `hse radar` drives the same
+/// set on every sweep — single source of truth, so adding a new
+/// sensor module here both bypasses preflight AND joins the radar
+/// loop in one edit.
+pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] =
+    &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
 
 /// Returns `Some(reason)` if `module` should be skipped under `opts`.
 /// `accepts(target)` is intentionally NOT checked here — that case skips
@@ -1084,8 +1090,14 @@ fn module_skip_reason(
     if !LOCAL_PASSIVE_MODULES.contains(&name) {
         use crate::util::preflight;
         match target.kind {
-            TargetKind::IpAddress if preflight::should_skip_external_ipv4(&target.value) => {
-                return Some("private/local IP — external API would reject");
+            // Use the v6-tolerant gate — public IPv6 must pass through
+            // (shodan, censys, RDAP, abuseipdb, etc. all support v6).
+            // `should_skip_external_ipv4` rejects ANY `:`-containing
+            // string and is reserved for the small set of IPv4-only
+            // modules (ipapi, ip-api.com, ipinfo.io, ipquery.io)
+            // that route through it inside their own `process`.
+            TargetKind::IpAddress if preflight::should_skip_external_ip(&target.value) => {
+                return Some("private/reserved IP — external API would reject");
             }
             TargetKind::Domain if preflight::is_local_domain(&target.value) => {
                 return Some("local/reserved domain — external API would reject");
@@ -1443,7 +1455,7 @@ mod tests {
         let opts = ScanOptions::default();
         assert_eq!(
             module_skip_reason(&m, &private, &opts, false),
-            Some("private/local IP — external API would reject")
+            Some("private/reserved IP — external API would reject")
         );
     }
 
@@ -1477,6 +1489,43 @@ mod tests {
         let m = free_active();
         let opts = ScanOptions::default();
         assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_passes_public_ipv6_through() {
+        // Regression: the universal preflight previously rejected
+        // every `:`-containing string via should_skip_external_ipv4,
+        // silently breaking IPv6 lookups for v6-capable modules
+        // (shodan, censys, abuseipdb, RDAP, etc.). The v6-tolerant
+        // gate must let public IPv6 pass through to module dispatch.
+        let m = free_active();
+        let opts = ScanOptions::default();
+        for v6 in [
+            "2606:4700:4700::1111", // Cloudflare
+            "2001:4860:4860::8888", // Google
+            "2620:fe::fe",          // Quad9
+        ] {
+            let t = Target::new(TargetKind::IpAddress, v6);
+            assert!(
+                module_skip_reason(&m, &t, &opts, false).is_none(),
+                "public IPv6 {v6} should NOT be rejected by the universal gate",
+            );
+        }
+    }
+
+    #[test]
+    fn skip_reason_still_rejects_private_ipv6() {
+        // Loopback / unique-local / link-local IPv6 are private and
+        // should still be skipped by the universal gate.
+        let m = free_active();
+        let opts = ScanOptions::default();
+        for private_v6 in ["::1", "fc00::1", "fe80::1"] {
+            let t = Target::new(TargetKind::IpAddress, private_v6);
+            assert!(
+                module_skip_reason(&m, &t, &opts, false).is_some(),
+                "private IPv6 {private_v6} should be rejected",
+            );
+        }
     }
 
     // -- dispatch dedup tests --

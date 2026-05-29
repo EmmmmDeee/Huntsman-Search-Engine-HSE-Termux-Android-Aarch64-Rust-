@@ -20,7 +20,7 @@ use crate::util::{http::build_client, keys, uid::scan_id};
 
 use super::{build_runtime, color_confidence, truncate, use_color};
 
-const SENSOR_MODULES: &[&str] = &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
+use crate::core::engine::LOCAL_PASSIVE_MODULES as SENSOR_MODULES;
 
 pub(super) async fn cmd_radar(
     interval: u64,

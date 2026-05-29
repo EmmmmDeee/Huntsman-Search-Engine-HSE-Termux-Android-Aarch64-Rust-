@@ -8,26 +8,20 @@
 //! Mirrors the HTTP export surface so CLI operators and dashboard
 //! users see the same outputs.
 
-use std::fmt::Write as _;
-
 use crate::core::error::{Error, Result};
-use crate::core::scan::Scan;
 use crate::default_db_path;
 use crate::storage::Store;
 
 /// Resolve the scan id requested by the user. `latest` → the most-
-/// recent completed scan, ranked by `created_at` descending.
+/// recent Complete scan, picked at the SQL layer so the 64-row
+/// `list_scans` window can't shadow older Complete rows when many
+/// recent scans failed.
 fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
     if raw != "latest" {
         return Ok(raw.to_string());
     }
-    let mut scans: Vec<Scan> = store.list_scans(64)?;
-    // list_scans returns newest-first already, but be defensive and
-    // re-sort by started_at descending.
-    scans.sort_by_key(|s| std::cmp::Reverse(s.started_at));
-    scans
-        .into_iter()
-        .find(|s| matches!(s.status, crate::core::scan::ScanStatus::Complete))
+    store
+        .latest_completed_scan()?
         .map(|s| s.id)
         .ok_or_else(|| Error::Other("no completed scans in store".into()))
 }
@@ -70,31 +64,7 @@ fn render_json(store: &Store, sid: &str) -> Result<String> {
 
 fn render_csv(store: &Store, sid: &str) -> Result<String> {
     let entities = store.entities_for_scan(sid)?;
-    let mut body = String::with_capacity(192 + entities.len() * 128);
-    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,tags\n");
-    for e in &entities {
-        let eff = e.c_effective();
-        let tier = e.classify().to_string();
-        let mut sources: Vec<&str> = e.evidence_sources().into_iter().collect();
-        sources.sort_unstable();
-        let sources = sources.join("|");
-        let tags = e.tags.join("|");
-        let _ = writeln!(
-            body,
-            "{},{},{},{:.3},{:.3},{},{},{},{},{}",
-            crate::api::scan_handlers::csv_escape(&e.kind.to_string()),
-            crate::api::scan_handlers::csv_escape(&e.value),
-            crate::api::scan_handlers::csv_escape(&e.raw_value),
-            e.confidence,
-            eff,
-            e.corroboration,
-            tier,
-            e.observed_at,
-            crate::api::scan_handlers::csv_escape(&sources),
-            crate::api::scan_handlers::csv_escape(&tags),
-        );
-    }
-    Ok(body)
+    Ok(crate::api::scan_handlers::entities_to_csv(&entities))
 }
 
 fn render_gexf(store: &Store, sid: &str) -> Result<String> {
@@ -103,19 +73,8 @@ fn render_gexf(store: &Store, sid: &str) -> Result<String> {
 }
 
 fn render_report(store: &Store, sid: &str) -> Result<String> {
-    let scan = store
-        .get_scan(sid)?
+    let report = crate::api::scan_handlers::build_scan_report(store as _, sid)?
         .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
-    let entities = store.entities_for_scan(sid)?;
-    let correlations = store.correlations_for_scan(sid)?;
-    let report = serde_json::json!({
-        "scan": scan,
-        "entities": entities,
-        "entity_count": entities.len(),
-        "correlations": correlations,
-        "correlation_count": correlations.len(),
-        "exported_at": crate::core::entity::unix_now(),
-    });
     serde_json::to_string_pretty(&report)
         .map_err(|e| Error::Other(format!("report serialise: {e}")))
 }

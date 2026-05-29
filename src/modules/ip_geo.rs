@@ -76,6 +76,11 @@ impl Module for IpGeo {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // ip-api.com free tier is IPv4-only — universal dispatcher gate
+        // lets public IPv6 through, so reject it here.
+        if crate::util::preflight::should_skip_external_ipv4(&target.value) {
+            return Ok(ModuleResult::new());
+        }
         // ip-api.com free tier is HTTP only — HTTPS requires paid plan.
         let url = format!(
             "http://ip-api.com/json/{}?fields=status,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,mobile,proxy,hosting",

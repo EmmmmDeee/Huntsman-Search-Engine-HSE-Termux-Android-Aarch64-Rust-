@@ -33,18 +33,32 @@ pub struct WhoisXml;
 struct Wrap {
     #[serde(rename = "WhoisRecord", default)]
     whois: Option<WhoisRecord>,
+    /// Some plan/quota errors come back as HTTP 200 with an
+    /// `ErrorMessage` body and no `WhoisRecord`. Capture so we can
+    /// mark the key exhausted instead of silently returning empty.
+    #[serde(rename = "ErrorMessage", default)]
+    error: Option<ApiError>,
+}
+
+#[derive(Deserialize)]
+struct ApiError {
+    #[serde(default)]
+    msg: Option<String>,
+    #[serde(rename = "errorCode", default)]
+    error_code: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct WhoisRecord {
     #[allow(dead_code)]
     #[serde(default)]
     domain_name: Option<String>,
-    #[serde(rename = "createdDate", default)]
+    #[serde(default)]
     created_date: Option<String>,
-    #[serde(rename = "updatedDate", default)]
+    #[serde(default)]
     updated_date: Option<String>,
-    #[serde(rename = "expiresDate", default)]
+    #[serde(default)]
     expires_date: Option<String>,
     #[serde(default)]
     registrar_name: Option<String>,
@@ -52,17 +66,18 @@ struct WhoisRecord {
     estimated_domain_age: Option<u64>,
     #[serde(default)]
     registrant: Option<Contact>,
-    #[serde(rename = "administrativeContact", default)]
+    #[serde(default)]
     administrative_contact: Option<Contact>,
-    #[serde(rename = "technicalContact", default)]
+    #[serde(default)]
     technical_contact: Option<Contact>,
-    #[serde(rename = "nameServers", default)]
+    #[serde(default)]
     name_servers: Option<NameServers>,
     #[serde(default)]
     status: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct Contact {
     #[serde(default)]
     name: Option<String>,
@@ -79,6 +94,7 @@ struct Contact {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct NameServers {
     #[serde(default)]
     host_names: Vec<String>,
@@ -147,7 +163,10 @@ impl Module for WhoisXml {
             .get(&url)
             .send()
             .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            // `without_url()` strips the URL (which carries the API key
+            // as a query param) before formatting, so transport errors
+            // don't leak the key into logs / events.
+            .map_err(|e| Error::module(SRC, e.without_url().to_string()))?;
         let status = resp.status();
         if status.as_u16() == 401 || status.as_u16() == 403 {
             ctx.report_key_exhausted(SRC, key, status.as_u16());
@@ -171,6 +190,18 @@ impl Module for WhoisXml {
             .json()
             .await
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
+        // HTTP-200-with-error-payload (quota / scope / plan): mark
+        // the key exhausted so subsequent scans don't keep burning
+        // calls against a dead credential.
+        if let Some(err) = wrap.error {
+            let detail = err
+                .msg
+                .as_deref()
+                .or(err.error_code.as_deref())
+                .unwrap_or("api error");
+            ctx.report_key_exhausted(SRC, key, 200);
+            return Err(Error::module(SRC, format!("api 200 error: {detail}")));
+        }
         let Some(rec) = wrap.whois else {
             return Ok(ModuleResult::new());
         };
@@ -241,9 +272,16 @@ impl Module for WhoisXml {
 
         // ── Emit Name Server entities (Domain entities, tagged ns) ──
         if let Some(ns) = rec.name_servers {
+            let mut seen_ns: std::collections::HashSet<String> = std::collections::HashSet::new();
             for host in ns.host_names {
-                let host = host.trim().to_ascii_lowercase();
+                // Strip FQDN trailing dot before lowercasing so
+                // `ns1.example.com.` and `ns1.example.com` collapse
+                // to a single entity instead of emitting duplicates.
+                let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
                 if host.is_empty() || !host.contains('.') {
+                    continue;
+                }
+                if !seen_ns.insert(host.clone()) {
                     continue;
                 }
                 let mut e = Entity::new(EntityKind::Domain, &host, 0.65, &ctx.scan_id);

@@ -95,6 +95,11 @@ impl Module for IpQuery {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // ipquery.io is IPv4-only — universal dispatcher gate lets
+        // public IPv6 through, so reject it here.
+        if crate::util::preflight::should_skip_external_ipv4(&target.value) {
+            return Ok(ModuleResult::new());
+        }
         let ip = target.value.trim();
 
         let url = format!("https://api.ipquery.io/{ip}");

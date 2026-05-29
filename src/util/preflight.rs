@@ -23,6 +23,27 @@ pub fn should_skip_external_ipv4(ip: &str) -> bool {
     is_private_ip(trimmed)
 }
 
+/// True if `ip` should be skipped for an external lookup that supports
+/// either IPv4 or IPv6. Used by the engine's universal dispatcher gate
+/// — modules whose upstream supports v6 (shodan, censys, RDAP, etc.)
+/// should NOT have public IPv6 silently rejected.
+///
+/// Rejection cases:
+///   - empty / whitespace
+///   - private / reserved IPv4 (10/8, 172.16/12, 192.168/16, 127/8,
+///     169.254/16, CGNAT 100.64/10, multicast, broadcast)
+///   - private / reserved IPv6 (loopback, unspecified, multicast,
+///     unique-local fc00::/7, link-local fe80::/10)
+///
+/// Returns FALSE for fully-public IPv6 like `2606:4700:4700::1111`.
+pub fn should_skip_external_ip(ip: &str) -> bool {
+    let trimmed = ip.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    is_private_ip(trimmed)
+}
+
 /// True if the IP string is one of the private / reserved ranges
 /// that won't yield meaningful intel from external lookup APIs.
 ///
@@ -187,6 +208,34 @@ mod tests {
         assert!(!should_skip_external_ipv4("1.1.1.1"));
         assert!(!should_skip_external_ipv4("8.8.8.8"));
         assert!(!should_skip_external_ipv4("13.107.42.14"));
+    }
+
+    // ── should_skip_external_ip (v6-tolerant universal gate) ──────────────
+
+    #[test]
+    fn should_skip_external_ip_rejects_empty_and_private() {
+        assert!(should_skip_external_ip(""));
+        assert!(should_skip_external_ip("  "));
+        assert!(should_skip_external_ip("10.0.0.1"));
+        assert!(should_skip_external_ip("192.168.1.1"));
+        assert!(should_skip_external_ip("127.0.0.1"));
+        assert!(should_skip_external_ip("::1"));
+        assert!(should_skip_external_ip("fc00::1"));
+        assert!(should_skip_external_ip("fe80::1"));
+    }
+
+    #[test]
+    fn should_skip_external_ip_lets_public_v6_through() {
+        // Public IPv6 must NOT be rejected by the universal gate —
+        // modules like shodan/censys/RDAP support v6 lookups.
+        assert!(!should_skip_external_ip("2606:4700:4700::1111"));
+        assert!(!should_skip_external_ip("2001:4860:4860::8888"));
+    }
+
+    #[test]
+    fn should_skip_external_ip_lets_public_v4_through() {
+        assert!(!should_skip_external_ip("1.1.1.1"));
+        assert!(!should_skip_external_ip("8.8.8.8"));
     }
 
     // ── is_local_domain ────────────────────────────────────────────────────

@@ -115,11 +115,10 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             for (svc, entries) in &services {
                 println!("\n[{svc}] ({} keys)", entries.len());
                 for (i, e) in entries.iter().enumerate() {
-                    let masked = if e.value.len() > 8 {
-                        format!("{}…{}", &e.value[..4], &e.value[e.value.len() - 4..])
-                    } else {
-                        e.value.clone()
-                    };
+                    // Char-aware truncation: byte-indexing panics on
+                    // multi-byte UTF-8 keys (rare but real for
+                    // imported test tokens).
+                    let masked = mask_key(&e.value);
                     let notes = e.notes.as_deref().unwrap_or("");
                     println!(
                         "  {}: {} [{}] uses={} {}",
@@ -164,10 +163,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             let mut active = 0u32;
             for (svc, entries) in &targets {
                 for entry in entries {
-                    print!(
-                        "  {svc}: testing {}… ",
-                        &entry.value[..entry.value.len().min(8)]
-                    );
+                    print!("  {svc}: testing {}… ", char_prefix(&entry.value, 8));
                     match key_pool::validate_key(svc, &entry.value).await {
                         Some(true) => {
                             pool.mark_validated(svc, &entry.value, true);
@@ -386,4 +382,59 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Take up to `n` chars from the start of `s` — char-aware to avoid
+/// the byte-indexing panic on multi-byte UTF-8 values.
+fn char_prefix(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
+/// Char-aware masked key display: `ABCD…WXYZ` for values longer than
+/// 8 chars, full value otherwise. Byte-indexing the value directly
+/// panics when the key contains multi-byte UTF-8 (rare but real for
+/// imported test tokens). Operates on chars instead.
+fn mask_key(value: &str) -> String {
+    let total = value.chars().count();
+    if total > 8 {
+        let head: String = value.chars().take(4).collect();
+        let tail: String = value.chars().skip(total - 4).collect();
+        format!("{head}…{tail}")
+    } else {
+        value.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{char_prefix, mask_key};
+
+    #[test]
+    fn mask_key_short_value_returned_verbatim() {
+        assert_eq!(mask_key(""), "");
+        assert_eq!(mask_key("abc"), "abc");
+        assert_eq!(mask_key("abcdefgh"), "abcdefgh");
+    }
+
+    #[test]
+    fn mask_key_long_value_truncates() {
+        assert_eq!(mask_key("AKIAIOSFODNN7EXAMPLE"), "AKIA…MPLE");
+    }
+
+    #[test]
+    fn mask_key_handles_multibyte_chars() {
+        // Pre-fix this byte-indexed `&v[..4]`/`&v[len-4..]` would panic
+        // for a value whose 4th byte falls inside a multi-byte char.
+        let v = "𝕊éCRet𝕊éCRet"; // 12 chars, 22 bytes
+        let m = mask_key(v);
+        assert!(m.contains('…'));
+        assert_eq!(m.chars().count(), 9);
+    }
+
+    #[test]
+    fn char_prefix_byte_safe() {
+        assert_eq!(char_prefix("abcdef", 4), "abcd");
+        // Multi-byte safe: 𝕊 is 4 bytes, so byte-slicing at 1 would panic.
+        assert_eq!(char_prefix("𝕊abc", 2), "𝕊a");
+    }
 }

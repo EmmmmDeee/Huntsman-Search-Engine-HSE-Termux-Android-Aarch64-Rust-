@@ -269,15 +269,28 @@ pub async fn scan_entities_csv(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    use std::fmt::Write as _;
     let entities = match s.store.entities_for_scan(&id) {
         Ok(es) => es,
         Err(e) => return internal_error(&e),
     };
+    download_response(
+        entities_to_csv(&entities),
+        "text/csv; charset=utf-8",
+        &id,
+        "csv",
+    )
+}
 
+/// Canonical CSV rendering for a scan's entities. Shared by the HTTP
+/// endpoint `/api/v1/scans/{id}/entities.csv` and the `hse export
+/// --format csv` CLI subcommand so both produce byte-identical
+/// output — operators piping the two interchangeably can rely on
+/// the column shape staying in sync.
+pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> String {
+    use std::fmt::Write as _;
     let mut body = String::with_capacity(192 + entities.len() * 128);
     body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,tags\n");
-    for e in &entities {
+    for e in entities {
         let eff = e.c_effective();
         let tier = e.classify().to_string();
         let mut sources: Vec<&str> = e.evidence_sources().into_iter().collect();
@@ -299,43 +312,55 @@ pub async fn scan_entities_csv(
             csv_escape(&tags),
         );
     }
-
-    download_response(body, "text/csv; charset=utf-8", &id, "csv")
+    body
 }
 
 pub async fn scan_report_json(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scan = match s.store.get_scan(&id) {
-        Ok(Some(scan)) => scan,
-        Ok(None) => return not_found(),
-        Err(e) => return internal_error(&e),
-    };
-    let entities = match s.store.entities_for_scan(&id) {
-        Ok(entities) => entities,
-        Err(e) => return internal_error(&e),
-    };
-    let correlations = match s.store.correlations_for_scan(&id) {
-        Ok(correlations) => correlations,
-        Err(e) => return internal_error(&e),
-    };
+    match build_scan_report(&*s.store, &id) {
+        Ok(Some(report)) => {
+            let body = serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
+                "{}".into()
+            });
+            download_response(body, "application/json; charset=utf-8", &id, "json")
+        }
+        Ok(None) => not_found(),
+        Err(e) => internal_error(&e),
+    }
+}
 
-    let report = json!({
+/// Canonical scan-report JSON envelope. Shared by the HTTP endpoint
+/// `/api/v1/scans/{id}/report.json` and the `hse export --format
+/// report` CLI subcommand so the on-device and over-the-wire
+/// dossiers stay byte-equivalent.
+///
+/// Generic over the storage handle: the HTTP layer hands in an
+/// `Arc<dyn StoragePort>` (via `&*s.store`), the CLI hands in a
+/// `&Store` directly. Both expose `get_scan / entities_for_scan /
+/// correlations_for_scan` with matching signatures.
+///
+/// Returns `Ok(None)` when no scan with that id exists, so callers
+/// can map straight to a 404. Bubbles storage errors otherwise.
+pub(crate) fn build_scan_report(
+    store: &dyn crate::core::port::StoragePort,
+    scan_id: &str,
+) -> crate::core::error::Result<Option<serde_json::Value>> {
+    let Some(scan) = store.get_scan(scan_id)? else {
+        return Ok(None);
+    };
+    let entities = store.entities_for_scan(scan_id)?;
+    let correlations = store.correlations_for_scan(scan_id)?;
+    Ok(Some(json!({
         "scan": scan,
         "entities": entities,
         "entity_count": entities.len(),
         "correlations": correlations,
         "correlation_count": correlations.len(),
         "exported_at": crate::core::entity::unix_now(),
-    });
-
-    let body = serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
-        "{}".into()
-    });
-
-    download_response(body, "application/json; charset=utf-8", &id, "json")
+    })))
 }
 
 pub async fn scan_export_gexf(

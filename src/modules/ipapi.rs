@@ -91,6 +91,12 @@ impl Module for IpApi {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // ip-api.com free tier is IPv4-only — the universal dispatcher
+        // gate allows public IPv6 through, so this module needs its own
+        // IPv6 rejection on top.
+        if crate::util::preflight::should_skip_external_ipv4(&target.value) {
+            return Ok(ModuleResult::new());
+        }
         let ip = target.value.trim();
 
         let url = format!("http://ip-api.com/json/{ip}?fields={FIELDS}");

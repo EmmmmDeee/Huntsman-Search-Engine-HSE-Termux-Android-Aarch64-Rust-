@@ -14,7 +14,7 @@ mod radar;
 mod scan;
 mod serve;
 
-pub use keys_cmd::KeysAction;
+use keys_cmd::KeysAction;
 
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -444,8 +444,10 @@ fn cmd_modules(category_filter: Option<String>, as_json: bool) -> Result<()> {
     let mut mods = registry();
     mods.sort_by_key(|m| std::cmp::Reverse(m.priority()));
 
-    // Optional category filter (case-insensitive substring match
-    // against the snake_case category name).
+    // Optional category filter — case-insensitive exact match against
+    // the snake_case category name (e.g. `--category geo`, `--category
+    // dns_recon`). Pre-strip the operator's input to match the
+    // canonical form ModuleCategory::as_str returns.
     let category_filter_lc = category_filter.as_ref().map(|s| s.to_lowercase());
     let filtered: Vec<_> = mods
         .iter()
@@ -523,7 +525,7 @@ fn cmd_modules(category_filter: Option<String>, as_json: bool) -> Result<()> {
 
 // ─── Shared helpers (used by subcommand files) ─────────────────────────────
 
-pub fn parse_target_kind(s: &str) -> Result<TargetKind> {
+pub(super) fn parse_target_kind(s: &str) -> Result<TargetKind> {
     match s.to_lowercase().trim() {
         "email" => Ok(TargetKind::Email),
         "username" => Ok(TargetKind::Username),
