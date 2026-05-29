@@ -71,6 +71,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
   walks the `CoLocatedWith` edges (connected components) and reports each
   cluster of 3+ coordinates that transitively converge within 1 km — the
   graph-structural signal the pairwise geo rules don't surface.
+- **Relation edges in the Web UI + `/relations` endpoint.** New
+  `GET /api/v1/scans/{id}/relations` JSON endpoint; the SPA's D3 force-graph now
+  draws the typed relation edges as distinct dashed links (relation kind shown
+  on hover), alongside the seed-star and correlation links. The attribution
+  graph is now visible in every read path — CLI dossier, JSON, GEXF, and web UI.
 
 ## [1.0.0] — 2026-05-27
 

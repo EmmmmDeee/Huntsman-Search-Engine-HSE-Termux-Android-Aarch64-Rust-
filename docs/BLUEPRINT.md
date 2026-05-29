@@ -322,9 +322,10 @@ deterministic SHA-256 id (so re-scans upsert idempotently), carries the weaker
 endpoint's confidence, and is persisted to the `relations` table via
 `StoragePort` (cascade-deleted with the scan). Edges are retrievable through
 `relations_for_scan` and surfaced in `scan --output json`, the dossier's
-RELATIONS section, and the GEXF export (typed edges labelled by kind for
-Gephi / Cytoscape). Like the correlator it is **deterministic open math** — no
-inference.
+RELATIONS section, the GEXF export (typed edges labelled by kind for Gephi /
+Cytoscape), and the SPA's D3 force-graph (via `GET /api/v1/scans/{id}/relations`,
+drawn as distinct dashed edges with the kind on hover). Like the correlator it
+is **deterministic open math** — no inference.
 
 Alongside the structural edges, the expansion loop records **lineage**
 (`DerivedFrom`) edges: as `run_expansion` dispatches each candidate (built from
@@ -488,10 +489,14 @@ disturbing the invariants above.
 - ✅ **Done (slice 6 — graph cluster rule).** `AU-032 — Geographic co-location
   cluster` walks the `CoLocatedWith` edges (connected components, BFS) and
   reports each cluster of 3+ transitively-converging coordinates.
-- _Remaining:_ (a) The module-coupled semantic edges `resolves_to` (from DNS
-  evidence) and `registered_by` (from WHOIS evidence), parsed from specific
-  evidence attributes. (b) Labelled relation edges in the SPA force-graph
-  (`spa.html`). (c) Further graph rules (e.g. multi-hop reachability) on the
+- ✅ **Done (slice 7 — SPA visualization).** The relation edges now render in
+  the SPA's D3 force-graph as distinct dashed edges (kind shown on hover), fed
+  by a new `GET /api/v1/scans/{id}/relations` endpoint. The graph is now
+  surfaced in every read path (CLI dossier, JSON, GEXF, web UI).
+- _Remaining (optional):_ (a) The module-coupled semantic edges `resolves_to`
+  (from DNS evidence) and `registered_by` (from WHOIS evidence), parsed from
+  specific evidence attributes — the only remaining edge family, and the most
+  fragile. (b) Further graph rules (e.g. multi-hop reachability) on the
   `RELATION_RULES` seam.
 
 **P3 — performance on aarch64**

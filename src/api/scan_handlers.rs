@@ -209,6 +209,18 @@ pub async fn scan_correlations(
     }
 }
 
+/// Typed entity-relation edges for a scan (the attribution graph). Powers the
+/// SPA force-graph's relation layer.
+pub async fn scan_relations(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.relations_for_scan(&id) {
+        Ok(rels) => ok_list("relations", rels),
+        Err(e) => internal_error(&e),
+    }
+}
+
 pub async fn scan_delete(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

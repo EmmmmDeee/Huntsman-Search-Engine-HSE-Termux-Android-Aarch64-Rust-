@@ -124,7 +124,8 @@ jQuery, D3 v3, tablesorter, alertify):
 - **New Scan** — target input + module grid with tooltips + depth/throttle
   controls + use-case presets
 - **Scan Results** — tabbed: Status, Browse (sortable entity table with
-  inline expand), D3 Force Graph (entity relationship visualization),
+  inline expand), D3 Force Graph (entity relationship visualization, incl.
+  typed relation edges — subdomain/lineage/co-location — dashed, kind on hover),
   Correlations (severity-tagged), Event Log (real-time SSE), Info
 - **Settings** — API key management with validation
 - **Dark mode** toggle
