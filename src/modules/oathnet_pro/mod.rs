@@ -661,9 +661,10 @@ fn extract_stealer_entities(
     }
     if let Some(pw) = val_str(item, "password") {
         ev = ev.with_attr("password", &pw);
-        if pw.contains("UPGRADE_TO_SEE") && pw.len() >= 3 {
-            let first = &pw[..1];
-            let last = &pw[pw.len() - 1..];
+        if pw.contains("UPGRADE_TO_SEE") && pw.chars().count() >= 3 {
+            // Char-safe first/last (a password may carry non-ASCII bytes).
+            let first = pw.chars().next().map(|c| c.to_string()).unwrap_or_default();
+            let last = pw.chars().last().map(|c| c.to_string()).unwrap_or_default();
             ev = ev
                 .with_attr("password_hint_first", first)
                 .with_attr("password_hint_last", last)

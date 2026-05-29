@@ -822,12 +822,27 @@ fn generate_username_variants(base: &str) -> Vec<String> {
         variants.push(format!("{lower}2"));
     }
 
-    // Truncation: jdespal → jdespa (off-by-one typos / platform limits)
-    if lower.len() >= 5 {
-        variants.push(lower[..lower.len() - 1].to_string());
+    // Truncation: jdespal → jdespa (off-by-one typos / platform limits).
+    // Drop the final *character* (char-safe — a byte slice would panic on a
+    // trailing multi-byte codepoint).
+    if lower.chars().count() >= 5 {
+        let mut chars = lower.chars();
+        chars.next_back();
+        variants.push(chars.as_str().to_string());
     }
 
     variants
+}
+
+/// Title-case a single word by its leading *codepoint*. Char-safe: byte
+/// slicing (`w[..1]`) panics mid-codepoint on non-ASCII names ("ángel" →
+/// "Ángel"), which would abort the scan in release.
+fn title_case_word(w: &str) -> String {
+    let mut chars = w.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// Extract family members from search results: people who share the
@@ -883,13 +898,7 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
             if !seen.insert(first.to_string()) {
                 continue;
             }
-            let name = format!(
-                "{}{} {}{}",
-                first[..1].to_uppercase(),
-                &first[1..],
-                lastname[..1].to_uppercase(),
-                &lastname[1..]
-            );
+            let name = format!("{} {}", title_case_word(first), title_case_word(&lastname));
             found.push((name, r.url.clone()));
         }
     }
@@ -1317,6 +1326,15 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn title_case_word_is_char_safe() {
+        assert_eq!(title_case_word("jordan"), "Jordan");
+        // Non-ASCII initials must not panic and must title-case correctly.
+        assert_eq!(title_case_word("ángel"), "Ángel");
+        assert_eq!(title_case_word("łukasz"), "Łukasz");
+        assert_eq!(title_case_word(""), "");
+    }
 
     #[test]
     fn accepts_all_supported_kinds() {
