@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (85 modules)
+## Catalogue (86 modules)
 
 ### Network / identity modules (target-driven)
 
@@ -79,7 +79,7 @@ binaries are present.
 | `coordinates` | wigle + overpass + sunrise_sunset + photon + geocode |
 | `address`     | geocode + photon |
 | `mac_address` | wigle + mylnikov |
-| `url`         | proxycurl + web_crawler + wayback |
+| `url`         | proxycurl + web_crawler + wayback + exif_geo + doc_meta |
 | `organisation`| opencorporates + abn_lookup |
 
 Any target also fires the 4 Termux sensor modules (passive; no-op without

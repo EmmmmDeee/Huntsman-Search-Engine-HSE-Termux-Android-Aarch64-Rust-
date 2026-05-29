@@ -1139,6 +1139,74 @@ pub(super) fn rule_au_030_geo_convergence_score(
     )]
 }
 
+/// AU-033 — Shared media origin across sources. A capture/authoring device or
+/// a media author that links **two or more distinct media items** (images via
+/// `exif_geo`, documents via `doc_meta`) is a cross-source attribution
+/// pathway: the same camera body, the same authoring toolchain, or the same
+/// named author appearing across separate files binds those files to a common
+/// origin. Counts distinct `media_url` / `doc_url` evidence attributes on the
+/// (already GREATEST-merged) entity; fires once per shared-origin node.
+/// A serial-keyed device (no `weak-device-link` tag) is High; make/model or
+/// toolchain cohorts are Medium. Deterministic — pure evidence counting.
+pub(super) fn rule_au_033_shared_media_origin(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    const DEVICE_TAGS: &[&str] = &["capture-device", "authoring-tool"];
+    const AUTHOR_TAGS: &[&str] = &["media-author", "doc-author"];
+    let mut out = Vec::new();
+    for e in entities {
+        let has = |tags: &[&str]| e.tags.iter().any(|t| tags.contains(&t.as_str()));
+        let is_device = e.kind == EntityKind::DeviceId && has(DEVICE_TAGS);
+        let is_author = e.kind == EntityKind::Person && has(AUTHOR_TAGS);
+        if !is_device && !is_author {
+            continue;
+        }
+        // Distinct media items this origin fingerprint was seen on.
+        let mut sources: HashSet<&str> = HashSet::new();
+        for ev in &e.evidence {
+            if let Some(u) = ev.attributes.get("media_url") {
+                sources.insert(u.as_str());
+            }
+            if let Some(u) = ev.attributes.get("doc_url") {
+                sources.insert(u.as_str());
+            }
+        }
+        if sources.len() < 2 {
+            continue;
+        }
+        let strong = is_device && !e.tags.iter().any(|t| t == "weak-device-link");
+        let kind_word = if is_device {
+            "capture/authoring device"
+        } else {
+            "media author"
+        };
+        let mut srcs: Vec<&str> = sources.into_iter().collect();
+        srcs.sort_unstable();
+        out.push(Correlation::new(
+            "AU-033",
+            "Shared media origin across sources",
+            if strong {
+                Severity::High
+            } else {
+                Severity::Medium
+            },
+            format!(
+                "{} `{}` links {} distinct media sources: {}",
+                kind_word,
+                e.value,
+                srcs.len(),
+                srcs.join(", ")
+            ),
+            vec![e.uid.clone()],
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
 /// Tags that mark an entity as known-bad for adjacency analysis.
 const ADJACENCY_BAD_TAGS: &[&str] = &["malicious", "threat-intel", "vulnerable"];
 

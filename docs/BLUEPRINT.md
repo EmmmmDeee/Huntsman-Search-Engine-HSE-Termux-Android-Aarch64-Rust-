@@ -13,7 +13,7 @@ mechanism that satisfies it.
 
 HSE is a single-binary, pure-Rust, recursive OSINT/GEOINT platform built to run
 natively inside **Termux on Android (aarch64), no root**. It is a plugin-style
-registry of **85 modules** feeding a module-agnostic `ScanEngine` that merges
+registry of **86 modules** feeding a module-agnostic `ScanEngine` that merges
 their findings into a deterministic entity graph, pivots recursively on
 high-confidence nodes, correlates the result against 32 declarative rules, and
 surfaces everything over a CLI, a localhost HTTP API, and an embedded SPA.
@@ -48,7 +48,7 @@ property regresses.
 | 1 | **Low overhead / memory** | 2 tokio workers; sequential dispatch default; response cache; budget caps; `entity_map` capacity clamp; mmap-tunable SQLite | `main.rs:3`, `lib.rs:26`, `engine.rs:198-199` |
 | 1 | **Single-binary recursive SpiderFoot** | `default-run = "hse"`; embedded SPA; `run_expansion` recursive walk; **a bare `scan` auto-recurses by default** (depth resolved from seed type + keys) | `Cargo.toml:9`; `engine.rs:341`; `cli/scan.rs` |
 | 2 | **Shared data fabric** (instant framework-wide propagation) | per-scan `entity_map` (GREATEST-merge) + SQLite store + `entity_observations` junction + `EventBus` + **key-pool hot-inject** | `engine.rs:623,300-304,358-367` |
-| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 32 rules (incl. **graph-aware AU-031/AU-032** that walk the edges), **and first-class typed `Relation` edges** (structural + expansion lineage + geo co-location + DNS resolution + WHOIS registration); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
+| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 33 rules (incl. **graph-aware AU-031/AU-032** that walk the edges), **and first-class typed `Relation` edges** (structural + expansion lineage + geo co-location + DNS resolution + WHOIS registration); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
 | 2 | **Discovery loops / adaptive pivoting** | `run_expansion`: depth-bounded DFS with ROI saturation-pruning, top-K gating, adaptive-depth termination, 4 expansion strategies | `engine.rs:341-510`, `core/roi.rs`, `core/scan.rs` |
 | 3 | **Code quality / static+dynamic verification** | CI: `fmt --check`, `check --locked`, `clippy -D warnings`, `test --all`, MSRV 1.88, shellcheck | `.github/workflows/ci.yml` |
 | 3 | **Resilience / regression testing** | 1,302 tests green (1217 lib + 37 API + 8 architecture + 40 smoke); per-module timeout; `panic = "abort"` | `tests/`, `engine.rs:752`, `Cargo.toml:64` |
@@ -146,7 +146,7 @@ tree and fails CI on a forbidden `use`.
                    │ Module trait               │ StoragePort trait
                    │ (the only contract)        ▼
    ┌───────────────┴───────────┐   ┌────────────────────────────────┐
-   │  modules/  (85 plugins)    │   │  storage.rs  (SQLite WAL Store) │
+   │  modules/  (86 plugins)    │   │  storage.rs  (SQLite WAL Store) │
    │  • depend on core only     │   │  • implements StoragePort       │
    │  • never import engine/    │   └────────────────────────────────┘
    │    storage                 │
@@ -301,9 +301,11 @@ serialization of the full struct.
 ### 4.4 The correlation layer (`core/correlator/`)
 
 After the last module, `Correlator::run(scan_id)` loads the scan's entities and
-evaluates **32 deterministic rules** (`AU-001` … `AU-032`) — multi-source breach
+evaluates **33 deterministic rules** (`AU-001` … `AU-033`) — multi-source breach
 corroboration, identity clusters (email+username+phone co-location), malicious
-infrastructure, credential/key exposure, address chains, and more. Each firing
+infrastructure, credential/key exposure, address chains, shared media origin
+(`AU-033` — one capture/authoring device or author linking multiple images or
+documents), and more. Each firing
 becomes a `Correlation { rule_id, severity (Low|Medium|High|Critical),
 entity_uids, … }`, persisted and emitted as a `correlation_found` event. **No
 LLM, no fuzzy matching** — every finding is reproducible open math, satisfying
@@ -317,7 +319,7 @@ entity one edge away from a node tagged malicious / threat-intel / vulnerable
 during expansion), and `AU-032 — Geographic co-location cluster` reports each
 connected component of 3+ `CoLocatedWith` coordinates (transitive convergence
 within `CO_LOCATION_KM`) — attribution pathways the flat list can't express. New
-graph rules slot into `RELATION_RULES` without touching the 30 entity rules'
+graph rules slot into `RELATION_RULES` without touching the 31 entity rules'
 signatures.
 
 ### 4.5 The relation layer (`core/relation.rs`)
@@ -514,7 +516,7 @@ disturbing the invariants above.
   pass (`evaluate_relation_rules`); `AU-031 — Adjacency to known-bad
   infrastructure` flags a benign entity one hop from a malicious / threat-intel
   / vulnerable node. New graph rules slot into `RELATION_RULES` without changing
-  the 30 entity rules' signatures.
+  the 31 entity rules' signatures.
 - ✅ **Done (slice 6 — graph cluster rule).** `AU-032 — Geographic co-location
   cluster` walks the `CoLocatedWith` edges (connected components, DFS) and
   reports each cluster of 3+ transitively-converging coordinates.

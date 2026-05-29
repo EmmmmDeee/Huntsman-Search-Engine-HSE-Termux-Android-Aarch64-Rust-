@@ -1,32 +1,31 @@
-//! EXIF-based geolocation from image URLs.
+//! Image metadata intelligence from image URLs — GPS, capture device, author.
 //!
-//! Closes a gap surfaced by the geolocation gap analysis: image URLs
-//! discovered by `search_engines`, `web_crawler`, social profile
-//! modules, and breach corpora often embed GPS coordinates in their
-//! EXIF metadata, but no module was extracting them.
+//! Image URLs discovered by `search_engines`, `web_crawler`, social-profile
+//! modules, and breach corpora frequently embed rich metadata. This module
+//! harvests three intelligence products from one in-memory fetch:
+//!   - **`Coordinates`** — GPS fix (the geolocation pipeline's strongest lead).
+//!   - **`DeviceId`** — the capture device (make/model, serial-keyed when
+//!     present), so the same camera across photos links as one graph node.
+//!   - **`Person`** — the camera owner / artist when embedded.
 //!
-//! Workflow when a `Url` target arrives:
-//!   1. Skip non-image URLs by file extension (`.jpg`, `.jpeg`,
-//!      `.png`, `.tif`, `.tiff`, `.webp`, `.heic`).
-//!   2. Fetch the bytes via `ctx.http` (capped at 8 MB so a
-//!      misclassified video URL doesn't drain memory).
-//!   3. Parse with `kamadak-exif`. Returns `None` if no EXIF tags or
-//!      the image is metadata-stripped (the typical case after
-//!      most social platforms re-encode).
-//!   4. Pull `GPSLatitude` / `GPSLongitude` / `GPSLatitudeRef` /
-//!      `GPSLongitudeRef` from the GPS IFD; emit a `Coordinates`
-//!      entity tagged `exif`.
-//!   5. Surface camera Make + Model + timestamp as evidence
-//!      attributes so the operator can correlate the image source
-//!      and shoot time downstream.
+//! Workflow when an image `Url` target arrives:
+//!   1. Skip non-image URLs by extension (`.jpg`/`.jpeg`/`.heic`/`.tiff`/…).
+//!   2. Range-fetch the leading bytes via `ctx.http` (capped at 8 MB).
+//!   3. Parse **EXIF** (`kamadak-exif`) *and* the **XMP** packet
+//!      (`util::metadata`) — complementary, since platforms often strip one
+//!      but pass the other. EXIF wins where they overlap; XMP backfills GPS,
+//!      make/model, serial, creator-tool, and `dc:creator`.
+//!   4. Emit the entities above, each carrying a `media_url` evidence
+//!      attribute so the AU-033 correlator can cluster shared origins.
 //!
-//! Privacy: most chat apps (WhatsApp, Signal, Telegram, iOS
-//! Messages, Instagram) strip EXIF on send, so URLs to those
-//! sources usually return empty. Photos hosted on personal
-//! websites, archive sites, and old social-platform uploads
-//! frequently retain GPS. Confidence is set conservatively (0.80)
-//! because EXIF GPS can be wrong by ±50 m on the originating
-//! device but is otherwise authoritative.
+//! In-memory only: the fetched image is parsed and dropped — **never written
+//! to disk** (privacy + storage constraint on Termux).
+//!
+//! Privacy/coverage: most chat apps (WhatsApp, Signal, Telegram, iOS Messages,
+//! Instagram) strip metadata on send; photos on personal sites, archives, and
+//! older uploads often retain it. GPS confidence is 0.80 (±50 m on-device);
+//! a make/model-only device key is a weak cohort signal (tagged
+//! `weak-device-link`), a serial-keyed one is strong.
 
 use async_trait::async_trait;
 use exif::{In, Reader, Tag, Value};
@@ -37,6 +36,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::metadata::parse_image_xmp;
 
 const SRC: &str = "exif_geo";
 
@@ -64,7 +64,7 @@ impl Module for ExifGeo {
     }
 
     fn description(&self) -> &'static str {
-        "Extract GPS coordinates + camera metadata from image URLs via EXIF parsing"
+        "Harvest GPS, capture device, and author from image EXIF + XMP metadata"
     }
 
     fn priority(&self) -> u8 {
@@ -81,12 +81,24 @@ impl Module for ExifGeo {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Coordinates,
+            EntityKind::DeviceId,
+            EntityKind::Person,
+        ];
         KINDS
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Url) && looks_like_image_url(&t.value)
+        // Kind-only gate so the probe-derived dispatch index includes `Url`
+        // (a value-shaped check here would yield an empty `consumes()` and the
+        // module would never be dispatched). The image-extension filter runs
+        // in `process()` below.
+        matches!(t.kind, TargetKind::Url)
+    }
+
+    fn consumes(&self) -> Vec<TargetKind> {
+        vec![TargetKind::Url]
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -98,14 +110,15 @@ impl Module for ExifGeo {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let url = target.value.trim();
-        if url.is_empty() {
+        // Value-shape gate (moved out of `accepts()`): only fetch URLs whose
+        // path looks like an image we can read EXIF/XMP from.
+        if url.is_empty() || !looks_like_image_url(url) {
             return Ok(result);
         }
 
-        // Range-limit the download. We don't need the whole image to
-        // parse EXIF — the metadata sits in the first few KB of a
-        // JPEG. Setting the Range header makes the polite-side of
-        // the trade visible to upstream servers.
+        // In-memory only: range-fetch the leading bytes (metadata lives near
+        // the head of a JPEG/HEIC), parse, then drop. The image is NEVER
+        // written to disk — a privacy + storage constraint on Termux.
         let resp = match ctx
             .http
             .get(url)
@@ -119,13 +132,6 @@ impl Module for ExifGeo {
         if !resp.status().is_success() && resp.status().as_u16() != 206 {
             return Ok(result);
         }
-
-        // bytes_stream + manual byte-accumulation would let us bail
-        // earlier on oversize; reqwest's `.bytes()` already caps at
-        // the response's content-length, and the Range header above
-        // bounded the server response. Trade clarity for control
-        // here — a deliberately misbehaving server can still send
-        // 8 MB; that's the worst case.
         let bytes = match resp.bytes().await {
             Ok(b) => b,
             Err(_) => return Ok(result),
@@ -134,49 +140,115 @@ impl Module for ExifGeo {
             return Ok(result);
         }
 
-        let mut cursor = std::io::Cursor::new(bytes.as_ref());
-        let exif = match Reader::new().read_from_container(&mut cursor) {
-            Ok(e) => e,
-            Err(_) => return Ok(result),
+        // EXIF (binary IFD) and XMP (text packet) are complementary: many
+        // platforms strip one but pass the other through, so we read both and
+        // prefer EXIF where they overlap.
+        let exif = {
+            let mut cursor = std::io::Cursor::new(bytes.as_ref());
+            Reader::new().read_from_container(&mut cursor).ok()
         };
+        let xmp = parse_image_xmp(&bytes);
 
-        let Some((lat, lon)) = extract_gps(&exif) else {
-            return Ok(result);
-        };
+        let ex = |tag: Tag| exif.as_ref().and_then(|x| read_str(x, tag));
 
-        // EXIF GPS is empirically reliable to ~10–50 m on the source
-        // device. Set base confidence at 0.80 — meaningfully above
-        // single-source IP-geo (now 0.55–0.60 post-recalibration)
-        // but below WiGLE WiFi consensus (0.85) which has multiple
-        // observers.
-        let coord_str = format!("{lat:.6},{lon:.6}");
-        let mut e = Entity::new(EntityKind::Coordinates, &coord_str, 0.80, &ctx.scan_id);
-        e.tag("geoint");
-        e.tag("exif");
-        e.tag("photo-derived");
-
-        let mut ev = Evidence::new(SRC, format!("EXIF GPS extracted from {url}"))
-            .with_attr("url", url)
-            .with_attr("latitude", lat.to_string())
-            .with_attr("longitude", lon.to_string());
-
-        // Camera Make / Model / DateTime — useful operator context.
-        if let Some(make) = read_str(&exif, Tag::Make) {
-            ev = ev.with_attr("camera_make", make);
-        }
-        if let Some(model) = read_str(&exif, Tag::Model) {
-            ev = ev.with_attr("camera_model", model);
-        }
-        if let Some(dt) = read_str(&exif, Tag::DateTimeOriginal) {
-            ev = ev.with_attr("shot_time", dt);
-        } else if let Some(dt) = read_str(&exif, Tag::DateTime) {
-            ev = ev.with_attr("shot_time", dt);
+        // ── GPS → Coordinates (EXIF preferred, XMP fallback) ──
+        if let Some((lat, lon)) = exif.as_ref().and_then(extract_gps).or(xmp.gps) {
+            // EXIF/XMP GPS is empirically reliable to ~10–50 m on the source
+            // device — base confidence 0.80, above single-source IP-geo, below
+            // WiGLE multi-observer consensus (0.85).
+            let coord_str = format!("{lat:.6},{lon:.6}");
+            let mut e = Entity::new(EntityKind::Coordinates, &coord_str, 0.80, &ctx.scan_id);
+            e.tag("geoint");
+            e.tag("exif");
+            e.tag("photo-derived");
+            e.add_evidence(
+                Evidence::new(SRC, format!("photo GPS extracted from {url}"))
+                    .with_attr("media_url", url)
+                    .with_attr("latitude", lat.to_string())
+                    .with_attr("longitude", lon.to_string()),
+            );
+            result.push(e);
         }
 
-        e.add_evidence(ev);
-        result.push(e);
+        // Field harvest — EXIF first, XMP fallback.
+        let make = ex(Tag::Make).or(xmp.make);
+        let model = ex(Tag::Model).or(xmp.model);
+        let serial = ex(Tag::BodySerialNumber).or(xmp.serial);
+        let software = ex(Tag::Software).or(xmp.creator_tool);
+        let owner = ex(Tag::CameraOwnerName)
+            .or_else(|| ex(Tag::Artist))
+            .or(xmp.creator);
+        let shot_time = ex(Tag::DateTimeOriginal).or_else(|| ex(Tag::DateTime));
+
+        // ── Camera → DeviceId (the device-linking node) ──
+        if let Some(key) = device_key(make.as_deref(), model.as_deref(), serial.as_deref()) {
+            // A serial pins one physical body (strong link); make+model alone
+            // is only a cohort signal (weak).
+            let strong = serial.as_deref().is_some_and(|s| !s.trim().is_empty());
+            let mut e = Entity::new(
+                EntityKind::DeviceId,
+                &key,
+                if strong { 0.75 } else { 0.50 },
+                &ctx.scan_id,
+            );
+            e.tag("capture-device");
+            e.tag("exif");
+            if !strong {
+                e.tag("weak-device-link");
+            }
+            let mut ev =
+                Evidence::new(SRC, format!("capture device for {url}")).with_attr("media_url", url);
+            for (k, v) in [
+                ("make", &make),
+                ("model", &model),
+                ("serial", &serial),
+                ("software", &software),
+                ("shot_time", &shot_time),
+            ] {
+                if let Some(val) = v.as_deref().filter(|s| !s.trim().is_empty()) {
+                    ev = ev.with_attr(k, val);
+                }
+            }
+            e.add_evidence(ev);
+            result.push(e);
+        }
+
+        // ── Owner / artist → Person ──
+        if let Some(person) = owner.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let mut e = Entity::new(EntityKind::Person, person, 0.70, &ctx.scan_id);
+            e.tag("media-author");
+            e.tag("photo-derived");
+            e.add_evidence(
+                Evidence::new(SRC, format!("image author/owner from {url}"))
+                    .with_attr("media_url", url),
+            );
+            result.push(e);
+        }
+
         Ok(result)
     }
+}
+
+/// Build a normalised capture-device key from make / model / serial. Returns
+/// `None` when both make and model are blank. Models usually already include
+/// the make (`"Canon EOS 5D"`), so we avoid a doubled `"Canon Canon EOS 5D"`.
+/// A serial appends `#<serial>`, pinning one physical body.
+fn device_key(make: Option<&str>, model: Option<&str>, serial: Option<&str>) -> Option<String> {
+    let mk = make.unwrap_or("").trim();
+    let md = model.unwrap_or("").trim();
+    let base = if !mk.is_empty() && md.to_lowercase().starts_with(&mk.to_lowercase()) {
+        md.to_string()
+    } else {
+        format!("{mk} {md}")
+    };
+    let base = base.trim();
+    if base.is_empty() {
+        return None;
+    }
+    Some(match serial.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => format!("{base} #{s}"),
+        None => base.to_string(),
+    })
 }
 
 /// True if the URL ends (case-insensitive) with one of the
@@ -274,44 +346,28 @@ fn read_str(exif: &exif::Exif, tag: Tag) -> Option<String> {
 mod tests {
     use super::*;
 
-    // ── accepts() URL classifier ────────────────────────────────
+    // ── accepts() is kind-only (Url); image filter lives in process() ──
 
     #[test]
-    fn accepts_only_image_urls() {
+    fn accepts_url_kind_regardless_of_extension() {
+        // Kind-only gate so the dispatch index includes Url. The
+        // image-extension filter is applied in process(), not accepts().
         let m = ExifGeo;
-        let yes = [
+        for u in [
             "https://example.com/photo.jpg",
-            "https://x.com/img.JPEG",
-            "https://cdn.x.com/path/to/file.heic",
-            "https://example.com/a/b/c.tiff?w=1024",
-            "https://example.com/x.webp#frag",
-        ];
-        for u in yes {
-            assert!(
-                m.accepts(&Target::new(TargetKind::Url, u)),
-                "expected to accept {u}"
-            );
-        }
-        let no = [
-            "https://example.com/page.html",
-            "https://example.com/doc.pdf",
-            "https://example.com/video.mp4",
+            "https://example.com/page.html", // non-image Url still accepted at the kind gate
             "https://example.com/no-extension",
-            "https://example.com/img.png", // PNGs rarely carry EXIF
-            "",
-        ];
-        for u in no {
-            assert!(
-                !m.accepts(&Target::new(TargetKind::Url, u)),
-                "expected to reject {u}"
-            );
+        ] {
+            assert!(m.accepts(&Target::new(TargetKind::Url, u)), "accept {u}");
         }
+        // consumes() must surface Url so the engine builds the dispatch index.
+        assert_eq!(m.consumes(), vec![TargetKind::Url]);
     }
 
     #[test]
-    fn rejects_non_url_kinds_even_with_image_extension() {
+    fn rejects_non_url_kinds() {
         let m = ExifGeo;
-        // Email values shaped like an image URL must NOT route here.
+        // Even image-shaped values of a non-Url kind must NOT route here.
         assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.jpg")));
         assert!(!m.accepts(&Target::new(TargetKind::Domain, "x.jpg")));
     }
@@ -340,8 +396,39 @@ mod tests {
     }
 
     #[test]
-    fn produces_coordinates_only() {
-        assert_eq!(ExifGeo.produces(), &[EntityKind::Coordinates]);
+    fn produces_coordinates_device_and_person() {
+        assert_eq!(
+            ExifGeo.produces(),
+            &[
+                EntityKind::Coordinates,
+                EntityKind::DeviceId,
+                EntityKind::Person
+            ]
+        );
+    }
+
+    // ── device_key ──────────────────────────────────────────────
+
+    #[test]
+    fn device_key_dedups_make_prefix_and_appends_serial() {
+        // Model already carries the make → no "Canon Canon".
+        assert_eq!(
+            device_key(Some("Canon"), Some("Canon EOS 5D"), None).as_deref(),
+            Some("Canon EOS 5D")
+        );
+        // Distinct make + model.
+        assert_eq!(
+            device_key(Some("Apple"), Some("iPhone 14"), None).as_deref(),
+            Some("Apple iPhone 14")
+        );
+        // Serial pins one body.
+        assert_eq!(
+            device_key(Some("Nikon"), Some("D850"), Some("301234")).as_deref(),
+            Some("Nikon D850 #301234")
+        );
+        // Nothing usable.
+        assert_eq!(device_key(None, None, None), None);
+        assert_eq!(device_key(Some("  "), Some(""), Some(" ")), None);
     }
 
     #[test]

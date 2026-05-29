@@ -157,6 +157,7 @@ const RULES: &[RuleFn] = &[
     rule_au_028_subdomain_takeover_risk,
     rule_au_029_cloud_storage_exposure,
     rule_au_030_geo_convergence_score,
+    rule_au_033_shared_media_origin,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -853,5 +854,85 @@ mod tests {
             ),
         ];
         assert!(rule_au_032_colocation_cluster(&[a, b, c], &rels, "s", 0).is_empty());
+    }
+
+    // ── AU-033 (shared media origin) ────────────────────────────────────
+
+    /// Build a merged capture-device entity seen across `urls` (mirrors what
+    /// the engine's GREATEST-merge produces from `exif_geo` across N images).
+    fn device_seen_on(value: &str, weak: bool, urls: &[&str]) -> Entity {
+        let mut e = Entity::new(EntityKind::DeviceId, value, 0.75, "s");
+        e.tag("capture-device");
+        if weak {
+            e.tag("weak-device-link");
+        }
+        for u in urls {
+            e.add_evidence(Evidence::new("exif_geo", "capture device").with_attr("media_url", *u));
+        }
+        e
+    }
+
+    #[test]
+    fn au033_fires_when_device_links_two_sources() {
+        let e = device_seen_on(
+            "nikon d850 #301234",
+            false,
+            &["https://a.com/1.jpg", "https://b.com/2.jpg"],
+        );
+        let r = rule_au_033_shared_media_origin(&[e], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-033");
+        // Serial-keyed (no weak tag) → High.
+        assert_eq!(r[0].severity, Severity::High);
+        assert!(r[0].description.contains("2 distinct media sources"));
+    }
+
+    #[test]
+    fn au033_weak_device_is_medium() {
+        let e = device_seen_on(
+            "apple iphone 14",
+            true,
+            &["https://a.com/1.jpg", "https://b.com/2.jpg"],
+        );
+        let r = rule_au_033_shared_media_origin(&[e], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].severity, Severity::Medium);
+    }
+
+    #[test]
+    fn au033_no_fire_on_single_source() {
+        let e = device_seen_on("nikon d850 #301234", false, &["https://a.com/1.jpg"]);
+        assert!(rule_au_033_shared_media_origin(&[e], "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au033_counts_distinct_urls_not_evidence_count() {
+        // Same URL twice must NOT count as two sources.
+        let e = device_seen_on(
+            "nikon d850 #301234",
+            false,
+            &["https://a.com/1.jpg", "https://a.com/1.jpg"],
+        );
+        assert!(rule_au_033_shared_media_origin(&[e], "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au033_links_document_author_across_pdfs() {
+        let mut e = Entity::new(EntityKind::Person, "Bob Smith", 0.7, "s");
+        e.tag("doc-author");
+        e.add_evidence(Evidence::new("doc_meta", "author").with_attr("doc_url", "https://x/a.pdf"));
+        e.add_evidence(Evidence::new("doc_meta", "author").with_attr("doc_url", "https://x/b.pdf"));
+        let r = rule_au_033_shared_media_origin(&[e], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].severity, Severity::Medium); // author, not a device
+        assert!(r[0].description.contains("media author"));
+    }
+
+    #[test]
+    fn au033_ignores_unrelated_entities() {
+        let mut e = Entity::new(EntityKind::DeviceId, "some-mac", 0.7, "s");
+        e.tag("local-interface"); // not a capture/authoring device
+        e.add_evidence(Evidence::new("local_net", "iface").with_attr("media_url", "https://a/1"));
+        assert!(rule_au_033_shared_media_origin(&[e], "s", 0).is_empty());
     }
 }

@@ -22,6 +22,7 @@ pub mod device_sensors;
 pub mod disposable_check;
 pub mod dns_axfr;
 pub mod dns_intel;
+pub mod doc_meta;
 pub mod doh_resolver;
 pub mod domainsdb;
 pub mod email_header_geo;
@@ -168,6 +169,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(mylnikov::Mylnikov),
         Arc::new(mls::Mls),
         Arc::new(exif_geo::ExifGeo),
+        Arc::new(doc_meta::DocMeta),
         Arc::new(overpass::Overpass),
         Arc::new(sunrise_sunset::SunriseSunset),
         // Geolocation enrichment (passive, zero-API)

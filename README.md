@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-Pure-Rust OSINT / GEOINT platform with **85 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **86 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 SpiderFoot-style Web UI, zero native dependencies.
 
@@ -50,7 +50,7 @@ for all install paths and Termux quirks.
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 85 modules
+hse modules                                                 # list all 86 modules
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
 hse scan --kind domain --value example.com --depth 2        # domain recon
 hse scan --kind email --value user@example.com --free-only  # email pivot (free only)
@@ -89,7 +89,7 @@ the seed type (pass `--depth 0` for a single round).
 
 ---
 
-## Module Overview (85 modules)
+## Module Overview (86 modules)
 
 **API-Free (no keys required):**
 - **Search engines** (13 engines): Yahoo, Bing, AOL, DuckDuckGo, Google,
@@ -108,6 +108,9 @@ the seed type (pass `--depth 0` for a single round).
   `mylnikov` (BSSID geolocation)
 - **Threat intel**: `alienvault_otx`, `threatfox`, `urlhaus`
 - **Web analysis**: `web_crawler`, `webserver_banner`, `search_engines`
+- **Media/document metadata**: `exif_geo` (image EXIF + XMP → GPS, capture
+  device, author), `doc_meta` (PDF author + authoring toolchain) — in-memory
+  only, never written to disk; cross-linked by correlator rule AU-033
 - **Phone**: `phone_intl` (offline, 175 country prefixes)
 - **Corporate**: `opencorporates` (AU jurisdiction focus)
 - **Termux sensors**: `gps_fix`, `wifi_scan`, `wifi_connect`, `arp_scan`,
@@ -205,8 +208,8 @@ pin a fixed depth, or `--recursive` for an aggressive deep sweep.
   co-location / DNS resolution / WHOIS registration edges, surfaced in the CLI
   dossier, `--output json`, GEXF export, the SPA D3 force-graph, and
   `GET /api/v1/scans/{id}/relations`
-- 1,290+ tests (unit + API integration + architecture boundary enforcement)
-- 32 correlator rules (AU-001 through AU-032), incl. 2 graph-aware edge rules
+- 1,300+ tests (unit + API integration + architecture boundary enforcement)
+- 33 correlator rules (AU-001 through AU-033), incl. 2 graph-aware edge rules
 - Always-on, secret-redacted debug log (`$HOME/.huntsman/logs/hse.log`) +
   live Web-UI **Logs** stream; `hse doctor --bundle` for one-paste diagnosis
 - 2 tokio worker threads (tuned for Termux low-power devices)

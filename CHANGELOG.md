@@ -10,6 +10,30 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **Image + document metadata harvesting with cross-correlation.** `exif_geo`
+  now reads both **EXIF and the XMP packet** (complementary — platforms often
+  strip one but pass the other) and emits, beyond GPS `Coordinates`, a camera
+  **`DeviceId`** (serial-keyed when present, else a weak make/model cohort) and
+  an owner/artist **`Person`**. New **`doc_meta`** module parses **PDF**
+  `/Info` + XMP (dependency-free byte-scan — no PDF/zip crate) into author
+  `Person` and authoring-toolchain `DeviceId`. New correlator rule **AU-033 —
+  Shared media origin across sources** fires when one capture/authoring device
+  or author links 2+ distinct images/documents (the FOCA-style cross-source
+  attribution pivot). Parsers are pure/in-memory: **fetched media is parsed and
+  dropped, never written to disk**. Registry 85→86 modules; correlator 32→33
+  rules (31 entity + 2 graph-aware).
+
+### Fixed
+
+- **`exif_geo` was never dispatched.** Its `accepts()` carried a value-shaped
+  check (`looks_like_image_url`), so the probe-derived `consumes()` was empty
+  and the module never entered the engine's dispatch index — a silent
+  no-coverage bug since it shipped. `accepts()` is now a kind-only `Url` gate
+  with an explicit `consumes()`, and the extension filter runs in `process()`
+  (the established pattern). `doc_meta` follows the same contract.
+
 ### Changed
 
 - **Intelligent defaults — scan auto-recurses out of the box.** A bare
