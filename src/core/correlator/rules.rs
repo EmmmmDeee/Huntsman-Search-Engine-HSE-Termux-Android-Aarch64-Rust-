@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use super::{Correlation, Severity};
 use crate::core::entity::{Entity, EntityKind};
+use crate::core::relation::Relation;
 
 fn entities_of_kind(entities: &[Entity], kind: EntityKind) -> Vec<&Entity> {
     entities.iter().filter(|e| e.kind == kind).collect()
@@ -1136,4 +1137,59 @@ pub(super) fn rule_au_030_geo_convergence_score(
         scan_id,
         ts,
     )]
+}
+
+/// Tags that mark an entity as known-bad for adjacency analysis.
+const ADJACENCY_BAD_TAGS: &[&str] = &["malicious", "threat-intel", "vulnerable"];
+
+/// AU-031 — Malicious adjacency (graph-aware). Surfaces a *benign* entity that
+/// is one relation-edge away from a known-bad entity (tagged malicious /
+/// threat-intel / vulnerable). This is the attribution pathway the flat entity
+/// list can't show: a subdomain of a malicious apex, an entity derived from a
+/// flagged node during expansion, or coordinates co-located with bad infra.
+///
+/// Fires once per benign↔bad edge (exactly one endpoint bad — edges between two
+/// already-flagged nodes are left to AU-004/AU-008/AU-015). Deterministic.
+pub(super) fn rule_au_031_malicious_adjacency(
+    entities: &[Entity],
+    relations: &[Relation],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::HashMap;
+
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let bad_reason = |e: &Entity| -> Option<&'static str> {
+        ADJACENCY_BAD_TAGS.iter().copied().find(|t| e.has_tag(t))
+    };
+
+    let mut out = Vec::new();
+    for r in relations {
+        let (Some(&from), Some(&to)) = (
+            by_uid.get(r.from_uid.as_str()),
+            by_uid.get(r.to_uid.as_str()),
+        ) else {
+            continue;
+        };
+        // Exactly one endpoint flagged → the other is "adjacent to bad".
+        // Edges between two already-flagged nodes are left to AU-004/008/015.
+        let (benign, bad, reason) = match (bad_reason(from), bad_reason(to)) {
+            (None, Some(reason)) => (from, to, reason),
+            (Some(reason), None) => (to, from, reason),
+            _ => continue,
+        };
+        out.push(Correlation::new(
+            "AU-031",
+            "Adjacency to known-bad infrastructure",
+            Severity::High,
+            format!(
+                "{} ({}) is {} flagged-{} {} ({})",
+                benign.value, benign.kind, r.kind, reason, bad.value, bad.kind
+            ),
+            vec![benign.uid.clone(), bad.uid.clone()],
+            scan_id,
+            ts,
+        ));
+    }
+    out
 }

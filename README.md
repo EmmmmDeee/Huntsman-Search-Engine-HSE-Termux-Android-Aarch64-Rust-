@@ -189,7 +189,7 @@ Round 2: Discovered IPs → geo modules → coordinates → address.
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 700+ tests (unit + API integration + architecture boundary enforcement)
-- 30 correlator rules (AU-001 through AU-030)
+- 31 correlator rules (AU-001 through AU-031), incl. a graph-aware adjacency rule
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 

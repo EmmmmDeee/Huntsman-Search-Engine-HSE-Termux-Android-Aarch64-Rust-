@@ -1617,3 +1617,62 @@ async fn expansion_records_derived_from_lineage() {
         "expected a Username -> Phone DerivedFrom edge, got: {lineage:?}"
     );
 }
+
+/// Emits a malicious apex domain + a benign subdomain. The structural
+/// `SubdomainOf` edge between them should drive the graph-aware AU-031 rule.
+struct MaliciousDomainModule;
+
+#[async_trait]
+impl Module for MaliciousDomainModule {
+    fn name(&self) -> &'static str {
+        "synth_mal_domain"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Domain)
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        // Use a .com domain: the preflight gate rejects reserved TLDs like
+        // .example/.test, which would skip this module before it runs.
+        let mut apex = Entity::new(EntityKind::Domain, "evilcorp.com", 0.9, &ctx.scan_id);
+        apex.tag("malicious");
+        r.push(apex);
+        r.push(Entity::new(
+            EntityKind::Domain,
+            "blog.evilcorp.com",
+            0.8,
+            &ctx.scan_id,
+        ));
+        Ok(r)
+    }
+}
+
+/// End-to-end: a benign subdomain of a malicious apex must surface AU-031
+/// (adjacency to known-bad) through the engine → relations → correlator chain —
+/// a finding the flat entity list / tag-only rules can't produce.
+#[tokio::test]
+async fn correlator_surfaces_malicious_adjacency_via_relations() {
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(MaliciousDomainModule)],
+        "rel-au031",
+        TargetKind::Domain,
+        "evilcorp.com",
+    );
+    let scan = Scan::new(sid.clone(), target.clone());
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let correlations = store.correlations_for_scan(&sid).unwrap();
+    let au031: Vec<_> = correlations
+        .iter()
+        .filter(|c| c.rule_id == "AU-031")
+        .collect();
+    assert_eq!(
+        au031.len(),
+        1,
+        "AU-031 should fire for the benign subdomain, got: {correlations:?}"
+    );
+    assert!(au031[0].description.contains("blog.evilcorp.com"));
+}

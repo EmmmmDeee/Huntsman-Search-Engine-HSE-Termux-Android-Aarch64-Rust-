@@ -48,7 +48,7 @@ property regresses.
 | 1 | **Low overhead / memory** | 2 tokio workers; sequential dispatch default; response cache; budget caps; `entity_map` capacity clamp; mmap-tunable SQLite | `main.rs:3`, `lib.rs:26`, `engine.rs:198-199` |
 | 1 | **Single-binary recursive SpiderFoot** | `default-run = "hse"`; embedded SPA; `run_expansion` recursive walk | `Cargo.toml:9`; `engine.rs:341` |
 | 2 | **Shared data fabric** (instant framework-wide propagation) | per-scan `entity_map` (GREATEST-merge) + SQLite store + `entity_observations` junction + `EventBus` + **key-pool hot-inject** | `engine.rs:623,300-304,358-367` |
-| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 30 entity-linking rules, **and first-class typed `Relation` edges** (structural + expansion lineage + geo co-location); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
+| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 31 rules (incl. the **graph-aware AU-031** that walks the edges), **and first-class typed `Relation` edges** (structural + expansion lineage + geo co-location); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
 | 2 | **Discovery loops / adaptive pivoting** | `run_expansion`: depth-bounded DFS with ROI saturation-pruning, top-K gating, adaptive-depth termination, 4 expansion strategies | `engine.rs:341-510`, `core/roi.rs`, `core/scan.rs` |
 | 3 | **Code quality / static+dynamic verification** | CI: `fmt --check`, `check --locked`, `clippy -D warnings`, `test --all`, MSRV 1.88, shellcheck | `.github/workflows/ci.yml` |
 | 3 | **Resilience / regression testing** | 1,254 tests green (1173 lib + 36 API + 8 architecture + 37 smoke); per-module timeout; `panic = "abort"` | `tests/`, `engine.rs:752`, `Cargo.toml:64` |
@@ -290,13 +290,22 @@ serialization of the full struct.
 ### 4.4 The correlation layer (`core/correlator/`)
 
 After the last module, `Correlator::run(scan_id)` loads the scan's entities and
-evaluates **30 deterministic rules** (`AU-001` … `AU-030`) — multi-source breach
+evaluates **31 deterministic rules** (`AU-001` … `AU-031`) — multi-source breach
 corroboration, identity clusters (email+username+phone co-location), malicious
 infrastructure, credential/key exposure, address chains, and more. Each firing
 becomes a `Correlation { rule_id, severity (Low|Medium|High|Critical),
 entity_uids, … }`, persisted and emitted as a `correlation_found` event. **No
 LLM, no fuzzy matching** — every finding is reproducible open math, satisfying
 the "deterministic execution" hardening constraint.
+
+Most rules read only the flat entity list. A separate **graph-aware pass**
+(`evaluate_relation_rules`) additionally loads `relations_for_scan` and walks the
+typed edge set: `AU-031 — Adjacency to known-bad infrastructure` flags a benign
+entity one edge away from a node tagged malicious / threat-intel / vulnerable
+(e.g. a subdomain of a malicious apex, or an entity derived from a flagged node
+during expansion) — an attribution pathway the flat list can't express. New
+graph rules slot into `RELATION_RULES` without touching the 30 entity rules'
+signatures.
 
 ### 4.5 The relation layer (`core/relation.rs`)
 
@@ -469,10 +478,16 @@ disturbing the invariants above.
   `util::geohash` Haversine distance — self-contained deterministic geo math,
   no module coupling. One canonically-directed edge per close pair; persisted
   with the other edges and exported to GEXF.
+- ✅ **Done (slice 5 — consume the graph).** The correlator now has a
+  graph-aware pass (`evaluate_relation_rules`); `AU-031 — Adjacency to known-bad
+  infrastructure` walks the edge set to flag a benign entity one hop from a
+  malicious / threat-intel / vulnerable node. New graph rules slot into
+  `RELATION_RULES` without changing the 30 entity rules' signatures.
 - _Remaining:_ (a) The module-coupled semantic edges `resolves_to` (from DNS
   evidence) and `registered_by` (from WHOIS evidence), parsed from specific
-  evidence attributes. (b) Path-based correlator rules over the edge set, and
-  labelled edges in the SPA force-graph (`spa.html`).
+  evidence attributes. (b) Labelled relation edges in the SPA force-graph
+  (`spa.html`). (c) More graph rules (e.g. multi-hop reachability, co-location
+  clusters) on the `RELATION_RULES` seam now that it exists.
 
 **P3 — performance on aarch64**
 - ✅ **Done.** `finalise_scan` now persists the scan's entities through

@@ -60,6 +60,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   Self-contained deterministic geo math (no module coupling); one
   canonically-directed edge per close pair, persisted with the other relations
   and exported to GEXF.
+- **Graph-aware correlator rule (AU-031).** The correlator now runs a separate
+  pass over the typed relation edges. `AU-031 — Adjacency to known-bad
+  infrastructure` flags a benign entity one edge away from a node tagged
+  malicious / threat-intel / vulnerable (e.g. a subdomain of a malicious apex,
+  or an entity derived from a flagged node) — a finding the flat entity list
+  and tag-only rules can't produce. New graph rules slot into `RELATION_RULES`
+  without changing the 30 entity rules.
 
 ## [1.0.0] — 2026-05-27
 
