@@ -1204,6 +1204,28 @@ fn module_skip_reason(
     if opts.passive_only && !module.is_passive() {
         return Some("not passive");
     }
+    // Local-sensor modules surface the OPERATOR's own machine / LAN (ARP
+    // table, interfaces, Wi-Fi APs, cell towers) — output that is independent
+    // of the target. On a remote-identity seed (person / email / username /
+    // domain / …) they inject the analyst's own network as false intel about
+    // the subject (the recurring `192.0.2.1` TEST-NET + `02:fc:…` MAC noise,
+    // which also mis-fires the threat-intel rules). They are meaningful only
+    // for a deliberate local-recon seed (coordinates / MAC) or when the
+    // operator explicitly opts in via the allowlist. Gate them accordingly —
+    // on both seed and expansion rounds.
+    if module.is_passive() && LOCAL_PASSIVE_MODULES.contains(&name) {
+        let explicitly_requested = opts
+            .modules
+            .as_ref()
+            .is_some_and(|a| a.iter().any(|n| n == name));
+        let local_seed = matches!(
+            target.kind,
+            TargetKind::Coordinates | TargetKind::MacAddress
+        );
+        if !explicitly_requested && !local_seed {
+            return Some("local sensor (irrelevant to remote-identity seed)");
+        }
+    }
     if is_expansion && module.is_passive() && LOCAL_PASSIVE_MODULES.contains(&name) {
         return Some("sensor (already ran on seed round)");
     }
@@ -1680,8 +1702,37 @@ mod tests {
             passive: true,
         };
         let private = Target::new(TargetKind::IpAddress, "192.168.1.1");
-        let opts = ScanOptions::default();
+        // Explicitly opt the sensor in — otherwise the remote-identity gate
+        // skips it before the preflight is even reached. With it requested,
+        // the private-IP preflight bypass is what we're asserting here.
+        let opts = ScanOptions {
+            modules: Some(vec!["local_net".into()]),
+            ..Default::default()
+        };
         assert!(module_skip_reason(&m, &private, &opts, false).is_none());
+    }
+
+    #[test]
+    fn skip_reason_gates_local_sensor_on_remote_identity_seed() {
+        // A local sensor must NOT run on a remote-identity seed by default —
+        // it would inject the operator's own LAN as false intel.
+        let m = StubModule {
+            name: "local_net",
+            cost: ModuleCost::Free,
+            passive: true,
+        };
+        let opts = ScanOptions::default();
+        for kind in [TargetKind::FullName, TargetKind::Email, TargetKind::Domain] {
+            let t = Target::new(kind, "subject");
+            assert_eq!(
+                module_skip_reason(&m, &t, &opts, false),
+                Some("local sensor (irrelevant to remote-identity seed)"),
+                "{kind:?} should gate the local sensor",
+            );
+        }
+        // But a local-recon seed (coordinates) lets it run.
+        let coords = Target::new(TargetKind::Coordinates, "-27.47,153.02");
+        assert!(module_skip_reason(&m, &coords, &opts, false).is_none());
     }
 
     #[test]
