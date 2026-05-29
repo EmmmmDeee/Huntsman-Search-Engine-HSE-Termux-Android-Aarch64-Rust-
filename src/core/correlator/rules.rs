@@ -697,8 +697,15 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
         return Vec::new();
     }
     breach_dates.sort_by_key(|(_, d)| *d);
-    let mut clusters: Vec<Vec<String>> = Vec::new();
+    // Single-linkage clustering: consecutive breaches no more than 30 days
+    // apart chain into one cluster. A chain can therefore span well beyond
+    // 30 days end-to-end, so each cluster carries its actual (start, end)
+    // window for a truthful description rather than the old fixed
+    // "within 30 days" claim, which was false whenever ≥3 breaches chained
+    // across a longer period.
+    let mut clusters: Vec<(Vec<String>, &str, &str)> = Vec::new();
     let mut current: Vec<String> = vec![breach_dates[0].0.uid.clone()];
+    let mut start_date = breach_dates[0].1;
     let mut prev_date = breach_dates[0].1;
     for &(e, d) in &breach_dates[1..] {
         let days_apart = date_diff_days(prev_date, d);
@@ -708,28 +715,33 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
             }
         } else {
             if current.len() >= 3 {
-                clusters.push(current);
+                clusters.push((current.clone(), start_date, prev_date));
             }
             current = vec![e.uid.clone()];
+            start_date = d;
         }
         prev_date = d;
     }
     if current.len() >= 3 {
-        clusters.push(current);
+        clusters.push((current, start_date, prev_date));
     }
     clusters
         .into_iter()
-        .map(|uids| Correlation {
-            rule_id: "AU-019".into(),
-            rule_name: "Temporal breach cluster".into(),
-            severity: Severity::High,
-            description: format!(
-                "{} breach entities clustered within 30 days — potential coordinated compromise",
-                uids.len()
-            ),
-            entity_uids: uids,
-            scan_id: scan_id.into(),
-            ts,
+        .map(|(uids, start, end)| {
+            let span = date_diff_days(start, end);
+            Correlation {
+                rule_id: "AU-019".into(),
+                rule_name: "Temporal breach cluster".into(),
+                severity: Severity::High,
+                description: format!(
+                    "{} breach entities span {start}…{end} ({span}-day window, \
+                     consecutive gaps ≤30d) — potential coordinated compromise",
+                    uids.len()
+                ),
+                entity_uids: uids,
+                scan_id: scan_id.into(),
+                ts,
+            }
         })
         .collect()
 }
@@ -1342,5 +1354,49 @@ mod tests {
         // approximation these month-crossing pairs were off by a day.
         assert!(date_diff_days("2023-06-15", "2023-07-15") <= 30);
         assert!(date_diff_days("2023-06-15", "2023-07-16") > 30);
+    }
+
+    fn breach_entity(uid_seed: &str, date: &str) -> Entity {
+        use crate::core::entity::Evidence;
+        let mut e = Entity::new(EntityKind::Email, format!("{uid_seed}@x.com"), 0.9, "sid");
+        e.tag("breach");
+        e.add_evidence(Evidence::new("hibp", "seen in breach").with_attr("breach_date", date));
+        e
+    }
+
+    #[test]
+    fn au_019_reports_true_window_span_not_a_fixed_30_days() {
+        // Three breaches that chain (gaps 19d then 21d) span 40 days end to
+        // end. The old description always claimed "within 30 days"; the rule
+        // must now report the real 40-day window so the analyst isn't misled.
+        let entities = vec![
+            breach_entity("a", "2023-01-01"),
+            breach_entity("b", "2023-01-20"),
+            breach_entity("c", "2023-02-10"),
+        ];
+        let out = rule_au_019_temporal_breach_cluster(&entities, "sid", 0);
+        assert_eq!(out.len(), 1, "the three breaches single-link into one cluster");
+        let c = &out[0];
+        assert_eq!(c.rule_id, "AU-019");
+        assert_eq!(c.entity_uids.len(), 3);
+        assert!(
+            c.description.contains("40-day window"),
+            "must state the true span, got: {}",
+            c.description
+        );
+        assert!(c.description.contains("2023-01-01…2023-02-10"));
+        assert!(
+            !c.description.contains("within 30 days"),
+            "stale misleading claim must be gone"
+        );
+    }
+
+    #[test]
+    fn au_019_requires_at_least_three_breaches() {
+        let entities = vec![
+            breach_entity("a", "2023-01-01"),
+            breach_entity("b", "2023-01-10"),
+        ];
+        assert!(rule_au_019_temporal_breach_cluster(&entities, "sid", 0).is_empty());
     }
 }

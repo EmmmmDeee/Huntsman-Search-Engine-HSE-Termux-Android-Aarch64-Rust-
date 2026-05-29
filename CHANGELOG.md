@@ -21,6 +21,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   persisted → `Failed`). `StoragePort::upsert_entities_batch` now takes
   `&[Entity]` so the caller retains ownership for the fallback.
 
+### Changed
+
+- **Correlator AU-019 now reports each breach cluster's true time window.**
+  The rule single-linkage-chains breaches whose consecutive gaps are ≤30 days,
+  so a cluster can span far longer than 30 days end to end — yet every firing
+  was described as "clustered within 30 days", misleading the analyst on the
+  "coordinated compromise" signal. Each cluster now carries its actual
+  `start…end` dates and reports the real span (e.g. "3 breach entities span
+  2023-01-01…2023-02-10 (40-day window, consecutive gaps ≤30d)"). Detection
+  semantics are unchanged. Tests: `au_019_reports_true_window_span_not_a_fixed_30_days`,
+  `au_019_requires_at_least_three_breaches`.
+
 ### Fixed
 
 - **Correlator AU-019 breach clustering now uses exact calendar arithmetic.**
