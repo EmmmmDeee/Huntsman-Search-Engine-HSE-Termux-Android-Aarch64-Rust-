@@ -145,13 +145,10 @@ pub struct Proxy {
 /// Pool entries older than this are considered stale (free proxies die fast).
 pub const STALE_AFTER_SECS: u64 = 6 * 3600;
 
-/// Current Unix time in seconds (std-only; `util` must not depend on `core`).
-pub fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
+/// Re-exported from `util::time` so this module's many `now_secs()` call
+/// sites (and the public `proxy::now_secs` path) keep resolving after the
+/// helper was hoisted to a shared leaf.
+pub use crate::util::time::now_secs;
 
 /// Age in seconds of the freshest proxy in `pool` (how long since the last
 /// successful refresh). `None` if the pool is empty or carries no timestamps

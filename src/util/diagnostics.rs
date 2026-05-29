@@ -844,10 +844,7 @@ fn persist_ledger(modules: &[ModulePerformance], kinds: &HashMap<String, usize>)
         .unwrap_or_default();
 
     ledger.total_scans = ledger.total_scans.saturating_add(1);
-    ledger.last_updated = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    ledger.last_updated = crate::util::time::now_secs();
 
     for m in modules {
         let entry = ledger.per_module.entry(m.name.clone()).or_default();

@@ -212,3 +212,33 @@ pub mod freq {
         }
     }
 }
+
+pub mod time {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Current Unix time in whole seconds — the shared std-only leaf for
+    /// `util/` and `modules/`.
+    ///
+    /// `core` deliberately keeps its own `core::entity::unix_now()` instead of
+    /// importing this: preserving the `core ⊥ util` boundary (enforced by
+    /// tests/architecture.rs) is worth more than deduplicating a four-line std
+    /// computation across the boundary. Saturates to 0 if the system clock
+    /// predates the epoch (never happens in practice).
+    pub fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn now_secs_is_after_2020() {
+            // 2020-01-01T00:00:00Z = 1_577_836_800.
+            assert!(now_secs() > 1_577_836_800);
+        }
+    }
+}
