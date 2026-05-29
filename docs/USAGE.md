@@ -15,6 +15,23 @@ hse --help    Top-level help
 hse --version Print version
 ```
 
+### First-run pre-configuration (automatic)
+
+The first time you run any subcommand, HSE configures itself with zero setup:
+
+- creates `$HOME/.huntsman/` (database + logs) and writes a self-documenting
+  key manifest at `$HOME/.huntsman.env` (mode `0600`);
+- fills the **bundled, always-on credentials** (OathNet / HIBP / WiGLE /
+  SeekNow) into the empty/placeholder slots, so breach, geo and SIGINT
+  modules work out of the box — no API keys to obtain first;
+- leaves every other key as an editable `insert_..._here` placeholder.
+
+It never clobbers a real value you've set, and placeholders are never treated
+as keys (they're filtered before modules see them, and `doctor` counts only
+real keys). Add your own keys with `hse set-key NAME VALUE`, by editing the
+manifest, or via the Settings tab in the Web UI. `hse provision` re-merges the
+manifest against the latest template (backing it up first).
+
 ---
 
 ## `hse scan` — full reference
@@ -57,8 +74,10 @@ hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-d, --depth <N>`             | `0`    | Rounds of recursive expansion. `0` = single-round scan (v0.1 behaviour). |
-| `--min-expand-confidence <F>` | `0.75` | Only expand entities whose `c_effective()` is ≥ this. Default is the Verified tier — strong filter. |
+| `-d, --depth <N>`             | *auto* | Rounds of recursive expansion. **Omit for intelligent auto-depth** (the default): HSE picks the optimal rounds from the seed type + available keys. Pass `0` to force a single-round scan (legacy v0.1 behaviour); `1+` for a fixed depth. |
+| `-A, --auto`                  | —      | Explicitly request auto-depth. Now the default when neither `--depth` nor `--recursive` is given; kept for back-compat / scripting clarity. |
+| `-R, --recursive`             | —      | Aggressive deep sweep: depth=7, expansion confidence ≤0.40, `max_concurrent`≥4. Overridden by an explicit `--depth`. |
+| `--min-expand-confidence <F>` | `0.50` | Only expand entities whose `c_effective()` is ≥ this. Set `0.75` for strict Verified-only expansion. |
 | `--max-entities <N>`          | none   | Stop expansion when entity count reaches this. |
 | `--max-wall-time <SECS>`      | none   | Stop expansion when wall-time exceeds this. |
 
@@ -80,8 +99,11 @@ Override the filter precisely with `RUST_LOG`, e.g.
 ### Example invocations
 
 ```bash
-# Plain single-shot scan against a domain
+# Default scan — auto-recurses to the optimal depth for the seed type
 hse scan --kind domain --value example.com
+
+# Force a single round (legacy v0.1 behaviour), no expansion
+hse scan --kind domain --value example.com --depth 0
 
 # Only run two specific modules, throttle, JSON output
 hse scan --kind domain --value example.com \

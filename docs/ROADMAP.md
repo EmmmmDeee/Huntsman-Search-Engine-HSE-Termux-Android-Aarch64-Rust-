@@ -115,7 +115,14 @@ registry with stderr (`-v`/`-vv`), file, and broadcast-bus sinks; a live
 Web-UI **Logs** tab (SSE over `/api/v1/logs/stream` + `/logs/recent`);
 and `hse doctor --bundle` for a single-paste offline diagnostic report.
 The sensor modules were consolidated 6→4 (one termux-api call each).
-**85 modules**; 1,290+ tests. See `docs/DEBUGGING.md`.
+**85 modules**; 1,300+ tests. See `docs/DEBUGGING.md`.
+
+Intelligent defaults: a bare `hse scan` now **auto-recurses** to the
+optimal depth for the seed type (pass `--depth 0` for the legacy single
+round), and the first run auto-provisions `$HOME/.huntsman/` + a key
+manifest pre-filled with the bundled always-on credentials, so the tool
+works with zero setup. Placeholder template values are filtered at the
+key-load chokepoint so they never masquerade as real keys.
 
 ## In flight
 

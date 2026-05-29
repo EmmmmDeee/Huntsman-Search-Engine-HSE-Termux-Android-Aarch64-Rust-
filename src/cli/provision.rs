@@ -173,6 +173,28 @@ fn write_env_file(path: &Path, contents: &str) -> Result<Option<PathBuf>> {
     Ok(backup)
 }
 
+/// First-run scaffolding, called once at CLI startup. Ensures the
+/// `$HOME/.huntsman/` data directory exists and, if the key manifest is
+/// **absent**, writes the canonical template (mode 0600) so the operator has
+/// a populated, self-documenting file to edit. Silent and idempotent; it
+/// never touches an existing env file (so it can't clobber real keys —
+/// editing those is `hse provision` / `hse set-key`). Returns `true` only on
+/// the run that actually created the manifest, so the caller can print a
+/// one-time hint. The bundled always-on keys are filled separately by
+/// [`crate::util::keys::ensure_hardcoded_keys`], which the startup path runs
+/// right after this and which correctly replaces the template placeholders.
+pub fn ensure_first_run_scaffold() -> bool {
+    if let Ok(home) = std::env::var("HOME") {
+        let _ = fs::create_dir_all(PathBuf::from(&home).join(".huntsman"));
+    }
+    let path = PathBuf::from(keys::env_path());
+    if path.exists() {
+        return false;
+    }
+    // No existing file to merge — `merge_template("")` is just the template.
+    write_env_file(&path, &merge_template("", ENV_TEMPLATE)).is_ok()
+}
+
 /// Run the env-merge phase. Prints a summary of what changed.
 pub fn cmd_provision_env(dry_run: bool) -> Result<()> {
     let path = PathBuf::from(keys::env_path());

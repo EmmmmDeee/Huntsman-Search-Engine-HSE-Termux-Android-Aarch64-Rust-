@@ -88,18 +88,20 @@ pub enum Command {
         /// Per-module timeout override, in milliseconds.
         #[arg(long)]
         timeout: Option<u64>,
-        /// Recursive expansion depth. 0 = single round; 1+ auto-feeds discovered
-        /// entities back as new scan targets, up to N rounds deep.
-        #[arg(short, long, default_value_t = 0)]
-        depth: u32,
-        /// Shorthand for deep recursive expansion: sets depth=5,
-        /// min_expand_confidence=0.50, max_concurrent=4. Overridden by
-        /// explicit --depth / --min-expand-confidence / --max-concurrent.
+        /// Recursive expansion depth. Omit for intelligent auto-depth (the
+        /// default): HSE picks the optimal number of rounds from the seed
+        /// type and available API keys. Pass 0 to force a single round
+        /// (legacy v0.1 behaviour); 1+ for a fixed number of rounds.
+        #[arg(short, long)]
+        depth: Option<u32>,
+        /// Aggressive deep sweep: sets depth=7, lowers the expansion
+        /// confidence bar to ≤0.40, max_concurrent≥4. Overridden by an
+        /// explicit --depth.
         #[arg(short = 'R', long)]
         recursive: bool,
-        /// Automatically select optimal expansion depth based on seed type
-        /// and available API keys. Uses expected-value analysis to determine
-        /// the depth where marginal yield justifies the cost.
+        /// Explicitly request the intelligent auto-depth heuristic. This is
+        /// now the DEFAULT when neither --depth nor --recursive is given, so
+        /// the flag is kept only for back-compat and scripting clarity.
         #[arg(short = 'A', long)]
         auto: bool,
         /// Only expand entities whose C_eff is at least this. Default 0.50
@@ -318,6 +320,19 @@ pub async fn run() -> Result<()> {
     // Web-UI log sinks always capture at debug regardless (see util::logging).
     let cli = Cli::parse();
     crate::util::logging::init(cli.verbose);
+
+    // Intelligent first-run pre-configuration: create the data dir + key
+    // manifest if missing, then fill the bundled always-on credentials
+    // (OathNet / HIBP / WiGLE / SeekNow) into any empty or placeholder slots
+    // so the tool works out-of-the-box. Both are idempotent and never
+    // clobber real user-set keys.
+    if provision::ensure_first_run_scaffold() {
+        eprintln!(
+            "hse: first run — wrote key manifest to {} (edit it, or use `hse set-key`)",
+            crate::util::keys::env_path()
+        );
+    }
+    crate::util::keys::ensure_hardcoded_keys();
 
     match cli.command {
         Command::Scan {

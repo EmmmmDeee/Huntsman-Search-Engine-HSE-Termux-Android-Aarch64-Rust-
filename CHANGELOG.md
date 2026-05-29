@@ -10,6 +10,32 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **Intelligent defaults — scan auto-recurses out of the box.** A bare
+  `hse scan --kind … --value …` (no expansion flags) now applies the
+  auto-depth heuristic by default (optimal rounds from seed type + available
+  keys) instead of a single round, showcasing the recursive engine with zero
+  tuning. `--depth N` (incl. `--depth 0` for the legacy single round) and
+  `--recursive` still take precedence; `-A/--auto` is kept for back-compat.
+  The `--depth` flag is now `Option<u32>` so "omitted" is distinguishable from
+  an explicit `0`.
+- **Placeholder-safe key loading.** Unfilled `insert_..._here` template
+  placeholders are now filtered at the `keys::load()` chokepoint and never
+  reach a module or count as a "key present" — fixing a latent bug where, after
+  `hse provision`, every placeholder looked like a real key (inflating
+  `--auto` paid-tier detection and feeding fake keys to APIs). `doctor` now
+  counts only real keys, and `ensure_hardcoded_keys` rewrites placeholder slots
+  in place (via `write_keys_at`) instead of being shadowed by them.
+
+### Added
+
+- **First-run pre-configuration (zero setup).** The first run of any subcommand
+  now auto-creates `$HOME/.huntsman/` and a `0600` key manifest, and fills the
+  bundled always-on credentials (OathNet / HIBP / WiGLE / SeekNow) into the
+  empty/placeholder slots, so breach/geo/SIGINT modules work immediately with
+  no keys to obtain. Idempotent; never clobbers a real user-set value.
+
 ### Performance
 
 - **Batched entity persistence.** `ScanEngine::finalise_scan` now writes a

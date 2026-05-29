@@ -60,6 +60,13 @@ hse serve                                                   # Web UI → http://
 hse live --kind domain --value example.com --interval 60    # continuous monitoring
 ```
 
+**Zero setup:** the first run auto-creates `$HOME/.huntsman/` + a key manifest
+and fills bundled always-on credentials (OathNet / HIBP / WiGLE / SeekNow), so
+breach, geo and SIGINT modules work immediately — no keys to obtain first. Add
+your own with `hse set-key`, by editing `$HOME/.huntsman.env`, or in the Web UI
+Settings tab. And a bare `hse scan` **auto-recurses** to the optimal depth for
+the seed type (pass `--depth 0` for a single round).
+
 ---
 
 ## Seed Types (12 supported)
@@ -167,20 +174,25 @@ extraction from search results.
 ## Autonomous Expansion
 
 ```bash
-hse scan --kind name --value "Jordan Leigh Meyers" --depth 2
+hse scan --kind name --value "Jordan Leigh Meyers"     # auto-recurses by default
 ```
 
-Round 0 (seed): `"Jordan Leigh Meyers"` dispatched to all accepting modules.
-Round 1: High-confidence entities (C_eff ≥ 0.75) become new targets.
-Round 2: Discovered IPs → geo modules → coordinates → address.
+A bare scan **auto-recurses by default** — HSE picks the optimal expansion
+depth from the seed type and the keys available (the old `--auto` heuristic,
+now the default). Round 0 (seed) is dispatched to all accepting modules;
+each subsequent round feeds high-confidence entities (C_eff ≥ threshold) back
+as new targets, e.g. discovered IPs → geo modules → coordinates → address.
+Pass `--depth 0` to force the legacy single-round behaviour, `--depth N` to
+pin a fixed depth, or `--recursive` for an aggressive deep sweep.
 
 | Knob | Default | Purpose |
 |------|---------|---------|
-| `--depth N` | `0` | Max expansion rounds |
+| `--depth N` | *auto* | Max expansion rounds; omit for intelligent auto-depth, `0` = single round |
+| `--recursive` | — | Aggressive deep sweep (depth 7, low confidence bar) |
 | `--min-expand-confidence F` | `0.50` | Min C_eff to expand (0.75 = Verified-only) |
 | `--max-entities N` | none | Stop at N total entities |
 | `--max-wall-time SECS` | none | Stop after SECS wall-time |
-| `--max-concurrent N` | `0` | Parallel module dispatch (0=sequential) |
+| `--max-concurrent N` | `4` | Parallel module dispatch (0=sequential) |
 
 ---
 

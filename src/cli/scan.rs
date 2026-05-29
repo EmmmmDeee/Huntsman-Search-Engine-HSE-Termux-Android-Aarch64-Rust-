@@ -23,7 +23,7 @@ pub(super) struct ScanCmd {
     pub free_only: bool,
     pub passive_only: bool,
     pub module_timeout_ms: Option<u64>,
-    pub depth: u32,
+    pub depth: Option<u32>,
     pub recursive: bool,
     pub auto: bool,
     pub min_expand_confidence: f64,
@@ -42,22 +42,30 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let target_kind = parse_target_kind(&cmd.kind)?;
     let target = Target::new(target_kind, cmd.value.clone());
 
-    let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth == 0 {
-        let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
-        let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
-        eprintln!(
-            "auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={})",
-            has_paid
-        );
-        (auto_depth, auto_conf, cmd.max_concurrent.max(4))
-    } else if cmd.recursive && cmd.depth == 0 {
+    // Expansion-depth resolution, in precedence order:
+    //   1. explicit --depth N   → honour exactly (incl. 0 = single round).
+    //   2. --recursive          → aggressive fixed deep sweep.
+    //   3. nothing / --auto      → intelligent auto-depth (the DEFAULT): pick
+    //                              the optimal rounds from seed type + keys.
+    let (depth, min_expand_confidence, max_concurrent) = if let Some(d) = cmd.depth {
+        if cmd.auto {
+            eprintln!("auto: overridden by explicit --depth {d}");
+        }
+        (d, cmd.min_expand_confidence, cmd.max_concurrent)
+    } else if cmd.recursive {
         (
             7,
             cmd.min_expand_confidence.min(0.40),
             cmd.max_concurrent.max(4),
         )
     } else {
-        (cmd.depth, cmd.min_expand_confidence, cmd.max_concurrent)
+        // Default behaviour — also what `-A`/`--auto` requests explicitly.
+        let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
+        let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
+        eprintln!(
+            "auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={has_paid}; pass --depth 0 for a single round)"
+        );
+        (auto_depth, auto_conf, cmd.max_concurrent.max(4))
     };
 
     let mut exclude_modules = split_csv(cmd.exclude).unwrap_or_default();

@@ -62,6 +62,14 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_OPENCORP_KEY",
 ];
 
+/// True when `value` is an unfilled env-template placeholder of the form
+/// `insert_<…>_here`. `hse provision` and first-run scaffolding write these
+/// so the manifest is self-documenting — but they are NOT real credentials
+/// and must never be handed to a module (or counted as "key present").
+pub fn is_placeholder(value: &str) -> bool {
+    value.starts_with("insert_") && value.ends_with("_here")
+}
+
 /// Resolve the keys env-file path.
 ///
 /// Termux: `$HOME/.huntsman.env` (typically `/data/data/com.termux/files/home/...`).
@@ -91,8 +99,12 @@ pub fn load() -> HashMap<String, String> {
     let mut map: HashMap<String, String> = std::env::vars()
         .filter(|(k, _)| k.starts_with("HUNTSMAN_"))
         .collect();
+    let had_any_huntsman = !map.is_empty();
+    // Drop unfilled `insert_..._here` template placeholders so they never
+    // reach a module or inflate "has key" checks (e.g. --auto paid detection).
+    map.retain(|_, v| !is_placeholder(v));
 
-    if map.is_empty()
+    if !had_any_huntsman
         && let Ok(meta) = std::fs::metadata(&path)
         && meta.len() > 0
     {
@@ -159,9 +171,14 @@ pub async fn populate_and_load() -> HashMap<String, String> {
     load()
 }
 
-/// Write hardcoded API keys to the env file if not already present.
-/// Only fills empty slots — never overwrites user-provided keys.
-fn ensure_hardcoded_keys() {
+/// Fill the bundled, always-on credentials into the env file so the tool
+/// works out-of-the-box. A slot is filled only when it is absent, empty, or
+/// still an unfilled `insert_..._here` template placeholder — so a real
+/// user-set value is never clobbered, but a placeholder (e.g. written by
+/// `hse provision`) is correctly replaced in place rather than shadowing the
+/// bundled key. Uses [`write_keys_at`] so existing placeholder lines are
+/// rewritten (no duplicate lines) and comments are preserved.
+pub(crate) fn ensure_hardcoded_keys() {
     const HARDCODED: &[(&str, &str)] = &[
         (
             "HUNTSMAN_OATHNET_KEY",
@@ -178,30 +195,26 @@ fn ensure_hardcoded_keys() {
 
     let path = env_path();
     let existing = load_from_file_only(Path::new(&path));
-    let mut to_write: Vec<(&str, &str)> = Vec::new();
+    let mut updates: BTreeMap<String, String> = BTreeMap::new();
 
     for (env_var, value) in HARDCODED {
-        if !existing.contains_key(*env_var) {
-            to_write.push((env_var, value));
+        // Occupied only by a *real* value — placeholders/empties are fillable.
+        let occupied = existing
+            .get(*env_var)
+            .is_some_and(|v| !is_placeholder(v) && !v.is_empty());
+        if !occupied {
+            updates.insert((*env_var).to_string(), (*value).to_string());
         }
     }
 
-    if to_write.is_empty() {
+    if updates.is_empty() {
         return;
     }
 
-    let mut file = match fs::OpenOptions::new().create(true).append(true).open(&path) {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!("cannot write hardcoded keys to {path}: {e}");
-            return;
-        }
-    };
-
-    for (k, v) in &to_write {
-        let _ = writeln!(file, "{k}={v}");
+    match write_keys_at(Path::new(&path), &updates, &[]) {
+        Ok(()) => tracing::info!("wrote {} bundled key(s) to {path}", updates.len()),
+        Err(e) => tracing::warn!("cannot write bundled keys to {path}: {e}"),
     }
-    tracing::info!("wrote {} hardcoded key(s) to {path}", to_write.len());
 }
 
 /// Parse `HUNTSMAN_*` lines from the env file at `path`, **ignoring the
@@ -229,8 +242,14 @@ pub fn load_from_file_only(path: &Path) -> HashMap<String, String> {
         if !key.starts_with("HUNTSMAN_") {
             continue;
         }
-        let value = trimmed[eq + 1..].trim().to_string();
-        out.insert(key.to_string(), value);
+        let mut value = trimmed[eq + 1..].trim();
+        // Strip a single pair of surrounding double-quotes (the template
+        // writes `KEY="value"`); dotenvy does the same in `load`, so both
+        // key-reading paths agree on the raw value.
+        if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+            value = &value[1..value.len() - 1];
+        }
+        out.insert(key.to_string(), value.to_string());
     }
     out
 }
@@ -529,6 +548,77 @@ mod tests {
         assert_eq!(m.get("HUNTSMAN_HIBP_KEY").map(String::as_str), Some("def"));
         assert!(!m.contains_key("HUNTSMAN_DEHASHED_KEY"));
         assert!(!m.contains_key("OTHER"));
+    }
+
+    #[test]
+    fn is_placeholder_matches_template_slots_only() {
+        assert!(is_placeholder("insert_oathnet_pro_key_here"));
+        assert!(is_placeholder("insert_x_here"));
+        assert!(!is_placeholder("real-hex-value"));
+        assert!(!is_placeholder("insert_x")); // no suffix
+        assert!(!is_placeholder("x_here")); // no prefix
+        assert!(!is_placeholder(""));
+    }
+
+    #[test]
+    fn load_from_file_strips_surrounding_quotes_and_detects_placeholders() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".huntsman.env");
+        fs::write(
+            &path,
+            "HUNTSMAN_OATHNET_KEY=\"insert_oathnet_pro_key_here\"\n\
+             HUNTSMAN_HIBP_KEY=\"real-value-xyz\"\n",
+        )
+        .unwrap();
+        let m = load_from_file_only(&path);
+        // Quotes stripped so the placeholder check (and module reads) see the
+        // raw value, matching dotenvy's behaviour in `load`.
+        assert_eq!(
+            m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
+            Some("insert_oathnet_pro_key_here")
+        );
+        assert!(is_placeholder(m.get("HUNTSMAN_OATHNET_KEY").unwrap()));
+        assert_eq!(
+            m.get("HUNTSMAN_HIBP_KEY").map(String::as_str),
+            Some("real-value-xyz")
+        );
+        assert!(!is_placeholder(m.get("HUNTSMAN_HIBP_KEY").unwrap()));
+    }
+
+    #[test]
+    fn write_keys_at_replaces_placeholder_line_in_place() {
+        // The provision template writes placeholders; the bundled-key path
+        // must replace that exact line (not append a duplicate) so dotenvy
+        // can't pick the placeholder over the real value.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".huntsman.env");
+        fs::write(
+            &path,
+            "# manifest\nHUNTSMAN_OATHNET_KEY=\"insert_oathnet_pro_key_here\"\n",
+        )
+        .unwrap();
+
+        write_keys_at(
+            &path,
+            &map_of(&[("HUNTSMAN_OATHNET_KEY", "real-key-abc")]),
+            &[],
+        )
+        .unwrap();
+
+        let got = fs::read_to_string(&path).unwrap();
+        assert!(got.contains("# manifest"), "comment preserved");
+        assert_eq!(
+            got.matches("HUNTSMAN_OATHNET_KEY=").count(),
+            1,
+            "no duplicate key line — placeholder replaced in place"
+        );
+        assert!(!got.contains("insert_oathnet_pro_key_here"));
+        assert_eq!(
+            load_from_file_only(&path)
+                .get("HUNTSMAN_OATHNET_KEY")
+                .map(String::as_str),
+            Some("real-key-abc")
+        );
     }
 
     #[test]
