@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (v1.0 — 63 modules)
+## Catalogue (85 modules)
 
 ### Network / identity modules (target-driven)
 
@@ -47,18 +47,23 @@ higher-priority first; ordering doesn't affect output).
 
 ### Termux sensors (v0.6+, environmental — accept any target)
 
-| Module | Cost | Passive | Priority | Output kinds | Needs `termux-api` |
-|--------|------|---------|----------|--------------|---------------------|
-| [`wifi_connect`](#wifi_connect)   | free | **yes** | 70 | MacAddress (connected AP), IpAddress (local) | yes |
-| [`gps_fix`](#gps_fix)             | free | **yes** | 68 | Coordinates                                 | yes |
-| [`wifi_scan`](#wifi_scan)         | free | **yes** | 65 | MacAddress × N (visible APs)                | yes |
-| [`cell_survey`](#cell_survey)     | free | **yes** | 62 | DeviceId × N (cell towers)                  | yes |
-| [`arp_scan`](#arp_scan)           | free | **yes** | 58 | IpAddress + MacAddress per ARP entry        | no  |
-| [`net_interfaces`](#net_interfaces) | free | **yes** | 55 | MacAddress per local interface              | no  |
+> **v0.6+ consolidation:** the earlier split sensors (`gps_fix`, `wifi_scan`,
+> `wifi_connect`, `cell_survey`, `arp_scan`, `net_interfaces`) were merged into
+> the four modules below.
 
-All sensor modules are **free** (no API key required). Sensors fire on
-every scan as environmental enrichment; off-device, the `termux-*`
-binary-based modules no-op cleanly (no `module_error` events).
+| Module | Cost | Passive | Termux binary / source | Output kinds | Needs `termux-api` |
+|--------|------|---------|------------------------|--------------|---------------------|
+| [`device_sensors`](#device_sensors) | free | **yes** | `termux-location`, `termux-wifi-connectioninfo` | Coordinates (GPS), MacAddress (connected AP), IpAddress | yes |
+| [`wifi_intel`](#wifi_intel)         | free | **yes** | `termux-wifi-scaninfo`                          | MacAddress × N (visible APs) + BSSID geo | yes |
+| [`cell_intel`](#cell_intel)         | free | **yes** | `termux-telephony-cellinfo`                     | cell-tower info; offline MCC→country fallback | partial |
+| [`local_net`](#local_net)           | free | **yes** | `/sys/class/net`, `/proc/net/arp` (file I/O)    | IpAddress + MacAddress (ARP), local interfaces | no |
+
+All sensor modules are **free** (no API key required) and **passive**. They fire
+on every scan as environmental enrichment. Off-device — or without the
+`termux-api` package + Termux:API APK — the `termux-*`-backed modules **no-op
+cleanly** (return empty, never a `module_error`); `local_net` is pure file I/O
+and works wherever those paths exist. `hse doctor --bundle` lists which sensor
+binaries are present.
 
 ### Target-kind coverage matrix
 
@@ -77,12 +82,13 @@ binary-based modules no-op cleanly (no `module_error` events).
 | `url`         | proxycurl + web_crawler + wayback |
 | `organisation`| opencorporates + abn_lookup |
 
-Any target also fires the 6 Termux sensors (passive, no-op without `termux-api`).
+Any target also fires the 4 Termux sensor modules (passive; no-op without
+`termux-api`, except `local_net` which uses local file I/O).
 
 Suppress the sensor suite for a particular scan with:
 ```bash
 hse scan --kind email --value foo@bar.com \
-  --exclude arp_scan,net_interfaces,wifi_scan,wifi_connect,gps_fix,cell_survey
+  --exclude device_sensors,wifi_intel,cell_intel,local_net
 ```
 …or use the allowlist `--modules` flag to opt in only the modules you
 want.
@@ -229,89 +235,93 @@ Returns an empty `ModuleResult` if none of those fields could be parsed
 4 s timeout. Failures (network, timeout, malformed response) produce a
 `module_error` event and contribute no entities, but never crash the scan.
 
-### `arp_scan`
+### `local_net`
 
-Parses `/proc/net/arp` — the kernel's resolved ARP table. No `termux-api`
-binary, no network traffic, no root. Pure passive observation.
+Pure passive observation of the device's own network position — reads
+`/sys/class/net/*/address` + `/operstate` (interfaces) then
+`/proc/net/arp` (the kernel's resolved ARP table) via `tokio::fs`. No
+`termux-api`, no network traffic, no root. Consolidates the former
+`net_interfaces` + `arp_scan` modules.
 
-**Targets accepted**: any (sensor).
-**Off-device**: no `/proc/net/arp` on macOS/Windows → empty `ModuleResult`.
+**Targets accepted**: any (sensor) — local-network data is environmental
+and independent of the scan target.
+**Off-device**: no `/sys/class/net` or `/proc/net/arp` on macOS/Windows →
+empty `ModuleResult` (clean no-op, no `module_error`).
 
-**Returns**: one `IpAddress` and one `MacAddress` entity per complete
-ARP row (rows with the placeholder `00:00:00:00:00:00` MAC are skipped).
-Confidence 0.95 for both. Evidence carries the cross-reference (the IP's
-evidence has the MAC + interface; the MAC's evidence has the IP +
-interface).
+**Returns**:
+- one `MacAddress` entity per non-loopback interface, confidence 0.95,
+  tagged `local-interface`; evidence records the interface name (`wlan0`
+  etc.) and `operstate` (`up`/`down`/`unknown`).
+- one `IpAddress` + one `MacAddress` per complete ARP row (rows with the
+  placeholder `00:00:00:00:00:00` MAC are skipped), confidence 0.95;
+  evidence carries the cross-reference (IP↔MAC↔interface).
 
-### `net_interfaces`
+### `wifi_intel`
 
-Reads `/sys/class/net/*/address` and `/operstate` — the kernel's view
-of each local network interface. No `termux-api`, no network traffic.
-
-**Targets accepted**: any (sensor).
-**Off-device**: no `/sys/class/net` on macOS → empty `ModuleResult`.
-
-**Returns**: one `MacAddress` entity per non-loopback interface,
-confidence 0.95, tagged `local-interface`. Evidence records the
-interface name (`wlan0` etc.) and `operstate` (`up`/`down`/`unknown`).
-
-### `wifi_scan`
-
-Invokes `termux-wifi-scaninfo` — a synchronous WiFi scan that lists all
-APs the radio can see. Free, no key, no root.
+Unified WiFi intelligence in a **single** `termux-wifi-scaninfo`
+invocation — AP enumeration *and* BSSID geolocation. Consolidates the
+former `wifi_scan` (AP → `MacAddress`) and `bssid_locate` (strongest
+BSSIDs → WiGLE detail → `Coordinates`/`Address`), halving the radio-scan
+overhead on-device. WiGLE auth via `HUNTSMAN_WIGLE_USER` /
+`HUNTSMAN_WIGLE_TOKEN` (HTTP Basic, hardcoded fallback, same as `wigle`).
 
 **Targets accepted**: any (sensor).
 **Off-device** or `termux-api` missing: helper returns `None` → empty
-`ModuleResult` (no `module_error` event).
+`ModuleResult` (no `module_error`).
 
-**Returns**: one `MacAddress` entity per AP (BSSID-keyed), confidence
-0.95, tagged `wifi-ap`. Evidence: SSID (or `<hidden>`), frequency,
-RSSI, timestamp.
+**Returns**:
+- one `MacAddress` entity per visible AP (BSSID-keyed), confidence 0.95,
+  tagged `wifi-ap`; evidence: SSID (or `<hidden>`), frequency, RSSI,
+  timestamp.
+- for the top-5 strongest BSSIDs, a WiGLE detail lookup yields
+  `Coordinates` (+ `Address` where available) entities geolocating the AP.
 
-### `wifi_connect`
+### `device_sensors`
 
-Invokes `termux-wifi-connectioninfo` — info about the currently-connected
-AP. Free, no key, no root.
-
-**Targets accepted**: any (sensor).
-**Returns**: zero entities if disconnected (`02:00:00:00:00:00` MAC
-placeholder and `0.0.0.0` IP are filtered). Otherwise:
-- one `MacAddress` for the connected AP, tagged `wifi-connected`,
-  evidence has SSID, frequency, RSSI, link-speed, supplicant-state
-- one `IpAddress` for the device's local IP on that network, tagged
-  `local-wifi`
-
-### `gps_fix`
-
-Invokes `termux-location -p network -r once` for a single fast fix via
-the network location provider (fast indoor, m-scale accuracy). Free,
-no key. Requires the Termux:API Android app to have Location permission
-granted in Android Settings.
+Device location sensors in one passive pass — invokes
+`termux-wifi-connectioninfo` (3 s ceiling) then
+`termux-location -p network -r once` (15 s ceiling). Consolidates the
+former `wifi_connect` + `gps_fix` modules. Free, no key. Requires the
+Termux:API APK with Location permission granted in Android Settings.
 
 **Targets accepted**: any (sensor).
-**Returns**: one `Coordinates` entity (`lat,lon` with 7-decimal-place
-precision), tagged `geoint` and `provider:<network|gps>`. Confidence
-0.90 for GPS provider, 0.65 for network. Evidence captures latitude,
-longitude, altitude, accuracy-metres, speed, bearing, provider.
+**Off-device** or `termux-api` missing: clean no-op.
 
-**Quirks**: a 15 s timeout caps the wait when the device genuinely can't
-acquire a fix. The default network provider is much faster than `gps`
-(~1 s vs minutes) and works indoors; use `--exclude gps_fix` and a
-custom modified module if you specifically need GPS-provider data.
+**Returns**:
+- *Connected WiFi* (skipped if disconnected — `02:00:00:00:00:00` MAC and
+  `0.0.0.0` IP are filtered): one `MacAddress` for the connected AP
+  tagged `wifi-connected` (evidence: SSID, frequency, RSSI, link-speed,
+  supplicant-state) + one `IpAddress` for the device's local IP tagged
+  `local-wifi`.
+- *Location fix*: one `Coordinates` entity (`lat,lon`, 7-dp), tagged
+  `geoint` and `provider:<network|gps>`, confidence 0.90 for GPS / 0.65
+  for network; evidence captures latitude, longitude, altitude,
+  accuracy-metres, speed, bearing, provider.
 
-### `cell_survey`
+**Quirks**: the network provider is much faster than `gps` (~1 s vs
+minutes) and works indoors. The 15 s timeout caps the wait when the
+device genuinely can't acquire a fix.
 
-Invokes `termux-telephony-cellinfo` — every registered cell the modem
-can see. Free, no key. Android Q+ restricts cell info to apps with
-foreground location permission; ensure Termux:API has location-allowed
-in Android Settings.
+### `cell_intel`
+
+Cell-tower survey **and** geolocation in a single
+`termux-telephony-cellinfo` call. Consolidates the former `cell_survey` +
+`cell_locate` modules. Free; Android Q+ restricts cell info to apps with
+foreground location permission, so ensure Termux:API is location-allowed.
 
 **Targets accepted**: any (sensor).
-**Returns**: one `DeviceId` entity per cell, keyed
-`<mcc>-<mnc>-<lac|tac>-<cid>` (TAC for LTE/NR, LAC for GSM/UMTS).
-Confidence 0.80. Tagged `cell-tower` and `radio:<lte|gsm|umts|nr>`.
-Evidence: type, MCC, MNC, LAC/TAC, CID, PCI, dBm, ASU, level,
-registered.
+**Off-device** or `termux-api` missing: clean no-op.
+
+**Returns**, per visible cell:
+- one `DeviceId` entity keyed `<mcc>-<mnc>-<lac|tac>-<cid>` (TAC for
+  LTE/NR, LAC for GSM/UMTS), confidence 0.80, tagged `cell-tower` and
+  `radio:<lte|gsm|umts|nr>`; evidence: type, MCC, MNC, LAC/TAC, CID, PCI,
+  dBm, ASU, level, registered.
+- one `Coordinates` entity geolocating the tower, via OpenCelliD /
+  UnwiredLabs (free tier 100 req/day, `HUNTSMAN_OPENCELLID_KEY`) when a
+  key is set, falling back to a built-in **offline** MCC→country centroid
+  (coarse) so the module still produces geo even with no key and no
+  network.
 
 **Quirks**: `mcc`/`mnc` arrive as either `"505"` (string) or `505`
 (integer) across Android versions; the parser normalises both.

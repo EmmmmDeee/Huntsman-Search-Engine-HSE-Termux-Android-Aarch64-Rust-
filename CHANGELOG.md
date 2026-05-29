@@ -20,8 +20,28 @@ versions can include breaking changes; patch versions are bug-fix-only.
   semantics (partial persist → `Complete` with an error note; nothing
   persisted → `Failed`). `StoragePort::upsert_entities_batch` now takes
   `&[Entity]` so the caller retains ownership for the fallback.
+- **Batched relation persistence.** `finalise_scan` now writes the scan's
+  typed `Relation` edges through `Store::upsert_relations_batch` in a single
+  WAL transaction (one fsync) instead of one per edge — a material win on
+  high-relation scans on aarch64 — with a per-relation fallback on error.
 
 ### Added
+
+- **Verbose multi-sink debug logging + live Web-UI stream.** Every run now
+  writes a full `debug` trace to `$HOME/.huntsman/logs/hse.log` (size-rotated,
+  secret-redacted) regardless of terminal verbosity; a global `-v`/`-vv` flag
+  raises the stderr level (`RUST_LOG` still honoured). The same stream is fanned
+  to the SPA's new **Logs** view (SpiderFoot-style live console) via
+  `GET /api/v1/scans` … `/api/v1/logs/stream` (SSE) + `/api/v1/logs/recent`.
+- **`hse doctor --bundle`.** Emits a full, redacted, **offline** diagnostic
+  report (env, arch, paths, Termux:API sensor-tool availability, module counts,
+  loaded key *names*, recent failed scans, log tails) to stdout and
+  `$HOME/.huntsman/hse-debug-report.txt` — the artefact to paste to Claude Code.
+  No network, no subprocess.
+- **`install.sh` diagnostics.** Up-front environment/version snapshot written
+  to the install log, and a failure footer pointing at the diagnosis workflow.
+- See [`docs/DEBUGGING.md`](docs/DEBUGGING.md) for the install → fail →
+  diagnose → fix loop.
 
 - **Per-module cost telemetry in the dossier.** `hse scan --output dossier`
   now shows each module's cost tier (`free` / `key` / `paid`) in the "modules

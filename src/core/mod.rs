@@ -492,6 +492,9 @@ pub mod port {
 
         // ── Relations (typed entity-to-entity edges) ────────────────────────────
         fn upsert_relation(&self, r: &Relation) -> Result<()>;
+        /// Persist many relations in one transaction (with per-relation
+        /// fallback by the caller). Idempotent on the deterministic edge id.
+        fn upsert_relations_batch(&self, relations: &[Relation]) -> Result<usize>;
         fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>>;
 
         // ── Events ─────────────────────────────────────────────────────────────

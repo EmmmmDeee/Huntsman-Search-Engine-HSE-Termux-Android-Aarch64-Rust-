@@ -357,34 +357,53 @@ impl ScanEngine {
         let colocation = crate::core::relation::derive_colocation(entities, scan_id);
         let resolution = crate::core::relation::derive_resolution(entities, scan_id);
         let registration = crate::core::relation::derive_registration(entities, scan_id);
-        if lineage.is_empty()
-            && structural.is_empty()
-            && colocation.is_empty()
-            && resolution.is_empty()
-            && registration.is_empty()
-        {
+        // Capture per-family counts before the vecs are moved into the batch.
+        let (n_lin, n_str, n_col, n_res, n_reg) = (
+            lineage.len(),
+            structural.len(),
+            colocation.len(),
+            resolution.len(),
+            registration.len(),
+        );
+
+        // Gather every edge into one batch so persistence is a single WAL
+        // transaction (one fsync) instead of N — a material IO win on
+        // high-relation scans on low-power aarch64.
+        let mut all: Vec<Relation> = Vec::with_capacity(n_lin + n_str + n_col + n_res + n_reg);
+        all.extend(lineage.iter().cloned());
+        all.extend(structural);
+        all.extend(colocation);
+        all.extend(resolution);
+        all.extend(registration);
+        if all.is_empty() {
             return;
         }
-        let mut persisted = 0usize;
-        for r in lineage
-            .iter()
-            .chain(structural.iter())
-            .chain(colocation.iter())
-            .chain(resolution.iter())
-            .chain(registration.iter())
-        {
-            match self.store.upsert_relation(r) {
-                Ok(()) => persisted += 1,
-                Err(e) => warn!(scan_id, relation = %r.id, error = %e, "relation persist failed"),
+
+        // Batch with all-or-nothing semantics; fall back to per-relation
+        // upserts on error so one bad edge doesn't lose the whole graph.
+        let persisted = match self.store.upsert_relations_batch(&all) {
+            Ok(n) => n,
+            Err(batch_err) => {
+                warn!(scan_id, error = %batch_err, "batch relation persist rolled back; falling back to per-relation");
+                let mut ok = 0usize;
+                for r in &all {
+                    match self.store.upsert_relation(r) {
+                        Ok(()) => ok += 1,
+                        Err(e) => {
+                            warn!(scan_id, relation = %r.id, error = %e, "relation persist failed")
+                        }
+                    }
+                }
+                ok
             }
-        }
+        };
         info!(
             scan_id,
-            lineage = lineage.len(),
-            structural = structural.len(),
-            colocation = colocation.len(),
-            resolution = resolution.len(),
-            registration = registration.len(),
+            lineage = n_lin,
+            structural = n_str,
+            colocation = n_col,
+            resolution = n_res,
+            registration = n_reg,
             persisted,
             "entity relations persisted"
         );

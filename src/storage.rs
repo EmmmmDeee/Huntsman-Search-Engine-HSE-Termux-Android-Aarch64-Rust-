@@ -262,6 +262,38 @@ impl Store {
         Ok(())
     }
 
+    /// Persist many relations in a single transaction (one WAL fsync instead
+    /// of N) — a material IO win on high-relation scans on low-power aarch64.
+    /// Idempotent on the deterministic edge id (`ON CONFLICT DO NOTHING`).
+    /// All-or-nothing: any error rolls the batch back, and the caller falls
+    /// back to per-relation `upsert_relation`. Returns `relations.len()`.
+    pub fn upsert_relations_batch(&self, relations: &[Relation]) -> Result<usize> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO relations(id, scan_id, from_uid, to_uid, kind, confidence, observed_at, data_json)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(id) DO NOTHING",
+            )?;
+            for r in relations {
+                let json = serde_json::to_string(r)?;
+                stmt.execute(params![
+                    r.id,
+                    r.scan_id,
+                    r.from_uid,
+                    r.to_uid,
+                    r.kind.as_str(),
+                    r.confidence,
+                    r.observed_at as i64,
+                    json,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(relations.len())
+    }
+
     pub fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
@@ -642,6 +674,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn upsert_relation(&self, r: &Relation) -> Result<()> {
         Store::upsert_relation(self, r)
+    }
+
+    fn upsert_relations_batch(&self, relations: &[Relation]) -> Result<usize> {
+        Store::upsert_relations_batch(self, relations)
     }
 
     fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>> {
@@ -1450,6 +1486,27 @@ mod tests {
         assert_eq!(store.relations_for_scan("rd-scan").unwrap().len(), 1);
         assert!(store.delete_scan("rd-scan").unwrap());
         assert!(store.relations_for_scan("rd-scan").unwrap().is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn upsert_relations_batch_persists_all_and_is_idempotent() {
+        use crate::core::relation::{Relation, RelationKind};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "rb-scan");
+        let rels = vec![
+            Relation::new("a", "b", RelationKind::SubdomainOf, 0.8, "rb-scan"),
+            Relation::new("c", "d", RelationKind::ResolvesTo, 0.9, "rb-scan"),
+            Relation::new("e", "f", RelationKind::CoLocatedWith, 0.7, "rb-scan"),
+        ];
+        let n = store.upsert_relations_batch(&rels).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(store.relations_for_scan("rb-scan").unwrap().len(), 3);
+        // Re-batching the same deterministic ids must not duplicate rows.
+        store.upsert_relations_batch(&rels).unwrap();
+        assert_eq!(store.relations_for_scan("rb-scan").unwrap().len(), 3);
+        assert_eq!(store.upsert_relations_batch(&[]).unwrap(), 0);
         let _ = std::fs::remove_file(&path);
     }
 }

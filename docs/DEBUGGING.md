@@ -1,0 +1,103 @@
+# Debugging & Diagnosis (Termux aarch64, no root)
+
+HSE is designed so that when something fails on-device — and it will, repeatedly,
+while you're getting it dialled in — **diagnosis is one paste away**. Every run
+leaves a full, secret-redacted debug trace, and a single command bundles
+everything an assistant (Claude Code) needs to root-cause the failure.
+
+Everything here is **100% local and deterministic**: no telemetry, no external
+service, no network call in the diagnostic path. Logs are scrubbed of
+credentials before they're ever written or shared.
+
+---
+
+## TL;DR — the loop
+
+```
+1. It broke.
+2. Run:   hse doctor --bundle
+3. Paste the output (or ~/.huntsman/hse-debug-report.txt) to Claude Code.
+4. Apply the fix, re-run. Repeat.
+```
+
+If the **install** broke (before the binary exists), share
+`~/.cache/hse-install.log` instead — `install.sh` writes a self-diagnosing
+snapshot (OS/arch/Termux version/paths/toolchain) to the top of it.
+
+---
+
+## Where the logs live
+
+| Log | Path | What |
+|-----|------|------|
+| Runtime | `$HOME/.huntsman/logs/hse.log` | **Always-on `debug`** trace of every run — module start/done/error, expansion ticks, relation/correlator output, HTTP failures. Size-rotated (`hse.log.1`) past 5 MB. |
+| Install | `$HOME/.cache/hse-install.log` | Full `install.sh` transcript incl. the up-front diagnostic snapshot. |
+| Bundle | `$HOME/.huntsman/hse-debug-report.txt` | Written by `hse doctor --bundle`. |
+
+The runtime log is captured **regardless of terminal verbosity** — so a failure
+on an ordinary run is already recorded; you don't have to reproduce it with a
+flag.
+
+## Verbosity
+
+| You want | Do |
+|----------|----|
+| Clean terminal (default) | *(nothing)* — `info` on stderr; full `debug` still goes to the file + Web UI. |
+| Debug on the terminal too | `hse -v <cmd>` |
+| Trace (everything) on the terminal | `hse -vv <cmd>` |
+| A specific target filter | `RUST_LOG=huntsman_search_engine::core::engine=trace hse <cmd>` |
+
+## Watch it live in the Web UI (SpiderFoot-style)
+
+```
+hse serve        # binds 127.0.0.1:8080 (localhost only)
+```
+
+Open `http://127.0.0.1:8080` in Chrome/Firefox on the device → **Logs** tab: a
+dark, level-coloured, auto-scrolling console streaming the same `debug` trace
+live (SSE), with pause / clear / substring-filter. Backed by
+`GET /api/v1/logs/stream` (live) and `/api/v1/logs/recent` (on-disk backfill).
+
+## The diagnostic bundle — `hse doctor --bundle`
+
+One **offline, redacted** report (stdout + `~/.huntsman/hse-debug-report.txt`):
+
+- HSE version; OS/arch; `HOME` / `PREFIX` / `SHELL` / `TERMUX_VERSION` / `PATH`.
+- Storage health (DB opens?), module counts by cost tier.
+- **Key *names* only** that are loaded (values are never printed).
+- **Termux:API sensor tools** — which of `termux-location` / `termux-wifi-scaninfo`
+  / `termux-telephony-cellinfo` / … resolve on `PATH` (missing ⇒ those sensor
+  modules no-op, which is expected and harmless).
+- **Recent scans** incl. any `Failed` status and its error.
+- Redacted tails of the runtime and install logs.
+
+It makes **no network calls and spawns no subprocess** — pure introspection +
+local file reads, so it's safe to share and reproducible.
+
+## Common Termux failure modes → what to check
+
+| Symptom | Likely cause | Check / fix |
+|---------|--------------|-------------|
+| `pkg update` fails | Play Store Termux (abandoned) | Reinstall from **F-Droid**; `install.sh` already refuses the Play Store build. |
+| Build OOM / killed | < ~1.5 GB RAM | `install.sh` sets `CARGO_BUILD_JOBS=1`; add swap; close apps. |
+| TLS handshake errors | Wrong system clock | Android → Date & time → *Set automatically*. |
+| Sensor modules return nothing | `termux-api` package / APK missing | `pkg install termux-api` + install **Termux:API** APK from F-Droid. Bundle shows which tools are missing. They no-op cleanly otherwise. |
+| `hse: command not found` | `$PREFIX/bin` not on `PATH` | Restart the shell, or `source ~/.bashrc`. |
+| Scans return few/no entities | No keys (free modules only) / network | `hse doctor` shows loaded keys; many modules are free and need none. |
+
+## Secret safety
+
+Credentials never reach a log or the bundle: `HUNTSMAN_*=…`, `api_key:…`,
+`token=…`, `password=…`, `bearer …` patterns are masked by the logger's
+`redact` pass, and the bundle prints key **names** only. Entity UIDs and scan
+IDs are deliberately **not** redacted — they're needed for diagnosis. The
+runtime log is under your home dir on-device; review a bundle before sharing if
+your scan targets themselves are sensitive.
+
+## For the assistant diagnosing a bundle
+
+Start at **recent scans** (any `Failed` + error), then the **runtime log tail**
+(grep `ERROR`/`WARN`, module names, `ExpansionStop` reasons), then
+**environment** (arch, Termux, `PATH`) and **sensor tools** for off-device
+no-ops. For install failures, the **install log tail** snapshot pins the
+toolchain/arch/network cause.

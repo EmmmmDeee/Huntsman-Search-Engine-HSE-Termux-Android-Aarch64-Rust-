@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-Pure-Rust OSINT / GEOINT platform with **60+ modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **85 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 SpiderFoot-style Web UI, zero native dependencies.
 
@@ -50,7 +50,7 @@ for all install paths and Termux quirks.
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 60+ modules
+hse modules                                                 # list all 85 modules
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
 hse scan --kind domain --value example.com --depth 2        # domain recon
 hse scan --kind email --value user@example.com --free-only  # email pivot (free only)
@@ -82,7 +82,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 ---
 
-## Module Overview (60+ modules)
+## Module Overview (85 modules)
 
 **API-Free (no keys required):**
 - **Search engines** (13 engines): Yahoo, Bing, AOL, DuckDuckGo, Google,
@@ -189,8 +189,14 @@ Round 2: Discovered IPs → geo modules → coordinates → address.
 - `#![forbid(unsafe_code)]` — entire codebase
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
-- 700+ tests (unit + API integration + architecture boundary enforcement)
+- Typed entity-relation graph (`core::relation`): structural / lineage / geo
+  co-location / DNS resolution / WHOIS registration edges, surfaced in the CLI
+  dossier, `--output json`, GEXF export, the SPA D3 force-graph, and
+  `GET /api/v1/scans/{id}/relations`
+- 1,290+ tests (unit + API integration + architecture boundary enforcement)
 - 32 correlator rules (AU-001 through AU-032), incl. 2 graph-aware edge rules
+- Always-on, secret-redacted debug log (`$HOME/.huntsman/logs/hse.log`) +
+  live Web-UI **Logs** stream; `hse doctor --bundle` for one-paste diagnosis
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 
@@ -205,6 +211,7 @@ Round 2: Discovered IPs → geo modules → coordinates → address.
 | [`docs/MODULES.md`](docs/MODULES.md) | Module catalogue + synergy map |
 | [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) | Canonical architectural blueprint (entry point, boundaries, data-fabric lifecycle) |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Design invariants + data flow |
+| [`docs/DEBUGGING.md`](docs/DEBUGGING.md) | Logs, `doctor --bundle`, the install→diagnose loop |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common errors + fixes |
 | [`CHANGELOG.md`](CHANGELOG.md) | Version history |
 

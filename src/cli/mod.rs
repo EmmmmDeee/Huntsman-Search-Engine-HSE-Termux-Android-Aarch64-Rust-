@@ -165,7 +165,13 @@ pub enum Command {
         json: bool,
     },
     /// Verify environment: DB path, key file, Termux detection, module counts.
-    Doctor,
+    Doctor {
+        /// Emit a full, redacted diagnostic bundle (env, versions, sensor-tool
+        /// availability, log tails, recent failed scans) to stdout and
+        /// `$HOME/.huntsman/hse-debug-report.txt` — paste it to Claude Code.
+        #[arg(long)]
+        bundle: bool,
+    },
     /// Provision the local environment: write/merge `$HOME/.huntsman.env`
     /// from the canonical template and run a diagnostic smoke test.
     ///
@@ -365,7 +371,7 @@ pub async fn run() -> Result<()> {
             .await
         }
         Command::Modules { category, json } => cmd_modules(category, json),
-        Command::Doctor => doctor::cmd_doctor().await,
+        Command::Doctor { bundle } => doctor::cmd_doctor(bundle).await,
         Command::Provision {
             env_only,
             verify_only,

@@ -27,7 +27,7 @@ hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 
 | Flag | Description |
 |------|-------------|
-| `-k, --kind <KIND>`   | Target type: `email`, `username`, `phone`, `name`, `ip`, `domain`, `asn`, `coords`, `address` |
+| `-k, --kind <KIND>`   | Target type: `email`, `username`, `phone`, `name`, `ip`, `domain`, `asn`, `coords`, `address`, `url`, `org`, `abn`, `mac` |
 | `-v, --value <VALUE>` | Target value (e.g. `example.com`, `foo@bar.com`) |
 
 ### Module selection
@@ -66,7 +66,16 @@ hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 
 | Flag | Description |
 |------|-------------|
-| `-o, --output <table\|json>` | `table` (human) or `json` (full scan + entities) |
+| `-o, --output <table\|json\|dossier>` | `table` (human summary), `json` (full scan + entities + relations, machine-readable), or `dossier` (full intel grouped by category, incl. the relation graph) |
+
+### Global flags (all subcommands)
+
+| Flag | Description |
+|------|-------------|
+| `-v` / `-vv` | Terminal verbosity: `-v` = `debug`, `-vv` = `trace` on stderr. The always-on `debug` file log (`$HOME/.huntsman/logs/hse.log`) and Web-UI **Logs** stream are unaffected — full `debug` is captured regardless. See [`DEBUGGING.md`](DEBUGGING.md). |
+
+Override the filter precisely with `RUST_LOG`, e.g.
+`RUST_LOG=huntsman_search_engine::core::engine=trace hse scan …`.
 
 ### Example invocations
 
@@ -219,7 +228,10 @@ All endpoints are under `/api/v1/`.
 | GET    | `/scans/{id}`              | Single scan record. 404 if unknown. |
 | GET    | `/scans/{id}/entities`     | `{ count, entities: [Entity, ...] }`. |
 | GET    | `/scans/{id}/correlations` | `{ count, correlations: [Correlation, ...] }` (v0.4+). |
+| GET    | `/scans/{id}/relations`    | `{ count, relations: [Relation, ...] }` — the typed entity-relation graph edges (structural / lineage / geo co-location / DNS resolution / WHOIS registration), each with a deterministic SHA-256 `id`, `kind`, `from`/`to` entity UIDs, and evidence. |
 | GET    | `/scans/{id}/events`       | **SSE** — `text/event-stream` of `EventKind` JSON payloads. |
+| GET    | `/logs/recent`             | On-disk backfill of the runtime debug log (redacted, plain text). |
+| GET    | `/logs/stream`             | **SSE** — live, secret-redacted `debug` trace of the running process (the Web-UI **Logs** tab consumes this). |
 | POST   | `/live`                    | `LiveRequest` body. Returns `202 { live_id, status }` (v0.5+). |
 | GET    | `/live`                    | `{ count, sessions: [LiveSession, ...] }`. |
 | GET    | `/live/{id}`               | Single `LiveSession`. 404 if unknown. |
@@ -330,6 +342,21 @@ HUNTSMAN_* keys loaded: 0
   (none set; all free modules still work)
 ```
 
+(Key **names** only are listed — values are never printed.)
+
+### `hse doctor --bundle`
+
+Emits a full, **offline, secret-redacted** diagnostic report to stdout
+*and* `$HOME/.huntsman/hse-debug-report.txt` — the artefact to paste to
+Claude Code when an install or scan misbehaves. On top of the plain
+output it adds: environment (`os/arch`, `HOME`/`PREFIX`/`SHELL`/
+`TERMUX_VERSION`/`PATH`/`RUST_LOG`), which Termux:API **sensor tools**
+resolve on `PATH` (missing ⇒ those sensor modules no-op, expected), the
+10 most recent scans incl. any `Failed` status + error, and redacted
+tails of the runtime and install logs. It makes **no network calls and
+spawns no subprocess** — pure introspection + local file reads. See
+[`DEBUGGING.md`](DEBUGGING.md).
+
 ---
 
 ## Environment variables read by HSE
@@ -345,11 +372,27 @@ HUNTSMAN_* keys loaded: 0
 
 ## Verbose / debug logging
 
+HSE captures a full `debug` trace **on every run regardless of terminal
+verbosity** to an always-on, secret-redacted log file — so a failure on
+an ordinary run is already recorded; you don't have to reproduce it.
+
+| Sink | Where | Level |
+|------|-------|-------|
+| Terminal (stderr) | live | `info` (default), `debug` with `-v`, `trace` with `-vv` |
+| File | `$HOME/.huntsman/logs/hse.log` (size-rotated → `hse.log.1` past 5 MB) | always `debug` |
+| Web UI | **Logs** tab / `GET /api/v1/logs/stream` (SSE) + `/logs/recent` | always `debug` |
+
 ```bash
-RUST_LOG=debug hse scan --kind domain --value example.com
-RUST_LOG=huntsman_search_engine=trace hse scan ...           # everything HSE emits
+hse -v  scan --kind domain --value example.com   # debug on the terminal too
+hse -vv serve                                     # trace everything
+
+# Precise per-target filtering still works via RUST_LOG:
+RUST_LOG=huntsman_search_engine=trace hse scan ...            # everything HSE emits
 RUST_LOG=huntsman_search_engine::modules::crtsh=trace hse ... # single-module trace
 ```
 
-Trace output is human-readable structured logging, suitable for `grep`/`jq`
-when combined with `--output json`.
+Output is human-readable structured logging, suitable for `grep`/`jq`
+when combined with `--output json`. Credentials (`HUNTSMAN_*=…`,
+`api_key:…`, `token=…`, `password=…`, `bearer …`) are masked before any
+line is written or streamed. For the full install→fail→diagnose→fix loop
+see [`DEBUGGING.md`](DEBUGGING.md).

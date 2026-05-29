@@ -62,7 +62,9 @@ termux-api binaries (`termux-wifi-scaninfo`, `termux-wifi-connectioninfo`,
 termux-* modules gracefully no-op via the new `util::termux::termux_cmd`
 helper. New `MacAddress` / `Coordinates` / `DeviceId` entity flow gives
 the correlator (AU-010 infrastructure consensus) more local data to
-cluster on. 80 tests pass; 4.8 MB stripped binary.
+cluster on. 80 tests pass; 4.8 MB stripped binary. *(Later consolidated
+into 4 modules — `local_net`, `wifi_intel`, `device_sensors`,
+`cell_intel` — each calling its termux-api binary once; see below.)*
 
 ### v0.7.0 — Junction table for multi-scan entity tracking (2026-05-23)
 
@@ -84,7 +86,7 @@ paths share `module_skip_reason` so event payloads are identical
 between modes. 94 tests (84 lib + 10 integration; +3 cover the
 concurrency cap). 4.8 MB stripped binary.
 
-### v1.0.0 — 11 new OSINT orchestration modules (63 total)
+### v1.0.0 — 11 new OSINT orchestration modules (63 at the time)
 
 Shipped the OSINT orchestration API integration: `seon`, `keybase`,
 `emailrep`, `epieos`, `proxycurl`, `photon`, `mylnikov`, `overpass`,
@@ -92,7 +94,28 @@ Shipped the OSINT orchestration API integration: `seon`, `keybase`,
 `github_user` with SSH key and event activity endpoints. Added 5 new
 correlator rules (AU-023 through AU-027) for cross-platform identity
 convergence, multi-signal email fraud, and corporate-identity linking.
-Proactive key harvest wired for 4 new service domains.
+Proactive key harvest wired for 4 new service domains. *(Module count
+has since grown to **85** — see below.)*
+
+### Relation graph + observability (current)
+
+The shared data fabric gained a typed **entity-relation graph**
+(`core::relation`): structural (subdomain), lineage (derived-from), geo
+co-location, DNS resolution, and WHOIS registration edges with
+deterministic SHA-256 ids, persisted via a batched
+`upsert_relations_batch` (one transaction per scan) and surfaced in the
+CLI dossier, `--output json`/`dossier`, GEXF export, the SPA D3
+force-graph, and `GET /api/v1/scans/{id}/relations`. The correlator grew
+two graph-aware rules (AU-031 lineage-chain, AU-032 co-location cluster)
+for **32** total.
+
+Observability: an always-on, secret-redacted **debug log**
+(`$HOME/.huntsman/logs/hse.log`, size-rotated) layered over a `tracing`
+registry with stderr (`-v`/`-vv`), file, and broadcast-bus sinks; a live
+Web-UI **Logs** tab (SSE over `/api/v1/logs/stream` + `/logs/recent`);
+and `hse doctor --bundle` for a single-paste offline diagnostic report.
+The sensor modules were consolidated 6→4 (one termux-api call each).
+**85 modules**; 1,290+ tests. See `docs/DEBUGGING.md`.
 
 ## In flight
 
