@@ -1610,11 +1610,13 @@ async fn expansion_records_derived_from_lineage() {
         .iter()
         .filter(|r| r.kind == RelationKind::DerivedFrom)
         .collect();
+    // Direction is child -> parent: the Phone was *derived from* the Username
+    // that was expanded to surface it.
     assert!(
         lineage
             .iter()
-            .any(|r| r.from_uid == uname.uid && r.to_uid == phone.uid),
-        "expected a Username -> Phone DerivedFrom edge, got: {lineage:?}"
+            .any(|r| r.from_uid == phone.uid && r.to_uid == uname.uid),
+        "expected a Phone ->(DerivedFrom) Username edge (child -> parent), got: {lineage:?}"
     );
 }
 

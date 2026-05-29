@@ -201,8 +201,9 @@ impl ScanEngine {
         let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
         let mut dispatched: DispatchLog = HashSet::new();
         let mut stats = ModuleStats::default();
-        // Lineage edges (parent entity → child surfaced by expanding it),
-        // accumulated across expansion rounds and persisted in finalise_scan.
+        // Lineage `DerivedFrom` edges (child → the parent it was expanded
+        // from), accumulated across expansion rounds and persisted in
+        // finalise_scan.
         let mut lineage: Vec<Relation> = Vec::new();
 
         visited.insert(visit_key(&target));
@@ -568,11 +569,14 @@ impl ScanEngine {
                 // Record a DerivedFrom edge for every entity newly created by
                 // this candidate's dispatch (merges into existing entities are
                 // not "new" and are skipped, avoiding cross-round edge spam).
+                // Direction is child -> parent: the new entity (`uid`) was
+                // *derived from* the parent it was expanded out of (`parent_uid`),
+                // matching the `DerivedFrom` edge name.
                 for (uid, child) in entity_map.iter() {
                     if !before.contains(uid) {
                         relations.push(Relation::new(
-                            parent_uid.as_str(),
                             uid.as_str(),
+                            parent_uid.as_str(),
                             RelationKind::DerivedFrom,
                             child.confidence,
                             scan_id,
