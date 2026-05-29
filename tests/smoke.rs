@@ -432,6 +432,67 @@ async fn expansion_depth_two_chains_three_modules() {
 }
 
 #[tokio::test]
+async fn expansion_stamps_provenance_edges_on_derived_entities() {
+    // Regression: the engine MUST stamp `Entity::derived_from` on
+    // every entity produced during expansion, with the parent
+    // entity's UID. Seed-dispatched entities stay at empty
+    // `derived_from` (graph roots). The intelligence-graph rendering
+    // and the /api/v1/scans/{id}/graph endpoint depend on these
+    // edges being recorded — without them the graph is just an
+    // unconnected node bag.
+    let (engine, store, sid, target, ctx) = setup(
+        vec![
+            Arc::new(EmailToUsernameSynth), // Email seed → Username child
+            Arc::new(UsernameToPhoneSynth), // Username → Phone grandchild
+        ],
+        "provenance_chain",
+        TargetKind::Email,
+        "carol@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 2,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let _ = engine.run(scan, target, ctx).await.unwrap();
+
+    let entities = store.entities_for_scan(&sid).unwrap();
+    let by_kind = |k: EntityKind| -> Vec<&_> { entities.iter().filter(|e| e.kind == k).collect() };
+
+    let usernames = by_kind(EntityKind::Username);
+    let phones = by_kind(EntityKind::Phone);
+    assert!(!usernames.is_empty(), "expected a Username entity");
+    assert!(!phones.is_empty(), "expected a Phone entity");
+
+    // Each Username was derived from the seed Email's dispatch.
+    // The seed itself (Email) isn't emitted by any module here, so
+    // there's no Email entity to be its parent — but the Username
+    // SHOULD have a non-empty derived_from at depth ≥ 1.
+    // (Seed Email target doesn't produce an Entity unless a module
+    // emits it; in this fixture only EmailToUsernameSynth runs on
+    // Email and it emits the Username.)
+    // So the Username is a graph root (no parent), and the Phone
+    // is derived from the Username.
+    for ph in &phones {
+        assert!(
+            !ph.derived_from.is_empty(),
+            "Phone entity must record its Username parent (derived_from is empty)"
+        );
+        // Confirm at least one Username's uid appears as parent.
+        let username_uids: std::collections::HashSet<&str> =
+            usernames.iter().map(|u| u.uid.as_str()).collect();
+        assert!(
+            ph.derived_from
+                .iter()
+                .any(|p| username_uids.contains(p.as_str())),
+            "Phone parent uid {:?} doesn't match any Username uid {:?}",
+            ph.derived_from,
+            username_uids,
+        );
+    }
+}
+
+#[tokio::test]
 async fn concurrent_dispatch_produces_same_entities_as_sequential() {
     let modules: Vec<Arc<dyn Module>> =
         vec![Arc::new(EmailToUsernameSynth), Arc::new(SyntheticModule)];

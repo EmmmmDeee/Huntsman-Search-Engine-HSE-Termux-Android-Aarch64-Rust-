@@ -188,6 +188,18 @@ pub struct Entity {
     pub tags: Vec<String>,
     /// Scan ID this entity was first seen in.
     pub scan_id: String,
+    /// Parent-entity UIDs that this entity was derived from during
+    /// recursive expansion. Empty for seed entities; one or more
+    /// entries per dispatch round that produced the same entity.
+    ///
+    /// Forms the directed edge set of the scan's intelligence graph
+    /// alongside the evidence-source attribution. Lets the SPA render
+    /// `Cytoscape`-compatible node + edge JSON without reconstructing
+    /// the chain from the ModuleStart/Done event log, and lets the
+    /// correlator reason about attribution depth, convergent paths,
+    /// and orphaned high-confidence findings.
+    #[serde(default)]
+    pub derived_from: Vec<String>,
 }
 
 impl Entity {
@@ -214,7 +226,32 @@ impl Entity {
             evidence: Vec::new(),
             tags: Vec::new(),
             scan_id: scan_id.into(),
+            derived_from: Vec::new(),
         }
+    }
+
+    // ── Provenance / graph edges ────────────────────────────────────────────
+
+    /// Record that this entity was derived from `parent_uid` during
+    /// recursive expansion. Idempotent — re-adding the same parent
+    /// does not duplicate the edge. Empty/whitespace inputs are
+    /// rejected so seed-dispatched entities (no parent) stay at
+    /// `derived_from = []`.
+    pub fn derive_from(&mut self, parent_uid: impl Into<String>) {
+        let p = parent_uid.into();
+        if p.trim().is_empty() || p == self.uid {
+            return;
+        }
+        if !self.derived_from.iter().any(|existing| existing == &p) {
+            self.derived_from.push(p);
+        }
+    }
+
+    /// Builder-style variant of `derive_from`.
+    #[must_use]
+    pub fn with_parent(mut self, parent_uid: impl Into<String>) -> Self {
+        self.derive_from(parent_uid);
+        self
     }
 
     // ── Derived metrics ──────────────────────────────────────────────────────
@@ -324,6 +361,12 @@ impl Entity {
         }
         for t in other.tags {
             self.tag(t);
+        }
+        // Union the parent set — when the same entity is re-emitted
+        // from a different expansion path, both attribution edges
+        // are preserved so the graph captures convergent attribution.
+        for parent in other.derived_from {
+            self.derive_from(parent);
         }
     }
 }
@@ -986,5 +1029,113 @@ mod tests {
         let a = scan_id("email", "x");
         let b = scan_id("domain", "x");
         assert_ne!(a, b);
+    }
+
+    // ── Provenance edges (Entity::derived_from) ──────────────────────
+
+    #[test]
+    fn new_entity_has_empty_derived_from() {
+        let e = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "sid");
+        assert!(e.derived_from.is_empty(), "seed entity has no parents");
+    }
+
+    #[test]
+    fn derive_from_records_parent_uid() {
+        let mut e = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "sid");
+        let parent = Entity::new(EntityKind::Domain, "example.com", 0.9, "sid");
+        e.derive_from(parent.uid.clone());
+        assert_eq!(e.derived_from, vec![parent.uid]);
+    }
+
+    #[test]
+    fn derive_from_is_idempotent() {
+        let mut e = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "sid");
+        e.derive_from("parent-1");
+        e.derive_from("parent-1");
+        e.derive_from("parent-1");
+        assert_eq!(e.derived_from, vec!["parent-1"]);
+    }
+
+    #[test]
+    fn derive_from_rejects_self_loop() {
+        let mut e = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "sid");
+        let uid = e.uid.clone();
+        e.derive_from(uid);
+        assert!(
+            e.derived_from.is_empty(),
+            "self-derivation MUST NOT be recorded (no graph self-loops)"
+        );
+    }
+
+    #[test]
+    fn derive_from_rejects_empty_input() {
+        let mut e = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "sid");
+        e.derive_from("");
+        e.derive_from("   ");
+        assert!(e.derived_from.is_empty());
+    }
+
+    #[test]
+    fn with_parent_builder_chains() {
+        let e = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "sid")
+            .with_parent("p1")
+            .with_parent("p2")
+            .with_parent("p1"); // dedup
+        assert_eq!(e.derived_from, vec!["p1", "p2"]);
+    }
+
+    #[test]
+    fn merge_unions_derived_from_parents() {
+        // Convergent attribution: same entity emitted from two
+        // different expansion paths. Both parents should land in
+        // the union — the graph captures BOTH attribution edges.
+        let mut a = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "sid");
+        a.derive_from("parent-A");
+        let mut b = Entity::new(EntityKind::Email, "alice@example.com", 0.7, "sid");
+        b.derive_from("parent-B");
+        a.merge(b);
+        assert!(a.derived_from.contains(&"parent-A".to_string()));
+        assert!(a.derived_from.contains(&"parent-B".to_string()));
+        assert_eq!(a.derived_from.len(), 2);
+    }
+
+    #[test]
+    fn merge_dedups_shared_parent() {
+        // If both halves cite the same parent, it stays once.
+        let mut a = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "sid");
+        a.derive_from("parent-A");
+        let mut b = Entity::new(EntityKind::Email, "alice@example.com", 0.7, "sid");
+        b.derive_from("parent-A");
+        a.merge(b);
+        assert_eq!(a.derived_from, vec!["parent-A"]);
+    }
+
+    #[test]
+    fn derived_from_round_trips_through_serde() {
+        // Storage persists Entity as JSON via serde — the new field
+        // must round-trip cleanly, and pre-v1.5 records (with no
+        // `derived_from` key) must still deserialise (serde default).
+        let mut e = Entity::new(EntityKind::Domain, "example.com", 0.9, "sid");
+        e.derive_from("parent-A");
+        e.derive_from("parent-B");
+        let json = serde_json::to_string(&e).unwrap();
+        let back: Entity = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.derived_from, vec!["parent-A", "parent-B"]);
+
+        // Backwards-compat probe: a JSON missing the field still
+        // deserialises with an empty Vec.
+        let legacy = serde_json::json!({
+            "uid": e.uid,
+            "kind": "domain",
+            "value": e.value,
+            "raw_value": e.raw_value,
+            "confidence": 0.9,
+            "corroboration": 1,
+            "observed_at": 0,
+            "evidence": [],
+            "scan_id": "sid"
+        });
+        let legacy_back: Entity = serde_json::from_value(legacy).unwrap();
+        assert!(legacy_back.derived_from.is_empty());
     }
 }

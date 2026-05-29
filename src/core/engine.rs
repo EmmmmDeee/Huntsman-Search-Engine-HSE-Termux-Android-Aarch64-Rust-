@@ -202,9 +202,12 @@ impl ScanEngine {
         let mut stats = ModuleStats::default();
 
         visited.insert(visit_key(&target));
+        // Seed dispatch: no parent_uid — emitted entities have empty
+        // `derived_from`, marking them as roots of the scan graph.
         self.dispatch_target(
             &scan.id,
             &target,
+            None,
             &mut ctx,
             &opts,
             &mut entity_map,
@@ -381,7 +384,10 @@ impl ScanEngine {
             // not this one.
             let entities_at_round_start = entity_map.len();
             let has_paid = ctx.keys.contains_key("HUNTSMAN_OATHNET_KEY");
-            let mut next: Vec<(Target, f64)> = Vec::new();
+            // (target, weight, parent_uid) — parent uid is threaded
+            // through dispatch so emitted entities can record their
+            // expansion provenance in `Entity::derived_from`.
+            let mut next: Vec<(Target, f64, String)> = Vec::new();
             for entity in entity_map.values() {
                 if entity.c_effective() < opts.min_expand_confidence {
                     continue;
@@ -407,7 +413,7 @@ impl ScanEngine {
                         has_paid,
                         richness,
                     );
-                    next.push((new_target, weight));
+                    next.push((new_target, weight, entity.uid.clone()));
                 }
             }
 
@@ -427,7 +433,8 @@ impl ScanEngine {
                 }
             }
             let dispatched_this_round = next.len();
-            let next: Vec<Target> = next.into_iter().map(|(t, _)| t).collect();
+            // Drop the weight; keep the parent_uid alongside the target.
+            let next: Vec<(Target, String)> = next.into_iter().map(|(t, _, p)| (t, p)).collect();
 
             if next.is_empty() {
                 let stop = StopReason::NoMoreCandidates;
@@ -449,7 +456,7 @@ impl ScanEngine {
                 },
             );
 
-            for nt in &next {
+            for (nt, parent_uid) in &next {
                 if ctx.cancel.is_cancelled() {
                     let stop = StopReason::Cancelled;
                     self.emit(
@@ -470,7 +477,17 @@ impl ScanEngine {
                     return stop;
                 }
                 if let Err(e) = self
-                    .dispatch_target(scan_id, nt, ctx, opts, entity_map, true, stats, dispatched)
+                    .dispatch_target(
+                        scan_id,
+                        nt,
+                        Some(parent_uid.as_str()),
+                        ctx,
+                        opts,
+                        entity_map,
+                        true,
+                        stats,
+                        dispatched,
+                    )
                     .await
                 {
                     // Per-target dispatch errors are already surfaced as
@@ -570,11 +587,13 @@ impl ScanEngine {
     /// emitted entities into the per-scan `entity_map`. Shared by
     /// `dispatch_target_sequential` and `dispatch_target_concurrent`
     /// so the event payload shape is identical between the two paths.
+    #[allow(clippy::too_many_arguments)]
     fn finalise_module_result(
         &self,
         scan_id: &str,
         name: &'static str,
         min_confidence: Option<f64>,
+        parent_uid: Option<&str>,
         entity_map: &mut HashMap<String, Entity>,
         result: TimeoutResult,
         stats: &mut ModuleStats,
@@ -620,6 +639,13 @@ impl ScanEngine {
                     scan_entity_for_keys(&entity);
                     let mut entity = entity;
                     enrich_geospatial(&mut entity);
+                    // Stamp the provenance edge BEFORE the merge so
+                    // both freshly-inserted and re-emitted entities
+                    // pick up the parent uid. Empty for seed dispatch
+                    // (parent_uid == None) → graph root.
+                    if let Some(p) = parent_uid {
+                        entity.derive_from(p);
+                    }
                     if let Some(existing) = entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
                     } else {
@@ -641,11 +667,18 @@ impl ScanEngine {
 
     /// Dispatch every accepting module against `target`. Picks the
     /// sequential or concurrent codepath based on `opts.max_concurrent`.
+    ///
+    /// `parent_uid` carries the UID of the entity whose expansion
+    /// produced `target` — used to stamp `Entity::derived_from` on
+    /// the resulting emissions so the scan's intelligence graph
+    /// records its edges. `None` for the seed dispatch (entities
+    /// produced from the seed are graph roots).
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_target(
         &self,
         scan_id: &str,
         target: &Target,
+        parent_uid: Option<&str>,
         ctx: &mut ModuleContext,
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
@@ -657,6 +690,7 @@ impl ScanEngine {
             self.dispatch_target_sequential(
                 scan_id,
                 target,
+                parent_uid,
                 ctx,
                 opts,
                 entity_map,
@@ -669,6 +703,7 @@ impl ScanEngine {
             self.dispatch_target_concurrent(
                 scan_id,
                 target,
+                parent_uid,
                 ctx,
                 opts,
                 entity_map,
@@ -686,6 +721,7 @@ impl ScanEngine {
         &self,
         scan_id: &str,
         target: &Target,
+        parent_uid: Option<&str>,
         ctx: &mut ModuleContext,
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
@@ -759,6 +795,7 @@ impl ScanEngine {
                 scan_id,
                 name,
                 opts.min_confidence,
+                parent_uid,
                 entity_map,
                 result,
                 stats,
@@ -812,6 +849,7 @@ impl ScanEngine {
         &self,
         scan_id: &str,
         target: &Target,
+        parent_uid: Option<&str>,
         ctx: &mut ModuleContext,
         opts: &ScanOptions,
         entity_map: &mut HashMap<String, Entity>,
@@ -880,6 +918,7 @@ impl ScanEngine {
                 scan_id,
                 name,
                 opts.min_confidence,
+                parent_uid,
                 entity_map,
                 result,
                 stats,
@@ -1018,6 +1057,7 @@ impl ScanEngine {
                 scan_id,
                 outcome.name,
                 opts.min_confidence,
+                parent_uid,
                 entity_map,
                 outcome.result,
                 stats,

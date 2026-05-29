@@ -8,6 +8,7 @@
 //! | GET    | `/api/v1/version`                 | `version`                |
 //! | GET    | `/api/v1/modules`                 | `modules_list`           |
 //! | GET    | `/api/v1/modules/graph`           | `modules_graph` (v1.1+)  |
+//! | GET    | `/api/v1/scans/{id}/graph`        | `scan_provenance_graph` (v1.5+) |
 //! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
 //! | POST   | `/api/v1/scans`                   | `scan_create`            |
 //! | GET    | `/api/v1/scans`                   | `scan_list`              |
@@ -161,6 +162,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route(
             "/scans/{id}/report.json",
             get(scan_handlers::scan_report_json),
+        )
+        .route(
+            "/scans/{id}/graph",
+            get(scan_handlers::scan_provenance_graph),
         )
         .route(
             "/scans/{id}/graph.gexf",

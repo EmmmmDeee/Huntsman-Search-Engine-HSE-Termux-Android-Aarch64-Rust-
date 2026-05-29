@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tracing::info;
 
@@ -373,6 +373,83 @@ pub async fn scan_export_gexf(
     };
     let body = crate::core::gexf::entities_to_gexf(&entities, &id);
     download_response(body, "application/xml; charset=utf-8", &id, "gexf")
+}
+
+/// Cytoscape-friendly node + edge view of a scan's entities, derived
+/// from `Entity::derived_from` provenance edges that the engine
+/// stamps at emit-time. Lets the SPA render the intelligence graph
+/// without reconstructing it from the event log.
+///
+/// Shape:
+/// ```json
+/// {
+///   "nodes": [
+///     { "uid": "…", "kind": "Email", "value": "a@b", "c_eff": 0.81,
+///       "tags": [...], "is_root": true|false }
+///   ],
+///   "edges": [
+///     { "from": "<parent_uid>", "to": "<child_uid>", "via": ["module1", ...] }
+///   ],
+///   "node_count": N,
+///   "edge_count": M,
+///   "root_count": R
+/// }
+/// ```
+///
+/// `is_root` = entity has no `derived_from` parents (produced from
+/// the seed dispatch). `via` lists the modules that contributed
+/// evidence to the child entity — useful for path narration.
+pub async fn scan_provenance_graph(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let entities = match s.store.entities_for_scan(&id) {
+        Ok(es) => es,
+        Err(e) => return internal_error(&e),
+    };
+    let nodes: Vec<Value> = entities
+        .iter()
+        .map(|e| {
+            let mut sources: Vec<&str> = e.evidence_sources().into_iter().collect();
+            sources.sort_unstable();
+            json!({
+                "uid": e.uid,
+                "kind": e.kind.to_string(),
+                "value": e.value,
+                "c_eff": e.c_effective(),
+                "confidence": e.confidence,
+                "corroboration": e.corroboration,
+                "tags": e.tags,
+                "is_root": e.derived_from.is_empty(),
+                "modules": sources,
+            })
+        })
+        .collect();
+    let mut edges: Vec<Value> = Vec::new();
+    for e in &entities {
+        let mut via: Vec<&str> = e.evidence_sources().into_iter().collect();
+        via.sort_unstable();
+        for parent in &e.derived_from {
+            edges.push(json!({
+                "from": parent,
+                "to": e.uid,
+                "via": via,
+            }));
+        }
+    }
+    let root_count = entities
+        .iter()
+        .filter(|e| e.derived_from.is_empty())
+        .count();
+    Json(json!({
+        "scan_id": id,
+        "nodes": nodes,
+        "edges": edges,
+        "node_count": entities.len(),
+        "edge_count": edges.len(),
+        "root_count": root_count,
+    }))
+    .into_response()
 }
 
 fn download_response(
