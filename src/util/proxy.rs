@@ -144,12 +144,46 @@ impl Proxy {
     }
 }
 
-/// A harvested-but-unvalidated candidate, carrying the country the source
-/// reported (where available) so it survives validation.
+/// A harvested-but-unvalidated candidate. Carries the wire protocol
+/// (`http`/`socks5`/`socks4`), the country the source reported (if any), and a
+/// **liveness prior** (higher = source/recency more likely to be live) used to
+/// validate the most promising candidates first under a fixed probe budget.
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub addr: String,
+    pub proto: &'static str,
     pub country: Option<String>,
+    pub prior: u8,
+}
+
+/// Normalise a source-reported protocol to one we route/validate.
+fn map_proto(p: &str) -> &'static str {
+    match p.trim().to_lowercase().as_str() {
+        "socks5" => "socks5",
+        "socks4" => "socks4",
+        // "https" in free lists means "supports HTTPS targets", not a TLS proxy.
+        _ => "http",
+    }
+}
+
+/// Liveness-prior score for validation ordering: source/recency prior, boosted
+/// when the port is a common proxy port (more likely to be a real, live proxy).
+/// Maximises live-proxy yield per probe — the statistically efficient ordering.
+fn candidate_score(c: &Candidate) -> u32 {
+    let mut s = u32::from(c.prior) * 10;
+    if let Some(port) = c
+        .addr
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse::<u16>().ok())
+        && matches!(
+            port,
+            80 | 443 | 1080 | 1085 | 3128 | 4145 | 8000 | 8080 | 8888 | 9050
+        )
+    {
+        s += 5;
+    }
+    s
 }
 
 /// Sort key: best anonymity first. `None` (undetermined) sits above the
@@ -243,41 +277,83 @@ impl ProxyPool {
     }
 }
 
-/// Harvest candidate proxies from multiple free public sources, capturing
-/// country where the source provides it (geonode does; the text lists don't).
+/// Harvest candidate proxies from a **diverse** set of free public sources —
+/// HTTP *and* SOCKS4/SOCKS5, including broad community aggregations, so the pool
+/// isn't limited to the same few saturated scrape APIs. Candidates carry their
+/// protocol, country (where the source reports it), and a liveness prior.
+///
+/// **Government / military / reserved ranges are dropped here and never probed**
+/// (see `preflight::sensitive_range_reason`). We only ingest publicly-listed
+/// (advertised-open) proxies — there is intentionally no active scanning of
+/// arbitrary IP ranges.
 pub async fn harvest() -> Vec<Candidate> {
     let mut raw: Vec<Candidate> = Vec::new();
 
-    // Source 1: proxyscrape.com (text list, one per line)
-    if let Some(body) = curl_get(
-        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=all",
-    ).await {
-        for line in body.lines() {
-            let trimmed = line.trim();
-            if trimmed.contains(':') && trimmed.len() >= 9 {
-                raw.push(Candidate { addr: trimmed.to_string(), country: None });
+    // (url, protocol, liveness-prior). Higher prior = source/recency more
+    // predictive of a live proxy.
+    const TEXT_SOURCES: &[(&str, &str, u8)] = &[
+        (
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=all",
+            "http",
+            1,
+        ),
+        (
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=5000&country=all",
+            "socks5",
+            2,
+        ),
+        (
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&timeout=5000&country=all",
+            "socks4",
+            1,
+        ),
+        (
+            "https://www.proxy-list.download/api/v1/get?type=https&anon=elite",
+            "http",
+            2,
+        ),
+        (
+            "https://www.proxy-list.download/api/v1/get?type=socks5",
+            "socks5",
+            2,
+        ),
+        // Broad community aggregations (not the saturated scrape APIs):
+        (
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+            "http",
+            1,
+        ),
+        (
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
+            "socks5",
+            2,
+        ),
+        (
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
+            "socks4",
+            1,
+        ),
+    ];
+    for (url, proto, prior) in TEXT_SOURCES {
+        if let Some(body) = curl_get(url).await {
+            for line in body.lines() {
+                let t = line.trim();
+                if t.contains(':') && t.len() >= 9 && !t.contains(' ') {
+                    raw.push(Candidate {
+                        addr: t.to_string(),
+                        proto,
+                        country: None,
+                        prior: *prior,
+                    });
+                }
             }
         }
     }
 
-    // Source 2: proxy-list.download (text list, elite-only request)
-    if let Some(body) =
-        curl_get("https://www.proxy-list.download/api/v1/get?type=https&anon=elite").await
-    {
-        for line in body.lines() {
-            let trimmed = line.trim();
-            if trimmed.contains(':') && trimmed.len() >= 9 {
-                raw.push(Candidate {
-                    addr: trimmed.to_string(),
-                    country: None,
-                });
-            }
-        }
-    }
-
-    // Source 3: geonode (JSON — includes country)
+    // geonode (JSON — country + recency + per-proxy protocol). Recency-sorted →
+    // highest liveness prior.
     if let Some(body) = curl_get(
-        "https://proxylist.geonode.com/api/proxy-list?limit=100&page=1&sort_by=lastChecked&sort_type=desc&protocols=http%2Chttps",
+        "https://proxylist.geonode.com/api/proxy-list?limit=200&page=1&sort_by=lastChecked&sort_type=desc&protocols=http%2Chttps%2Csocks4%2Csocks5",
     ).await
         && let Ok(val) = serde_json::from_str::<serde_json::Value>(&body)
         && let Some(data) = val.get("data").and_then(|d| d.as_array())
@@ -285,32 +361,53 @@ pub async fn harvest() -> Vec<Candidate> {
         for item in data {
             let ip = item.get("ip").and_then(|v| v.as_str()).unwrap_or("");
             let port = item.get("port").and_then(|v| v.as_str()).unwrap_or("");
+            if ip.is_empty() || port.is_empty() {
+                continue;
+            }
+            let proto = item
+                .get("protocols")
+                .and_then(|p| p.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())
+                .map(map_proto)
+                .unwrap_or("http");
             let country = item
                 .get("country")
                 .and_then(|v| v.as_str())
                 .filter(|c| !c.is_empty())
-                .map(|c| c.to_uppercase());
-            if !ip.is_empty() && !port.is_empty() {
-                raw.push(Candidate {
-                    addr: format!("{ip}:{port}"),
-                    country,
-                });
-            }
+                .map(str::to_uppercase);
+            raw.push(Candidate {
+                addr: format!("{ip}:{port}"),
+                proto,
+                country,
+                prior: 3,
+            });
         }
     }
 
-    // Dedup by address, keeping the first occurrence (which may carry country).
-    raw.sort_by(|a, b| a.addr.cmp(&b.addr));
-    raw.dedup_by(|a, b| a.addr == b.addr);
+    // Dedup by (addr, proto), then DROP any government/reserved range — those
+    // are never probed, validated, or routed through.
+    raw.sort_by(|a, b| a.addr.cmp(&b.addr).then(a.proto.cmp(b.proto)));
+    raw.dedup_by(|a, b| a.addr == b.addr && a.proto == b.proto);
+    raw.retain(|c| {
+        let ip = c.addr.split(':').next().unwrap_or("");
+        crate::util::preflight::sensitive_range_reason(ip).is_none()
+    });
     raw
 }
 
 /// Validate a proxy via a header-echo request, returning it with latency and
 /// anonymity grade. `real_ip` is our own public IP (empty if unknown) used to
 /// detect transparent proxies. `None` if the proxy is dead.
-pub async fn validate(addr: &str, real_ip: &str) -> Option<Proxy> {
+pub async fn validate(addr: &str, proto: &str, real_ip: &str) -> Option<Proxy> {
+    // Hard guardrail (defence-in-depth): never connect to a sensitive range,
+    // even if one slipped past the harvest filter.
+    let ip = addr.split(':').next().unwrap_or("");
+    if crate::util::preflight::sensitive_range_reason(ip).is_some() {
+        return None;
+    }
     let start = std::time::Instant::now();
-    let proxy_url = format!("http://{addr}");
+    let proxy_url = format!("{proto}://{addr}");
     let (code, body) = curl_through_proxy(&proxy_url, "http://httpbin.org/get").await?;
     if code != 200 {
         return None;
@@ -332,7 +429,7 @@ pub async fn validate(addr: &str, real_ip: &str) -> Option<Proxy> {
 
     Some(Proxy {
         addr: addr.to_string(),
-        proto: "http".to_string(),
+        proto: proto.to_string(),
         latency_ms,
         grade,
         country: None,
@@ -346,18 +443,22 @@ pub async fn validate(addr: &str, real_ip: &str) -> Option<Proxy> {
 /// up to `max_validate` candidates in parallel. Network-bound; empty `Vec` if
 /// nothing validates.
 pub async fn retrieve(max_validate: usize) -> Vec<Proxy> {
-    let candidates = harvest().await;
+    let mut candidates = harvest().await;
     if candidates.is_empty() {
         return Vec::new();
     }
     let real_ip = real_public_ip().await.unwrap_or_default();
 
+    // Statistically efficient: validate the highest-liveness-prior candidates
+    // first (recency-sorted sources, SOCKS, common ports) so a fixed probe
+    // budget yields the most live proxies.
+    candidates.sort_by_key(|c| std::cmp::Reverse(candidate_score(c)));
     let to_test: Vec<Candidate> = candidates.into_iter().take(max_validate).collect();
     let mut tasks = Vec::new();
     for c in to_test {
         let rip = real_ip.clone();
         tasks.push(tokio::spawn(async move {
-            validate(&c.addr, &rip).await.map(|mut p| {
+            validate(&c.addr, c.proto, &rip).await.map(|mut p| {
                 p.country = c.country;
                 p
             })

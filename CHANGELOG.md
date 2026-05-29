@@ -12,6 +12,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **SOCKS proxies + statistically efficient retrieval + government-range
+  exclusion.** The retriever now ingests **SOCKS4/SOCKS5** as well as HTTP
+  (validated/graded/typed/routed identically; reqwest gains the `socks`
+  feature), from a **diversified** set of public sources (proxyscrape SOCKS,
+  proxy-list.download, and broad community aggregations) so the pool isn't
+  limited to a few saturated scrape APIs. Candidates carry a **liveness prior**
+  (source recency + common-port boost) and are validated highest-prior-first, so
+  a fixed probe budget yields the most live proxies. A hard **government /
+  military / reserved-range guardrail** (`preflight::sensitive_range_reason` —
+  all private/reserved space plus the IANA US-DoD `/8` blocks) is enforced at
+  three layers: candidates in those ranges are dropped at harvest, never
+  validated, and never routed through (explicit `HUNTSMAN_PROXY` included). The
+  ABN/ACN registry API and search engines are unaffected — they contact
+  published gov endpoints by hostname (authorized API resources), not by
+  probing IP ranges. `hse proxies` shows the protocol column.
+
 - **Proxy type classification (datacenter / residential / mobile).** The
   retriever now determines each proxy's infrastructure type by **ASN
   IP-intelligence** — the most accurate readily-available method: a single

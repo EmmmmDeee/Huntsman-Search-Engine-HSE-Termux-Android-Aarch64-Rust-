@@ -80,25 +80,44 @@ fn resolve_proxy() -> Option<String> {
     if v.is_empty() {
         return None;
     }
-    if v.eq_ignore_ascii_case("auto") {
+    let chosen = if v.eq_ignore_ascii_case("auto") {
         let pool = crate::util::proxy::load_pool();
         // Region-match: if HUNTSMAN_REGION is set, prefer a proxy egressing from
         // that country (the high-yield range for the locale) so the request and
         // the localised search results come from the same region. Falls back to
         // the best-graded proxy overall.
-        if let Ok(region) = std::env::var("HUNTSMAN_REGION") {
+        let region_pick = std::env::var("HUNTSMAN_REGION").ok().and_then(|region| {
             let cc = region.trim().split('-').next().unwrap_or("").to_uppercase();
-            if cc.len() == 2
-                && let Some(p) = pool
-                    .iter()
-                    .find(|p| p.country.as_deref() == Some(cc.as_str()))
-            {
-                return Some(p.url());
-            }
-        }
-        return pool.first().map(|p| p.url());
+            (cc.len() == 2)
+                .then(|| {
+                    pool.iter()
+                        .find(|p| p.country.as_deref() == Some(cc.as_str()))
+                })
+                .flatten()
+                .map(|p| p.url())
+        });
+        region_pick.or_else(|| pool.first().map(|p| p.url()))?
+    } else {
+        v
+    };
+
+    // Hard guardrail: NEVER route through (and thus never connect to) a
+    // government / reserved IP range, even via an explicit proxy. The pool is
+    // already gov-filtered at harvest; this also covers explicit `HUNTSMAN_PROXY`.
+    if let Some(host) = proxy_host(&chosen)
+        && crate::util::preflight::sensitive_range_reason(host).is_some()
+    {
+        tracing::warn!(target: "hse::proxy", proxy = %chosen, "refusing proxy in a government/reserved range");
+        return None;
     }
-    Some(v)
+    Some(chosen)
+}
+
+/// Extract the host (without scheme, port, or path) from a proxy URL.
+fn proxy_host(url: &str) -> Option<&str> {
+    let after = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let hostport = after.split(['/', '?']).next()?;
+    Some(hostport.rsplit_once(':').map_or(hostport, |(h, _)| h))
 }
 
 /// Read up to 200 characters of a non-success response body, trim, and

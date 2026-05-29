@@ -119,13 +119,14 @@ fn meets_grade(p: &Proxy, floor: &str) -> bool {
 
 fn print_table(proxies: &[Proxy]) {
     println!(
-        "  {:<22} {:<10} {:<12} {:<4} {:>8}  org",
-        "addr", "grade", "type", "cc", "latency"
+        "  {:<22} {:<7} {:<10} {:<12} {:<4} {:>8}  org",
+        "addr", "proto", "grade", "type", "cc", "latency"
     );
     for p in proxies.iter().take(50) {
         println!(
-            "  {:<22} {:<10} {:<12} {:<4} {:>5} ms  {}",
+            "  {:<22} {:<7} {:<10} {:<12} {:<4} {:>5} ms  {}",
             p.addr,
+            p.proto,
             p.grade.map(Grade::as_str).unwrap_or("?"),
             p.proxy_type.map(ProxyType::as_str).unwrap_or("?"),
             p.country.as_deref().unwrap_or("-"),

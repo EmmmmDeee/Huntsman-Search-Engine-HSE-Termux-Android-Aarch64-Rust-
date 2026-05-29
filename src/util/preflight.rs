@@ -82,6 +82,38 @@ pub fn is_private_ip(ip: &str) -> bool {
     }
 }
 
+/// Returns `Some(reason)` if `ip` falls in a government / military or otherwise
+/// sensitive reserved range that must **never** be probed, validated, or routed
+/// through (e.g. when sourcing proxies). Conservative and best-effort: it denies
+/// all private/reserved space *and* the well-documented IANA `/8` blocks
+/// allocated to the US Department of Defense. A complete global government-range
+/// map is not publicly enumerable, so this covers the prominent, well-known
+/// cases plus all reserved space rather than claiming completeness.
+pub fn sensitive_range_reason(ip: &str) -> Option<&'static str> {
+    let addr = ip.trim().parse::<std::net::IpAddr>().ok()?;
+    if is_private_ip(ip) {
+        return Some("private/reserved range");
+    }
+    if let std::net::IpAddr::V4(v4) = addr {
+        let o = v4.octets();
+        // IANA /8 blocks allocated to the US Department of Defense.
+        const DOD_SLASH8: &[u8] = &[6, 7, 11, 21, 22, 26, 28, 29, 30, 33, 55, 214, 215];
+        if DOD_SLASH8.contains(&o[0]) {
+            return Some("US DoD / government range");
+        }
+        if o[0] >= 240 {
+            return Some("reserved (240.0.0.0/4)");
+        }
+        if o[0] == 198 && (o[1] == 18 || o[1] == 19) {
+            return Some("benchmarking (198.18.0.0/15)");
+        }
+        if v4.is_documentation() {
+            return Some("documentation range");
+        }
+    }
+    None
+}
+
 /// True if the domain is one of the IANA-reserved special-use names
 /// (RFC 6761 / 6762) that should never reach external intel APIs.
 ///
@@ -137,6 +169,52 @@ pub fn is_placeholder_username(u: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── sensitive_range_reason (gov / reserved deny-list) ──────────────────
+
+    #[test]
+    fn sensitive_ranges_are_denied() {
+        // US DoD /8 blocks.
+        for ip in [
+            "6.1.2.3",
+            "7.0.0.1",
+            "11.22.33.44",
+            "22.1.1.1",
+            "55.9.9.9",
+            "214.0.0.1",
+        ] {
+            assert!(
+                sensitive_range_reason(ip).is_some(),
+                "{ip} should be denied (DoD)"
+            );
+        }
+        // Reserved / benchmarking / private.
+        assert!(sensitive_range_reason("240.0.0.1").is_some());
+        assert!(sensitive_range_reason("198.18.0.5").is_some());
+        assert!(sensitive_range_reason("10.0.0.1").is_some());
+        assert!(sensitive_range_reason("127.0.0.1").is_some());
+    }
+
+    #[test]
+    fn ordinary_public_ips_are_allowed() {
+        for ip in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "203.0.113.1".trim_end(),
+            "45.33.32.156",
+        ] {
+            // (203.0.113.0/24 is documentation → denied; use a real public one)
+            if ip == "203.0.113.1" {
+                continue;
+            }
+            assert!(
+                sensitive_range_reason(ip).is_none(),
+                "{ip} should be allowed"
+            );
+        }
+        // Non-IPs don't match (caller validates shape separately).
+        assert!(sensitive_range_reason("not-an-ip").is_none());
+    }
 
     // ── is_private_ip ──────────────────────────────────────────────────────
 
