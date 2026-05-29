@@ -590,7 +590,7 @@ fn build_queries(target: &Target) -> Vec<String> {
                     let fl_concat = format!("{}{}", first.to_lowercase(), last.to_lowercase());
                     let fml = format!(
                         "{}{}{}",
-                        &first.to_lowercase()[..1.min(first.len())],
+                        crate::util::str_util::first_char(&first.to_lowercase()),
                         middle.to_lowercase(),
                         last.to_lowercase()
                     );
@@ -843,7 +843,9 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
         TargetKind::Email => {
             let local = target.value.split('@').next().unwrap_or("");
             if local.len() >= 5 {
-                local[1..].to_lowercase()
+                // Drop the leading initial char-safely (`local[1..]` panics
+                // when the local part starts with a multi-byte codepoint).
+                local.chars().skip(1).collect::<String>().to_lowercase()
             } else {
                 return Vec::new();
             }
@@ -883,12 +885,13 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
             if !seen.insert(first.to_string()) {
                 continue;
             }
+            // Char-safe title-casing. `first` is ASCII-guaranteed above, but
+            // `lastname` derives from the (possibly non-ASCII) seed value, so
+            // `lastname[..1]` / `&lastname[1..]` would slice mid-codepoint.
             let name = format!(
-                "{}{} {}{}",
-                first[..1].to_uppercase(),
-                &first[1..],
-                lastname[..1].to_uppercase(),
-                &lastname[1..]
+                "{} {}",
+                crate::util::str_util::title_case(first),
+                crate::util::str_util::title_case(&lastname)
             );
             found.push((name, r.url.clone()));
         }
@@ -1340,6 +1343,41 @@ mod tests {
         let q = build_queries(&t);
         assert!(q.len() >= 2);
         assert!(q[0].contains("\"123 Main St, Springfield\""));
+    }
+
+    #[test]
+    fn build_queries_non_ascii_three_part_name_does_not_panic() {
+        // Regression: the f-m-l initial built `&first.to_lowercase()[..1]`,
+        // which panicked when the first name began with a multi-byte
+        // codepoint. A 3-part name exercises that branch.
+        let t = Target::new(TargetKind::FullName, "Élodie Marie Dupont");
+        let q = build_queries(&t);
+        assert!(!q.is_empty());
+        // The first-initial query must carry the whole leading codepoint.
+        assert!(
+            q.iter().any(|s| s.contains("émariedupont")),
+            "expected f-m-l query with full 'é' initial, got {q:?}"
+        );
+    }
+
+    #[test]
+    fn extract_family_names_non_ascii_surname_does_not_panic() {
+        // Regression: title-casing did `lastname[..1].to_uppercase()` +
+        // `&lastname[1..]`, slicing mid-codepoint when the seed surname began
+        // with a multi-byte char — aborting the binary under panic=abort.
+        let results = vec![SearchResult {
+            url: "https://example.com/robert".to_string(),
+            title: "Robert Ñúñez profile page".to_string(),
+            snippet: String::new(),
+            engine: "test",
+            query: String::new(),
+        }];
+        let t = Target::new(TargetKind::FullName, "Jordan Ñúñez");
+        let names = extract_family_names(&results, &t);
+        assert!(
+            names.iter().any(|(n, _)| n == "Robert Ñúñez"),
+            "expected char-safe title-cased name, got {names:?}"
+        );
     }
 
     #[test]

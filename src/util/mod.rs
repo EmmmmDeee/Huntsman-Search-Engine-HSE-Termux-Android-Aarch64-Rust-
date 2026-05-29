@@ -51,6 +51,56 @@ pub mod str_util {
         }
         &s[..end]
     }
+
+    /// First Unicode scalar of `s` as an owned `String` (empty if `s` is
+    /// empty). Char-boundary-safe: a multi-byte leading codepoint (é, ñ, ø…)
+    /// is returned whole. Replaces the `&s[..1]` byte-slice idiom, which
+    /// panics — and under `panic = "abort"` crashes the binary — when the
+    /// first character is not a single byte.
+    pub fn first_char(s: &str) -> String {
+        s.chars().next().map(String::from).unwrap_or_default()
+    }
+
+    /// Upper-case the first character and keep the remainder unchanged.
+    /// Char-boundary-safe replacement for `s[..1].to_uppercase() + &s[1..]`,
+    /// which panics on a multi-byte leading codepoint.
+    pub fn title_case(s: &str) -> String {
+        let mut chars = s.chars();
+        match chars.next() {
+            Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+            None => String::new(),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn truncate_safe_never_splits_a_codepoint() {
+            // 'é' (2 bytes) straddles byte 1; truncating to 1 must back off to 0.
+            assert_eq!(truncate_safe("é", 1), "");
+            assert_eq!(truncate_safe("aé", 2), "a");
+            assert_eq!(truncate_safe("abc", 2), "ab");
+            assert_eq!(truncate_safe("abc", 10), "abc");
+        }
+
+        #[test]
+        fn first_char_is_codepoint_safe() {
+            assert_eq!(first_char("émile"), "é");
+            assert_eq!(first_char("jordan"), "j");
+            assert_eq!(first_char(""), "");
+            assert_eq!(first_char("中文"), "中");
+        }
+
+        #[test]
+        fn title_case_is_codepoint_safe() {
+            assert_eq!(title_case("émile"), "Émile");
+            assert_eq!(title_case("jordan"), "Jordan");
+            assert_eq!(title_case("ñoño"), "Ñoño");
+            assert_eq!(title_case(""), "");
+        }
+    }
 }
 
 pub mod geo {

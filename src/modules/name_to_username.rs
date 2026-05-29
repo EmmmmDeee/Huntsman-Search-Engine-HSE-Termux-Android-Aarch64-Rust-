@@ -88,11 +88,7 @@ fn parse_name_parts(raw: &str) -> Vec<NameParts> {
     }]
 }
 
-/// First Unicode scalar of `s` as an owned `String` (empty if `s` is empty).
-/// Char-boundary-safe: never slices inside a multi-byte codepoint.
-fn first_char(s: &str) -> String {
-    s.chars().next().map(String::from).unwrap_or_default()
-}
+use crate::util::str_util::first_char;
 
 fn derive_usernames(parts_list: &[NameParts]) -> Vec<String> {
     let mut out = Vec::with_capacity(MAX_DERIVATIONS);

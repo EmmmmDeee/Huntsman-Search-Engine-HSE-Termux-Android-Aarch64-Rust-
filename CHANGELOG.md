@@ -23,6 +23,28 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Swept the byte-slice panic class across the codebase.** Following the
+  `name_to_username` fix, three more sites sliced strings on raw byte indices
+  that are not guaranteed char boundaries, each panicking — and under
+  `panic = "abort"` aborting the binary — on non-ASCII input:
+  - `diagnostics::analyse` lineage preview sliced `&e.value[..57]`; entity
+    values routinely hold non-ASCII names/IDNs/breach strings. Now uses the
+    existing char-safe `str_util::truncate_safe` (also a DRY win). Proven by
+    execution: the regression test panics at `diagnostics.rs:527` on the old
+    slice and passes on the fix.
+  - `search_engines::build_queries` built a first-initial via
+    `&first.to_lowercase()[..1]` (panicked on a multi-byte leading codepoint
+    in a 3-part name).
+  - `search_engines::extract_family_names` derived an email-local surname with
+    `local[1..]` and title-cased with `lastname[..1]`/`&lastname[1..]`
+    (panicked when the local part or surname began with a multi-byte char).
+  New shared, codepoint-safe helpers `str_util::first_char` and
+  `str_util::title_case` (with unit tests) back the fixes; `name_to_username`
+  now reuses `first_char` instead of its own copy. ASCII behaviour is
+  unchanged (`"Jordan Meyer"` still yields the identical 7 usernames).
+  Regression tests: `build_queries_non_ascii_three_part_name_does_not_panic`,
+  `extract_family_names_non_ascii_surname_does_not_panic`,
+  `analyse_long_non_ascii_value_preview_does_not_panic`, plus `str_util` tests.
 - **`name_to_username` no longer panics (and, under `panic = "abort"`,
   crashes the whole binary) on non-ASCII names.** Initial-letter derivations
   sliced the first *byte* (`&first[..1]`), which is not a char boundary when a

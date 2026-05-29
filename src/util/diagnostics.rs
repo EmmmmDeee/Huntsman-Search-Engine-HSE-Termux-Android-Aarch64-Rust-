@@ -521,7 +521,10 @@ pub fn analyse(
 
         // Lineage
         let preview = if e.value.len() > 60 {
-            format!("{}…", &e.value[..57])
+            // Char-boundary-safe truncation: `&e.value[..57]` panics when a
+            // multi-byte codepoint straddles byte 57 (entity values routinely
+            // hold non-ASCII names, IDNs, and breach strings).
+            format!("{}…", crate::util::str_util::truncate_safe(&e.value, 57))
         } else {
             e.value.clone()
         };
@@ -888,6 +891,22 @@ mod tests {
         assert_eq!(d.modules_by_yield.len(), 0);
         assert_eq!(d.geo_precision.coordinates_count, 0);
         assert!(!d.optimization_hints.is_empty());
+    }
+
+    #[test]
+    fn analyse_long_non_ascii_value_preview_does_not_panic() {
+        // Regression: the lineage preview sliced `&e.value[..57]`, which
+        // panics when a multi-byte codepoint straddles byte 57. Build a
+        // >60-byte value with 'é' (2 bytes) spanning bytes 56..58.
+        let val = format!("{}é{}", "a".repeat(56), "a".repeat(12));
+        assert!(val.len() > 60 && !val.is_char_boundary(57));
+        // Username with no uppercase ASCII is stored verbatim by normalise.
+        let e = ent(EntityKind::Username, &val, 0.5, "src");
+        let d = analyse("sid", "username", "seed", 0, std::slice::from_ref(&e));
+        let preview = &d.enrichment_lineage[0].value_preview;
+        assert!(preview.ends_with('…'));
+        // Preview body is valid UTF-8 (guaranteed) and never exceeds 57 bytes.
+        assert!(preview.trim_end_matches('…').len() <= 57);
     }
 
     #[test]
