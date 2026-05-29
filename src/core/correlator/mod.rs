@@ -175,7 +175,10 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 
 type RelationRuleFn = fn(&[Entity], &[Relation], &str, u64) -> Vec<Correlation>;
 
-const RELATION_RULES: &[RelationRuleFn] = &[rule_au_031_malicious_adjacency];
+const RELATION_RULES: &[RelationRuleFn] = &[
+    rule_au_031_malicious_adjacency,
+    rule_au_032_colocation_cluster,
+];
 
 fn evaluate_relation_rules(
     entities: &[Entity],
@@ -776,5 +779,79 @@ mod tests {
             "s",
         );
         assert!(rule_au_031_malicious_adjacency(&[bad], &[rel], "s", 0).is_empty());
+    }
+
+    // ── AU-032 (graph-aware: co-location cluster) ───────────────────────
+
+    #[test]
+    fn au032_fires_on_three_node_colocation_cluster() {
+        use crate::core::relation::{Relation, RelationKind};
+        let c1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+        let c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+        let c3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+        // Chain c1–c2–c3 → one connected component of 3.
+        let rels = vec![
+            Relation::new(
+                c1.uid.clone(),
+                c2.uid.clone(),
+                RelationKind::CoLocatedWith,
+                0.9,
+                "s",
+            ),
+            Relation::new(
+                c2.uid.clone(),
+                c3.uid.clone(),
+                RelationKind::CoLocatedWith,
+                0.9,
+                "s",
+            ),
+        ];
+        let r = rule_au_032_colocation_cluster(&[c1, c2, c3], &rels, "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-032");
+        assert_eq!(r[0].severity, Severity::Medium);
+        assert_eq!(r[0].entity_uids.len(), 3);
+        assert!(r[0].description.contains("3 coordinates"));
+    }
+
+    #[test]
+    fn au032_no_fire_on_pair() {
+        use crate::core::relation::{Relation, RelationKind};
+        let c1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+        let c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+        let rels = vec![Relation::new(
+            c1.uid.clone(),
+            c2.uid.clone(),
+            RelationKind::CoLocatedWith,
+            0.9,
+            "s",
+        )];
+        assert!(rule_au_032_colocation_cluster(&[c1, c2], &rels, "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au032_ignores_non_colocation_edges() {
+        use crate::core::relation::{Relation, RelationKind};
+        // Three domains chained by SubdomainOf — not co-location → no cluster.
+        let a = Entity::new(EntityKind::Domain, "a.b.c.com", 0.9, "s");
+        let b = Entity::new(EntityKind::Domain, "b.c.com", 0.9, "s");
+        let c = Entity::new(EntityKind::Domain, "c.com", 0.9, "s");
+        let rels = vec![
+            Relation::new(
+                a.uid.clone(),
+                b.uid.clone(),
+                RelationKind::SubdomainOf,
+                0.9,
+                "s",
+            ),
+            Relation::new(
+                b.uid.clone(),
+                c.uid.clone(),
+                RelationKind::SubdomainOf,
+                0.9,
+                "s",
+            ),
+        ];
+        assert!(rule_au_032_colocation_cluster(&[a, b, c], &rels, "s", 0).is_empty());
     }
 }

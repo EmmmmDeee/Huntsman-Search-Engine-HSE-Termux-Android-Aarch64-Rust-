@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use super::{Correlation, Severity};
 use crate::core::entity::{Entity, EntityKind};
-use crate::core::relation::Relation;
+use crate::core::relation::{Relation, RelationKind};
 
 fn entities_of_kind(entities: &[Entity], kind: EntityKind) -> Vec<&Entity> {
     entities.iter().filter(|e| e.kind == kind).collect()
@@ -1190,6 +1190,83 @@ pub(super) fn rule_au_031_malicious_adjacency(
             scan_id,
             ts,
         ));
+    }
+    out
+}
+
+/// Minimum members for a co-location cluster to be reported.
+const COLOCATION_CLUSTER_MIN: usize = 3;
+
+/// AU-032 — Geographic co-location cluster (graph-aware). Walks the
+/// `CoLocatedWith` edge graph and reports each connected component of
+/// `COLOCATION_CLUSTER_MIN`+ Coordinates entities — i.e. three or more
+/// independent coordinate sources that transitively converge within
+/// `CO_LOCATION_KM`. This is the graph-structural (transitive-closure) signal
+/// the pairwise geo rules (AU-017/AU-030) don't surface. Deterministic:
+/// component membership is edge-defined and the output is uid-sorted.
+pub(super) fn rule_au_032_colocation_cluster(
+    entities: &[Entity],
+    relations: &[Relation],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::{HashMap, HashSet};
+
+    // Undirected adjacency from CoLocatedWith edges only.
+    let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    for r in relations {
+        if r.kind == RelationKind::CoLocatedWith {
+            adj.entry(r.from_uid.as_str()).or_default().push(&r.to_uid);
+            adj.entry(r.to_uid.as_str()).or_default().push(&r.from_uid);
+        }
+    }
+    if adj.is_empty() {
+        return Vec::new();
+    }
+
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+
+    // Connected components via BFS. Iterate seed nodes in sorted order so the
+    // emitted clusters are deterministic regardless of edge ordering.
+    let mut nodes: Vec<&str> = adj.keys().copied().collect();
+    nodes.sort_unstable();
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut out = Vec::new();
+    for &start in &nodes {
+        if !visited.insert(start) {
+            continue;
+        }
+        let mut comp = vec![start];
+        let mut stack = vec![start];
+        while let Some(n) = stack.pop() {
+            if let Some(neighbours) = adj.get(n) {
+                for &m in neighbours {
+                    if visited.insert(m) {
+                        comp.push(m);
+                        stack.push(m);
+                    }
+                }
+            }
+        }
+        if comp.len() >= COLOCATION_CLUSTER_MIN {
+            comp.sort_unstable();
+            let sample = by_uid.get(comp[0]).map_or(comp[0], |e| e.value.as_str());
+            let uids: Vec<String> = comp.iter().map(|u| (*u).to_string()).collect();
+            out.push(Correlation::new(
+                "AU-032",
+                "Geographic co-location cluster",
+                Severity::Medium,
+                format!(
+                    "{} coordinates converge within {:.0} km (e.g. {})",
+                    comp.len(),
+                    crate::core::relation::CO_LOCATION_KM,
+                    sample
+                ),
+                uids,
+                scan_id,
+                ts,
+            ));
+        }
     }
     out
 }

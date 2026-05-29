@@ -67,6 +67,10 @@ versions can include breaking changes; patch versions are bug-fix-only.
   or an entity derived from a flagged node) — a finding the flat entity list
   and tag-only rules can't produce. New graph rules slot into `RELATION_RULES`
   without changing the 30 entity rules.
+- **Graph cluster rule (AU-032).** `AU-032 — Geographic co-location cluster`
+  walks the `CoLocatedWith` edges (connected components) and reports each
+  cluster of 3+ coordinates that transitively converge within 1 km — the
+  graph-structural signal the pairwise geo rules don't surface.
 
 ## [1.0.0] — 2026-05-27
 
