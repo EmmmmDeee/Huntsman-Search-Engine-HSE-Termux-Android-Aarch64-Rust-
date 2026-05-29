@@ -60,12 +60,96 @@ pub fn normalize_region(s: &str) -> Option<&'static str> {
     })
 }
 
-/// The ISO country an entity is geo-tagged with, if any. Reads the
-/// `country:XX` tag the engine's geospatial enrichment attaches.
+/// The ISO country an entity is geo-tagged with, if any.
+///
+/// Resolution order: the explicit `country:XX` tag (set by geospatial
+/// enrichment / modules) first, then a value-based inference for kinds that
+/// carry an intrinsic country signal — phone dialling codes and ccTLDs. This
+/// lets the region prior reach phones and domains, not just addresses/coords.
 pub fn entity_country_iso(e: &Entity) -> Option<String> {
-    e.tags
+    use crate::core::entity::EntityKind;
+    if let Some(iso) = e
+        .tags
         .iter()
         .find_map(|t| t.strip_prefix("country:").map(|c| c.to_ascii_uppercase()))
+    {
+        return Some(iso);
+    }
+    match e.kind {
+        EntityKind::Phone => phone_country(&e.value),
+        EntityKind::Domain | EntityKind::Url | EntityKind::Email => tld_country(&e.value),
+        _ => None,
+    }
+    .map(str::to_string)
+}
+
+/// Infer ISO country from a phone number's international dialling prefix.
+/// Tolerates `+`, `00`, spaces, dashes, and brackets. Only the prefixes most
+/// load-bearing for HSE's geo prior are mapped; `+1` is reported as `US`
+/// (NANP — non-AU is what the prior actually needs to know).
+pub fn phone_country(value: &str) -> Option<&'static str> {
+    let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+    // Normalise leading "00" international prefix to bare country code.
+    let d = digits.strip_prefix("00").unwrap_or(&digits);
+    // AU also commonly appears in national format: 0[2-478]######## (10 digits).
+    if value.trim_start().starts_with('+') || digits.starts_with("00") {
+        for (code, iso) in [("61", "AU"), ("64", "NZ"), ("44", "GB"), ("1", "US")] {
+            if d.starts_with(code) {
+                return Some(iso);
+            }
+        }
+    } else if d.len() == 10 && d.starts_with('0') {
+        // National AU mobile/landline: 04xx (mobile), 02/03/07/08 (landline).
+        if matches!(&d[1..2], "2" | "3" | "4" | "7" | "8") {
+            return Some("AU");
+        }
+    }
+    None
+}
+
+/// Infer ISO country from a host/email ccTLD. Returns `None` for generic TLDs
+/// (`.com`, `.org`, …) which carry no country signal.
+pub fn tld_country(value: &str) -> Option<&'static str> {
+    let v = value.trim();
+    // email: take the domain after '@'
+    let after_at = v.rsplit('@').next().unwrap_or(v);
+    // url: drop scheme, then take the host (up to the first '/' or ':')
+    let no_scheme = after_at
+        .strip_prefix("https://")
+        .or_else(|| after_at.strip_prefix("http://"))
+        .unwrap_or(after_at);
+    let host = no_scheme
+        .split('/')
+        .next()
+        .unwrap_or(no_scheme)
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let tld = host.rsplit('.').next()?;
+    Some(match tld {
+        "au" => "AU",
+        "nz" => "NZ",
+        "uk" => "GB",
+        "ie" => "IE",
+        "ca" => "CA",
+        "in" => "IN",
+        "de" => "DE",
+        "fr" => "FR",
+        "sg" => "SG",
+        _ => return None,
+    })
+}
+
+/// True if the entity carries a geolocation signal that conflicts with the
+/// given region prior — used to keep expansion from pivoting on out-of-region
+/// leads. Entities with no inferable region never conflict (unknown ≠ wrong).
+pub fn region_conflicts(e: &Entity, prior: &str) -> bool {
+    match (normalize_region(prior), entity_country_iso(e)) {
+        (Some(p), Some(r)) => r != p,
+        _ => false,
+    }
 }
 
 /// True if the entity carries any geolocation signal worth re-weighting.
@@ -143,6 +227,42 @@ mod tests {
         assert_eq!(entity_country_iso(&e).as_deref(), Some("AU"));
         let plain = Entity::new(EntityKind::Email, "a@b.com", 0.8, "s");
         assert_eq!(entity_country_iso(&plain), None);
+    }
+
+    #[test]
+    fn phone_country_recognises_au_and_others() {
+        assert_eq!(phone_country("+61 400 123 456"), Some("AU"));
+        assert_eq!(phone_country("0061 2 9000 0000"), Some("AU"));
+        assert_eq!(phone_country("0412345678"), Some("AU")); // national mobile
+        assert_eq!(phone_country("+1 (415) 555-0100"), Some("US"));
+        assert_eq!(phone_country("+44 20 7946 0000"), Some("GB"));
+        assert_eq!(phone_country("5551234"), None); // bare, ambiguous
+    }
+
+    #[test]
+    fn tld_country_recognises_cctld() {
+        assert_eq!(tld_country("example.com.au"), Some("AU"));
+        assert_eq!(tld_country("alice@uni.edu.au"), Some("AU"));
+        assert_eq!(tld_country("https://site.co.uk/path"), Some("GB"));
+        assert_eq!(tld_country("example.com"), None);
+    }
+
+    #[test]
+    fn entity_country_iso_infers_from_value() {
+        let phone = Entity::new(EntityKind::Phone, "+61400123456", 0.8, "s");
+        assert_eq!(entity_country_iso(&phone).as_deref(), Some("AU"));
+        let dom = Entity::new(EntityKind::Domain, "acme.com.au", 0.8, "s");
+        assert_eq!(entity_country_iso(&dom).as_deref(), Some("AU"));
+    }
+
+    #[test]
+    fn region_conflicts_only_on_known_mismatch() {
+        let au_phone = Entity::new(EntityKind::Phone, "+61400123456", 0.8, "s");
+        let us_phone = Entity::new(EntityKind::Phone, "+14155550100", 0.8, "s");
+        let unknown = Entity::new(EntityKind::Username, "ghost", 0.8, "s");
+        assert!(!region_conflicts(&au_phone, "AU"));
+        assert!(region_conflicts(&us_phone, "AU"));
+        assert!(!region_conflicts(&unknown, "AU")); // unknown never conflicts
     }
 
     // ── apply_region_prior ──────────────────────────────────────────────

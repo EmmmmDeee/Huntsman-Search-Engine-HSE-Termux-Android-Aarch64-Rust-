@@ -495,6 +495,23 @@ impl ScanEngine {
                 if opts.max_roi && crate::core::roi::is_saturated(entity) {
                     continue;
                 }
+                // Pivot efficiency (always on): never spend expansion budget on
+                // single-source breach-dump PII. A common-name breach query
+                // floods the corpus with hundreds of unrelated identities;
+                // pivoting on each one squanders the round. The genuine subject
+                // is corroborated and unaffected.
+                if crate::core::roi::is_breach_dump_noise(entity) {
+                    continue;
+                }
+                // Pivot efficiency (region prior): don't chase leads whose own
+                // geo signal contradicts the known target region. Out-of-region
+                // breach addresses / foreign phones are dead ends for finding
+                // an in-region subject.
+                if let Some(region) = opts.region_hint.as_deref()
+                    && crate::core::geo::region_conflicts(entity, region)
+                {
+                    continue;
+                }
                 let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
                     continue;
                 };
@@ -1264,6 +1281,24 @@ fn url_host_is_private(url: &str) -> bool {
     is_local_domain(bare)
 }
 
+/// The country a module already attributed to this entity, as an ISO-2 code,
+/// read from existing evidence attributes. Lets the pipeline prefer a source's
+/// real geodata over the heuristic address parser. Recognises both ISO codes
+/// and country names via `core::geo::normalize_region`.
+fn explicit_country_iso(entity: &crate::core::entity::Entity) -> Option<String> {
+    const KEYS: &[&str] = &["country_iso", "iso_country", "country_code", "country"];
+    for ev in &entity.evidence {
+        for key in KEYS {
+            if let Some(v) = ev.attributes.get(*key)
+                && let Some(iso) = crate::core::geo::normalize_region(v)
+            {
+                return Some(iso.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Augment Coordinates entities with geohash + timezone, and Address
 /// entities with parsed admin-hierarchy components. Runs once per
 /// emission so downstream correlators see the enriched evidence.
@@ -1307,6 +1342,15 @@ fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
             }
         }
         EntityKind::Address => {
+            // Trust a country a *module* already attributed (e.g. OathNet's
+            // `country: US`) over the heuristic address parser. The parser is a
+            // best-effort fallback for free-text addresses; when a source with
+            // real geodata has already named the country, re-deriving it from
+            // string heuristics can only introduce error (it once read
+            // "Vancouver, WA" as Western Australia and mis-tagged a US address
+            // as AU). Module country wins; the parser fills the gap otherwise.
+            let module_iso = explicit_country_iso(entity);
+            let module_was_explicit = module_iso.is_some();
             let parsed = geohash::parse_address(&entity.value);
             let mut ev = Evidence::new("geo_normalize", "Address parse + normalization");
             let mut any = false;
@@ -1326,12 +1370,12 @@ fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
                 ev = ev.with_attr("addr_postal", p);
                 any = true;
             }
-            if let Some(c) = &parsed.country {
-                ev = ev.with_attr("addr_country", c);
-                any = true;
-            }
-            if let Some(iso) = &parsed.iso_country {
+            let iso = module_iso.or_else(|| parsed.iso_country.clone());
+            if let Some(iso) = &iso {
                 ev = ev.with_attr("addr_iso", iso);
+                if let Some(name) = parsed.country.as_deref().filter(|_| !module_was_explicit) {
+                    ev = ev.with_attr("addr_country", name);
+                }
                 entity.tag(format!("country:{iso}"));
                 any = true;
             }
