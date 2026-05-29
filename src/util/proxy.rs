@@ -641,16 +641,11 @@ async fn real_public_ip() -> Option<String> {
 }
 
 async fn curl_get(url: &str) -> Option<String> {
-    let secs = 10u64.to_string();
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args(["-s", "--max-time", &secs, "-L", "--", url]);
-    cmd.kill_on_drop(true);
-
-    let output = tokio::time::timeout(Duration::from_secs(12), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
-
+    let output = crate::util::curl::run_raw(
+        &["--max-time", "10", "-L", "--", url],
+        Duration::from_secs(12),
+    )
+    .await?;
     if !output.status.success() {
         return None;
     }
@@ -659,25 +654,20 @@ async fn curl_get(url: &str) -> Option<String> {
 
 /// POST a JSON `body` to `url` (no proxy), returning the response body.
 async fn curl_post_json(url: &str, body: &str) -> Option<String> {
-    let secs = 12u64.to_string();
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args([
-        "-s",
-        "--max-time",
-        &secs,
-        "-H",
-        "Content-Type: application/json",
-        "-d",
-        body,
-        "--",
-        url,
-    ]);
-    cmd.kill_on_drop(true);
-
-    let output = tokio::time::timeout(Duration::from_secs(15), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
+    let output = crate::util::curl::run_raw(
+        &[
+            "--max-time",
+            "12",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            body,
+            "--",
+            url,
+        ],
+        Duration::from_secs(15),
+    )
+    .await?;
     if !output.status.success() {
         return None;
     }
@@ -686,25 +676,20 @@ async fn curl_post_json(url: &str, body: &str) -> Option<String> {
 
 /// `curl` a URL through a proxy, returning `(http_code, body)`.
 async fn curl_through_proxy(proxy_url: &str, url: &str) -> Option<(u16, String)> {
-    let secs = 8u64.to_string();
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args([
-        "-s",
-        "--max-time",
-        &secs,
-        "-x",
-        proxy_url,
-        "-w",
-        "\n%{http_code}",
-        "--",
-        url,
-    ]);
-    cmd.kill_on_drop(true);
-
-    let output = tokio::time::timeout(Duration::from_secs(10), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
+    let output = crate::util::curl::run_raw(
+        &[
+            "--max-time",
+            "8",
+            "-x",
+            proxy_url,
+            "-w",
+            "\n%{http_code}",
+            "--",
+            url,
+        ],
+        Duration::from_secs(10),
+    )
+    .await?;
     let s = String::from_utf8_lossy(&output.stdout);
     // Last line is the http_code (from -w); everything before it is the body.
     let (body, code) = s.rsplit_once('\n')?;

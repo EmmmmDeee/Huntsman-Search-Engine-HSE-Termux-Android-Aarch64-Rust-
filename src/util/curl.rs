@@ -50,40 +50,58 @@ async fn curl_exec(
     post_data: Option<&str>,
 ) -> Option<String> {
     let secs = (timeout_ms / 1000).max(3).to_string();
-    let mut cmd = Command::new("curl");
-    cmd.args(["-s", "--max-time", &secs, "-A", ua]);
-    cmd.args([
+    let search_proxy = std::env::var("HUNTSMAN_SEARCH_PROXY")
+        .ok()
+        .filter(|p| !p.is_empty());
+
+    let mut args: Vec<&str> = vec![
+        "--max-time",
+        secs.as_str(),
+        "-A",
+        ua,
         "-H",
         "Accept: text/html,application/xhtml+xml,application/json",
-    ]);
-    cmd.args(["-H", "Accept-Language: en-US,en;q=0.9"]);
-
+        "-H",
+        "Accept-Language: en-US,en;q=0.9",
+    ];
     if let Some(data) = post_data {
-        cmd.args(["-H", "Content-Type: application/x-www-form-urlencoded"]);
-        cmd.args(["-d", data]);
+        args.extend([
+            "-H",
+            "Content-Type: application/x-www-form-urlencoded",
+            "-d",
+            data,
+        ]);
     }
-
-    if let Ok(proxy) = std::env::var("HUNTSMAN_SEARCH_PROXY")
-        && !proxy.is_empty()
-    {
-        cmd.args(["-x", &proxy]);
+    if let Some(proxy) = search_proxy.as_deref() {
+        args.extend(["-x", proxy]);
     }
+    args.extend(["-L", "--", url]);
 
-    cmd.args(["-L", "--", url]);
-    cmd.kill_on_drop(true);
-
-    let output = timeout(Duration::from_millis(timeout_ms + 2000), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
-
+    let output = run_raw(&args, Duration::from_millis(timeout_ms + 2000)).await?;
     if !output.status.success() {
         return None;
     }
-
     let body = String::from_utf8(output.stdout).ok()?;
     super::http::scan_for_api_keys(&body);
     Some(body)
+}
+
+/// The single point where the `curl` subprocess is spawned. Always passes
+/// `-s`, sets `kill_on_drop`, and enforces a hard outer timeout so a wedged
+/// curl can never hold a concurrency slot. Returns the raw captured output —
+/// the caller decides how to interpret the exit status / stdout (e.g. a
+/// `-w %{http_code}` probe needs the body even on non-2xx). `None` if curl
+/// couldn't be spawned or the outer timeout fired. The canonical low-level
+/// curl spawn: the HTTP-fetch helpers here and the proxy retriever route
+/// through it so subprocess hardening (`-s` + `kill_on_drop` + outer timeout)
+/// lives in one spot. (A few modules with dynamically-built header args still
+/// construct their own one-shot probes.)
+pub(crate) async fn run_raw(args: &[&str], hard_timeout: Duration) -> Option<std::process::Output> {
+    let mut cmd = Command::new("curl");
+    cmd.arg("-s");
+    cmd.args(args);
+    cmd.kill_on_drop(true);
+    timeout(hard_timeout, cmd.output()).await.ok()?.ok()
 }
 
 /// Fetch a URL via curl subprocess. Returns the response body on
@@ -117,26 +135,25 @@ pub async fn fetch_post_with_ua(
 /// Proxy format: `socks5://host:port`, `http://user:pass@host:port`, etc.
 pub async fn fetch_via_proxy(url: &str, timeout_ms: u64, ua: &str, proxy: &str) -> Option<String> {
     let secs = (timeout_ms / 1000).max(3).to_string();
-    let mut cmd = Command::new("curl");
-    cmd.args(["-s", "--max-time", &secs, "-A", ua]);
-    cmd.args([
+    let args = [
+        "--max-time",
+        secs.as_str(),
+        "-A",
+        ua,
         "-H",
         "Accept: text/html,application/xhtml+xml,application/json",
-    ]);
-    cmd.args(["-H", "Accept-Language: en-US,en;q=0.9"]);
-    cmd.args(["-x", proxy]);
-    cmd.args(["-L", "--", url]);
-    cmd.kill_on_drop(true);
-
-    let output = timeout(Duration::from_millis(timeout_ms + 2000), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
-
+        "-H",
+        "Accept-Language: en-US,en;q=0.9",
+        "-x",
+        proxy,
+        "-L",
+        "--",
+        url,
+    ];
+    let output = run_raw(&args, Duration::from_millis(timeout_ms + 2000)).await?;
     if !output.status.success() {
         return None;
     }
-
     let body = String::from_utf8(output.stdout).ok()?;
     super::http::scan_for_api_keys(&body);
     Some(body)

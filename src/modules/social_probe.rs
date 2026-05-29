@@ -311,22 +311,24 @@ impl Module for SocialProbe {
 }
 
 async fn probe_url(url: &str) -> u16 {
-    let output = tokio::process::Command::new("curl")
-        .args([
-            "-s", "-o", "/dev/null",
+    // HEAD-like status probe (`-o /dev/null -w %{http_code}`) via the shared
+    // curl runner. Outer 6s safety net over curl's own 4s `--max-time`.
+    let output = crate::util::curl::run_raw(
+        &[
+            "-o", "/dev/null",
             "-w", "%{http_code}",
             "--max-time", "4",
             "-L",
             "-A", "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
             "--",
             url,
-        ])
-        .kill_on_drop(true)
-        .output()
-        .await;
+        ],
+        std::time::Duration::from_secs(6),
+    )
+    .await;
 
     match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+        Some(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
             .trim()
             .parse()
             .unwrap_or(0),
