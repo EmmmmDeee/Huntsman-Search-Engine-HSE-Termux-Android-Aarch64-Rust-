@@ -450,6 +450,29 @@ pub(super) fn url_matches_target(url: &str, terms: &[String]) -> bool {
         .any(|w| path.contains(w.as_str()))
 }
 
+/// Relevance gate for a person-name seed: the URL path must contain the
+/// **surname** (the distinctive term, taken as the last name token) or at
+/// least two distinct name terms. A lone common-given-name match — `/JORDAN`
+/// (Air Jordan), `/wiki/Jordan` (the country), `/shoes/jordan` — is rejected
+/// as noise. Live "Jordan Meyer" run: this drops the nike/footlocker/wikipedia
+/// false matches while keeping `jordanmeyermusic`, `jordan-meyer`, `jordandmeyer`.
+pub(super) fn url_matches_name(url: &str, terms: &[String]) -> bool {
+    let path = url::Url::parse(url)
+        .ok()
+        .map(|u| u.path().to_lowercase())
+        .unwrap_or_default();
+    if path.len() < 4 || terms.is_empty() {
+        return false;
+    }
+    let surname = terms.last().map(String::as_str).unwrap_or("");
+    let surname_hit = surname.len() >= 3 && path.contains(surname);
+    let distinct_hits = terms
+        .iter()
+        .filter(|w| w.len() >= 4 && path.contains(w.as_str()))
+        .count();
+    surname_hit || distinct_hits >= 2
+}
+
 /// Score how strongly a discovered username is connected to the target.
 /// Uses multiple independent signals — a username that shares no terms
 /// with the seed can still be validated through co-occurrence, people-

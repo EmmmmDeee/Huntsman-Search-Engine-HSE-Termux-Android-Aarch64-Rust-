@@ -1170,9 +1170,15 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
         // whitepages.com/people-search) are excluded unless the path
         // also contains a target term — only specific profile pages
         // like peekyou.com/jerome_despal pass.
-        if url_matches_target(&r.url, &terms)
-            && seen_domains.insert(format!("@url:{}", canonicalize_url(&r.url)))
-        {
+        // Name seeds use the surname-aware gate so a lone common-given-name
+        // path match (Air Jordan / the country / Jordan-brand shoes) doesn't
+        // masquerade as the person; other kinds use the any-term gate.
+        let url_relevant = if target.kind == TargetKind::FullName {
+            url_matches_name(&r.url, &terms)
+        } else {
+            url_matches_target(&r.url, &terms)
+        };
+        if url_relevant && seen_domains.insert(format!("@url:{}", canonicalize_url(&r.url))) {
             let mut e = Entity::new(EntityKind::Url, &r.url, 0.50, scan_id);
             e.tag("search-discovered");
             e.add_evidence(build_search_evidence(r));
@@ -1326,6 +1332,35 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_matches_name_rejects_lone_given_name() {
+        let terms = vec!["jordan".to_string(), "meyer".to_string()];
+        // Real false matches from the live "Jordan Meyer" run — only the
+        // common given name in the path → rejected.
+        assert!(!url_matches_name("https://www.nike.com/JORDAN", &terms));
+        assert!(!url_matches_name(
+            "https://en.m.wikipedia.org/wiki/Jordan",
+            &terms
+        ));
+        assert!(!url_matches_name(
+            "https://www.footlocker.com/category/shoes/jordan.html",
+            &terms
+        ));
+        // Surname present (or both terms) → kept.
+        assert!(url_matches_name(
+            "https://www.instagram.com/jordanmeyermusic",
+            &terms
+        ));
+        assert!(url_matches_name(
+            "https://www.transfermarkt.us/jordan-meyer/profil",
+            &terms
+        ));
+        assert!(url_matches_name(
+            "https://www.linkedin.com/in/jordandmeyer",
+            &terms
+        ));
+    }
 
     #[test]
     fn title_case_word_is_char_safe() {
