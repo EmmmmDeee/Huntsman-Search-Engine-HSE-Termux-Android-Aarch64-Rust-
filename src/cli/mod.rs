@@ -65,7 +65,8 @@ pub enum Command {
         #[arg(short, long)]
         kind: String,
         /// Target value (e.g. example.com, foo@bar.com).
-        #[arg(short, long)]
+        // `--value` only: `-v` is the global verbosity flag (`-v`/`-vv`).
+        #[arg(long)]
         value: String,
         /// Comma-separated allowlist of module names.
         #[arg(short, long)]
@@ -244,7 +245,8 @@ pub enum Command {
         #[arg(short, long)]
         kind: String,
         /// Target value.
-        #[arg(short, long)]
+        // `--value` only: `-v` is the global verbosity flag (`-v`/`-vv`).
+        #[arg(long)]
         value: String,
         /// Seconds between iterations.
         #[arg(short, long, default_value_t = crate::LIVE_DEFAULT_INTERVAL_SECS)]

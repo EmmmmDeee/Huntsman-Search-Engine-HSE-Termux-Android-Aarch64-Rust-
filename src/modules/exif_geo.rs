@@ -36,6 +36,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use tracing::{debug, trace};
+
 use crate::util::media_score::{self, ImageMetaSignals};
 use crate::util::metadata::parse_image_xmp;
 use crate::util::phash;
@@ -115,6 +117,7 @@ impl Module for ExifGeo {
         // Value-shape gate (moved out of `accepts()`): only fetch URLs whose
         // path looks like an image we can read EXIF/XMP from.
         if url.is_empty() || !looks_like_image_url(url) {
+            trace!(target: "hse::exif_geo", %url, "skip: not an image URL");
             return Ok(result);
         }
 
@@ -129,16 +132,25 @@ impl Module for ExifGeo {
             .await
         {
             Ok(r) => r,
-            Err(_) => return Ok(result),
+            Err(e) => {
+                debug!(target: "hse::exif_geo", %url, error = %e, "image fetch failed");
+                return Ok(result);
+            }
         };
-        if !resp.status().is_success() && resp.status().as_u16() != 206 {
+        let status = resp.status();
+        if !status.is_success() && status.as_u16() != 206 {
+            debug!(target: "hse::exif_geo", %url, status = status.as_u16(), "image fetch non-success");
             return Ok(result);
         }
         let bytes = match resp.bytes().await {
             Ok(b) => b,
-            Err(_) => return Ok(result),
+            Err(e) => {
+                debug!(target: "hse::exif_geo", %url, error = %e, "image body read failed");
+                return Ok(result);
+            }
         };
         if bytes.len() > MAX_BYTES as usize {
+            debug!(target: "hse::exif_geo", %url, len = bytes.len(), cap = MAX_BYTES, "image exceeds size cap; skipped");
             return Ok(result);
         }
 
@@ -184,11 +196,31 @@ impl Module for ExifGeo {
             software: nonempty(&software),
         });
 
+        match &phash {
+            Some(h) => debug!(
+                target: "hse::exif_geo", %url, bytes = bytes.len(),
+                detail = format!("{:.1}", h.detail), dims = format!("{}x{}", h.width, h.height),
+                trust = format!("{trust:.2}"), meta_conf = format!("{meta_conf:.2}"),
+                "image parsed: phash ok"
+            ),
+            None => debug!(
+                target: "hse::exif_geo", %url, bytes = bytes.len(), meta_conf = format!("{meta_conf:.2}"),
+                "image decode/hash produced no fingerprint (unsupported format, truncated, or < min edge)"
+            ),
+        }
+
         // ── Image content anchor (kept even with no metadata so it can link by
         //    perceptual hash — the local reverse-image-search role). ──
         if let Some(h) = phash {
             let area = u64::from(h.width) * u64::from(h.height);
             let content_conf = media_score::image_content_confidence(h.detail, area, trust);
+            if content_conf < media_score::IMAGE_KEEP_MIN {
+                debug!(
+                    target: "hse::exif_geo", %url,
+                    content_conf = format!("{content_conf:.2}"), keep_min = media_score::IMAGE_KEEP_MIN,
+                    "image below keep threshold; no similarity anchor emitted"
+                );
+            }
             if content_conf >= media_score::IMAGE_KEEP_MIN {
                 let mut e = Entity::new(EntityKind::Url, url, content_conf, &ctx.scan_id);
                 e.tag("image");
@@ -215,6 +247,12 @@ impl Module for ExifGeo {
         //    excessive recursion. Below the gate the image still lives on as a
         //    similarity anchor above, just without metadata-derived nodes. ──
         if meta_conf < media_score::META_EMIT_MIN {
+            debug!(
+                target: "hse::exif_geo", %url,
+                meta_conf = format!("{meta_conf:.2}"), emit_min = media_score::META_EMIT_MIN,
+                entities = result.len(),
+                "image metadata below emit threshold; metadata entities suppressed"
+            );
             return Ok(result);
         }
         // Confidence of emitted nodes tracks metadata trust (0.78..1.0 here).
@@ -280,6 +318,10 @@ impl Module for ExifGeo {
             result.push(e);
         }
 
+        debug!(
+            target: "hse::exif_geo", %url, entities = result.len(),
+            meta_conf = format!("{meta_conf:.2}"), "exif_geo done"
+        );
         Ok(result)
     }
 }

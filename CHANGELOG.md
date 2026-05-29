@@ -10,7 +10,29 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`-v` collided with `scan/live --value` (debug-build panic).** The global
+  `-v`/`-vv` verbosity flag and the `--value` short `-v` shared a letter; clap's
+  debug-assertions panic on this, so **any `scan`/`live` in a debug build
+  aborted at parse** (release silently shadowed one). `--value` is now
+  long-only (every doc/example already used `--value`); `-v` is unambiguously
+  verbosity. Removes a guaranteed "fails immediately during testing" trap.
+
 ### Added
+
+- **Verbose, diagnosable logging for the media pipeline.** `exif_geo` and
+  `doc_meta` previously swallowed every failure silently (`Err(_) => return`).
+  They now emit structured `debug` traces at every decision point — fetch
+  failure (with the error + status), oversize, decode/`no-fingerprint`,
+  not-a-PDF, and each confidence-gate with the actual score vs threshold — under
+  the short `hse::exif_geo` / `hse::doc_meta` targets (captured by the always-on
+  file log + `-v`/`-vv` + `RUST_LOG`). A module that "found 0" now says why.
+- **`hse doctor --bundle` image-pipeline self-test.** An offline
+  encode→decode→hash round-trip (`phash::self_test`) proves the pure-Rust image
+  decoder + DCT pHash actually build and run on the device — pinpointing the
+  main aarch64 risk from the `image` dependency. Reports `ok` / `FAIL — <why>`.
+  `docs/DEBUGGING.md` updated with the new failure modes and log targets.
 
 - **Stealer-log cross-correlation — victim identity clustering.** Infostealer
   data is uniquely powerful for attribution: every email, credential, domain,

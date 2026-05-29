@@ -28,6 +28,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use tracing::{debug, trace};
+
 use crate::util::media_score::{self, DocMetaSignals};
 use crate::util::metadata::parse_pdf;
 
@@ -95,6 +97,7 @@ impl Module for DocMeta {
         let url = target.value.trim();
         // Value-shape gate (moved out of `accepts()`): only fetch `.pdf` URLs.
         if url.is_empty() || !looks_like_doc_url(url) {
+            trace!(target: "hse::doc_meta", %url, "skip: not a .pdf URL");
             return Ok(result);
         }
 
@@ -108,16 +111,25 @@ impl Module for DocMeta {
             .await
         {
             Ok(r) => r,
-            Err(_) => return Ok(result),
+            Err(e) => {
+                debug!(target: "hse::doc_meta", %url, error = %e, "PDF fetch failed");
+                return Ok(result);
+            }
         };
-        if !resp.status().is_success() && resp.status().as_u16() != 206 {
+        let status = resp.status();
+        if !status.is_success() && status.as_u16() != 206 {
+            debug!(target: "hse::doc_meta", %url, status = status.as_u16(), "PDF fetch non-success");
             return Ok(result);
         }
         let bytes = match resp.bytes().await {
             Ok(b) => b,
-            Err(_) => return Ok(result),
+            Err(e) => {
+                debug!(target: "hse::doc_meta", %url, error = %e, "PDF body read failed");
+                return Ok(result);
+            }
         };
         if bytes.len() > MAX_BYTES as usize {
+            debug!(target: "hse::doc_meta", %url, len = bytes.len(), cap = MAX_BYTES, "PDF exceeds size cap; skipped");
             return Ok(result);
         }
 
@@ -125,6 +137,7 @@ impl Module for DocMeta {
         // PDF (a mislabelled HTML error page or login wall otherwise pollutes
         // the graph). The `%PDF-` signature must appear in the first 1 KB.
         if !is_pdf(&bytes) {
+            debug!(target: "hse::doc_meta", %url, bytes = bytes.len(), "not a PDF (missing %PDF- signature) — likely an HTML/login-wall response; skipped");
             return Ok(result);
         }
         let meta = parse_pdf(&bytes);
@@ -156,8 +169,20 @@ impl Module for DocMeta {
                 .is_some_and(non_empty),
         });
 
+        debug!(
+            target: "hse::doc_meta", %url, bytes = bytes.len(),
+            doc_conf = format!("{doc_conf:.2}"), trust = format!("{trust:.2}"),
+            has_author = author.is_some(), has_tool = tool.is_some(),
+            "PDF parsed"
+        );
+
         // Gate: low-confidence document metadata is junk — don't emit or recurse.
         if doc_conf < media_score::DOC_META_EMIT_MIN {
+            debug!(
+                target: "hse::doc_meta", %url,
+                doc_conf = format!("{doc_conf:.2}"), emit_min = media_score::DOC_META_EMIT_MIN,
+                "document metadata below emit threshold; suppressed (generic/absent author?)"
+            );
             return Ok(result);
         }
         let scale = (0.6 + 0.4 * doc_conf) * (0.7 + 0.3 * trust);
@@ -218,6 +243,7 @@ impl Module for DocMeta {
             result.push(e);
         }
 
+        debug!(target: "hse::doc_meta", %url, entities = result.len(), "doc_meta done");
         Ok(result)
     }
 }

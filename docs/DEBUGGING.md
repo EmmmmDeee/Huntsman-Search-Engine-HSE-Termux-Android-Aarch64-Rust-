@@ -46,6 +46,7 @@ flag.
 | Debug on the terminal too | `hse -v <cmd>` |
 | Trace (everything) on the terminal | `hse -vv <cmd>` |
 | A specific target filter | `RUST_LOG=huntsman_search_engine::core::engine=trace hse <cmd>` |
+| Just the media modules | `RUST_LOG=hse::exif_geo=debug,hse::doc_meta=debug hse <cmd>` (they log under the short `hse::<module>` target; the always-on file log captures them at `debug` regardless) |
 
 ## Watch it live in the Web UI (SpiderFoot-style)
 
@@ -68,6 +69,10 @@ One **offline, redacted** report (stdout + `~/.huntsman/hse-debug-report.txt`):
 - **Termux:API sensor tools** — which of `termux-location` / `termux-wifi-scaninfo`
   / `termux-telephony-cellinfo` / … resolve on `PATH` (missing ⇒ those sensor
   modules no-op, which is expected and harmless).
+- **Image pipeline self-test** — an offline encode→decode→hash round-trip that
+  proves the pure-Rust image decoder + DCT perceptual hash actually run on this
+  device (the main aarch64 risk from the `image` dependency). Shows
+  `ok` or `FAIL — <reason>`.
 - **Recent scans** incl. any `Failed` status and its error.
 - Redacted tails of the runtime and install logs.
 
@@ -84,6 +89,9 @@ local file reads, so it's safe to share and reproducible.
 | Sensor modules return nothing | `termux-api` package / APK missing | `pkg install termux-api` + install **Termux:API** APK from F-Droid. Bundle shows which tools are missing. They no-op cleanly otherwise. |
 | `hse: command not found` | `$PREFIX/bin` not on `PATH` | Restart the shell, or `source ~/.bashrc`. |
 | Scans return few/no entities | No keys (free modules only) / network | `hse doctor` shows loaded keys; many modules are free and need none. |
+| `image`/`zune`/`png` build error | aarch64 toolchain / RAM during compile | Pure-Rust, no C — usually RAM: `CARGO_BUILD_JOBS=1`, add swap. Confirm the codec runs after build with `hse doctor --bundle` (image-pipeline line). |
+| Image module yields nothing | fetch failed / not an image / flat-or-tiny / metadata gated | Run `hse -v scan …` (or read the file log) — `exif_geo` logs the exact reason: `image fetch failed`, `no fingerprint`, `below keep threshold`, or `metadata below emit threshold`. |
+| PDF (`doc_meta`) yields nothing | not a real PDF / generic author / gated | `doc_meta` logs `not a PDF (missing %PDF- signature)`, `below emit threshold`, etc. at `debug`. |
 
 ## Secret safety
 
@@ -99,5 +107,14 @@ your scan targets themselves are sensitive.
 Start at **recent scans** (any `Failed` + error), then the **runtime log tail**
 (grep `ERROR`/`WARN`, module names, `ExpansionStop` reasons), then
 **environment** (arch, Termux, `PATH`) and **sensor tools** for off-device
-no-ops. For install failures, the **install log tail** snapshot pins the
-toolchain/arch/network cause.
+no-ops. Check the **image-pipeline** line — a `FAIL` there means the `image`
+decoder didn't build/run on this aarch64 device and every `exif_geo`/pHash
+result will be empty. For install failures, the **install log tail** snapshot
+pins the toolchain/arch/network cause.
+
+When a module "found 0" and you need to know *why*, grep the runtime log for its
+short target — `hse::exif_geo` / `hse::doc_meta` log the precise reason at
+`debug` (fetch failure, unsupported/truncated image, confidence-gated, not a
+PDF, generic author). The gate decisions carry the actual scores
+(`content_conf`, `meta_conf`, `doc_conf`) against the thresholds, so "nothing
+emitted" is never a mystery.

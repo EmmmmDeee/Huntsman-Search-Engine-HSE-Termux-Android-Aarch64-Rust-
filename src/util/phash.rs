@@ -166,10 +166,40 @@ fn cos_table() -> &'static [[f32; DCT_DIM]; DCT_DIM] {
     })
 }
 
+/// Offline self-test of the image codec + hash path, for `hse doctor`.
+/// Encodes a small synthetic image to PNG in-memory, decodes it back through
+/// [`hash_bytes`], and confirms a fingerprint is produced — proving the
+/// pure-Rust decoder links and runs on this device (the main aarch64 risk
+/// introduced by the `image` dependency). Pure, deterministic, no I/O, no
+/// network. Returns `Ok(detail)` on success or a diagnostic string on failure.
+pub fn self_test() -> Result<f64, String> {
+    let img = image::RgbImage::from_fn(32, 32, |x, y| {
+        image::Rgb([(x * 8) as u8, (y * 8) as u8, ((x + y) * 4) as u8])
+    });
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut buf, image::ImageFormat::Png)
+        .map_err(|e| format!("PNG encode failed: {e}"))?;
+    let bytes = buf.into_inner();
+    match hash_bytes(&bytes) {
+        Some(h) => Ok(h.detail),
+        None => Err(format!(
+            "PNG re-decode produced no hash ({} bytes encoded)",
+            bytes.len()
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use image::{GrayImage, Luma};
+
+    #[test]
+    fn self_test_round_trips_png() {
+        // Encode→decode→hash must succeed wherever the crate builds.
+        assert!(self_test().is_ok());
+    }
 
     // Smooth diagonal 0→255 gradient, resolution-independent. Used for the
     // detail test (lots of luma variance).

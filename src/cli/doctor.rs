@@ -123,6 +123,22 @@ fn append_bundle_sections(out: &mut String, store: Option<&Store>) {
         );
     }
 
+    // Image pipeline self-test — proves the pure-Rust decoder + perceptual
+    // hash actually run on this device (the main aarch64 risk from the `image`
+    // dependency). Offline encode→decode→hash round-trip; no network.
+    let _ = writeln!(out, "\n── image pipeline (perceptual hash) ──");
+    match crate::util::phash::self_test() {
+        Ok(detail) => {
+            let _ = writeln!(
+                out,
+                "  ok — codec + DCT pHash working (self-test detail={detail:.1})"
+            );
+        }
+        Err(e) => {
+            let _ = writeln!(out, "  FAIL — {e}");
+        }
+    }
+
     // Recent scans (surfaces failures + their errors) from the store.
     let _ = writeln!(out, "\n── recent scans ──");
     match store.map(|s| s.list_scans(10)) {
