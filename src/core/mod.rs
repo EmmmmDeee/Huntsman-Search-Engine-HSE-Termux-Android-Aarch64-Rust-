@@ -14,6 +14,7 @@ pub mod profiles;
 pub mod relation;
 pub mod roi;
 pub mod scan;
+pub mod temporal;
 pub mod validation;
 pub mod webhook;
 
@@ -612,3 +613,4 @@ pub use module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleInfo, 
 pub use port::StoragePort;
 pub use relation::{Relation, RelationKind};
 pub use scan::{ExpansionStrategy, Scan, ScanOptions, ScanRequest, ScanStatus, Target, TargetKind};
+pub use temporal::{ActivityProfile, Burst};

@@ -157,6 +157,7 @@ const RULES: &[RuleFn] = &[
     rule_au_028_subdomain_takeover_risk,
     rule_au_029_cloud_storage_exposure,
     rule_au_030_geo_convergence_score,
+    rule_au_033_behavioral_timezone,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -170,7 +171,7 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 
 // ─── Graph-aware rules ───────────────────────────────────────────────────────
 // Rules that consume the typed `Relation` edge set in addition to entities.
-// Kept separate from `RULES` so the 30 entity-only rules need no signature
+// Kept separate from `RULES` so the entity-only rules need no signature
 // change.
 
 type RelationRuleFn = fn(&[Entity], &[Relation], &str, u64) -> Vec<Correlation>;
@@ -331,6 +332,35 @@ mod tests {
                 .with_attr("platforms", platforms),
         );
         e
+    }
+
+    // ── AU-033 (behavioural timezone) ───────────────────────────────────
+
+    #[test]
+    fn au033_infers_timezone_from_diurnal_activity() {
+        use rules::rule_au_033_behavioral_timezone;
+        // Twelve account/activity timestamps clustered in a tight evening
+        // band with a clear overnight trough — enough signal for a lead.
+        let mut e = Entity::new(EntityKind::Username, "ghost", 0.9, "scan-test");
+        for day in 1..=16 {
+            e.add_evidence(
+                Evidence::new("github_user", "activity")
+                    .with_attr("pushed_at", format!("2023-04-{day:02}T20:00:00Z")),
+            );
+        }
+        let r = rule_au_033_behavioral_timezone(&[e], "scan-test", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-033");
+        assert!(r[0].description.contains("UTC"));
+        assert!(!r[0].entity_uids.is_empty());
+    }
+
+    #[test]
+    fn au033_no_fire_without_enough_timestamps() {
+        use rules::rule_au_033_behavioral_timezone;
+        let mut e = Entity::new(EntityKind::Username, "ghost", 0.9, "scan-test");
+        e.add_evidence(Evidence::new("x", "y").with_attr("created_at", "2023-04-01T20:00:00Z"));
+        assert!(rule_au_033_behavioral_timezone(&[e], "scan-test", 0).is_empty());
     }
 
     // ── AU-001 ──────────────────────────────────────────────────────────

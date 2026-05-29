@@ -1270,3 +1270,65 @@ pub(super) fn rule_au_032_colocation_cluster(
     }
     out
 }
+
+/// AU-033 — Behavioural timezone lead. Folds every behavioural timestamp in
+/// the corpus (account-creation, last-seen, commit-push, paste, breach dates)
+/// onto a 24-hour clock and infers the subject's UTC offset from the diurnal
+/// quiet-window. When the trough is pronounced enough to call, this is a
+/// non-spatial geolocation lead — orthogonal to the IP/address geo signals,
+/// and useful precisely when those are absent or proxied.
+///
+/// Fires at most once per scan, only when the inferred-offset confidence
+/// clears a floor. Severity scales with confidence. Deterministic: the
+/// temporal engine is pure arithmetic over the same entity set.
+pub(super) fn rule_au_033_behavioral_timezone(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use crate::core::temporal;
+
+    /// Minimum offset confidence before we surface a lead — below this the
+    /// activity histogram is too flat to distinguish a timezone.
+    const CONF_FLOOR: f64 = 0.35;
+
+    let Some(profile) = temporal::analyze(entities) else {
+        return Vec::new();
+    };
+    if profile.offset_confidence < CONF_FLOOR {
+        return Vec::new();
+    }
+    let Some(label) = profile.offset_label() else {
+        return Vec::new();
+    };
+
+    let severity = if profile.offset_confidence >= 0.70 {
+        Severity::High
+    } else {
+        Severity::Medium
+    };
+
+    let burst_note = if profile.bursts.is_empty() {
+        String::new()
+    } else {
+        format!(", {} activity burst(s)", profile.bursts.len())
+    };
+
+    vec![Correlation::new(
+        "AU-033",
+        "Behavioural timezone lead",
+        severity,
+        format!(
+            "Diurnal activity across {} timestamps (peak {:02}:00 UTC) infers subject timezone {} \
+             (confidence {:.2}){} — non-spatial geolocation lead",
+            profile.samples,
+            profile.peak_hour_utc(),
+            label,
+            profile.offset_confidence,
+            burst_note,
+        ),
+        profile.contributing_uids,
+        scan_id,
+        ts,
+    )]
+}

@@ -23,6 +23,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Temporal / behavioural pattern engine.** New `core::temporal` module
+  distils the timestamps already embedded across the entity corpus
+  (account-creation, last-seen, commit-push, paste and breach dates) into an
+  `ActivityProfile`: a UTC hour-of-day and day-of-week histogram, inferred
+  subject UTC offset from the diurnal quiet-window, and activity-burst
+  detection. Pure arithmetic — a self-contained ISO-8601/epoch parser and
+  Hinnant civil-time conversion, no `chrono`, no native deps, deterministic.
+  Wired into the correlator as rule **AU-033 "Behavioural timezone lead"**,
+  which surfaces a non-spatial geolocation lead (severity scaling with
+  trough-depth × sample-volume confidence) — orthogonal to the IP/address geo
+  signals and most useful precisely when those are proxied or absent.
 - **Per-module cost telemetry in the dossier.** `hse scan --output dossier`
   now shows each module's cost tier (`free` / `key` / `paid`) in the "modules
   ranked by yield" table and flags keyed/paid modules that yielded nothing
