@@ -161,6 +161,7 @@ const RULES: &[RuleFn] = &[
     rule_au_035_stealer_victim_cluster,
     rule_au_036_credential_reuse,
     rule_au_037_shared_web_tracker,
+    rule_au_038_pattern_of_life,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

@@ -12,6 +12,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Pattern-of-life location exposure (`AU-038`).** The geo-convergence rules
+  (AU-014/017/030) confirm *where* an entity is by agreement; this is the
+  inverse signal: a person observed at multiple *distinct* places is a mobility
+  trace that uniquely identifies and exposes pattern-of-life (de Montjoye /
+  Blondel: ~4 spatiotemporal points pin 95% of individuals). The rule fires only
+  on **person-presence** coordinates — geotagged photos (`photo-derived`) and
+  self-reported social check-ins (`social-profile`) — and never on IP/datacenter
+  geo (which carries only `geoint`), so a domain's far-flung servers can't be
+  mistaken for someone's movements. Requires ≥3 distinct places (≥~2 km apart,
+  so GPS jitter at one venue doesn't count). Correlator now 38 rules (35 entity
+  + 3 graph-aware); unit-tested offline incl. the server-geo exclusion.
+
 - **`security.txt` harvester (`security_txt` module, RFC 9116).** The crawler
   only *probed* `/.well-known/security.txt` for config leaks; nothing parsed it.
   The new module fetches `/.well-known/security.txt` (then the legacy

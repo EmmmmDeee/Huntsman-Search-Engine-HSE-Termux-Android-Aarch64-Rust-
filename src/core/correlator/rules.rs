@@ -1633,6 +1633,69 @@ pub(super) fn rule_au_037_shared_web_tracker(
     out
 }
 
+/// AU-038 — pattern-of-life location exposure.
+///
+/// The geo-convergence rules (AU-014/017/030) confirm *where* an entity is by
+/// agreement. This is the inverse and complementary signal Clive Robinson keeps
+/// citing: a person observed at a handful of *distinct* places forms a mobility
+/// trace that uniquely identifies and exposes pattern-of-life — de Montjoye /
+/// Blondel showed ~4 such spatiotemporal points pin 95% of individuals.
+///
+/// Fires only on **person-presence** coordinates — geotagged photos
+/// (`photo-derived`) or self-reported social check-ins (`social-profile`) —
+/// never on IP/datacenter geo (which carries only `geoint`), so a domain's
+/// far-flung servers can never be mistaken for someone's movements. Requires
+/// ≥3 distinct places (≥~2 km apart, so GPS jitter at one venue doesn't count).
+pub(super) fn rule_au_038_pattern_of_life(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::BTreeSet;
+
+    const PRESENCE_TAGS: &[&str] = &["photo-derived", "social-profile"];
+    const DISTINCT_DEG: f64 = 0.02; // ~2 km
+
+    let mut uids: BTreeSet<&str> = BTreeSet::new();
+    let mut places: Vec<(f64, f64)> = Vec::new();
+    for e in entities_of_kind(entities, EntityKind::Coordinates) {
+        if !PRESENCE_TAGS.iter().any(|t| e.has_tag(t)) {
+            continue;
+        }
+        let parts: Vec<&str> = e.value.split(',').collect();
+        let (Some(a), Some(b)) = (parts.first(), parts.get(1)) else {
+            continue;
+        };
+        let (Ok(lat), Ok(lon)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>()) else {
+            continue;
+        };
+        uids.insert(e.uid.as_str());
+        if !places
+            .iter()
+            .any(|(rl, ro)| (lat - rl).abs() < DISTINCT_DEG && (lon - ro).abs() < DISTINCT_DEG)
+        {
+            places.push((lat, lon));
+        }
+    }
+
+    if places.len() < 3 {
+        return Vec::new();
+    }
+    vec![Correlation::new(
+        "AU-038",
+        "Pattern-of-life location exposure",
+        Severity::High,
+        format!(
+            "Subject placed at {} distinct locations via geotagged photos / self-reported \
+             check-ins — a mobility trace (≈4 such points uniquely identify an individual)",
+            places.len()
+        ),
+        uids.iter().map(|u| (*u).to_string()).collect(),
+        scan_id,
+        ts,
+    )]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1843,13 +1906,80 @@ mod tests {
         assert!(out.is_empty());
     }
 
+    // ── AU-038 pattern-of-life location exposure ────────────────────────────
+
+    fn presence_coord(latlon: &str, presence_tag: &str) -> Entity {
+        let mut e = ent(EntityKind::Coordinates, latlon);
+        e.tag("geoint");
+        e.tag(presence_tag);
+        e
+    }
+
+    #[test]
+    fn au_038_fires_on_three_distinct_presence_locations() {
+        let out = rule_au_038_pattern_of_life(
+            &[
+                presence_coord("-37.81,144.96", "photo-derived"), // Melbourne
+                presence_coord("-33.87,151.21", "photo-derived"), // Sydney
+                presence_coord("51.50,-0.12", "social-profile"),  // London
+            ],
+            "s",
+            0,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-038");
+        assert_eq!(out[0].severity, Severity::High);
+        assert_eq!(out[0].entity_uids.len(), 3);
+    }
+
+    #[test]
+    fn au_038_silent_when_points_cluster_at_one_venue() {
+        // Three geotags within GPS jitter of one place → not a mobility trace.
+        let out = rule_au_038_pattern_of_life(
+            &[
+                presence_coord("1.0000,1.0000", "photo-derived"),
+                presence_coord("1.0010,1.0010", "photo-derived"),
+                presence_coord("1.0020,0.9990", "photo-derived"),
+            ],
+            "s",
+            0,
+        );
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn au_038_excludes_ip_and_server_geo() {
+        // Three distinct locations, but IP/datacenter geo carries only "geoint"
+        // (no person-presence tag) — must never be read as someone's movements.
+        let mut a = ent(EntityKind::Coordinates, "-37.81,144.96");
+        a.tag("geoint");
+        let mut b = ent(EntityKind::Coordinates, "-33.87,151.21");
+        b.tag("geoint");
+        let mut c = ent(EntityKind::Coordinates, "51.50,-0.12");
+        c.tag("geoint");
+        assert!(rule_au_038_pattern_of_life(&[a, b, c], "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au_038_silent_below_three_distinct_places() {
+        let out = rule_au_038_pattern_of_life(
+            &[
+                presence_coord("-37.81,144.96", "photo-derived"),
+                presence_coord("-33.87,151.21", "photo-derived"),
+            ],
+            "s",
+            0,
+        );
+        assert!(out.is_empty());
+    }
+
     // ── Engine wiring: array invariants + dispatcher integration ────────────
 
     #[test]
     fn rule_arrays_match_documented_counts() {
         use super::super::{RELATION_RULES, RULES};
-        // 34 entity rules + 3 relation rules = the 37 documented in the blueprint.
-        assert_eq!(RULES.len(), 34, "entity-rule count drifted from docs");
+        // 35 entity rules + 3 relation rules = the 38 documented in the blueprint.
+        assert_eq!(RULES.len(), 35, "entity-rule count drifted from docs");
         assert_eq!(
             RELATION_RULES.len(),
             3,
