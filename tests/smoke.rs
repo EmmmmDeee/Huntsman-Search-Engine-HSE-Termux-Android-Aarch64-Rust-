@@ -1570,3 +1570,50 @@ async fn scan_persists_structural_subdomain_relation() {
     assert_eq!(by_uid(&sub[0].from_uid), Some("blog.example.com"));
     assert_eq!(by_uid(&sub[0].to_uid), Some("example.com"));
 }
+
+/// End-to-end: expansion must record `DerivedFrom` lineage edges attributing a
+/// child entity to the parent whose expansion surfaced it. Seed Email →
+/// (seed round) Username → (expansion round 1) Phone, so the engine should
+/// persist a Username ──DerivedFrom──▶ Phone edge.
+#[tokio::test]
+async fn expansion_records_derived_from_lineage() {
+    use huntsman_search_engine::core::relation::RelationKind;
+
+    let (engine, store, sid, target, ctx) = setup(
+        vec![
+            Arc::new(EmailToUsernameSynth),
+            Arc::new(UsernameToPhoneSynth),
+        ],
+        "rel-lineage",
+        TargetKind::Email,
+        "alice@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let entities = store.entities_for_scan(&sid).unwrap();
+    let uname = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("seed round should produce a username");
+    let phone = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Phone)
+        .expect("expansion should produce a phone");
+
+    let relations = store.relations_for_scan(&sid).unwrap();
+    let lineage: Vec<_> = relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::DerivedFrom)
+        .collect();
+    assert!(
+        lineage
+            .iter()
+            .any(|r| r.from_uid == uname.uid && r.to_uid == phone.uid),
+        "expected a Username -> Phone DerivedFrom edge, got: {lineage:?}"
+    );
+}

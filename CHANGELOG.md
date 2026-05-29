@@ -41,8 +41,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (Domain→closest parent), `BelongsToDomain` (Email→Domain), and `HostedOn`
   (Url→Domain) edges; these are persisted by `finalise_scan` and surfaced in
   `hse scan --output json` and the dossier's RELATIONS section. Pure open math
-  — no inference. (Lineage / evidence-derived semantic edges are planned
-  follow-ons.)
+  — no inference.
+- **Lineage relations (`DerivedFrom`).** Autonomous expansion now records the
+  attribution chain as graph edges: as `run_expansion` dispatches each
+  candidate, it attributes every newly-surfaced entity back to the parent
+  entity it expanded (`child ──DerivedFrom──▶ parent`). Captured via a
+  read-only before/after diff localised to the expansion loop — no change to
+  dispatch behaviour — and persisted alongside the structural edges.
+  (Evidence-derived semantic edges remain a planned follow-on.)
 
 ## [1.0.0] — 2026-05-27
 

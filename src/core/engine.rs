@@ -36,6 +36,7 @@ use crate::core::{
     event::{Event, EventBus, EventKind},
     module::{Module, ModuleContext, ModuleCost},
     port::StoragePort,
+    relation::{Relation, RelationKind},
     scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
 };
 
@@ -200,6 +201,9 @@ impl ScanEngine {
         let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
         let mut dispatched: DispatchLog = HashSet::new();
         let mut stats = ModuleStats::default();
+        // Lineage edges (parent entity → child surfaced by expanding it),
+        // accumulated across expansion rounds and persisted in finalise_scan.
+        let mut lineage: Vec<Relation> = Vec::new();
 
         visited.insert(visit_key(&target));
         self.dispatch_target(
@@ -225,11 +229,12 @@ impl ScanEngine {
                     &mut visited,
                     &mut stats,
                     &mut dispatched,
+                    &mut lineage,
                 )
                 .await;
         }
 
-        self.finalise_scan(&mut scan, entity_map, &ctx, stats)
+        self.finalise_scan(&mut scan, entity_map, &ctx, stats, lineage)
     }
 
     /// Persist entities, run the correlator, and mark the scan terminal.
@@ -239,6 +244,7 @@ impl ScanEngine {
         entity_map: HashMap<String, Entity>,
         ctx: &ModuleContext,
         stats: ModuleStats,
+        lineage_relations: Vec<Relation>,
     ) -> Result<Scan> {
         // Persist the scan's entities in a single transaction. On the common
         // path (every entity is new or a clean GREATEST-merge) this collapses
@@ -314,8 +320,9 @@ impl ScanEngine {
         self.store.upsert_scan(scan)?;
 
         // Derive + persist the typed entity-relation edges (attribution
-        // graph). Runs on the persisted entity set, like the correlator.
-        self.persist_relations(&scan.id, &entities);
+        // graph): the lineage edges captured during expansion plus the
+        // structural edges derived from the persisted entity set.
+        self.persist_relations(&scan.id, &entities, &lineage_relations);
 
         self.run_correlator(&scan.id);
 
@@ -338,16 +345,19 @@ impl ScanEngine {
         Ok(scan.clone())
     }
 
-    /// Derive the scan's deterministic structural relations and persist them.
-    /// Best-effort: a relation that fails to persist is logged, never fatal to
-    /// the scan. Edge endpoints are entity UIDs already persisted above.
-    fn persist_relations(&self, scan_id: &str, entities: &[Entity]) {
-        let relations = crate::core::relation::derive_structural(entities, scan_id);
-        if relations.is_empty() {
+    /// Persist the scan's typed entity-relation edges: the `lineage` edges
+    /// captured during expansion (`DerivedFrom`) plus the deterministic
+    /// structural edges derived from the persisted entity set. Best-effort: a
+    /// relation that fails to persist is logged, never fatal to the scan.
+    /// Endpoints are entity UIDs already persisted above; upserts are
+    /// idempotent on the deterministic edge id.
+    fn persist_relations(&self, scan_id: &str, entities: &[Entity], lineage: &[Relation]) {
+        let structural = crate::core::relation::derive_structural(entities, scan_id);
+        if lineage.is_empty() && structural.is_empty() {
             return;
         }
         let mut persisted = 0usize;
-        for r in &relations {
+        for r in lineage.iter().chain(structural.iter()) {
             match self.store.upsert_relation(r) {
                 Ok(()) => persisted += 1,
                 Err(e) => warn!(scan_id, relation = %r.id, error = %e, "relation persist failed"),
@@ -355,8 +365,10 @@ impl ScanEngine {
         }
         info!(
             scan_id,
-            relations = persisted,
-            "structural relations persisted"
+            lineage = lineage.len(),
+            structural = structural.len(),
+            persisted,
+            "entity relations persisted"
         );
     }
 
@@ -394,7 +406,13 @@ impl ScanEngine {
         visited: &mut HashSet<(TargetKind, String)>,
         stats: &mut ModuleStats,
         dispatched: &mut DispatchLog,
+        relations: &mut Vec<Relation>,
     ) -> StopReason {
+        // Reused across candidates to capture lineage: the set of entity UIDs
+        // present *before* a candidate's dispatch, so new UIDs afterward are
+        // children that candidate surfaced. Reusing the buffer avoids a
+        // per-candidate allocation; the key clones are bounded by max_entities.
+        let mut before: HashSet<String> = HashSet::new();
         for depth in 1..=opts.depth {
             // Refresh keys from the pool at the start of each round.
             // Keys discovered during the previous round (oathnet_pro breach
@@ -427,7 +445,10 @@ impl ScanEngine {
             // not this one.
             let entities_at_round_start = entity_map.len();
             let has_paid = ctx.keys.contains_key("HUNTSMAN_OATHNET_KEY");
-            let mut next: Vec<(Target, f64)> = Vec::new();
+            // Each candidate carries the UID of the parent entity it was
+            // derived from, so a `DerivedFrom` lineage edge can be recorded
+            // for whatever new entities its dispatch surfaces.
+            let mut next: Vec<(Target, f64, String)> = Vec::new();
             for entity in entity_map.values() {
                 if entity.c_effective() < opts.min_expand_confidence {
                     continue;
@@ -453,7 +474,7 @@ impl ScanEngine {
                         has_paid,
                         richness,
                     );
-                    next.push((new_target, weight));
+                    next.push((new_target, weight, entity.uid.clone()));
                 }
             }
 
@@ -473,7 +494,7 @@ impl ScanEngine {
                 }
             }
             let dispatched_this_round = next.len();
-            let next: Vec<Target> = next.into_iter().map(|(t, _)| t).collect();
+            let next: Vec<(Target, String)> = next.into_iter().map(|(t, _, p)| (t, p)).collect();
 
             if next.is_empty() {
                 let stop = StopReason::NoMoreCandidates;
@@ -495,7 +516,7 @@ impl ScanEngine {
                 },
             );
 
-            for nt in &next {
+            for (nt, parent_uid) in &next {
                 if ctx.cancel.is_cancelled() {
                     let stop = StopReason::Cancelled;
                     self.emit(
@@ -515,6 +536,10 @@ impl ScanEngine {
                     );
                     return stop;
                 }
+                // Snapshot UIDs before dispatch so we can attribute the
+                // entities this candidate surfaces back to its parent.
+                before.clear();
+                before.extend(entity_map.keys().cloned());
                 if let Err(e) = self
                     .dispatch_target(scan_id, nt, ctx, opts, entity_map, true, stats, dispatched)
                     .await
@@ -522,6 +547,20 @@ impl ScanEngine {
                     // Per-target dispatch errors are already surfaced as
                     // ModuleError events; we keep going through the round.
                     warn!(scan_id, error = %e, "dispatch_target failed (continuing)");
+                }
+                // Record a DerivedFrom edge for every entity newly created by
+                // this candidate's dispatch (merges into existing entities are
+                // not "new" and are skipped, avoiding cross-round edge spam).
+                for (uid, child) in entity_map.iter() {
+                    if !before.contains(uid) {
+                        relations.push(Relation::new(
+                            parent_uid.as_str(),
+                            uid.as_str(),
+                            RelationKind::DerivedFrom,
+                            child.confidence,
+                            scan_id,
+                        ));
+                    }
                 }
             }
 

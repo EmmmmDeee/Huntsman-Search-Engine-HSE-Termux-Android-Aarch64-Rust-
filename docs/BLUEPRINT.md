@@ -310,9 +310,16 @@ endpoint's confidence, and is persisted to the `relations` table via
 `StoragePort` (cascade-deleted with the scan). Edges are retrievable through
 `relations_for_scan` and surfaced in `scan --output json` and the dossier's
 RELATIONS section. Like the correlator it is **deterministic open math** — no
-inference. (Lineage `DerivedFrom` edges and evidence-derived semantic edges
-such as `resolves_to`/`registered_by` are reserved follow-on increments; see
-[§7 P2](#7-forward-optimization-levers).)
+inference.
+
+Alongside the structural edges, the expansion loop records **lineage**
+(`DerivedFrom`) edges: as `run_expansion` dispatches each candidate (built from
+a parent entity), it diffs the entity map before/after and attributes every
+newly-surfaced entity back to that parent — the literal "recursive enumeration
+chain" made explicit as graph edges. Capture is a read-only side-effect
+localised to `run_expansion`; it changes no dispatch behaviour. (Evidence-derived
+semantic edges such as `resolves_to`/`registered_by` remain follow-on
+increments; see [§7 P2](#7-forward-optimization-levers).)
 
 ---
 
@@ -435,22 +442,24 @@ disturbing the invariants above.
   at runtime and fails the build instead. (The engine still re-checks
   `accepts()` on the hit path at `engine.rs:718` as belt-and-braces.)
 
-**P2 — fabric richness (first slice ✅)**
-- ✅ **Done (slice 1).** First-class typed entity relations now exist
+**P2 — fabric richness (slices 1–2 ✅)**
+- ✅ **Done (slice 1 — structural).** First-class typed entity relations exist
   (`core::relation`): a `Relation { from_uid, to_uid, kind, confidence }` model,
   a `relations` table + `StoragePort::{upsert_relation, relations_for_scan}`
   (idempotent on a deterministic edge id, cascade-deleted with the scan), and a
   **deterministic post-scan structural builder** (`derive_structural`) that
   emits `SubdomainOf` (Domain→closest parent), `BelongsToDomain` (Email→Domain),
-  and `HostedOn` (Url→Domain). Wired into `finalise_scan` and surfaced in the
-  `scan --output json` payload and the dossier's RELATIONS section. Pure open
-  math — no inference — preserving the deterministic-only guarantee.
-- _Remaining:_ (a) **lineage edges** (`DerivedFrom`: child → the entity whose
-  expansion surfaced it) — variant reserved; needs parent context threaded
-  through the dispatch path. (b) Evidence-derived semantic edges
-  (`resolves_to` from DNS, `registered_by` from WHOIS, `co_located_with` from
-  geo proximity). (c) Path-based correlator rules over the edge set and
-  labelled edges in the SPA force-graph / GEXF export.
+  and `HostedOn` (Url→Domain). Surfaced in the `scan --output json` payload and
+  the dossier's RELATIONS section. Pure open math — no inference.
+- ✅ **Done (slice 2 — lineage).** `run_expansion` now records `DerivedFrom`
+  edges (child → the parent entity whose expansion surfaced it) via a read-only
+  before/after entity-map diff, localised to the expansion loop — no change to
+  dispatch behaviour. Persisted alongside the structural edges in
+  `finalise_scan`.
+- _Remaining:_ (a) Evidence-derived semantic edges (`resolves_to` from DNS,
+  `registered_by` from WHOIS, `co_located_with` from geo proximity), parsed
+  deterministically from evidence attributes. (b) Path-based correlator rules
+  over the edge set and labelled edges in the SPA force-graph / GEXF export.
 
 **P3 — performance on aarch64**
 - ✅ **Done.** `finalise_scan` now persists the scan's entities through
