@@ -523,6 +523,30 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
     Ok(Some(data))
 }
 
+/// GET `url` and return its body, **streamed and truncated to `cap` bytes** so
+/// an oversized or hostile response can never exhaust memory. `None` on any
+/// transport error or non-success status. For page/well-known scrapers where
+/// only the first N KiB matter (trackers live in `<head>`; `security.txt` is
+/// tiny). The caller scans the body for keys if appropriate.
+pub async fn fetch_text_capped(client: &reqwest::Client, url: &str, cap: usize) -> Option<String> {
+    use futures::StreamExt as _;
+    let resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.ok()?;
+        buf.extend_from_slice(&bytes);
+        if buf.len() >= cap {
+            buf.truncate(cap);
+            break;
+        }
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// Percent-encode a single URL path or query-string component using the
 /// `application/x-www-form-urlencoded` serialiser. Equivalent to:
 ///

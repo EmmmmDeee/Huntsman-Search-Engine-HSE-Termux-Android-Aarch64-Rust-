@@ -12,6 +12,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`security.txt` harvester (`security_txt` module, RFC 9116).** The crawler
+  only *probed* `/.well-known/security.txt` for config leaks; nothing parsed it.
+  The new module fetches `/.well-known/security.txt` (then the legacy
+  `/security.txt`) and extracts an organisation's published security-team
+  **contacts** (`mailto:`→Email, `tel:`→Phone, form URLs), **PGP keys**
+  (`Encryption:`), and policy/hiring/acknowledgments/canonical/CSAF URLs —
+  authoritative leads that feed recursive identity expansion (the contact
+  emails become fresh targets). Reuses the new shared `http::fetch_text_capped`
+  (streamed, size-bounded body read) — also adopted by `web_trackers`, retiring
+  its duplicate fetch helper. Registry now 88 modules. RFC-9116 parsing +
+  entity extraction are unit-tested offline.
+
 - **Web-tracker operator fingerprinting (`web_trackers` module + `AU-037`).**
   Operators paste the *same* analytics/ad snippet across every property they
   run, so a shared tracking ID is a near-definitive "same operator" link — the

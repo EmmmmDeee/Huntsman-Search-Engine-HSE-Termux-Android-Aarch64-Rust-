@@ -13,7 +13,7 @@ mechanism that satisfies it.
 
 HSE is a single-binary, pure-Rust, recursive OSINT/GEOINT platform built to run
 natively inside **Termux on Android (aarch64), no root**. It is a plugin-style
-registry of **87 modules** feeding a module-agnostic `ScanEngine` that merges
+registry of **88 modules** feeding a module-agnostic `ScanEngine` that merges
 their findings into a deterministic entity graph, pivots recursively on
 high-confidence nodes, correlates the result against 36 declarative rules, and
 surfaces everything over a CLI, a localhost HTTP API, and an embedded SPA.

@@ -69,6 +69,7 @@ pub mod proxycurl;
 pub mod pwned_passwords;
 pub mod rdap_domain;
 pub mod search_engines;
+pub mod security_txt;
 pub mod securitytrails;
 pub mod see_know;
 pub mod seon;
@@ -147,6 +148,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(webserver_banner::WebserverBanner),
         Arc::new(web_crawler::WebCrawler),
         Arc::new(web_trackers::WebTrackers),
+        Arc::new(security_txt::SecurityTxt),
         Arc::new(urlscan::UrlScan),
         Arc::new(email_parse::EmailParse),
         Arc::new(employer_pivot::EmployerPivot),

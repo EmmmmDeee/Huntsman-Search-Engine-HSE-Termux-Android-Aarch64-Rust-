@@ -129,7 +129,9 @@ impl Module for WebTrackers {
             return Ok(ModuleResult::new());
         }
 
-        let Some(body) = fetch_capped(&ctx.http, &fetch_url).await else {
+        let Some(body) =
+            crate::util::http::fetch_text_capped(&ctx.http, &fetch_url, MAX_BODY).await
+        else {
             return Ok(ModuleResult::new());
         };
 
@@ -156,28 +158,6 @@ impl Module for WebTrackers {
         result.push(e);
         Ok(result)
     }
-}
-
-/// GET `url` and return its body, **streamed and truncated to [`MAX_BODY`]** so
-/// an oversized/hostile response can never exhaust memory. `None` on any
-/// transport error or non-success status.
-async fn fetch_capped(client: &reqwest::Client, url: &str) -> Option<String> {
-    use futures::StreamExt as _;
-    let resp = client.get(url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let mut stream = resp.bytes_stream();
-    let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk.ok()?;
-        buf.extend_from_slice(&bytes);
-        if buf.len() >= MAX_BODY {
-            buf.truncate(MAX_BODY);
-            break;
-        }
-    }
-    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 #[cfg(test)]
