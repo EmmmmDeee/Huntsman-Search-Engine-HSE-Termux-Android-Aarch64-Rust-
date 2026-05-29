@@ -10,12 +10,14 @@ mod export;
 mod keys_cmd;
 mod live;
 mod provision;
+mod proxies;
 mod radar;
 mod scan;
 mod selftest;
 mod serve;
 
 use keys_cmd::KeysAction;
+use proxies::ProxiesAction;
 
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -181,6 +183,13 @@ pub enum Command {
     /// builders, printing a per-stage pass/fail report. No network. Run it
     /// first on a fresh device; exits non-zero if any stage fails.
     Selftest,
+    /// Manage the rotating proxy pool (the proxy retriever): `refresh`
+    /// retrieves + validates + persists free proxies; `list` shows them.
+    /// Route a scan through them with `HUNTSMAN_PROXY=auto`.
+    Proxies {
+        #[command(subcommand)]
+        action: ProxiesAction,
+    },
     /// Provision the local environment: write/merge `$HOME/.huntsman.env`
     /// from the canonical template and run a diagnostic smoke test.
     ///
@@ -396,6 +405,7 @@ pub async fn run() -> Result<()> {
         Command::Modules { category, json } => cmd_modules(category, json),
         Command::Doctor { bundle } => doctor::cmd_doctor(bundle).await,
         Command::Selftest => selftest::cmd_selftest().await,
+        Command::Proxies { action } => proxies::cmd_proxies(action).await,
         Command::Provision {
             env_only,
             verify_only,

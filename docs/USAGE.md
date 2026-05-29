@@ -11,6 +11,7 @@ hse live      Re-run a scan periodically (v0.5+)
 hse modules   List registered modules with cost / target / passive flags
 hse selftest  Offline 5-stage install health check (no network); run it first
 hse doctor    Verify environment (DB, keys, Termux, modules)
+hse proxies   Proxy retriever: refresh/list a validated free-proxy pool
 hse serve     Start the HTTP server + SPA (browse to http://127.0.0.1:8080)
 hse --help    Top-level help
 hse --version Print version
@@ -390,6 +391,8 @@ spawns no subprocess** — pure introspection + local file reads. See
 | `RUST_LOG` | Standard `tracing_subscriber` filter, e.g. `RUST_LOG=debug` or `RUST_LOG=huntsman_search_engine::modules=trace` |
 | `TERMUX_VERSION` | Set by Termux; used for `is_termux()` detection |
 | `HUNTSMAN_*` | Per-module API keys (loaded from `$HOME/.huntsman.env`); never logged |
+| `HUNTSMAN_PROXY` | Route all module HTTP through a proxy: an explicit `scheme://host:port`, or `auto` to use the fastest validated proxy from the pool (`hse proxies refresh`). Unset → direct. |
+| `HUNTSMAN_SEARCH_PROXY` | Proxy used by the search-engine modules when a direct fetch is blocked (falls back to the validated pool if unset). |
 
 ---
 

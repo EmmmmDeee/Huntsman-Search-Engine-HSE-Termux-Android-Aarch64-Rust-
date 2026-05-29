@@ -39,14 +39,17 @@ pub(super) async fn try_fetch(url: &str, ua: &str, post_body: Option<&str>) -> F
         crate::util::curl::fetch_with_ua(url, 8_000, ua).await
     };
 
-    // If direct fetch failed, try through the HUNTSMAN_SEARCH_PROXY env
-    // or fall back to the proxy pool (populated by util::proxy::harvest)
+    // If direct fetch failed, retry through a proxy: an explicit
+    // `HUNTSMAN_SEARCH_PROXY` wins, else fall back to the fastest validated
+    // proxy from the persisted pool (`hse proxies refresh`).
     let body = match body {
         Some(b) if b.len() >= 500 => Some(b),
         _ => {
-            if let Ok(proxy) = std::env::var("HUNTSMAN_SEARCH_PROXY")
-                && !proxy.is_empty()
-            {
+            let proxy = std::env::var("HUNTSMAN_SEARCH_PROXY")
+                .ok()
+                .filter(|p| !p.is_empty())
+                .or_else(|| crate::util::proxy::load_pool().first().map(|p| p.url()));
+            if let Some(proxy) = proxy {
                 return match crate::util::curl::fetch_via_proxy(url, 8_000, ua, &proxy).await {
                     Some(b) if b.len() >= 500 && !is_captcha_page(&b) => FetchOutcome::Body(b),
                     Some(_) => FetchOutcome::Blocked,

@@ -7,16 +7,18 @@
 //! Compatible with Termux aarch64 — uses curl subprocess for all
 //! network calls (no native TLS dependencies).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 
 /// A validated proxy entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Proxy {
     pub addr: String,
-    pub proto: &'static str,
+    pub proto: String,
     pub latency_ms: u64,
 }
 
@@ -150,7 +152,7 @@ pub async fn validate(addr: &str) -> Option<Proxy> {
         let latency = start.elapsed().as_millis() as u64;
         Some(Proxy {
             addr: addr.to_string(),
-            proto: "http",
+            proto: "http".to_string(),
             latency_ms: latency,
         })
     } else {
@@ -158,17 +160,18 @@ pub async fn validate(addr: &str) -> Option<Proxy> {
     }
 }
 
-/// Harvest and validate proxies, returning only live ones.
-/// Validates up to `max_validate` candidates in parallel.
-pub async fn refresh_pool(pool: &Arc<ProxyPool>, max_validate: usize) {
+/// Harvest and validate proxies, returning only live ones sorted by latency.
+/// Validates up to `max_validate` candidates in parallel. This is the proxy
+/// *retriever*: the one entry point that turns public sources into a usable,
+/// fastest-first list. Network-bound (curl); empty `Vec` if nothing validates.
+pub async fn retrieve(max_validate: usize) -> Vec<Proxy> {
     let candidates = harvest().await;
     if candidates.is_empty() {
-        return;
+        return Vec::new();
     }
 
     let to_test: Vec<String> = candidates.into_iter().take(max_validate).collect();
     let mut tasks = Vec::new();
-
     for addr in to_test {
         tasks.push(tokio::spawn(async move { validate(&addr).await }));
     }
@@ -179,9 +182,39 @@ pub async fn refresh_pool(pool: &Arc<ProxyPool>, max_validate: usize) {
             valid.push(proxy);
         }
     }
-
     valid.sort_by_key(|p| p.latency_ms);
-    pool.replace(valid);
+    valid
+}
+
+/// Refresh an in-memory pool from the live retriever.
+pub async fn refresh_pool(pool: &Arc<ProxyPool>, max_validate: usize) {
+    pool.replace(retrieve(max_validate).await);
+}
+
+/// Where the validated pool is persisted between invocations. Each CLI run is a
+/// fresh process, so the retriever's output is saved here for later scans/serve
+/// to load (`hse proxies refresh` writes it; `HUNTSMAN_PROXY=auto` reads it).
+pub fn pool_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".huntsman").join("proxies.json")
+}
+
+/// Persist validated proxies (fastest-first) to [`pool_path`] as JSON.
+pub fn save_pool(proxies: &[Proxy]) -> std::io::Result<()> {
+    let path = pool_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let json = serde_json::to_string_pretty(proxies).unwrap_or_else(|_| "[]".to_string());
+    std::fs::write(path, json)
+}
+
+/// Load the persisted pool (fastest-first). Empty `Vec` if absent/unreadable.
+pub fn load_pool() -> Vec<Proxy> {
+    std::fs::read_to_string(pool_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 async fn curl_get(url: &str) -> Option<String> {
@@ -211,12 +244,12 @@ mod tests {
         pool.replace(vec![
             Proxy {
                 addr: "1.2.3.4:8080".into(),
-                proto: "http",
+                proto: "http".into(),
                 latency_ms: 100,
             },
             Proxy {
                 addr: "5.6.7.8:3128".into(),
-                proto: "http",
+                proto: "http".into(),
                 latency_ms: 200,
             },
         ]);
@@ -233,10 +266,31 @@ mod tests {
     fn proxy_url_format() {
         let p = Proxy {
             addr: "1.2.3.4:8080".into(),
-            proto: "http",
+            proto: "http".into(),
             latency_ms: 50,
         };
         assert_eq!(p.url(), "http://1.2.3.4:8080");
+    }
+
+    #[test]
+    fn pool_json_round_trips() {
+        let proxies = vec![
+            Proxy {
+                addr: "1.2.3.4:8080".into(),
+                proto: "http".into(),
+                latency_ms: 100,
+            },
+            Proxy {
+                addr: "5.6.7.8:3128".into(),
+                proto: "http".into(),
+                latency_ms: 200,
+            },
+        ];
+        let json = serde_json::to_string(&proxies).unwrap();
+        let back: Vec<Proxy> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].addr, "1.2.3.4:8080");
+        assert_eq!(back[0].url(), "http://1.2.3.4:8080");
     }
 
     #[test]

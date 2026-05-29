@@ -40,7 +40,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// No client-level total timeout — see module docstring. A short
 /// `connect_timeout` is set so unreachable hosts fail fast.
 pub fn build_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .pool_max_idle_per_host(5)
         .pool_idle_timeout(Duration::from_secs(90))
@@ -49,9 +49,41 @@ pub fn build_client() -> reqwest::Client {
             "huntsman-search-engine/",
             env!("CARGO_PKG_VERSION"),
             " (+https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)"
-        ))
-        .build()
-        .expect("reqwest client build failed")
+        ));
+
+    // Opt-in proxy routing. Default (env unset) → direct, byte-identical to
+    // before. `HUNTSMAN_PROXY=auto` routes through the fastest validated proxy
+    // from the persisted pool (`hse proxies refresh`); an explicit
+    // `scheme://host:port` routes through that.
+    if let Some(url) = resolve_proxy() {
+        match reqwest::Proxy::all(&url) {
+            Ok(p) => {
+                tracing::debug!(target: "hse::proxy", %url, "routing HTTP through proxy");
+                builder = builder.proxy(p);
+            }
+            Err(e) => {
+                tracing::warn!(target: "hse::proxy", %url, error = %e, "invalid HUNTSMAN_PROXY; using direct connection");
+            }
+        }
+    }
+
+    builder.build().expect("reqwest client build failed")
+}
+
+/// Resolve the proxy URL from `HUNTSMAN_PROXY`: an explicit `scheme://host:port`
+/// is used verbatim; `auto` picks the fastest validated proxy from the
+/// persisted pool ([`crate::util::proxy::load_pool`]). `None` (env unset/empty,
+/// or `auto` with an empty pool) → direct connection.
+fn resolve_proxy() -> Option<String> {
+    let v = std::env::var("HUNTSMAN_PROXY").ok()?;
+    let v = v.trim().to_string();
+    if v.is_empty() {
+        return None;
+    }
+    if v.eq_ignore_ascii_case("auto") {
+        return crate::util::proxy::load_pool().first().map(|p| p.url());
+    }
+    Some(v)
 }
 
 /// Read up to 200 characters of a non-success response body, trim, and

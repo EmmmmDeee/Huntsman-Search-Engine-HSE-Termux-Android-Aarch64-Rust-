@@ -12,6 +12,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Proxy retriever incorporated (`hse proxies`).** The complete but previously
+  dead `util::proxy` harvester/validator/pool is now wired into the platform:
+  `hse proxies refresh` retrieves free HTTP proxies from public sources,
+  validates each live, and **persists** the fastest-first survivors to
+  `~/.huntsman/proxies.json` (a new `retrieve()` entrypoint + `save_pool`/
+  `load_pool`; `Proxy` is now `Serialize`/`Deserialize`); `hse proxies list`
+  shows them. Scans route through them on demand — `HUNTSMAN_PROXY=auto` makes
+  `util::http::build_client` send all module HTTP through the fastest validated
+  proxy (or an explicit `scheme://host:port`), and the search-engine modules
+  now fall back to the pool automatically when a direct fetch is blocked
+  (completing the long-standing TODO). Opt-in: with the env unset and an empty
+  pool, behaviour is byte-identical to before. Anti-blocking resilience for
+  authorised OSINT collection; 13 subcommands.
+
 - **AU-036 — credential reuse across accounts (correlator rule).** The same
   password (or password hash) appearing on ≥2 distinct stealer-derived
   accounts — within a victim or across victims/logs — now fires a High-severity
