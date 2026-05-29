@@ -428,13 +428,13 @@ mod tests {
         for i in 0..50 {
             entities.push(Entity::new(
                 EntityKind::Email,
-                &format!("user{i}@bank.com"),
+                format!("user{i}@bank.com"),
                 0.7,
                 "s",
             ));
             entities.push(Entity::new(
                 EntityKind::Phone,
-                &format!("+1555000{i:04}"),
+                format!("+1555000{i:04}"),
                 0.25,
                 "s",
             ));
@@ -465,13 +465,13 @@ mod tests {
         for i in 0..20 {
             entities.push(Entity::new(
                 EntityKind::Email,
-                &format!("u{i}@bank.com"),
+                format!("u{i}@bank.com"),
                 0.7,
                 "s",
             ));
             entities.push(Entity::new(
                 EntityKind::Address,
-                &format!("{i} Main St, Helena, MT"),
+                format!("{i} Main St, Helena, MT"),
                 0.65,
                 "s",
             ));
