@@ -21,3 +21,6 @@
 # live investigation raw export (contains live-scraped public-web data)
 jlm_live.json
 *_live.json
+*_full.json
+*_full_clean.json
+jlm_full*
