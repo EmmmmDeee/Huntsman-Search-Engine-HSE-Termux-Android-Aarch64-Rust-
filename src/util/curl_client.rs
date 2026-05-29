@@ -144,7 +144,12 @@ impl CurlClient {
             .map_err(|e| Error::module(self.module, e.to_string()))?;
 
         if !output.status.success() {
-            return Err(Error::module(self.module, "curl failed"));
+            let code = output.status.code().unwrap_or(-1);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::module(
+                self.module,
+                format!("curl failed (exit {code}): {}", stderr.trim()),
+            ));
         }
         String::from_utf8(output.stdout).map_err(|e| Error::module(self.module, e.to_string()))
     }

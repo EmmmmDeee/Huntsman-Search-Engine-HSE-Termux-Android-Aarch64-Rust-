@@ -101,9 +101,11 @@ impl Module for SeekNow {
     fn max_timeout_ms(&self) -> u64 {
         // Concurrent endpoint dispatch lets us call ~10 endpoints in
         // ~the time of one — but the upper bound is still gated by the
-        // slowest individual lookup. 45s leaves room for stealer +
-        // breachhub (the heaviest paths) on slow upstreams.
-        45_000
+        // slowest individual lookup. The cold `/search` fan-out to external
+        // aggregators measured ~25-55s wall against the live key (the server
+        // caches afterwards, ~1.4s on repeat), so the engine wrapper must sit
+        // above the curl client's 58s/60s envelope to never fire first.
+        65_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

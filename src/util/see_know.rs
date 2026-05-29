@@ -42,9 +42,18 @@ pub const KEY_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";
 /// every distinct endpoint × query a single scan generates).
 static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
 
-/// Shared curl-subprocess client. Bearer auth, 12s curl timeout
-/// (matches the legacy `--max-time 12`), 15s outer tokio timeout.
-static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::Bearer, 12, 15_000);
+/// Shared curl-subprocess client. Bearer auth.
+///
+/// Timeout sizing (measured against the live enterprise key): the heavy
+/// `/search` path — used for every target, and the only path for FullName /
+/// auto-detect — fans out to external aggregators (Snusbase, BreachHub, …)
+/// and measured ~25-55s wall. The old 12s curl cap killed every one with
+/// "curl failed", so SeekNow yielded nothing despite a valid key and quota.
+/// Curl is now capped at 58s + 2s grace (60s outer), clearing the observed
+/// cold-path p100 (~55s) while staying inside the module's declared
+/// `max_timeout_ms()` of 65s so the engine-level wrapper never fires first.
+/// After the first call the server caches the result (~1.4s on repeat).
+static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::Bearer, 58, 60_000);
 
 /// Per-scan + per-session quota budget for SeekNow API calls.
 ///
