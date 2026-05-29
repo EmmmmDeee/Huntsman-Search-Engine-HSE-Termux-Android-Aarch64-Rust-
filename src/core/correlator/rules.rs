@@ -1581,3 +1581,195 @@ pub(super) fn rule_au_036_credential_reuse(
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::entity::Evidence;
+
+    fn ent(kind: EntityKind, value: &str) -> Entity {
+        Entity::new(kind, value, 0.80, "scan-test")
+    }
+
+    /// A stealer-sourced credential entity carrying a cleartext password — the
+    /// shape `oathnet_pro`/stealer modules emit and AU-036 clusters on.
+    fn stealer_cred(value: &str, password: &str) -> Entity {
+        let mut e = ent(EntityKind::Email, value);
+        e.tag("stealer-log");
+        e.add_evidence(Evidence::new("oathnet_pro", "cred").with_attr("password", password));
+        e
+    }
+
+    // ── AU-001 multi-source breach corroboration ───────────────────────────
+
+    #[test]
+    fn au_001_fires_only_with_two_distinct_breach_sources() {
+        let mut e = ent(EntityKind::Email, "a@b.com");
+        e.add_evidence(Evidence::new("hibp", "t"));
+        e.add_evidence(Evidence::new("hudsonrock", "t"));
+        let out = rule_au_001_multi_breach(&[e], "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-001");
+        assert_eq!(out[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn au_001_silent_on_a_single_breach_source_even_if_repeated() {
+        let mut e = ent(EntityKind::Email, "a@b.com");
+        // Two evidences, one distinct source — `evidence_sources()` dedupes,
+        // so corroboration of "two sources" must not be faked by repetition.
+        e.add_evidence(Evidence::new("hibp", "t1"));
+        e.add_evidence(Evidence::new("hibp", "t2"));
+        assert!(rule_au_001_multi_breach(&[e], "s", 0).is_empty());
+    }
+
+    // ── AU-002 identity cluster (email + username + phone) ──────────────────
+
+    #[test]
+    fn au_002_fires_when_all_three_identity_kinds_present() {
+        let entities = vec![
+            ent(EntityKind::Email, "a@b.com"),
+            ent(EntityKind::Username, "alice"),
+            ent(EntityKind::Phone, "+15551234567"),
+        ];
+        let out = rule_au_002_identity_cluster(&entities, "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-002");
+    }
+
+    #[test]
+    fn au_002_silent_when_a_kind_is_missing() {
+        let entities = vec![
+            ent(EntityKind::Email, "a@b.com"),
+            ent(EntityKind::Username, "alice"),
+        ];
+        assert!(rule_au_002_identity_cluster(&entities, "s", 0).is_empty());
+    }
+
+    // ── AU-003 high cross-source corroboration (per-kind threshold) ─────────
+
+    #[test]
+    fn au_003_fires_at_kind_threshold() {
+        let mut e = ent(EntityKind::Email, "a@b.com"); // Email threshold = 3
+        e.corroboration = 3;
+        let out = rule_au_003_high_corroboration(&[e], "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-003");
+    }
+
+    #[test]
+    fn au_003_silent_below_kind_threshold() {
+        let mut e = ent(EntityKind::Email, "a@b.com");
+        e.corroboration = 2; // below the Email threshold of 3
+        assert!(rule_au_003_high_corroboration(&[e], "s", 0).is_empty());
+    }
+
+    // ── AU-009 stealer-log compromise (Email + tag) ─────────────────────────
+
+    #[test]
+    fn au_009_fires_on_stealer_tagged_email() {
+        let mut e = ent(EntityKind::Email, "a@b.com");
+        e.tag("stealer-log");
+        let out = rule_au_009_stealer_log(&[e], "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn au_009_silent_without_tag_or_on_wrong_kind() {
+        let untagged = ent(EntityKind::Email, "a@b.com");
+        let mut wrong_kind = ent(EntityKind::Username, "bob");
+        wrong_kind.tag("stealer-log"); // right tag, wrong kind
+        assert!(rule_au_009_stealer_log(&[untagged, wrong_kind], "s", 0).is_empty());
+    }
+
+    // ── AU-021 API-key exposure (one firing per ApiKey entity) ──────────────
+
+    #[test]
+    fn au_021_fires_per_api_key_entity() {
+        let entities = vec![
+            ent(EntityKind::ApiKey, "AKIAEXAMPLEKEY00"),
+            ent(EntityKind::Email, "a@b.com"),
+        ];
+        let out = rule_au_021_api_key_exposure(&entities, "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-021");
+        assert_eq!(out[0].severity, Severity::Critical);
+    }
+
+    // ── AU-036 credential reuse (security- and privacy-critical) ────────────
+
+    #[test]
+    fn au_036_clusters_accounts_reusing_one_credential() {
+        let out = rule_au_036_credential_reuse(
+            &[
+                stealer_cred("a@b.com", "hunter2pass"),
+                stealer_cred("c@d.com", "hunter2pass"),
+            ],
+            "s",
+            0,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-036");
+        assert_eq!(out[0].entity_uids.len(), 2);
+        // Privacy invariant: the cleartext credential must NEVER appear in the
+        // correlation output (entity.rs: "Passwords MUST NOT appear").
+        assert!(!out[0].description.contains("hunter2pass"));
+    }
+
+    #[test]
+    fn au_036_silent_on_distinct_credentials() {
+        let out = rule_au_036_credential_reuse(
+            &[
+                stealer_cred("a@b.com", "alpha1234"),
+                stealer_cred("c@d.com", "bravo5678"),
+            ],
+            "s",
+            0,
+        );
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn au_036_ignores_redacted_credentials() {
+        let mut a = ent(EntityKind::Email, "a@b.com");
+        a.tag("stealer-log");
+        a.add_evidence(
+            Evidence::new("x", "c")
+                .with_attr("password", "secret77")
+                .with_attr("password_redacted", "true"),
+        );
+        let mut b = ent(EntityKind::Email, "c@d.com");
+        b.tag("stealer-log");
+        b.add_evidence(
+            Evidence::new("x", "c")
+                .with_attr("password", "secret77")
+                .with_attr("password_redacted", "true"),
+        );
+        assert!(rule_au_036_credential_reuse(&[a, b], "s", 0).is_empty());
+    }
+
+    // ── Engine wiring: array invariants + dispatcher integration ────────────
+
+    #[test]
+    fn rule_arrays_match_documented_counts() {
+        use super::super::{RELATION_RULES, RULES};
+        // 33 entity rules + 3 relation rules = the 36 documented in the blueprint.
+        assert_eq!(RULES.len(), 33, "entity-rule count drifted from docs");
+        assert_eq!(
+            RELATION_RULES.len(),
+            3,
+            "relation-rule count drifted from docs"
+        );
+    }
+
+    #[test]
+    fn dispatcher_invokes_rules_and_surfaces_firings() {
+        use super::super::evaluate_rules;
+        let mut e = ent(EntityKind::Email, "a@b.com");
+        e.add_evidence(Evidence::new("hibp", "t"));
+        e.add_evidence(Evidence::new("hudsonrock", "t"));
+        let fired = evaluate_rules(&[e], "scan-test");
+        assert!(fired.iter().any(|c| c.rule_id == "AU-001"));
+    }
+}
