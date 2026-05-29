@@ -12,6 +12,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **AU-036 — credential reuse across accounts (correlator rule).** The same
+  password (or password hash) appearing on ≥2 distinct stealer-derived
+  accounts — within a victim or across victims/logs — now fires a High-severity
+  correlation, a strong attribution pivot linking those identities. **Secret-
+  safe by construction:** a cleartext password is SHA-256-hashed the instant
+  it's read and only the hash is ever compared or retained; the credential
+  never appears in the `Correlation` (which reports a count + opaque per-scan
+  cluster index only). Redacted placeholders (`UPGRADE_TO_SEE…`,
+  `password_redacted`) and trivially short values are skipped. Deterministic.
+  Correlator 35→36 rules (33 entity + 3 graph-aware).
+
 - **Performance benchmark harness + CI regression gate.** `benches/pipeline.rs`
   (`cargo bench --bench pipeline`, dependency-free, `harness = false`) drives a
   deterministic synthetic workload through the **real** stages — all six

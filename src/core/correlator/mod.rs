@@ -159,6 +159,7 @@ const RULES: &[RuleFn] = &[
     rule_au_030_geo_convergence_score,
     rule_au_033_shared_media_origin,
     rule_au_035_stealer_victim_cluster,
+    rule_au_036_credential_reuse,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -172,8 +173,7 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 
 // ─── Graph-aware rules ───────────────────────────────────────────────────────
 // Rules that consume the typed `Relation` edge set in addition to entities.
-// Kept separate from `RULES` so the 30 entity-only rules need no signature
-// change.
+// Kept separate from `RULES` so the entity-only rules need no signature change.
 
 type RelationRuleFn = fn(&[Entity], &[Relation], &str, u64) -> Vec<Correlation>;
 
@@ -1037,5 +1037,76 @@ mod tests {
         assert!(rule_au_035_stealer_victim_cluster(&[lone], "s", 0).is_empty());
         let plain = Entity::new(EntityKind::Email, "v@x.com", 0.6, "s");
         assert!(rule_au_035_stealer_victim_cluster(&[plain], "s", 0).is_empty());
+    }
+
+    // ── AU-036 (credential reuse) ───────────────────────────────────────
+
+    fn cred_node(email: &str, pw: &str) -> Entity {
+        let mut e = Entity::new(EntityKind::Email, email, 0.6, "s");
+        e.tag("stealer");
+        e.add_evidence(Evidence::new("oathnet-pro", "cred").with_attr("password", pw));
+        e
+    }
+
+    #[test]
+    fn au036_fires_on_shared_password_without_leaking_it() {
+        let a = cred_node("a@x.com", "hunter2!secret");
+        let b = cred_node("b@y.com", "hunter2!secret"); // same pw, different account
+        let c = cred_node("c@z.com", "unrelated-pass");
+        let r = rule_au_036_credential_reuse(&[a, b, c], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-036");
+        assert_eq!(r[0].severity, Severity::High);
+        assert_eq!(r[0].entity_uids.len(), 2);
+        assert!(
+            !r[0].description.contains("hunter2"),
+            "the password must NEVER appear in the correlation"
+        );
+    }
+
+    #[test]
+    fn au036_matches_on_password_hash() {
+        let mk = |email: &str, h: &str| {
+            let mut e = Entity::new(EntityKind::Email, email, 0.6, "s");
+            e.tag("stealer");
+            e.add_evidence(Evidence::new("oathnet-pro", "b").with_attr("password_hash", h));
+            e
+        };
+        let a = mk("a@x.com", "5f4dcc3b5aa765d61d8327deb882cf99");
+        let b = mk("b@y.com", "5f4dcc3b5aa765d61d8327deb882cf99");
+        assert_eq!(rule_au_036_credential_reuse(&[a, b], "s", 0).len(), 1);
+    }
+
+    #[test]
+    fn au036_skips_redacted_short_singleton_and_non_stealer() {
+        // Redacted placeholder must not cluster.
+        let mut r1 = Entity::new(EntityKind::Email, "a@x.com", 0.6, "s");
+        r1.tag("stealer");
+        r1.add_evidence(
+            Evidence::new("o", "c")
+                .with_attr("password", "UPGRADE_TO_SEE_xyz")
+                .with_attr("password_redacted", "true"),
+        );
+        let mut r2 = Entity::new(EntityKind::Email, "b@y.com", 0.6, "s");
+        r2.tag("stealer");
+        r2.add_evidence(
+            Evidence::new("o", "c")
+                .with_attr("password", "UPGRADE_TO_SEE_xyz")
+                .with_attr("password_redacted", "true"),
+        );
+        assert!(rule_au_036_credential_reuse(&[r1, r2], "s", 0).is_empty());
+
+        // Single account with a password → nothing to correlate.
+        assert!(
+            rule_au_036_credential_reuse(&[cred_node("a@x.com", "longpassword")], "s", 0)
+                .is_empty()
+        );
+
+        // Non-stealer entities are ignored even with a shared password.
+        let mut p1 = Entity::new(EntityKind::Email, "a@x.com", 0.6, "s");
+        p1.add_evidence(Evidence::new("o", "c").with_attr("password", "longpassword"));
+        let mut p2 = Entity::new(EntityKind::Email, "b@y.com", 0.6, "s");
+        p2.add_evidence(Evidence::new("o", "c").with_attr("password", "longpassword"));
+        assert!(rule_au_036_credential_reuse(&[p1, p2], "s", 0).is_empty());
     }
 }

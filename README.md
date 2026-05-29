@@ -216,7 +216,7 @@ pin a fixed depth, or `--recursive` for an aggressive deep sweep.
   dossier, `--output json`, GEXF export, the SPA D3 force-graph, and
   `GET /api/v1/scans/{id}/relations`
 - 1,300+ tests (unit + API integration + architecture boundary enforcement)
-- 35 correlator rules (AU-001 through AU-035), incl. 3 graph-aware edge rules
+- 36 correlator rules (AU-001 through AU-036), incl. 3 graph-aware edge rules
 - Always-on, secret-redacted debug log (`$HOME/.huntsman/logs/hse.log`) +
   live Web-UI **Logs** stream; `hse doctor --bundle` for one-paste diagnosis
 - 2 tokio worker threads (tuned for Termux low-power devices)

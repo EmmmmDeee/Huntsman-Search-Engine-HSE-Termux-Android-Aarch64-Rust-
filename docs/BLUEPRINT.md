@@ -15,7 +15,7 @@ HSE is a single-binary, pure-Rust, recursive OSINT/GEOINT platform built to run
 natively inside **Termux on Android (aarch64), no root**. It is a plugin-style
 registry of **86 modules** feeding a module-agnostic `ScanEngine` that merges
 their findings into a deterministic entity graph, pivots recursively on
-high-confidence nodes, correlates the result against 35 declarative rules, and
+high-confidence nodes, correlates the result against 36 declarative rules, and
 surfaces everything over a CLI, a localhost HTTP API, and an embedded SPA.
 
 ---
@@ -48,10 +48,10 @@ property regresses.
 | 1 | **Low overhead / memory** | 2 tokio workers; sequential dispatch default; response cache; budget caps; `entity_map` capacity clamp; mmap-tunable SQLite | `main.rs:3`, `lib.rs:26`, `engine.rs:198-199` |
 | 1 | **Single-binary recursive SpiderFoot** | `default-run = "hse"`; embedded SPA; `run_expansion` recursive walk; **a bare `scan` auto-recurses by default** (depth resolved from seed type + keys) | `Cargo.toml:9`; `engine.rs:341`; `cli/scan.rs` |
 | 2 | **Shared data fabric** (instant framework-wide propagation) | per-scan `entity_map` (GREATEST-merge) + SQLite store + `entity_observations` junction + `EventBus` + **key-pool hot-inject** | `engine.rs:623,300-304,358-367` |
-| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 35 rules (incl. **graph-aware AU-031/AU-032/AU-034** that walk the edges), **and first-class typed `Relation` edges** (structural + lineage + geo co-location + DNS resolution + WHOIS registration + image similarity + stealer co-occurrence); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
+| 2 | **Graph engine / entity-linking** | `ModuleGraph` (dispatch + richness), the correlator's 36 rules (incl. **graph-aware AU-031/AU-032/AU-034** that walk the edges), **and first-class typed `Relation` edges** (structural + lineage + geo co-location + DNS resolution + WHOIS registration + image similarity + stealer co-occurrence); GEXF export + D3 force graph | `core/dependency.rs`, `core/correlator/`, `core/relation.rs`, `core/gexf.rs` |
 | 2 | **Discovery loops / adaptive pivoting** | `run_expansion`: depth-bounded DFS with ROI saturation-pruning, top-K gating, adaptive-depth termination, 4 expansion strategies | `engine.rs:341-510`, `core/roi.rs`, `core/scan.rs` |
 | 3 | **Code quality / static+dynamic verification** | CI: `fmt --check`, `check --locked`, `clippy -D warnings`, `test --all`, MSRV 1.88, shellcheck | `.github/workflows/ci.yml` |
-| 3 | **Resilience / regression testing** | 1,346 tests green; per-module timeout; `panic = "abort"`; offline `hse selftest` (5-stage health check); `tests/perf.rs` complexity gate + `benches/pipeline.rs` offline timing harness | `tests/`, `engine.rs:752`, `Cargo.toml:64`, `cli/selftest.rs`, `benches/` |
+| 3 | **Resilience / regression testing** | 1,349 tests green; per-module timeout; `panic = "abort"`; offline `hse selftest` (5-stage health check); `tests/perf.rs` complexity gate + `benches/pipeline.rs` offline timing harness | `tests/`, `engine.rs:752`, `Cargo.toml:64`, `cli/selftest.rs`, `benches/` |
 | 3 | **Hardening / deterministic execution** | SSRF preflight gate; private-IP/local-domain rejection; credential & key redaction; **no LLM/fuzzy** in correlator (open math only) | `engine.rs:1044-1141`, `SECURITY.md`, `core/correlator/` |
 
 ---
@@ -302,11 +302,13 @@ serialization of the full struct.
 ### 4.4 The correlation layer (`core/correlator/`)
 
 After the last module, `Correlator::run(scan_id)` loads the scan's entities and
-evaluates **35 deterministic rules** (`AU-001` … `AU-035`) — multi-source breach
+evaluates **36 deterministic rules** (`AU-001` … `AU-036`) — multi-source breach
 corroboration, identity clusters (email+username+phone co-location), malicious
 infrastructure, credential/key exposure, address chains, shared media origin
 (`AU-033` — one capture/authoring device or author linking multiple images or
-documents), and more. Each firing
+documents), stealer-log victim clusters (`AU-035`), credential reuse across
+accounts (`AU-036` — same password/hash on ≥2 accounts; correlated on a
+one-way hash, the cleartext never emitted), and more. Each firing
 becomes a `Correlation { rule_id, severity (Low|Medium|High|Critical),
 entity_uids, … }`, persisted and emitted as a `correlation_found` event. **No
 LLM, no fuzzy matching** — every finding is reproducible open math, satisfying

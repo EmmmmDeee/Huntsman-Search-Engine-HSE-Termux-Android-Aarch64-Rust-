@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use sha2::{Digest, Sha256};
+
 use super::{Correlation, Severity};
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::relation::{Relation, RelationKind};
@@ -1496,6 +1498,83 @@ pub(super) fn rule_au_035_stealer_victim_cluster(
                 uids.len()
             ),
             uids,
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
+/// AU-036 — Credential reuse across accounts. The same password (or password
+/// hash) on two or more distinct accounts — within a victim or across
+/// victims/logs — is a strong attribution pivot: it ties those identities to
+/// one chooser-of-passwords (and, across logs, often one person or actor).
+/// Operates only on stealer-derived entities carrying credential evidence.
+///
+/// **Secret-safe:** a cleartext password is SHA-256-hashed the instant it is
+/// read and only the hash is ever compared or retained — the cleartext never
+/// leaves this function and never appears in the `Correlation`, which reports a
+/// count and a per-scan opaque cluster index only. Redacted placeholders
+/// (`UPGRADE_TO_SEE…`, `password_redacted=true`) and trivially short values are
+/// skipped. Deterministic (groups keyed by a sorted fingerprint).
+pub(super) fn rule_au_036_credential_reuse(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // credential fingerprint -> distinct entity uids sharing it.
+    let mut groups: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+    for e in entities {
+        let stealer = e.tags.iter().any(|t| t == "stealer" || t == "stealer-log");
+        if !stealer {
+            continue;
+        }
+        for ev in &e.evidence {
+            // Prefer an already-hashed value; otherwise hash the cleartext now.
+            let fp = if let Some(h) = ev.attributes.get("password_hash") {
+                let h = h.trim();
+                if h.len() < 8 {
+                    continue;
+                }
+                format!("h:{}", h.to_lowercase())
+            } else if let Some(pw) = ev.attributes.get("password") {
+                let redacted = ev
+                    .attributes
+                    .get("password_redacted")
+                    .is_some_and(|v| v == "true");
+                let pw = pw.trim();
+                if redacted || pw.len() < 4 || pw.contains("UPGRADE_TO_SEE") {
+                    continue;
+                }
+                let mut hasher = Sha256::new();
+                hasher.update(pw.as_bytes());
+                format!("p:{}", hex::encode(hasher.finalize()))
+            } else {
+                continue;
+            };
+            groups.entry(fp).or_default().insert(e.uid.as_str());
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut cluster = 0u32;
+    for uids in groups.values() {
+        if uids.len() < 2 {
+            continue;
+        }
+        cluster += 1;
+        let entity_uids: Vec<String> = uids.iter().map(|u| (*u).to_string()).collect();
+        out.push(Correlation::new(
+            "AU-036",
+            "Credential reuse across accounts",
+            Severity::High,
+            format!(
+                "{} accounts reuse an identical credential (value not shown; reuse cluster #{cluster})",
+                entity_uids.len()
+            ),
+            entity_uids,
             scan_id,
             ts,
         ));
