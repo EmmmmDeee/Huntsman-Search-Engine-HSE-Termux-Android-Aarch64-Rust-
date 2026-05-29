@@ -12,6 +12,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Proxy grading, geo-targeting, and high-yield ranking.** The retriever now
+  **grades each proxy's anonymity** — elite / anonymous / transparent — by
+  inspecting a header-echo response (and comparing the server-seen origin to our
+  own public IP to catch IP-leaking *transparent* proxies, the dangerous ones).
+  Each proxy also carries its **country** where the source reports it. The pool
+  is ordered **high-yield first** (best grade, then lowest latency) so
+  `HUNTSMAN_PROXY=auto` always grabs the strongest, and `hse proxies refresh`
+  gains `--grade <elite|anonymous|any>` and `--country <CC>` filters; `list`
+  shows grade + country. Pool JSON is backward-compatible (new fields default).
+  *(Search-engine result localisation — Google `gl`/`hl`, Bing `cc` — is a
+  separate follow-on in the search modules.)*
+
 - **Proxy retriever incorporated (`hse proxies`).** The complete but previously
   dead `util::proxy` harvester/validator/pool is now wired into the platform:
   `hse proxies refresh` retrieves free HTTP proxies from public sources,
