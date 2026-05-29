@@ -37,6 +37,7 @@ pub mod geo_intel;
 pub mod geocode;
 pub mod github_user;
 pub mod greynoise;
+pub mod hackernews;
 pub mod hackertarget;
 pub mod hibp;
 pub mod hudsonrock;
@@ -150,6 +151,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(social_probe::SocialProbe),
         Arc::new(username_search::UsernameSearch),
         Arc::new(github_user::GithubUser),
+        Arc::new(hackernews::HackerNews),
         Arc::new(phone_intl::PhoneIntl),
         Arc::new(wayback::Wayback),
         Arc::new(device_sensors::DeviceSensors),

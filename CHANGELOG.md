@@ -23,6 +23,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`hackernews` module — username → activity footprint (free, no key).**
+  Queries the public Algolia Hacker News Search API
+  (`/api/v1/search?tags=author_…`) for a username and, when the account is
+  real, emits a confirmed `Username` entity plus de-duplicated `Url` /
+  `Domain` entities for the links the account has shared. Every hit's
+  ISO-8601 `created_at` is attached under the `created_at` / `first_seen` /
+  `last_seen` keys the `core::temporal` engine mines — so a prolific account
+  feeds the AU-033 diurnal timezone inference end-to-end with no extra
+  wiring. Confidence scales with observed activity volume; output is capped
+  and the network surface is split from a pure, fully unit-tested
+  `entities_from_hits` core.
 - **Temporal / behavioural pattern engine.** New `core::temporal` module
   distils the timestamps already embedded across the entity corpus
   (account-creation, last-seen, commit-push, paste and breach dates) into an
