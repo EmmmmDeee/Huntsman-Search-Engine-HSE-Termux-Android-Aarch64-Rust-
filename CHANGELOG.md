@@ -39,6 +39,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`install.sh` header no longer understates the Rust requirement.** The banner
+  comment claimed "rustc 1.85+" while the script itself enforces 1.88 (`ver_ge
+  "$RUST_MAJ_MIN" "1.88"`), matching `Cargo.toml`'s `rust-version`, the README
+  badge, the CI MSRV job, and `docs/INSTALL.md`. A user reading the header would
+  believe 1.85–1.87 works, but the `cargo build --release --locked` hard-fails
+  under 1.88; aligned the comment to 1.88 so the installer's stated and enforced
+  requirements agree.
+
 - **CI green under Rust 1.96 stable: collapsed a nested `if` clippy now rejects.**
   `clippy::collapsible_match` (enforced under `-D warnings`) became stricter in
   1.96.0 and flagged an arm in `tests/smoke.rs` whose body was solely an
