@@ -41,7 +41,7 @@ use crate::{
     version = crate::VERSION,
     about = "Huntsman Search Engine — Termux aarch64 OSINT / GEOINT prototype",
     long_about = "Pure-Rust OSINT scaffold for Termux on Android aarch64.\n\
-                  Five free modules, autonomous depth-bounded expansion.\n\
+                  80+ modules (most free, no key), autonomous depth-bounded expansion.\n\
                   Docs: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-"
 )]
 pub struct Cli {
