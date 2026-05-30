@@ -223,21 +223,23 @@ fn records_to_entities(
         entity.add_evidence(ev);
         out.push(entity);
 
-        // Unclaimed money is often owed to *companies* (dividends, refunds). When
-        // the owner carries a corporate legal form, also emit an `Organisation`
-        // so the engine's expansion pivots it to abn_lookup / opencorporates and
-        // resolves its ABN/ACN — incorporating the federal business registry into
-        // the unclaimed-money graph.
-        if crate::util::abn::looks_like_company(&owner) {
-            let mut org = Entity::new(EntityKind::Organisation, &owner, find_conf, scan_id);
+        // Unclaimed money is often owed to *companies* (dividends, refunds) — and
+        // frequently to joint syndicates of several companies. Emit one
+        // `Organisation` per individually-resolvable company name so the engine's
+        // expansion pivots each into abn_lookup / opencorporates and resolves its
+        // ABN/ACN, connecting the unclaimed-money graph to the business registry.
+        for company in crate::util::abn::company_names(&owner) {
+            let mut org = Entity::new(EntityKind::Organisation, &company, find_conf, scan_id);
             org.tag(SRC);
             org.tag("unclaimed-money");
             org.tag("country:AU");
             org.tag("company-owner");
-            org.add_evidence(
-                Evidence::new(SRC, format!("Company owed unclaimed money: {owner}"))
-                    .with_attr("register", "QLD Public Trustee unclaimed monies"),
-            );
+            let mut oev = Evidence::new(SRC, format!("Company owed unclaimed money: {company}"))
+                .with_attr("register", "QLD Public Trustee unclaimed monies");
+            if company != owner {
+                oev = oev.with_attr("joint_owner", &owner);
+            }
+            org.add_evidence(oev);
             out.push(org);
         }
     }
@@ -432,6 +434,31 @@ mod tests {
         let ents2 = records_to_entities(&recs2, 1, "Jane Citizen", "s");
         assert_eq!(ents2.len(), 1, "individual owner → no Organisation");
         assert!(ents2.iter().all(|e| e.kind != EntityKind::Organisation));
+
+        // A real joint syndicate splits into one resolvable Organisation each.
+        let raw3 = r#"{"result":{"total":1,"records":[
+            {"_id":9,"Owner":"DEV PTY LTD & GWAD PTY LTD & GWAD2 PTY LTD","Amount":"508.80","SenderName":"QLD URBAN UTILITIES","PCode":"4051"}
+        ]}}"#;
+        let recs3: Vec<Map<String, Value>> = serde_json::from_str::<CkanResp>(raw3)
+            .unwrap()
+            .result
+            .unwrap()
+            .records;
+        let ents3 = records_to_entities(&recs3, 1, "DEV", "s");
+        let orgs: Vec<&str> = ents3
+            .iter()
+            .filter(|e| e.kind == EntityKind::Organisation)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(orgs, vec!["DEV PTY LTD", "GWAD PTY LTD", "GWAD2 PTY LTD"]);
+        // Split orgs carry the original joint owner in evidence for context.
+        let dev = ents3.iter().find(|e| e.value == "DEV PTY LTD").unwrap();
+        assert!(
+            dev.evidence[0]
+                .attributes
+                .iter()
+                .any(|(k, _)| k.as_str() == "joint_owner")
+        );
     }
 
     #[test]
@@ -468,7 +495,14 @@ mod tests {
         let resp: CkanResp = serde_json::from_str(raw).unwrap();
         let recs = resp.result.unwrap().records;
         let ents = records_to_entities(&recs, 17, "Ali Kareem", "s");
+        // All four Kareem owners are individuals → no Organisation/ABN pivots:
+        // four entities exactly, none a company (the ABN incorporation stays
+        // silent on a non-business family).
         assert_eq!(ents.len(), 4);
+        assert!(
+            ents.iter().all(|e| e.kind != EntityKind::Organisation),
+            "individual owners must not manufacture company/ABN entities"
+        );
         for e in &ents {
             assert!(
                 e.tags.iter().any(|t| t.as_str() == "family-candidate"),

@@ -77,6 +77,45 @@ pub fn looks_like_company(name: &str) -> bool {
     SUFFIXES.iter().any(|s| u.contains(s))
 }
 
+/// Split a register owner string into individually ABN-resolvable company
+/// names. Owners are frequently joint syndicates
+/// (`"DEV PTY LTD & GWAD PTY LTD & ..."`) where each company has its own ABN, so
+/// we split on `&`/`and`, drop a trailing `- SEE …` batch cross-reference, and —
+/// crucially — only treat it as a syndicate when **two or more** parts carry a
+/// corporate legal form. That keeps single names like `"SMITH & CO"` intact
+/// (one company, not two individuals "SMITH" and "CO"). Returns deduped names,
+/// capped at 5 so a large trust can't flood the graph. Empty for individuals.
+pub fn company_names(owner: &str) -> Vec<String> {
+    let normalised = owner.replace(" AND ", " & ").replace(" and ", " & ");
+    let parts: Vec<String> = normalised
+        .split('&')
+        .map(|p| match p.find("- SEE") {
+            Some(i) => p[..i].trim().to_string(),
+            None => p.trim().to_string(),
+        })
+        .filter(|p| p.len() >= 4 && looks_like_company(p))
+        .collect();
+
+    if parts.len() >= 2 {
+        // Joint syndicate: each company is its own ABN target.
+        let mut out: Vec<String> = Vec::new();
+        for c in parts {
+            if !out.contains(&c) {
+                out.push(c);
+                if out.len() >= 5 {
+                    break;
+                }
+            }
+        }
+        out
+    } else if looks_like_company(owner) {
+        // A single company (possibly "X & CO") — keep the whole name.
+        vec![owner.trim().to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +145,35 @@ mod tests {
         // Wrong length.
         assert!(!is_valid_acn("00000001")); // 8 digits
         assert!(!is_valid_acn("0000000190")); // 10 digits
+    }
+
+    #[test]
+    fn company_names_splits_real_joint_syndicates() {
+        // Real owner strings from the QLD register (q="Pty Ltd").
+        assert_eq!(
+            company_names("DEV PTY LTD & GWAD PTY LTD & GWAD2 PTY LTD & GWAD3 PTY LTD"),
+            vec![
+                "DEV PTY LTD",
+                "GWAD PTY LTD",
+                "GWAD2 PTY LTD",
+                "GWAD3 PTY LTD"
+            ]
+        );
+        // Trailing "- SEE B" batch marker is dropped from the last name.
+        assert_eq!(
+            company_names("PORTIMAO PTY LTD & KILKIRK PTY LTD & CONWALL PTY LTD - SEE B"),
+            vec!["PORTIMAO PTY LTD", "KILKIRK PTY LTD", "CONWALL PTY LTD"]
+        );
+        // A single "& CO" company is NOT split into two non-companies.
+        assert_eq!(company_names("SMITH & CO"), vec!["SMITH & CO"]);
+        // A plain single company is returned whole.
+        assert_eq!(
+            company_names("ACME WIDGETS PTY LTD"),
+            vec!["ACME WIDGETS PTY LTD"]
+        );
+        // Individuals (incl. joint individuals) yield nothing.
+        assert!(company_names("KAREEM AYALA").is_empty());
+        assert!(company_names("SALIM ATSHAN FAHD & MOHAMMED ABDUL KAREEM").is_empty());
     }
 
     #[test]
