@@ -1,0 +1,77 @@
+HUNTSMAN — CANONICAL OSINT/GEOINT ENGINE · REFACTOR MANIFEST
+============================================================
+Target: Termux · aarch64 · no-root · 4GB · LMK-hostile.
+Method: INVENTORY → PLAN → FORWARD → BACKWARD → REPORT (halt-gated).
+Rule:   manifest == produced before package. Every decision decidable/bounded/halts.
+
+DELIVERABLE NOTE
+----------------
+`huntsman_refactored.zip` is REJECTED (one-line proof): a zip snapshot forks the
+source of truth off the git repo + open PR, breaking the provenance-kept and
+reversible-rollback invariants. The refactor ships as git commits / PR #90.
+This manifest is the produced register; it lives in-repo, git-tracked.
+
+================================================================================
+INVENTORY — measured against the tree (file:line proof). [HELD ✓ / GAP ◑ / MISSING ✗]
+================================================================================
+
+INVARIANTS
+  ✓ C_eff = clamp(C·(1+0.15·ln(max(corr,1))))   entity.rs:229; coeff is the named
+      tunable const CORROBORATION_COEFF=0.15. Documented deviation (legal, proven):
+      corr capped at 10 to bound runaway boost — entity.rs:222-227.
+  ✓ SHA-256 UIDs            entity.rs:161  uid = hex(SHA-256(kind ":" value_norm)).
+  ✓ Provenance kept / confidence DERIVED   classify() never stored, recomputed.
+  ✓ rustls / zero-CGO       reqwest default-features=false, rustls-tls (Cargo.toml:27).
+  ✓ WAL + synchronous=NORMAL + checkpoint   storage.rs:30-31 + explicit
+      wal_autocheckpoint=512 + scan-boundary checkpoint_truncate()  [CLOSED THIS CYCLE].
+
+MANDATES
+  ◑ M1 RECURSION — depth-round BFS with per-round weight-sort + top-K defer
+      (engine.rs:484-529). Weight ≈ C_eff×priority×richness; halts (monotone
+      visited-set + budget + depth). GAP: selection is round-local batch, not a
+      single global best-first frontier. M1 is an ORDERING optimisation, not a
+      soundness fix.
+  ◑ M2 CORRELATION — merge split from correlation ✓ (entity.rs vs correlator/),
+      online merge ✓. GAP: batch rules are Rust fn-pointers (correlator/mod.rs:165),
+      not declarative data. Mandate wants "data not Rust".
+  ◑ M3 UI/UX — SpiderFoot stack vendored (bootstrap/d3/tablesorter, spiderfoot-
+      style.css, spa.html). GAP (unverified): WS resume-from-cursor.
+  ◑ M4 CONCURRENCY — async I/O ✓; per-module bounded Semaphores ✓ (dns_intel=12,
+      username=32); per-API rate via key_pool ✓. GAP: no rayon for CPU correlation;
+      no GLOBAL token-bucket / global concurrency cap; no bounded I/O→CPU channel.
+  ✗ BUILD SPLIT — native / armv8-a not present. Release profile good
+      (opt-level=s, lto, codegen-units=1, strip, panic=abort; Cargo.toml:59).
+
+LOCKED REGISTER (already optimal — do NOT touch)
+  C_eff math · SHA-256 UIDs · merge/correlation separation · rustls stack ·
+  per-module semaphores · release profile.
+
+================================================================================
+FORWARD PLAN — ranked, each bounded + halt-proven. Locked one cycle at a time.
+================================================================================
+  F0  WAL bound asserted + scan-boundary truncate.            [DONE — see below]
+  F1  M1 global best-first frontier (BinaryHeap keyed weight) under unified
+      budget. Halting proof: monotone visited-set (perm. ineligible at dispatch)
+      ∧ finite reachable target space ∧ unified budget (entities ∥ time ∥ API)
+      ∧ per-candidate depth cap. Preserves depth-events + adaptive-yield.
+  F2  M4 global token-bucket + global concurrency cap + bounded I/O→CPU channel
+      + rayon pool (bounded) for CPU-side correlation.
+  F3  M2 declarative rule table (data, not Rust) + interpreter; port existing
+      RULES one-for-one with golden-output tests.
+  F4  BUILD SPLIT native / armv8-a (.cargo/config target-feature profiles).
+  F5  M3 WS resume-from-cursor (verify, then close).
+
+================================================================================
+SYNERGY LEDGER (per-file ticker — appended per reconciled cycle)
+================================================================================
+F0 [DONE] WAL footprint bound — closes the one under-asserted invariant.
+   storage.rs   : PRAGMA wal_autocheckpoint=512 (explicit ~2MB bound, documented);
+                  + Store::checkpoint_truncate() → PRAGMA wal_checkpoint(TRUNCATE).
+   core/mod.rs  : StoragePort::checkpoint_truncate() trait method (default no-op
+                  for non-WAL backends).
+   core/engine.rs: scan-boundary checkpoint at finalise_scan (best-effort; busy
+                  defers to next boundary).
+   tests        : wal_autocheckpoint_bound_is_asserted (bound == 512);
+                  checkpoint_truncate_resets_wal_file_and_keeps_data (-wal → 0 bytes
+                  after forced growth, 300 entities survive the fold-back).
+   gate         : full suite 1324 green · clippy --all-targets clean · halts.

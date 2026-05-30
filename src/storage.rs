@@ -29,6 +29,15 @@ impl Store {
             "
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=NORMAL;
+            -- Bound the WAL explicitly rather than leaning on SQLite's implicit
+            -- 1000-page default: 512 pages (~2 MB at the 4 KB default page
+            -- size) caps the live -wal footprint between checkpoints. Asserts
+            -- the 'WAL+checkpoint, everything bounded' invariant on aarch64 /
+            -- 4 GB where an unbounded -wal under a long-lived `serve` process
+            -- is real memory/storage pressure. The autocheckpoint is PASSIVE
+            -- (never blocks writers, never shrinks the file); the file itself
+            -- is reset to zero at scan boundaries via checkpoint_truncate().
+            PRAGMA wal_autocheckpoint=512;
             PRAGMA temp_store=MEMORY;
             PRAGMA foreign_keys=ON;
             PRAGMA cache_size=-{cache_kb};
@@ -146,6 +155,22 @@ impl Store {
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Checkpoint the WAL and truncate the `-wal` file back to zero bytes.
+    ///
+    /// `PRAGMA wal_autocheckpoint` runs in PASSIVE mode, which folds committed
+    /// pages back into the main database but never shrinks the on-disk `-wal`
+    /// file — so under a long-lived process the file high-water-marks and
+    /// stays there. This runs an explicit `TRUNCATE` checkpoint at a safe
+    /// boundary (a completed scan), resetting the `-wal` to zero and bounding
+    /// its footprint. Best-effort: a busy checkpoint (a concurrent reader
+    /// holding the WAL) returns `SQLITE_BUSY`, which is surfaced as `Err` for
+    /// the caller to log and ignore — the next boundary will retry.
+    pub fn checkpoint_truncate(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        Ok(())
     }
 
     // ── Scans ──────────────────────────────────────────────────────────────
@@ -681,6 +706,10 @@ impl Store {
 }
 
 impl crate::core::port::StoragePort for Store {
+    fn checkpoint_truncate(&self) -> Result<()> {
+        Store::checkpoint_truncate(self)
+    }
+
     fn upsert_scan(&self, scan: &Scan) -> Result<()> {
         Store::upsert_scan(self, scan)
     }
@@ -1669,5 +1698,58 @@ mod tests {
         assert!(store.delete_scan("rd-scan").unwrap());
         assert!(store.relations_for_scan("rd-scan").unwrap().is_empty());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn wal_autocheckpoint_bound_is_asserted() {
+        // The WAL bound must be explicit (512 pages), not SQLite's implicit
+        // 1000-page default — the 'WAL+checkpoint, everything bounded'
+        // invariant.
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        let n: i64 = {
+            let conn = store.conn.lock();
+            conn.query_row("PRAGMA wal_autocheckpoint", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(n, 512, "WAL autocheckpoint must be the asserted 512-page bound");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn checkpoint_truncate_resets_wal_file_and_keeps_data() {
+        // checkpoint_truncate() must reset the -wal file to zero bytes (PASSIVE
+        // autocheckpoint never shrinks it) without losing durable data.
+        let path = tmp_db();
+        let wal = format!("{path}-wal");
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "wal-scan");
+        // Force the WAL to grow: many separate commits, each appending frames.
+        for i in 0..300 {
+            store
+                .upsert_entity(&Entity::new(
+                    EntityKind::Email,
+                    format!("user{i}@example.com"),
+                    0.5,
+                    "wal-scan",
+                ))
+                .unwrap();
+        }
+        let pre = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+        assert!(pre > 0, "WAL should hold frames before checkpoint (was {pre})");
+
+        store.checkpoint_truncate().unwrap();
+
+        let post = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(post, 0, "TRUNCATE checkpoint must reset the -wal to zero");
+        // Data survived the fold-back into the main DB.
+        assert_eq!(
+            store.entities_for_scan("wal-scan").unwrap().len(),
+            300,
+            "checkpoint must not lose committed entities"
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+        let _ = std::fs::remove_file(format!("{path}-shm"));
     }
 }
