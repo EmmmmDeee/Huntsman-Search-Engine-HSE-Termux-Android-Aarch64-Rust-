@@ -47,6 +47,15 @@ impl Module for DisposableCheck {
         ModuleCategory::Email
     }
 
+    fn max_timeout_ms(&self) -> u64 {
+        // The request carries a 5s reqwest timeout; on the 3s default
+        // MODULE_TIMEOUT_MS the engine would kill process() before that
+        // timeout could fire, so a slow endpoint yielded a spurious engine
+        // "timeout" instead of the module's own clean no-op. Budget above
+        // the request timeout with headroom for JSON read.
+        8_000
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let email = target.value.trim();
         if email.is_empty() || !email.contains('@') {
