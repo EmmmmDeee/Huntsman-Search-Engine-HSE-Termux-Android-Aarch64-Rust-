@@ -22,6 +22,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::geo::is_valid_coords;
 use crate::util::http::fetch_json;
 
 const SRC: &str = "geo_intel";
@@ -137,7 +138,7 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
         .await
         && data.error != Some(true)
         && let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
-        && !(lat == 0.0 && lon == 0.0)
+        && is_valid_coords(lat, lon)
     {
         let coords = format!("{lat:.6},{lon:.6}");
         if seen_coords.insert(coords.clone()) {
@@ -188,7 +189,7 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
         )
         .await
         && let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
-        && !(lat == 0.0 && lon == 0.0)
+        && is_valid_coords(lat, lon)
     {
         let coords = format!("{lat:.6},{lon:.6}");
         if seen_coords.insert(coords.clone()) {
@@ -431,6 +432,17 @@ mod tests {
     #[test]
     fn phone_prefix_unknown() {
         assert!(phone_prefix_to_country("000").is_none());
+    }
+
+    #[test]
+    fn ip_geo_uses_shared_coord_validator() {
+        // geo_intel now gates both IP sources on util::geo::is_valid_coords,
+        // so out-of-range / Null-Island fixes from a hostile or buggy API are
+        // rejected rather than becoming high-confidence Coordinates entities.
+        assert!(is_valid_coords(-27.4766, 153.0166));
+        assert!(!is_valid_coords(0.0, 0.0));
+        assert!(!is_valid_coords(999.0, 10.0));
+        assert!(!is_valid_coords(10.0, f64::NAN));
     }
 
     #[test]

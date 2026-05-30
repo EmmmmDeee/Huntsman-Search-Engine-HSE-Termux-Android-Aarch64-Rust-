@@ -70,6 +70,51 @@ pub mod geo {
             .map_err(|_| Error::module("geo", "invalid longitude"))?;
         Ok((lat, lon))
     }
+
+    /// Canonical validity check for a geographic coordinate, shared by every
+    /// module that turns an external lat/lon into a `Coordinates` entity
+    /// (`geo_intel`, `ip_whois_geo`, `wifi_intel`, `mylnikov`, `cell_intel`,
+    /// `exif_geo`, `censys`, `device_sensors`, …). Each previously hand-rolled
+    /// some subset of these guards — most only rejected `0,0` and let
+    /// out-of-range/NaN values through, which then became high-confidence false
+    /// fixes that poison the geo-cluster correlator. One definition keeps the
+    /// policy consistent.
+    ///
+    /// Rejects:
+    ///   - non-finite values (NaN, ±inf) from malformed JSON,
+    ///   - out-of-range values (`|lat| > 90`, `|lon| > 180`), and
+    ///   - the `0.0, 0.0` "Null Island" sentinel that geo APIs and the Android
+    ///     location stack emit when they have no real fix.
+    #[must_use]
+    pub fn is_valid_coords(lat: f64, lon: f64) -> bool {
+        lat.is_finite()
+            && lon.is_finite()
+            && (-90.0..=90.0).contains(&lat)
+            && (-180.0..=180.0).contains(&lon)
+            && !(lat == 0.0 && lon == 0.0)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn valid_coords_accepts_real_positions() {
+            assert!(is_valid_coords(-27.4766, 153.0166)); // Brisbane
+            assert!(is_valid_coords(51.5074, -0.1278)); // London
+            assert!(is_valid_coords(90.0, 180.0)); // boundaries
+            assert!(is_valid_coords(-90.0, -180.0));
+        }
+
+        #[test]
+        fn valid_coords_rejects_bad_fixes() {
+            assert!(!is_valid_coords(0.0, 0.0)); // Null Island
+            assert!(!is_valid_coords(91.0, 10.0)); // lat out of range
+            assert!(!is_valid_coords(10.0, 181.0)); // lon out of range
+            assert!(!is_valid_coords(f64::NAN, 10.0)); // non-finite
+            assert!(!is_valid_coords(10.0, f64::INFINITY));
+        }
+    }
 }
 
 pub mod stats {
