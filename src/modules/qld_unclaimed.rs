@@ -105,15 +105,25 @@ fn derive_query(target: &Target) -> &str {
     v
 }
 
-/// True if `owner` contains every whitespace token of the seed name (case-
-/// insensitive) — i.e. this row is the seeded person, not merely a surname-match
-/// relative. Used to tag exact hits vs family candidates and weight confidence.
+/// True if `owner` contains every token of the seed name as a *whole word*
+/// (case-insensitive) — i.e. this row is the seeded person, not merely a
+/// surname-match relative. Whole-word (not substring) matching so a seed token
+/// like `"M"` doesn't match inside `"DIEGMANN"`, or `"ANN"` inside `"JOANNE"`,
+/// which would wrongly upgrade a relative to `exact-name-match`. Tokenises on
+/// non-alphanumeric boundaries and compares with `eq_ignore_ascii_case` (no
+/// per-token `String` allocation).
 fn owner_matches_full_name(owner: &str, seed: &str) -> bool {
-    let owner_up = owner.to_uppercase();
+    let owner_words: Vec<&str> = owner
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
     let mut any = false;
-    for tok in seed.split_whitespace() {
+    for tok in seed
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+    {
         any = true;
-        if !owner_up.contains(&tok.to_uppercase()) {
+        if !owner_words.iter().any(|w| w.eq_ignore_ascii_case(tok)) {
             return false;
         }
     }
@@ -184,8 +194,11 @@ fn records_to_entities(
         if let Some(r) = reference.as_deref() {
             ev = ev.with_attr("reference", r);
         }
-        if let Some(p) = postcode(rec) {
-            ev = ev.with_attr("postcode", &p);
+        // Resolve the postcode once and reuse it for both the evidence attr and
+        // the entity-kind decision below.
+        let pc = postcode(rec);
+        if let Some(ref p) = pc {
+            ev = ev.with_attr("postcode", p);
         }
         ev = ev
             .with_attr("register", "QLD Public Trustee unclaimed monies")
@@ -196,7 +209,7 @@ fn records_to_entities(
         let (addr_conf, find_conf) = if exact { (0.50, 0.60) } else { (0.40, 0.50) };
 
         // Geo pivot when we have a usable postcode; otherwise a plain finding.
-        let mut entity = match postcode(rec) {
+        let mut entity = match pc {
             Some(p) => {
                 let mut e = Entity::new(
                     EntityKind::Address,
@@ -205,6 +218,9 @@ fn records_to_entities(
                     scan_id,
                 );
                 e.tag("postcode-only");
+                // `geoint` only belongs on actual geo entities (Address/Coords);
+                // the no-postcode finding below is not geographic.
+                e.tag("geoint");
                 e
             }
             None => {
@@ -220,7 +236,6 @@ fn records_to_entities(
         entity.tag(SRC);
         entity.tag("unclaimed-money");
         entity.tag("country:AU");
-        entity.tag("geoint");
         entity.tag(if exact {
             "exact-name-match"
         } else {
@@ -612,6 +627,52 @@ mod tests {
         };
         assert_eq!(attr("suburb"), Some("Maleny"));
         assert_eq!(attr("postcode"), Some("4552"));
+    }
+
+    #[test]
+    fn owner_match_is_whole_word_not_substring() {
+        // Whole-word matching: a short seed token must NOT substring-match inside
+        // an owner word (the bug flagged in review).
+        assert!(!owner_matches_full_name("CURT DIEGMANN", "M Diegmann")); // "M" ⊄ word
+        assert!(!owner_matches_full_name("JOANNE CITIZEN", "Ann Citizen")); // "ANN" ⊄ JOANNE
+        // True whole-word matches still hold, order-independent, punctuation-split.
+        assert!(owner_matches_full_name(
+            "HAYLEY DIEGMANN & CURT DIEGMANN",
+            "Curt Diegmann"
+        ));
+        assert!(owner_matches_full_name("MS SILVA KAREEM", "silva kareem"));
+        // A relative (surname only) is not an exact match.
+        assert!(!owner_matches_full_name("ERIK DIEGMANN", "Curt Diegmann"));
+    }
+
+    #[test]
+    fn no_postcode_finding_is_not_tagged_geoint() {
+        // The Other("unclaimed_money") fallback is not a geo entity → no geoint.
+        let raw = r#"{"result":{"total":1,"records":[
+            {"_id":1,"Owner":"NO POSTCODE PERSON","Amount":"42.00","SenderName":"X"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .unwrap()
+            .result
+            .unwrap()
+            .records;
+        let ents = records_to_entities(&recs, 1, "No Postcode Person", "s");
+        assert_eq!(
+            ents[0].kind,
+            EntityKind::Other("unclaimed_money".to_string())
+        );
+        assert!(!ents[0].tags.iter().any(|t| t.as_str() == "geoint"));
+        // …but a postcode-bearing Address still is.
+        let raw2 = r#"{"result":{"total":1,"records":[
+            {"_id":2,"Owner":"GEO PERSON","Amount":"1.00","PCode":"4000"}
+        ]}}"#;
+        let recs2 = serde_json::from_str::<CkanResp>(raw2)
+            .unwrap()
+            .result
+            .unwrap()
+            .records;
+        let ents2 = records_to_entities(&recs2, 1, "Geo Person", "s");
+        assert!(ents2[0].tags.iter().any(|t| t.as_str() == "geoint"));
     }
 
     #[test]
