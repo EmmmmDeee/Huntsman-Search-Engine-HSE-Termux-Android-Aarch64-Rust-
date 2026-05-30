@@ -137,6 +137,18 @@ async fn fetch_fix(provider: &str, timeout_ms: u64, scan_id: &str) -> ModuleResu
 
 // ── WiFi parsing ────────────────────────────────────────────────────────
 
+/// Classify an 802.11 channel centre frequency (MHz) into its band.
+/// Returns `None` for absent/zero/unrecognised frequencies so callers emit
+/// no band tag rather than a misleading one.
+fn wifi_band(freq_mhz: Option<i64>) -> Option<&'static str> {
+    match freq_mhz? {
+        2400..=2500 => Some("2.4GHz"),
+        4900..=5900 => Some("5GHz"),
+        5925..=7125 => Some("6GHz"),
+        _ => None,
+    }
+}
+
 fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
     let info: ConnInfo = match serde_json::from_slice(stdout) {
         Ok(v) => v,
@@ -154,20 +166,31 @@ fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
     {
         let mut e = Entity::new(EntityKind::MacAddress, bssid.as_str(), 0.95, scan_id);
         e.tag("wifi-connected");
-        e.add_evidence(
-            Evidence::new(SRC, format!("Connected to: {ssid}"))
-                .with_attr("ssid", ssid)
-                .with_attr("frequency_mhz", info.frequency_mhz.unwrap_or(0).to_string())
-                .with_attr("rssi_dbm", info.rssi.unwrap_or(0).to_string())
-                .with_attr(
-                    "link_speed_mbps",
-                    info.link_speed_mbps.unwrap_or(0).to_string(),
-                )
-                .with_attr(
-                    "supplicant_state",
-                    info.supplicant_state.as_deref().unwrap_or("-"),
-                ),
-        );
+        // The connected-AP BSSID is the single highest-value WiFi-geolocation
+        // seed available on an unrooted device. It already expands into the
+        // wigle / mylnikov BSSID→coordinates pivot (both accept MacAddress and
+        // the engine weights MacAddress expansion 2.0×); tag it explicitly so
+        // the intent is legible and so geo-aware consumers can prioritise it.
+        e.tag("geolocatable");
+        let mut bssid_ev = Evidence::new(SRC, format!("Connected to: {ssid}"))
+            .with_attr("ssid", ssid)
+            .with_attr("frequency_mhz", info.frequency_mhz.unwrap_or(0).to_string())
+            .with_attr("rssi_dbm", info.rssi.unwrap_or(0).to_string())
+            .with_attr(
+                "link_speed_mbps",
+                info.link_speed_mbps.unwrap_or(0).to_string(),
+            )
+            .with_attr(
+                "supplicant_state",
+                info.supplicant_state.as_deref().unwrap_or("-"),
+            );
+        // Classify the 802.11 band from the channel frequency — useful AP
+        // context (6 GHz ⇒ Wi-Fi 6E/7 hardware, etc.) the raw MHz didn't give.
+        if let Some(band) = wifi_band(info.frequency_mhz) {
+            e.tag(format!("band:{band}"));
+            bssid_ev = bssid_ev.with_attr("band", band);
+        }
+        e.add_evidence(bssid_ev);
         result.push(e);
     }
 
@@ -351,6 +374,32 @@ mod tests {
         // MAC filtered out, IP kept
         assert_eq!(r.entities.len(), 1);
         assert_eq!(r.entities[0].kind, EntityKind::IpAddress);
+    }
+
+    #[test]
+    fn wifi_band_classification() {
+        assert_eq!(wifi_band(Some(2412)), Some("2.4GHz"));
+        assert_eq!(wifi_band(Some(5180)), Some("5GHz"));
+        assert_eq!(wifi_band(Some(5955)), Some("6GHz"));
+        assert_eq!(wifi_band(Some(0)), None);
+        assert_eq!(wifi_band(None), None);
+        assert_eq!(wifi_band(Some(1234)), None);
+    }
+
+    #[test]
+    fn connected_bssid_is_geolocatable_and_banded() {
+        let json = br#"{"bssid":"aa:bb:cc:dd:ee:ff","ssid":"MyNet","ip":"192.168.1.42",
+            "frequency_mhz":5180,"supplicant_state":"COMPLETED"}"#;
+        let r = parse_conn(json, "test");
+        let mac = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::MacAddress)
+            .expect("BSSID entity");
+        // Tagged for the wigle/mylnikov BSSID→coords pivot and banded.
+        assert!(mac.has_tag("geolocatable"));
+        assert!(mac.has_tag("band:5GHz"));
+        assert_eq!(mac.evidence[0].attributes.get("band").unwrap(), "5GHz");
     }
 
     #[test]
