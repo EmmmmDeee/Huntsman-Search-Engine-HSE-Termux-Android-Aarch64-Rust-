@@ -662,21 +662,23 @@ fn extract_entities(
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
         if lower.contains('@') && seen.insert(lower) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
-            e.tag(tags::BREACH);
-            e.tag("see-know");
-            e.add_evidence(ev.clone());
-            result.push(e);
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Email, &email, 0.70, scan_id),
+                &ev,
+                &[],
+            );
         }
     }
     if let Some(uname) = val_str(item, "username") {
         let lower = uname.to_lowercase();
         if lower.len() >= 3 && seen.insert(lower) {
-            let mut e = Entity::new(EntityKind::Username, &uname, 0.65, scan_id);
-            e.tag(tags::BREACH);
-            e.tag("see-know");
-            e.add_evidence(ev.clone());
-            result.push(e);
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Username, &uname, 0.65, scan_id),
+                &ev,
+                &[],
+            );
         }
     }
     if let Some(phone) = val_str(item, "phone").or_else(|| val_str(item, "phone_number"))
@@ -688,56 +690,59 @@ fn extract_entities(
         } else {
             0.55
         };
-        let mut e = Entity::new(EntityKind::Phone, &phone, conf, scan_id);
-        e.tag(tags::BREACH);
-        e.tag("see-know");
-        e.add_evidence(ev.clone());
-        result.push(e);
+        push_breach_entity(
+            result,
+            Entity::new(EntityKind::Phone, &phone, conf, scan_id),
+            &ev,
+            &[],
+        );
     }
     if let Some(name) = val_str(item, "full_name").or_else(|| val_str(item, "name"))
         && name.trim().contains(' ')
         && seen.insert(name.to_lowercase())
     {
-        let mut e = Entity::new(EntityKind::Person, name.trim(), 0.65, scan_id);
-        e.tag(tags::BREACH);
-        e.tag("see-know");
-        e.add_evidence(ev.clone());
-        result.push(e);
+        push_breach_entity(
+            result,
+            Entity::new(EntityKind::Person, name.trim(), 0.65, scan_id),
+            &ev,
+            &[],
+        );
     }
     if let Some(ip) = val_str(item, "ip")
         && ip.len() >= 7
         && seen.insert(ip.clone())
     {
-        let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id);
-        e.tag(tags::BREACH);
-        e.tag("see-know");
-        e.tag("geolocation-lead");
-        e.add_evidence(ev.clone());
-        result.push(e);
+        push_breach_entity(
+            result,
+            Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
+            &ev,
+            &["geolocation-lead"],
+        );
     }
     if let Some(country) = val_str(item, "country")
         && seen.insert(format!("@country:{country}"))
     {
-        let mut e = Entity::new(EntityKind::Address, &country, 0.55, scan_id);
-        e.tag(tags::BREACH);
-        e.tag("see-know");
-        e.add_evidence(ev.clone());
-        result.push(e);
+        push_breach_entity(
+            result,
+            Entity::new(EntityKind::Address, &country, 0.55, scan_id),
+            &ev,
+            &[],
+        );
     }
     if let Some(did) = val_str(item, "discord_id").or_else(|| val_str(item, "discordid"))
         && seen.insert(format!("@discord:{did}"))
     {
-        let mut e = Entity::new(
-            EntityKind::Username,
-            format!("discord:{did}"),
-            0.60,
-            scan_id,
+        push_breach_entity(
+            result,
+            Entity::new(
+                EntityKind::Username,
+                format!("discord:{did}"),
+                0.60,
+                scan_id,
+            ),
+            &ev,
+            &["discord"],
         );
-        e.tag(tags::BREACH);
-        e.tag("see-know");
-        e.tag("discord");
-        e.add_evidence(ev.clone());
-        result.push(e);
     }
     // Steam ID — 17-digit 64-bit SteamIDs (steamID64). Surface as a
     // Username with `steam:<id>` prefix so the gaming endpoint pivot
@@ -749,13 +754,15 @@ fn extract_entities(
         && looks_like_steam_id(&sid)
         && seen.insert(format!("@steam:{sid}"))
     {
-        let mut e = Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.60, scan_id);
-        e.tag(tags::BREACH);
-        e.tag("see-know");
-        e.tag("steam");
-        e.add_evidence(ev.clone());
-        result.push(e);
+        push_breach_entity(
+            result,
+            Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.60, scan_id),
+            &ev,
+            &["steam"],
+        );
     }
+    // Domain is infrastructure, not a leaked credential, so it is the one kind
+    // NOT tagged `breach` — keep its inline tail (and consume the last `ev`).
     if let Some(domain) = val_str(item, "domain")
         && domain.contains('.')
         && seen.insert(domain.to_lowercase())
@@ -765,6 +772,25 @@ fn extract_entities(
         e.add_evidence(ev);
         result.push(e);
     }
+}
+
+/// Apply see_know's standard breach tags (`breach`, `see-know`, plus any
+/// endpoint-specific `extra_tags`) and a cloned evidence record to `e`, then
+/// push it onto `result`. Centralises the tag+evidence+push tail that every
+/// breach-derived entity kind shares.
+fn push_breach_entity(
+    result: &mut ModuleResult,
+    mut e: Entity,
+    ev: &Evidence,
+    extra_tags: &[&str],
+) {
+    e.tag(tags::BREACH);
+    e.tag("see-know");
+    for t in extra_tags {
+        e.tag(*t);
+    }
+    e.add_evidence(ev.clone());
+    result.push(e);
 }
 
 // Pre-flight validators (`is_private_ip`, `is_local_domain`,
@@ -810,6 +836,76 @@ mod tests {
         assert!(!should_skip_seed(TargetKind::FullName, "Jordan Meyer"));
         assert!(!should_skip_seed(TargetKind::IpAddress, "8.8.8.8"));
         assert!(!should_skip_seed(TargetKind::Domain, "example.com"));
+    }
+
+    #[test]
+    fn extract_entities_characterization() {
+        use serde_json::json;
+        let item = json!({
+            "dbname": "TestBreach",
+            "email": "Jordan.Meyer@Example.com",
+            "username": "jmeyer",
+            "phone": "15551234567",
+            "full_name": "Jordan Meyer",
+            "ip": "8.8.8.8",
+            "country": "US",
+            "discord_id": "123456789012345678",
+            "steam_id": "76561198000000000",
+            "domain": "example.com"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(&item, "15551234567", "scan", &mut seen, &mut result);
+
+        // One entity per recognised field.
+        assert_eq!(
+            result.entities.len(),
+            9,
+            "kinds: {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| (e.kind.to_string(), e.value.clone()))
+                .collect::<Vec<_>>()
+        );
+        // Every entity carries `see-know`; all but the Domain carry `breach`.
+        for e in &result.entities {
+            assert!(e.has_tag("see-know"), "{} missing see-know", e.value);
+            assert_eq!(
+                e.has_tag("breach"),
+                e.kind != EntityKind::Domain,
+                "breach tag policy wrong for {} ({})",
+                e.value,
+                e.kind
+            );
+        }
+        // Kind-specific values + endpoint-specific tags.
+        let has =
+            |k: EntityKind, v: &str| result.entities.iter().any(|e| e.kind == k && e.value == v);
+        assert!(has(EntityKind::Email, "jordan.meyer@example.com"));
+        assert!(has(EntityKind::Username, "jmeyer"));
+        assert!(has(EntityKind::Phone, "15551234567"));
+        assert!(has(EntityKind::Person, "Jordan Meyer"));
+        assert!(has(EntityKind::Address, "US"));
+        assert!(has(EntityKind::Domain, "example.com"));
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::IpAddress && e.has_tag("geolocation-lead"))
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.value == "discord:123456789012345678" && e.has_tag("discord"))
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.value == "steam:76561198000000000" && e.has_tag("steam"))
+        );
     }
 
     #[test]

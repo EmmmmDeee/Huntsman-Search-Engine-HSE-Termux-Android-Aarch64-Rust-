@@ -12,6 +12,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **see_know breach-entity tagging centralised; extraction characterised.** The
+  nine per-field blocks in `extract_entities` each repeated the same tail —
+  `tag(breach) + tag("see-know") + add_evidence(ev.clone()) + push`. Lifted that
+  policy into a single `push_breach_entity(result, e, ev, extra_tags)` helper so
+  the breach-tagging rule has one source of truth (Domain stays the documented
+  exception — infrastructure, not a leaked credential, so no `breach` tag). Added
+  an `extract_entities_characterization` test that pins the full output (kinds,
+  values, per-kind tag policy) and was written/green *before* the refactor.
+  Behaviour-identical; live "Jordan Meyer" still returns the same 185 entities.
+
 - **see_know pre-flight skip logic extracted to a testable predicate.** The
   ~38-line per-target-kind junk-seed skip block inside `SeekNow::process` (local
   domains, too-short/all-digit/placeholder usernames, under-length phones/names,
