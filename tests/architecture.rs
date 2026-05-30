@@ -135,3 +135,88 @@ fn architecture_constants() {
     assert_eq!(huntsman_search_engine::WORKER_THREADS, 2);
     assert_eq!(huntsman_search_engine::DEFAULT_BIND, "127.0.0.1:8080");
 }
+
+/// Walk `dir` recursively and collect every `HUNTSMAN_*` identifier literal
+/// that appears in a `.rs` source file (i.e. every key a module could read).
+fn collect_env_literals(dir: &Path, out: &mut std::collections::HashSet<String>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_env_literals(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let content = fs::read_to_string(&path).unwrap();
+            for (idx, _) in content.match_indices("HUNTSMAN_") {
+                let tail = &content[idx..];
+                let end = tail
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(tail.len());
+                out.insert(tail[..end].to_string());
+            }
+        }
+    }
+}
+
+/// Guards against the silent-key-mismatch bug class: a key documented in the
+/// provisioning template under a name no module actually reads, so the operator
+/// sets it and gets nothing. Every key in `env_template.txt` must be consumed in
+/// `src/` (or registered as a service def), or be explicitly listed as reserved.
+#[test]
+fn env_template_keys_are_all_consumed() {
+    use std::collections::HashSet;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // Documented but not yet wired to a consuming module. Each MUST be marked
+    // `[RESERVED]` in the template; setting it has no runtime effect (yet).
+    const NOT_YET_WIRED: &[&str] = &[
+        "HUNTSMAN_ALIENVAULT_KEY",
+        "HUNTSMAN_MALSHARE_KEY",
+        "HUNTSMAN_PHISHTANK_KEY",
+        "HUNTSMAN_XPOSEDORNOT_KEY",
+        "HUNTSMAN_HUDSONROCK_KEY",
+        "HUNTSMAN_MACADDRESS_KEY",
+        "HUNTSMAN_IPINFO_KEY",
+        "HUNTSMAN_MAXMIND_KEY",
+    ];
+
+    // 1. Keys declared in the provisioning template.
+    let template = fs::read_to_string(root.join("src/cli/env_template.txt")).unwrap();
+    let declared: Vec<String> = template
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("HUNTSMAN_"))
+        .filter_map(|l| l.split('=').next())
+        .map(|k| k.trim().to_string())
+        .collect();
+    assert!(!declared.is_empty(), "no keys parsed from env template");
+
+    // 2. Keys actually read in source, plus the registered service registry.
+    let mut consumed: HashSet<String> = HashSet::new();
+    collect_env_literals(&root.join("src"), &mut consumed);
+    for d in huntsman_search_engine::util::service_defs::service_defs() {
+        consumed.insert(d.env_var.to_string());
+    }
+
+    let reserved: HashSet<&str> = NOT_YET_WIRED.iter().copied().collect();
+
+    // Every documented key must be consumed/registered, or explicitly reserved.
+    let orphans: Vec<&String> = declared
+        .iter()
+        .filter(|k| !consumed.contains(k.as_str()) && !reserved.contains(k.as_str()))
+        .collect();
+    assert!(
+        orphans.is_empty(),
+        "env template documents keys no module reads (silent no-op for the operator): {orphans:?}"
+    );
+
+    // The reserved allowlist must not rot: each entry must still be in the template.
+    let declared_set: HashSet<&str> = declared.iter().map(String::as_str).collect();
+    let stale: Vec<&str> = NOT_YET_WIRED
+        .iter()
+        .copied()
+        .filter(|k| !declared_set.contains(k))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "NOT_YET_WIRED lists keys absent from the template (remove them): {stale:?}"
+    );
+}
