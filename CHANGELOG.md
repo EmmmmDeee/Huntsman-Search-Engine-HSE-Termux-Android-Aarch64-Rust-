@@ -83,6 +83,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Global entity search hardened against Android-Chrome keyboard corruption.**
+  The seed-target input already disabled autocomplete/autocorrect/autocapitalize
+  + spellcheck (case/spelling-sensitive OSINT values must pass through verbatim),
+  but the navbar global search — which queries the same entity values against the
+  backend `/search` endpoint — did not, so on a phone the soft keyboard could
+  autocorrect `jdoe`→`Joe` or inject capitals/spaces before the query was sent.
+  Applied the same four attributes to `#global-q` for consistency. (SQLite `LIKE`
+  is ASCII-case-insensitive so capitalisation alone was absorbed, but autocorrect
+  substitution genuinely corrupted queries.) SPA-only; suite unchanged at 1328.
+
 - **Import bogus-IP/domain filtering now runs in a single pass (PR #87 review).**
   The stealer-log import dropped bogus IP-kind entities and IP-literals
   mis-classified as domains in two consecutive `retain` calls; since the
