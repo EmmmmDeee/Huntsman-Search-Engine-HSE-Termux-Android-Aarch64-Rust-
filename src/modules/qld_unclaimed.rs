@@ -167,14 +167,18 @@ fn records_to_entities(
     records: &[Map<String, Value>],
     total: u64,
     seed: &str,
+    broadened: bool,
     scan_id: &str,
 ) -> Vec<Entity> {
     let mut out = Vec::new();
     for rec in records.iter().take(MAX_RECORDS) {
         let owner = field_str(rec, "Owner").unwrap_or_else(|| "(unknown owner)".to_string());
-        // Is this the seeded person, or a same-surname relative the broadened
-        // surname search swept in? Exact hits rank higher and are tagged so.
-        let exact = owner_matches_full_name(&owner, seed);
+        // The exact-vs-family split only has meaning when the query was
+        // surname-*broadened* (a multi-token FullName). For a verbatim search
+        // (organisation, single-token name) every row already AND-matched the
+        // seed, so they're all direct hits — don't mislabel them as
+        // `family-candidate` (which also under-weights them).
+        let exact = !broadened || owner_matches_full_name(&owner, seed);
         let amount = field_str(rec, "Amount");
         let sender = field_str(rec, "SenderName");
         let date = field_str(rec, "DateRec");
@@ -410,7 +414,16 @@ impl Module for QldUnclaimed {
         }
 
         let mut out = ModuleResult::new();
-        out.extend(records_to_entities(&records, total, full, &ctx.scan_id));
+        // `surname != full` ⇔ derive_query broadened a multi-token FullName to
+        // its surname, which is exactly when the exact-vs-family split applies.
+        let broadened = surname != full;
+        out.extend(records_to_entities(
+            &records,
+            total,
+            full,
+            broadened,
+            &ctx.scan_id,
+        ));
         out.extend(suburbs_to_entities(&pc_localities, &ctx.scan_id));
         Ok(out)
     }
@@ -482,7 +495,7 @@ mod tests {
 
         // Seeding the user's full name (no register row contains "MATTHEW"):
         // every Diegmann row is a family candidate, none an exact match.
-        let fam = records_to_entities(&result.records, 3, "Matthew Diegmann", "s");
+        let fam = records_to_entities(&result.records, 3, "Matthew Diegmann", true, "s");
         assert!(
             fam.iter()
                 .all(|e| e.tags.iter().any(|t| t.as_str() == "family-candidate")),
@@ -496,7 +509,7 @@ mod tests {
         // Seeding "Curt Diegmann": the two Curt rows are exact, Erik is family.
         let resp2 = sample();
         let result2 = resp2.result.unwrap();
-        let curt = records_to_entities(&result2.records, 3, "Curt Diegmann", "s");
+        let curt = records_to_entities(&result2.records, 3, "Curt Diegmann", true, "s");
         let exact = |e: &Entity| e.tags.iter().any(|t| t.as_str() == "exact-name-match");
         assert!(exact(&curt[0]), "HAYLEY & CURT row is an exact Curt match");
         assert!(exact(&curt[1]), "CURT DIEGMANN row is an exact Curt match");
@@ -514,7 +527,7 @@ mod tests {
         ]}}"#;
         let resp: CkanResp = serde_json::from_str(raw).unwrap();
         let recs = resp.result.unwrap().records;
-        let ents = records_to_entities(&recs, 1, "ACME Widgets", "s");
+        let ents = records_to_entities(&recs, 1, "ACME Widgets", true, "s");
         // Address (geo) + Organisation (ABN pivot).
         assert_eq!(ents.len(), 2);
         assert!(ents.iter().any(|e| e.kind == EntityKind::Address));
@@ -534,7 +547,7 @@ mod tests {
             .result
             .unwrap()
             .records;
-        let ents2 = records_to_entities(&recs2, 1, "Jane Citizen", "s");
+        let ents2 = records_to_entities(&recs2, 1, "Jane Citizen", true, "s");
         assert_eq!(ents2.len(), 1, "individual owner → no Organisation");
         assert!(ents2.iter().all(|e| e.kind != EntityKind::Organisation));
 
@@ -547,7 +560,7 @@ mod tests {
             .result
             .unwrap()
             .records;
-        let ents3 = records_to_entities(&recs3, 1, "DEV", "s");
+        let ents3 = records_to_entities(&recs3, 1, "DEV", true, "s");
         let orgs: Vec<&str> = ents3
             .iter()
             .filter(|e| e.kind == EntityKind::Organisation)
@@ -630,6 +643,28 @@ mod tests {
     }
 
     #[test]
+    fn verbatim_search_never_tags_family_candidate() {
+        // Organisation / single-token seeds are searched verbatim (not surname-
+        // broadened), so every returned row is a direct AND-match — classify all
+        // as exact, never `family-candidate` (which would under-weight a genuine
+        // hit). broadened = false here.
+        let raw = r#"{"result":{"total":1,"records":[
+            {"_id":1,"Owner":"ACME WIDGETS PTY LTD","Amount":"10.00","PCode":"4000"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .unwrap()
+            .result
+            .unwrap()
+            .records;
+        // Seed "ACME PTY LTD" doesn't whole-word-match all of the owner, but for a
+        // verbatim (non-broadened) search it's still a direct hit, not family.
+        let ents = records_to_entities(&recs, 1, "ACME PTY LTD", false, "s");
+        let addr = ents.iter().find(|e| e.kind == EntityKind::Address).unwrap();
+        assert!(addr.tags.iter().any(|t| t.as_str() == "exact-name-match"));
+        assert!(!addr.tags.iter().any(|t| t.as_str() == "family-candidate"));
+    }
+
+    #[test]
     fn owner_match_is_whole_word_not_substring() {
         // Whole-word matching: a short seed token must NOT substring-match inside
         // an owner word (the bug flagged in review).
@@ -656,7 +691,7 @@ mod tests {
             .result
             .unwrap()
             .records;
-        let ents = records_to_entities(&recs, 1, "No Postcode Person", "s");
+        let ents = records_to_entities(&recs, 1, "No Postcode Person", true, "s");
         assert_eq!(
             ents[0].kind,
             EntityKind::Other("unclaimed_money".to_string())
@@ -671,7 +706,7 @@ mod tests {
             .result
             .unwrap()
             .records;
-        let ents2 = records_to_entities(&recs2, 1, "Geo Person", "s");
+        let ents2 = records_to_entities(&recs2, 1, "Geo Person", true, "s");
         assert!(ents2[0].tags.iter().any(|t| t.as_str() == "geoint"));
     }
 
@@ -708,7 +743,7 @@ mod tests {
         ]}}"#;
         let resp: CkanResp = serde_json::from_str(raw).unwrap();
         let recs = resp.result.unwrap().records;
-        let ents = records_to_entities(&recs, 17, "Ali Kareem", "s");
+        let ents = records_to_entities(&recs, 17, "Ali Kareem", true, "s");
         // All four Kareem owners are individuals → no Organisation/ABN pivots:
         // four entities exactly, none a company (the ABN incorporation stays
         // silent on a non-business family).
@@ -731,7 +766,7 @@ mod tests {
 
         // Control: a seed that genuinely matches one row ("Silva Kareem") flips
         // exactly that row to an exact match — the classifier is not just always-family.
-        let silva = records_to_entities(&recs, 17, "Silva Kareem", "s");
+        let silva = records_to_entities(&recs, 17, "Silva Kareem", true, "s");
         assert!(
             silva[1]
                 .tags
@@ -752,8 +787,13 @@ mod tests {
     fn parses_records_into_geo_addresses() {
         let resp = sample();
         let result = resp.result.unwrap();
-        let ents =
-            records_to_entities(&result.records, result.total.unwrap(), "Diegmann", "scan-1");
+        let ents = records_to_entities(
+            &result.records,
+            result.total.unwrap(),
+            "Diegmann",
+            true,
+            "scan-1",
+        );
         assert_eq!(ents.len(), 3, "one entity per record");
 
         // All three rows have valid 4-digit postcodes → geocodable Address entities.
@@ -789,7 +829,7 @@ mod tests {
         ]}}"#;
         let resp: CkanResp = serde_json::from_str(raw).unwrap();
         let result = resp.result.unwrap();
-        let ents = records_to_entities(&result.records, 1, "NO POSTCODE PERSON", "scan-1");
+        let ents = records_to_entities(&result.records, 1, "NO POSTCODE PERSON", true, "scan-1");
         assert_eq!(ents.len(), 1, "no-postcode record must still surface");
         assert_eq!(
             ents[0].kind,
@@ -807,7 +847,7 @@ mod tests {
         ]}}"#;
         let resp: CkanResp = serde_json::from_str(raw).unwrap();
         let result = resp.result.unwrap();
-        let ents = records_to_entities(&result.records, 1, "NUMERIC FIELDS", "scan-1");
+        let ents = records_to_entities(&result.records, 1, "NUMERIC FIELDS", true, "scan-1");
         assert_eq!(ents.len(), 1);
         // PCode 4000 (numeric) is recognised as a valid postcode → Address.
         assert_eq!(ents[0].kind, EntityKind::Address);
