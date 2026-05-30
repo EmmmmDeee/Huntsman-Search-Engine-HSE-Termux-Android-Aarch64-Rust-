@@ -720,9 +720,28 @@ fn visit_key(target: &Target) -> (TargetKind, String) {
     (target.kind, normalised)
 }
 
+/// Upper bound (ms) on any single module's timeout when running on Termux and
+/// the operator hasn't pinned `--module-timeout`. On a low-power, metered,
+/// often-flaky mobile connection a 90–120 s module (search_engines, api_key_probe)
+/// can stall the whole scan; capping the worst offenders keeps a phone scan
+/// responsive. Desktop and any explicit user timeout are unaffected.
+const TERMUX_MODULE_TIMEOUT_CAP_MS: u64 = 60_000;
+
 fn resolve_timeout(opts: &ScanOptions, module: &dyn Module) -> u64 {
-    opts.module_timeout_ms
-        .unwrap_or_else(|| module.max_timeout_ms())
+    let user_set = opts.module_timeout_ms;
+    let base = user_set.unwrap_or_else(|| module.max_timeout_ms());
+    apply_termux_cap(base, user_set.is_some(), crate::is_termux())
+}
+
+/// Pure timeout-capping policy (split out so it's unit-testable without env):
+/// on Termux with no user override, clamp to [`TERMUX_MODULE_TIMEOUT_CAP_MS`];
+/// otherwise pass the resolved value through unchanged.
+fn apply_termux_cap(base_ms: u64, user_set: bool, is_termux: bool) -> u64 {
+    if is_termux && !user_set {
+        base_ms.min(TERMUX_MODULE_TIMEOUT_CAP_MS)
+    } else {
+        base_ms
+    }
 }
 
 fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> Option<StopReason> {
@@ -1470,6 +1489,27 @@ fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn termux_cap_bounds_long_modules_only_on_termux_without_override() {
+        // Desktop (not Termux): full timeout preserved, even 120 s.
+        assert_eq!(apply_termux_cap(120_000, false, false), 120_000);
+        // Termux, no user override: the worst offenders are clamped...
+        assert_eq!(
+            apply_termux_cap(120_000, false, true),
+            TERMUX_MODULE_TIMEOUT_CAP_MS
+        );
+        assert_eq!(
+            apply_termux_cap(90_000, false, true),
+            TERMUX_MODULE_TIMEOUT_CAP_MS
+        );
+        // ...while the common short timeouts pass through unchanged.
+        assert_eq!(apply_termux_cap(8_000, false, true), 8_000);
+        assert_eq!(apply_termux_cap(60_000, false, true), 60_000);
+        // An explicit --module-timeout is honoured verbatim, even on Termux,
+        // even above the cap (the operator asked for it).
+        assert_eq!(apply_termux_cap(120_000, true, true), 120_000);
+    }
 
     #[test]
     fn visit_key_normalises_email() {

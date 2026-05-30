@@ -10,6 +10,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **Termux-aware per-module timeout cap so a slow upstream can't stall a phone
+  scan.** Audit of `max_timeout_ms` found a handful of modules legitimately set
+  very long timeouts (search_engines 120 s, api_key_probe 90 s, hibp/web_crawler
+  60 s) — fine on desktop, but on a low-power, metered, often-flaky mobile
+  connection a single such module can hang the whole scan for minutes.
+  `resolve_timeout` now clamps any module to 60 s **only on Termux and only when
+  the operator hasn't pinned `--module-timeout`** (an explicit timeout is honoured
+  verbatim; desktop is unchanged). Split into a pure `apply_termux_cap` with a
+  unit test covering desktop pass-through, Termux clamping of the 90/120 s
+  offenders, short-timeout pass-through, and user-override precedence. (Verified
+  in the same pass that absent external binaries already degrade fast: the
+  curl-subprocess modules return `None` on an immediate spawn error rather than
+  burning their timeout, so a minimal Termux without `curl`/`termux-api` doesn't
+  hang.)
+
 ### Fixed
 
 - **Module synergy graph made truthful: completed `produces()` across ~60
