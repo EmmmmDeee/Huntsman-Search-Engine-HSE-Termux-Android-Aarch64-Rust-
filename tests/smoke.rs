@@ -846,41 +846,67 @@ async fn concurrent_dispatch_is_faster_than_sequential() {
     // with max_concurrent=4 should complete in ≈ 200 ms.
     let counters = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let modules: Vec<Arc<dyn Module>> = (0..4)
-        .map(|i| {
-            let name: &'static str = match i {
-                0 => "slow0",
-                1 => "slow1",
-                2 => "slow2",
-                _ => "slow3",
-            };
-            Arc::new(SlowEchoModule {
-                name_str: name,
-                delay_ms: 200,
-                in_flight: Arc::clone(&counters),
-                peak_in_flight: Arc::clone(&peak),
-            }) as Arc<dyn Module>
-        })
-        .collect();
 
-    let (engine, _store, sid, target, ctx) =
-        setup(modules, "concurrent_fast", TargetKind::Email, "x@y.com");
+    // Build a fresh identical module set for each run (modules are consumed
+    // by `setup`/`run`). Helper closure so seq and concurrent are comparable.
+    let make_modules = || -> Vec<Arc<dyn Module>> {
+        (0..4)
+            .map(|i| {
+                let name: &'static str = match i {
+                    0 => "slow0",
+                    1 => "slow1",
+                    2 => "slow2",
+                    _ => "slow3",
+                };
+                Arc::new(SlowEchoModule {
+                    name_str: name,
+                    delay_ms: 200,
+                    in_flight: Arc::clone(&counters),
+                    peak_in_flight: Arc::clone(&peak),
+                }) as Arc<dyn Module>
+            })
+            .collect()
+    };
 
-    let opts = ScanOptions {
+    // Sequential baseline (max_concurrent=0): four 200ms modules ≈ 800ms.
+    let (eng_s, _ss, sid_s, tgt_s, ctx_s) = setup(
+        make_modules(),
+        "concurrent_seq",
+        TargetKind::Email,
+        "x@y.com",
+    );
+    let scan_s = Scan::new(sid_s.clone(), tgt_s.clone()).with_options(ScanOptions {
+        max_concurrent: 0,
+        ..Default::default()
+    });
+    let t0 = std::time::Instant::now();
+    let res_s = eng_s.run(scan_s, tgt_s, ctx_s).await.unwrap();
+    let seq = t0.elapsed();
+
+    // Concurrent (max_concurrent=4): same work should overlap to ≈ 200ms.
+    let (eng_c, _sc, sid_c, tgt_c, ctx_c) = setup(
+        make_modules(),
+        "concurrent_fast",
+        TargetKind::Email,
+        "x@y.com",
+    );
+    let scan_c = Scan::new(sid_c.clone(), tgt_c.clone()).with_options(ScanOptions {
         max_concurrent: 4,
         ..Default::default()
-    };
-    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    });
+    let t1 = std::time::Instant::now();
+    let res_c = eng_c.run(scan_c, tgt_c, ctx_c).await.unwrap();
+    let con = t1.elapsed();
 
-    let started = std::time::Instant::now();
-    let result = engine.run(scan, target, ctx).await.unwrap();
-    let elapsed = started.elapsed();
-
-    assert_eq!(result.entity_count, 1, "4 modules echo the same email UID");
-    // Sequential would be 800 ms; concurrent should clear well under 600 ms.
+    assert_eq!(res_s.entity_count, 1, "4 modules echo the same email UID");
+    assert_eq!(res_c.entity_count, 1, "4 modules echo the same email UID");
+    // RELATIVE assertion — immune to absolute CI-runner slowness (a 3x-slower
+    // box scales both runs together). Concurrent must be clearly faster than
+    // sequential; require at least 1.5x speedup (true ratio ≈ 4x, so this is
+    // a wide margin that still catches a regression where concurrency breaks).
     assert!(
-        elapsed < std::time::Duration::from_millis(600),
-        "concurrent dispatch took {elapsed:?} — expected < 600ms"
+        con.as_secs_f64() * 1.5 < seq.as_secs_f64(),
+        "concurrent ({con:?}) should be >=1.5x faster than sequential ({seq:?})"
     );
 }
 
