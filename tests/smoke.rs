@@ -1805,10 +1805,10 @@ async fn correlations_stream_live_during_ingestion_not_at_finalise() {
                     first_au013 = Some(idx);
                 }
             }
-            EventKind::ModuleStart { module } if module == "expansion_marker" => {
-                if marker_start.is_none() {
-                    marker_start = Some(idx);
-                }
+            EventKind::ModuleStart { module }
+                if module == "expansion_marker" && marker_start.is_none() =>
+            {
+                marker_start = Some(idx);
             }
             _ => {}
         }

@@ -39,6 +39,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **CI green under Rust 1.96 stable: collapsed a nested `if` clippy now rejects.**
+  `clippy::collapsible_match` (enforced under `-D warnings`) became stricter in
+  1.96.0 and flagged an arm in `tests/smoke.rs` whose body was solely an
+  `if marker_start.is_none()` guard — collapsed into the match guard
+  (`… if module == "expansion_marker" && marker_start.is_none() =>`),
+  behaviour-identical (first expansion-marker still wins; later ones fall to
+  `_`). The failure only appeared on CI because its `stable` toolchain had
+  advanced past the local one; updated local to 1.96.0 to reproduce.
+
 - **`events.history` and `graph.gexf` now 404 for unknown scans (PR #87 review).**
   Both sub-resource handlers skipped the `scan_missing` guard that the other
   `/scans/{id}/…` endpoints use, so an unknown scan id returned `200` with an
