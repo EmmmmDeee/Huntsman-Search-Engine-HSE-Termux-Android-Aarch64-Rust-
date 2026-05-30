@@ -12,6 +12,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **oathnet_pro stealer-entity tagging centralised; extraction characterised.**
+  `extract_stealer_entities` repeated the stealer-context tail
+  (`tag("oathnet-pro") + tag("stealer") + [extra] + add_evidence + push`) across
+  its login-email/domain/credential blocks. Added a `push_stealer_entity` helper
+  for that base (deliberately distinct from `push_oathnet_entity` — the stealer
+  context does NOT carry the `breach` tag, except the email-array kind which
+  reuses `push_oathnet_entity` for its `[breach, oathnet-pro, stealer]`). A
+  characterization test pins the two distinct tag bases in exact order, written
+  green before the change. Behaviour-identical; the function had no coverage.
+
 - **oathnet_pro breach-entity tagging centralised; extraction characterised.**
   Applied the same cleanup as `see_know` to `oathnet_pro::extract_breach_entities`:
   its thirteen per-field blocks each repeated `tag(breach) + tag("oathnet-pro")

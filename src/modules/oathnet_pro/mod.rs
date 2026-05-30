@@ -573,6 +573,25 @@ fn extract_breach_entities(
     }
 }
 
+/// Apply the stealer-context tags (`oathnet-pro`, `stealer`, plus any
+/// `extra_tags` in order) and a cloned evidence record to `e`, then push it.
+/// Unlike [`push_oathnet_entity`] this does NOT add the `breach` tag — stealer
+/// login/domain/credential context is not leaked PII per se.
+fn push_stealer_entity(
+    result: &mut ModuleResult,
+    mut e: Entity,
+    ev: &Evidence,
+    extra_tags: &[&str],
+) {
+    e.tag("oathnet-pro");
+    e.tag("stealer");
+    for t in extra_tags {
+        e.tag(*t);
+    }
+    e.add_evidence(ev.clone());
+    result.push(e);
+}
+
 fn extract_stealer_entities(
     item: &Value,
     scan_id: &str,
@@ -606,12 +625,12 @@ fn extract_stealer_entities(
             if let Some(email) = email_val.as_str() {
                 let lower = email.to_lowercase();
                 if lower.contains('@') && seen.insert(lower) {
-                    let mut e = Entity::new(EntityKind::Email, email, 0.65, scan_id);
-                    e.tag(tags::BREACH);
-                    e.tag("oathnet-pro");
-                    e.tag("stealer");
-                    e.add_evidence(ev.clone());
-                    result.push(e);
+                    push_oathnet_entity(
+                        result,
+                        Entity::new(EntityKind::Email, email, 0.65, scan_id),
+                        &ev,
+                        &["stealer"],
+                    );
                 }
             }
         }
@@ -626,15 +645,13 @@ fn extract_stealer_entities(
             && lower.contains('.')
             && seen.insert(format!("@stealer-user:{lower}"))
         {
-            let mut e = Entity::new(EntityKind::Email, &uname, 0.60, scan_id);
-            e.tag("oathnet-pro");
-            e.tag("stealer");
-            e.tag("stealer-login");
-            e.add_evidence(
-                Evidence::new(SRC, "Stealer login email (username field)")
+            push_stealer_entity(
+                result,
+                Entity::new(EntityKind::Email, &uname, 0.60, scan_id),
+                &Evidence::new(SRC, "Stealer login email (username field)")
                     .with_attr("source", "stealer"),
+                &["stealer-login"],
             );
-            result.push(e);
         }
     }
 
@@ -644,14 +661,13 @@ fn extract_stealer_entities(
                 && dom.contains('.')
                 && seen.insert(dom.to_lowercase())
             {
-                let mut e = Entity::new(EntityKind::Domain, dom, 0.50, scan_id);
-                e.tag("oathnet-pro");
-                e.tag("stealer");
-                e.add_evidence(
-                    Evidence::new(SRC, format!("Stealer credential for {dom}"))
+                push_stealer_entity(
+                    result,
+                    Entity::new(EntityKind::Domain, dom, 0.50, scan_id),
+                    &Evidence::new(SRC, format!("Stealer credential for {dom}"))
                         .with_attr("source", "stealer"),
+                    &[],
                 );
-                result.push(e);
             }
         }
     }
@@ -661,11 +677,12 @@ fn extract_stealer_entities(
     {
         let cred_val = format!("{uname}@{url_str}");
         if seen.insert(format!("@cred:{}", cred_val.to_lowercase())) {
-            let mut e = Entity::new(EntityKind::Credential, &cred_val, 0.60, scan_id);
-            e.tag("oathnet-pro");
-            e.tag("stealer");
-            e.add_evidence(ev);
-            result.push(e);
+            push_stealer_entity(
+                result,
+                Entity::new(EntityKind::Credential, &cred_val, 0.60, scan_id),
+                &ev,
+                &[],
+            );
         }
     }
 }
@@ -738,6 +755,48 @@ mod tests {
         assert_eq!(
             tags_of(EntityKind::Password, "0123456789"),
             ["breach", "oathnet-pro", "password-hash"]
+        );
+    }
+
+    #[test]
+    fn extract_stealer_entities_characterization() {
+        use serde_json::json;
+        let item = json!({
+            "email": ["victim@example.com"],
+            "username": "loginuser@example.com",
+            "domain": ["testsite.com"],
+            "url": "https://login.site",
+            "password": "secret"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", &mut seen, &mut result);
+
+        let tags_of = |k: EntityKind, needle: &str| -> Vec<String> {
+            result
+                .entities
+                .iter()
+                .find(|e| e.kind == k && e.value.contains(needle))
+                .map(|e| e.tags.clone())
+                .unwrap_or_default()
+        };
+        // The email-array kind carries `breach`; the login-email/domain/credential
+        // kinds do NOT (they are credential context, not leaked PII). Exact order.
+        assert_eq!(
+            tags_of(EntityKind::Email, "victim@example.com"),
+            ["breach", "oathnet-pro", "stealer"]
+        );
+        assert_eq!(
+            tags_of(EntityKind::Email, "loginuser@example.com"),
+            ["oathnet-pro", "stealer", "stealer-login"]
+        );
+        assert_eq!(
+            tags_of(EntityKind::Domain, "testsite.com"),
+            ["oathnet-pro", "stealer"]
+        );
+        assert_eq!(
+            tags_of(EntityKind::Credential, "loginuser@example.com@"),
+            ["oathnet-pro", "stealer"]
         );
     }
 
