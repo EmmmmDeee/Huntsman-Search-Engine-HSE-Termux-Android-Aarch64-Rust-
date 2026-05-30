@@ -1,0 +1,289 @@
+//! Test-only support: an in-memory [`StoragePort`] and deterministic mock
+//! modules used to prove engine properties (bounded best-first halting,
+//! over-budget early stop) without touching SQLite or the network.
+//!
+//! Compiled only under `#[cfg(test)]` — never part of the shipped binary.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+
+use crate::core::correlator::Correlation;
+use crate::core::entity::Entity;
+use crate::core::error::Result;
+use crate::core::event::Event;
+use crate::core::module::{Module, ModuleContext, ModuleResult};
+use crate::core::port::StoragePort;
+use crate::core::relation::Relation;
+use crate::core::scan::{Scan, Target, TargetKind};
+
+/// Fully in-memory [`StoragePort`]. Pure HashMap/Vec state behind a single
+/// `parking_lot::Mutex`, so engine tests are deterministic, allocation-bounded,
+/// and never spawn a SQLite connection. Mirrors the GREATEST-merge contract of
+/// the real store closely enough for halting/budget assertions: `upsert_entity`
+/// keeps the higher-confidence copy on UID collision.
+#[derive(Default)]
+pub struct InMemoryStore {
+    inner: Mutex<Inner>,
+}
+
+#[derive(Default)]
+struct Inner {
+    scans: HashMap<String, Scan>,
+    entities: HashMap<String, Entity>,
+    correlations: Vec<Correlation>,
+    relations: Vec<Relation>,
+    events: Vec<Event>,
+}
+
+impl InMemoryStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Total entities currently held — the post-scan "what got persisted"
+    /// count the halting test asserts against.
+    pub fn entity_count(&self) -> usize {
+        self.inner.lock().entities.len()
+    }
+
+    /// Number of events of a given `EventKind` discriminant string that were
+    /// persisted. Used to count `ModuleStart` dispatches (= expansions).
+    pub fn count_events_matching(&self, pred: impl Fn(&Event) -> bool) -> usize {
+        self.inner.lock().events.iter().filter(|e| pred(e)).count()
+    }
+}
+
+impl StoragePort for InMemoryStore {
+    fn upsert_scan(&self, scan: &Scan) -> Result<()> {
+        self.inner.lock().scans.insert(scan.id.clone(), scan.clone());
+        Ok(())
+    }
+
+    fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
+        Ok(self.inner.lock().scans.get(id).cloned())
+    }
+
+    fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
+        Ok(self.inner.lock().scans.values().take(limit).cloned().collect())
+    }
+
+    fn delete_scan(&self, scan_id: &str) -> Result<bool> {
+        Ok(self.inner.lock().scans.remove(scan_id).is_some())
+    }
+
+    fn upsert_entity(&self, entity: &Entity) -> Result<()> {
+        let mut g = self.inner.lock();
+        match g.entities.get_mut(&entity.uid) {
+            // GREATEST-merge: keep the stronger copy, mirroring the real store.
+            Some(existing) if existing.confidence >= entity.confidence => {}
+            _ => {
+                g.entities.insert(entity.uid.clone(), entity.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize> {
+        for e in entities {
+            self.upsert_entity(e)?;
+        }
+        Ok(entities.len())
+    }
+
+    fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
+        Ok(self
+            .inner
+            .lock()
+            .entities
+            .values()
+            .filter(|e| e.scan_id == scan_id)
+            .cloned()
+            .collect())
+    }
+
+    fn entities_filtered(
+        &self,
+        scan_id: &str,
+        kind: Option<&str>,
+        min_confidence: Option<f64>,
+        value_contains: Option<&str>,
+    ) -> Result<Vec<Entity>> {
+        Ok(self
+            .inner
+            .lock()
+            .entities
+            .values()
+            .filter(|e| e.scan_id == scan_id)
+            .filter(|e| kind.is_none_or(|k| e.kind.to_string() == k))
+            .filter(|e| min_confidence.is_none_or(|m| e.confidence >= m))
+            .filter(|e| value_contains.is_none_or(|v| e.value.contains(v)))
+            .cloned()
+            .collect())
+    }
+
+    fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        for e in self.inner.lock().entities.values().filter(|e| e.scan_id == scan_id) {
+            *counts.entry(e.kind.to_string()).or_insert(0) += 1;
+        }
+        Ok(counts.into_iter().collect())
+    }
+
+    fn get_entity(&self, uid: &str) -> Result<Option<Entity>> {
+        Ok(self.inner.lock().entities.get(uid).cloned())
+    }
+
+    fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<Entity>> {
+        Ok(self
+            .inner
+            .lock()
+            .entities
+            .values()
+            .filter(|e| e.value.contains(query))
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+
+    fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>> {
+        Ok(self
+            .inner
+            .lock()
+            .entities
+            .get(entity_uid)
+            .map(|e| vec![e.scan_id.clone()])
+            .unwrap_or_default())
+    }
+
+    fn observation_count(&self, entity_uid: &str) -> Result<usize> {
+        Ok(self
+            .inner
+            .lock()
+            .entities
+            .get(entity_uid)
+            .map_or(0, |e| e.corroboration as usize))
+    }
+
+    fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
+        self.inner.lock().correlations.push(c.clone());
+        Ok(())
+    }
+
+    fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>> {
+        Ok(self
+            .inner
+            .lock()
+            .correlations
+            .iter()
+            .filter(|c| c.scan_id == scan_id)
+            .cloned()
+            .collect())
+    }
+
+    fn upsert_relation(&self, r: &Relation) -> Result<()> {
+        self.inner.lock().relations.push(r.clone());
+        Ok(())
+    }
+
+    fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>> {
+        Ok(self
+            .inner
+            .lock()
+            .relations
+            .iter()
+            .filter(|r| r.scan_id == scan_id)
+            .cloned()
+            .collect())
+    }
+
+    fn insert_event(&self, event: &Event) -> Result<()> {
+        self.inner.lock().events.push(event.clone());
+        Ok(())
+    }
+
+    fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
+        Ok(self
+            .inner
+            .lock()
+            .events
+            .iter()
+            .filter(|e| e.scan_id == scan_id)
+            .cloned()
+            .collect())
+    }
+}
+
+/// Deterministic, offline mock module for halting/budget proofs.
+///
+/// Given a fixed adjacency map `value -> Vec<(kind, value, confidence)>`, it
+/// emits exactly those entities whenever dispatched on a matching target. The
+/// complete reachable entity set is therefore computable by hand, so a test can
+/// assert the scan ends frontier-empty with an expansion count within the
+/// `entities × tiers` bound. No network, no timers — `process` is synchronous
+/// work wrapped in an async fn.
+pub struct MockModule {
+    pub module_name: &'static str,
+    pub module_priority: u8,
+    /// `seed value` → entities to emit (kind, value, confidence).
+    pub edges: HashMap<String, Vec<(TargetKind, String, f64)>>,
+}
+
+impl MockModule {
+    pub fn new(name: &'static str, priority: u8) -> Self {
+        Self {
+            module_name: name,
+            module_priority: priority,
+            edges: HashMap::new(),
+        }
+    }
+
+    /// Add an emission edge: when dispatched on `from`, emit entity `to`.
+    pub fn with_edge(
+        mut self,
+        from: &str,
+        to_kind: TargetKind,
+        to_value: &str,
+        confidence: f64,
+    ) -> Self {
+        self.edges
+            .entry(from.to_string())
+            .or_default()
+            .push((to_kind, to_value.to_string(), confidence));
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl Module for MockModule {
+    fn name(&self) -> &'static str {
+        self.module_name
+    }
+
+    fn priority(&self) -> u8 {
+        self.module_priority
+    }
+
+    fn accepts(&self, _target: &Target) -> bool {
+        true
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut result = ModuleResult::new();
+        if let Some(emits) = self.edges.get(&target.value) {
+            for (kind, value, confidence) in emits {
+                let entity = Entity::new(kind.to_entity_kind(), value.clone(), *confidence, &ctx.scan_id);
+                result.entities.push(entity);
+            }
+        }
+        Ok(result)
+    }
+}
+
+/// Build an `Arc<dyn Module>` list from owned `MockModule`s.
+pub fn mock_modules(mods: Vec<MockModule>) -> Vec<Arc<dyn Module>> {
+    mods.into_iter()
+        .map(|m| Arc::new(m) as Arc<dyn Module>)
+        .collect()
+}
