@@ -88,6 +88,15 @@ impl Module for OpenCorporates {
         10_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Organisation,
+            EntityKind::AbnAcn,
+            EntityKind::Address,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let query = target.value.trim();
         if query.is_empty() || query.len() < 3 {

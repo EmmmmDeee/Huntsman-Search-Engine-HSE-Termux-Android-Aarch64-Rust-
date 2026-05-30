@@ -55,6 +55,12 @@ impl Module for EmailParse {
         matches!(t.kind, TargetKind::Email)
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] =
+            &[EntityKind::Domain, EntityKind::Username, EntityKind::Person];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
 

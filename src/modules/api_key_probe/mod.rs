@@ -55,6 +55,11 @@ impl Module for ApiKeyProbe {
         90_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::ApiKey, EntityKind::Domain];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = target.value.trim();
         if key.is_empty() || key.len() < 8 {

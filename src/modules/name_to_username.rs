@@ -37,6 +37,11 @@ impl Module for NameToUsername {
         matches!(t.kind, TargetKind::FullName)
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Username];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let parts = parse_name_parts(&target.value);

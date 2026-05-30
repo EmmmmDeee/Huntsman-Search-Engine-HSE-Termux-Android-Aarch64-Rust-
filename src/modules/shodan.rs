@@ -107,6 +107,7 @@ impl Module for Shodan {
             EntityKind::Asn,
             EntityKind::Organisation,
             EntityKind::Address,
+            EntityKind::IpAddress,
         ];
         KINDS
     }

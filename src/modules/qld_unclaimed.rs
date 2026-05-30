@@ -327,7 +327,11 @@ impl Module for QldUnclaimed {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Organisation];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Address,
+            EntityKind::Coordinates,
+            EntityKind::Organisation,
+        ];
         KINDS
     }
 

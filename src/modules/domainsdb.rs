@@ -65,6 +65,11 @@ impl Module for DomainsDb {
         12_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Domain];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let query = match target.kind {
             TargetKind::Domain => {

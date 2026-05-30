@@ -65,6 +65,20 @@ impl Module for OathnetPro {
         30_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Phone,
+            EntityKind::Person,
+            EntityKind::IpAddress,
+            EntityKind::Address,
+            EntityKind::Url,
+            EntityKind::Domain,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = oathnet::resolve_key(ctx.key_opt(oathnet::KEY_ENV));
 

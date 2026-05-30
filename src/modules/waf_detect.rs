@@ -38,6 +38,11 @@ impl Module for WafDetect {
         matches!(t.kind, TargetKind::Domain | TargetKind::Url)
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Domain];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
 

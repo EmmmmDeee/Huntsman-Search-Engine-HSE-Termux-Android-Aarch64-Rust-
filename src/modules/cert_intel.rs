@@ -61,6 +61,11 @@ impl Module for CertIntel {
         10_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Domain];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let domain = target.value.trim();
         if domain.is_empty() {

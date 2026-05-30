@@ -43,6 +43,11 @@ impl Module for LocalNet {
         true
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::MacAddress, EntityKind::IpAddress];
+        KINDS
+    }
+
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
 

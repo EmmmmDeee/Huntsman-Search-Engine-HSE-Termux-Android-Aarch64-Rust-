@@ -101,6 +101,11 @@ impl Module for UsernameSearch {
         60_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Url, EntityKind::Username];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let username = target.value.trim();
         if username.is_empty() || username.len() > 64 {

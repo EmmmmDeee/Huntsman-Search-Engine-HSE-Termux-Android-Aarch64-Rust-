@@ -103,6 +103,17 @@ impl Module for Keybase {
         4_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Person,
+            EntityKind::Username,
+            EntityKind::Email,
+            EntityKind::Domain,
+            EntityKind::Address,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let username = target.value.trim();
         if username.is_empty() || username.len() > 64 {

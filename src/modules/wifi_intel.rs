@@ -111,6 +111,15 @@ impl Module for WifiIntel {
         20_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::MacAddress,
+            EntityKind::Coordinates,
+            EntityKind::Address,
+        ];
+        KINDS
+    }
+
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let user = ctx.key_opt(USER_ENV).unwrap_or(HARDCODED_USER);
         let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);

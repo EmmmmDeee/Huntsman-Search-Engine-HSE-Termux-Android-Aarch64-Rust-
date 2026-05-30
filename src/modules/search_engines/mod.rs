@@ -138,8 +138,10 @@ impl Module for SearchEngines {
             EntityKind::Username,
             EntityKind::Phone,
             EntityKind::Address,
+            EntityKind::Coordinates,
             EntityKind::Person,
             EntityKind::Organisation,
+            EntityKind::AbnAcn,
         ];
         KINDS
     }

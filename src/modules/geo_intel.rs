@@ -112,6 +112,11 @@ impl Module for GeoIntel {
         25_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         match target.kind {
             TargetKind::IpAddress => process_ip(target, ctx).await,

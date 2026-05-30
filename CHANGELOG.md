@@ -10,6 +10,27 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Module synergy graph made truthful: completed `produces()` across ~60
+  modules.** Empirical audit of the producer→consumer graph (via
+  `/api/v1/modules/graph`) found the dispatch index is built from `consumes()`
+  (so runtime expansion always worked), but the `produces()` declarations that
+  drive the *displayed* synergy graph were absent on 62 modules — the default
+  returns `&[]` ("hasn't declared its outputs yet"). So the graph the operator
+  navigates in Chrome under-reported producers (e.g. `abn_acn` showed
+  produced-by-nobody while `abn_lookup`/`opencorporates` both emit it). Declared
+  the real outputs for every module that emits entities (driven by each module's
+  `Entity::new(EntityKind::…)` sites), fixing partial declarations
+  (`search_engines` +Coordinates/AbnAcn, `social_probe` +Domain, `shodan`/
+  `device_sensors` +IpAddress, `qld_unclaimed` +Coordinates) and adding full
+  `produces()` to ~55 others (whois, github_user, keybase, the IP-geo family,
+  the DNS/reputation modules, …). Modules declaring ≥1 output went from ~24 to
+  **75/86**; hub-producer counts roughly tripled (address 8→32, domain 9→31,
+  coordinates 8→22, organisation 9→20, person 5→15). New invariant test
+  `every_declared_produced_pivot_has_a_consumer` proves every produced pivot
+  kind has a consumer (zero dead-ends) and guards against future drift.
+
 ### Added
 
 - **`util::postcode_au` + suburb-level enumeration for `qld_unclaimed`.** The

@@ -1260,6 +1260,45 @@ fn oathnet_priority_above_free_geo_modules() {
     );
 }
 
+/// Synergy invariant: every entity kind a module *declares* it produces, and
+/// which maps to a scannable `TargetKind`, must be accepted by at least one
+/// module — otherwise it's a dead-end pivot the engine can never expand. Guards
+/// the producer→consumer wiring so a future module can't declare an output that
+/// nothing consumes (or a `produces()` typo can't silently orphan a kind).
+#[test]
+fn every_declared_produced_pivot_has_a_consumer() {
+    use huntsman_search_engine::core::scan::TargetKind;
+    let modules = huntsman_search_engine::modules::registry();
+
+    let mut consumed: std::collections::HashSet<TargetKind> = std::collections::HashSet::new();
+    for m in &modules {
+        for k in m.consumes() {
+            consumed.insert(k);
+        }
+    }
+
+    let mut orphans = Vec::new();
+    for m in &modules {
+        for ek in m.produces() {
+            // Kinds with no scan target (Credential/Password/DeviceId/Other) are
+            // intentionally terminal — they never expand, so they can't orphan.
+            if let Some(tk) = TargetKind::from_entity_kind(ek)
+                && !consumed.contains(&tk)
+            {
+                orphans.push(format!(
+                    "{} produces {ek:?} → {tk:?} (no consumer)",
+                    m.name()
+                ));
+            }
+        }
+    }
+    assert!(
+        orphans.is_empty(),
+        "declared produced pivots with no consumer:\n  {}",
+        orphans.join("\n  ")
+    );
+}
+
 // ── ModuleGraph / dispatch index / expansion strategy ──────────────────────
 
 #[test]

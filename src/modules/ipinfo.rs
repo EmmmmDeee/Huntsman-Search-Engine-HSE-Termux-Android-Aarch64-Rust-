@@ -62,6 +62,17 @@ impl Module for IpInfo {
         8_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Asn,
+            EntityKind::Organisation,
+            EntityKind::Domain,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let ip = target.value.trim();
 

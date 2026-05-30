@@ -89,6 +89,11 @@ impl Module for Photon {
         4_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates, EntityKind::Address];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         match target.kind {
             TargetKind::Address => self.forward(target, ctx).await,

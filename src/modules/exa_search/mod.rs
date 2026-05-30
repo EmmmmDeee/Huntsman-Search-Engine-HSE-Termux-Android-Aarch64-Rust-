@@ -97,6 +97,16 @@ impl Module for ExaSearch {
         20_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Url,
+            EntityKind::Domain,
+            EntityKind::Email,
+            EntityKind::Phone,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = match ctx.key_opt(KEY_ENV) {
             Some(k) if !k.is_empty() => k,
