@@ -12,6 +12,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **NAMINT-grade name→username engine: diacritic folding + broader permutations.**
+  `name_to_username` is the recursion seed for identity OSINT (its `Username`
+  outputs feed username_search/social_probe/keybase/github_user, whose hits then
+  cross-correlate). Two issues, fixed Turing-style (measure → fix): (1) a real
+  correctness bug — `parse_name_parts` filtered on `is_alphabetic()`, which
+  *keeps* diacritics, so `"José Müller"` derived un-matchable `josé…`/`müller…`
+  handles; international/migrant names (common in AU OSINT) were silently
+  mis-derived. Added a pure, dependency-free `util::str_util::fold_ascii_lower`
+  (Latin diacritics → base ASCII incl. `æ→ae`, `ß→ss`, apostrophe/hyphen folding;
+  non-Latin dropped) and fold every name token through it. (2) Broadened the
+  permutation set from 9 to 16 ordered-by-likelihood patterns (adds `j.doe`,
+  `doej`, `jd`, `doe_john`, `john-doe`, `john.michael.doe`, …), deduped in
+  priority order and bounded so the highest-value handles survive the cap. Pure,
+  keyless, no network — ideal for Termux. New tests pin the fold (`José`→`jose`,
+  `Çağrı`→`cagri`, Arabic→dropped) and the new patterns; existing patterns
+  preserved. Suite +3 at 1360.
+
 - **Refactored the recursion core's duplicated key-cascade and skip-emit.** The
   hot-inject key-cascade — the mechanism that makes recursion compound (a key one
   module discovers becomes usable by the next module and the next round) — was
