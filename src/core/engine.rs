@@ -196,6 +196,26 @@ impl ScanEngine {
 
         let opts = scan.options.clone();
         let started = Instant::now();
+
+        // Wall-time watchdog. `budget_check` only enforces the wall budget
+        // BETWEEN expansion candidates, so the seed round (all accepting
+        // modules fan out at once) and any long in-flight concurrent batch
+        // could blow far past `max_wall_time_secs` — observed: a
+        // `--max-wall-time 5` scan ran until an external SIGKILL because no
+        // deadline was checked during the seed round. This watchdog fires the
+        // engine-wide cancel flag at the deadline; every dispatch loop already
+        // polls `ctx.cancel`, and finalise treats cancellation as a clean
+        // `Aborted` with all collected entities persisted — so the scan stops
+        // promptly AND still prints/streams what it found (the "always display
+        // results" + "fallback bound that actually bounds" requirements).
+        let wall_watchdog = opts.max_wall_time_secs.map(|secs| {
+            let cancel = ctx.cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+                cancel.cancel();
+            })
+        });
+
         let mut entity_map: HashMap<String, Entity> =
             HashMap::with_capacity(opts.max_entities.unwrap_or(256).min(4096));
         let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
@@ -248,6 +268,13 @@ impl ScanEngine {
                     &mut emitted_corr,
                 )
                 .await;
+        }
+
+        // Scan body done — stop the wall-time watchdog so it can't fire after
+        // we've already finished (and is reaped promptly rather than sleeping
+        // out its full deadline in the background on a long-lived `serve`).
+        if let Some(handle) = wall_watchdog {
+            handle.abort();
         }
 
         self.finalise_scan(&mut scan, entity_map, &ctx, stats, lineage, emitted_corr)

@@ -191,15 +191,17 @@ async fn scan_halts_frontier_empty_within_structural_bound() {
 async fn scan_stops_at_entity_budget() {
     // A fan-out graph that would produce 5 entities, capped at 2. The budget is
     // a graceful early stop — distinct from the halting guarantee above.
+    // Non-reserved domains: `.example` is gated by the preflight check, which
+    // would suppress dispatch and make the budget assertion vacuous.
     let big = DagModule::new()
-        .edge("seed.example", EntityKind::Domain, "a.example", 0.9)
-        .edge("seed.example", EntityKind::Domain, "b.example", 0.9)
-        .edge("a.example", EntityKind::Domain, "c.example", 0.9)
-        .edge("b.example", EntityKind::Domain, "d.example", 0.9)
-        .edge("c.example", EntityKind::Domain, "e.example", 0.9);
+        .edge("seed-target.com", EntityKind::Domain, "a-node.com", 0.9)
+        .edge("seed-target.com", EntityKind::Domain, "b-node.com", 0.9)
+        .edge("a-node.com", EntityKind::Domain, "c-node.com", 0.9)
+        .edge("b-node.com", EntityKind::Domain, "d-node.com", 0.9)
+        .edge("c-node.com", EntityKind::Domain, "e-node.com", 0.9);
 
     let (engine, store, sid, target, ctx) =
-        setup(vec![Arc::new(big)], "budget", TargetKind::Domain, "seed.example");
+        setup(vec![Arc::new(big)], "budget", TargetKind::Domain, "seed-target.com");
 
     let opts = ScanOptions {
         depth: 25,
@@ -223,5 +225,81 @@ async fn scan_stops_at_entity_budget() {
     assert!(
         store.entities_for_scan(&sid).unwrap().len() < unbudgeted_closure,
         "budget must stop the scan before the full closure is reached"
+    );
+}
+
+/// A module that emits one entity, then sleeps far longer than any test wall
+/// budget — stands in for a slow/unresponsive upstream so we can prove the
+/// wall-time watchdog interrupts promptly instead of waiting the module out.
+struct SlowModule;
+
+#[async_trait]
+impl Module for SlowModule {
+    fn name(&self) -> &'static str {
+        "slow_mock"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, _t: &Target) -> bool {
+        true
+    }
+    fn max_timeout_ms(&self) -> u64 {
+        60_000 // would block the scan for a minute absent the watchdog
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        r.push(Entity::new(EntityKind::Email, "seed@found.example", 0.9, &ctx.scan_id));
+        // Poll the cancel flag so the watchdog can interrupt this mid-flight,
+        // mirroring how real long-running modules cooperate with cancellation.
+        for _ in 0..600 {
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn wall_time_budget_stops_promptly_and_preserves_findings() {
+    // Regression: --max-wall-time was only checked BETWEEN expansion
+    // candidates, so the seed round / in-flight modules could blow past it
+    // (observed: a 5s budget ran until an external SIGKILL). The watchdog must
+    // now interrupt within ~the budget and still finalize the entities found.
+    // NB: a non-reserved domain — `.example` is treated as local/reserved by
+    // the preflight gate and would suppress dispatch entirely (making this
+    // test vacuous).
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(SlowModule)],
+        "walltime",
+        TargetKind::Domain,
+        "seed-target.com",
+    );
+    let opts = ScanOptions {
+        depth: 0,
+        max_wall_time_secs: Some(1),
+        max_concurrent: 4,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+
+    let t0 = std::time::Instant::now();
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    let elapsed = t0.elapsed();
+
+    // Must return well before the module's 60s timeout — proving the wall
+    // budget interrupted the in-flight seed round, not that the module
+    // happened to finish.
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "wall-time budget must interrupt promptly; took {elapsed:?}"
+    );
+    // And it still persisted what it collected (always display results).
+    assert_eq!(result.status, ScanStatus::Aborted, "deadline → clean Aborted");
+    assert!(
+        !store.entities_for_scan(&sid).unwrap().is_empty(),
+        "findings collected before the deadline must be persisted, not lost"
     );
 }
