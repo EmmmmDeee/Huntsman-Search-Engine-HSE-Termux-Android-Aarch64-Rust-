@@ -626,7 +626,7 @@ mod tests {
         assert!(Classification::Probable.rank() < Classification::Verified.rank());
         assert_eq!(Classification::COUNT, 3);
         // Highest rank must be < COUNT so it indexes a finite ladder.
-        assert!((Classification::Verified.rank() as u8) < Classification::COUNT);
+        assert!(Classification::Verified.rank() < Classification::COUNT);
     }
 
     #[test]
