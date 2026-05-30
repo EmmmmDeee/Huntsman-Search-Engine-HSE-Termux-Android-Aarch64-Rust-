@@ -127,6 +127,13 @@ impl Module for XposedOrNot {
         ModuleCategory::Breach
     }
 
+    fn max_timeout_ms(&self) -> u64 {
+        // Up to ~3 sequential network requests, none with a per-request
+        // timeout. The 3s default could not cover even one slow response,
+        // let alone the chain; budget for the full sequence.
+        15_000
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let url = format!(
             "https://api.xposedornot.com/v1/check-email/{}",

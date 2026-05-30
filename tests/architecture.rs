@@ -129,6 +129,35 @@ fn module_registry_count_is_stable() {
     );
 }
 
+/// Every non-passive (network-reaching) module must declare a
+/// `max_timeout_ms()` strictly greater than the default `MODULE_TIMEOUT_MS`
+/// (3s). The engine wraps each `process()` in a `tokio::time::timeout` at
+/// this budget; with no client-level total timeout, a module left at the 3s
+/// default is killed before a slow-but-connected response can return,
+/// surfacing a spurious engine "timeout" and silently yielding nothing.
+///
+/// Several modules (abn_lookup, disposable_check, mylnikov, sunrise_sunset,
+/// and the ip/breach lookups) shipped exactly this defect. This guard makes
+/// the whole class a CI failure rather than a silent runtime no-op. Passive
+/// modules (local sensors, pure computation) legitimately keep the default
+/// and are exempt.
+#[test]
+fn non_passive_modules_budget_above_default() {
+    let default = huntsman_search_engine::MODULE_TIMEOUT_MS;
+    let modules = huntsman_search_engine::modules::registry();
+    let under_budget: Vec<(&str, u64)> = modules
+        .iter()
+        .filter(|m| !m.is_passive())
+        .map(|m| (m.name(), m.max_timeout_ms()))
+        .filter(|(_, budget)| *budget <= default)
+        .collect();
+    assert!(
+        under_budget.is_empty(),
+        "non-passive modules must override max_timeout_ms() above the {default}ms \
+         default or the engine kills them mid-request; offenders: {under_budget:?}"
+    );
+}
+
 #[test]
 fn architecture_constants() {
     assert_eq!(huntsman_search_engine::MODULE_TIMEOUT_MS, 3000);

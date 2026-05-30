@@ -84,6 +84,12 @@ impl Module for UrlHaus {
         ModuleCategory::Threat
     }
 
+    fn max_timeout_ms(&self) -> u64 {
+        // Single network POST with no per-request timeout; the 3s default
+        // would kill a slow-but-connected response as a spurious "timeout".
+        10_000
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let host = target.value.trim();
         if host.is_empty() {

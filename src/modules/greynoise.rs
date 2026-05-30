@@ -82,6 +82,13 @@ impl Module for GreyNoise {
         KINDS
     }
 
+    fn max_timeout_ms(&self) -> u64 {
+        // Single network request with no per-request timeout (governed only
+        // by the client's 5s connect timeout). On the 3s default the engine
+        // killed a slow-but-connected response as a spurious "timeout".
+        10_000
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let ip = target.value.trim();
         if ip.is_empty() {

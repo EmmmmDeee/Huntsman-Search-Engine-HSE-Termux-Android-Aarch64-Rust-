@@ -54,7 +54,11 @@ impl Module for Mylnikov {
         matches!(t.kind, TargetKind::MacAddress)
     }
     fn max_timeout_ms(&self) -> u64 {
-        3_000
+        // Single network request with no per-request timeout. The explicit
+        // 3s here matched MODULE_TIMEOUT_MS, so a slow-but-connected response
+        // was killed by the engine as a spurious "timeout" before it could
+        // return a fix. Budget above the connect timeout with read headroom.
+        10_000
     }
 
     fn category(&self) -> ModuleCategory {
@@ -145,7 +149,7 @@ mod tests {
     fn module_metadata() {
         assert_eq!(Mylnikov.name(), "mylnikov");
         assert_eq!(Mylnikov.priority(), 17);
-        assert_eq!(Mylnikov.max_timeout_ms(), 3_000);
+        assert_eq!(Mylnikov.max_timeout_ms(), 10_000);
     }
 
     #[test]

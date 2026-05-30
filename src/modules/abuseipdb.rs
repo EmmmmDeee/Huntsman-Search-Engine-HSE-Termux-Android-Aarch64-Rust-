@@ -44,6 +44,14 @@ impl Module for AbuseIpDb {
         KINDS
     }
 
+    fn max_timeout_ms(&self) -> u64 {
+        // Single keyed request via fetch_keyed_json (no internal total
+        // timeout, only the client's 5s connect). On the 3s default the
+        // engine killed a slow-but-connected response as a spurious
+        // "timeout".
+        10_000
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
 
