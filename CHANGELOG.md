@@ -55,6 +55,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **D3 force graph is now pan/zoomable — usable on Chrome-on-Android.** The graph
+  previously supported only node-drag, so on a phone screen a multi-node layout
+  could not be panned or zoomed (it overflowed the SVG with no way to reach
+  off-screen nodes). `buildD3Graph` now nests all links/nodes in a `zoom-container`
+  `<g>` driven by `d3.behavior.zoom` (`scaleExtent [0.2, 5]`), which is touch-aware
+  in d3 v3: pinch-to-zoom and one-finger pan work natively in Chrome on Android,
+  mouse-wheel + drag-canvas on desktop — matching SpiderFoot 4.0's zoomable graph.
+  A node `mousedown` `stopPropagation` keeps node-drag from also panning the
+  canvas; double-click-zoom is disabled to avoid fighting the layout. Added a
+  "Reset view" button (recentres/rescales via a 250 ms transition) and a corner
+  hint ("Drag nodes · pinch or scroll to zoom · drag canvas to pan"), both
+  dark-theme aware. SPA-only; suite unchanged at 1326 passed.
+
 - **Browse tab gains a SpiderFoot 4.0-style data-element rollup table.** Above
   the entity element list, `renderBrowse` now renders a `Data Element | Unique |
   Total` summary table (`#browse-rollup`) computed from `S.entities`: Unique is

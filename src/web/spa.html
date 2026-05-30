@@ -96,6 +96,8 @@
     .graph-legend .lr{display:flex;align-items:center;gap:6px;margin-bottom:2px;color:#555}
     .graph-legend .sw{width:10px;height:10px;border-radius:50%;display:inline-block}
     .graph-ctl{position:absolute;bottom:10px;left:14px}
+    .graph-hint{position:absolute;bottom:14px;right:14px;font-size:11px;
+                background:rgba(255,255,255,.85);padding:2px 8px;border-radius:3px}
     .help-panel{background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;
                 padding:10px;font-size:12px}
     .help-panel b{color:#333}
@@ -154,6 +156,7 @@
     body.dark-theme .help-panel{background:#222;border-color:#333}
     body.dark-theme .help-panel b{color:#eee}
     body.dark-theme #graph-svg{background:radial-gradient(circle at 50% 40%,#222 0%,#1a1a1a 70%)}
+    body.dark-theme .graph-hint{background:rgba(20,20,20,.85);color:#999}
     body.dark-theme #log-box{background:#222;border-color:#333;color:#ddd}
     body.dark-theme .keyrow{background:#222;border-color:#333}
     body.dark-theme .mod-grid{background:#1f1f1f;border-color:#333}
@@ -1178,11 +1181,14 @@ function renderGraph(host){
       </div>
       <div class="graph-ctl">
         <button class="btn btn-default btn-xs" id="g-relayout"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Re-layout</button>
+        <button class="btn btn-default btn-xs" id="g-reset"><i class="glyphicon glyphicon-fullscreen"></i>&nbsp;Reset view</button>
       </div>
+      <div class="graph-hint text-muted">Drag nodes · pinch or scroll to zoom · drag canvas to pan</div>
     </div>
   `;
   buildD3Graph();
   $('#g-relayout').addEventListener('click', buildD3Graph);
+  $('#g-reset').addEventListener('click', ()=>{ if (window.__graphResetZoom) window.__graphResetZoom(); });
 }
 
 const NODE_COLOR = {
@@ -1199,6 +1205,20 @@ function buildD3Graph(){
   const W = rect.width, H = rect.height || 560;
   svg.selectAll('*').remove();
   svg.attr('viewBox', `0 0 ${W} ${H}`);
+
+  // Pan/zoom container — pinch-zoom + one-finger pan work natively on
+  // Chrome-on-Android via d3 v3's touch-aware zoom behavior. Without this a
+  // multi-node graph is unusable on a phone screen (SpiderFoot 4.0 parity).
+  const container = svg.append('g').attr('class','zoom-container');
+  const zoom = d3.behavior.zoom().scaleExtent([0.2, 5]).on('zoom', ()=>{
+    container.attr('transform', `translate(${d3.event.translate})scale(${d3.event.scale})`);
+  });
+  svg.call(zoom).on('dblclick.zoom', null);
+  // Expose a reset so the "Reset view" button can recentre/rescale.
+  window.__graphResetZoom = ()=>{
+    zoom.translate([0,0]).scale(1);
+    container.transition().duration(250).attr('transform', 'translate(0,0)scale(1)');
+  };
 
   // Build nodes/edges.
   const seedId = '__seed__';
@@ -1233,7 +1253,7 @@ function buildD3Graph(){
   const seedNode = nodes.find(n=>n.isSeed);
   if (seedNode){ seedNode.fixed = true; seedNode.x = W/2; seedNode.y = H/2; }
 
-  const link = svg.append('g').selectAll('line')
+  const link = container.append('g').selectAll('line')
     .data(validLinks).enter().append('line')
     .style('stroke', d=>d.rel?'#d9822b':(d.corr?'#9b1f9b':'#bbb'))
     .style('stroke-opacity', d=>d.rel?0.85:(d.corr?0.7:0.3))
@@ -1244,7 +1264,9 @@ function buildD3Graph(){
 
   const drag = force.drag().on('dragstart', function(){ d3.select(this).style('cursor','grabbing'); });
 
-  const nodeG = svg.append('g').selectAll('g').data(nodes).enter().append('g').call(drag);
+  const nodeG = container.append('g').selectAll('g').data(nodes).enter().append('g').call(drag);
+  // Stop a node-drag from also panning the canvas (d3 v3 zoom vs drag).
+  nodeG.on('mousedown', ()=>{ if (d3.event) d3.event.stopPropagation(); });
   nodeG.append('circle')
     .attr('r', d=>d.r)
     .style('fill', d=>d.isSeed?'#059CD7':(NODE_COLOR[d.kind]||'#888'))
