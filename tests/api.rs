@@ -866,3 +866,129 @@ async fn sub_resource_endpoints_404_for_unknown_scan() {
         assert_eq!(known.status(), 200, "known scan {ep} must 200");
     }
 }
+
+// ── KML import (WiGLE wardrive ingestion) ──────────────────────────────────
+
+/// Verbatim slice of a real WiGLE KML export (two WiFi APs, one BLE beacon,
+/// one Telstra LTE cell) — real records, no synthetic data.
+const KML_SNIPPET: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+<name>WiGLE_Upload-20250127-00607</name>
+<Placemark><name>544xanTRU19</name><description>Network ID: 00:03:16:00:8A:AC
+Encryption: WPA2
+Time: 2025-01-27T08:21:17.000-08:00
+Signal: -89.0
+Accuracy: 5.04
+Type: WIFI</description><styleUrl>#highConfidence</styleUrl>
+<Point><coordinates>152.95878601,-26.94807434</coordinates></Point></Placemark>
+<Placemark><name>Trey&amp;Fefe</name><description>Network ID: 00:04:56:AF:FE:A0
+Encryption: WPA3
+Time: 2025-01-27T07:36:39.000-08:00
+Signal: -90.0
+Accuracy: 4.81
+Type: WIFI</description><styleUrl>#highConfidence</styleUrl>
+<Point><coordinates>153.03323364,-27.41077232</coordinates></Point></Placemark>
+<Placemark><name>(no SSID)</name><description>Network ID: 00:01:74:60:6D:47
+Time: 2024-10-13T06:59:10.000-07:00
+Signal: -95.0
+Accuracy: 21.5
+Type: BLE</description><styleUrl>#bluetoothLe</styleUrl>
+<Point><coordinates>152.90296936,-27.67771721</coordinates></Point></Placemark>
+<Placemark><name>Telstra Corporation Limited</name><description>Network ID: 50501_28674_147165965
+Time: 2025-01-17T02:45:36.000-08:00
+Signal: -113.0
+Accuracy: 0.84
+Type: LTE</description><styleUrl>#cell</styleUrl>
+<Point><coordinates>152.99046326,-27.42411613</coordinates></Point></Placemark>
+</Document></kml>"#;
+
+/// Build a raw-text POST (the SPA's Import view posts the file's text verbatim).
+fn post_kml(uri: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "text/plain; charset=utf-8")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+async fn body_json_big(resp: axum::response::Response) -> Value {
+    let bytes = axum::body::to_bytes(resp.into_body(), 32_000_000)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn import_kml_ingests_persists_and_is_browsable() {
+    let app = test_app("import-kml");
+
+    let resp = app
+        .clone()
+        .oneshot(post_kml("/api/v1/import/kml", KML_SNIPPET))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "valid KML must 200");
+    let json = body_json_big(resp).await;
+
+    // Records: all four placemarks parsed.
+    assert_eq!(json["record_count"], 4);
+    assert_eq!(json["stats"]["wifi"], 2);
+    assert_eq!(json["stats"]["ble"], 1);
+    assert_eq!(json["stats"]["cellular"], 1);
+    assert_eq!(json["stats"]["unique_macs"], 3);
+    assert_eq!(json["stats"]["country_iso"], "AU");
+    assert_eq!(json["format"], "wigle-kml");
+    assert_eq!(json["persisted"]["scan"], true);
+
+    // XML entity decoded in the raw record output.
+    let records = json["records"].as_array().unwrap();
+    assert!(
+        records.iter().any(|r| r["name"] == "Trey&Fefe"),
+        "ampersand SSID must be decoded in records"
+    );
+
+    // The import created a real, browsable scan.
+    let sid = json["scan_id"].as_str().unwrap().to_string();
+    let ent = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/entities")))
+        .await
+        .unwrap();
+    assert_eq!(ent.status(), 200);
+    let ent_json = body_json_big(ent).await;
+    assert_eq!(
+        ent_json["count"], json["entity_count"],
+        "persisted entity count must match the ingest report"
+    );
+
+    // And it appears in the scan list as a completed coordinates scan.
+    let list = app.oneshot(get("/api/v1/scans")).await.unwrap();
+    let list_json = body_json(list).await;
+    assert!(
+        list_json["scans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == sid.as_str() && s["status"] == "complete"),
+        "imported scan must be listed as complete"
+    );
+}
+
+#[tokio::test]
+async fn import_kml_rejects_empty_and_non_kml() {
+    let app = test_app("import-kml-bad");
+
+    let empty = app
+        .clone()
+        .oneshot(post_kml("/api/v1/import/kml", "   "))
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), 400, "empty body must 400");
+
+    let not_kml = app
+        .oneshot(post_kml("/api/v1/import/kml", "just some text, not xml"))
+        .await
+        .unwrap();
+    assert_eq!(not_kml.status(), 400, "non-KML body must 400");
+}

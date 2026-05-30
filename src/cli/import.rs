@@ -6,6 +6,17 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::Other(format!("cannot read {path}: {e}")))?;
 
+    // KML detection runs first: a WiGLE export is XML (`<?xml … <kml …>`) so it
+    // must be intercepted before the HTML / JSON branches would mis-handle it.
+    // Sniff only a bounded, char-boundary-safe head so a multi-MB capture isn't
+    // scanned twice.
+    let head: String = body.chars().take(2048).collect();
+    let is_kml =
+        path.ends_with(".kml") || head.contains("<kml") || head.contains("opengis.net/kml");
+    if is_kml {
+        return cmd_import_kml(path, &body, output).await;
+    }
+
     let is_html = path.ends_with(".html")
         || body.trim_start().starts_with("<!")
         || body.trim_start().starts_with("<html");
@@ -433,6 +444,158 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Import a WiGLE KML wardriving export.
+///
+/// Pipeline (identical to the `POST /api/v1/import/kml` web path — both call
+/// `util::kml::ingest`, so CLI and browser produce byte-identical entities):
+///   1. Stream-parse the KML → records + derived entities + stats.
+///   2. Persist a real `Scan` (target = capture centroid) + entities, so the
+///      import is browsable in the SPA and flows through the same pipeline as
+///      a live scan.
+///   3. Run the correlator over it (fires geo-cluster / convergence rules).
+///   4. Emit the **complete** result as pretty JSON — every record, entity,
+///      stat and correlation, nothing summarised away.
+async fn cmd_import_kml(path: &str, body: &str, output: &str) -> Result<()> {
+    use std::sync::Arc;
+
+    use crate::core::correlator::Correlator;
+    use crate::core::entity::{scan_id, unix_now};
+    use crate::core::port::StoragePort;
+    use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+    use crate::storage::Store;
+
+    eprintln!("Importing WiGLE KML export: {path}");
+
+    // Each import is a distinct, timestamped observation event — the same model
+    // the engine uses for scans (`scan_id` mixes in the clock). Entities
+    // corroborate across captures, so importing several wardrives of the same
+    // area legitimately strengthens the shared locations / BSSIDs. `ingest`
+    // parses once; we do not pre-parse here.
+    let sid = scan_id("kml", path);
+    let ingest = crate::util::kml::ingest(body, path, &sid);
+
+    // Open the on-device store and persist as a first-class scan.
+    let store: Arc<dyn StoragePort> =
+        Arc::new(Store::open(&crate::default_db_path()).map_err(|e| Error::Other(e.to_string()))?);
+    let db_path = crate::default_db_path();
+
+    let mut persisted_entities = 0usize;
+    let mut correlations = Vec::new();
+    let mut scan_json = serde_json::Value::Null;
+    let mut persisted_scan = false;
+
+    if let Some(c) = ingest.centroid {
+        let target = Target::new(
+            TargetKind::Coordinates,
+            format!("{:.6},{:.6}", c.lat, c.lon),
+        );
+        let now = unix_now();
+        let mut scan = Scan::new(sid.clone(), target);
+        scan.status = ScanStatus::Complete;
+        scan.started_at = now;
+        scan.finished_at = Some(now);
+        scan.entity_count = ingest.entities.len();
+
+        store
+            .upsert_scan(&scan)
+            .map_err(|e| Error::Other(e.to_string()))?;
+        persisted_entities = store
+            .upsert_entities_batch(&ingest.entities)
+            .map_err(|e| Error::Other(e.to_string()))?;
+        // Correlator reads the just-persisted entities and writes its firings
+        // back to the store — the import is now fully wired into correlation,
+        // timeline and graph just like any scan.
+        correlations = Correlator::new(Arc::clone(&store))
+            .run(&sid)
+            .unwrap_or_default();
+        scan_json = serde_json::to_value(&scan).unwrap_or(serde_json::Value::Null);
+        persisted_scan = true;
+    }
+
+    print_kml_stats(&ingest, persisted_entities, correlations.len(), &sid);
+
+    if output == "json" || output == "dossier" {
+        // The full, transparent payload: ingest envelope + persistence facts +
+        // the persisted scan + every correlation. Built by augmenting the
+        // serialised ingest so `records`/`entities`/`stats` appear in entirety.
+        let mut v = serde_json::to_value(&ingest).unwrap_or(serde_json::Value::Null);
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("format".into(), serde_json::json!("wigle-kml"));
+            obj.insert("source_file".into(), serde_json::json!(path));
+            obj.insert("scan_id".into(), serde_json::json!(sid));
+            obj.insert("db_path".into(), serde_json::json!(db_path));
+            obj.insert(
+                "persisted".into(),
+                serde_json::json!({
+                    "scan": persisted_scan,
+                    "entities": persisted_entities,
+                    "correlations": correlations.len(),
+                }),
+            );
+            obj.insert("scan".into(), scan_json);
+            obj.insert(
+                "correlations".into(),
+                serde_json::to_value(&correlations).unwrap_or(serde_json::Value::Null),
+            );
+        }
+        println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+    } else {
+        eprintln!(
+            "\nFull JSON (all {} records + {} entities): re-run with `--output json`.",
+            ingest.record_count, ingest.entity_count
+        );
+        if persisted_scan {
+            eprintln!("Browse in the web UI: hse serve → open the scan {sid}");
+        }
+    }
+
+    Ok(())
+}
+
+/// Human-readable summary of a KML ingest — printed to stderr so it never
+/// pollutes the JSON on stdout.
+fn print_kml_stats(
+    ingest: &crate::util::kml::KmlIngest,
+    persisted: usize,
+    correlations: usize,
+    sid: &str,
+) {
+    let s = &ingest.stats;
+    eprintln!(
+        "Parsed {} records ({} WiFi, {} BLE, {} BT, {} cellular, {} other; {} skipped)",
+        s.total_records, s.wifi, s.ble, s.bt, s.cellular, s.unknown, s.skipped_records
+    );
+    eprintln!(
+        "  Networks:  {} unique BSSIDs, {} cell towers, {} carriers, {} named, {} hidden",
+        s.unique_macs, s.unique_cell_towers, s.unique_carriers, s.named_networks, s.hidden_networks
+    );
+    eprintln!(
+        "  Geo:       {} coordinate clusters; {}{}",
+        s.coordinate_clusters,
+        s.country_name.as_deref().unwrap_or("unknown region"),
+        s.timezone
+            .as_deref()
+            .map(|tz| format!(" ({tz})"))
+            .unwrap_or_default()
+    );
+    if let Some(b) = &s.bounding_box {
+        eprintln!(
+            "  Bounds:    lat [{:.4}, {:.4}], lon [{:.4}, {:.4}]",
+            b.min_lat, b.max_lat, b.min_lon, b.max_lon
+        );
+    }
+    if let Some(t) = &s.time_range {
+        eprintln!("  Timeline:  {} → {}", t.earliest, t.latest);
+    }
+    eprintln!(
+        "  Entities:  {} built, {persisted} persisted, {correlations} correlations (scan {sid})",
+        ingest.entity_count
+    );
+    for w in &ingest.warnings {
+        eprintln!("  warning:   {w}");
+    }
 }
 
 fn cmd_import_html(body: &str, output: &str) -> Result<()> {

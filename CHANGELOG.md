@@ -10,6 +10,32 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **WiGLE KML wardrive ingestion (`util::kml`), wired CLI + web + API.** A new
+  zero-dependency, streaming KML parser turns a WiGLE `*.kml` export (WiFi /
+  BLE / BT / cellular observations) into the HSE entity model and runs it
+  through the same correlation / timeline / graph machinery as a live scan:
+  - WiFi/BLE/BT BSSIDs → `MacAddress` (OUI vendor + device class, encryption,
+    SSID, confidence tags); cellular `PLMN_TAC_CID` → `DeviceId` (radio + MCC +
+    MNC) plus a carrier `Organisation`; capture points → geohash-clustered
+    `Coordinates` (density-weighted confidence, bounded entity count).
+  - `hse import file.kml [--output json]` auto-detects KML, persists a
+    first-class browsable scan (target = capture centroid), runs the correlator,
+    and prints the **complete, transparent JSON** — every parsed record, derived
+    entity, statistic and correlation, nothing summarised away.
+  - `POST /api/v1/import/kml` (64 MiB body limit) backs a new **Import** tab in
+    the SPA (drag-drop a `.kml`, see summary cards + the full raw JSON + a link
+    to the created scan). CLI and browser share `util::kml::ingest`, so both
+    produce byte-identical entities.
+  - Hand-rolled single-pass scanner (no XML crate) keeps the Termux aarch64
+    build a single static binary and memory flat on multi-MB captures.
+    Validated end-to-end against real WiGLE exports (42,482 placemarks across
+    5 files): 100 % parse rate, ~2–5 s per file in a debug build.
+  - `corroboration` is held at 1 for imported entities (one file is one
+    source); per-network sighting frequency rides in an `observations:N` tag so
+    the high-corroboration correlation rule can't misfire on dense captures.
+
 ### Removed
 
 - **Deleted two dead `pub fn`s (~110 lines).** `util::see_know::credits` and

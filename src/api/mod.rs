@@ -9,6 +9,7 @@
 //! The router is wired in [`crate::cli::cmd_serve`].
 
 pub mod handlers;
+pub mod import_handlers;
 pub mod routes;
 pub mod scan_handlers;
 

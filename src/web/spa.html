@@ -175,6 +175,9 @@
     body.dark-theme .keyrow{background:#222;border-color:#333}
     body.dark-theme .mod-grid{background:#1f1f1f;border-color:#333}
     body.dark-theme .mod-grid label{background:#272727;border-color:#333;color:#ddd}
+    @keyframes hse-spin{to{transform:rotate(360deg)}}
+    .spin{display:inline-block;animation:hse-spin 0.9s linear infinite}
+    #dropzone:hover{border-color:#07aef1 !important;background:#eef7ff !important}
   </style>
 </head>
 <body>
@@ -194,6 +197,7 @@
       <ul class="nav navbar-nav">
         <li id="nav-dash"   ><a href="#/dash"   ><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Dashboard</a></li>
         <li id="nav-newscan"><a href="#/newscan"><i class="glyphicon glyphicon-screenshot"></i>&nbsp;New Scan</a></li>
+        <li id="nav-import" ><a href="#/import" ><i class="glyphicon glyphicon-import"></i>&nbsp;Import KML</a></li>
         <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
         <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a></li>
       </ul>
@@ -365,7 +369,8 @@ const API = {
   async _req(path, opts){
     opts = opts || {};
     const init = {method: opts.method||'GET'};
-    if (opts.body){ init.headers = {'Content-Type':'application/json'}; init.body = JSON.stringify(opts.body); }
+    if (opts.rawBody!=null){ init.headers = {'Content-Type':'text/plain; charset=utf-8'}; init.body = opts.rawBody; }
+    else if (opts.body){ init.headers = {'Content-Type':'application/json'}; init.body = JSON.stringify(opts.body); }
     const r = await fetch(path, init);
     if (opts.raw) return r;
     if (!r.ok){
@@ -391,7 +396,8 @@ const API = {
   reportUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json',
   gexfUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/graph.gexf',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
-  keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body})
+  keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
+  importKml: text=>API._req('/api/v1/import/kml',{method:'POST',rawBody:text})
 };
 
 /* ─── Router (hash-based, mirrors SpiderFoot's path semantics) ─── */
@@ -406,6 +412,7 @@ function parseHash(){
   if (segs.length===0 || segs[0]==='dash' || segs[0]==='dashboard') return {name:'dash', params:{}, query};
   if (segs[0]==='scans')                    return {name:'scans', params:{}, query};
   if (segs[0]==='newscan')                  return {name:'newscan', params:{}, query};
+  if (segs[0]==='import')                   return {name:'import', params:{}, query};
   if (segs[0]==='opts'||segs[0]==='settings') return {name:'opts', params:{}, query};
   if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
   return {name:'dash', params:{}, query};
@@ -418,7 +425,7 @@ async function render(){
   closeSse();
   S.route = parseHash();
   $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
-  const navMap = {dash:'nav-dash', scans:'nav-scans', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans'};
+  const navMap = {dash:'nav-dash', scans:'nav-scans', newscan:'nav-newscan', import:'nav-import', opts:'nav-opts', scaninfo:'nav-scans'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
   const v = $('#view');
@@ -427,6 +434,7 @@ async function render(){
     if (S.route.name==='dash')     return await renderDash(v);
     if (S.route.name==='scans')    return await renderScans(v);
     if (S.route.name==='newscan')  return await renderNewScan(v);
+    if (S.route.name==='import')   return await renderImport(v);
     if (S.route.name==='scaninfo') return await renderScanInfo(v);
     if (S.route.name==='opts')     return await renderOpts(v);
   } catch(e){
@@ -487,6 +495,7 @@ async function renderDash(v){
           <div class="panel-heading"><b>Quick Actions</b></div>
           <div class="panel-body">
             <a href="#/newscan" class="btn btn-danger btn-block"><i class="glyphicon glyphicon-plus"></i>&nbsp;New Scan</a>
+            <a href="#/import" class="btn btn-default btn-block" style="margin-top:6px"><i class="glyphicon glyphicon-import"></i>&nbsp;Import WiGLE KML</a>
             <a href="#/scans" class="btn btn-default btn-block" style="margin-top:6px"><i class="glyphicon glyphicon-list"></i>&nbsp;View Scans</a>
             <a href="#/opts" class="btn btn-default btn-block" style="margin-top:6px"><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a>
           </div>
@@ -885,6 +894,179 @@ async function submitWizard(){
     alertify.error(e.message);
   }
 }
+
+/* ═══════════ Page: IMPORT (#/import) — WiGLE KML wardrive ingestion ═══════════ */
+let IMPORT = { text:'', filename:'', result:null, busy:false };
+
+async function renderImport(v){
+  v.innerHTML = `
+    <div class="page-header" style="margin-top:0;border-bottom:1px solid #eee;padding-bottom:8px">
+      <h3 style="margin:0"><i class="glyphicon glyphicon-import"></i>&nbsp;Import WiGLE KML
+        <small class="text-muted">wardrive capture → entities, correlations &amp; geo-intel</small></h3>
+    </div>
+    <div class="row">
+      <div class="col-md-5">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>1 · Choose a capture</b></div>
+          <div class="panel-body">
+            <p class="text-muted" style="font-size:12px">
+              A <code>.kml</code> export from <a href="https://wigle.net" target="_blank" rel="noopener">WiGLE</a>
+              (WiFi / BLE / BT / cellular observations). Parsed entirely on-device; nothing leaves your phone.</p>
+            <div id="dropzone" style="border:2px dashed #bbb;border-radius:6px;padding:26px;text-align:center;cursor:pointer;background:#fafafa">
+              <i class="glyphicon glyphicon-cloud-upload" style="font-size:28px;color:#999"></i>
+              <div style="margin-top:8px" id="dz-label">Drop a <b>.kml</b> here, or click to browse</div>
+              <div id="dz-file" class="text-info" style="margin-top:6px;font-weight:bold"></div>
+            </div>
+            <input type="file" id="kml-file" accept=".kml,application/vnd.google-earth.kml+xml,text/xml" style="display:none">
+            <button id="kml-go" class="btn btn-danger btn-block" style="margin-top:12px" disabled>
+              <i class="glyphicon glyphicon-cog"></i>&nbsp;Ingest &amp; Correlate</button>
+            <div id="kml-status" style="margin-top:10px"></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-7">
+        <div id="import-result">
+          <div class="empty-state text-muted" style="padding:40px;text-align:center">
+            <i class="glyphicon glyphicon-stats" style="font-size:34px"></i>
+            <h4>No capture ingested yet</h4>
+            <p>Pick a WiGLE KML on the left. Every parsed record, derived entity,
+               statistic and correlation is shown below in raw JSON.</p>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  const fileInput = $('#kml-file'), dz = $('#dropzone'), go = $('#kml-go');
+  const setFile = (file)=>{
+    if (!file) return;
+    IMPORT.filename = file.name;
+    $('#dz-file').textContent = file.name + ' · ' + fmtBytes(file.size);
+    const reader = new FileReader();
+    reader.onload = e=>{ IMPORT.text = e.target.result; go.disabled = false; };
+    reader.onerror = ()=>toast('Could not read file','err');
+    reader.readAsText(file);
+  };
+  dz.addEventListener('click', ()=>fileInput.click());
+  fileInput.addEventListener('change', e=>setFile(e.target.files[0]));
+  ['dragover','dragenter'].forEach(ev=>dz.addEventListener(ev, e=>{e.preventDefault();dz.style.background='#eef7ff';dz.style.borderColor='#07aef1';}));
+  ['dragleave','drop'].forEach(ev=>dz.addEventListener(ev, e=>{e.preventDefault();dz.style.background='#fafafa';dz.style.borderColor='#bbb';}));
+  dz.addEventListener('drop', e=>{ if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]); });
+  go.addEventListener('click', runImport);
+
+  if (IMPORT.result) paintImportResult(IMPORT.result);
+}
+
+async function runImport(){
+  if (!IMPORT.text){ toast('Choose a .kml file first','warn'); return; }
+  const go = $('#kml-go'), status = $('#kml-status');
+  go.disabled = true;
+  const sizeMB = (IMPORT.text.length/1048576).toFixed(1);
+  status.innerHTML = `<div class="alert alert-info" style="margin:0"><i class="glyphicon glyphicon-refresh spin"></i>
+      Parsing &amp; correlating ${esc(IMPORT.filename)} (${sizeMB} MB)… large captures take a few seconds.</div>`;
+  const t0 = performance.now();
+  try {
+    const res = await API.importKml(IMPORT.text);
+    IMPORT.result = res;
+    const ms = Math.round(performance.now()-t0);
+    status.innerHTML = `<div class="alert alert-success" style="margin:0">
+        <b>Done in ${ms} ms.</b> ${res.record_count} records → ${res.entity_count} entities,
+        ${(res.correlations||[]).length} correlations.</div>`;
+    toast('KML imported');
+    paintImportResult(res);
+  } catch(e){
+    status.innerHTML = `<div class="alert alert-danger" style="margin:0"><b>Import failed.</b> ${esc(e.message)}</div>`;
+    toast(e.message,'err');
+  } finally {
+    go.disabled = false;
+  }
+}
+
+function paintImportResult(res){
+  const host = $('#import-result'); if (!host) return;
+  const s = res.stats||{};
+  const bb = s.bounding_box, tr = s.time_range, c = res.centroid;
+  const tally = (obj)=>Object.entries(obj||{}).sort((a,b)=>b[1]-a[1])
+      .map(([k,n])=>`<tr><td><code>${esc(k)}</code></td><td class="text-right"><b>${n}</b></td></tr>`).join('') || '<tr><td colspan="2" class="text-muted">—</td></tr>';
+  const vendors = (s.top_vendors||[]).slice(0,10)
+      .map(t=>`<tr><td>${esc(t.key)}</td><td class="text-right"><b>${t.count}</b></td></tr>`).join('') || '<tr><td colspan="2" class="text-muted">none recognised</td></tr>';
+  const card = (lab,val)=>`<div class="col-xs-6 col-sm-3"><div class="stat-card"><div class="lab">${lab}</div><div class="val">${val}</div></div></div>`;
+  const rawJson = JSON.stringify(res, null, 2);
+
+  host.innerHTML = `
+    <div class="row">
+      ${card('Records', s.total_records||0)}
+      ${card('Entities', res.entity_count||0)}
+      ${card('Unique BSSIDs', s.unique_macs||0)}
+      ${card('Correlations', (res.correlations||[]).length)}
+    </div>
+    <div class="row" style="margin-top:6px">
+      ${card('WiFi', s.wifi||0)}
+      ${card('BLE / BT', (s.ble||0)+' / '+(s.bt||0))}
+      ${card('Cellular', s.cellular||0)}
+      ${card('Geo clusters', s.coordinate_clusters||0)}
+    </div>
+
+    <div class="panel panel-default" style="margin-top:12px">
+      <div class="panel-heading"><b>Capture summary</b>
+        <span class="pull-right">
+          <a class="btn btn-xs btn-info" href="#/scaninfo?id=${attr(res.scan_id)}&tab=entities">Open scan ▸</a>
+          <button class="btn btn-xs btn-default" id="dl-json"><i class="glyphicon glyphicon-download-alt"></i> Download JSON</button>
+        </span></div>
+      <div class="panel-body" style="font-size:13px">
+        <div class="row">
+          <div class="col-sm-6">
+            <table class="table table-condensed" style="margin-bottom:6px">
+              <tr><td>Document</td><td class="text-right"><code>${esc(res.document_name||'—')}</code></td></tr>
+              <tr><td>Region</td><td class="text-right">${esc(s.country_name||'?')} ${s.country_iso?'('+esc(s.country_iso)+')':''}</td></tr>
+              <tr><td>Timezone</td><td class="text-right"><code>${esc(s.timezone||'?')}</code></td></tr>
+              <tr><td>Centroid</td><td class="text-right"><code>${c?c.lat.toFixed(5)+', '+c.lon.toFixed(5):'—'}</code></td></tr>
+              <tr><td>Cell towers / carriers</td><td class="text-right">${s.unique_cell_towers||0} / ${s.unique_carriers||0}</td></tr>
+              <tr><td>Named / hidden</td><td class="text-right">${s.named_networks||0} / ${s.hidden_networks||0}</td></tr>
+              <tr><td>Skipped</td><td class="text-right">${s.skipped_records||0}</td></tr>
+            </table>
+            ${bb?`<div class="text-muted" style="font-size:12px">Bounds: lat [${bb.min_lat.toFixed(4)}, ${bb.max_lat.toFixed(4)}], lon [${bb.min_lon.toFixed(4)}, ${bb.max_lon.toFixed(4)}]</div>`:''}
+            ${tr?`<div class="text-muted" style="font-size:12px">Timeline: ${esc(tr.earliest)} → ${esc(tr.latest)}</div>`:''}
+          </div>
+          <div class="col-sm-3">
+            <div class="text-muted" style="font-size:11px;text-transform:uppercase">By type</div>
+            <table class="table table-condensed">${tally(s.by_type)}</table>
+            <div class="text-muted" style="font-size:11px;text-transform:uppercase">Encryption</div>
+            <table class="table table-condensed">${tally(s.by_encryption)}</table>
+          </div>
+          <div class="col-sm-3">
+            <div class="text-muted" style="font-size:11px;text-transform:uppercase">Top vendors (OUI)</div>
+            <table class="table table-condensed">${vendors}</table>
+            <div class="text-muted" style="font-size:11px;text-transform:uppercase">Confidence</div>
+            <table class="table table-condensed">${tally(s.by_confidence)}</table>
+          </div>
+        </div>
+        ${(res.warnings&&res.warnings.length)?`<div class="alert alert-warning" style="font-size:12px;margin:4px 0">${res.warnings.map(esc).join('<br>')}</div>`:''}
+      </div>
+    </div>
+
+    <div class="panel panel-default">
+      <div class="panel-heading">
+        <b>Raw JSON</b> <small class="text-muted">— complete, transparent payload (every record + entity + correlation)</small>
+        <button class="btn btn-xs btn-default pull-right" id="toggle-raw">show / hide</button>
+      </div>
+      <div class="panel-body" id="raw-wrap" style="display:none">
+        <pre id="raw-json" style="max-height:520px;overflow:auto;font-size:11px;line-height:1.35">${esc(rawJson)}</pre>
+      </div>
+    </div>`;
+
+  $('#toggle-raw').addEventListener('click', ()=>{
+    const w = $('#raw-wrap'); w.style.display = w.style.display==='none' ? 'block' : 'none';
+  });
+  $('#dl-json').addEventListener('click', ()=>{
+    const blob = new Blob([rawJson], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `hse-kml-${(res.scan_id||'import').slice(0,12)}.json`;
+    a.click(); URL.revokeObjectURL(a.href);
+  });
+}
+
+function fmtBytes(n){ if(n<1024)return n+' B'; if(n<1048576)return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(1)+' MB'; }
 
 /* ═══════════ Page: SCANINFO (#/scaninfo?id=X[&tab=Y]) ═══════════ */
 async function renderScanInfo(v){

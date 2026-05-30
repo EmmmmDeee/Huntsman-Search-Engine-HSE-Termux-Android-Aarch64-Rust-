@@ -198,13 +198,20 @@ pub enum Command {
         /// Raw value to store. Quote in the shell to avoid mis-parsing.
         value: String,
     },
-    /// Import an OathNet JSON export file. Extracts breach results,
-    /// stealer metadata, IP geolocation, and Holehe platform checks
-    /// into a new scan record with full entity extraction.
+    /// Import an export file and extract entities. Format is auto-detected:
+    ///
+    /// • WiGLE KML (`.kml`) — wardrive capture: WiFi/BLE/BT BSSIDs →
+    ///   MacAddress, cellular → DeviceId + carrier Organisation, points →
+    ///   geohash-clustered Coordinates. Persists a real, browsable scan and
+    ///   runs the correlator. Use `--output json` for the complete,
+    ///   transparent payload (every record + entity + correlation).
+    /// • OathNet JSON/HTML/TXT — breach results, stealer metadata, IP
+    ///   geolocation, and Holehe platform checks.
     Import {
-        /// Path to the OathNet export JSON file.
+        /// Path to the export file (`.kml`, OathNet `.json` / `.html` / `.txt`).
         file: String,
-        /// Output format: json, table, dossier.
+        /// Output format: json, table, dossier. KML import prints the full
+        /// transparent JSON under `json`/`dossier`.
         #[arg(short, long, default_value = "table")]
         output: String,
     },

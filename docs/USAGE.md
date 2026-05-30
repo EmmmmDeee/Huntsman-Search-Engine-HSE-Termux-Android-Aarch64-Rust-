@@ -8,12 +8,45 @@ suitable for scripting.
 ```
 hse scan      Run a single scan, print results
 hse live      Re-run a scan periodically (v0.5+)
+hse import    Import an export file (WiGLE KML / OathNet JSON|HTML|TXT)
 hse modules   List registered modules with cost / target / passive flags
 hse doctor    Verify environment (DB, keys, Termux, modules)
 hse serve     Start the HTTP server + SPA (browse to http://127.0.0.1:8080)
 hse --help    Top-level help
 hse --version Print version
 ```
+
+---
+
+## `hse import` — WiGLE KML / OathNet ingestion
+
+Auto-detects the file format and extracts entities. For a **WiGLE KML**
+wardrive export it stream-parses every `<Placemark>` (zero XML deps, flat
+memory on multi-MB captures) and turns it into HSE entities:
+
+| Observation                | Entity kind     | Notes                                            |
+|----------------------------|-----------------|--------------------------------------------------|
+| WiFi / BLE / BT BSSID      | `MacAddress`    | OUI vendor + device class, encryption, SSID tags |
+| Cellular tower (PLMN_TAC_CID) | `DeviceId`   | tagged with radio (LTE/GSM/NR), MCC, MNC         |
+| Mobile carrier name        | `Organisation`  | one per carrier (e.g. Telstra)                   |
+| Capture points             | `Coordinates`   | geohash-clustered, density-weighted confidence   |
+
+The import is persisted as a **first-class, browsable scan** (target = the
+capture centroid) and run through the correlator, so it shows up in the
+Scans list and feeds the same correlation / timeline / graph machinery as a
+live scan.
+
+```bash
+# Full, transparent JSON — every record, entity, stat and correlation
+hse import ~/wardrive.kml --output json > capture.json
+
+# Human summary (counts + bounds + timeline) on stderr
+hse import ~/wardrive.kml
+```
+
+The same pipeline backs the web UI's **Import** tab and the
+`POST /api/v1/import/kml` endpoint, so CLI and browser produce identical
+entities.
 
 ---
 
@@ -214,6 +247,7 @@ All endpoints are under `/api/v1/`.
 | GET    | `/health`                  | `{ "status": "ok", "version": "0.3.0" }` |
 | GET    | `/version`                 | `{ "version": "0.3.0" }` |
 | GET    | `/modules`                 | `{ "count": N, "modules": [{ name, priority, cost, passive }, ...] }` |
+| POST   | `/import/kml`              | Body: raw WiGLE KML (text). Ingests → persists a scan → returns the complete JSON (records, entities, stats, correlations). 64 MiB limit. |
 | POST   | `/scans`                   | Body: `ScanRequest` (`{ kind, value, options? }`). Returns `202 { scan_id, status }`. |
 | GET    | `/scans`                   | 200 most recent scans. |
 | GET    | `/scans/{id}`              | Single scan record. 404 if unknown. |

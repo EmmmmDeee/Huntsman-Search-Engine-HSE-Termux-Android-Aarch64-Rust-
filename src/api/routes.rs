@@ -8,6 +8,7 @@
 //! | GET    | `/api/v1/version`                 | `version`                |
 //! | GET    | `/api/v1/modules`                 | `modules_list`           |
 //! | GET    | `/api/v1/modules/graph`           | `modules_graph` (v1.1+)  |
+//! | POST   | `/api/v1/import/kml`              | `import_kml` (WiGLE KML)  |
 //! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
 //! | POST   | `/api/v1/scans`                   | `scan_create`            |
 //! | GET    | `/api/v1/scans`                   | `scan_list`              |
@@ -34,7 +35,7 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{OriginalUri, Path},
+    extract::{DefaultBodyLimit, OriginalUri, Path},
     http::{HeaderValue, Method, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -42,7 +43,7 @@ use axum::{
 use serde_json::json;
 use tower_http::cors::CorsLayer;
 
-use super::{AppState, handlers, scan_handlers};
+use super::{AppState, handlers, import_handlers, scan_handlers};
 
 /// Embedded SPA — single self-contained HTML file with inline CSS + JS.
 /// Lives in `src/web/spa.html` and is compiled into the binary at build time
@@ -132,6 +133,14 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/modules", get(handlers::modules_list))
         .route("/modules/graph", get(handlers::modules_graph))
         .route("/stats", get(handlers::stats))
+        // ── import (WiGLE KML wardrive ingestion) ──
+        // 64 MiB ceiling overrides axum's 2 MiB default — real captures run to
+        // several MB. Loopback-bound + same-origin SPA, so this isn't a remote
+        // DoS surface in the default deployment.
+        .route(
+            "/import/kml",
+            post(import_handlers::import_kml).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
         // ── key-detector catalogue (v1.4+) ──
         .route("/keys/patterns", get(handlers::keys_patterns))
         // ── scans ──
