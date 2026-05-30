@@ -25,6 +25,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::Target,
 };
+use crate::util::geo::is_valid_coords;
 use crate::util::termux::termux_cmd;
 
 const OPENCELLID_KEY_ENV: &str = "HUNTSMAN_OPENCELLID_KEY";
@@ -236,7 +237,9 @@ async fn query_opencellid(
 
     let lat = data.lat?;
     let lon = data.lon?;
-    if lat == 0.0 && lon == 0.0 {
+    // Shared validator: rejects Null Island AND out-of-range / non-finite
+    // values a malformed OpenCelliD payload could carry (see util::geo).
+    if !is_valid_coords(lat, lon) {
         return None;
     }
 
