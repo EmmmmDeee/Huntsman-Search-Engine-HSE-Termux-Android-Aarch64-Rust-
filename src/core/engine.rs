@@ -225,10 +225,13 @@ impl ScanEngine {
         )
         .await?;
 
-        // Correlate the seed round before expansion begins, so single-round
-        // (depth=0) scans still stream correlations live rather than waiting
-        // for finalise.
-        self.correlate_incremental(&scan.id, &entity_map, &mut emitted_corr);
+        // Checkpoint + correlate the seed round from a single snapshot: the
+        // entities are made durable before expansion begins (crash-safety) and
+        // single-round (depth=0) scans stream correlations live rather than
+        // waiting for finalise.
+        let seed_snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+        self.checkpoint_entities(&scan.id, &seed_snapshot);
+        self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
 
         if opts.depth > 0 {
             let _ = self
@@ -433,22 +436,18 @@ impl ScanEngine {
     }
 
     /// Live cross-correlation during ingestion. Evaluates the entity rules
-    /// against the working in-memory entity map (no store round-trip) and
-    /// streams any newly-fired correlation immediately, persisting it as it
+    /// against an in-memory snapshot of the working set (no store round-trip)
+    /// and streams any newly-fired correlation immediately, persisting it as it
     /// appears. Idempotent across rounds: a correlation's stable identity
     /// (`rule_id` + sorted entity uids) is recorded in `emitted` so it fires
     /// exactly once even though the rules are re-run every round.
     fn correlate_incremental(
         &self,
         scan_id: &str,
-        entity_map: &HashMap<String, Entity>,
+        entities: &[Entity],
         emitted: &mut HashSet<String>,
     ) {
-        if entity_map.is_empty() {
-            return;
-        }
-        let entities: Vec<Entity> = entity_map.values().cloned().collect();
-        for c in crate::core::correlator::correlate_entities(&entities, scan_id) {
+        for c in crate::core::correlator::correlate_entities(entities, scan_id) {
             if !emitted.insert(correlation_key(&c)) {
                 continue;
             }
@@ -456,6 +455,21 @@ impl ScanEngine {
                 warn!(scan_id, error = %e, "live correlation persist failed");
             }
             self.emit(scan_id, EventKind::CorrelationFound { correlation: c });
+        }
+    }
+
+    /// Checkpoint the working entity set to durable storage mid-scan so a crash
+    /// or kill preserves discovered intel instead of losing everything until
+    /// `finalise_scan`. Runs at every productive round boundary. The upsert is
+    /// idempotent GREATEST-merge — replaying the same entities only ever raises
+    /// confidence/corroboration, so a resumed or re-run scan never regresses.
+    /// Best-effort: a checkpoint failure is logged and retried at finalise.
+    fn checkpoint_entities(&self, scan_id: &str, entities: &[Entity]) {
+        if entities.is_empty() {
+            return;
+        }
+        if let Err(e) = self.store.upsert_entities_batch(entities) {
+            warn!(scan_id, error = %e, "entity checkpoint failed (will retry at finalise)");
         }
     }
 
@@ -638,13 +652,16 @@ impl ScanEngine {
             // stop early. Marginal yield collapses near convergence.
             let new_this_round = entity_map.len().saturating_sub(entities_at_round_start);
 
-            // Live cross-correlation: re-evaluate the entity rules against the
-            // freshly-grown in-memory graph and stream any newly-fired
-            // correlations now, rather than deferring all of them to finalise.
-            // Gated on dispatch activity — a round that dispatched nothing
-            // cannot have changed the graph, so we skip the pass (backpressure).
+            // Round-boundary durability + live correlation from one snapshot:
+            // checkpoint the freshly-grown graph to storage so a crash here
+            // preserves everything through this round, then re-evaluate the
+            // entity rules and stream any newly-fired correlations. Gated on
+            // dispatch activity — a round that dispatched nothing cannot have
+            // changed the graph, so we skip both passes (backpressure).
             if dispatched_this_round > 0 {
-                self.correlate_incremental(scan_id, entity_map, emitted_corr);
+                let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+                self.checkpoint_entities(scan_id, &snapshot);
+                self.correlate_incremental(scan_id, &snapshot, emitted_corr);
             }
 
             let floor = opts
