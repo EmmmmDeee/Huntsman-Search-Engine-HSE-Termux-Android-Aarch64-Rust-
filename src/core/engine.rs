@@ -205,6 +205,12 @@ impl ScanEngine {
         // from), accumulated across expansion rounds and persisted in
         // finalise_scan.
         let mut lineage: Vec<Relation> = Vec::new();
+        // Live cross-correlation dedup set: the stable identity (rule_id +
+        // sorted entity uids) of every correlation already streamed during
+        // ingestion. Shared across the seed round, every expansion round, and
+        // the authoritative finalise pass so each correlation is emitted at
+        // most once even though the rules are re-evaluated continuously.
+        let mut emitted_corr: HashSet<String> = HashSet::new();
 
         visited.insert(visit_key(&target));
         self.dispatch_target(
@@ -219,6 +225,11 @@ impl ScanEngine {
         )
         .await?;
 
+        // Correlate the seed round before expansion begins, so single-round
+        // (depth=0) scans still stream correlations live rather than waiting
+        // for finalise.
+        self.correlate_incremental(&scan.id, &entity_map, &mut emitted_corr);
+
         if opts.depth > 0 {
             let _ = self
                 .run_expansion(
@@ -231,11 +242,12 @@ impl ScanEngine {
                     &mut stats,
                     &mut dispatched,
                     &mut lineage,
+                    &mut emitted_corr,
                 )
                 .await;
         }
 
-        self.finalise_scan(&mut scan, entity_map, &ctx, stats, lineage)
+        self.finalise_scan(&mut scan, entity_map, &ctx, stats, lineage, emitted_corr)
     }
 
     /// Persist entities, run the correlator, and mark the scan terminal.
@@ -246,6 +258,7 @@ impl ScanEngine {
         ctx: &ModuleContext,
         stats: ModuleStats,
         lineage_relations: Vec<Relation>,
+        mut emitted_corr: HashSet<String>,
     ) -> Result<Scan> {
         // Persist the scan's entities in a single transaction. On the common
         // path (every entity is new or a clean GREATEST-merge) this collapses
@@ -325,7 +338,7 @@ impl ScanEngine {
         // structural edges derived from the persisted entity set.
         self.persist_relations(&scan.id, &entities, &lineage_relations);
 
-        self.run_correlator(&scan.id);
+        self.run_correlator(&scan.id, &mut emitted_corr);
 
         // Persist the key pool to disk after every scan. Keys discovered
         // during this scan (from breach data, page bodies, entity values)
@@ -390,16 +403,23 @@ impl ScanEngine {
         );
     }
 
-    fn run_correlator(&self, scan_id: &str) {
+    /// Authoritative finalise-time correlation pass. Runs the full rule set
+    /// (entity + graph-aware relation rules) over the persisted scan, persists
+    /// every firing, and emits `CorrelationFound` only for correlations not
+    /// already streamed live during ingestion (deduped via `emitted`). The
+    /// `CorrelationsDone` count is the authoritative total for the scan.
+    fn run_correlator(&self, scan_id: &str, emitted: &mut HashSet<String>) {
         match crate::core::correlator::Correlator::new(Arc::clone(&self.store)).run(scan_id) {
             Ok(firings) => {
                 for c in &firings {
-                    self.emit(
-                        scan_id,
-                        EventKind::CorrelationFound {
-                            correlation: c.clone(),
-                        },
-                    );
+                    if emitted.insert(correlation_key(c)) {
+                        self.emit(
+                            scan_id,
+                            EventKind::CorrelationFound {
+                                correlation: c.clone(),
+                            },
+                        );
+                    }
                 }
                 self.emit(
                     scan_id,
@@ -409,6 +429,33 @@ impl ScanEngine {
                 );
             }
             Err(e) => warn!(scan_id, error = %e, "correlator failed"),
+        }
+    }
+
+    /// Live cross-correlation during ingestion. Evaluates the entity rules
+    /// against the working in-memory entity map (no store round-trip) and
+    /// streams any newly-fired correlation immediately, persisting it as it
+    /// appears. Idempotent across rounds: a correlation's stable identity
+    /// (`rule_id` + sorted entity uids) is recorded in `emitted` so it fires
+    /// exactly once even though the rules are re-run every round.
+    fn correlate_incremental(
+        &self,
+        scan_id: &str,
+        entity_map: &HashMap<String, Entity>,
+        emitted: &mut HashSet<String>,
+    ) {
+        if entity_map.is_empty() {
+            return;
+        }
+        let entities: Vec<Entity> = entity_map.values().cloned().collect();
+        for c in crate::core::correlator::correlate_entities(&entities, scan_id) {
+            if !emitted.insert(correlation_key(&c)) {
+                continue;
+            }
+            if let Err(e) = self.store.upsert_correlation(&c) {
+                warn!(scan_id, error = %e, "live correlation persist failed");
+            }
+            self.emit(scan_id, EventKind::CorrelationFound { correlation: c });
         }
     }
 
@@ -425,6 +472,7 @@ impl ScanEngine {
         stats: &mut ModuleStats,
         dispatched: &mut DispatchLog,
         relations: &mut Vec<Relation>,
+        emitted_corr: &mut HashSet<String>,
     ) -> StopReason {
         // Reused across candidates to capture lineage: the set of entity UIDs
         // present *before* a candidate's dispatch, so new UIDs afterward are
@@ -589,6 +637,16 @@ impl ScanEngine {
             // measure new-entities-per-dispatched-target; if below floor,
             // stop early. Marginal yield collapses near convergence.
             let new_this_round = entity_map.len().saturating_sub(entities_at_round_start);
+
+            // Live cross-correlation: re-evaluate the entity rules against the
+            // freshly-grown in-memory graph and stream any newly-fired
+            // correlations now, rather than deferring all of them to finalise.
+            // Gated on dispatch activity — a round that dispatched nothing
+            // cannot have changed the graph, so we skip the pass (backpressure).
+            if dispatched_this_round > 0 {
+                self.correlate_incremental(scan_id, entity_map, emitted_corr);
+            }
+
             let floor = opts
                 .min_marginal_yield
                 .unwrap_or(crate::core::roi::DEFAULT_MIN_MARGINAL_YIELD);
@@ -614,6 +672,16 @@ impl ScanEngine {
         }
         StopReason::DepthExhausted
     }
+}
+
+/// Stable identity for a correlation, used to dedup live-streamed firings
+/// against the authoritative finalise pass. Order-independent in the entity
+/// set so the same rule firing over the same entities keys identically
+/// regardless of discovery order.
+fn correlation_key(c: &crate::core::correlator::Correlation) -> String {
+    let mut uids = c.entity_uids.clone();
+    uids.sort();
+    format!("{}\u{1f}{}", c.rule_id, uids.join("\u{1e}"))
 }
 
 /// Visit-key for the expansion visited-set. Normalises the value the same

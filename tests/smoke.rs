@@ -1678,3 +1678,145 @@ async fn correlator_surfaces_malicious_adjacency_via_relations() {
     );
     assert!(au031[0].description.contains("blog.evilcorp.com"));
 }
+
+// ── Live cross-correlation during ingestion ─────────────────────────────────
+//
+// Proves the charter's "live cross-correlation during ingestion (not
+// post-processing)" condition: entity rules are evaluated against the working
+// in-memory graph as it grows, so correlations stream out mid-scan rather than
+// only at finalise.
+
+/// Seed-round module: emits two LAN-tagged entities (an IP and a MAC) so the
+/// entity rule AU-013 (local-network discovery) fires from the seed round
+/// alone — before any expansion round runs. Also emits a high-confidence
+/// Username, the entity the next round expands on (a well-trodden expansion
+/// path that survives the candidate filters).
+struct LanPairModule;
+
+#[async_trait]
+impl Module for LanPairModule {
+    fn name(&self) -> &'static str {
+        "lan_pair"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let mut ip = Entity::new(EntityKind::IpAddress, "192.168.1.50", 0.95, &ctx.scan_id);
+        ip.tag("local-arp");
+        let mut mac = Entity::new(
+            EntityKind::MacAddress,
+            "aa:bb:cc:dd:ee:ff",
+            0.95,
+            &ctx.scan_id,
+        );
+        mac.tag("local-interface");
+        let mut user = Entity::new(EntityKind::Username, "lanhost", 0.95, &ctx.scan_id);
+        user.tag("derived");
+        r.push(ip);
+        r.push(mac);
+        r.push(user);
+        Ok(r)
+    }
+}
+
+/// Expansion-only ordering marker: accepts Username (never the Email seed),
+/// so its `ModuleStart` event can only appear once expansion round 1 begins.
+/// Produces nothing — it exists purely to mark the seed/expansion boundary in
+/// the event stream.
+struct ExpansionMarker;
+
+#[async_trait]
+impl Module for ExpansionMarker {
+    fn name(&self) -> &'static str {
+        "expansion_marker"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    async fn process(&self, _t: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+        Ok(ModuleResult::new())
+    }
+}
+
+#[tokio::test]
+async fn correlations_stream_live_during_ingestion_not_at_finalise() {
+    use huntsman_search_engine::core::event::EventKind;
+
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(LanPairModule), Arc::new(ExpansionMarker)],
+        "live-correlation",
+        TargetKind::Email,
+        "host@example.com",
+    );
+    // depth=1 so expansion round 1 dispatches the Username-only marker module
+    // against the username the seed round produced.
+    let opts = ScanOptions {
+        depth: 1,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+
+    // Subscribe before running so we capture the full event stream in order.
+    let mut rx = engine.bus().subscribe();
+    engine.run(scan, target, ctx).await.unwrap();
+
+    // Drain the broadcast buffer into an ordered transcript.
+    let mut first_au013: Option<usize> = None;
+    let mut marker_start: Option<usize> = None;
+    let mut au013_emits = 0usize;
+    let mut idx = 0usize;
+    while let Ok(ev) = rx.try_recv() {
+        match &ev.kind {
+            EventKind::CorrelationFound { correlation } if correlation.rule_id == "AU-013" => {
+                au013_emits += 1;
+                if first_au013.is_none() {
+                    first_au013 = Some(idx);
+                }
+            }
+            EventKind::ModuleStart { module } if module == "expansion_marker" => {
+                if marker_start.is_none() {
+                    marker_start = Some(idx);
+                }
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+
+    let corr_at = first_au013.expect("AU-013 correlation_found event should be emitted");
+    let marker_at = marker_start.expect("expansion_marker should run in expansion round 1");
+
+    // The discriminating assertion: the correlation streamed out *before* the
+    // expansion-only module even started. A finalise-only correlator would emit
+    // AU-013 after every expansion module event, so this ordering can only hold
+    // if correlation runs live during ingestion.
+    assert!(
+        corr_at < marker_at,
+        "AU-013 fired at event #{corr_at} but expansion module started at #{marker_at}; \
+         correlation is not running live during ingestion"
+    );
+
+    // Dedup invariant: the live pass and the authoritative finalise pass must
+    // not double-emit the same correlation.
+    assert_eq!(
+        au013_emits, 1,
+        "AU-013 should be emitted exactly once, not re-fired"
+    );
+
+    // And it is still persisted exactly once.
+    let stored: Vec<_> = store
+        .correlations_for_scan(&sid)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.rule_id == "AU-013")
+        .collect();
+    assert_eq!(stored.len(), 1, "AU-013 should persist exactly once");
+}

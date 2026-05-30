@@ -1,8 +1,18 @@
-// Correlator — rule-based post-scan analysis.
+// Correlator — rule-based cross-correlation analysis.
 //
-// Runs after all modules complete (engine hook). Loads the entities the
-// scan produced and evaluates a fixed set of declarative rules. Each
-// firing rule produces a [`Correlation`] record persisted alongside the
+// Two entry points share the same deterministic rule set:
+//
+//   * [`Correlator::run`] — the authoritative finalise-time pass. Loads the
+//     scan's persisted entities *and* the typed relation edges, evaluates
+//     both the entity rules and the graph-aware relation rules, and persists
+//     every firing.
+//   * [`correlate_entities`] — a live, in-memory pass the engine invokes
+//     during ingestion (after the seed round and after each expansion round)
+//     so high-confidence correlations stream out as the graph grows rather
+//     than only after the scan finishes. Entity rules only — relation rules
+//     need the persisted edge set, so they stay in `run`.
+//
+// Each firing rule produces a [`Correlation`] record persisted alongside the
 // scan and emitted on the event bus. Rules are deterministic — no LLMs,
 // no fuzzy matching.
 
@@ -166,6 +176,17 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
         out.extend(rule(entities, scan_id, now));
     }
     out
+}
+
+/// Evaluate the entity-only rules against an in-memory entity slice.
+///
+/// This is the live-ingestion entry point: the engine calls it against the
+/// working entity map after each dispatch round so correlations stream out
+/// during the scan, with no store round-trip. The graph-aware relation rules
+/// are intentionally excluded here — they need the persisted edge set, which
+/// only exists once [`Correlator::run`] derives it at finalise.
+pub(crate) fn correlate_entities(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
+    evaluate_rules(entities, scan_id)
 }
 
 // ─── Graph-aware rules ───────────────────────────────────────────────────────
