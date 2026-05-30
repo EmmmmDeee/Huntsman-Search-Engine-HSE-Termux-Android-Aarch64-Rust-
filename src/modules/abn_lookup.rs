@@ -54,7 +54,11 @@ impl Module for AbnLookup {
     }
 
     fn is_passive(&self) -> bool {
-        true
+        // NOT passive: fetch_jsonp curls the Australian Business Register
+        // API. Passive is defined as local-sensor / no-network, and
+        // `--passive-only` is documented as skipping network-reaching
+        // modules, so this outbound lookup must report false.
+        false
     }
 
     fn category(&self) -> ModuleCategory {
