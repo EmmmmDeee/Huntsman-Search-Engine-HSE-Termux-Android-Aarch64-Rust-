@@ -116,21 +116,8 @@ impl Module for CellIntel {
             let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
 
             // ---- 1. DeviceId entity (from former cell_survey) ----
-            let mut dev = Entity::new(EntityKind::DeviceId, &tower_id, 0.80, &ctx.scan_id);
-            dev.tag("cell-tower");
-            dev.tag(format!("radio:{ctype}"));
-            dev.add_evidence(
-                Evidence::new(SRC, format!("Cell tower {ctype} {tower_id}"))
-                    .with_attr("type", ctype)
-                    .with_attr("mcc", mcc.as_ref())
-                    .with_attr("mnc", mnc.as_ref())
-                    .with_attr("lac_tac", lac.to_string())
-                    .with_attr("cid", cid.to_string())
-                    .with_attr("pci", cell.pci.unwrap_or(0).to_string())
-                    .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
-                    .with_attr("asu", cell.asu.unwrap_or(0).to_string())
-                    .with_attr("level", cell.level.unwrap_or(0).to_string())
-                    .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
+            let dev = build_tower_device(
+                cell, &mcc, &mnc, lac, cid, ctype, &tower_id, &ctx.scan_id,
             );
             result.push(dev);
 
@@ -204,6 +191,39 @@ impl Module for CellIntel {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Build the `DeviceId` entity for one cell tower. Single source of truth for
+/// the tower-survey entity shape, shared by the live `process()` path and the
+/// `parse_cells_survey` test helper so the two can never drift in their tags or
+/// evidence-attribute set (they were previously byte-identical copies).
+fn build_tower_device(
+    cell: &Cell,
+    mcc: &str,
+    mnc: &str,
+    lac: i64,
+    cid: i64,
+    ctype: &str,
+    tower_id: &str,
+    scan_id: &str,
+) -> Entity {
+    let mut e = Entity::new(EntityKind::DeviceId, tower_id, 0.80, scan_id);
+    e.tag("cell-tower");
+    e.tag(format!("radio:{ctype}"));
+    e.add_evidence(
+        Evidence::new(SRC, format!("Cell tower {ctype} {tower_id}"))
+            .with_attr("type", ctype)
+            .with_attr("mcc", mcc)
+            .with_attr("mnc", mnc)
+            .with_attr("lac_tac", lac.to_string())
+            .with_attr("cid", cid.to_string())
+            .with_attr("pci", cell.pci.unwrap_or(0).to_string())
+            .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
+            .with_attr("asu", cell.asu.unwrap_or(0).to_string())
+            .with_attr("level", cell.level.unwrap_or(0).to_string())
+            .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
+    );
+    e
+}
 
 async fn query_opencellid(
     http: &reqwest::Client,
@@ -360,23 +380,11 @@ fn parse_cells_survey(stdout: &[u8], scan_id: &str) -> ModuleResult {
         let ctype = cell.cell_type.as_deref().unwrap_or("unknown");
         let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
 
-        let mut e = Entity::new(EntityKind::DeviceId, &tower_id, 0.80, scan_id);
-        e.tag("cell-tower");
-        e.tag(format!("radio:{ctype}"));
-        e.add_evidence(
-            Evidence::new(SRC, format!("Cell tower {ctype} {tower_id}"))
-                .with_attr("type", ctype)
-                .with_attr("mcc", mcc.as_ref())
-                .with_attr("mnc", mnc.as_ref())
-                .with_attr("lac_tac", lac.to_string())
-                .with_attr("cid", cid.to_string())
-                .with_attr("pci", cell.pci.unwrap_or(0).to_string())
-                .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
-                .with_attr("asu", cell.asu.unwrap_or(0).to_string())
-                .with_attr("level", cell.level.unwrap_or(0).to_string())
-                .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
-        );
-        result.push(e);
+        // Exercise the SAME builder the live process() path uses, so these
+        // tests pin the real entity shape rather than a parallel copy.
+        result.push(build_tower_device(
+            cell, &mcc, &mnc, lac, cid, ctype, &tower_id, scan_id,
+        ));
     }
     result
 }
