@@ -12,6 +12,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`util::postcode_au` + suburb-level enumeration for `qld_unclaimed`.** The
+  register carries only a 4-digit postcode, but a QLD postcode is not one place —
+  `4552` spans Maleny, Landsborough, Booroobin, Conondale, Witta and more.
+  Probing established that data.qld's locality datasets are spatial-only
+  (`datastore_active=false`, shapefiles/WMS) and a Nominatim postcode query
+  returns a single centroid, so neither enumerates; **Zippopotam**
+  (`api.zippopotam.us/au/{pc}`, keyless JSON) does — it returns each locality
+  with a lat/lon. New `util::postcode_au` resolves a postcode to its localities
+  (best-effort: any failure → empty, so the module degrades to the bare
+  postcode). `qld_unclaimed` now expands each distinct result postcode (capped at
+  6 lookups × 8 suburbs) into a postcode-centroid `Coordinates` anchor plus one
+  suburb-precise, individually geocodable `Address` per locality
+  (`"Maleny, QLD 4552, Australia"`), tagged `candidate-suburb` at low confidence
+  (below the 0.50 expansion floor) since the owner is in *one* of them — depth
+  for disambiguation, not auto-expansion. Pure parse + entity-build are
+  unit-tested against the real 4552 payload (which enumerates Booroobin).
+
 - **`util::abn` — shared, checksum-validated ABN/ACN identification, wired into
   the OSINT graph.** Probing established the ABR ABN Lookup web service is
   strictly GUID-gated (both `AbnDetails` and `MatchingNames` reject any call

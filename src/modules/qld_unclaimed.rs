@@ -30,6 +30,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::{fetch_json, urlencode};
+use crate::util::postcode_au::Locality;
 
 const SRC: &str = "qld_unclaimed";
 
@@ -42,6 +43,11 @@ const RESOURCE_ID: &str = "872065ae-ddfd-4b5f-ad15-e1935dadd883";
 /// hundreds of rows; we keep the highest-ranked handful so a single name doesn't
 /// flood the graph.
 const MAX_RECORDS: usize = 20;
+
+/// Max distinct postcodes resolved to suburb-sets per scan (each is one HTTP
+/// call to Zippopotam), and max suburbs enumerated per postcode.
+const POSTCODE_CAP: usize = 6;
+const SUBURB_CAP: usize = 8;
 
 pub struct QldUnclaimed;
 
@@ -246,6 +252,58 @@ fn records_to_entities(
     out
 }
 
+/// Depth-of-enumeration: turn each resolved postcode→localities set into geo
+/// entities — one rough `Coordinates` anchor at the postcode centroid plus a
+/// suburb-precise, individually geocodable `Address` per locality
+/// (`"Maleny, QLD 4552, Australia"`). These are *candidate* localities (the
+/// owner is in one of them), so confidence is low and they carry a
+/// `candidate-suburb` tag; the engine surfaces them as enumeration without
+/// auto-expanding (below the 0.50 floor). Pure: takes the already-fetched map.
+fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], scan_id: &str) -> Vec<Entity> {
+    let mut out = Vec::new();
+    for (pc, locs) in pc_localities {
+        if let Some(first) = locs.first() {
+            let coords = format!("{:.5},{:.5}", first.lat, first.lon);
+            let mut c = Entity::new(EntityKind::Coordinates, coords, 0.40, scan_id);
+            c.tag(SRC);
+            c.tag("country:AU");
+            c.tag("geoint");
+            c.tag("postcode-centroid");
+            c.add_evidence(
+                Evidence::new(SRC, format!("Centroid of postcode {pc}"))
+                    .with_attr("postcode", pc)
+                    .with_attr("source", "zippopotam"),
+            );
+            out.push(c);
+        }
+        for loc in locs.iter().take(SUBURB_CAP) {
+            let mut a = Entity::new(
+                EntityKind::Address,
+                format!("{}, QLD {pc}, Australia", loc.suburb),
+                0.40,
+                scan_id,
+            );
+            a.tag(SRC);
+            a.tag("country:AU");
+            a.tag("geoint");
+            a.tag("candidate-suburb");
+            a.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Locality within postcode {pc}: {}", loc.suburb),
+                )
+                .with_attr("suburb", &loc.suburb)
+                .with_attr("postcode", pc)
+                .with_attr("lat", format!("{:.5}", loc.lat))
+                .with_attr("lon", format!("{:.5}", loc.lon))
+                .with_attr("source", "zippopotam"),
+            );
+            out.push(a);
+        }
+    }
+    out
+}
+
 #[async_trait]
 impl Module for QldUnclaimed {
     fn name(&self) -> &'static str {
@@ -307,8 +365,34 @@ impl Module for QldUnclaimed {
             records = merge_records(exact_res.records, records);
         }
 
+        // Depth-of-enumeration: resolve each distinct postcode in the results to
+        // its constituent suburbs (Zippopotam, keyless). A bare postcode is a
+        // coarse signal — a QLD postcode spans many localities — so we expand it
+        // into suburb-precise, geocodable Address candidates. Best-effort and
+        // capped; each lookup is non-fatal.
+        let mut seen_pc: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut unique_pcs: Vec<String> = Vec::new();
+        for rec in &records {
+            if let Some(pc) = postcode(rec)
+                && seen_pc.insert(pc.clone())
+            {
+                unique_pcs.push(pc);
+                if unique_pcs.len() >= POSTCODE_CAP {
+                    break;
+                }
+            }
+        }
+        let mut pc_localities: Vec<(String, Vec<Locality>)> = Vec::new();
+        for pc in unique_pcs {
+            let locs = crate::util::postcode_au::localities(&ctx.http, &pc).await;
+            if !locs.is_empty() {
+                pc_localities.push((pc, locs));
+            }
+        }
+
         let mut out = ModuleResult::new();
         out.extend(records_to_entities(&records, total, full, &ctx.scan_id));
+        out.extend(suburbs_to_entities(&pc_localities, &ctx.scan_id));
         Ok(out)
     }
 }
@@ -459,6 +543,71 @@ mod tests {
                 .iter()
                 .any(|(k, _)| k.as_str() == "joint_owner")
         );
+    }
+
+    #[test]
+    fn suburbs_enumerate_into_geocodable_candidates() {
+        // Postcode 4552 → its localities (incl. the user's home, Booroobin).
+        let locs = vec![
+            Locality {
+                suburb: "Maleny".into(),
+                lat: -26.729,
+                lon: 152.7554,
+            },
+            Locality {
+                suburb: "Booroobin".into(),
+                lat: -26.729,
+                lon: 152.7554,
+            },
+            Locality {
+                suburb: "Conondale".into(),
+                lat: -26.7333,
+                lon: 152.7167,
+            },
+        ];
+        let ents = suburbs_to_entities(&[("4552".to_string(), locs)], "s");
+        // One centroid Coordinates + one Address per locality.
+        let coords: Vec<&Entity> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Coordinates)
+            .collect();
+        assert_eq!(coords.len(), 1);
+        assert!(
+            coords[0]
+                .tags
+                .iter()
+                .any(|t| t.as_str() == "postcode-centroid")
+        );
+
+        let addrs: Vec<&str> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Address)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(
+            addrs,
+            vec![
+                "Maleny, QLD 4552, Australia",
+                "Booroobin, QLD 4552, Australia",
+                "Conondale, QLD 4552, Australia",
+            ]
+        );
+        // Candidate suburbs stay below the 0.50 expansion floor.
+        assert!(
+            ents.iter()
+                .all(|e| e.confidence < 0.50 && e.tags.iter().any(|t| t.as_str() == SRC))
+        );
+        // The Address evidence carries the suburb + per-locality coordinates.
+        let maleny = ents.iter().find(|e| e.value.starts_with("Maleny")).unwrap();
+        let attr = |k: &str| {
+            maleny.evidence[0]
+                .attributes
+                .iter()
+                .find(|(a, _)| a.as_str() == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(attr("suburb"), Some("Maleny"));
+        assert_eq!(attr("postcode"), Some("4552"));
     }
 
     #[test]

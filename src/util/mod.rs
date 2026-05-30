@@ -15,6 +15,7 @@ pub mod key_roi;
 pub mod keys;
 pub mod oathnet;
 pub mod oui;
+pub mod postcode_au;
 pub mod preflight;
 pub mod proxy;
 pub mod response_cache;
