@@ -649,9 +649,13 @@ async fn fetch_wigle_typed(
 
     let status = resp.status();
     if status.as_u16() == 429 {
+        // Return the rate-limit immediately rather than sleeping. The backoff
+        // (up to 120s via retry_after_secs) was followed by an unconditional
+        // return Err with no retry, so under this module's 20s max_timeout_ms
+        // it only let the engine kill process() mid-sleep and mislabel the
+        // 429 as a timeout. Surface it as the rate-limit it is.
         let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 60);
-        tracing::warn!("WiGLE 429 — backing off {retry_secs}s");
-        tokio::time::sleep(std::time::Duration::from_secs(retry_secs)).await;
+        tracing::warn!("WiGLE 429 — rate-limited (server requested {retry_secs}s backoff)");
         return Err(Error::module(SRC, "rate-limited (429)"));
     }
     if !status.is_success() {
