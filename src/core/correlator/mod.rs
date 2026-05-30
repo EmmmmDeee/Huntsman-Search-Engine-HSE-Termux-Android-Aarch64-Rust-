@@ -405,27 +405,61 @@ mod tests {
 
     #[test]
     fn au003_fires_at_kind_specific_thresholds() {
+        // Thresholds are now on DISTINCT sources: identity (email) >= 2,
+        // infra (domain) >= 3. These fixtures set corroboration with no
+        // evidence, so source_count() falls back to the field value.
         let mut email = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
-        email.corroboration = 3;
+        email.corroboration = 2;
         let r = rule_au_003_high_corroboration(&[email], "s", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].rule_id, "AU-003");
+        assert!(
+            r[0].description.contains("2 independent source"),
+            "description must report the true distinct-source count: {}",
+            r[0].description
+        );
 
         let mut domain = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
-        domain.corroboration = 5;
+        domain.corroboration = 3;
         let r = rule_au_003_high_corroboration(&[domain], "s", 0);
         assert_eq!(r.len(), 1);
     }
 
     #[test]
     fn au003_no_fire_below_threshold() {
+        // Email below 2 distinct sources, domain below 3 → no fire.
         let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
-        e.corroboration = 2;
+        e.corroboration = 1;
         assert!(rule_au_003_high_corroboration(&[e], "s", 0).is_empty());
 
         let mut d = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
-        d.corroboration = 4;
+        d.corroboration = 2;
         assert!(rule_au_003_high_corroboration(&[d], "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au003_uses_distinct_sources_not_summed_corroboration() {
+        // THE FIX in correlator terms: an email with summed corroboration=8
+        // but only 1 distinct evidence source must NOT fire AU-003 (it is not
+        // cross-corroborated), and an email with 2 distinct sources must fire
+        // regardless of the summed field.
+        let mut single = Entity::new(EntityKind::Email, "a@b.com", 0.9, "s");
+        single.corroboration = 8;
+        single.add_evidence(crate::core::entity::Evidence::new("oathnet_pro", "8 rows"));
+        assert!(
+            rule_au_003_high_corroboration(&[single], "s", 0).is_empty(),
+            "single-source entity must not fire AU-003 despite inflated corroboration"
+        );
+
+        let mut multi = Entity::new(EntityKind::Email, "a@b.com", 0.9, "s");
+        multi.corroboration = 2;
+        multi.add_evidence(crate::core::entity::Evidence::new("hibp", "breach"));
+        multi.add_evidence(crate::core::entity::Evidence::new("dehashed", "breach"));
+        assert_eq!(
+            rule_au_003_high_corroboration(&[multi], "s", 0).len(),
+            1,
+            "two distinct sources must fire AU-003"
+        );
     }
 
     // ── AU-004 ──────────────────────────────────────────────────────────

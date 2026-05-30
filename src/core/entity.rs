@@ -238,18 +238,53 @@ impl Entity {
 
     // ── Derived metrics ──────────────────────────────────────────────────────
 
-    /// `C_eff = clamp(confidence × (1 + 0.15 × ln(corroboration)), 0.0, 1.0)`
+    /// Number of DISTINCT corroborating sources backing this entity — the
+    /// true cross-correlation signal that drives the C_eff boost.
     ///
-    /// Corroboration is floored at 1 (so a never-corroborated entity gets
-    /// `ln(1) = 0`, i.e. no boost) and is otherwise uncapped — the canonical
-    /// formula applies the logarithm directly to the corroboration count.
-    /// The outer `clamp(.., 0.0, 1.0)` keeps the result a valid confidence,
-    /// so additional sources have sharply diminishing effect near the ceiling
-    /// without an explicit cap on the count.
+    /// This is `evidence_sources().len()` (count of distinct `evidence.source`
+    /// strings, since every module emits one stable source name), floored at 1.
+    /// When no evidence is attached (synthetic/test entities, or an entity
+    /// constructed before its evidence) it falls back to the stored
+    /// `corroboration` field so an explicitly-set strength value is still
+    /// honoured.
+    ///
+    /// Why not the `corroboration` field directly: that field is the summed
+    /// *observation magnitude* (e.g. hibp seeds it with verified-breach count,
+    /// search_engines with engine-agreement count, and `merge()` adds them).
+    /// Summed within-module counts are NOT a count of independent sources, so
+    /// using them to boost C_eff over-credited single-source findings (a 5-breach
+    /// hibp hit looked like "5 independent sources"). The distinct-source count
+    /// is the honest cross-correlation measure — and is already the signal used
+    /// by the expansion gate, the diagnostics diversity floor, and 6 correlator
+    /// rules. The `corroboration` field is retained as the observation-magnitude
+    /// signal for ranking/diagnostics; it no longer drives C_eff.
+    #[inline]
+    pub fn source_count(&self) -> u32 {
+        let distinct = self.evidence_sources().len() as u32;
+        if distinct > 0 {
+            // Evidence is attached: distinct sources is the authoritative
+            // cross-correlation count. The summed `corroboration` magnitude is
+            // deliberately NOT allowed to inflate it — that was the bug.
+            distinct
+        } else {
+            // No evidence (synthetic/test entity, or constructed pre-evidence):
+            // fall back to the explicitly-set field so a deliberate strength
+            // value is still honoured.
+            self.corroboration.max(1)
+        }
+    }
+
+    /// `C_eff = clamp(confidence × (1 + 0.15 × ln(source_count)), 0.0, 1.0)`
+    ///
+    /// `source_count` is the number of DISTINCT corroborating sources (see
+    /// [`source_count`]), floored at 1 (so a single-source entity gets
+    /// `ln(1) = 0`, i.e. no boost) and otherwise uncapped — the logarithm gives
+    /// additional sources sharply diminishing effect, and the outer
+    /// `clamp(.., 0.0, 1.0)` keeps the result a valid confidence.
     #[inline]
     pub fn c_effective(&self) -> f64 {
-        let corr = self.corroboration.max(1) as f64;
-        let boost = CORROBORATION_COEFF.mul_add(corr.ln(), 1.0);
+        let sources = f64::from(self.source_count());
+        let boost = CORROBORATION_COEFF.mul_add(sources.ln(), 1.0);
         (self.confidence * boost).clamp(0.0, 1.0)
     }
 
@@ -606,9 +641,48 @@ mod tests {
     fn c_eff_boost_with_corroboration() {
         let mut e = email("a@b.com");
         e.corroboration = 4;
+        // No evidence attached → source_count() falls back to the field (4).
         // c_eff = 0.6 * (1 + 0.15 * ln(4)) = 0.6 * 1.2079...
         let expected = 0.6 * 0.15f64.mul_add(4f64.ln(), 1.0);
         assert!((e.c_effective() - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn c_eff_boosts_on_distinct_sources_not_summed_corroboration() {
+        // THE FIX: an entity backed by 2 DISTINCT sources but with a summed
+        // corroboration of 8 (the merge() over-count bug) must boost on 2, not 8.
+        let mut e = email("a@b.com");
+        e.corroboration = 8; // as if hibp(5) merged with search_engines(3)
+        e.add_evidence(Evidence::new("hibp", "found in 5 breaches"));
+        e.add_evidence(Evidence::new("search_engines", "5 engines agree"));
+        assert_eq!(e.source_count(), 2, "distinct sources, not the summed 8");
+        let expected = 0.6 * 0.15f64.mul_add(2f64.ln(), 1.0);
+        assert!(
+            (e.c_effective() - expected).abs() < 1e-9,
+            "C_eff must boost on 2 distinct sources, not the inflated corroboration=8"
+        );
+    }
+
+    #[test]
+    fn source_count_collapses_same_module_duplicate_evidence() {
+        // Multiple evidence rows from ONE module (e.g. oathnet_pro returning
+        // many breach rows) are a single independent source.
+        let mut e = email("a@b.com");
+        e.corroboration = 172; // oathnet within-module row count
+        for i in 0..5 {
+            e.add_evidence(Evidence::new("oathnet_pro", format!("breach row {i}")));
+        }
+        assert_eq!(e.source_count(), 1, "one module = one source regardless of rows");
+        // ln(1)=0 → no boost; a single source must not be inflated.
+        assert!((e.c_effective() - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn source_count_no_evidence_uses_field() {
+        // Synthetic entity with no evidence honours the explicit field.
+        let mut e = email("a@b.com");
+        e.corroboration = 3;
+        assert_eq!(e.source_count(), 3);
     }
 
     #[test]
