@@ -4,6 +4,13 @@
   <meta charset="utf-8">
   <title>Huntsman Search Engine</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Colours Chrome-on-Android's address bar to match the dark navbar. -->
+  <meta name="theme-color" content="#222222">
+  <!-- Inline SVG favicon (hunting-crosshair, brand cyan on navbar dark). Being a
+       data URI, modern Chrome uses it directly and never requests /favicon.ico —
+       which would otherwise fall through to the SPA fallback and return the whole
+       HTML document as an image. Fully offline; no extra route or binary asset. -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23222222'/><circle cx='16' cy='16' r='8' fill='none' stroke='%2307aef1' stroke-width='2'/><circle cx='16' cy='16' r='2.4' fill='%2307aef1'/><path d='M16 2v6M16 24v6M2 16h6M24 16h6' stroke='%2307aef1' stroke-width='2'/></svg>">
 
   <!-- Spiderfoot's exact vendor stack: Bootstrap 3.4.1, jQuery 3.7.1,
        D3 v3, tablesorter 2.31, alertify 1.13. Served from the embedded

@@ -55,6 +55,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Favicon + address-bar theming for Chrome-on-Android; `/favicon.ico` no longer
+  returns the SPA HTML.** Chrome (especially on Android) requests `/favicon.ico`
+  unconditionally; with no handler it fell through to the SPA fallback and
+  returned the entire HTML document as an "image" (≈70 KB, `text/html`, blank tab
+  icon, console error). Added (1) an inline SVG `<link rel="icon">` in the SPA
+  head — a hunting-crosshair in the brand cyan (`#07aef1`) on the navbar dark
+  (`#222`) — so modern Chrome uses it directly and skips the `/favicon.ico`
+  request entirely; (2) a `<meta name="theme-color" content="#222222">` so the
+  Android Chrome address bar matches the dark navbar; and (3) a dedicated
+  `GET /favicon.ico` route serving the same 319-byte SVG with
+  `Content-Type: image/svg+xml` for any client that still asks. New test
+  `favicon_returns_svg_not_html` asserts it's SVG, not the SPA document. Fully
+  offline (no extra binary asset). Suite +1 at 1327 passed.
+
 - **Wide data tables now scroll horizontally on Chrome-on-Android.** The Browse
   element table (8 columns: Type/Value/C_eff/Corr/Tier/Tags/Sources/Observed) and
   the Scans table (7 columns) previously overflowed a phone viewport, forcing a
