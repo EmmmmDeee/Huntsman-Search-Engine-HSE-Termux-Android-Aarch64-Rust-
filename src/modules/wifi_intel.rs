@@ -97,6 +97,15 @@ impl Module for WifiIntel {
     }
 
     fn is_passive(&self) -> bool {
+        // Classed passive as a local sensor: the primary action is reading
+        // on-device Wi-Fi radios via termux-wifi-scaninfo, and off-Termux
+        // the module no-ops before any network use. CAVEAT: when run
+        // on-device with scan results, the top-N strongest BSSIDs are
+        // enriched via the WiGLE API — so under --passive-only this module
+        // CAN still egress for geolocation. This is intentional (it lives in
+        // engine::LOCAL_PASSIVE_MODULES as a seed-round sensor); a strict
+        // no-egress guarantee would require gating the WiGLE step on a
+        // passive flag. Documented in docs/MODULES.md.
         true
     }
 

@@ -60,6 +60,17 @@ All sensor modules are **free** (no API key required). Sensors fire on
 every scan as environmental enrichment; off-device, the `termux-*`
 binary-based modules no-op cleanly (no `module_error` events).
 
+> **Passive caveat — `wifi_intel` / `cell_intel`.** These two are classed
+> `is_passive() == true` because their primary action is reading on-device
+> radios (and they no-op off-Termux before any network use). However, when
+> run on-device with radio data, they enrich the strongest BSSIDs / towers
+> via the WiGLE and OpenCellID APIs respectively. So under `--passive-only`
+> they **can still make outbound requests** on-device. This is intentional —
+> they are seed-round local sensors (`engine::LOCAL_PASSIVE_MODULES`) — but
+> if you need a strict no-egress guarantee, exclude them explicitly
+> (`--exclude wifi_intel,cell_intel`). All other passive modules are
+> genuinely zero-network.
+
 ### Target-kind coverage matrix
 
 | Target | Modules that fire |
