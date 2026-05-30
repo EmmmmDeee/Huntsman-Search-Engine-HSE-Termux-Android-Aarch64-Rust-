@@ -10,6 +10,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Removed
+
+- **Stripped non-functional governance + narrative docs.** Removed the process
+  "rules and regulations" that carry no build or runtime effect: governance docs
+  (`CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `SECURITY.md`) and the `.github/` PR +
+  issue templates; and the narrative/charter docs (`docs/BLUEPRINT.md`,
+  `docs/DESIGN.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`). Functional code is
+  untouched — all 87 modules, the 32 correlator rules, `#![forbid(unsafe_code)]`,
+  the CI workflow, the architecture-invariant tests, the LICENSEs, this CHANGELOG,
+  and the operational docs (`USAGE`, `INSTALL`, `MODULES`, `TROUBLESHOOTING`,
+  `API_KEY_HUNTING_GUIDE`, `OATHNET_API_GUIDE`) remain. README's doc index was
+  updated to drop the two now-deleted links. Build + full test suite unchanged
+  (1326 green), proving nothing in code/tests depended on the removed files.
+
 ### Fixed
 
 - **see_know `/search` transient empties no longer poison the scan; curl errors
