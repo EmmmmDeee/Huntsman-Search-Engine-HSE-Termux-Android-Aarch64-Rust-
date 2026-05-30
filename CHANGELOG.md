@@ -55,6 +55,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Exposed the GEXF graph export in the browser UI (was backend-only).** The
+  `GET /scans/{id}/graph.gexf` endpoint — Gephi-compatible graph export with a
+  proper `Content-Disposition: attachment` filename — was fully wired in the
+  backend but had **zero** reference anywhere in the SPA: no button, no URL
+  helper, so a Chrome user could never reach it (SpiderFoot 4.0 offers exactly
+  this graph export). Added an `API.gexfUrl(id)` helper and an "Export GEXF"
+  download button in the Graph tab controls, beside Re-layout / Reset view —
+  SpiderFoot's contextual location for graph export. Verified the download
+  serves `application/xml` with `attachment; filename="hse-gexf-<id>.gexf"`, so
+  Chrome-on-Android saves it with a sensible name. SPA-only; suite unchanged at
+  1327 passed.
+
 - **Favicon + address-bar theming for Chrome-on-Android; `/favicon.ico` no longer
   returns the SPA HTML.** Chrome (especially on Android) requests `/favicon.ico`
   unconditionally; with no handler it fell through to the SPA fallback and
