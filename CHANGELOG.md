@@ -91,6 +91,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Extracted the dashboard's scan-stats aggregation into a pure, unit-tested
+  function.** The `/stats` handler (which feeds the SPA dashboard's Total Scans /
+  Entities / status-breakdown cards) interleaved its summation loop — per-status
+  histogram + entity/dedup totals — with store I/O and JSON assembly, so the
+  arithmetic was only reachable through the full async handler + a live store.
+  Pulled it into a pure `aggregate_scan_stats(&[Scan]) -> ScanStatsAgg` (the
+  handler now destructures the result), and added a unit test covering the
+  multi-status histogram, the running totals, and the empty-input case. Not a
+  line-count play (handler 60→56) — a separation-of-concerns / testability one,
+  matching the codebase's pure-function pattern. Behaviour-preserving: the
+  existing `/stats` end-to-end API tests pass unchanged. Suite +1 at 1331.
+
 - **Refactored `Store::open` (102→27-line body) behind a schema characterisation
   test.** The SQLite bootstrap — the most Termux-essential function, run on every
   launch — was a 102-line body dominated by an inline DDL string, with the two

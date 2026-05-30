@@ -91,20 +91,36 @@ pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "version": crate::VERSION }))
 }
 
+/// Pure aggregation of dashboard scan statistics — the per-status histogram and
+/// the entity/dedup totals — over a scan list. Split out of [`stats`] so the
+/// summation logic is unit-testable without a live store + async handler.
+#[derive(Default, PartialEq, Eq, Debug)]
+pub(crate) struct ScanStatsAgg {
+    pub by_status: std::collections::BTreeMap<&'static str, u64>,
+    pub total_entities: u64,
+    pub total_deduped: u64,
+}
+
+pub(crate) fn aggregate_scan_stats(scans: &[crate::core::scan::Scan]) -> ScanStatsAgg {
+    let mut agg = ScanStatsAgg::default();
+    for scan in scans {
+        *agg.by_status.entry(scan.status.as_str()).or_insert(0) += 1;
+        agg.total_entities += scan.entity_count as u64;
+        agg.total_deduped += scan.modules_deduped as u64;
+    }
+    agg
+}
+
 pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let scans = match s.store.list_scans(10_000) {
         Ok(scans) => scans,
         Err(e) => return internal_error(&e),
     };
-    let mut by_status: std::collections::BTreeMap<&'static str, u64> =
-        std::collections::BTreeMap::new();
-    let mut total_entities = 0u64;
-    let mut total_deduped = 0u64;
-    for scan in &scans {
-        *by_status.entry(scan.status.as_str()).or_insert(0) += 1;
-        total_entities += scan.entity_count as u64;
-        total_deduped += scan.modules_deduped as u64;
-    }
+    let ScanStatsAgg {
+        by_status,
+        total_entities,
+        total_deduped,
+    } = aggregate_scan_stats(&scans);
     let modules = s.engine.modules().len();
     let live_sessions = s.live.list().len();
 
@@ -510,6 +526,37 @@ pub async fn live_events_sse(
 #[cfg(test)]
 mod tests {
     use crate::api::scan_handlers::csv_escape;
+
+    #[test]
+    fn aggregate_scan_stats_sums_counts_and_histograms_status() {
+        use super::aggregate_scan_stats;
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+
+        let mk = |id: &str, status: ScanStatus, ents: usize, dedup: usize| {
+            let mut s = Scan::new(id, Target::new(TargetKind::Email, "x@y.com"));
+            s.status = status;
+            s.entity_count = ents;
+            s.modules_deduped = dedup;
+            s
+        };
+        let scans = [
+            mk("a", ScanStatus::Complete, 10, 2),
+            mk("b", ScanStatus::Complete, 5, 1),
+            mk("c", ScanStatus::Failed, 0, 0),
+            mk("d", ScanStatus::Running, 3, 4),
+        ];
+        let agg = aggregate_scan_stats(&scans);
+        assert_eq!(agg.total_entities, 18);
+        assert_eq!(agg.total_deduped, 7);
+        assert_eq!(agg.by_status.get("complete"), Some(&2));
+        assert_eq!(agg.by_status.get("failed"), Some(&1));
+        assert_eq!(agg.by_status.get("running"), Some(&1));
+        assert_eq!(agg.by_status.get("pending"), None);
+
+        // Empty input yields all-zero totals and an empty histogram.
+        let empty = aggregate_scan_stats(&[]);
+        assert_eq!(empty, super::ScanStatsAgg::default());
+    }
 
     #[test]
     fn csv_escape_plain() {
