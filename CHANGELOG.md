@@ -12,6 +12,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **see_know coordinate parsing extracted to `parse_coord`.** The lat/lon
+  extraction in `extract_geo_entities` was two 10-line `or_else` ladders that
+  each tried a JSON number then a numeric string across the candidate keys
+  (`latitude`/`lat`, `longitude`/`lon`/`lng`). Replaced with a single
+  `parse_coord(item, keys)` helper preserving the exact "first present key, read
+  as f64 else parse its string" semantics, taking `extract_geo_entities` from
+  128 to 111 lines. Added `extract_geo_entities_characterization` (f64 + string
+  coords, out-of-range rejection, location/timezone/ASN/org endpoint-gating,
+  WHOIS registrant) written green before the change. Behaviour-identical.
+
 - **see_know breach-entity tagging centralised; extraction characterised.** The
   nine per-field blocks in `extract_entities` each repeated the same tail —
   `tag(breach) + tag("see-know") + add_evidence(ev.clone()) + push`. Lifted that

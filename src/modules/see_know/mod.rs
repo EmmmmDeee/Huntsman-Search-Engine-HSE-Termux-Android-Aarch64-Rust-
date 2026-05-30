@@ -507,6 +507,15 @@ impl EndpointCall {
 /// Geo-conscious extraction — surface coordinates, timezones, and
 /// location-bearing fields from any SeekNow endpoint response so the
 /// downstream geocode/overpass/wigle modules can converge.
+/// First-present-of-`keys` coordinate value, accepting either a JSON number or
+/// a numeric string (some SeekNow endpoints serialise lat/lon as strings).
+/// Preserves the original semantics: pick the first present key, then read it as
+/// an f64 or, failing that, parse its string form.
+fn parse_coord(item: &Value, keys: &[&str]) -> Option<f64> {
+    let v = keys.iter().find_map(|k| item.get(*k))?;
+    v.as_f64().or_else(|| v.as_str()?.parse().ok())
+}
+
 fn extract_geo_entities(
     item: &Value,
     endpoint: &str,
@@ -515,27 +524,9 @@ fn extract_geo_entities(
     result: &mut ModuleResult,
 ) {
     // Direct coordinate fields — some endpoints (ip_info, phone_info)
-    // return lat/lon pairs directly.
-    let lat = item
-        .get("latitude")
-        .or_else(|| item.get("lat"))
-        .and_then(|v| v.as_f64())
-        .or_else(|| {
-            item.get("latitude")
-                .or_else(|| item.get("lat"))
-                .and_then(|v| v.as_str()?.parse().ok())
-        });
-    let lon = item
-        .get("longitude")
-        .or_else(|| item.get("lon"))
-        .or_else(|| item.get("lng"))
-        .and_then(|v| v.as_f64())
-        .or_else(|| {
-            item.get("longitude")
-                .or_else(|| item.get("lon"))
-                .or_else(|| item.get("lng"))
-                .and_then(|v| v.as_str()?.parse().ok())
-        });
+    // return lat/lon pairs directly, as a JSON number or a numeric string.
+    let lat = parse_coord(item, &["latitude", "lat"]);
+    let lon = parse_coord(item, &["longitude", "lon", "lng"]);
     if let (Some(la), Some(lo)) = (lat, lon)
         && (-90.0..=90.0).contains(&la)
         && (-180.0..=180.0).contains(&lo)
@@ -906,6 +897,112 @@ mod tests {
                 .iter()
                 .any(|e| e.value == "steam:76561198000000000" && e.has_tag("steam"))
         );
+    }
+
+    #[test]
+    fn extract_geo_entities_characterization() {
+        use serde_json::json;
+
+        // Coordinates from f64 fields, tagged with the endpoint.
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"lat": 40.7128, "lon": -74.0060}),
+                "ip_info",
+                "s",
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                r.entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Coordinates && e.has_tag("via:ip_info")),
+                "f64 coords"
+            );
+        }
+        // Coordinates from STRING fields (the dual f64/str parse path).
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"latitude": "51.5", "longitude": "-0.12"}),
+                "phone_info",
+                "s",
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+                "string coords"
+            );
+        }
+        // Out-of-range coordinates are rejected.
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"lat": 999.0, "lon": 0.0}),
+                "ip_info",
+                "s",
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                !r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+                "out-of-range rejected"
+            );
+        }
+        // Location hint, timezone, ASN + org (ip_info only).
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"location": "Sydney, NSW", "timezone": "Australia/Sydney", "asn": "AS15169", "org": "Google"}),
+                "ip_info",
+                "s",
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                r.entities
+                    .iter()
+                    .any(|e| e.value == "Sydney, NSW" && e.has_tag("geo-hint"))
+            );
+            assert!(
+                r.entities
+                    .iter()
+                    .any(|e| e.value == "tz:Australia/Sydney" && e.has_tag("timezone"))
+            );
+            assert!(
+                r.entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Asn && e.value == "AS15169")
+            );
+            assert!(
+                r.entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Organisation)
+            );
+        }
+        // ASN/org gated to the ip_info endpoint.
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(&json!({"asn": "AS1"}), "phone_info", "s", &mut seen, &mut r);
+            assert!(!r.entities.iter().any(|e| e.kind == EntityKind::Asn));
+        }
+        // WHOIS registrant address (>= 2 parts) on the whois endpoint.
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"registrant_city": "Reno", "registrant_state": "NV", "registrant_country": "US"}),
+                "whois",
+                "s",
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                r.entities
+                    .iter()
+                    .any(|e| e.value == "Reno, NV, US" && e.has_tag("whois-registrant"))
+            );
+        }
     }
 
     #[test]
