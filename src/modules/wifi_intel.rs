@@ -273,14 +273,14 @@ async fn query_wigle_detail(
 
     let status = resp.status();
     if status.as_u16() == 429 {
-        let retry_secs = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(60);
-        tracing::warn!("WiGLE 429 — backing off {retry_secs}s");
-        tokio::time::sleep(std::time::Duration::from_secs(retry_secs.min(120))).await;
+        // Return the rate-limit to the caller immediately. The previous code
+        // slept up to 120 s here before returning Err, but this module's 20 s
+        // budget (max_timeout_ms) meant the engine killed process() mid-sleep
+        // — discarding the entire module result, including the phase-1 AP
+        // survey already collected, and mislabelling the 429 as a "timeout".
+        // No retry follows this branch, so the sleep bought nothing.
+        let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 60);
+        tracing::warn!("WiGLE 429 — rate-limited (server requested {retry_secs}s backoff)");
         return Err(Error::module(SOURCE, "rate-limited (429)"));
     }
     if status.as_u16() == 404 {
