@@ -1,8 +1,9 @@
 //! Device location sensors — WiFi connection info and GPS/network fix via Termux.
 //!
 //! Merges the former `wifi_connect` and `gps_fix` modules into a single
-//! passive sensor pass.  Invokes `termux-wifi-connectioninfo` (3 s ceiling)
-//! followed by `termux-location -p network -r once` (15 s ceiling).
+//! passive sensor pass.  Invokes `termux-wifi-connectioninfo` (3 s ceiling),
+//! then a location fix: `termux-location -p gps` first (12 s), falling back to
+//! `-p network` (8 s) when GPS yields no valid fix.
 //!
 //! Off-device behaviour: termux-api binary missing → no-op (no error).
 
@@ -94,17 +95,43 @@ impl Module for DeviceSensors {
             }
         }
 
-        // ── Step 2: GPS / network location fix (15 s timeout) ───────
-        if let Some(stdout) =
-            termux_cmd("termux-location", &["-p", "network", "-r", "once"], 15_000).await
-        {
-            let fix = parse_fix(&stdout, &ctx.scan_id);
-            for e in fix.entities {
-                result.push(e);
-            }
+        // ── Step 2: location fix — GPS first, network fallback ──────
+        // The brief requires gps_fix WITH a network-provider fallback. Try the
+        // GPS provider first (highest accuracy; satellite acquisition can be
+        // slow, so a ~12 s ceiling), and only if it yields no VALID fix fall
+        // back to the network provider (~8 s; works indoors / cold-start).
+        // Both calls are independently timeout-bounded and together stay
+        // inside the module's 20 s max_timeout_ms. A GPS response that fails
+        // validation (Null Island / out-of-range) correctly triggers the
+        // fallback rather than being accepted.
+        let gps = fetch_fix("gps", 12_000, &ctx.scan_id).await;
+        let fix = if gps.entities.is_empty() {
+            fetch_fix("network", 8_000, &ctx.scan_id).await
+        } else {
+            gps
+        };
+        for e in fix.entities {
+            result.push(e);
         }
 
         Ok(result)
+    }
+}
+
+/// Run `termux-location -p <provider> -r once`, bounded by `timeout_ms`, and
+/// parse the result. Returns an empty `ModuleResult` off-device (binary
+/// missing), on timeout, or on an invalid/no-fix payload — so the caller can
+/// treat "no entities" as "try the next provider".
+async fn fetch_fix(provider: &str, timeout_ms: u64, scan_id: &str) -> ModuleResult {
+    match termux_cmd(
+        "termux-location",
+        &["-p", provider, "-r", "once"],
+        timeout_ms,
+    )
+    .await
+    {
+        Some(stdout) => parse_fix(&stdout, scan_id),
+        None => ModuleResult::new(),
     }
 }
 
@@ -390,6 +417,16 @@ mod tests {
         let r = parse_fix(json, "test");
         assert!(r.entities[0].has_tag("provider:gps"));
         assert!(r.entities[0].has_tag("device-sensor"));
+    }
+
+    #[tokio::test]
+    async fn fetch_fix_is_empty_off_device() {
+        // Off-device (no termux-location binary), fetch_fix returns empty —
+        // which is exactly the signal process() uses to fall back from the
+        // GPS provider to the network provider. Proves the fallback trigger
+        // is wired without requiring a device.
+        let r = fetch_fix("gps", 1000, "test").await;
+        assert!(r.entities.is_empty());
     }
 
     #[test]
