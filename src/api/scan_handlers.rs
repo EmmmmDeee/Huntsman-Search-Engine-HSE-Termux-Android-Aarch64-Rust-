@@ -13,18 +13,16 @@ use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target};
 
-pub async fn scan_create(
-    State(s): State<Arc<AppState>>,
-    Json(req): Json<ScanRequest>,
-) -> impl IntoResponse {
+/// Build a validated, profile-resolved `Scan` (+ its `Target`) from a request,
+/// or a client-facing error message. Shared by `scan_create` (single) and
+/// `scan_batch` (per-item) so the validation, deterministic scan-id derivation,
+/// and `profile`→options resolution can't drift between the two paths. Pure:
+/// no store or engine access, so it's unit-testable on its own.
+fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target), String> {
     let target = Target::new(req.kind, req.value.clone());
-    if let Err(msg) = target.validate() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("invalid target: {msg}") })),
-        )
-            .into_response();
-    }
+    target
+        .validate()
+        .map_err(|msg| format!("invalid target: {msg}"))?;
     let sid = scan_id(req.kind.canonical_str(), &req.value);
     let mut opts = req.options;
     if let Some(ref profile_name) = opts.profile
@@ -32,7 +30,20 @@ pub async fn scan_create(
     {
         opts = profile_opts;
     }
-    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let scan = Scan::new(sid, target.clone()).with_options(opts);
+    Ok((scan, target))
+}
+
+pub async fn scan_create(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<ScanRequest>,
+) -> impl IntoResponse {
+    let (scan, target) = match build_scan_from_request(req) {
+        Ok(pair) => pair,
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+        }
+    };
 
     if let Err(e) = s.store.upsert_scan(&scan) {
         return internal_error(&e);
@@ -69,23 +80,18 @@ pub async fn scan_batch(
 
     let mut scan_ids = Vec::with_capacity(requests.len());
     for req in requests {
-        let target = Target::new(req.kind, req.value.clone());
-        if let Err(msg) = target.validate() {
-            scan_ids.push(json!({ "error": format!("invalid target: {msg}") }));
-            continue;
-        }
-        let sid = scan_id(req.kind.canonical_str(), &req.value);
-        let mut opts = req.options;
-        if let Some(ref profile_name) = opts.profile
-            && let Some(profile_opts) = crate::core::profiles::resolve_profile(profile_name)
-        {
-            opts = profile_opts;
-        }
-        let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+        let (scan, target) = match build_scan_from_request(req) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                scan_ids.push(json!({ "error": msg }));
+                continue;
+            }
+        };
         if let Err(e) = s.store.upsert_scan(&scan) {
             scan_ids.push(json!({ "error": e.to_string() }));
             continue;
         }
+        let sid = scan.id.clone();
         spawn_scan(&s, scan, target);
         scan_ids.push(json!({ "scan_id": sid, "status": "queued" }));
     }
@@ -472,3 +478,45 @@ pub(crate) fn csv_escape(s: &str) -> String {
 }
 
 // ─── Health / Version / Stats / Modules ────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::scan::TargetKind;
+
+    #[test]
+    fn build_scan_from_request_valid_is_deterministic() {
+        let req = ScanRequest {
+            kind: TargetKind::Domain,
+            value: "example.com".to_string(),
+            options: Default::default(),
+        };
+        let (scan, target) = build_scan_from_request(req).expect("valid domain should build");
+        assert_eq!(target.value, "example.com");
+        assert_eq!(target.kind, TargetKind::Domain);
+        // The scan id is the deterministic content hash of (kind, value), so a
+        // second build of the same request yields the identical id.
+        let req2 = ScanRequest {
+            kind: TargetKind::Domain,
+            value: "example.com".to_string(),
+            options: Default::default(),
+        };
+        let (scan2, _) = build_scan_from_request(req2).unwrap();
+        assert_eq!(scan.id, scan2.id);
+        assert_eq!(scan.id, scan_id("domain", "example.com"));
+    }
+
+    #[test]
+    fn build_scan_from_request_rejects_invalid_target() {
+        let req = ScanRequest {
+            kind: TargetKind::Domain,
+            value: "no-dot-here".to_string(),
+            options: Default::default(),
+        };
+        let err = build_scan_from_request(req).unwrap_err();
+        assert!(
+            err.starts_with("invalid target: "),
+            "error must carry the client-facing prefix, got: {err}"
+        );
+    }
+}

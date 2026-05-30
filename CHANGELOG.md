@@ -91,6 +91,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **De-duplicated scan construction shared by `scan_create` and `scan_batch`.**
+  Both the single-scan `POST /scans` and the batch `POST /scans/batch` handlers
+  carried an identical eight-line sequence — target construction, `validate()`
+  (with the same `invalid target: …` error string), deterministic `scan_id`
+  derivation, `profile`→options resolution, and `Scan::new().with_options()` —
+  differing only in how each reports a bad item (HTTP 400 vs a per-item JSON
+  error). Lifted that into a pure `build_scan_from_request(req) -> Result<(Scan,
+  Target), String>` that both call, so the validation/id/profile rules can no
+  longer drift between the two entry points. Added unit tests for the valid
+  (deterministic id) and invalid (error-prefix) paths. Behaviour-preserving: the
+  existing `scan_create_*` end-to-end API tests pass unchanged. Suite +2 at 1333.
+
 - **Extracted the dashboard's scan-stats aggregation into a pure, unit-tested
   function.** The `/stats` handler (which feeds the SPA dashboard's Total Scans /
   Entities / status-breakdown cards) interleaved its summation loop — per-status
