@@ -235,12 +235,12 @@ fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
 /// position.
 ///
 /// Also rejects non-finite values (NaN/±inf) defensively.
+///
+/// Delegates to the canonical `util::geo::is_valid_coords` so on-device GPS
+/// fixes are validated by exactly the same policy as the network-geo modules
+/// (geo_intel, ip_whois_geo, cell_intel, wifi_intel, mylnikov).
 fn is_valid_fix(lat: f64, lon: f64) -> bool {
-    lat.is_finite()
-        && lon.is_finite()
-        && (-90.0..=90.0).contains(&lat)
-        && (-180.0..=180.0).contains(&lon)
-        && !(lat == 0.0 && lon == 0.0)
+    crate::util::geo::is_valid_coords(lat, lon)
 }
 
 /// Confidence for an on-device location fix.

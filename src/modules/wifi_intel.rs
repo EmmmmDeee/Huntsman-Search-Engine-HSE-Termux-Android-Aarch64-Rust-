@@ -18,6 +18,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::Target,
 };
+use crate::util::geo::is_valid_coords;
 use crate::util::http::error_snippet;
 use crate::util::termux::termux_cmd;
 
@@ -165,7 +166,8 @@ impl Module for WifiIntel {
             if let Ok(Some(detail)) = query_wigle_detail(&ctx.http, user, token, &ap.bssid).await
                 && let (Some(lat), Some(lon)) = (detail.trilat, detail.trilong)
             {
-                if lat == 0.0 && lon == 0.0 {
+                // Shared validator: Null Island + out-of-range + non-finite.
+                if !is_valid_coords(lat, lon) {
                     continue;
                 }
 

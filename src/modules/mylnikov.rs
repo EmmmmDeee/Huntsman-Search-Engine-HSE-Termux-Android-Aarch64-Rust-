@@ -14,6 +14,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::geo::is_valid_coords;
 use crate::util::http::urlencode;
 
 const SRC: &str = "mylnikov";
@@ -90,7 +91,8 @@ impl Module for Mylnikov {
         let (Some(lat), Some(lon)) = (data.lat, data.lon) else {
             return Ok(ModuleResult::new());
         };
-        if lat == 0.0 && lon == 0.0 {
+        // Shared validator: Null Island + out-of-range + non-finite (util::geo).
+        if !is_valid_coords(lat, lon) {
             return Ok(ModuleResult::new());
         }
 
