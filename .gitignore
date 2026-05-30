@@ -17,3 +17,4 @@
 *.db-shm
 .huntsman.env
 .claude/worktrees/
+.claude/settings.local.json
