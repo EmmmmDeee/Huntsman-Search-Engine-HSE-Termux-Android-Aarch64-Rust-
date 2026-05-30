@@ -12,6 +12,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **whois response parsing extracted to a pure `parse_whois`.** The ~55-line
+  block in `Whois::process` that parsed a raw WHOIS body into 17 typed fields
+  (registrar/dates/registrant/nameservers/statuses/dnssec) is now a pure
+  `parse_whois(&str) -> WhoisFields` that `process` destructures, taking the
+  method from 304 to 268 lines and making the parser unit-testable against
+  canned WHOIS text (no TCP/43). Two new tests cover the field extraction and
+  the `@`-required email-placeholder filtering. Behaviour-identical (same field
+  keys, same precedence, same `@` filter).
+
 - **oathnet_pro stealer-entity tagging centralised; extraction characterised.**
   `extract_stealer_entities` repeated the stealer-context tail
   (`tag("oathnet-pro") + tag("stealer") + [extra] + add_evidence + push`) across
