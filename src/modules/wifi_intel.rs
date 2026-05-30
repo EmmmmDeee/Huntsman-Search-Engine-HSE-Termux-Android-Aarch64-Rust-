@@ -278,8 +278,10 @@ async fn query_wigle_detail(
         // budget (max_timeout_ms) meant the engine killed process() mid-sleep
         // — discarding the entire module result, including the phase-1 AP
         // survey already collected, and mislabelling the 429 as a "timeout".
-        // No retry follows this branch, so the sleep bought nothing.
-        let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 60);
+        // No retry follows this branch, so the sleep bought nothing. The
+        // value is logged only (not slept on), so the ceiling just bounds the
+        // displayed number.
+        let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 60, 120);
         tracing::warn!("WiGLE 429 — rate-limited (server requested {retry_secs}s backoff)");
         return Err(Error::module(SOURCE, "rate-limited (429)"));
     }

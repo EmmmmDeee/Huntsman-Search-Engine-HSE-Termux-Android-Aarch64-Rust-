@@ -250,14 +250,27 @@ pub(crate) fn redact_credentials(text: &str) -> String {
 
 /// Parse the `Retry-After` header from a response, returning the number
 /// of seconds to wait. Falls back to `default_secs` if absent or
-/// unparseable. Capped at 120s to prevent infinite waits.
-pub fn retry_after_secs(headers: &reqwest::header::HeaderMap, default_secs: u64) -> u64 {
+/// unparseable, and is clamped to `max_secs`.
+///
+/// `max_secs` is mandatory because the wait happens *inside* a module's
+/// `process()` call, which the engine kills at `max_timeout_ms`. A blanket
+/// 120s cap (the previous behaviour) let a server-supplied `Retry-After`
+/// — or even a modest default — exceed a 8–20s module budget, so the
+/// engine killed `process()` mid-sleep and mislabelled the 429 as a
+/// timeout. Callers MUST pass a ceiling derived from their own budget
+/// (rule of thumb: ~⅓ of `max_timeout_ms`, leaving headroom for the retry
+/// request itself).
+pub fn retry_after_secs(
+    headers: &reqwest::header::HeaderMap,
+    default_secs: u64,
+    max_secs: u64,
+) -> u64 {
     headers
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(default_secs)
-        .min(120)
+        .min(max_secs)
 }
 
 /// Handle a non-success HTTP response for keyed modules. Returns:
@@ -281,7 +294,10 @@ pub async fn handle_keyed_error(
         429 if *retries_left > 0 => {
             *retries_left -= 1;
             ctx.report_key_exhausted(module, key, 429);
-            let secs = retry_after_secs(headers, 8);
+            // Cap at 4s: callers of this shared helper run with 8–12s module
+            // budgets, so a single in-process retry sleep must stay well under
+            // the tightest of those or the engine kills process() mid-wait.
+            let secs = retry_after_secs(headers, 4, 4);
             tracing::warn!(
                 module,
                 "429 rate-limited on key …{}, retrying in {secs}s ({} left)",
@@ -447,6 +463,43 @@ mod tests {
         assert!(encoded.contains("%2F"));
         assert!(encoded.contains("%26"));
         assert!(encoded.contains("%3D"));
+    }
+
+    // ── retry_after_secs ───────────────────────────────────────────────
+
+    fn hdrs(retry_after: Option<&str>) -> reqwest::header::HeaderMap {
+        let mut h = reqwest::header::HeaderMap::new();
+        if let Some(v) = retry_after {
+            h.insert("retry-after", v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn retry_after_uses_default_when_header_absent() {
+        assert_eq!(retry_after_secs(&hdrs(None), 5, 10), 5);
+    }
+
+    #[test]
+    fn retry_after_parses_header_value() {
+        assert_eq!(retry_after_secs(&hdrs(Some("3")), 5, 10), 3);
+    }
+
+    #[test]
+    fn retry_after_clamps_hostile_header_to_max() {
+        // A server (or a misbehaving proxy) asking for a 600s wait must not
+        // exceed the caller's budget ceiling — this is the timeout-kill bug.
+        assert_eq!(retry_after_secs(&hdrs(Some("600")), 5, 10), 10);
+    }
+
+    #[test]
+    fn retry_after_clamps_oversized_default_to_max() {
+        assert_eq!(retry_after_secs(&hdrs(None), 99, 6), 6);
+    }
+
+    #[test]
+    fn retry_after_ignores_unparseable_header() {
+        assert_eq!(retry_after_secs(&hdrs(Some("soon")), 7, 30), 7);
     }
 
     // ── redact_credentials ─────────────────────────────────────────────

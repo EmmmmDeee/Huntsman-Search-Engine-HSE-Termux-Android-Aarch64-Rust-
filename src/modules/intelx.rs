@@ -203,7 +203,9 @@ impl Module for IntelX {
             }
             let code = status.as_u16();
             if code == 429 && retries < 2 {
-                let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 10);
+                // 15s module budget across search + poll phases: cap each
+                // backoff at 4s so two retries can't exhaust process()'s timeout.
+                let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 4, 4);
                 retries += 1;
                 tokio::time::sleep(Duration::from_secs(retry_secs)).await;
                 continue;
@@ -254,7 +256,7 @@ impl Module for IntelX {
             if !resp.status().is_success() {
                 let code = resp.status().as_u16();
                 if code == 429 && poll_retries < 2 {
-                    let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 10);
+                    let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 4, 4);
                     poll_retries += 1;
                     tokio::time::sleep(Duration::from_secs(retry_secs)).await;
                 }
