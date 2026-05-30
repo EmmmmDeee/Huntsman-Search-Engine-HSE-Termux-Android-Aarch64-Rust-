@@ -35,6 +35,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`scan`/`live` accept coordinate values that begin with `-` (southern
+  hemisphere).** clap parsed a `--value` starting with `-` (e.g. a negative
+  latitude like `-27.47,153.02`, Brisbane) as an unknown flag and aborted the
+  whole invocation with `unexpected argument '-2' found` (exit 2) before the
+  scan ran — breaking the primary GEOINT input for an Australia-focused tool.
+  Added `allow_hyphen_values = true` to the `--value` arg on both `scan` and
+  `live`. Regression test `scan_accepts_leading_negative_coordinate_value`
+  (tests/cli_io.rs) spawns the binary with `-27.47,153.02` and asserts a clean
+  exit with the latitude reaching the scan target; it fails (exit 2) on the
+  unfixed binary. Also fixed test-isolation in that suite (each spawned binary
+  now gets a unique `HOME`/DB via a shared counter, avoiding a "database is
+  locked" collision between parallel CLI tests).
 - **Correlator AU-003 counts distinct sources, not the observation tally (no
   more inflated "N independent sources" claims).** "High cross-source
   corroboration" gated on and reported `Entity::corroboration` — a saturating

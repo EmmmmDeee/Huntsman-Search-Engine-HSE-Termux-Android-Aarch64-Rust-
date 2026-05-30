@@ -60,7 +60,12 @@ pub enum Command {
         #[arg(short, long)]
         kind: String,
         /// Target value (e.g. example.com, foo@bar.com).
-        #[arg(short, long)]
+        // `allow_hyphen_values` so a value that legitimately begins with `-`
+        // is not mistaken for a flag — notably southern-hemisphere coordinates
+        // like `-27.47,153.02` (Brisbane), a core GEOINT input for this
+        // AU-focused tool. Without it clap rejects the entire invocation with
+        // "unexpected argument '-2' found".
+        #[arg(short, long, allow_hyphen_values = true)]
         value: String,
         /// Comma-separated allowlist of module names.
         #[arg(short, long)]
@@ -231,7 +236,9 @@ pub enum Command {
         #[arg(short, long)]
         kind: String,
         /// Target value.
-        #[arg(short, long)]
+        // See `scan`: allow leading-`-` values such as southern-hemisphere
+        // coordinates (`-27.47,153.02`).
+        #[arg(short, long, allow_hyphen_values = true)]
         value: String,
         /// Seconds between iterations.
         #[arg(short, long, default_value_t = crate::LIVE_DEFAULT_INTERVAL_SECS)]
