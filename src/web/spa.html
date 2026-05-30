@@ -1181,10 +1181,14 @@ function renderCorrelations(host){
     host.innerHTML = '<div class="empty-state"><h3>No correlations fired</h3><p>Correlation rules evaluate post-scan against the entities produced. They surface multi-source breach clusters, infrastructure consensus, and other high-signal aggregations.</p></div>';
     return;
   }
+  // Server returns correlations pre-ranked by severity × max child C_eff
+  // (highest-value first). Surface the rank score so the ordering is legible.
   host.innerHTML = S.correlations.map(c=>{
     const sev = (c.severity||'low').toLowerCase();
+    const rank = (typeof c.rank === 'number' && c.rank > 0)
+      ? `<span class="pull-right" title="rank = severity × max child C_eff">rank ${c.rank.toFixed(2)}</span>` : '';
     return `<div class="corr-card cv-${attr(sev)}">
-      <div class="corr-h"><b>${esc(sev.toUpperCase())}</b> · ${esc(c.rule_id||'')}</div>
+      <div class="corr-h"><b>${esc(sev.toUpperCase())}</b> · ${esc(c.rule_id||'')}${rank}</div>
       <div class="corr-name">${esc(c.rule_name||c.rule_id||'—')}</div>
       <div class="corr-d">${esc(c.description||c.summary||'')}</div>
     </div>`;

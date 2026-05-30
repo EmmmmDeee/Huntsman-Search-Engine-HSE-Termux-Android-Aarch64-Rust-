@@ -234,6 +234,11 @@ impl Store {
     pub fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
+            // SQL pre-orders by severity (keeps rows that predate the `rank`
+            // field, which deserialize with rank 0.0, in a sane order); the
+            // authoritative ranking is applied in Rust below using the
+            // persisted `rank` (severity × max child C_eff), which SQL can't
+            // see inside `data_json` without a column + migration.
             let mut stmt = conn.prepare_cached(
                 "SELECT data_json FROM correlations WHERE scan_id = ?1
                  ORDER BY CASE severity
@@ -247,10 +252,21 @@ impl Store {
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
             rows.filter_map(std::result::Result::ok).collect()
         };
-        Ok(raw
+        let mut corrs: Vec<Correlation> = raw
             .into_iter()
             .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+            .collect();
+        // Rank desc: severity × max child C_eff (computed at correlator-run
+        // time). Stable tie-break on severity then rule_id, matching the
+        // correlator's own ordering so CLI and API agree.
+        corrs.sort_by(|a, b| {
+            b.rank
+                .partial_cmp(&a.rank)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.severity.cmp(&a.severity))
+                .then(a.rule_id.cmp(&b.rule_id))
+        });
+        Ok(corrs)
     }
 
     // ── Relations ──────────────────────────────────────────────────────────

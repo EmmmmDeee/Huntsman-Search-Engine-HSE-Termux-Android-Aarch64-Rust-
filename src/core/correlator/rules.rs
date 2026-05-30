@@ -86,6 +86,7 @@ pub(super) fn rule_au_002_identity_cluster(
         entity_uids: uids,
         scan_id: scan_id.into(),
         ts,
+        rank: 0.0,
     }]
 }
 
@@ -124,6 +125,7 @@ pub(super) fn rule_au_003_high_corroboration(
             entity_uids: vec![e.uid.clone()],
             scan_id: scan_id.into(),
             ts,
+            rank: 0.0,
         })
         .collect()
 }
@@ -153,6 +155,7 @@ pub(super) fn rule_au_004_malicious_infrastructure(
             entity_uids: vec![e.uid.clone()],
             scan_id: scan_id.into(),
             ts,
+            rank: 0.0,
         })
         .collect()
 }
@@ -181,6 +184,7 @@ pub(super) fn rule_au_005_anonymous_network(
                 entity_uids: vec![e.uid.clone()],
                 scan_id: scan_id.into(),
                 ts,
+                rank: 0.0,
             }
         })
         .collect()
@@ -214,6 +218,7 @@ pub(super) fn rule_au_006_proxy_vpn(
                 entity_uids: vec![e.uid.clone()],
                 scan_id: scan_id.into(),
                 ts,
+                rank: 0.0,
             }
         })
         .collect()
@@ -249,6 +254,7 @@ pub(super) fn rule_au_007_high_risk_reputation(
                 entity_uids: vec![e.uid.clone()],
                 scan_id: scan_id.into(),
                 ts,
+                rank: 0.0,
             }
         })
         .collect()
@@ -283,6 +289,7 @@ pub(super) fn rule_au_008_exposed_service(
                 entity_uids: vec![e.uid.clone()],
                 scan_id: scan_id.into(),
                 ts,
+                rank: 0.0,
             }
         })
         .collect()
@@ -304,6 +311,7 @@ pub(super) fn rule_au_009_stealer_log(
             entity_uids: vec![e.uid.clone()],
             scan_id: scan_id.into(),
             ts,
+            rank: 0.0,
         })
         .collect()
 }
@@ -336,6 +344,7 @@ pub(super) fn rule_au_010_infra_consensus(
                 entity_uids: vec![e.uid.clone()],
                 scan_id: scan_id.into(),
                 ts,
+                rank: 0.0,
             });
         }
     }
@@ -377,6 +386,7 @@ pub(super) fn rule_au_011_cross_platform_username(
                     entity_uids: vec![e.uid.clone()],
                     scan_id: scan_id.into(),
                     ts,
+                    rank: 0.0,
                 })
             } else {
                 None
@@ -419,6 +429,7 @@ pub(super) fn rule_au_012_identity_linked_domain(
                 entity_uids: uids,
                 scan_id: scan_id.into(),
                 ts,
+                rank: 0.0,
             }
         })
         .collect()
@@ -449,6 +460,7 @@ pub(super) fn rule_au_013_local_network_discovery(
         entity_uids: hits.iter().map(|e| e.uid.clone()).collect(),
         scan_id: scan_id.into(),
         ts,
+        rank: 0.0,
     }]
 }
 
@@ -476,6 +488,7 @@ pub(super) fn rule_au_014_geo_cluster(
                     entity_uids: vec![e.uid.clone()],
                     scan_id: scan_id.into(),
                     ts,
+                    rank: 0.0,
                 })
             } else {
                 None
@@ -524,6 +537,7 @@ pub(super) fn rule_au_015_threat_intel_hit(
                 entity_uids: vec![e.uid.clone()],
                 scan_id: scan_id.into(),
                 ts,
+                rank: 0.0,
             }
         })
         .collect()
@@ -571,6 +585,7 @@ pub(super) fn rule_au_016_breach_ip_geo_chain(
         entity_uids: uids,
         scan_id: scan_id.into(),
         ts,
+        rank: 0.0,
     }]
 }
 
@@ -635,6 +650,7 @@ pub(super) fn rule_au_017_multi_geo_convergence(
                 entity_uids: uids,
                 scan_id: scan_id.into(),
                 ts,
+                rank: 0.0,
             }
         })
         .collect()
@@ -672,6 +688,7 @@ pub(super) fn rule_au_018_email_address_colocation(
         entity_uids: uids,
         scan_id: scan_id.into(),
         ts,
+        rank: 0.0,
     }]
 }
 
@@ -732,6 +749,7 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
             entity_uids: uids,
             scan_id: scan_id.into(),
             ts,
+            rank: 0.0,
         })
         .collect()
 }

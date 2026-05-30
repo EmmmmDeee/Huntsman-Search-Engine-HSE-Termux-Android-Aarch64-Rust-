@@ -46,6 +46,17 @@ impl Severity {
             Self::Critical => "critical",
         }
     }
+
+    /// Ordinal weight for ranking. Higher = more severe. Used as the severity
+    /// factor in a correlation's rank score (`weight × max child C_eff`).
+    pub fn weight(&self) -> f64 {
+        match self {
+            Self::Low => 1.0,
+            Self::Medium => 2.0,
+            Self::High => 3.0,
+            Self::Critical => 4.0,
+        }
+    }
 }
 
 impl std::fmt::Display for Severity {
@@ -70,6 +81,14 @@ pub struct Correlation {
     pub entity_uids: Vec<String>,
     pub scan_id: String,
     pub ts: u64,
+    /// Ranking score = `severity.weight() × max(C_eff)` over the child
+    /// entities. Computed once in `Correlator::run` after the rules fire (the
+    /// rules themselves don't have the entity C_eff map handy) and used to
+    /// order the Correlations view highest-value-first. `#[serde(default)]`
+    /// keeps correlation rows persisted before this field existed readable
+    /// (they deserialize with rank 0.0 and simply sort last).
+    #[serde(default)]
+    pub rank: f64,
 }
 
 impl Correlation {
@@ -90,6 +109,7 @@ impl Correlation {
             entity_uids,
             scan_id: scan_id.into(),
             ts,
+            rank: 0.0,
         }
     }
 }
@@ -120,6 +140,33 @@ impl Correlator {
             let now = crate::core::entity::unix_now();
             firings.extend(evaluate_relation_rules(&entities, &relations, scan_id, now));
         }
+
+        // Rank each firing by severity × the highest C_eff among its child
+        // entities. The rules emit `rank: 0.0`; we set it here because this is
+        // the first point that has both the firings and the entity C_eff map.
+        // A C_eff lookup table avoids an O(rules × entities) rescan.
+        let ceff: std::collections::HashMap<&str, f64> = entities
+            .iter()
+            .map(|e| (e.uid.as_str(), e.c_effective()))
+            .collect();
+        for c in &mut firings {
+            let max_child_ceff = c
+                .entity_uids
+                .iter()
+                .filter_map(|uid| ceff.get(uid.as_str()).copied())
+                .fold(0.0_f64, f64::max);
+            c.rank = c.severity.weight() * max_child_ceff;
+        }
+        // Highest-value correlations first: severity-weighted, C_eff-scaled.
+        // Stable tie-break on severity then rule_id keeps output deterministic
+        // when ranks collide (e.g. all children at C_eff ceiling).
+        firings.sort_by(|a, b| {
+            b.rank
+                .partial_cmp(&a.rank)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.severity.cmp(&a.severity))
+                .then(a.rule_id.cmp(&b.rule_id))
+        });
 
         for c in &firings {
             self.store.upsert_correlation(c)?;
@@ -229,6 +276,74 @@ mod tests {
         assert_eq!(Severity::Medium.as_canonical(), "medium");
         assert_eq!(Severity::High.as_canonical(), "high");
         assert_eq!(Severity::Critical.as_canonical(), "critical");
+    }
+
+    // ── Severity::weight + rank ordering ────────────────────────────────
+
+    #[test]
+    fn severity_weight_is_monotonic() {
+        assert!(Severity::Low.weight() < Severity::Medium.weight());
+        assert!(Severity::Medium.weight() < Severity::High.weight());
+        assert!(Severity::High.weight() < Severity::Critical.weight());
+    }
+
+    #[test]
+    fn run_ranks_by_severity_times_max_child_ceff() {
+        use crate::core::test_support::InMemoryStore;
+        use std::sync::Arc;
+
+        // Build a scan where:
+        //  - a HIGH-severity rule will fire over a strongly-corroborated entity
+        //    (high C_eff), and
+        //  - a CRITICAL-severity rule will fire over a weakly-corroborated one
+        //    (low C_eff),
+        // so that severity-alone ordering (critical first) and
+        // severity×C_eff ordering disagree — proving the rank is C_eff-scaled.
+        //
+        // AU-021 (API key exposure) is Critical and fires on any ApiKey entity.
+        // AU-003 (cross-source corroboration) is Medium and fires on an entity
+        // with >=2 distinct sources. We give the ApiKey a LOW C_eff (single
+        // source, low base confidence) and the corroborated email a HIGH C_eff
+        // (3 distinct sources, high base confidence). The Medium hit on the
+        // high-C_eff entity must outrank the Critical hit on the low-C_eff one
+        // once C_eff dominates the severity gap.
+        let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+        let sid = "rank-test";
+
+        let mut weak_key = Entity::new(EntityKind::ApiKey, "AKIAWEAK", 0.20, sid);
+        weak_key.add_evidence(Evidence::new("key_harvest", "found once"));
+
+        let mut strong_email = Entity::new(EntityKind::Email, "a@b.com", 0.95, sid);
+        for src in ["hibp", "dehashed", "search_engines"] {
+            strong_email.add_evidence(Evidence::new(src, "seen"));
+        }
+
+        store.upsert_entity(&weak_key).unwrap();
+        store.upsert_entity(&strong_email).unwrap();
+
+        let corr = Correlator::new(Arc::clone(&store));
+        let hits = corr.run(sid).unwrap();
+
+        // Both rules fired.
+        let key_hit = hits.iter().find(|c| c.rule_id == "AU-021").unwrap();
+        let email_hit = hits.iter().find(|c| c.rule_id == "AU-003").unwrap();
+
+        // Critical×low-C_eff vs Medium×high-C_eff: 4×~0.20 = 0.8 vs 2×~0.99 ≈ 1.98.
+        assert!(
+            email_hit.rank > key_hit.rank,
+            "C_eff-scaled rank must put the strongly-corroborated Medium hit \
+             (rank {:.3}) above the weak Critical hit (rank {:.3})",
+            email_hit.rank,
+            key_hit.rank,
+        );
+        // And the returned Vec is sorted by rank desc.
+        assert!(
+            hits.windows(2).all(|w| w[0].rank >= w[1].rank),
+            "correlations must be returned in rank-descending order"
+        );
+        // Rank is severity.weight × max child C_eff (sanity on the key hit).
+        let expected_key_rank = Severity::Critical.weight() * weak_key.c_effective();
+        assert!((key_hit.rank - expected_key_rank).abs() < 1e-9);
     }
 
     // ── Severity Display ────────────────────────────────────────────────
