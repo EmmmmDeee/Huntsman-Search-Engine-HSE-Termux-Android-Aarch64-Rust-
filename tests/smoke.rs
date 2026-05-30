@@ -197,12 +197,35 @@ impl Module for KeyConsumerModule {
     }
 }
 
+/// Clear any pre-existing keys for the chain-test service from the process-
+/// global pool so the key-chaining tests are hermetic. The global pool is a
+/// `OnceLock` seeded from the persisted `~/.huntsman/key_pool.json`, which can
+/// already hold real `shodan` keys (from prior CLI use or scans); those perturb
+/// `next_key("shodan")` selection and make the hot-inject assertion flaky
+/// depending on test order / the developer's local pool. Removal is in-memory
+/// only (never writes the file), so it cannot affect real keys on disk.
+fn reset_chain_pool() {
+    let pool = huntsman_search_engine::util::key_pool::global_pool();
+    let existing: Vec<String> = pool
+        .snapshot()
+        .services
+        .get(CHAIN_TEST_SERVICE)
+        .into_iter()
+        .flatten()
+        .map(|e| e.value.clone())
+        .collect();
+    for value in existing {
+        pool.remove(CHAIN_TEST_SERVICE, &value);
+    }
+}
+
 #[tokio::test]
 async fn key_chaining_sequential_dispatch() {
     // Sequential mode (max_concurrent=0). The discoverer runs first,
     // stores the key in the pool. The per-module hot-inject after
     // finalise_module_result pushes it into ctx. The consumer then sees
     // the key and emits its marker entity.
+    reset_chain_pool();
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(KeyDiscovererModule), Arc::new(KeyConsumerModule)],
         "chain-seq",
@@ -233,6 +256,7 @@ async fn key_chaining_concurrent_dispatch() {
     // Concurrent mode (max_concurrent>0). Paid modules run in Phase 1
     // synchronously; ctx is refreshed from the pool; THEN Free + KeyGated
     // modules spawn in Phase 2 with the keys-rich ctx clone.
+    reset_chain_pool();
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(KeyDiscovererModule), Arc::new(KeyConsumerModule)],
         "chain-conc",
