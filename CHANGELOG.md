@@ -26,6 +26,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   the no-postcode path). Exactly the Australian people-centric public-records
   source the charter targets; brings the registry to 87 modules.
 
+  Query strategy (refined against live data): the register's full-text search
+  ANDs multi-word terms, so a full-name seed alone misses the deceased-estate
+  funds owed to *relatives* (same surname, different given name). The module
+  therefore runs a **two-tier query** — an exact full-name probe whose rows lead
+  (so the seeded person's own record can't be capped out behind a common
+  surname's namesakes) merged ahead of a broadened **surname** probe for family
+  recall — then classifies each row `exact-name-match` vs `family-candidate`,
+  weighting confidence so common-surname noise (verified to stay at C_eff 0.40,
+  below the 0.50 expansion floor) is surfaced but never auto-expanded.
+  Reconnaissance note: QLD is the only AU jurisdiction that publishes its full
+  per-owner unclaimed-money register as a queryable open dataset — NSW/VIC expose
+  aggregates only, WA/ASIC are search-portal-gated — so this is deliberately a
+  single-jurisdiction module, not the first of N state clones.
+
 ### Removed
 
 - **Deleted two dead `pub fn`s (~110 lines).** `util::see_know::credits` and

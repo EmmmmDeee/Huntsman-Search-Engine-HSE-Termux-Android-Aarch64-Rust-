@@ -114,6 +114,35 @@ fn owner_matches_full_name(owner: &str, seed: &str) -> bool {
     any
 }
 
+/// The datastore_search URL for one full-text query.
+fn query_url(q: &str) -> String {
+    format!(
+        "https://www.data.qld.gov.au/api/3/action/datastore_search?resource_id={RESOURCE_ID}&q={}&limit={MAX_RECORDS}",
+        urlencode(q)
+    )
+}
+
+/// Merge an exact-name (`primary`) record set *ahead of* a broad surname
+/// (`secondary`) set, de-duplicating on the CKAN row `_id`. Exact rows lead so
+/// the seeded person's own record survives the `MAX_RECORDS` cap even when a
+/// common surname returns a flood of unrelated namesakes ranked above them.
+fn merge_records(
+    primary: Vec<Map<String, Value>>,
+    secondary: Vec<Map<String, Value>>,
+) -> Vec<Map<String, Value>> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(primary.len() + secondary.len());
+    for rec in primary.into_iter().chain(secondary) {
+        let id = field_str(&rec, "_id").unwrap_or_default();
+        // Keep id-less rows (CKAN always sets `_id`, so this is just defensive)
+        // and any id not seen before.
+        if id.is_empty() || seen.insert(id) {
+            out.push(rec);
+        }
+    }
+    out
+}
+
 /// Pure transform: CKAN records → entities. One entity per record — a geocodable
 /// `Address` built from the lodged postcode when present (so geocode/coords can
 /// pivot on it), otherwise an `unclaimed_money` finding so the record is never
@@ -229,34 +258,37 @@ impl Module for QldUnclaimed {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // Search broadens a full name to its surname to catch deceased-estate
-        // funds owed to relatives; the original full name is kept to classify
-        // exact hits vs family candidates.
-        let query = derive_query(target);
+        let full = target.value.trim();
         // The register full-text search needs a meaningful token; a 1–2 char
         // query would match noise across a 240 MB dataset.
-        if query.len() < 3 {
+        if full.len() < 3 {
             return Ok(ModuleResult::new());
         }
+        // `derive_query` broadens a multi-token full name to its surname so
+        // relatives' deceased-estate funds surface; equals `full` otherwise.
+        let surname = derive_query(target);
 
-        let url = format!(
-            "https://www.data.qld.gov.au/api/3/action/datastore_search?resource_id={RESOURCE_ID}&q={}&limit={MAX_RECORDS}",
-            urlencode(query),
-        );
-
-        let resp: CkanResp = fetch_json(&ctx.http, SRC, &url).await?;
-        let Some(result) = resp.result else {
+        // Broad query (surname, or the verbatim value): family-level recall.
+        let broad: CkanResp = fetch_json(&ctx.http, SRC, &query_url(surname)).await?;
+        let Some(broad_res) = broad.result else {
             return Ok(ModuleResult::new());
         };
-        let total = result.total.unwrap_or(result.records.len() as u64);
+        let total = broad_res.total.unwrap_or(broad_res.records.len() as u64);
+        let mut records = broad_res.records;
+
+        // Two-tier precision: when we broadened to a surname, also run the exact
+        // full-name query (AND-matched) and place those rows FIRST, so the
+        // seeded person's own record is never capped out behind a common
+        // surname's namesakes. A failed exact probe is non-fatal — broad stands.
+        if surname != full
+            && let Ok(exact) = fetch_json::<CkanResp>(&ctx.http, SRC, &query_url(full)).await
+            && let Some(exact_res) = exact.result
+        {
+            records = merge_records(exact_res.records, records);
+        }
 
         let mut out = ModuleResult::new();
-        out.extend(records_to_entities(
-            &result.records,
-            total,
-            target.value.trim(),
-            &ctx.scan_id,
-        ));
+        out.extend(records_to_entities(&records, total, full, &ctx.scan_id));
         Ok(out)
     }
 }
@@ -348,6 +380,24 @@ mod tests {
         assert!(!exact(&curt[2]), "ERIK row is only a surname match");
         // Exact hits outrank family candidates on confidence.
         assert!(curt[1].confidence > curt[2].confidence);
+    }
+
+    #[test]
+    fn merge_records_puts_exact_first_and_dedups_on_id() {
+        // Exact probe returns the seeded person (id 50); broad surname probe
+        // returns a flood including that same row (id 50) plus namesakes.
+        let exact: Vec<Map<String, Value>> =
+            serde_json::from_str(r#"[{"_id":50,"Owner":"JOHN SMITH","PCode":"4000"}]"#).unwrap();
+        let broad: Vec<Map<String, Value>> = serde_json::from_str(
+            r#"[{"_id":11,"Owner":"ALICE SMITH"},{"_id":50,"Owner":"JOHN SMITH"},{"_id":12,"Owner":"BOB SMITH"}]"#,
+        )
+        .unwrap();
+        let merged = merge_records(exact, broad);
+        // id 50 appears once, and FIRST (survives the cap ahead of namesakes).
+        assert_eq!(merged.len(), 3, "the duplicate id 50 is collapsed");
+        assert_eq!(field_str(&merged[0], "_id").as_deref(), Some("50"));
+        let ids: Vec<String> = merged.iter().filter_map(|r| field_str(r, "_id")).collect();
+        assert_eq!(ids, vec!["50", "11", "12"]);
     }
 
     #[test]
