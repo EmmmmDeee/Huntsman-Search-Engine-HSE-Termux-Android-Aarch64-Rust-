@@ -91,6 +91,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Scan Results page: SpiderFoot-style bar chart in the summary + phone-density
+  fix.** Two refinements to the page operators spend the most time on. (1) The
+  Status tab's "Entities by type" panel — previously a table with a bare
+  percentage column — now draws a proportional horizontal bar per type (scaled to
+  the largest type, brand-cyan fill, percentage overlaid), matching SpiderFoot
+  4.0's summary visualisation so the data-element distribution is scannable at a
+  glance; dark-theme aware. (2) The four scan-summary cards (Entities /
+  Correlations / Started / Duration) were `col-sm-3` with no `col-xs` class, so on
+  a phone they stacked 4×1 — added `col-xs-6` for a compact 2×2 grid (same fix as
+  the dashboard cards). SPA-only; suite unchanged at 1328.
+
 - **Dashboard KPI cards sit 2×2 on a phone instead of one tall column.** The four
   stat cards (Total Scans / Entities / Modules / Live Sessions) were `col-md-3
   col-sm-6` with no `col-xs` class, so below Bootstrap 3's 768px breakpoint each

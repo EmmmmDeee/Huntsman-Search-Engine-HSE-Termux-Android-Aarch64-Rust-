@@ -98,6 +98,13 @@
     #graph-svg{display:block;width:100%;height:560px;
                background:radial-gradient(circle at 50% 40%,#fbfbfb 0%,#f4f4f4 70%);
                border:1px solid #e3e3e3;border-radius:3px;cursor:grab}
+    /* SpiderFoot-style by-type bar in the scan summary */
+    .kbar-cell{min-width:120px}
+    .kbar-track{position:relative;height:14px;background:#eee;border-radius:2px;overflow:hidden}
+    .kbar-fill{position:absolute;left:0;top:0;height:100%;background:#07aef1;border-radius:2px}
+    .kbar-pct{position:absolute;right:4px;top:0;line-height:14px;font-size:10px;color:#444}
+    body.dark-theme .kbar-track{background:#333}
+    body.dark-theme .kbar-pct{color:#ccc}
     .graph-legend{position:absolute;top:8px;right:14px;background:rgba(255,255,255,.92);
                   border:1px solid #ddd;border-radius:3px;padding:6px 10px;font-size:11px}
     .graph-legend .lr{display:flex;align-items:center;gap:6px;margin-bottom:2px;color:#555}
@@ -911,10 +918,10 @@ async function renderScanInfo(v){
     <hr style="margin:8px 0 14px 0">
 
     <div class="row">
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Entities</div><div class="val">${scan.entity_count || S.entities.length}</div></div></div>
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Correlations</div><div class="val" style="color:${S.correlations.length?'#9b1f9b':'#888'}">${S.correlations.length}</div></div></div>
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Started</div><div class="val dim">${esc(fmtDate(scan.started_at))}</div></div></div>
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Duration</div><div class="val dim">${esc(fmtDuration(dur))}</div></div></div>
+      <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Entities</div><div class="val">${scan.entity_count || S.entities.length}</div></div></div>
+      <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Correlations</div><div class="val" style="color:${S.correlations.length?'#9b1f9b':'#888'}">${S.correlations.length}</div></div></div>
+      <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Started</div><div class="val dim">${esc(fmtDate(scan.started_at))}</div></div></div>
+      <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Duration</div><div class="val dim">${esc(fmtDuration(dur))}</div></div></div>
     </div>
 
     <ul class="nav nav-tabs">
@@ -978,9 +985,14 @@ function subTab(name, label, count, active){
 function renderStatus(host, scan){
   const byKind = new Map();
   for (const e of S.entities) byKind.set(e.kind, (byKind.get(e.kind)||0) + 1);
-  const kindRows = Array.from(byKind.entries()).sort((a,b)=>b[1]-a[1]).map(([k,n])=>
-    `<tr><td>${kindPill(k)}</td><td class="text-right">${n}</td>
-         <td class="text-right text-muted">${((n/Math.max(1,S.entities.length))*100).toFixed(0)}%</td></tr>`).join('');
+  const kindSorted = Array.from(byKind.entries()).sort((a,b)=>b[1]-a[1]);
+  const kindMax = kindSorted.length ? kindSorted[0][1] : 1;  // scale bars to the largest type
+  const kindRows = kindSorted.map(([k,n])=>{
+    const share = ((n/Math.max(1,S.entities.length))*100).toFixed(0);
+    const barW = ((n/Math.max(1,kindMax))*100).toFixed(1);
+    return `<tr><td>${kindPill(k)}</td><td class="text-right">${n}</td>
+         <td class="kbar-cell"><div class="kbar-track"><div class="kbar-fill" style="width:${barW}%"></div><span class="kbar-pct">${share}%</span></div></td></tr>`;
+  }).join('');
 
   const byMod = new Map();
   for (const e of S.entities) for (const ev of (e.evidence||[])) byMod.set(ev.source, (byMod.get(ev.source)||0)+1);
@@ -1000,7 +1012,7 @@ function renderStatus(host, scan){
           <div class="panel-heading"><b>Entities by type</b></div>
           ${kindRows
             ? `<table class="table table-striped table-condensed" style="margin-bottom:0">
-                 <thead><tr><th>Type</th><th class="text-right">Count</th><th class="text-right">Share</th></tr></thead>
+                 <thead><tr><th>Type</th><th class="text-right">Count</th><th>Share</th></tr></thead>
                  <tbody>${kindRows}</tbody></table>`
             : '<div class="empty-state"><p>No entities yet.</p></div>'}
         </div>
