@@ -113,6 +113,25 @@ impl Classification {
             Self::Verified => "VERIFIED",
         }
     }
+
+    /// Stable, dense tier rank (0 = Candidate, 1 = Probable, 2 = Verified).
+    ///
+    /// This is the finite tier ladder the bounded best-first expansion uses
+    /// for its `(target, tier)` visited-set: an entity may be expanded at
+    /// most once per rank, and there are exactly [`Classification::COUNT`]
+    /// ranks, so total expansions are bounded by `entities × COUNT`.
+    #[inline]
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Candidate => 0,
+            Self::Probable => 1,
+            Self::Verified => 2,
+        }
+    }
+
+    /// Number of distinct confidence tiers. Fixed and finite — the
+    /// multiplier in the halting bound `expansions ≤ entities × COUNT`.
+    pub const COUNT: u8 = 3;
 }
 
 impl fmt::Display for Classification {
@@ -244,6 +263,15 @@ impl Entity {
             c if c >= 0.40 => Classification::Probable,
             _ => Classification::Candidate,
         }
+    }
+
+    /// The entity's current confidence tier — alias for [`classify`] that
+    /// names the role the value plays in bounded best-first expansion. The
+    /// expansion frontier keys its visited-set on `(target, tier_rank)`, so
+    /// an entity is re-queued at most once per tier when a merge lifts it.
+    #[inline]
+    pub fn tier(&self) -> Classification {
+        self.classify()
     }
 
     /// Apply gamma-decay over elapsed time since `observed_at`.
@@ -589,6 +617,27 @@ mod tests {
         e.confidence = 0.99;
         e.corroboration = 1000;
         assert!(e.c_effective() <= 1.0);
+    }
+
+    #[test]
+    fn tier_rank_is_monotonic_and_finite() {
+        // Tier ladder used by the bounded best-first halting bound.
+        assert!(Classification::Candidate.rank() < Classification::Probable.rank());
+        assert!(Classification::Probable.rank() < Classification::Verified.rank());
+        assert_eq!(Classification::COUNT, 3);
+        // Highest rank must be < COUNT so it indexes a finite ladder.
+        assert!((Classification::Verified.rank() as u8) < Classification::COUNT);
+    }
+
+    #[test]
+    fn tier_tracks_c_eff_bands() {
+        let mut e = email("a@b.com");
+        e.confidence = 0.30;
+        assert_eq!(e.tier(), Classification::Candidate);
+        e.confidence = 0.50;
+        assert_eq!(e.tier(), Classification::Probable);
+        e.confidence = 0.90;
+        assert_eq!(e.tier(), Classification::Verified);
     }
 
     #[test]
