@@ -18,6 +18,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::geo::is_valid_coords;
 use crate::util::http::fetch_json;
 
 const SRC: &str = "ip_whois_geo";
@@ -87,7 +88,9 @@ impl Module for IpWhois {
         let mut result = ModuleResult::new();
 
         if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
-            if lat == 0.0 && lon == 0.0 {
+            // Shared validator: rejects Null Island AND out-of-range / non-finite
+            // values a malformed ipwho.is payload could carry (see util::geo).
+            if !is_valid_coords(lat, lon) {
                 return Ok(result);
             }
 
