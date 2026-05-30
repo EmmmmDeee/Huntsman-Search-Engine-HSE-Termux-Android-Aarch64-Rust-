@@ -812,6 +812,17 @@ impl ScanEngine {
                     {
                         continue;
                     }
+                    // Drop guaranteed-bogus IPs (documentation / reserved /
+                    // benchmark ranges, e.g. 192.0.2.1 scraped off a tutorial
+                    // page) at admission so they never enter the graph, fire
+                    // correlations, or appear as findings. RFC1918 private and
+                    // loopback are intentionally kept — local sensors surface
+                    // those legitimately on-device.
+                    if entity.kind == crate::core::entity::EntityKind::IpAddress
+                        && crate::core::validation::is_bogus_ip(&entity.value)
+                    {
+                        continue;
+                    }
                     self.emit(
                         scan_id,
                         EventKind::EntityFound {

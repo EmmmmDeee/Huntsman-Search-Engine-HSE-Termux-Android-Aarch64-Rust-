@@ -1434,7 +1434,7 @@ async fn richest_first_strategy_prefers_high_unlock_targets() {
         }
         async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
             let mut r = ModuleResult::new();
-            let mut e = Entity::new(EntityKind::IpAddress, "203.0.113.5", 0.9, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::IpAddress, "93.184.216.34", 0.9, &ctx.scan_id);
             e.tag("derived");
             r.push(e);
             Ok(r)
@@ -1998,7 +1998,10 @@ impl Module for DualIpModule {
         let mut r = ModuleResult::new();
         let mut a = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.95, &ctx.scan_id);
         a.tag("derived");
-        let mut b = Entity::new(EntityKind::IpAddress, "192.0.2.1", 0.95, &ctx.scan_id);
+        // Private (RFC1918): non-routable so it must not be EXPANDED, but it is
+        // a legitimate local-sensor finding so it is still ADMITTED/recorded
+        // (unlike documentation IPs, which are dropped at admission).
+        let mut b = Entity::new(EntityKind::IpAddress, "192.168.1.50", 0.95, &ctx.scan_id);
         b.tag("derived");
         r.push(a);
         r.push(b);
@@ -2056,11 +2059,12 @@ async fn non_routable_ips_are_not_expanded() {
         .map(|e| e.value)
         .collect();
 
-    // Both IPs are still recorded as entities (we filter expansion, not record).
+    // Both IPs are recorded (private IPs are admitted; only the EXPANSION of
+    // non-routable addresses is suppressed).
     assert!(vals.iter().any(|v| v == "8.8.8.8"), "routable IP recorded");
     assert!(
-        vals.iter().any(|v| v == "192.0.2.1"),
-        "non-routable IP still recorded as an entity"
+        vals.iter().any(|v| v == "192.168.1.50"),
+        "private (non-routable) IP still recorded as an entity"
     );
     // Only the routable IP was expanded (marker ran against it).
     assert!(
@@ -2068,7 +2072,68 @@ async fn non_routable_ips_are_not_expanded() {
         "routable IP must be expanded"
     );
     assert!(
-        !vals.iter().any(|v| v == "seen-192.0.2.1"),
-        "non-routable/documentation IP must NOT be expanded"
+        !vals.iter().any(|v| v == "seen-192.168.1.50"),
+        "non-routable (private) IP must NOT be expanded"
+    );
+}
+
+// ── Bogus-IP admission guard ─────────────────────────────────────────────────
+//
+// Proves documentation/reserved IPs (e.g. 192.0.2.1 scraped from a page) are
+// dropped at entity admission, while a real public IP and an RFC1918 private
+// IP (legitimately surfaced by local sensors) are kept.
+
+/// Emits one documentation IP, one real IP, one private IP from an email seed.
+struct MixedIpModule;
+
+#[async_trait]
+impl Module for MixedIpModule {
+    fn name(&self) -> &'static str {
+        "mixed_ip"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        for v in ["192.0.2.1", "8.8.8.8", "192.168.1.5"] {
+            let mut e = Entity::new(EntityKind::IpAddress, v, 0.9, &ctx.scan_id);
+            e.tag("derived");
+            r.push(e);
+        }
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn bogus_ips_are_dropped_at_admission() {
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(MixedIpModule)],
+        "bogus-ip-admission",
+        TargetKind::Email,
+        "host@example.com",
+    );
+    let scan = Scan::new(sid.clone(), target.clone());
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let ips: Vec<String> = store
+        .entities_for_scan(&sid)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .map(|e| e.value)
+        .collect();
+
+    assert!(
+        !ips.iter().any(|v| v == "192.0.2.1"),
+        "documentation IP must be dropped, got: {ips:?}"
+    );
+    assert!(ips.iter().any(|v| v == "8.8.8.8"), "real IP must be kept");
+    assert!(
+        ips.iter().any(|v| v == "192.168.1.5"),
+        "private IP must be kept (local-sensor finding)"
     );
 }

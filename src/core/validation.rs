@@ -186,6 +186,40 @@ pub fn is_non_routable_ip(s: &str) -> bool {
     }
 }
 
+/// True if `s` parses to an IP that can **never** be a real host *anywhere*:
+/// RFC5737 documentation (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`),
+/// RFC2544 benchmarking (`198.18.0.0/15`), IETF-protocol (`192.0.0.0/24`),
+/// "this-host" (`0.0.0.0/8`), reserved/future (`240.0.0.0/4`), and IPv6
+/// documentation (`2001:db8::/32`).
+///
+/// Unlike [`is_non_routable_ip`] this **deliberately excludes** RFC1918 private,
+/// loopback, link-local, CGN and multicast — addresses that local sensors
+/// (`local_net`, `device_sensors`, `wifi_intel`) legitimately surface on-device.
+/// It is therefore safe to drop matches at *entity admission* without losing any
+/// real local-network finding; only addresses scraped from documentation/examples
+/// (e.g. `192.0.2.1` lifted off a tutorial page) are rejected.
+pub fn is_bogus_ip(s: &str) -> bool {
+    let Ok(addr) = s.parse::<IpAddr>() else {
+        return false;
+    };
+    match addr {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 0                                            // 0.0.0.0/8 this-host
+                || o[0] >= 240                                   // 240/4 reserved/future + broadcast
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)       // 192.0.0.0/24 IETF protocol
+                || (o[0] == 192 && o[1] == 0 && o[2] == 2)       // 192.0.2.0/24 TEST-NET-1
+                || (o[0] == 198 && o[1] == 51 && o[2] == 100)    // 198.51.100.0/24 TEST-NET-2
+                || (o[0] == 203 && o[1] == 0 && o[2] == 113)     // 203.0.113.0/24 TEST-NET-3
+                || (o[0] == 198 && (o[1] & 0xFE) == 18) // 198.18.0.0/15 benchmarking
+        }
+        IpAddr::V6(v6) => {
+            let o = v6.octets();
+            o[0] == 0x20 && o[1] == 0x01 && o[2] == 0x0d && o[3] == 0xb8 // 2001:db8::/32 doc
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Domain shape
 // ---------------------------------------------------------------------------
@@ -323,6 +357,40 @@ mod tests {
         assert!(!is_non_routable_ip("8.8.8.8"));
         assert!(!is_non_routable_ip("2606:4700:4700::1111"));
         assert!(!is_non_routable_ip("not-an-ip"));
+    }
+
+    #[test]
+    fn bogus_ip_rejects_documentation_but_keeps_private_and_real() {
+        // Never-real ranges → bogus.
+        for ip in [
+            "192.0.2.1",
+            "198.51.100.5",
+            "203.0.113.9",
+            "192.0.0.8",
+            "198.18.0.1",
+            "0.1.2.3",
+            "240.0.0.1",
+            "255.255.255.255",
+            "2001:db8::1",
+        ] {
+            assert!(is_bogus_ip(ip), "{ip} should be bogus");
+        }
+        // Private / loopback / link-local / real → kept (NOT bogus), because
+        // local sensors legitimately surface these and real hosts use them.
+        for ip in [
+            "192.168.1.5",
+            "10.0.0.1",
+            "172.16.0.1",
+            "127.0.0.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "8.8.8.8",
+            "1.1.1.1",
+            "2606:4700:4700::1111",
+            "not-an-ip",
+        ] {
+            assert!(!is_bogus_ip(ip), "{ip} should NOT be bogus");
+        }
     }
 
     #[test]
