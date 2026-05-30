@@ -225,42 +225,6 @@ pub async fn steam_profile(key: &str, steam_id: &str) -> Result<Vec<Value>> {
     get_path(key, "gaming/steam", &[("id", steam_id)]).await
 }
 
-/// Credits endpoint — returns the SeekNow account's remaining daily
-/// quota. Used by the module layer for proactive tier decisions:
-/// callers can skip optional endpoint plans when `remaining < N`.
-///
-/// Returns `Ok(None)` if the endpoint is missing or the response is
-/// not understood — callers should treat that as "quota unknown, keep
-/// going" so the budget atomic remains authoritative.
-///
-/// Does NOT consume any of the per-scan budget — credits-check is
-/// considered metadata, not a billable lookup.
-pub async fn credits(key: &str) -> Result<Option<u64>> {
-    if is_quota_exhausted() {
-        return Ok(Some(0));
-    }
-    let url = format!("{}/credits", base_url());
-    let body = match CLIENT.get(&url, key).await {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    let v: Value = match serde_json::from_str(&body) {
-        Ok(v) => v,
-        Err(_) => return Ok(None),
-    };
-    // Common shapes: { "credits_remaining": N }, { "remaining": N },
-    // { "data": { "credits": N } }.
-    let remaining = v
-        .get("credits_remaining")
-        .or_else(|| v.get("remaining"))
-        .or_else(|| v.get("credits"))
-        .or_else(|| v.pointer("/data/credits_remaining"))
-        .or_else(|| v.pointer("/data/credits"))
-        .or_else(|| v.pointer("/data/remaining"))
-        .and_then(|x| x.as_u64());
-    Ok(remaining)
-}
-
 // Single-parameter GET endpoints (stealer, breachhub/search, domain/intel,
 // network/{ip,phone,email-check}, username/{github,twitter,reddit,tiktok,
 // social,history}, gaming/{roblox,xbox,minecraft}, domain/whois) carry no

@@ -12,6 +12,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Removed
 
+- **Deleted two dead `pub fn`s (~110 lines).** `util::see_know::credits` and
+  `util::oathnet::harvest_credentials` had zero call sites anywhere in the crate
+  (binary, lib, or tests) and were never re-exported — `harvest_credentials` was
+  left orphaned when the pre-scan OathNet harvest was disabled, and `credits`
+  was aspirational (its doc described a quota-gating use that no caller ever
+  wired up). `clippy -D warnings` can't flag unused `pub` items in a lib, which
+  is why they survived. Removal verified clean: build + `clippy -D warnings`
+  stay green (no private helper orphaned) and the full suite is unchanged at
+  1326 passed, confirming nothing depended on them. Analysed-but-kept: all deps
+  are used; the `#[allow(dead_code)]` annotations are on deliberate API-response
+  struct fields (documentation of the wire shape); the duplicated hardcoded keys
+  are intentional per the operator's standing instruction.
+
 - **Stripped non-functional governance + narrative docs.** Removed the process
   "rules and regulations" that carry no build or runtime effect: governance docs
   (`CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `SECURITY.md`) and the `.github/` PR +
