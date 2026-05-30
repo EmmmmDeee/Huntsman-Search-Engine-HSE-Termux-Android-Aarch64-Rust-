@@ -12,6 +12,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Refactored the recursion core's duplicated key-cascade and skip-emit.** The
+  hot-inject key-cascade — the mechanism that makes recursion compound (a key one
+  module discovers becomes usable by the next module and the next round) — was
+  copy-pasted in three places (`run_expansion` per-round refresh, plus the
+  sequential and concurrent dispatchers' per-module inject), and the
+  `ModuleSkipped` event was hand-built at six call sites. Extracted a single
+  `hot_inject_keys(&mut keys)` (idempotent, gap-filling) and an `emit_skipped`
+  helper. Behaviour-preserving: which keys land in `ctx` and which skip events
+  fire is unchanged (the only delta is `run_expansion` now logs hot-injects too,
+  matching the dispatchers — observable scan behaviour is identical). Proven by
+  the `key_chaining_*` smoke tests and the engine suite, full run unchanged at
+  1353.
+
 - **Termux-aware per-module timeout cap so a slow upstream can't stall a phone
   scan.** Audit of `max_timeout_ms` found a handful of modules legitimately set
   very long timeouts (search_engines 120 s, api_key_probe 90 s, hibp/web_crawler
