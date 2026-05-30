@@ -822,6 +822,15 @@ fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>) {
         e.kind != crate::core::entity::EntityKind::IpAddress
             || !crate::core::validation::is_bogus_ip(&e.value)
     });
+    // Drop IP literals mis-classified as domains: the HTML/TXT parsers' domain
+    // regex matches dotted-decimal IPs (8.8.8.8, 192.0.2.1) and emits them as
+    // Domain entities, which both duplicates the real ip_address entity and
+    // smuggles bogus documentation IPs past the IP-kind filter above. A real
+    // domain never parses as an IP address, so this has no false positives.
+    entities.retain(|e| {
+        e.kind != crate::core::entity::EntityKind::Domain
+            || e.value.parse::<std::net::IpAddr>().is_err()
+    });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     entities.retain(|e| seen.insert(e.uid.clone()));
 }
@@ -975,5 +984,28 @@ mod tests {
         );
         assert!(vals.contains(&"192.168.1.5"), "private IP kept");
         assert!(vals.contains(&"x@b.com"), "non-IP entity untouched");
+    }
+
+    #[test]
+    fn finalize_drops_ip_literals_mis_classified_as_domains() {
+        let sid = "import-test";
+        let mut v = vec![
+            Entity::new(EntityKind::Domain, "8.8.8.8", 0.45, sid), // IP-as-domain -> drop
+            Entity::new(EntityKind::Domain, "192.0.2.1", 0.45, sid), // doc-IP-as-domain -> drop
+            Entity::new(EntityKind::Domain, "evil.com", 0.50, sid), // real domain -> keep
+            Entity::new(EntityKind::Domain, "sub.evil.com", 0.45, sid), // real subdomain -> keep
+        ];
+        deduplicate_by_uid(&mut v);
+        let vals: Vec<&str> = v.iter().map(|e| e.value.as_str()).collect();
+        assert!(
+            !vals.contains(&"8.8.8.8"),
+            "IP literal must not be a domain: {vals:?}"
+        );
+        assert!(
+            !vals.contains(&"192.0.2.1"),
+            "doc-IP literal must not be a domain"
+        );
+        assert!(vals.contains(&"evil.com"), "real domain kept");
+        assert!(vals.contains(&"sub.evil.com"), "real subdomain kept");
     }
 }
