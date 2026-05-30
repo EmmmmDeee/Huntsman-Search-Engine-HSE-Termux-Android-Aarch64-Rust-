@@ -116,10 +116,18 @@ impl Classification {
 
     /// Stable, dense tier rank (0 = Candidate, 1 = Probable, 2 = Verified).
     ///
-    /// This is the finite tier ladder the bounded best-first expansion uses
-    /// for its `(target, tier)` visited-set: an entity may be expanded at
-    /// most once per rank, and there are exactly [`Classification::COUNT`]
-    /// ranks, so total expansions are bounded by `entities × COUNT`.
+    /// This is the finite tier ladder intended to back a bounded best-first
+    /// expansion: with a `(target, tier)` visited-set an entity is expanded at
+    /// most once per rank, and because there are exactly
+    /// [`Classification::COUNT`] ranks, total expansions are bounded by
+    /// `entities × COUNT`.
+    ///
+    /// NOTE (current state): the engine's expansion visited-set is still keyed
+    /// on `(TargetKind, normalised value)` and expands each target at most
+    /// once overall — it does not yet key on tier or re-queue on tier
+    /// graduation. `rank()`/[`COUNT`] are the ladder that the planned
+    /// tier-aware frontier will use; until that lands, this method is consumed
+    /// by tests and ranking, not by the live visited-set.
     #[inline]
     pub fn rank(self) -> u8 {
         match self {
@@ -301,9 +309,13 @@ impl Entity {
     }
 
     /// The entity's current confidence tier — alias for [`classify`] that
-    /// names the role the value plays in bounded best-first expansion. The
-    /// expansion frontier keys its visited-set on `(target, tier_rank)`, so
-    /// an entity is re-queued at most once per tier when a merge lifts it.
+    /// names the role the value is intended to play in a tier-aware bounded
+    /// best-first expansion (key the visited-set on `(target, tier_rank)` and
+    /// re-queue at most once per tier when a merge lifts the entity).
+    ///
+    /// NOTE (current state): the live engine does not yet key its visited-set
+    /// on tier or re-queue on graduation — see [`Classification::rank`]. This
+    /// alias documents intent and is used by ranking/tests today.
     #[inline]
     pub fn tier(&self) -> Classification {
         self.classify()
@@ -672,7 +684,11 @@ mod tests {
         for i in 0..5 {
             e.add_evidence(Evidence::new("oathnet_pro", format!("breach row {i}")));
         }
-        assert_eq!(e.source_count(), 1, "one module = one source regardless of rows");
+        assert_eq!(
+            e.source_count(),
+            1,
+            "one module = one source regardless of rows"
+        );
         // ln(1)=0 → no boost; a single source must not be inflated.
         assert!((e.c_effective() - 0.6).abs() < 1e-9);
     }

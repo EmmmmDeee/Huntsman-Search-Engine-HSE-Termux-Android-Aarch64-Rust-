@@ -197,8 +197,17 @@ mod tests {
         let parts = parse_name_parts("Jordan Meyer");
         let u = derive_usernames(&parts);
         // hyphen, digit-suffix, last-first, bare, initial-dot forms.
-        for want in ["jordan-meyer", "jordanmeyer1", "meyerj", "jordan", "j.meyer"] {
-            assert!(u.contains(&want.to_string()), "missing real-world handle: {want}");
+        for want in [
+            "jordan-meyer",
+            "jordanmeyer1",
+            "meyerj",
+            "jordan",
+            "j.meyer",
+        ] {
+            assert!(
+                u.contains(&want.to_string()),
+                "missing real-world handle: {want}"
+            );
         }
     }
 

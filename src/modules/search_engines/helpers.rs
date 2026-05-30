@@ -1266,7 +1266,11 @@ pub(super) fn is_valid_abn(s: &str) -> bool {
         return false;
     }
     let weights = [10i64, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19];
-    let digits: Vec<i64> = s.chars().filter_map(|c| c.to_digit(10)).map(i64::from).collect();
+    let digits: Vec<i64> = s
+        .chars()
+        .filter_map(|c| c.to_digit(10))
+        .map(i64::from)
+        .collect();
     if digits.len() != 11 {
         return false;
     }

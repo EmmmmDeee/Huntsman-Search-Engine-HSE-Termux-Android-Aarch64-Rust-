@@ -57,7 +57,10 @@ impl InMemoryStore {
 
 impl StoragePort for InMemoryStore {
     fn upsert_scan(&self, scan: &Scan) -> Result<()> {
-        self.inner.lock().scans.insert(scan.id.clone(), scan.clone());
+        self.inner
+            .lock()
+            .scans
+            .insert(scan.id.clone(), scan.clone());
         Ok(())
     }
 
@@ -66,7 +69,13 @@ impl StoragePort for InMemoryStore {
     }
 
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
-        Ok(self.inner.lock().scans.values().take(limit).cloned().collect())
+        // Mirror Store::list_scans — newest-first by started_at — so the
+        // in-memory port is deterministic and matches production ordering
+        // (HashMap iteration order is otherwise arbitrary across runs).
+        let mut scans: Vec<Scan> = self.inner.lock().scans.values().cloned().collect();
+        scans.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        scans.truncate(limit);
+        Ok(scans)
     }
 
     fn delete_scan(&self, scan_id: &str) -> Result<bool> {
@@ -76,9 +85,14 @@ impl StoragePort for InMemoryStore {
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {
         let mut g = self.inner.lock();
         match g.entities.get_mut(&entity.uid) {
-            // GREATEST-merge: keep the stronger copy, mirroring the real store.
-            Some(existing) if existing.confidence >= entity.confidence => {}
-            _ => {
+            // Mirror the real store's GREATEST-merge contract exactly: on UID
+            // collision, MERGE (max confidence, accumulate corroboration,
+            // append evidence, union tags) rather than keep-or-overwrite. The
+            // prior keep-stronger/overwrite logic silently discarded new
+            // evidence/tags/corroboration, diverging from production and
+            // undermining tests that assert merge semantics.
+            Some(existing) => existing.merge(entity.clone()),
+            None => {
                 g.entities.insert(entity.uid.clone(), entity.clone());
             }
         }
@@ -93,14 +107,22 @@ impl StoragePort for InMemoryStore {
     }
 
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
-        Ok(self
+        // Mirror Store::entities_for_scan ordering (confidence desc) so the
+        // in-memory port is deterministic across runs.
+        let mut ents: Vec<Entity> = self
             .inner
             .lock()
             .entities
             .values()
             .filter(|e| e.scan_id == scan_id)
             .cloned()
-            .collect())
+            .collect();
+        ents.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(ents)
     }
 
     fn entities_filtered(
@@ -125,10 +147,19 @@ impl StoragePort for InMemoryStore {
 
     fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {
         let mut counts: HashMap<String, u64> = HashMap::new();
-        for e in self.inner.lock().entities.values().filter(|e| e.scan_id == scan_id) {
+        for e in self
+            .inner
+            .lock()
+            .entities
+            .values()
+            .filter(|e| e.scan_id == scan_id)
+        {
             *counts.entry(e.kind.to_string()).or_insert(0) += 1;
         }
-        Ok(counts.into_iter().collect())
+        // Mirror Store::entity_facets (COUNT desc) for deterministic ordering.
+        let mut facets: Vec<(String, u64)> = counts.into_iter().collect();
+        facets.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(facets)
     }
 
     fn get_entity(&self, uid: &str) -> Result<Option<Entity>> {
@@ -247,10 +278,11 @@ impl MockModule {
         to_value: &str,
         confidence: f64,
     ) -> Self {
-        self.edges
-            .entry(from.to_string())
-            .or_default()
-            .push((to_kind, to_value.to_string(), confidence));
+        self.edges.entry(from.to_string()).or_default().push((
+            to_kind,
+            to_value.to_string(),
+            confidence,
+        ));
         self
     }
 }
@@ -273,7 +305,12 @@ impl Module for MockModule {
         let mut result = ModuleResult::new();
         if let Some(emits) = self.edges.get(&target.value) {
             for (kind, value, confidence) in emits {
-                let entity = Entity::new(kind.to_entity_kind(), value.clone(), *confidence, &ctx.scan_id);
+                let entity = Entity::new(
+                    kind.to_entity_kind(),
+                    value.clone(),
+                    *confidence,
+                    &ctx.scan_id,
+                );
                 result.entities.push(entity);
             }
         }

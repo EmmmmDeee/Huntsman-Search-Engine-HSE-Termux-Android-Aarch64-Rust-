@@ -326,8 +326,7 @@ pub async fn run() -> Result<()> {
         tokio_util=info,tower=info,want=info,mio=info";
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_RAW_LOG)),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_RAW_LOG)),
         )
         .with_target(true)
         .with_line_number(true)

@@ -44,7 +44,9 @@ struct DagModule {
 
 impl DagModule {
     fn new() -> Self {
-        Self { edges: HashMap::new() }
+        Self {
+            edges: HashMap::new(),
+        }
     }
     fn edge(mut self, from: &str, kind: EntityKind, to: &str, confidence: f64) -> Self {
         self.edges
@@ -70,7 +72,12 @@ impl Module for DagModule {
         let mut r = ModuleResult::new();
         if let Some(emits) = self.edges.get(&target.value) {
             for (kind, value, confidence) in emits {
-                r.push(Entity::new(kind.clone(), value.clone(), *confidence, &ctx.scan_id));
+                r.push(Entity::new(
+                    kind.clone(),
+                    value.clone(),
+                    *confidence,
+                    &ctx.scan_id,
+                ));
             }
         }
         Ok(r)
@@ -86,7 +93,12 @@ fn setup(
     let mut p = std::env::temp_dir();
     p.push(format!("hse-halting-{}-{}.db", std::process::id(), suffix));
     let tmp = p.to_string_lossy().to_string();
+    // Remove the main DB *and* its WAL/SHM sidecars — in WAL mode a stale
+    // `-wal`/`-shm` left from a prior run can resurrect old state or corrupt
+    // the fresh handle, making tests flaky.
     let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(format!("{tmp}-wal"));
+    let _ = std::fs::remove_file(format!("{tmp}-shm"));
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let engine = ScanEngine::new(
@@ -131,8 +143,12 @@ fn dag() -> DagModule {
 
 #[tokio::test]
 async fn scan_halts_frontier_empty_within_structural_bound() {
-    let (engine, store, sid, target, ctx) =
-        setup(vec![Arc::new(dag())], "halt", TargetKind::FullName, "Onur Ada");
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(dag())],
+        "halt",
+        TargetKind::FullName,
+        "Onur Ada",
+    );
 
     // NO budget: no max_entities, no max_wall_time. Depth is set well above the
     // graph diameter (3) so that depth-exhaustion is NOT what halts the scan —
@@ -176,10 +192,17 @@ async fn scan_halts_frontier_empty_within_structural_bound() {
     let events = store.events_for_scan(&sid).unwrap();
     let module_starts = events
         .iter()
-        .filter(|e| matches!(e.kind, huntsman_search_engine::core::event::EventKind::ModuleStart { .. }))
+        .filter(|e| {
+            matches!(
+                e.kind,
+                huntsman_search_engine::core::event::EventKind::ModuleStart { .. }
+            )
+        })
         .count();
     let entity_count = entities.len();
-    let tiers = 3usize; // Classification::COUNT — Candidate/Probable/Verified
+    // Use the engine's own tier-ladder constant so this bound stays in sync if
+    // the tier count ever changes (rather than silently drifting from a 3).
+    let tiers = huntsman_search_engine::core::Classification::COUNT as usize;
     let bound = (entity_count + 1) * tiers;
     assert!(
         module_starts <= bound,
@@ -200,8 +223,12 @@ async fn scan_stops_at_entity_budget() {
         .edge("b-node.com", EntityKind::Domain, "d-node.com", 0.9)
         .edge("c-node.com", EntityKind::Domain, "e-node.com", 0.9);
 
-    let (engine, store, sid, target, ctx) =
-        setup(vec![Arc::new(big)], "budget", TargetKind::Domain, "seed-target.com");
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(big)],
+        "budget",
+        TargetKind::Domain,
+        "seed-target.com",
+    );
 
     let opts = ScanOptions {
         depth: 25,
@@ -249,7 +276,12 @@ impl Module for SlowModule {
     }
     async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut r = ModuleResult::new();
-        r.push(Entity::new(EntityKind::Email, "seed@found.example", 0.9, &ctx.scan_id));
+        r.push(Entity::new(
+            EntityKind::Email,
+            "seed@found.example",
+            0.9,
+            &ctx.scan_id,
+        ));
         // Poll the cancel flag so the watchdog can interrupt this mid-flight,
         // mirroring how real long-running modules cooperate with cancellation.
         for _ in 0..600 {
@@ -297,7 +329,11 @@ async fn wall_time_budget_stops_promptly_and_preserves_findings() {
         "wall-time budget must interrupt promptly; took {elapsed:?}"
     );
     // And it still persisted what it collected (always display results).
-    assert_eq!(result.status, ScanStatus::Aborted, "deadline → clean Aborted");
+    assert_eq!(
+        result.status,
+        ScanStatus::Aborted,
+        "deadline → clean Aborted"
+    );
     assert!(
         !store.entities_for_scan(&sid).unwrap().is_empty(),
         "findings collected before the deadline must be persisted, not lost"
