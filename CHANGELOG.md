@@ -55,6 +55,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Wide data tables now scroll horizontally on Chrome-on-Android.** The Browse
+  element table (8 columns: Type/Value/C_eff/Corr/Tier/Tags/Sources/Observed) and
+  the Scans table (7 columns) previously overflowed a phone viewport, forcing a
+  body-level horizontal scroll that dragged the fixed navbar and crushed columns.
+  Both are now wrapped in Bootstrap 3's `.table-responsive` (the same pattern
+  SpiderFoot 4.0 uses), so on narrow screens the table itself scrolls within its
+  panel while the page chrome stays put. Narrow 2–3 column summary tables (Status
+  rollups, Info key/value) are left unwrapped as they already fit. SPA-only;
+  suite unchanged at 1326 passed.
+
 - **D3 force graph is now pan/zoomable — usable on Chrome-on-Android.** The graph
   previously supported only node-drag, so on a phone screen a multi-node layout
   could not be panned or zoomed (it overflowed the SVG with no way to reach

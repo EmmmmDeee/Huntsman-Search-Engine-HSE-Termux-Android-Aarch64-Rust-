@@ -575,12 +575,12 @@ function renderScansTable(scans){
       </td>
     </tr>`;
   }).join('');
-  return `<table class="table table-striped table-condensed tablesorter" id="scans-table">
+  return `<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="scans-table">
     <thead><tr>
       <th>Target</th><th>Type</th><th>Created</th><th>Duration</th>
       <th>Status</th><th class="text-right">Entities</th>
       <th class="sorter-false">Actions</th>
-    </tr></thead><tbody>${rows}</tbody></table>`;
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function wireScansTable(){
   if (window.jQuery && jQuery.fn.tablesorter) {
@@ -1137,12 +1137,12 @@ function renderBrowseTable(rows){
       ${evDetail || '<span class="text-muted">No evidence attached</span>'}
     </div></td></tr>`;
   }).join('');
-  return `<table class="table table-striped table-condensed tablesorter" id="browse-table">
+  return `<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="browse-table">
     <thead><tr>
       <th>Type</th><th>Value</th><th class="text-right">C_eff</th>
       <th class="text-right">Corr</th><th>Tier</th>
       <th class="sorter-false">Tags</th><th class="sorter-false">Sources</th><th>Observed</th>
-    </tr></thead><tbody>${body}</tbody></table>`;
+    </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 /* ── Correlations tab ── */
