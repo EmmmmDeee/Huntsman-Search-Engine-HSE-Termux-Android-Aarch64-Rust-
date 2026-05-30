@@ -177,7 +177,22 @@ async fn fetch_json_inner<T: DeserializeOwned>(
                 .map_err(|e| Error::module(module, e.to_string()))?;
             Ok(Some(data))
         }
-        Err(_) => Ok(super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await),
+        // reqwest transport failed (e.g. TLS interception → UnknownIssuer).
+        // Fall back to the system `curl` binary, which uses the OS trust
+        // store. CRITICAL: a `None` from the curl fallback means the request
+        // never produced a usable response — it must surface as an ERROR, not
+        // `Ok(None)`. `Ok(None)` is reserved for the genuine "upstream
+        // returned 404" case above; conflating the two makes a total transport
+        // failure read as a clean "not in dataset" all-clear for the
+        // `fetch_json_or_404` modules (greynoise, hudsonrock, xposed_or_not,
+        // ip_reputation, …) — a dangerous false negative in OSINT.
+        Err(e) => match super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await {
+            Some(data) => Ok(Some(data)),
+            None => Err(Error::module(
+                module,
+                format!("transport failed for {url} (reqwest: {e}; curl fallback returned no usable response)"),
+            )),
+        },
     }
 }
 
@@ -412,6 +427,23 @@ mod tests {
     #[test]
     fn build_client_succeeds() {
         let _c = build_client();
+    }
+
+    /// Regression: when BOTH reqwest and the curl fallback fail to produce a
+    /// response, `fetch_json_or_404` must return `Err` — NOT `Ok(None)`.
+    /// `Ok(None)` is the "upstream returned 404 / not in dataset" signal;
+    /// conflating a total transport failure with it turns a TLS-interception
+    /// outage into a false "clean" all-clear for greynoise/hudsonrock/
+    /// xposed_or_not/etc. Uses an unresolvable host so both paths fail fast.
+    #[tokio::test]
+    async fn transport_failure_is_error_not_clean_404() {
+        let client = build_client();
+        let r: Result<Option<serde_json::Value>> =
+            fetch_json_or_404(&client, "test_mod", "https://256.256.256.256/x").await;
+        assert!(
+            r.is_err(),
+            "total transport failure must be Err, not a clean Ok(None); got {r:?}"
+        );
     }
 
     #[test]

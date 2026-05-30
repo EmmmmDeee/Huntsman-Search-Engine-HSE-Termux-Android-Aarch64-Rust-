@@ -35,6 +35,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **HTTP curl-fallback no longer reports a transport failure as a clean "404 /
+  not in dataset".** `util::http::fetch_json_inner` falls back to the system
+  `curl` binary when reqwest's TLS fails (e.g. UnknownIssuer under TLS
+  interception). It wrapped the fallback as `Ok(curl::fetch_json(...))`, so when
+  curl *also* failed (returned `None`) the function returned `Ok(None)` —
+  identical to the genuine "upstream returned 404" signal. For the six
+  `fetch_json_or_404` modules (greynoise, hudsonrock, xposed_or_not,
+  ip_registry, ip_reputation, contact_enrich) this turned a total transport
+  outage into a false negative all-clear ("not a scanner", "no breaches", "not
+  infostealer-compromised") — the most dangerous failure mode in OSINT. A
+  `None` from the curl fallback now surfaces as `Err`; `Ok(None)` is reserved
+  for an actual upstream 404. Regression test
+  `transport_failure_is_error_not_clean_404` (fails with `Ok(None)` on the old
+  code, passes on the fix).
 - **`scan`/`live` accept coordinate values that begin with `-` (southern
   hemisphere).** clap parsed a `--value` starting with `-` (e.g. a negative
   latitude like `-27.47,153.02`, Brisbane) as an unknown flag and aborted the
