@@ -21,6 +21,39 @@ fn short_uid(uid: &str) -> &str {
 pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &str) -> String {
     let mut xml = String::with_capacity(entities.len() * 256);
 
+    write_preamble(&mut xml, scan_id);
+
+    let _ = writeln!(xml, r#"    <nodes>"#);
+    for e in entities {
+        write_node(&mut xml, e);
+    }
+    let _ = writeln!(xml, r#"    </nodes>"#);
+
+    // Edges. Two kinds:
+    //   1. Typed Relation edges (the explicit attribution graph), labelled by
+    //      relation kind (subdomain_of / belongs_to_domain / hosted_on /
+    //      derived_from), weighted by edge confidence.
+    //   2. Shared-evidence co-occurrence edges, labelled by the shared sources.
+    // Edge ids are assigned sequentially: relation edges first, then the
+    // co-occurrence edges continue the same counter.
+    let _ = writeln!(xml, r#"    <edges>"#);
+    let mut edge_id = 0u64;
+    for r in relations {
+        write_relation_edge(&mut xml, r, &mut edge_id);
+    }
+    write_shared_evidence_edges(&mut xml, entities, &mut edge_id);
+    let _ = writeln!(xml, r#"    </edges>"#);
+
+    let _ = writeln!(xml, r#"  </graph>"#);
+    let _ = writeln!(xml, r#"</gexf>"#);
+
+    xml
+}
+
+/// XML header, `<meta>`, the `<graph>` open tag, and the node attribute
+/// declarations (kind / confidence / c_effective / classification /
+/// corroboration). Leaves `xml` positioned to receive `<nodes>`.
+fn write_preamble(xml: &mut String, scan_id: &str) {
     let _ = writeln!(xml, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     let _ = writeln!(xml, r#"<gexf xmlns="http://gexf.net/1.3" version="1.3">"#);
     let _ = writeln!(xml, r#"  <meta>"#);
@@ -29,7 +62,6 @@ pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &s
     let _ = writeln!(xml, r#"  </meta>"#);
     let _ = writeln!(xml, r#"  <graph defaultedgetype="directed" mode="static">"#);
 
-    // Node attributes
     let _ = writeln!(xml, r#"    <attributes class="node" mode="static">"#);
     let _ = writeln!(
         xml,
@@ -52,81 +84,79 @@ pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &s
         r#"      <attribute id="4" title="corroboration" type="integer"/>"#
     );
     let _ = writeln!(xml, r#"    </attributes>"#);
+}
 
-    // Nodes
-    let _ = writeln!(xml, r#"    <nodes>"#);
-    for e in entities {
-        let label = xml_escape(&e.value);
-        let short_uid = &e.uid[..e.uid.len().min(12)];
-        let _ = writeln!(xml, r#"      <node id="{}" label="{label}">"#, short_uid);
-        let _ = writeln!(xml, r#"        <attvalues>"#);
-        let _ = writeln!(xml, r#"          <attvalue for="0" value="{}"/>"#, e.kind);
-        let _ = writeln!(
-            xml,
-            r#"          <attvalue for="1" value="{:.3}"/>"#,
-            e.confidence
-        );
-        let _ = writeln!(
-            xml,
-            r#"          <attvalue for="2" value="{:.3}"/>"#,
-            e.c_effective()
-        );
-        let _ = writeln!(
-            xml,
-            r#"          <attvalue for="3" value="{}"/>"#,
-            e.classify()
-        );
-        let _ = writeln!(
-            xml,
-            r#"          <attvalue for="4" value="{}"/>"#,
-            e.corroboration
-        );
-        let _ = writeln!(xml, r#"        </attvalues>"#);
-        let _ = writeln!(xml, r#"      </node>"#);
-    }
-    let _ = writeln!(xml, r#"    </nodes>"#);
+/// One `<node>` element with its five `<attvalue>`s. The id is the truncated
+/// uid (see [`short_uid`]) so relation/co-occurrence edges can reference it.
+fn write_node(xml: &mut String, e: &Entity) {
+    let label = xml_escape(&e.value);
+    let _ = writeln!(
+        xml,
+        r#"      <node id="{}" label="{label}">"#,
+        short_uid(&e.uid)
+    );
+    let _ = writeln!(xml, r#"        <attvalues>"#);
+    let _ = writeln!(xml, r#"          <attvalue for="0" value="{}"/>"#, e.kind);
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="1" value="{:.3}"/>"#,
+        e.confidence
+    );
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="2" value="{:.3}"/>"#,
+        e.c_effective()
+    );
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="3" value="{}"/>"#,
+        e.classify()
+    );
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="4" value="{}"/>"#,
+        e.corroboration
+    );
+    let _ = writeln!(xml, r#"        </attvalues>"#);
+    let _ = writeln!(xml, r#"      </node>"#);
+}
 
-    // Edges. Two kinds:
-    //   1. Typed Relation edges (the explicit attribution graph), labelled by
-    //      relation kind (subdomain_of / belongs_to_domain / hosted_on /
-    //      derived_from), weighted by edge confidence.
-    //   2. Shared-evidence co-occurrence edges, labelled by the shared sources.
-    let _ = writeln!(xml, r#"    <edges>"#);
-    let mut edge_id = 0u64;
-    for r in relations {
-        let src = short_uid(&r.from_uid);
-        let tgt = short_uid(&r.to_uid);
-        let _ = writeln!(
-            xml,
-            r#"      <edge id="{edge_id}" source="{src}" target="{tgt}" weight="{:.3}" label="{}"/>"#,
-            r.confidence,
-            xml_escape(r.kind.as_str())
-        );
-        edge_id += 1;
-    }
+/// One typed `Relation` edge, weighted by edge confidence and labelled by the
+/// relation kind. Advances `edge_id`.
+fn write_relation_edge(xml: &mut String, r: &Relation, edge_id: &mut u64) {
+    let _ = writeln!(
+        xml,
+        r#"      <edge id="{edge_id}" source="{}" target="{}" weight="{:.3}" label="{}"/>"#,
+        short_uid(&r.from_uid),
+        short_uid(&r.to_uid),
+        r.confidence,
+        xml_escape(r.kind.as_str())
+    );
+    *edge_id += 1;
+}
+
+/// Shared-evidence co-occurrence edges: for every unordered entity pair that
+/// shares ≥1 evidence source, an edge weighted by the shared-source count and
+/// labelled by the joined source names. Advances `edge_id` per emitted edge.
+fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &mut u64) {
     for (i, src) in entities.iter().enumerate() {
         let src_sources = src.evidence_sources();
         for tgt in entities.iter().skip(i + 1) {
             let tgt_sources = tgt.evidence_sources();
             let shared: Vec<&str> = src_sources.intersection(&tgt_sources).copied().collect();
             if !shared.is_empty() {
-                let src_uid = &src.uid[..src.uid.len().min(12)];
-                let tgt_uid = &tgt.uid[..tgt.uid.len().min(12)];
                 let _ = writeln!(
                     xml,
-                    r#"      <edge id="{edge_id}" source="{src_uid}" target="{tgt_uid}" weight="{}.0" label="{}"/>"#,
+                    r#"      <edge id="{edge_id}" source="{}" target="{}" weight="{}.0" label="{}"/>"#,
+                    short_uid(&src.uid),
+                    short_uid(&tgt.uid),
                     shared.len(),
                     xml_escape(&shared.join(", "))
                 );
-                edge_id += 1;
+                *edge_id += 1;
             }
         }
     }
-    let _ = writeln!(xml, r#"    </edges>"#);
-    let _ = writeln!(xml, r#"  </graph>"#);
-    let _ = writeln!(xml, r#"</gexf>"#);
-
-    xml
 }
 
 fn xml_escape(s: &str) -> String {
@@ -212,5 +242,69 @@ mod tests {
             xml_escape("a<b>c&d\"e'f"),
             "a&lt;b&gt;c&amp;d&quot;e&apos;f"
         );
+    }
+
+    /// Characterisation golden: pins the EXACT byte output for a deterministic
+    /// input (entity uids are SHA-256(kind:value), so they're stable). Locks the
+    /// full document — header, node attvalues, typed relation edge, and
+    /// shared-evidence co-occurrence edge — so any byte-level change during a
+    /// refactor is caught, not just the presence of substrings.
+    #[test]
+    fn gexf_golden_output_is_byte_stable() {
+        use crate::core::relation::{Relation, RelationKind};
+        let mut a = Entity::new(EntityKind::Domain, "example.com", 0.9, "s");
+        a.add_evidence(Evidence::new("crtsh", "cert"));
+        let mut b = Entity::new(EntityKind::Domain, "blog.example.com", 0.8, "s");
+        b.add_evidence(Evidence::new("crtsh", "cert"));
+        let rel = Relation::new(
+            b.uid.clone(),
+            a.uid.clone(),
+            RelationKind::SubdomainOf,
+            0.8,
+            "s",
+        );
+        let xml = entities_to_gexf(&[a, b], &[rel], "scan-1");
+        let expected = r#"<?xml version="1.0" encoding="UTF-8"?>
+<gexf xmlns="http://gexf.net/1.3" version="1.3">
+  <meta>
+    <creator>Huntsman Search Engine</creator>
+    <description>Scan scan-1</description>
+  </meta>
+  <graph defaultedgetype="directed" mode="static">
+    <attributes class="node" mode="static">
+      <attribute id="0" title="kind" type="string"/>
+      <attribute id="1" title="confidence" type="float"/>
+      <attribute id="2" title="c_effective" type="float"/>
+      <attribute id="3" title="classification" type="string"/>
+      <attribute id="4" title="corroboration" type="integer"/>
+    </attributes>
+    <nodes>
+      <node id="ed152b32b035" label="example.com">
+        <attvalues>
+          <attvalue for="0" value="domain"/>
+          <attvalue for="1" value="0.900"/>
+          <attvalue for="2" value="0.900"/>
+          <attvalue for="3" value="VERIFIED"/>
+          <attvalue for="4" value="1"/>
+        </attvalues>
+      </node>
+      <node id="df4bda23ac18" label="blog.example.com">
+        <attvalues>
+          <attvalue for="0" value="domain"/>
+          <attvalue for="1" value="0.800"/>
+          <attvalue for="2" value="0.800"/>
+          <attvalue for="3" value="VERIFIED"/>
+          <attvalue for="4" value="1"/>
+        </attvalues>
+      </node>
+    </nodes>
+    <edges>
+      <edge id="0" source="df4bda23ac18" target="ed152b32b035" weight="0.800" label="subdomain_of"/>
+      <edge id="1" source="ed152b32b035" target="df4bda23ac18" weight="1.0" label="crtsh"/>
+    </edges>
+  </graph>
+</gexf>
+"#;
+        assert_eq!(xml, expected);
     }
 }

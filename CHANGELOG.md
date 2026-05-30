@@ -91,6 +91,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Refactored `entities_to_gexf` (109→30-line body) behind a byte-exact golden
+  test.** The GEXF graph export (the SpiderFoot-style "Export GEXF" the Graph tab
+  now offers) was one monolithic function that also inlined the uid-truncation
+  three times instead of calling the existing `short_uid` helper. Split it into
+  focused, single-purpose writers — `write_preamble`, `write_node`,
+  `write_relation_edge`, `write_shared_evidence_edges` — and routed every node/
+  edge id through `short_uid`, removing the duplication. Behaviour-preserving:
+  added a characterisation test (`gexf_golden_output_is_byte_stable`) that pins
+  the *exact* document for a deterministic input (uids are `SHA-256(kind:value)`)
+  before the refactor; it still passes byte-for-byte after. Suite +1 at 1329.
+
 - **Scan Results page: SpiderFoot-style bar chart in the summary + phone-density
   fix.** Two refinements to the page operators spend the most time on. (1) The
   Status tab's "Entities by type" panel — previously a table with a bare
