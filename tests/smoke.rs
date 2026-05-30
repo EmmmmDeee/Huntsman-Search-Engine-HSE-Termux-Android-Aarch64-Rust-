@@ -88,6 +88,36 @@ impl Module for UsernameToPhoneSynth {
     }
 }
 
+/// Adversarial generative module: for an Email target it emits a *brand-new,
+/// never-before-seen* Email each call (local part grows by one char), so the
+/// monotone visited-set can never block it. Left unbounded it would expand
+/// forever — used to prove the recursion HALTS purely on the entity budget.
+struct HydraModule;
+
+#[async_trait]
+impl Module for HydraModule {
+    fn name(&self) -> &'static str {
+        "hydra"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let local = target.value.split('@').next().unwrap_or("a");
+        // High confidence so it always clears the expansion floor; unique each
+        // round so `visited` never short-circuits it.
+        let next = format!("{local}x@h.test");
+        let mut e = Entity::new(EntityKind::Email, next, 0.95, &ctx.scan_id);
+        e.tag("hydra");
+        r.push(e);
+        Ok(r)
+    }
+}
+
 /// Accepts Email, produces a low-confidence Username — should be ignored
 /// by expansion when min_expand_confidence is 0.75.
 struct LowConfidenceModule;
@@ -357,6 +387,45 @@ async fn engine_dispatches_synthetic_module_end_to_end() {
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].value, "test@example.com");
     assert!(stored[0].has_tag("synthetic"));
+}
+
+/// HALT PROOF (M1 / BOUNDED invariant): a module that generates a fresh entity
+/// every round — so the visited-set offers no protection — must still terminate,
+/// bounded purely by `max_entities`, even with a large depth. Wrapped in a hard
+/// wall-clock timeout so a regression that breaks termination FAILS rather than
+/// hangs the suite.
+#[tokio::test]
+async fn recursion_halts_under_unbounded_generation() {
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(HydraModule)],
+        "halt_generative",
+        TargetKind::Email,
+        "a@h.test",
+    );
+    let opts = ScanOptions {
+        depth: 100,             // far more rounds than the budget will allow
+        max_entities: Some(10), // the only thing that can stop the Hydra
+        min_expand_confidence: 0.5,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        engine.run(scan, target, ctx),
+    )
+    .await
+    .expect("recursion MUST halt under unbounded generation (timed out)")
+    .unwrap();
+
+    // Generation is bounded by the entity budget (small slack for the per-round
+    // boundary at which the cap is observed), not left to run for 100 rounds.
+    assert!(
+        result.entity_count <= 13,
+        "max_entities budget must bound generation, got {}",
+        result.entity_count
+    );
+    assert!(store.entities_for_scan(&sid).unwrap().len() <= 13);
 }
 
 #[tokio::test]
