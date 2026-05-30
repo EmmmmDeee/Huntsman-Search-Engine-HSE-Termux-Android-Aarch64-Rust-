@@ -26,6 +26,7 @@ use crate::core::{
     scan::Target,
 };
 use crate::util::geo::is_valid_coords;
+use crate::util::http::urlencode;
 use crate::util::termux::termux_cmd;
 
 const OPENCELLID_KEY_ENV: &str = "HUNTSMAN_OPENCELLID_KEY";
@@ -48,6 +49,65 @@ struct Cell {
     mcc: Option<serde_json::Value>, // can be string or int across Android versions
     mnc: Option<serde_json::Value>,
     pci: Option<i64>,
+}
+
+/// Parsed, validated identity of one cell tower. Bundling the fields that
+/// `process()` and `parse_cells_survey()` both derive from a raw `Cell` keeps
+/// the parse + skip policy in one place (it was duplicated) and keeps
+/// `build_tower_device` to a small, clippy-clean argument list.
+struct TowerKey<'a> {
+    mcc: Cow<'a, str>,
+    mnc: Cow<'a, str>,
+    lac: i64,
+    cid: i64,
+    ctype: &'a str,
+    tower_id: String,
+}
+
+impl<'a> TowerKey<'a> {
+    /// Parse a `Cell` into a usable tower identity, or `None` when it lacks the
+    /// minimum keys (no MCC or no CID) — the survey skip condition, defined
+    /// once. `lac` falls back to `tac` (LTE reports `tac`).
+    fn from_cell(cell: &'a Cell) -> Option<Self> {
+        let mcc = json_to_str(&cell.mcc);
+        if mcc.is_empty() {
+            return None;
+        }
+        let cid = cell.cid.unwrap_or(0);
+        if cid == 0 {
+            return None;
+        }
+        let mnc = json_to_str(&cell.mnc);
+        let lac = cell.lac.or(cell.tac).unwrap_or(0);
+        let ctype = cell.cell_type.as_deref().unwrap_or("unknown");
+        let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
+        Some(Self {
+            mcc,
+            mnc,
+            lac,
+            cid,
+            ctype,
+            tower_id,
+        })
+    }
+
+    /// True once the tower has enough data to attempt geolocation (needs MNC
+    /// and a non-zero LAC/TAC in addition to the survey minimums).
+    fn is_geolocatable(&self) -> bool {
+        !self.mnc.is_empty() && self.lac != 0
+    }
+
+    /// OpenCelliD `radio` parameter for this tower's air interface.
+    fn radio_code(&self) -> &'static str {
+        match self.ctype.to_lowercase().as_str() {
+            "lte" => "LTE",
+            "gsm" => "GSM",
+            "umts" | "wcdma" => "UMTS",
+            "nr" | "5g" => "NR",
+            "cdma" => "CDMA",
+            _ => "GSM",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -104,65 +164,52 @@ impl Module for CellIntel {
         let mut seen = HashSet::new();
 
         for cell in &cells {
-            let mcc = json_to_str(&cell.mcc);
-            let mnc = json_to_str(&cell.mnc);
-            let lac = cell.lac.or(cell.tac).unwrap_or(0);
-            let cid = cell.cid.unwrap_or(0);
-            if mcc.is_empty() || cid == 0 {
+            // Parse + survey-skip policy in one place (TowerKey::from_cell):
+            // None when the cell lacks the minimum keys (no MCC / no CID).
+            let Some(key) = TowerKey::from_cell(cell) else {
                 continue;
-            }
-
-            let ctype = cell.cell_type.as_deref().unwrap_or("unknown");
-            let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
-
-            // ---- 1. DeviceId entity (from former cell_survey) ----
-            let dev = build_tower_device(
-                cell, &mcc, &mnc, lac, cid, ctype, &tower_id, &ctx.scan_id,
-            );
-            result.push(dev);
-
-            // ---- 2. Coordinates entity (from former cell_locate) ----
-            // Skip duplicate geolocation for the same tower.
-            if mnc.is_empty() || lac == 0 || !seen.insert(tower_id.clone()) {
-                continue;
-            }
-
-            let radio = match ctype.to_lowercase().as_str() {
-                "lte" => "LTE",
-                "gsm" => "GSM",
-                "umts" | "wcdma" => "UMTS",
-                "nr" | "5g" => "NR",
-                "cdma" => "CDMA",
-                _ => "GSM",
             };
 
-            if let Some(key) = api_key
-                && let Some((lat, lon, range)) =
-                    query_opencellid(&ctx.http, key, &mcc, &mnc, lac, cid, radio).await
+            // ---- 1. DeviceId entity (from former cell_survey) ----
+            result.push(build_tower_device(cell, &key, &ctx.scan_id));
+
+            // ---- 2. Coordinates entity (from former cell_locate) ----
+            // Needs MNC + non-zero LAC/TAC; skip duplicate geolocation per tower.
+            if !key.is_geolocatable() || !seen.insert(key.tower_id.clone()) {
+                continue;
+            }
+
+            let radio = key.radio_code();
+
+            if let Some(api) = api_key
+                && let Some((lat, lon, range)) = query_opencellid(&ctx.http, api, &key, radio).await
             {
                 let coords = format!("{lat:.6},{lon:.6}");
                 let confidence = accuracy_to_confidence(range);
                 let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, &ctx.scan_id);
                 e.tag("geoint");
                 e.tag("cell-tower");
-                e.tag(format!("radio:{}", ctype.to_lowercase()));
+                e.tag(format!("radio:{}", key.ctype.to_lowercase()));
                 e.add_evidence(
-                    Evidence::new(SRC, format!("Cell tower {radio} {tower_id} -> {coords}"))
-                        .with_attr("tower_id", &tower_id)
-                        .with_attr("radio", radio)
-                        .with_attr("mcc", mcc.as_ref())
-                        .with_attr("mnc", mnc.as_ref())
-                        .with_attr("range_m", range.to_string())
-                        .with_attr("source", "OpenCelliD")
-                        .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
-                        .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
+                    Evidence::new(
+                        SRC,
+                        format!("Cell tower {radio} {} -> {coords}", key.tower_id),
+                    )
+                    .with_attr("tower_id", &key.tower_id)
+                    .with_attr("radio", radio)
+                    .with_attr("mcc", key.mcc.as_ref())
+                    .with_attr("mnc", key.mnc.as_ref())
+                    .with_attr("range_m", range.to_string())
+                    .with_attr("source", "OpenCelliD")
+                    .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
+                    .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
                 );
                 result.push(e);
                 continue;
             }
 
             // Fallback: MCC -> country centroid (coarse but free, offline)
-            if let Some((lat, lon, country)) = mcc_to_centroid(&mcc) {
+            if let Some((lat, lon, country)) = mcc_to_centroid(&key.mcc) {
                 let coords = format!("{lat:.4},{lon:.4}");
                 let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.25, &ctx.scan_id);
                 e.tag("geoint");
@@ -172,10 +219,10 @@ impl Module for CellIntel {
                 e.add_evidence(
                     Evidence::new(
                         SRC,
-                        format!("Cell tower MCC {mcc} -> {country} (country centroid)"),
+                        format!("Cell tower MCC {} -> {country} (country centroid)", key.mcc),
                     )
-                    .with_attr("tower_id", &tower_id)
-                    .with_attr("mcc", mcc.as_ref())
+                    .with_attr("tower_id", &key.tower_id)
+                    .with_attr("mcc", key.mcc.as_ref())
                     .with_attr("country", country)
                     .with_attr("source", "mcc-centroid")
                     .with_attr("accuracy", "country-level"),
@@ -196,26 +243,17 @@ impl Module for CellIntel {
 /// the tower-survey entity shape, shared by the live `process()` path and the
 /// `parse_cells_survey` test helper so the two can never drift in their tags or
 /// evidence-attribute set (they were previously byte-identical copies).
-fn build_tower_device(
-    cell: &Cell,
-    mcc: &str,
-    mnc: &str,
-    lac: i64,
-    cid: i64,
-    ctype: &str,
-    tower_id: &str,
-    scan_id: &str,
-) -> Entity {
-    let mut e = Entity::new(EntityKind::DeviceId, tower_id, 0.80, scan_id);
+fn build_tower_device(cell: &Cell, key: &TowerKey, scan_id: &str) -> Entity {
+    let mut e = Entity::new(EntityKind::DeviceId, &key.tower_id, 0.80, scan_id);
     e.tag("cell-tower");
-    e.tag(format!("radio:{ctype}"));
+    e.tag(format!("radio:{}", key.ctype));
     e.add_evidence(
-        Evidence::new(SRC, format!("Cell tower {ctype} {tower_id}"))
-            .with_attr("type", ctype)
-            .with_attr("mcc", mcc)
-            .with_attr("mnc", mnc)
-            .with_attr("lac_tac", lac.to_string())
-            .with_attr("cid", cid.to_string())
+        Evidence::new(SRC, format!("Cell tower {} {}", key.ctype, key.tower_id))
+            .with_attr("type", key.ctype)
+            .with_attr("mcc", key.mcc.as_ref())
+            .with_attr("mnc", key.mnc.as_ref())
+            .with_attr("lac_tac", key.lac.to_string())
+            .with_attr("cid", key.cid.to_string())
             .with_attr("pci", cell.pci.unwrap_or(0).to_string())
             .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
             .with_attr("asu", cell.asu.unwrap_or(0).to_string())
@@ -227,15 +265,22 @@ fn build_tower_device(
 
 async fn query_opencellid(
     http: &reqwest::Client,
-    key: &str,
-    mcc: &str,
-    mnc: &str,
-    lac: i64,
-    cid: i64,
+    api_key: &str,
+    tower: &TowerKey<'_>,
     radio: &str,
 ) -> Option<(f64, f64, u64)> {
+    // URL-encode every interpolated value (consistent with censys). mcc/mnc
+    // come from json_to_str of arbitrary cellinfo JSON; a malformed value with
+    // a `&`/space would otherwise corrupt the query string. Numeric codes
+    // (the normal case) pass through unchanged.
     let url = format!(
-        "https://opencellid.org/cell/get?key={key}&mcc={mcc}&mnc={mnc}&lac={lac}&cellid={cid}&radio={radio}&format=json"
+        "https://opencellid.org/cell/get?key={}&mcc={}&mnc={}&lac={}&cellid={}&radio={}&format=json",
+        urlencode(api_key),
+        urlencode(&tower.mcc),
+        urlencode(&tower.mnc),
+        tower.lac,
+        tower.cid,
+        urlencode(radio),
     );
 
     let resp = http
@@ -369,22 +414,12 @@ fn parse_cells_survey(stdout: &[u8], scan_id: &str) -> ModuleResult {
         entities: Vec::with_capacity(cells.len()),
     };
     for cell in &cells {
-        let mcc = json_to_str(&cell.mcc);
-        let mnc = json_to_str(&cell.mnc);
-        let lac = cell.lac.or(cell.tac).unwrap_or(0);
-        let cid = cell.cid.unwrap_or(0);
-        if mcc.is_empty() || cid == 0 {
-            continue;
-        }
-
-        let ctype = cell.cell_type.as_deref().unwrap_or("unknown");
-        let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
-
-        // Exercise the SAME builder the live process() path uses, so these
+        // Same parse/skip + builder the live process() path uses, so these
         // tests pin the real entity shape rather than a parallel copy.
-        result.push(build_tower_device(
-            cell, &mcc, &mnc, lac, cid, ctype, &tower_id, scan_id,
-        ));
+        let Some(key) = TowerKey::from_cell(cell) else {
+            continue;
+        };
+        result.push(build_tower_device(cell, &key, scan_id));
     }
     result
 }
