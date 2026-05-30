@@ -1972,3 +1972,103 @@ async fn entities_are_checkpointed_each_round_for_durability() {
         "checkpointed entities must be persisted"
     );
 }
+
+// ── Non-routable IP expansion gate ───────────────────────────────────────────
+//
+// Proves the relevance fix: bogus/reserved IPs (documentation ranges scraped
+// from pages, private LAN addresses from sensors) are recorded as entities but
+// never become expansion targets, so the engine doesn't burn whole rounds on
+// guaranteed-empty external lookups.
+
+/// Emits one routable (8.8.8.8) and one documentation (192.0.2.1) IP.
+struct DualIpModule;
+
+#[async_trait]
+impl Module for DualIpModule {
+    fn name(&self) -> &'static str {
+        "dual_ip"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let mut a = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.95, &ctx.scan_id);
+        a.tag("derived");
+        let mut b = Entity::new(EntityKind::IpAddress, "192.0.2.1", 0.95, &ctx.scan_id);
+        b.tag("derived");
+        r.push(a);
+        r.push(b);
+        Ok(r)
+    }
+}
+
+/// Accepts IpAddress and emits a `seen-<ip>` username marker, so the test can
+/// observe exactly which IPs the engine expanded into.
+struct IpSeenMarker;
+
+#[async_trait]
+impl Module for IpSeenMarker {
+    fn name(&self) -> &'static str {
+        "ip_seen_marker"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::IpAddress)
+    }
+    async fn process(&self, t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let e = Entity::new(
+            EntityKind::Username,
+            format!("seen-{}", t.value),
+            0.95,
+            &ctx.scan_id,
+        );
+        r.push(e);
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn non_routable_ips_are_not_expanded() {
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(DualIpModule), Arc::new(IpSeenMarker)],
+        "non-routable-ip",
+        TargetKind::Email,
+        "host@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let vals: Vec<String> = store
+        .entities_for_scan(&sid)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.value)
+        .collect();
+
+    // Both IPs are still recorded as entities (we filter expansion, not record).
+    assert!(vals.iter().any(|v| v == "8.8.8.8"), "routable IP recorded");
+    assert!(
+        vals.iter().any(|v| v == "192.0.2.1"),
+        "non-routable IP still recorded as an entity"
+    );
+    // Only the routable IP was expanded (marker ran against it).
+    assert!(
+        vals.iter().any(|v| v == "seen-8.8.8.8"),
+        "routable IP must be expanded"
+    );
+    assert!(
+        !vals.iter().any(|v| v == "seen-192.0.2.1"),
+        "non-routable/documentation IP must NOT be expanded"
+    );
+}

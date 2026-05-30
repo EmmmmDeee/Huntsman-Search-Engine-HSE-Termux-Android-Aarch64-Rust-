@@ -542,6 +542,16 @@ impl ScanEngine {
                 let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
                     continue;
                 };
+                // Never pivot on a non-routable / reserved / documentation IP
+                // (e.g. 192.0.2.1 scraped from a tutorial page, or a private
+                // 192.168.x surfaced by local sensors). No external OSINT source
+                // can resolve these, so expanding them only burns whole rounds
+                // on guaranteed-empty lookups and pollutes the graph with noise.
+                if tk == TargetKind::IpAddress
+                    && crate::core::validation::is_non_routable_ip(&entity.value)
+                {
+                    continue;
+                }
                 let new_target = Target::new(tk, entity.value.clone());
                 let key = visit_key(&new_target);
                 if visited.insert(key) {

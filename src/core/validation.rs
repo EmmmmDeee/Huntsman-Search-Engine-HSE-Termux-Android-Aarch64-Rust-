@@ -143,30 +143,45 @@ pub fn validate_coordinates(lat: f64, lon: f64) -> ValidationReport {
 // IP address routability (centralised from `oathnet_pro::is_private_ip`)
 // ---------------------------------------------------------------------------
 
-/// True if `s` parses to a non-routable IP (RFC1918 private, loopback,
-/// link-local, CGN, IPv6 ULA, multicast, broadcast, unspecified).
-/// Useful for modules that should never spend quota querying internal
-/// addresses surfaced by sensor discovery.
+/// True if `s` parses to a non-routable or otherwise un-queryable IP. Covers
+/// RFC1918 private, loopback, link-local, CGN, broadcast, unspecified,
+/// multicast, IPv6 ULA — **plus** the reserved/unrealistic ranges that leak in
+/// from scraped pages and tutorials and would only waste expansion budget:
+/// RFC5737 documentation (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`),
+/// RFC2544 benchmarking (`198.18.0.0/15`), IETF protocol (`192.0.0.0/24`),
+/// "this-host" (`0.0.0.0/8`), reserved/future (`240.0.0.0/4`), and IPv6
+/// documentation (`2001:db8::/32`). No external OSINT source can resolve any of
+/// these, so the engine must never pivot on them.
 pub fn is_non_routable_ip(s: &str) -> bool {
     let Ok(addr) = s.parse::<IpAddr>() else {
         return false;
     };
     match addr {
         IpAddr::V4(v4) => {
+            let o = v4.octets();
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_broadcast()
                 || v4.is_unspecified()
                 || v4.is_multicast()
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64) // CGN 100.64/10
+                || (o[0] == 100 && (o[1] & 0xC0) == 64)              // CGN 100.64/10
+                || o[0] == 0                                          // 0.0.0.0/8 this-host
+                || o[0] >= 240                                        // 240/4 reserved/future
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)           // 192.0.0.0/24 IETF protocol
+                || (o[0] == 192 && o[1] == 0 && o[2] == 2)           // 192.0.2.0/24 TEST-NET-1
+                || (o[0] == 198 && o[1] == 51 && o[2] == 100)        // 198.51.100.0/24 TEST-NET-2
+                || (o[0] == 203 && o[1] == 0 && o[2] == 113)         // 203.0.113.0/24 TEST-NET-3
+                || (o[0] == 198 && (o[1] & 0xFE) == 18) // 198.18.0.0/15 benchmarking
         }
         IpAddr::V6(v6) => {
+            let o = v6.octets();
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
-                || (v6.octets()[0] == 0xfc || v6.octets()[0] == 0xfd) // ULA fc00::/7
-                || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xC0) == 0x80) // link-local fe80::/10
+                || (o[0] == 0xfc || o[0] == 0xfd)                    // ULA fc00::/7
+                || (o[0] == 0xfe && (o[1] & 0xC0) == 0x80)           // link-local fe80::/10
+                || (o[0] == 0x20 && o[1] == 0x01 && o[2] == 0x0d && o[3] == 0xb8) // 2001:db8::/32 doc
         }
     }
 }
@@ -308,6 +323,27 @@ mod tests {
         assert!(!is_non_routable_ip("8.8.8.8"));
         assert!(!is_non_routable_ip("2606:4700:4700::1111"));
         assert!(!is_non_routable_ip("not-an-ip"));
+    }
+
+    #[test]
+    fn non_routable_ip_catches_reserved_and_documentation_ranges() {
+        // RFC5737 documentation (the canonical "example IP" that leaks in
+        // from scraped tutorial pages and used to get expanded).
+        assert!(is_non_routable_ip("192.0.2.1")); // TEST-NET-1
+        assert!(is_non_routable_ip("198.51.100.7")); // TEST-NET-2
+        assert!(is_non_routable_ip("203.0.113.9")); // TEST-NET-3
+        assert!(is_non_routable_ip("192.0.0.8")); // IETF protocol assignments
+        assert!(is_non_routable_ip("198.18.0.1")); // RFC2544 benchmarking
+        assert!(is_non_routable_ip("198.19.255.1")); // RFC2544 upper half
+        assert!(is_non_routable_ip("0.1.2.3")); // 0.0.0.0/8 this-host
+        assert!(is_non_routable_ip("240.0.0.1")); // reserved/future
+        assert!(is_non_routable_ip("255.255.255.255")); // broadcast
+        assert!(is_non_routable_ip("2001:db8::1")); // IPv6 documentation
+        // Real, routable addresses adjacent to the reserved blocks stay valid.
+        assert!(!is_non_routable_ip("192.0.3.1"));
+        assert!(!is_non_routable_ip("198.20.0.1"));
+        assert!(!is_non_routable_ip("203.0.114.1"));
+        assert!(!is_non_routable_ip("1.1.1.1"));
     }
 
     #[test]
