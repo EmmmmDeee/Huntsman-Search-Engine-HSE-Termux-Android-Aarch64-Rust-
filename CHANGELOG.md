@@ -28,6 +28,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **search_engines FullName dork set extracted to a pure `build_queries_fullname`.**
+  `build_queries` was a 331-line per-`TargetKind` match whose FullName arm alone
+  was ~100 lines of person-centric Google dorks (social/professional, AU
+  people-search & court/registry surfaces, news, diaspora platforms,
+  email-discovery). Lifted that arm verbatim into a pure
+  `build_queries_fullname(&str) -> Vec<String>` that the dispatch arm delegates
+  to, dropping `build_queries` from 331 to 213 lines. This is the API-free
+  recursive-discovery layer, so it's now unit-testable in isolation: a new test
+  asserts the helper output equals the dispatch output exactly (verbatim
+  extraction) plus single-token vs multi-part behaviour. Behaviour-identical;
+  the existing FullName query tests stay green.
+
 - **whois response parsing extracted to a pure `parse_whois`.** The ~55-line
   block in `Whois::process` that parsed a raw WHOIS body into 17 typed fields
   (registrar/dates/registrant/nameservers/statuses/dnssec) is now a pure
