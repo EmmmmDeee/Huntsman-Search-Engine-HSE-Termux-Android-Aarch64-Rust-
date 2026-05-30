@@ -1350,6 +1350,25 @@ mod tests {
     }
 
     #[test]
+    fn build_queries_fullname_pure_fn_matches_dispatch() {
+        // The extracted pure helper must produce exactly what the FullName
+        // dispatch arm produces (verbatim extraction, no behaviour change).
+        let direct = build_queries_fullname("Jordan Lee Meyer");
+        let viadispatch = build_queries(&Target::new(TargetKind::FullName, "Jordan Lee Meyer"));
+        assert_eq!(direct, viadispatch);
+
+        // Single-token name → only the two base dorks, no first/last expansion.
+        let single = build_queries_fullname("Jordan");
+        assert_eq!(single.len(), 2, "single token → 2 base queries: {single:?}");
+
+        // Three-part name unlocks the AU registries + middle-name username pattern.
+        assert!(direct.len() > 15, "multi-part name → rich dork set");
+        assert!(direct.iter().any(|s| s.contains("ahpra.gov.au")));
+        assert!(direct.iter().any(|s| s.contains("profile OR account")));
+        assert!(direct.iter().all(|s| !s.is_empty()));
+    }
+
+    #[test]
     fn build_queries_asn_normalises_prefix() {
         let t = Target::new(TargetKind::Asn, "13335");
         let q = build_queries(&t);
