@@ -91,6 +91,30 @@ pub struct Correlation {
     pub rank: f64,
 }
 
+/// Compute `severity.weight() × max(C_eff)` over the child entities of each
+/// correlation, write it into `rank`, and sort the slice rank-descending with
+/// a stable severity/rule_id tie-break. Shared by both the finalize pass
+/// (`Correlator::run`) and the live incremental pass (engine) so a correlation
+/// carries the same rank whether it was streamed mid-scan or produced at the
+/// end. `ceff` maps entity uid → c_effective().
+pub fn rank_and_sort(corrs: &mut [Correlation], ceff: &std::collections::HashMap<String, f64>) {
+    for c in corrs.iter_mut() {
+        let max_child = c
+            .entity_uids
+            .iter()
+            .filter_map(|uid| ceff.get(uid).copied())
+            .fold(0.0_f64, f64::max);
+        c.rank = c.severity.weight() * max_child;
+    }
+    corrs.sort_by(|a, b| {
+        b.rank
+            .partial_cmp(&a.rank)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.severity.cmp(&a.severity))
+            .then(a.rule_id.cmp(&b.rule_id))
+    });
+}
+
 impl Correlation {
     pub(crate) fn new(
         rule_id: &str,
@@ -141,32 +165,13 @@ impl Correlator {
             firings.extend(evaluate_relation_rules(&entities, &relations, scan_id, now));
         }
 
-        // Rank each firing by severity × the highest C_eff among its child
-        // entities. The rules emit `rank: 0.0`; we set it here because this is
-        // the first point that has both the firings and the entity C_eff map.
-        // A C_eff lookup table avoids an O(rules × entities) rescan.
-        let ceff: std::collections::HashMap<&str, f64> = entities
+        // Rank each firing by severity × highest child C_eff and sort
+        // (shared with the live incremental pass so ranks are consistent).
+        let ceff: std::collections::HashMap<String, f64> = entities
             .iter()
-            .map(|e| (e.uid.as_str(), e.c_effective()))
+            .map(|e| (e.uid.clone(), e.c_effective()))
             .collect();
-        for c in &mut firings {
-            let max_child_ceff = c
-                .entity_uids
-                .iter()
-                .filter_map(|uid| ceff.get(uid.as_str()).copied())
-                .fold(0.0_f64, f64::max);
-            c.rank = c.severity.weight() * max_child_ceff;
-        }
-        // Highest-value correlations first: severity-weighted, C_eff-scaled.
-        // Stable tie-break on severity then rule_id keeps output deterministic
-        // when ranks collide (e.g. all children at C_eff ceiling).
-        firings.sort_by(|a, b| {
-            b.rank
-                .partial_cmp(&a.rank)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(b.severity.cmp(&a.severity))
-                .then(a.rule_id.cmp(&b.rule_id))
-        });
+        rank_and_sort(&mut firings, &ceff);
 
         for c in &firings {
             self.store.upsert_correlation(c)?;

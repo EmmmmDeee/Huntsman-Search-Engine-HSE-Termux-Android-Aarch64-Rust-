@@ -447,10 +447,21 @@ impl ScanEngine {
         entities: &[Entity],
         emitted: &mut HashSet<String>,
     ) {
-        for c in crate::core::correlator::correlate_entities(entities, scan_id) {
-            if !emitted.insert(correlation_key(&c)) {
-                continue;
-            }
+        // Rank live-streamed correlations with the same severity × max-child-
+        // C_eff score the finalize pass uses, so a scan that is killed at its
+        // wall/entity budget (and never reaches finalize) still persists ranked
+        // correlations — not rank=0.0 rows. Build the C_eff map once per call.
+        let ceff: HashMap<String, f64> = entities
+            .iter()
+            .map(|e| (e.uid.clone(), e.c_effective()))
+            .collect();
+        let mut fresh: Vec<crate::core::correlator::Correlation> =
+            crate::core::correlator::correlate_entities(entities, scan_id)
+                .into_iter()
+                .filter(|c| emitted.insert(correlation_key(c)))
+                .collect();
+        crate::core::correlator::rank_and_sort(&mut fresh, &ceff);
+        for c in fresh {
             if let Err(e) = self.store.upsert_correlation(&c) {
                 warn!(scan_id, error = %e, "live correlation persist failed");
             }
