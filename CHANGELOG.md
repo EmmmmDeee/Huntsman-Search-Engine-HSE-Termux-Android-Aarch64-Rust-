@@ -10,6 +10,42 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **`name_intel` — NAMINT-style name intelligence (offline).** A faithful,
+  bounded port of the methodology in [NAMINT](https://seintpl.github.io/NAMINT/)
+  that supersedes the thin `name_to_username` module (12 naïve patterns, usernames
+  only). From a `FullName` seed — and an optional trailing year/number, e.g.
+  `"Jordan Leigh Meyers 1987"` — it derives, with **no network calls and zero new
+  dependencies** (`md-5`/`hex`/`url` were already vendored):
+  - up to 24 scored **usernames** (`first.last`, `flast`, `firstl`, reversed,
+    hyphen/underscore joins, middle-initial blends, year suffixes), best-first by a
+    real-world-frequency weight — feeding `username_search`, `social_probe`,
+    `github_user`, `keybase`;
+  - up to 16 speculative **emails** crossing the highest-signal handle shapes with
+    a provider set (NAMINT's iCloud/Yahoo/Hotmail plus Gmail/Outlook/Proton,
+    overridable via `HUNTSMAN_EMAIL_DOMAINS`) — feeding the entire email pivot
+    pipeline (`hibp`, `hunter_io`, `epieos`, `emailrep`, `disposable_check`,
+    `email_parse`), each carrying its **Gravatar** avatar URL (`MD5(email)`);
+  - up to 18 ready-to-click **search-query pivots** (Google web/face/email/phone/
+    document/paste dorks, Bing, DuckDuckGo, Yandex face, LinkedIn, Facebook, X,
+    Instagram, TikTok, GitHub, WhatsMyName, Epieos) as `Url` entities.
+
+  Permutations are emitted as low-confidence *candidates* (usernames ≤ 0.42,
+  emails 0.30, pivots 0.20) — deliberately below the default `min_expand_confidence`
+  (0.50), so a `--depth` scan never auto-spends API budget on guesses while the
+  entities still enrich the graph and feed the correlator's identity-surface rules.
+  To pivot on them, lower the floor (`--min-expand-confidence 0.40 --depth 1`).
+  Output is `MAX_*`-capped so a single name target generates constant-bounded work
+  — important on low-power Termux/aarch64. 26 new unit/integration tests; suite
+  green.
+
+- **Clickable URL entities + evidence in the Web UI.** The Browse table now
+  linkifies `http(s)` entity values and evidence attributes (`target="_blank"
+  rel="noopener noreferrer"`, `javascript:`/`data:` left inert and escaped), so
+  `name_intel` search pivots and Gravatar URLs are one click away — matching
+  SpiderFoot's URL-event affordance and NAMINT's link-generator workflow.
+
 ### Removed
 
 - **Deleted two dead `pub fn`s (~110 lines).** `util::see_know::credits` and

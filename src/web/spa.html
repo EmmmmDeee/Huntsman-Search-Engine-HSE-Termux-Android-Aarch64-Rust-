@@ -352,6 +352,15 @@ function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${
 function statusPill(s){const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending',aborted:'s-aborted'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
 function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
 function kindPill(k){return `<span class="kind-pill k-${attr(k)}">${esc(k)}</span>`;}
+function trunc(s,n){s=String(s||'');return s.length>n?s.slice(0,n)+'…':s;}
+/* Linkify http(s) values only (javascript:/data: stay inert escaped text), so
+   URL entities and pivot/avatar evidence are clickable — SpiderFoot/NAMINT UX. */
+function extLink(url,maxText){
+  url=String(url||'');
+  const text=esc(maxText?trunc(url,maxText):url);
+  if(!/^https?:\/\//i.test(url)) return text;
+  return `<a href="${attr(url)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+}
 function effC(e){const c=e.confidence??0;const corr=Math.max(1,e.corroboration??1);return Math.min(1,Math.max(0,c*(1+0.15*Math.log(corr))));}
 function classify(eff){return eff>=0.75?'VERIFIED':eff>=0.4?'PROBABLE':'CANDIDATE';}
 function toast(msg,kind){
@@ -1138,12 +1147,12 @@ function renderBrowseTable(rows){
     const eff = effC(e), tier = classify(eff);
     const sources = Array.from(new Set((e.evidence||[]).map(ev=>ev.source))).sort();
     const evDetail = (e.evidence||[]).map(ev=>{
-      const attrs = Object.entries(ev.attributes||{}).map(([k,v])=>`<span class="ev-attr"><span class="ak">${esc(k)}:</span> ${esc((v||'').substring(0,120))}</span>`).join('');
+      const attrs = Object.entries(ev.attributes||{}).map(([k,v])=>`<span class="ev-attr"><span class="ak">${esc(k)}:</span> ${extLink(v,90)}</span>`).join('');
       return `<div class="ev-block"><span class="ev-src">${esc(ev.source)}</span><div class="ev-sum">${esc(ev.summary)}</div>${attrs?`<div class="ev-attrs">${attrs}</div>`:''}</div>`;
     }).join('');
     return `<tr onclick="toggleDetail(this)" data-idx="${idx}">
       <td>${kindPill(e.kind)}</td>
-      <td style="word-break:break-word"><code>${esc(e.raw_value||e.value)}</code></td>
+      <td style="word-break:break-word"><code>${extLink(e.raw_value||e.value)}</code></td>
       <td class="text-right"><code>${eff.toFixed(3)}</code></td>
       <td class="text-right">${e.corroboration||1}</td>
       <td><span class="cls c-${attr(tier)}">${tier}</span></td>

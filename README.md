@@ -184,6 +184,40 @@ Round 2: Discovered IPs → geo modules → coordinates → address.
 
 ---
 
+## Name Intelligence (NAMINT-style)
+
+The `name_intel` module is a bounded, offline port of
+[NAMINT](https://seintpl.github.io/NAMINT/). From a full name (plus an
+optional trailing year, e.g. `"Jordan Leigh Meyers 1987"`) it derives — with
+**no network calls and zero native deps** — the identifiers and pivots a human
+analyst would build by hand:
+
+```bash
+hse scan --kind name --value "Jordan Leigh Meyers 1987" --modules name_intel --output json
+```
+
+- **Usernames** (≤24, scored): `first.last`, `flast`, `firstl`, reversed,
+  hyphen/underscore joins, middle-initial blends, year suffixes → feed
+  `username_search`, `social_probe`, `github_user`, `keybase`.
+- **Emails** (≤16): top handle shapes × a provider set (Gmail/Outlook/iCloud/
+  Yahoo/Hotmail/Proton, override with `HUNTSMAN_EMAIL_DOMAINS`) → feed the email
+  pipeline (`hibp`, `hunter_io`, `epieos`, `emailrep`, …). Each email carries its
+  **Gravatar** avatar URL (`MD5(email)`).
+- **Search pivots** (≤18): ready-to-click Google (web/face/email/phone/document/
+  paste) dorks, Bing, DuckDuckGo, Yandex face, LinkedIn, Facebook, X, Instagram,
+  TikTok, GitHub, WhatsMyName, Epieos — surfaced as clickable `Url` entities in
+  the Web UI Browse table.
+
+Permutations are low-confidence *candidates*, so they enrich the graph and the
+correlator without auto-spending API budget. To recurse on them, lower the
+expansion floor:
+
+```bash
+hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confidence 0.40
+```
+
+---
+
 ## Architecture
 
 - `#![forbid(unsafe_code)]` — entire codebase
