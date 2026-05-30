@@ -157,7 +157,22 @@ impl CurlClient {
             .map_err(|e| Error::module(self.module, e.to_string()))?;
 
         if !output.status.success() {
-            return Err(Error::module(self.module, "curl failed"));
+            // Surface curl's own exit code (28 = timeout, 6 = could-not-resolve,
+            // 7 = connect-refused, …) plus a trimmed stderr snippet, instead of
+            // an opaque "curl failed", so transient upstream failures are
+            // diagnosable from the logs.
+            let code = output
+                .status
+                .code()
+                .map_or_else(|| "signal".to_string(), |c| c.to_string());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let snippet: String = stderr.trim().chars().take(200).collect();
+            let detail = if snippet.is_empty() {
+                format!("curl exited {code}")
+            } else {
+                format!("curl exited {code}: {snippet}")
+            };
+            return Err(Error::module(self.module, detail));
         }
         String::from_utf8(output.stdout).map_err(|e| Error::module(self.module, e.to_string()))
     }
@@ -186,6 +201,27 @@ mod tests {
     #[test]
     fn auth_scheme_none_emits_no_header() {
         assert_eq!(AuthScheme::None.header_line("ignored"), None);
+    }
+
+    #[tokio::test]
+    async fn curl_failure_reports_exit_code_not_opaque_message() {
+        // Point at an unroutable host with a tiny timeout so curl exits
+        // non-zero (typically 28 timeout or 6/7 resolve/connect). The error
+        // must carry curl's exit code, not the old opaque "curl failed".
+        static C: CurlClient = CurlClient::new("test_seeknow", AuthScheme::None, 1, 3_000);
+        let err = C
+            .get("https://10.255.255.1/definitely-not-real", "")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("curl exited"),
+            "error must surface curl's exit code, got: {err}"
+        );
+        assert!(
+            !err.contains("curl failed"),
+            "opaque message must be gone: {err}"
+        );
     }
 
     #[test]

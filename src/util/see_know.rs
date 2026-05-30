@@ -97,6 +97,14 @@ fn cache_get(key: &str) -> Option<Vec<Value>> {
 }
 
 fn cache_put(key: String, items: Vec<Value>) {
+    // Never cache an empty result. SeekNow's name/auto `/search` path
+    // intermittently returns `total:0` for records that do exist (server-side
+    // cap races); caching that empty would poison every subsequent lookup of
+    // the same query for the life of the process. Only positive hits are
+    // memoised — a transient miss is always re-queried (bounded by budget).
+    if items.is_empty() {
+        return;
+    }
     RESPONSE_CACHE.put(key, items);
 }
 
@@ -174,10 +182,38 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
             query_type
         )
     };
-    let resp = post_json(&url, key, &body).await?;
-    let items = extract_items(&resp);
-    cache_put(ck, items.clone());
-    Ok(items)
+    // The name/auto `/search` path intermittently returns `total:0` even when
+    // the record exists (server-side cap races). Retry once on a transient
+    // empty before giving up. `cache_put` already refuses to memoise an empty
+    // result, so a transient miss can never poison later lookups of this query.
+    const MAX_ATTEMPTS: u32 = 2;
+    let mut last_err = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        match post_json(&url, key, &body).await {
+            Ok(resp) => {
+                let items = extract_items(&resp);
+                if !items.is_empty() {
+                    cache_put(ck, items.clone());
+                    return Ok(items);
+                }
+                // Transient empty: not cached. Retry if attempts remain.
+            }
+            Err(e) => last_err = Some(e),
+        }
+        if attempt + 1 < MAX_ATTEMPTS {
+            tracing::debug!(
+                query_type,
+                attempt = attempt + 1,
+                "see_know /search returned empty or errored — retrying once"
+            );
+        }
+    }
+    // Both attempts empty/errored. Surface the error (so the curl exit code
+    // reaches the logs) if we have one; otherwise an uncached empty vec.
+    match last_err {
+        Some(e) => Err(e),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// Steam profile lookup via GET /api/v1/gaming/steam?id=<value>
@@ -428,6 +464,30 @@ mod tests {
         assert_eq!(auto, cache_key("search", "alice"));
         // Typed form includes the type marker.
         assert!(typed.contains("#email"));
+    }
+
+    #[test]
+    fn empty_results_are_never_cached_but_non_empty_are() {
+        // Regression for the transient-empty poisoning bug: cache_put() must
+        // refuse an empty result so a transient `total:0` cannot poison later
+        // lookups of the same query, while a real hit is memoised.
+        let empty_key = typed_cache_key("search", "transient-empty-probe", "name");
+        cache_put(empty_key.clone(), Vec::new());
+        assert!(
+            cache_get(&empty_key).is_none(),
+            "an empty result must not be served from cache (would poison retries)"
+        );
+
+        let hit_key = typed_cache_key("search", "real-hit-probe", "name");
+        cache_put(
+            hit_key.clone(),
+            vec![serde_json::json!({"email": "x@y.com"})],
+        );
+        assert_eq!(
+            cache_get(&hit_key).map(|v| v.len()),
+            Some(1),
+            "a non-empty result must be cached and retrievable"
+        );
     }
 
     #[test]
