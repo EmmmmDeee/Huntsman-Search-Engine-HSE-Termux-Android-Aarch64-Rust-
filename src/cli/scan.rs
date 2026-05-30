@@ -531,6 +531,28 @@ fn print_dossier(
         println!();
     }
 
+    // ─── TIMELINE (semantic chronology reconstructed from the graph) ───
+    let timeline = crate::core::timeline::reconstruct(entities);
+    println!("━━━ TIMELINE ({} events) ━━━", timeline.len());
+    println!();
+    if timeline.is_empty() {
+        println!("  No dated events reconstructed from the current entity set.");
+    } else {
+        for ev in timeline.iter().take(40) {
+            println!(
+                "  {:<19}  {:<16}  {} [{}]",
+                ev.iso,
+                ev.kind.as_str(),
+                ev.entity_value,
+                ev.source
+            );
+        }
+        if timeline.len() > 40 {
+            println!("  … {} more", timeline.len() - 40);
+        }
+    }
+    println!();
+
     // ─── ENRICHMENT LINEAGE (top 20 highest-corroboration entities) ───
     println!("━━━ ENRICHMENT LINEAGE ━━━");
     println!();

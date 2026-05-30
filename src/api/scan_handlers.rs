@@ -8,23 +8,20 @@ use serde_json::json;
 use std::sync::Arc;
 use tracing::info;
 
-use super::handlers::{internal_error, not_found, ok_list, spawn_scan};
+use super::handlers::{
+    bad_request, internal_error, not_found, ok_list, spawn_scan, validated_target,
+};
 use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target};
 
-pub async fn scan_create(
-    State(s): State<Arc<AppState>>,
-    Json(req): Json<ScanRequest>,
-) -> impl IntoResponse {
-    let target = Target::new(req.kind, req.value.clone());
-    if let Err(msg) = target.validate() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("invalid target: {msg}") })),
-        )
-            .into_response();
-    }
+/// Build a validated, profile-resolved `Scan` (+ its `Target`) from a request,
+/// or a client-facing error message. Shared by `scan_create` (single) and
+/// `scan_batch` (per-item) so the validation, deterministic scan-id derivation,
+/// and `profile`→options resolution can't drift between the two paths. Pure:
+/// no store or engine access, so it's unit-testable on its own.
+fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target), String> {
+    let target = validated_target(req.kind, req.value.clone())?;
     let sid = scan_id(req.kind.canonical_str(), &req.value);
     let mut opts = req.options;
     if let Some(ref profile_name) = opts.profile
@@ -32,7 +29,18 @@ pub async fn scan_create(
     {
         opts = profile_opts;
     }
-    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let scan = Scan::new(sid, target.clone()).with_options(opts);
+    Ok((scan, target))
+}
+
+pub async fn scan_create(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<ScanRequest>,
+) -> impl IntoResponse {
+    let (scan, target) = match build_scan_from_request(req) {
+        Ok(pair) => pair,
+        Err(msg) => return bad_request(msg),
+    };
 
     if let Err(e) = s.store.upsert_scan(&scan) {
         return internal_error(&e);
@@ -53,39 +61,26 @@ pub async fn scan_batch(
     Json(requests): Json<Vec<ScanRequest>>,
 ) -> impl IntoResponse {
     if requests.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "empty batch" })),
-        )
-            .into_response();
+        return bad_request("empty batch");
     }
     if requests.len() > 50 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "batch too large (max 50)" })),
-        )
-            .into_response();
+        return bad_request("batch too large (max 50)");
     }
 
     let mut scan_ids = Vec::with_capacity(requests.len());
     for req in requests {
-        let target = Target::new(req.kind, req.value.clone());
-        if let Err(msg) = target.validate() {
-            scan_ids.push(json!({ "error": format!("invalid target: {msg}") }));
-            continue;
-        }
-        let sid = scan_id(req.kind.canonical_str(), &req.value);
-        let mut opts = req.options;
-        if let Some(ref profile_name) = opts.profile
-            && let Some(profile_opts) = crate::core::profiles::resolve_profile(profile_name)
-        {
-            opts = profile_opts;
-        }
-        let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+        let (scan, target) = match build_scan_from_request(req) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                scan_ids.push(json!({ "error": msg }));
+                continue;
+            }
+        };
         if let Err(e) = s.store.upsert_scan(&scan) {
             scan_ids.push(json!({ "error": e.to_string() }));
             continue;
         }
+        let sid = scan.id.clone();
         spawn_scan(&s, scan, target);
         scan_ids.push(json!({ "scan_id": sid, "status": "queued" }));
     }
@@ -142,10 +137,26 @@ pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     }
 }
 
+/// `Some(404)` when no scan with `id` exists (or `Some(500)` on a store error),
+/// else `None`. Sub-resource handlers call this first so an unknown scan yields
+/// 404 — consistent with `GET /scans/{id}` and `report.json` — rather than a
+/// misleading empty `200` that a client cannot distinguish from a real scan
+/// that simply found nothing.
+fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
+    match s.store.get_scan(id) {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(not_found()),
+        Err(e) => Some(internal_error(&e)),
+    }
+}
+
 pub async fn scan_entities(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     match s.store.entities_for_scan(&id) {
         Ok(entities) => ok_list("entities", entities),
         Err(e) => internal_error(&e),
@@ -157,19 +168,14 @@ pub async fn scan_entities_filter(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     if params.get("kind").is_some_and(|k| k.len() > 32) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "kind too long (max 32 chars)"})),
-        )
-            .into_response();
+        return bad_request("kind too long (max 32 chars)");
     }
     if params.get("q").is_some_and(|v| v.len() > 256) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "query too long (max 256 chars)"})),
-        )
-            .into_response();
+        return bad_request("query too long (max 256 chars)");
     }
     let kind = params.get("kind").map(String::as_str);
     let min_conf = params
@@ -187,6 +193,9 @@ pub async fn scan_entities_facets(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     match s.store.entity_facets(&id) {
         Ok(facets) => {
             let items: Vec<serde_json::Value> = facets
@@ -203,6 +212,9 @@ pub async fn scan_correlations(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     match s.store.correlations_for_scan(&id) {
         Ok(corr) => ok_list("correlations", corr),
         Err(e) => internal_error(&e),
@@ -215,6 +227,9 @@ pub async fn scan_relations(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     match s.store.relations_for_scan(&id) {
         Ok(rels) => ok_list("relations", rels),
         Err(e) => internal_error(&e),
@@ -271,6 +286,9 @@ pub async fn scan_events_history(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     match s.store.events_for_scan(&id) {
         Ok(events) => ok_list("events", events),
         Err(e) => internal_error(&e),
@@ -281,6 +299,9 @@ pub async fn scan_entities_csv(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     let entities = match s.store.entities_for_scan(&id) {
         Ok(es) => es,
         Err(e) => return internal_error(&e),
@@ -379,6 +400,9 @@ pub async fn scan_export_gexf(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     let entities = match s.store.entities_for_scan(&id) {
         Ok(entities) => entities,
         Err(e) => return internal_error(&e),
@@ -435,3 +459,45 @@ pub(crate) fn csv_escape(s: &str) -> String {
 }
 
 // ─── Health / Version / Stats / Modules ────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::scan::TargetKind;
+
+    #[test]
+    fn build_scan_from_request_valid_is_deterministic() {
+        let req = ScanRequest {
+            kind: TargetKind::Domain,
+            value: "example.com".to_string(),
+            options: Default::default(),
+        };
+        let (scan, target) = build_scan_from_request(req).expect("valid domain should build");
+        assert_eq!(target.value, "example.com");
+        assert_eq!(target.kind, TargetKind::Domain);
+        // The scan id is the deterministic content hash of (kind, value), so a
+        // second build of the same request yields the identical id.
+        let req2 = ScanRequest {
+            kind: TargetKind::Domain,
+            value: "example.com".to_string(),
+            options: Default::default(),
+        };
+        let (scan2, _) = build_scan_from_request(req2).unwrap();
+        assert_eq!(scan.id, scan2.id);
+        assert_eq!(scan.id, scan_id("domain", "example.com"));
+    }
+
+    #[test]
+    fn build_scan_from_request_rejects_invalid_target() {
+        let req = ScanRequest {
+            kind: TargetKind::Domain,
+            value: "no-dot-here".to_string(),
+            options: Default::default(),
+        };
+        let err = build_scan_from_request(req).unwrap_err();
+        assert!(
+            err.starts_with("invalid target: "),
+            "error must carry the client-facing prefix, got: {err}"
+        );
+    }
+}

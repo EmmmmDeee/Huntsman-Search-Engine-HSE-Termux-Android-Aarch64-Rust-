@@ -26,9 +26,22 @@ fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
         .ok_or_else(|| Error::Other("no completed scans in store".into()))
 }
 
+/// Fail loudly on a missing scan instead of emitting an empty CSV/JSON/GEXF.
+/// `entities_for_scan` returns an empty Vec for an unknown id, which is
+/// indistinguishable from a real scan that found nothing; the `report` format
+/// already errors on a missing scan, so this makes all four formats consistent.
+/// (The `latest` branch of `resolve_scan_id` already guarantees existence.)
+fn require_scan(store: &Store, sid: &str) -> Result<()> {
+    if store.get_scan(sid)?.is_none() {
+        return Err(Error::Other(format!("scan {sid} not found")));
+    }
+    Ok(())
+}
+
 pub(super) async fn cmd_export(scan_id: String, format: String, out: Option<String>) -> Result<()> {
     let store = Store::open(&default_db_path())?;
     let sid = resolve_scan_id(&store, &scan_id)?;
+    require_scan(&store, &sid)?;
     let body = match format.to_lowercase().as_str() {
         "json" => render_json(&store, &sid)?,
         "csv" => render_csv(&store, &sid)?,
@@ -80,4 +93,33 @@ fn render_report(store: &Store, sid: &str) -> Result<String> {
         .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
     serde_json::to_string_pretty(&report)
         .map_err(|e| Error::Other(format!("report serialise: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::scan::{Scan, Target, TargetKind};
+
+    #[test]
+    fn require_scan_errors_on_missing_and_ok_on_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("export_test.db");
+        let store = Store::open(db.to_str().unwrap()).unwrap();
+
+        // Unknown id -> a clear "not found" error (no silent empty export).
+        let err = require_scan(&store, "no-such-scan")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not found"),
+            "expected not-found error, got: {err}"
+        );
+
+        // After the scan exists, the check passes.
+        let target = Target::new(TargetKind::Email, "x@b.com");
+        store
+            .upsert_scan(&Scan::new("scan-present", target))
+            .unwrap();
+        assert!(require_scan(&store, "scan-present").is_ok());
+    }
 }

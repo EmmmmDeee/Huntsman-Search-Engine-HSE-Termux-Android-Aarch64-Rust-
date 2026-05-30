@@ -14,6 +14,7 @@ pub mod profiles;
 pub mod relation;
 pub mod roi;
 pub mod scan;
+pub mod timeline;
 pub mod validation;
 pub mod webhook;
 

@@ -546,6 +546,35 @@ async fn spa_fallback_returns_html() {
     assert!(body.contains("<html") || body.contains("<!DOCTYPE"));
 }
 
+// ── 14b. Favicon (SVG, not the SPA HTML) ─────────────────────────────────
+
+#[tokio::test]
+async fn favicon_returns_svg_not_html() {
+    let app = test_app("favicon");
+    let resp = app.oneshot(get("/favicon.ico")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .expect("favicon should have content-type")
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        ct.contains("image/svg+xml"),
+        "favicon must be SVG, not the SPA fallback HTML — got: {ct}"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), 100_000)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(body.contains("<svg"), "favicon body should be an SVG");
+    assert!(
+        !body.contains("<!DOCTYPE"),
+        "favicon must not return the SPA HTML document"
+    );
+}
+
 // ── 15. Stats ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -791,4 +820,49 @@ async fn live_stop_not_found() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn sub_resource_endpoints_404_for_unknown_scan() {
+    // Regression: every /scans/{id}/<sub> must 404 for an unknown scan —
+    // consistent with GET /scans/{id} and report.json — instead of a
+    // misleading empty 200 a client can't distinguish from "found nothing".
+    let (app, sid) = create_scan("subres404").await;
+    let bad = "nonexistent0000000000000000000000000000000000000000000000000000";
+
+    for ep in [
+        "entities",
+        "entities/facets",
+        "entities/filter?kind=email",
+        "correlations",
+        "relations",
+        "entities.csv",
+        "events.history",
+        "graph.gexf",
+    ] {
+        let unknown = app
+            .clone()
+            .oneshot(get(&format!("/api/v1/scans/{bad}/{ep}")))
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), 404, "unknown scan {ep} must 404");
+    }
+
+    // A real scan still serves each sub-resource (no success-path regression).
+    for ep in [
+        "entities",
+        "entities/facets",
+        "correlations",
+        "relations",
+        "entities.csv",
+        "events.history",
+        "graph.gexf",
+    ] {
+        let known = app
+            .clone()
+            .oneshot(get(&format!("/api/v1/scans/{sid}/{ep}")))
+            .await
+            .unwrap();
+        assert_eq!(known.status(), 200, "known scan {ep} must 200");
+    }
 }

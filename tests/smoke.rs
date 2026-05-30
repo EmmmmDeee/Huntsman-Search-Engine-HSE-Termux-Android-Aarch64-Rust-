@@ -197,12 +197,35 @@ impl Module for KeyConsumerModule {
     }
 }
 
+/// Clear any pre-existing keys for the chain-test service from the process-
+/// global pool so the key-chaining tests are hermetic. The global pool is a
+/// `OnceLock` seeded from the persisted `~/.huntsman/key_pool.json`, which can
+/// already hold real `shodan` keys (from prior CLI use or scans); those perturb
+/// `next_key("shodan")` selection and make the hot-inject assertion flaky
+/// depending on test order / the developer's local pool. Removal is in-memory
+/// only (never writes the file), so it cannot affect real keys on disk.
+fn reset_chain_pool() {
+    let pool = huntsman_search_engine::util::key_pool::global_pool();
+    let existing: Vec<String> = pool
+        .snapshot()
+        .services
+        .get(CHAIN_TEST_SERVICE)
+        .into_iter()
+        .flatten()
+        .map(|e| e.value.clone())
+        .collect();
+    for value in existing {
+        pool.remove(CHAIN_TEST_SERVICE, &value);
+    }
+}
+
 #[tokio::test]
 async fn key_chaining_sequential_dispatch() {
     // Sequential mode (max_concurrent=0). The discoverer runs first,
     // stores the key in the pool. The per-module hot-inject after
     // finalise_module_result pushes it into ctx. The consumer then sees
     // the key and emits its marker entity.
+    reset_chain_pool();
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(KeyDiscovererModule), Arc::new(KeyConsumerModule)],
         "chain-seq",
@@ -233,6 +256,7 @@ async fn key_chaining_concurrent_dispatch() {
     // Concurrent mode (max_concurrent>0). Paid modules run in Phase 1
     // synchronously; ctx is refreshed from the pool; THEN Free + KeyGated
     // modules spawn in Phase 2 with the keys-rich ctx clone.
+    reset_chain_pool();
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(KeyDiscovererModule), Arc::new(KeyConsumerModule)],
         "chain-conc",
@@ -1434,7 +1458,7 @@ async fn richest_first_strategy_prefers_high_unlock_targets() {
         }
         async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
             let mut r = ModuleResult::new();
-            let mut e = Entity::new(EntityKind::IpAddress, "203.0.113.5", 0.9, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::IpAddress, "93.184.216.34", 0.9, &ctx.scan_id);
             e.tag("derived");
             r.push(e);
             Ok(r)
@@ -1677,4 +1701,463 @@ async fn correlator_surfaces_malicious_adjacency_via_relations() {
         "AU-031 should fire for the benign subdomain, got: {correlations:?}"
     );
     assert!(au031[0].description.contains("blog.evilcorp.com"));
+}
+
+// ── Live cross-correlation during ingestion ─────────────────────────────────
+//
+// Proves the charter's "live cross-correlation during ingestion (not
+// post-processing)" condition: entity rules are evaluated against the working
+// in-memory graph as it grows, so correlations stream out mid-scan rather than
+// only at finalise.
+
+/// Seed-round module: emits two LAN-tagged entities (an IP and a MAC) so the
+/// entity rule AU-013 (local-network discovery) fires from the seed round
+/// alone — before any expansion round runs. Also emits a high-confidence
+/// Username, the entity the next round expands on (a well-trodden expansion
+/// path that survives the candidate filters).
+struct LanPairModule;
+
+#[async_trait]
+impl Module for LanPairModule {
+    fn name(&self) -> &'static str {
+        "lan_pair"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let mut ip = Entity::new(EntityKind::IpAddress, "192.168.1.50", 0.95, &ctx.scan_id);
+        ip.tag("local-arp");
+        let mut mac = Entity::new(
+            EntityKind::MacAddress,
+            "aa:bb:cc:dd:ee:ff",
+            0.95,
+            &ctx.scan_id,
+        );
+        mac.tag("local-interface");
+        let mut user = Entity::new(EntityKind::Username, "lanhost", 0.95, &ctx.scan_id);
+        user.tag("derived");
+        r.push(ip);
+        r.push(mac);
+        r.push(user);
+        Ok(r)
+    }
+}
+
+/// Expansion-only ordering marker: accepts Username (never the Email seed),
+/// so its `ModuleStart` event can only appear once expansion round 1 begins.
+/// Produces nothing — it exists purely to mark the seed/expansion boundary in
+/// the event stream.
+struct ExpansionMarker;
+
+#[async_trait]
+impl Module for ExpansionMarker {
+    fn name(&self) -> &'static str {
+        "expansion_marker"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    async fn process(&self, _t: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+        Ok(ModuleResult::new())
+    }
+}
+
+#[tokio::test]
+async fn correlations_stream_live_during_ingestion_not_at_finalise() {
+    use huntsman_search_engine::core::event::EventKind;
+
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(LanPairModule), Arc::new(ExpansionMarker)],
+        "live-correlation",
+        TargetKind::Email,
+        "host@example.com",
+    );
+    // depth=1 so expansion round 1 dispatches the Username-only marker module
+    // against the username the seed round produced.
+    let opts = ScanOptions {
+        depth: 1,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+
+    // Subscribe before running so we capture the full event stream in order.
+    let mut rx = engine.bus().subscribe();
+    engine.run(scan, target, ctx).await.unwrap();
+
+    // Drain the broadcast buffer into an ordered transcript.
+    let mut first_au013: Option<usize> = None;
+    let mut marker_start: Option<usize> = None;
+    let mut au013_emits = 0usize;
+    let mut idx = 0usize;
+    while let Ok(ev) = rx.try_recv() {
+        match &ev.kind {
+            EventKind::CorrelationFound { correlation } if correlation.rule_id == "AU-013" => {
+                au013_emits += 1;
+                if first_au013.is_none() {
+                    first_au013 = Some(idx);
+                }
+            }
+            EventKind::ModuleStart { module }
+                if module == "expansion_marker" && marker_start.is_none() =>
+            {
+                marker_start = Some(idx);
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+
+    let corr_at = first_au013.expect("AU-013 correlation_found event should be emitted");
+    let marker_at = marker_start.expect("expansion_marker should run in expansion round 1");
+
+    // The discriminating assertion: the correlation streamed out *before* the
+    // expansion-only module even started. A finalise-only correlator would emit
+    // AU-013 after every expansion module event, so this ordering can only hold
+    // if correlation runs live during ingestion.
+    assert!(
+        corr_at < marker_at,
+        "AU-013 fired at event #{corr_at} but expansion module started at #{marker_at}; \
+         correlation is not running live during ingestion"
+    );
+
+    // Dedup invariant: the live pass and the authoritative finalise pass must
+    // not double-emit the same correlation.
+    assert_eq!(
+        au013_emits, 1,
+        "AU-013 should be emitted exactly once, not re-fired"
+    );
+
+    // And it is still persisted exactly once.
+    let stored: Vec<_> = store
+        .correlations_for_scan(&sid)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.rule_id == "AU-013")
+        .collect();
+    assert_eq!(stored.len(), 1, "AU-013 should persist exactly once");
+}
+
+// ── Crash-durability: entities are checkpointed each round ───────────────────
+//
+// Proves the charter's "fault-tolerant, resumable execution state" invariant:
+// discovered entities are persisted at every productive round boundary, so a
+// crash mid-scan preserves intel instead of losing everything until finalise.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use huntsman_search_engine::core::StoragePort;
+
+/// A `StoragePort` decorator that counts `upsert_entities_batch` invocations
+/// and otherwise delegates to a real `Store`.
+struct CountingStore {
+    inner: Arc<dyn StoragePort>,
+    batch_calls: Arc<AtomicUsize>,
+}
+
+impl StoragePort for CountingStore {
+    fn upsert_scan(&self, scan: &Scan) -> Result<()> {
+        self.inner.upsert_scan(scan)
+    }
+    fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
+        self.inner.get_scan(id)
+    }
+    fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
+        self.inner.list_scans(limit)
+    }
+    fn delete_scan(&self, scan_id: &str) -> Result<bool> {
+        self.inner.delete_scan(scan_id)
+    }
+    fn upsert_entity(&self, entity: &Entity) -> Result<()> {
+        self.inner.upsert_entity(entity)
+    }
+    fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize> {
+        self.batch_calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.upsert_entities_batch(entities)
+    }
+    fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
+        self.inner.entities_for_scan(scan_id)
+    }
+    fn entities_filtered(
+        &self,
+        scan_id: &str,
+        kind: Option<&str>,
+        min_confidence: Option<f64>,
+        value_contains: Option<&str>,
+    ) -> Result<Vec<Entity>> {
+        self.inner
+            .entities_filtered(scan_id, kind, min_confidence, value_contains)
+    }
+    fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {
+        self.inner.entity_facets(scan_id)
+    }
+    fn get_entity(&self, uid: &str) -> Result<Option<Entity>> {
+        self.inner.get_entity(uid)
+    }
+    fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<Entity>> {
+        self.inner.search_entities(query, limit)
+    }
+    fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>> {
+        self.inner.scan_ids_for_entity(entity_uid)
+    }
+    fn observation_count(&self, entity_uid: &str) -> Result<usize> {
+        self.inner.observation_count(entity_uid)
+    }
+    fn upsert_correlation(
+        &self,
+        c: &huntsman_search_engine::core::correlator::Correlation,
+    ) -> Result<()> {
+        self.inner.upsert_correlation(c)
+    }
+    fn correlations_for_scan(
+        &self,
+        scan_id: &str,
+    ) -> Result<Vec<huntsman_search_engine::core::correlator::Correlation>> {
+        self.inner.correlations_for_scan(scan_id)
+    }
+    fn upsert_relation(&self, r: &huntsman_search_engine::core::relation::Relation) -> Result<()> {
+        self.inner.upsert_relation(r)
+    }
+    fn relations_for_scan(
+        &self,
+        scan_id: &str,
+    ) -> Result<Vec<huntsman_search_engine::core::relation::Relation>> {
+        self.inner.relations_for_scan(scan_id)
+    }
+    fn insert_event(&self, event: &huntsman_search_engine::core::event::Event) -> Result<()> {
+        self.inner.insert_event(event)
+    }
+    fn events_for_scan(
+        &self,
+        scan_id: &str,
+    ) -> Result<Vec<huntsman_search_engine::core::event::Event>> {
+        self.inner.events_for_scan(scan_id)
+    }
+}
+
+#[tokio::test]
+async fn entities_are_checkpointed_each_round_for_durability() {
+    let tmp = tempfile_path("durability");
+    let _ = std::fs::remove_file(&tmp);
+    let store = Arc::new(Store::open(&tmp).unwrap());
+    let batch_calls = Arc::new(AtomicUsize::new(0));
+    let counting = Arc::new(CountingStore {
+        inner: Arc::clone(&store) as Arc<dyn StoragePort>,
+        batch_calls: Arc::clone(&batch_calls),
+    });
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(
+        vec![
+            Arc::new(EmailToUsernameSynth),
+            Arc::new(UsernameToPhoneSynth),
+        ],
+        Arc::clone(&counting) as Arc<dyn StoragePort>,
+        bus.clone(),
+    );
+    let sid = scan_id("email", "alice@example.com");
+    let target = Target::new(TargetKind::Email, "alice@example.com".to_string());
+    let ctx = ModuleContext {
+        scan_id: sid.clone(),
+        bus,
+        http: build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+        proxy_pool: Default::default(),
+    };
+    // depth=1: seed round (email -> username) then expansion (username -> phone).
+    let opts = ScanOptions {
+        depth: 1,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    engine.run(scan, target, ctx).await.unwrap();
+
+    // Seed checkpoint + round-1 checkpoint + finalise persist => at least two
+    // batch upserts. Without round-boundary checkpointing it would be exactly
+    // one (finalise only), so a crash mid-scan would lose everything.
+    let calls = batch_calls.load(Ordering::SeqCst);
+    assert!(
+        calls >= 2,
+        "expected >=2 entity batch upserts (round checkpoints + finalise), got {calls}"
+    );
+
+    // And the intel is genuinely durable in the underlying store.
+    let stored = store.entities_for_scan(&sid).unwrap();
+    assert!(
+        !stored.is_empty(),
+        "checkpointed entities must be persisted"
+    );
+}
+
+// ── Non-routable IP expansion gate ───────────────────────────────────────────
+//
+// Proves the relevance fix: bogus/reserved IPs (documentation ranges scraped
+// from pages, private LAN addresses from sensors) are recorded as entities but
+// never become expansion targets, so the engine doesn't burn whole rounds on
+// guaranteed-empty external lookups.
+
+/// Emits one routable (8.8.8.8) and one documentation (192.0.2.1) IP.
+struct DualIpModule;
+
+#[async_trait]
+impl Module for DualIpModule {
+    fn name(&self) -> &'static str {
+        "dual_ip"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let mut a = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.95, &ctx.scan_id);
+        a.tag("derived");
+        // Private (RFC1918): non-routable so it must not be EXPANDED, but it is
+        // a legitimate local-sensor finding so it is still ADMITTED/recorded
+        // (unlike documentation IPs, which are dropped at admission).
+        let mut b = Entity::new(EntityKind::IpAddress, "192.168.1.50", 0.95, &ctx.scan_id);
+        b.tag("derived");
+        r.push(a);
+        r.push(b);
+        Ok(r)
+    }
+}
+
+/// Accepts IpAddress and emits a `seen-<ip>` username marker, so the test can
+/// observe exactly which IPs the engine expanded into.
+struct IpSeenMarker;
+
+#[async_trait]
+impl Module for IpSeenMarker {
+    fn name(&self) -> &'static str {
+        "ip_seen_marker"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::IpAddress)
+    }
+    async fn process(&self, t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let e = Entity::new(
+            EntityKind::Username,
+            format!("seen-{}", t.value),
+            0.95,
+            &ctx.scan_id,
+        );
+        r.push(e);
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn non_routable_ips_are_not_expanded() {
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(DualIpModule), Arc::new(IpSeenMarker)],
+        "non-routable-ip",
+        TargetKind::Email,
+        "host@example.com",
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let vals: Vec<String> = store
+        .entities_for_scan(&sid)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.value)
+        .collect();
+
+    // Both IPs are recorded (private IPs are admitted; only the EXPANSION of
+    // non-routable addresses is suppressed).
+    assert!(vals.iter().any(|v| v == "8.8.8.8"), "routable IP recorded");
+    assert!(
+        vals.iter().any(|v| v == "192.168.1.50"),
+        "private (non-routable) IP still recorded as an entity"
+    );
+    // Only the routable IP was expanded (marker ran against it).
+    assert!(
+        vals.iter().any(|v| v == "seen-8.8.8.8"),
+        "routable IP must be expanded"
+    );
+    assert!(
+        !vals.iter().any(|v| v == "seen-192.168.1.50"),
+        "non-routable (private) IP must NOT be expanded"
+    );
+}
+
+// ── Bogus-IP admission guard ─────────────────────────────────────────────────
+//
+// Proves documentation/reserved IPs (e.g. 192.0.2.1 scraped from a page) are
+// dropped at entity admission, while a real public IP and an RFC1918 private
+// IP (legitimately surfaced by local sensors) are kept.
+
+/// Emits one documentation IP, one real IP, one private IP from an email seed.
+struct MixedIpModule;
+
+#[async_trait]
+impl Module for MixedIpModule {
+    fn name(&self) -> &'static str {
+        "mixed_ip"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        for v in ["192.0.2.1", "8.8.8.8", "192.168.1.5"] {
+            let mut e = Entity::new(EntityKind::IpAddress, v, 0.9, &ctx.scan_id);
+            e.tag("derived");
+            r.push(e);
+        }
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn bogus_ips_are_dropped_at_admission() {
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(MixedIpModule)],
+        "bogus-ip-admission",
+        TargetKind::Email,
+        "host@example.com",
+    );
+    let scan = Scan::new(sid.clone(), target.clone());
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let ips: Vec<String> = store
+        .entities_for_scan(&sid)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .map(|e| e.value)
+        .collect();
+
+    assert!(
+        !ips.iter().any(|v| v == "192.0.2.1"),
+        "documentation IP must be dropped, got: {ips:?}"
+    );
+    assert!(ips.iter().any(|v| v == "8.8.8.8"), "real IP must be kept");
+    assert!(
+        ips.iter().any(|v| v == "192.168.1.5"),
+        "private IP must be kept (local-sensor finding)"
+    );
 }

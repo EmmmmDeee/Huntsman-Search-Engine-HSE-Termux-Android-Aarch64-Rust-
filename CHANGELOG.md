@@ -10,6 +10,353 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Removed
+
+- **Deleted two dead `pub fn`s (~110 lines).** `util::see_know::credits` and
+  `util::oathnet::harvest_credentials` had zero call sites anywhere in the crate
+  (binary, lib, or tests) and were never re-exported — `harvest_credentials` was
+  left orphaned when the pre-scan OathNet harvest was disabled, and `credits`
+  was aspirational (its doc described a quota-gating use that no caller ever
+  wired up). `clippy -D warnings` can't flag unused `pub` items in a lib, which
+  is why they survived. Removal verified clean: build + `clippy -D warnings`
+  stay green (no private helper orphaned) and the full suite is unchanged at
+  1326 passed, confirming nothing depended on them. Analysed-but-kept: all deps
+  are used; the `#[allow(dead_code)]` annotations are on deliberate API-response
+  struct fields (documentation of the wire shape); the duplicated hardcoded keys
+  are intentional per the operator's standing instruction.
+
+- **Stripped non-functional governance + narrative docs.** Removed the process
+  "rules and regulations" that carry no build or runtime effect: governance docs
+  (`CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `SECURITY.md`) and the `.github/` PR +
+  issue templates; and the narrative/charter docs (`docs/BLUEPRINT.md`,
+  `docs/DESIGN.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`). Functional code is
+  untouched — all 87 modules, the 32 correlator rules, `#![forbid(unsafe_code)]`,
+  the CI workflow, the architecture-invariant tests, the LICENSEs, this CHANGELOG,
+  and the operational docs (`USAGE`, `INSTALL`, `MODULES`, `TROUBLESHOOTING`,
+  `API_KEY_HUNTING_GUIDE`, `OATHNET_API_GUIDE`) remain. README's doc index was
+  updated to drop the two now-deleted links. Build + full test suite unchanged
+  (1326 green), proving nothing in code/tests depended on the removed files.
+
+### Fixed
+
+- **`install.sh` header no longer understates the Rust requirement.** The banner
+  comment claimed "rustc 1.85+" while the script itself enforces 1.88 (`ver_ge
+  "$RUST_MAJ_MIN" "1.88"`), matching `Cargo.toml`'s `rust-version`, the README
+  badge, the CI MSRV job, and `docs/INSTALL.md`. A user reading the header would
+  believe 1.85–1.87 works, but the `cargo build --release --locked` hard-fails
+  under 1.88; aligned the comment to 1.88 so the installer's stated and enforced
+  requirements agree.
+
+- **CI green under Rust 1.96 stable: collapsed a nested `if` clippy now rejects.**
+  `clippy::collapsible_match` (enforced under `-D warnings`) became stricter in
+  1.96.0 and flagged an arm in `tests/smoke.rs` whose body was solely an
+  `if marker_start.is_none()` guard — collapsed into the match guard
+  (`… if module == "expansion_marker" && marker_start.is_none() =>`),
+  behaviour-identical (first expansion-marker still wins; later ones fall to
+  `_`). The failure only appeared on CI because its `stable` toolchain had
+  advanced past the local one; updated local to 1.96.0 to reproduce.
+
+- **`events.history` and `graph.gexf` now 404 for unknown scans (PR #87 review).**
+  Both sub-resource handlers skipped the `scan_missing` guard that the other
+  `/scans/{id}/…` endpoints use, so an unknown scan id returned `200` with an
+  empty events list / empty-graph GEXF document — the misleading "found nothing"
+  response the guard exists to eliminate. Added the early-return to both and
+  extended `sub_resource_endpoints_404_for_unknown_scan` to cover them so the
+  consistency invariant can't silently regress.
+
+- **Timeline date parser no longer accepts a malformed time as midnight (PR #87
+  review).** In `parse_date`, when a `T`/space time part was present but its
+  components failed to parse (e.g. `2019-03-15Tinvalid`), each fell back to `0`
+  via `unwrap_or(0)`, so validation passed and the value was accepted as
+  `00:00:00`. The hour is now mandatory and the minute mandatory-when-present
+  (a present-but-unparseable component rejects the whole timestamp). Seconds
+  stay lenient on purpose — `split(':')` glues a timezone offset onto that token
+  (`00+05` from `+05:00`), so strict parsing there would wrongly reject valid
+  offset timestamps. New test covers malformed rejection, hour/minute-only
+  validity, and offset tolerance.
+
+- **see_know `/search` transient empties no longer poison the scan; curl errors
+  are diagnosable.** The name/auto `/search` path intermittently returns
+  `total:0` for records that exist (server-side cap races). Previously that empty
+  was cached, so every later lookup of the same query returned nothing for the
+  life of the process — and when curl itself failed, the module logged an opaque
+  `[seek_now] curl failed`. Two fixes: (1) `cache_put` now refuses to memoise an
+  empty result (covers `/search` *and* every `get_path` endpoint), and `search`
+  retries once on a transient empty; (2) the shared `CurlClient` now reports
+  curl's exit code + a trimmed stderr snippet (`curl exited 28: …`) instead of
+  `curl failed`. Live `hse scan --kind name --value "Jordan Meyer" --modules
+  see_know` now returns 185 entities on a single attempt where it intermittently
+  returned 0. Regression tests pin both invariants (empty-never-cached;
+  error-carries-exit-code), each proven by reverting the fix in place.
+
+### Changed
+
+- **Added a `bad_request` response helper, collapsing 10 open-coded 400 sites.**
+  `internal_error` and `not_found` already existed as shared response builders,
+  but every `400` was hand-written as `(StatusCode::BAD_REQUEST, Json(json!({
+  "error": … })))` — ten times across the scan/live/search/settings handlers,
+  each an opportunity for an inconsistent body shape. Introduced
+  `bad_request(impl Into<String>)` (accepts `&str` literals and `format!`/`String`
+  messages alike) and routed all ten through it; the open-coded `BAD_REQUEST`
+  count in `src/api` drops from 10 to 1 (the helper). Behaviour-preserving — the
+  status and `{"error": …}` body are byte-identical, proven by the existing API
+  tests that assert the exact 400 responses (`*_rejects_invalid_target`, the
+  filter length-guards, the batch size guards). Suite unchanged at 1334.
+
+- **Unified target validation across the scan- and live-create endpoints.**
+  `live_create` (`POST /live`) repeated the same `Target::new` + `validate()` +
+  `invalid target: …` error construction that the scan path already had, so the
+  admission rule and its error wording lived in two places and could drift.
+  Extracted `validated_target(kind, value) -> Result<Target, String>` as the
+  single source of truth; both `build_scan_from_request` and `live_create` now
+  funnel through it. Added a unit test for the accept/reject-prefix behaviour.
+  Behaviour-preserving: the `live_create_rejects_invalid_target` and
+  `scan_create_*` end-to-end API tests pass unchanged. Suite +1 at 1334.
+
+- **De-duplicated scan construction shared by `scan_create` and `scan_batch`.**
+  Both the single-scan `POST /scans` and the batch `POST /scans/batch` handlers
+  carried an identical eight-line sequence — target construction, `validate()`
+  (with the same `invalid target: …` error string), deterministic `scan_id`
+  derivation, `profile`→options resolution, and `Scan::new().with_options()` —
+  differing only in how each reports a bad item (HTTP 400 vs a per-item JSON
+  error). Lifted that into a pure `build_scan_from_request(req) -> Result<(Scan,
+  Target), String>` that both call, so the validation/id/profile rules can no
+  longer drift between the two entry points. Added unit tests for the valid
+  (deterministic id) and invalid (error-prefix) paths. Behaviour-preserving: the
+  existing `scan_create_*` end-to-end API tests pass unchanged. Suite +2 at 1333.
+
+- **Extracted the dashboard's scan-stats aggregation into a pure, unit-tested
+  function.** The `/stats` handler (which feeds the SPA dashboard's Total Scans /
+  Entities / status-breakdown cards) interleaved its summation loop — per-status
+  histogram + entity/dedup totals — with store I/O and JSON assembly, so the
+  arithmetic was only reachable through the full async handler + a live store.
+  Pulled it into a pure `aggregate_scan_stats(&[Scan]) -> ScanStatsAgg` (the
+  handler now destructures the result), and added a unit test covering the
+  multi-status histogram, the running totals, and the empty-input case. Not a
+  line-count play (handler 60→56) — a separation-of-concerns / testability one,
+  matching the codebase's pure-function pattern. Behaviour-preserving: the
+  existing `/stats` end-to-end API tests pass unchanged. Suite +1 at 1331.
+
+- **Refactored `Store::open` (102→27-line body) behind a schema characterisation
+  test.** The SQLite bootstrap — the most Termux-essential function, run on every
+  launch — was a 102-line body dominated by an inline DDL string, with the two
+  env-tunable pragma reads duplicating the same `env::var().and_then().unwrap_or()`
+  dance. Lifted the static schema into a `SCHEMA_DDL` constant and the idempotent
+  observation backfill into `BACKFILL_OBSERVATIONS_SQL`, and extracted an
+  `env_i64` helper for the pragma reads; `open` is now a short orchestrator and
+  the schema lives in one greppable place. Behaviour-preserving: pragmas + schema
+  still execute in a single batch, and a new characterisation test
+  (`open_produces_exact_schema_and_pragmas`) pins the exact `sqlite_master` table/
+  index set plus `foreign_keys=ON` / `journal_mode=WAL` — verified passing before
+  the refactor, still passing after. Suite +1 at 1330.
+
+- **Refactored `entities_to_gexf` (109→30-line body) behind a byte-exact golden
+  test.** The GEXF graph export (the SpiderFoot-style "Export GEXF" the Graph tab
+  now offers) was one monolithic function that also inlined the uid-truncation
+  three times instead of calling the existing `short_uid` helper. Split it into
+  focused, single-purpose writers — `write_preamble`, `write_node`,
+  `write_relation_edge`, `write_shared_evidence_edges` — and routed every node/
+  edge id through `short_uid`, removing the duplication. Behaviour-preserving:
+  added a characterisation test (`gexf_golden_output_is_byte_stable`) that pins
+  the *exact* document for a deterministic input (uids are `SHA-256(kind:value)`)
+  before the refactor; it still passes byte-for-byte after. Suite +1 at 1329.
+
+- **Scan Results page: SpiderFoot-style bar chart in the summary + phone-density
+  fix.** Two refinements to the page operators spend the most time on. (1) The
+  Status tab's "Entities by type" panel — previously a table with a bare
+  percentage column — now draws a proportional horizontal bar per type (scaled to
+  the largest type, brand-cyan fill, percentage overlaid), matching SpiderFoot
+  4.0's summary visualisation so the data-element distribution is scannable at a
+  glance; dark-theme aware. (2) The four scan-summary cards (Entities /
+  Correlations / Started / Duration) were `col-sm-3` with no `col-xs` class, so on
+  a phone they stacked 4×1 — added `col-xs-6` for a compact 2×2 grid (same fix as
+  the dashboard cards). SPA-only; suite unchanged at 1328.
+
+- **Dashboard KPI cards sit 2×2 on a phone instead of one tall column.** The four
+  stat cards (Total Scans / Entities / Modules / Live Sessions) were `col-md-3
+  col-sm-6` with no `col-xs` class, so below Bootstrap 3's 768px breakpoint each
+  went full-width — four large cards stacked vertically, pushing the rest of the
+  dashboard far down on a Chrome-on-Android screen. Added `col-xs-6` so they form
+  a compact 2×2 grid on phones (still 4-up on desktop, 2-up on tablet). The three
+  taller content panels below keep full-width stacking, which suits their height.
+  SPA-only; suite unchanged at 1328.
+
+- **Global entity search hardened against Android-Chrome keyboard corruption.**
+  The seed-target input already disabled autocomplete/autocorrect/autocapitalize
+  + spellcheck (case/spelling-sensitive OSINT values must pass through verbatim),
+  but the navbar global search — which queries the same entity values against the
+  backend `/search` endpoint — did not, so on a phone the soft keyboard could
+  autocorrect `jdoe`→`Joe` or inject capitals/spaces before the query was sent.
+  Applied the same four attributes to `#global-q` for consistency. (SQLite `LIKE`
+  is ASCII-case-insensitive so capitalisation alone was absorbed, but autocorrect
+  substitution genuinely corrupted queries.) SPA-only; suite unchanged at 1328.
+
+- **Import bogus-IP/domain filtering now runs in a single pass (PR #87 review).**
+  The stealer-log import dropped bogus IP-kind entities and IP-literals
+  mis-classified as domains in two consecutive `retain` calls; since the
+  predicates apply to disjoint entity kinds, they're merged into one traversal
+  (behaviour-identical) to avoid a second full pass + element shift on large
+  imports. Both rationale comments are preserved.
+
+- **Exposed the GEXF graph export in the browser UI (was backend-only).** The
+  `GET /scans/{id}/graph.gexf` endpoint — Gephi-compatible graph export with a
+  proper `Content-Disposition: attachment` filename — was fully wired in the
+  backend but had **zero** reference anywhere in the SPA: no button, no URL
+  helper, so a Chrome user could never reach it (SpiderFoot 4.0 offers exactly
+  this graph export). Added an `API.gexfUrl(id)` helper and an "Export GEXF"
+  download button in the Graph tab controls, beside Re-layout / Reset view —
+  SpiderFoot's contextual location for graph export. Verified the download
+  serves `application/xml` with `attachment; filename="hse-gexf-<id>.gexf"`, so
+  Chrome-on-Android saves it with a sensible name. SPA-only; suite unchanged at
+  1327 passed.
+
+- **Favicon + address-bar theming for Chrome-on-Android; `/favicon.ico` no longer
+  returns the SPA HTML.** Chrome (especially on Android) requests `/favicon.ico`
+  unconditionally; with no handler it fell through to the SPA fallback and
+  returned the entire HTML document as an "image" (≈70 KB, `text/html`, blank tab
+  icon, console error). Added (1) an inline SVG `<link rel="icon">` in the SPA
+  head — a hunting-crosshair in the brand cyan (`#07aef1`) on the navbar dark
+  (`#222`) — so modern Chrome uses it directly and skips the `/favicon.ico`
+  request entirely; (2) a `<meta name="theme-color" content="#222222">` so the
+  Android Chrome address bar matches the dark navbar; and (3) a dedicated
+  `GET /favicon.ico` route serving the same 319-byte SVG with
+  `Content-Type: image/svg+xml` for any client that still asks. New test
+  `favicon_returns_svg_not_html` asserts it's SVG, not the SPA document. Fully
+  offline (no extra binary asset). Suite +1 at 1327 passed.
+
+- **Wide data tables now scroll horizontally on Chrome-on-Android.** The Browse
+  element table (8 columns: Type/Value/C_eff/Corr/Tier/Tags/Sources/Observed) and
+  the Scans table (7 columns) previously overflowed a phone viewport, forcing a
+  body-level horizontal scroll that dragged the fixed navbar and crushed columns.
+  Both are now wrapped in Bootstrap 3's `.table-responsive` (the same pattern
+  SpiderFoot 4.0 uses), so on narrow screens the table itself scrolls within its
+  panel while the page chrome stays put. Narrow 2–3 column summary tables (Status
+  rollups, Info key/value) are left unwrapped as they already fit. SPA-only;
+  suite unchanged at 1326 passed.
+
+- **D3 force graph is now pan/zoomable — usable on Chrome-on-Android.** The graph
+  previously supported only node-drag, so on a phone screen a multi-node layout
+  could not be panned or zoomed (it overflowed the SVG with no way to reach
+  off-screen nodes). `buildD3Graph` now nests all links/nodes in a `zoom-container`
+  `<g>` driven by `d3.behavior.zoom` (`scaleExtent [0.2, 5]`), which is touch-aware
+  in d3 v3: pinch-to-zoom and one-finger pan work natively in Chrome on Android,
+  mouse-wheel + drag-canvas on desktop — matching SpiderFoot 4.0's zoomable graph.
+  A node `mousedown` `stopPropagation` keeps node-drag from also panning the
+  canvas; double-click-zoom is disabled to avoid fighting the layout. Added a
+  "Reset view" button (recentres/rescales via a 250 ms transition) and a corner
+  hint ("Drag nodes · pinch or scroll to zoom · drag canvas to pan"), both
+  dark-theme aware. SPA-only; suite unchanged at 1326 passed.
+
+- **Browse tab gains a SpiderFoot 4.0-style data-element rollup table.** Above
+  the entity element list, `renderBrowse` now renders a `Data Element | Unique |
+  Total` summary table (`#browse-rollup`) computed from `S.entities`: Unique is
+  the per-kind entity count, Total is the per-kind sum of `corroboration`,
+  mirroring SpiderFoot's Browse rollup (unique values vs total data elements).
+  Rows are sorted by Unique descending and are clickable — clicking a type drives
+  the existing `#b-kind` dropdown + `refresh()` to drill the element list down to
+  that type (clicking the active type toggles back to All), reusing the filter
+  infrastructure rather than adding a parallel path. SPA-only change (re-embedded
+  via `include_str!`); no Rust logic touched, suite unchanged at 1326 passed.
+
+- **search_engines FullName dork set extracted to a pure `build_queries_fullname`.**
+  `build_queries` was a 331-line per-`TargetKind` match whose FullName arm alone
+  was ~100 lines of person-centric Google dorks (social/professional, AU
+  people-search & court/registry surfaces, news, diaspora platforms,
+  email-discovery). Lifted that arm verbatim into a pure
+  `build_queries_fullname(&str) -> Vec<String>` that the dispatch arm delegates
+  to, dropping `build_queries` from 331 to 213 lines. This is the API-free
+  recursive-discovery layer, so it's now unit-testable in isolation: a new test
+  asserts the helper output equals the dispatch output exactly (verbatim
+  extraction) plus single-token vs multi-part behaviour. Behaviour-identical;
+  the existing FullName query tests stay green.
+
+- **whois response parsing extracted to a pure `parse_whois`.** The ~55-line
+  block in `Whois::process` that parsed a raw WHOIS body into 17 typed fields
+  (registrar/dates/registrant/nameservers/statuses/dnssec) is now a pure
+  `parse_whois(&str) -> WhoisFields` that `process` destructures, taking the
+  method from 304 to 268 lines and making the parser unit-testable against
+  canned WHOIS text (no TCP/43). Two new tests cover the field extraction and
+  the `@`-required email-placeholder filtering. Behaviour-identical (same field
+  keys, same precedence, same `@` filter).
+
+- **oathnet_pro stealer-entity tagging centralised; extraction characterised.**
+  `extract_stealer_entities` repeated the stealer-context tail
+  (`tag("oathnet-pro") + tag("stealer") + [extra] + add_evidence + push`) across
+  its login-email/domain/credential blocks. Added a `push_stealer_entity` helper
+  for that base (deliberately distinct from `push_oathnet_entity` — the stealer
+  context does NOT carry the `breach` tag, except the email-array kind which
+  reuses `push_oathnet_entity` for its `[breach, oathnet-pro, stealer]`). A
+  characterization test pins the two distinct tag bases in exact order, written
+  green before the change. Behaviour-identical; the function had no coverage.
+
+- **oathnet_pro breach-entity tagging centralised; extraction characterised.**
+  Applied the same cleanup as `see_know` to `oathnet_pro::extract_breach_entities`:
+  its thirteen per-field blocks each repeated `tag(breach) + tag("oathnet-pro")
+  + [record-specific tag] + add_evidence(ev.clone()) + push`. Lifted that into a
+  `push_oathnet_entity(result, e, ev, extra_tags)` helper, with `extra_tags`
+  preserving the exact serialised tag order (`candidate`, `geolocation-lead`,
+  `discord`, `linkedin`, `email-domain`, `password-hash`, …). Added two
+  characterization tests that pin the **exact ordered tag vectors** for every
+  kind (and the non-target `candidate` path) — written green against the
+  pre-refactor code, so any reordered/dropped tag fails. Behaviour-identical;
+  the function had no test coverage before.
+
+- **see_know coordinate parsing extracted to `parse_coord`.** The lat/lon
+  extraction in `extract_geo_entities` was two 10-line `or_else` ladders that
+  each tried a JSON number then a numeric string across the candidate keys
+  (`latitude`/`lat`, `longitude`/`lon`/`lng`). Replaced with a single
+  `parse_coord(item, keys)` helper preserving the exact "first present key, read
+  as f64 else parse its string" semantics, taking `extract_geo_entities` from
+  128 to 111 lines. Added `extract_geo_entities_characterization` (f64 + string
+  coords, out-of-range rejection, location/timezone/ASN/org endpoint-gating,
+  WHOIS registrant) written green before the change. Behaviour-identical.
+
+- **see_know breach-entity tagging centralised; extraction characterised.** The
+  nine per-field blocks in `extract_entities` each repeated the same tail —
+  `tag(breach) + tag("see-know") + add_evidence(ev.clone()) + push`. Lifted that
+  policy into a single `push_breach_entity(result, e, ev, extra_tags)` helper so
+  the breach-tagging rule has one source of truth (Domain stays the documented
+  exception — infrastructure, not a leaked credential, so no `breach` tag). Added
+  an `extract_entities_characterization` test that pins the full output (kinds,
+  values, per-kind tag policy) and was written/green *before* the refactor.
+  Behaviour-identical; live "Jordan Meyer" still returns the same 185 entities.
+
+- **see_know pre-flight skip logic extracted to a testable predicate.** The
+  ~38-line per-target-kind junk-seed skip block inside `SeekNow::process` (local
+  domains, too-short/all-digit/placeholder usernames, under-length phones/names,
+  private IPs, unsupported kinds) is now a pure `should_skip_seed(kind, value)`
+  function with its own unit test, shrinking `process()` from 147 to 112 lines.
+  Behaviour-identical (same conditions, same early-return); live "Jordan Meyer"
+  still returns 185 entities.
+
+- **see_know endpoint dispatch is now table-driven.** Each of the 19 typed
+  SeekNow endpoints used to be encoded in four places — an `EndpointCall`
+  variant, a 19-arm `label()` match, a 19-arm `invoke()` match, and a
+  near-identical `util::see_know` wrapper that did nothing but
+  `get_path(path, &[(param, value)])`. Collapsed the per-endpoint truth into a
+  single `EndpointCall::spec() -> (label, path, param)` table that drives both
+  `label()` and `invoke()` (the latter calling the now-`pub(crate)` `get_path`
+  directly), and removed the 16 single-use wrappers. The two Discord bridges
+  keep named wrappers because pivot discovery calls them outside the planner.
+  Behaviour-preserving: identical labels/paths/params, 37 see_know tests green,
+  and live `see_know` on the "Jordan Meyer" name seed still returns the same 185
+  entities (1 person, 96 emails, 81 phones, 6 addresses). Net −81 lines.
+
+### Fixed
+
+- **see_know name/auto search no longer times out on every query.** The
+  see-know.eu name/auto `/search` path has a ~55s server-side cap and returns
+  real data in 50–60s, but the `seek_now` curl client was budgeted at 12s curl
+  / 15s outer and the module's `max_timeout_ms` at 45s — so every name search
+  hit a curl timeout-exit (28) and surfaced as an opaque `[seek_now] curl
+  failed` with zero entities. Raised the budget above the cap: 75s curl, 78s
+  outer (curl < outer so curl's own exit code is observed), and an 80s module
+  timeout. Live `hse scan --kind name --value "Jordan Meyer"` now returns 185
+  entities (1 person, 96 emails, 81 phones, 6 addresses) where it previously
+  returned 0. Fast endpoints are unaffected — `--max-time` is a ceiling, not a
+  wait. Two regression tests pin the ordering (curl > server cap; outer > curl;
+  module ≥ outer) so the budget can't silently regress.
+
 ### Performance
 
 - **Batched entity persistence.** `ScanEngine::finalise_scan` now writes a

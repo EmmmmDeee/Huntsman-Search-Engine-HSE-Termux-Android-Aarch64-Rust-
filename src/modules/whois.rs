@@ -95,60 +95,24 @@ impl Module for Whois {
         crate::util::http::scan_for_api_keys_with_source(&response, "whois");
 
         // 3) Parse the response into the fields we surface.
-        let registrar = field(&response, &["Registrar:", "Sponsoring Registrar:"]);
-        let registrar_iana = field(&response, &["Registrar IANA ID:", "Registrar IANA Number:"]);
-        let registrar_url = field(&response, &["Registrar URL:", "Registrar Website:"]);
-        let updated = field(
-            &response,
-            &[
-                "Updated Date:",
-                "Last Modified:",
-                "Last updated:",
-                "changed:",
-            ],
-        );
-        let created = field(&response, &["Creation Date:", "created:", "Created On:"]);
-        let expires = field(
-            &response,
-            &[
-                "Registry Expiry Date:",
-                "Registrar Registration Expiration Date:",
-                "expires:",
-                "paid-till:",
-            ],
-        );
-        let registrant_email = field(
-            &response,
-            &["Registrant Email:", "Tech Email:", "Admin Email:"],
-        )
-        .filter(|e| e.contains('@'));
-        let registrant_org = field(
-            &response,
-            &[
-                "Registrant Organization:",
-                "Registrant Organisation:",
-                "org:",
-            ],
-        );
-        let registrant_country = field(&response, &["Registrant Country:", "country:"]);
-        let registrant_state = field(
-            &response,
-            &["Registrant State/Province:", "Registrant State:"],
-        );
-        let admin_email = field(&response, &["Admin Email:"]).filter(|e| e.contains('@'));
-        let tech_email = field(&response, &["Tech Email:"]).filter(|e| e.contains('@'));
-        let abuse_email = field(
-            &response,
-            &[
-                "Registrar Abuse Contact Email:",
-                "abuse-mailbox:",
-                "OrgAbuseEmail:",
-            ],
-        )
-        .filter(|e| e.contains('@'));
-        let nameservers = all_fields(&response, &["Name Server:", "nserver:"]);
-        let statuses = all_fields(&response, &["Domain Status:", "status:"]);
-        let dnssec = field(&response, &["DNSSEC:", "dnssec:"]);
+        let WhoisFields {
+            registrar,
+            registrar_iana,
+            registrar_url,
+            updated,
+            created,
+            expires,
+            registrant_email,
+            registrant_org,
+            registrant_country,
+            registrant_state,
+            admin_email,
+            tech_email,
+            abuse_email,
+            nameservers,
+            statuses,
+            dnssec,
+        } = parse_whois(&response);
 
         // No actionable data parsed — skip the entity to avoid noise.
         if registrar.is_none() && created.is_none() && nameservers.is_empty() && statuses.is_empty()
@@ -438,6 +402,89 @@ fn all_fields(text: &str, keys: &[&str]) -> Vec<String> {
     out
 }
 
+/// The typed fields parsed out of a raw WHOIS response. Pure data — the
+/// entity-building in `process` consumes these by name.
+struct WhoisFields {
+    registrar: Option<String>,
+    registrar_iana: Option<String>,
+    registrar_url: Option<String>,
+    updated: Option<String>,
+    created: Option<String>,
+    expires: Option<String>,
+    registrant_email: Option<String>,
+    registrant_org: Option<String>,
+    registrant_country: Option<String>,
+    registrant_state: Option<String>,
+    admin_email: Option<String>,
+    tech_email: Option<String>,
+    abuse_email: Option<String>,
+    nameservers: Vec<String>,
+    statuses: Vec<String>,
+    dnssec: Option<String>,
+}
+
+/// Parse a raw WHOIS response body into the [`WhoisFields`] we surface. Pure
+/// (no I/O), so it is unit-testable against canned WHOIS text. Email fields are
+/// filtered to require an `@` (some registries return "REDACTED" placeholders).
+fn parse_whois(response: &str) -> WhoisFields {
+    WhoisFields {
+        registrar: field(response, &["Registrar:", "Sponsoring Registrar:"]),
+        registrar_iana: field(response, &["Registrar IANA ID:", "Registrar IANA Number:"]),
+        registrar_url: field(response, &["Registrar URL:", "Registrar Website:"]),
+        updated: field(
+            response,
+            &[
+                "Updated Date:",
+                "Last Modified:",
+                "Last updated:",
+                "changed:",
+            ],
+        ),
+        created: field(response, &["Creation Date:", "created:", "Created On:"]),
+        expires: field(
+            response,
+            &[
+                "Registry Expiry Date:",
+                "Registrar Registration Expiration Date:",
+                "expires:",
+                "paid-till:",
+            ],
+        ),
+        registrant_email: field(
+            response,
+            &["Registrant Email:", "Tech Email:", "Admin Email:"],
+        )
+        .filter(|e| e.contains('@')),
+        registrant_org: field(
+            response,
+            &[
+                "Registrant Organization:",
+                "Registrant Organisation:",
+                "org:",
+            ],
+        ),
+        registrant_country: field(response, &["Registrant Country:", "country:"]),
+        registrant_state: field(
+            response,
+            &["Registrant State/Province:", "Registrant State:"],
+        ),
+        admin_email: field(response, &["Admin Email:"]).filter(|e| e.contains('@')),
+        tech_email: field(response, &["Tech Email:"]).filter(|e| e.contains('@')),
+        abuse_email: field(
+            response,
+            &[
+                "Registrar Abuse Contact Email:",
+                "abuse-mailbox:",
+                "OrgAbuseEmail:",
+            ],
+        )
+        .filter(|e| e.contains('@')),
+        nameservers: all_fields(response, &["Name Server:", "nserver:"]),
+        statuses: all_fields(response, &["Domain Status:", "status:"]),
+        dnssec: field(response, &["DNSSEC:", "dnssec:"]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,5 +518,51 @@ mod tests {
         let s = "Name Server: NS1.EXAMPLE.COM\nName Server: NS2.EXAMPLE.COM\nName Server: NS1.EXAMPLE.COM";
         let ns = all_fields(s, &["Name Server:"]);
         assert_eq!(ns.len(), 2);
+    }
+
+    #[test]
+    fn parse_whois_extracts_typed_fields() {
+        let s = "\
+Registrar: Example Registrar LLC
+Registrar IANA ID: 1234
+Creation Date: 2020-01-01T00:00:00Z
+Registry Expiry Date: 2030-01-01T00:00:00Z
+Updated Date: 2024-06-01T00:00:00Z
+Registrant Organization: Example Org
+Registrant Country: US
+Registrant State/Province: NV
+Registrant Email: owner@example.com
+Admin Email: admin@example.com
+Tech Email: tech@example.com
+Registrar Abuse Contact Email: abuse@registrar.com
+Name Server: NS1.EXAMPLE.COM
+Name Server: NS2.EXAMPLE.COM
+Domain Status: clientTransferProhibited
+DNSSEC: unsigned
+";
+        let f = parse_whois(s);
+        assert_eq!(f.registrar.as_deref(), Some("Example Registrar LLC"));
+        assert_eq!(f.registrar_iana.as_deref(), Some("1234"));
+        assert_eq!(f.created.as_deref(), Some("2020-01-01T00:00:00Z"));
+        assert_eq!(f.expires.as_deref(), Some("2030-01-01T00:00:00Z"));
+        assert_eq!(f.updated.as_deref(), Some("2024-06-01T00:00:00Z"));
+        assert_eq!(f.registrant_org.as_deref(), Some("Example Org"));
+        assert_eq!(f.registrant_country.as_deref(), Some("US"));
+        assert_eq!(f.registrant_state.as_deref(), Some("NV"));
+        assert_eq!(f.registrant_email.as_deref(), Some("owner@example.com"));
+        assert_eq!(f.admin_email.as_deref(), Some("admin@example.com"));
+        assert_eq!(f.tech_email.as_deref(), Some("tech@example.com"));
+        assert_eq!(f.abuse_email.as_deref(), Some("abuse@registrar.com"));
+        assert_eq!(f.nameservers, ["NS1.EXAMPLE.COM", "NS2.EXAMPLE.COM"]);
+        assert_eq!(f.statuses, ["clientTransferProhibited"]);
+        assert_eq!(f.dnssec.as_deref(), Some("unsigned"));
+    }
+
+    #[test]
+    fn parse_whois_filters_non_at_email_placeholders() {
+        // Registrant Email present but without '@' (REDACTED placeholder) → None.
+        let f = parse_whois("Registrant Email: REDACTED FOR PRIVACY\nRegistrar: X");
+        assert!(f.registrant_email.is_none());
+        assert_eq!(f.registrar.as_deref(), Some("X"));
     }
 }

@@ -206,6 +206,11 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .nest("/api", api)
         // ── static vendor bundle (Bootstrap 3, jQuery, D3, tablesorter, alertify) ──
         .route("/static/{file}", get(vendor_handler))
+        // ── favicon — browsers (esp. Chrome-on-Android) request /favicon.ico
+        //    unconditionally; without this route it would hit the SPA fallback
+        //    and return the whole HTML document as an "image". Serve the same
+        //    inline crosshair the SPA links, with the correct content type.
+        .route("/favicon.ico", get(favicon_handler))
         // ── SPA fallback — `/`, `/scan/...`, anything outside `/api` and
         //    `/static`; serves the embedded SPA for client-side routing.
         .fallback(spa_handler)
@@ -215,6 +220,29 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
 
 async fn spa_handler() -> Html<&'static str> {
     Html(SPA_HTML)
+}
+
+/// SVG favicon — a hunting-crosshair in the brand cyan on the navbar's dark.
+/// Matches the inline `<link rel="icon">` in the SPA head; this route covers
+/// clients that request `/favicon.ico` directly regardless of that link.
+const FAVICON_SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='#222222'/><circle cx='16' cy='16' r='8' fill='none' stroke='#07aef1' stroke-width='2'/><circle cx='16' cy='16' r='2.4' fill='#07aef1'/><path d='M16 2v6M16 24v6M2 16h6M24 16h6' stroke='#07aef1' stroke-width='2'/></svg>";
+
+async fn favicon_handler() -> Response {
+    (
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("image/svg+xml"),
+            ),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=86400"),
+            ),
+        ],
+        FAVICON_SVG,
+    )
+        .into_response()
 }
 
 /// JSON 404 for any unmatched route under `/api`. Without this the SPA

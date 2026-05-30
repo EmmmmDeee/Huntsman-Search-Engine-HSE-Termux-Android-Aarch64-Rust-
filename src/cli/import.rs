@@ -810,6 +810,33 @@ struct ImportStats {
 }
 
 fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>) {
+    // Shared finalization step for all three import parsers (JSON/HTML/TXT).
+    // Drop documentation/reserved IPs (192.0.2.x / 198.51.100.x / 203.0.113.x /
+    // 0.x / 240.0.0.0/4 / 2001:db8::/32) lifted out of exported data — they can
+    // never be real hosts and would otherwise pollute the graph and fire
+    // correlations. This mirrors the scan path's admission guard
+    // (engine::finalise_module_result) for the import path, which builds
+    // entities directly. RFC1918 private / loopback are intentionally kept —
+    // they can be genuine local findings in a stealer log.
+    //
+    // Combined with the domain check below into a single retain pass (the two
+    // predicates apply to disjoint entity kinds, so this is behaviour-identical)
+    // to avoid a second full traversal + element shift on large imports.
+    //
+    // Domain branch: drop IP literals mis-classified as domains — the HTML/TXT
+    // parsers' domain regex matches dotted-decimal IPs (8.8.8.8, 192.0.2.1) and
+    // emits them as Domain entities, which both duplicates the real ip_address
+    // entity and smuggles bogus documentation IPs past the IP-kind filter. A real
+    // domain never parses as an IP address, so this has no false positives.
+    entities.retain(|e| {
+        if e.kind == crate::core::entity::EntityKind::IpAddress {
+            !crate::core::validation::is_bogus_ip(&e.value)
+        } else if e.kind == crate::core::entity::EntityKind::Domain {
+            e.value.parse::<std::net::IpAddr>().is_err()
+        } else {
+            true
+        }
+    });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     entities.retain(|e| seen.insert(e.uid.clone()));
 }
@@ -927,5 +954,64 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize) {
             "  Pool:      {} API keys detected, {} validated active",
             stats.api_keys, stats.api_keys_valid
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::deduplicate_by_uid;
+    use crate::core::entity::{Entity, EntityKind};
+
+    #[test]
+    fn finalize_drops_bogus_ips_keeps_real_and_private_and_dedups() {
+        let sid = "import-test";
+        let mut v = vec![
+            Entity::new(EntityKind::IpAddress, "192.0.2.1", 0.6, sid), // doc -> drop
+            Entity::new(EntityKind::IpAddress, "203.0.113.9", 0.6, sid), // doc -> drop
+            Entity::new(EntityKind::IpAddress, "240.0.0.1", 0.6, sid), // reserved -> drop
+            Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.6, sid),   // real -> keep
+            Entity::new(EntityKind::IpAddress, "192.168.1.5", 0.6, sid), // private -> keep
+            Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.6, sid),   // dup -> deduped
+            Entity::new(EntityKind::Email, "x@b.com", 0.6, sid),       // non-IP untouched
+        ];
+        deduplicate_by_uid(&mut v);
+        let vals: Vec<&str> = v.iter().map(|e| e.value.as_str()).collect();
+
+        for bogus in ["192.0.2.1", "203.0.113.9", "240.0.0.1"] {
+            assert!(
+                !vals.contains(&bogus),
+                "bogus {bogus} must be dropped: {vals:?}"
+            );
+        }
+        assert_eq!(
+            vals.iter().filter(|x| **x == "8.8.8.8").count(),
+            1,
+            "real IP kept exactly once (deduped)"
+        );
+        assert!(vals.contains(&"192.168.1.5"), "private IP kept");
+        assert!(vals.contains(&"x@b.com"), "non-IP entity untouched");
+    }
+
+    #[test]
+    fn finalize_drops_ip_literals_mis_classified_as_domains() {
+        let sid = "import-test";
+        let mut v = vec![
+            Entity::new(EntityKind::Domain, "8.8.8.8", 0.45, sid), // IP-as-domain -> drop
+            Entity::new(EntityKind::Domain, "192.0.2.1", 0.45, sid), // doc-IP-as-domain -> drop
+            Entity::new(EntityKind::Domain, "evil.com", 0.50, sid), // real domain -> keep
+            Entity::new(EntityKind::Domain, "sub.evil.com", 0.45, sid), // real subdomain -> keep
+        ];
+        deduplicate_by_uid(&mut v);
+        let vals: Vec<&str> = v.iter().map(|e| e.value.as_str()).collect();
+        assert!(
+            !vals.contains(&"8.8.8.8"),
+            "IP literal must not be a domain: {vals:?}"
+        );
+        assert!(
+            !vals.contains(&"192.0.2.1"),
+            "doc-IP literal must not be a domain"
+        );
+        assert!(vals.contains(&"evil.com"), "real domain kept");
+        assert!(vals.contains(&"sub.evil.com"), "real subdomain kept");
     }
 }

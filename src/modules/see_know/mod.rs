@@ -99,11 +99,12 @@ impl Module for SeekNow {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // Concurrent endpoint dispatch lets us call ~10 endpoints in
-        // ~the time of one — but the upper bound is still gated by the
-        // slowest individual lookup. 45s leaves room for stealer +
-        // breachhub (the heaviest paths) on slow upstreams.
-        45_000
+        // The name/auto `/search` path has a ~55s server cap and routinely
+        // takes 50–60s to return real data. The module budget must exceed both
+        // that cap and the 78s curl-client outer timeout so the engine does not
+        // abort see_know before the upstream responds. 80s gives headroom while
+        // staying bounded.
+        80_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -114,46 +115,11 @@ impl Module for SeekNow {
         seen.insert(target.value.to_lowercase());
         let v = target.value.trim();
 
-        // Pre-flight skips — same pattern as oathnet_pro. Catching junk
-        // before any HTTP call saves quota and pool noise.
-        match target.kind {
-            TargetKind::Email => {
-                if let Some((_, host)) = v.split_once('@')
-                    && is_local_domain(host)
-                {
-                    return Ok(result);
-                }
-            }
-            TargetKind::Username => {
-                if v.len() < 4
-                    || v.chars().all(|c| c.is_ascii_digit())
-                    || is_placeholder_username(v)
-                {
-                    return Ok(result);
-                }
-            }
-            TargetKind::Phone => {
-                let digits = v.chars().filter(|c| c.is_ascii_digit()).count();
-                if digits < 6 {
-                    return Ok(result);
-                }
-            }
-            TargetKind::FullName => {
-                if !v.contains(' ') || v.len() < 5 {
-                    return Ok(result);
-                }
-            }
-            TargetKind::IpAddress => {
-                if is_private_ip(v) {
-                    return Ok(result);
-                }
-            }
-            TargetKind::Domain => {
-                if is_local_domain(v) {
-                    return Ok(result);
-                }
-            }
-            _ => return Ok(result),
+        // Pre-flight skip — junk seeds (local domains, too-short usernames,
+        // placeholder values, private IPs, unsupported kinds) never reach an
+        // HTTP call, saving quota and pool noise.
+        if should_skip_seed(target.kind, v) {
+            return Ok(result);
         }
 
         // ── Query 1: universal /search ─────────────────────────────────
@@ -252,6 +218,26 @@ impl Module for SeekNow {
         }
 
         Ok(result)
+    }
+}
+
+/// True if a seed is junk that should never reach a SeekNow HTTP call — local
+/// domains, too-short / all-digit / placeholder usernames, under-length phones
+/// and names, private IPs, and any unsupported target kind. Pure function of
+/// `(kind, value)` so the skip policy is testable in isolation.
+fn should_skip_seed(kind: TargetKind, v: &str) -> bool {
+    match kind {
+        TargetKind::Email => v
+            .split_once('@')
+            .is_some_and(|(_, host)| is_local_domain(host)),
+        TargetKind::Username => {
+            v.len() < 4 || v.chars().all(|c| c.is_ascii_digit()) || is_placeholder_username(v)
+        }
+        TargetKind::Phone => v.chars().filter(|c| c.is_ascii_digit()).count() < 6,
+        TargetKind::FullName => !v.contains(' ') || v.len() < 5,
+        TargetKind::IpAddress => is_private_ip(v),
+        TargetKind::Domain => is_local_domain(v),
+        _ => true,
     }
 }
 
@@ -477,60 +463,59 @@ enum EndpointCall {
 }
 
 impl EndpointCall {
-    /// Stable identifier used by `extract_geo_entities` to choose
-    /// endpoint-specific geo extractors (e.g. WHOIS registrant fields).
-    fn label(self) -> &'static str {
+    /// The endpoint's `(label, path, param)` spec. `label` is the stable
+    /// identifier `extract_geo_entities` uses to pick endpoint-specific geo
+    /// extractors; `path` and `param` form the SeekNow `/api/v1/<path>?<param>=`
+    /// single-parameter GET. This one table is the single source of truth that
+    /// drives both [`label`](Self::label) and [`invoke`](Self::invoke).
+    fn spec(self) -> (&'static str, &'static str, &'static str) {
         match self {
-            Self::Stealer => "stealer",
-            Self::BreachHub => "breachhub",
-            Self::EmailCheck => "email_check",
-            Self::SocialAggregate => "social",
-            Self::GithubProfile => "github",
-            Self::TwitterProfile => "twitter",
-            Self::RedditProfile => "reddit",
-            Self::TiktokProfile => "tiktok",
-            Self::UsernameHistory => "username_history",
-            Self::RobloxProfile => "roblox",
-            Self::XboxProfile => "xbox",
-            Self::MinecraftProfile => "minecraft",
-            Self::SteamProfile => "steam",
-            Self::DiscordUser => "discord_user",
-            Self::DiscordToRoblox => "discord_to_roblox",
-            Self::PhoneInfo => "phone_info",
-            Self::IpInfo => "ip_info",
-            Self::DomainIntel => "domain_intel",
-            Self::Whois => "whois",
+            Self::Stealer => ("stealer", "stealer", "q"),
+            Self::BreachHub => ("breachhub", "breachhub/search", "q"),
+            Self::EmailCheck => ("email_check", "network/email-check", "email"),
+            Self::SocialAggregate => ("social", "username/social", "username"),
+            Self::GithubProfile => ("github", "username/github", "username"),
+            Self::TwitterProfile => ("twitter", "username/twitter", "username"),
+            Self::RedditProfile => ("reddit", "username/reddit", "username"),
+            Self::TiktokProfile => ("tiktok", "username/tiktok", "username"),
+            Self::UsernameHistory => ("username_history", "username/history", "username"),
+            Self::RobloxProfile => ("roblox", "gaming/roblox", "username"),
+            Self::XboxProfile => ("xbox", "gaming/xbox", "gamertag"),
+            Self::MinecraftProfile => ("minecraft", "gaming/minecraft", "username"),
+            Self::SteamProfile => ("steam", "gaming/steam", "id"),
+            Self::DiscordUser => ("discord_user", "discord/user", "id"),
+            Self::DiscordToRoblox => ("discord_to_roblox", "discord/to-roblox", "id"),
+            Self::PhoneInfo => ("phone_info", "network/phone", "phone"),
+            Self::IpInfo => ("ip_info", "network/ip", "ip"),
+            Self::DomainIntel => ("domain_intel", "domain/intel", "domain"),
+            Self::Whois => ("whois", "domain/whois", "domain"),
         }
     }
 
+    /// Stable identifier used by `extract_geo_entities` to choose
+    /// endpoint-specific geo extractors (e.g. WHOIS registrant fields).
+    fn label(self) -> &'static str {
+        self.spec().0
+    }
+
     async fn invoke(self, key: &str, value: &str) -> Result<Vec<Value>> {
-        match self {
-            Self::Stealer => see_know::stealer(key, value).await,
-            Self::BreachHub => see_know::breachhub(key, value).await,
-            Self::EmailCheck => see_know::email_check(key, value).await,
-            Self::SocialAggregate => see_know::social_aggregate(key, value).await,
-            Self::GithubProfile => see_know::github_profile(key, value).await,
-            Self::TwitterProfile => see_know::twitter_profile(key, value).await,
-            Self::RedditProfile => see_know::reddit_profile(key, value).await,
-            Self::TiktokProfile => see_know::tiktok_profile(key, value).await,
-            Self::UsernameHistory => see_know::username_history(key, value).await,
-            Self::RobloxProfile => see_know::roblox_profile(key, value).await,
-            Self::XboxProfile => see_know::xbox_profile(key, value).await,
-            Self::MinecraftProfile => see_know::minecraft_profile(key, value).await,
-            Self::SteamProfile => see_know::steam_profile(key, value).await,
-            Self::DiscordUser => see_know::discord_user(key, value).await,
-            Self::DiscordToRoblox => see_know::discord_to_roblox(key, value).await,
-            Self::PhoneInfo => see_know::phone_info(key, value).await,
-            Self::IpInfo => see_know::ip_info(key, value).await,
-            Self::DomainIntel => see_know::domain_intel(key, value).await,
-            Self::Whois => see_know::whois(key, value).await,
-        }
+        let (_, path, param) = self.spec();
+        see_know::get_path(key, path, &[(param, value)]).await
     }
 }
 
 /// Geo-conscious extraction — surface coordinates, timezones, and
 /// location-bearing fields from any SeekNow endpoint response so the
 /// downstream geocode/overpass/wigle modules can converge.
+/// First-present-of-`keys` coordinate value, accepting either a JSON number or
+/// a numeric string (some SeekNow endpoints serialise lat/lon as strings).
+/// Preserves the original semantics: pick the first present key, then read it as
+/// an f64 or, failing that, parse its string form.
+fn parse_coord(item: &Value, keys: &[&str]) -> Option<f64> {
+    let v = keys.iter().find_map(|k| item.get(*k))?;
+    v.as_f64().or_else(|| v.as_str()?.parse().ok())
+}
+
 fn extract_geo_entities(
     item: &Value,
     endpoint: &str,
@@ -539,27 +524,9 @@ fn extract_geo_entities(
     result: &mut ModuleResult,
 ) {
     // Direct coordinate fields — some endpoints (ip_info, phone_info)
-    // return lat/lon pairs directly.
-    let lat = item
-        .get("latitude")
-        .or_else(|| item.get("lat"))
-        .and_then(|v| v.as_f64())
-        .or_else(|| {
-            item.get("latitude")
-                .or_else(|| item.get("lat"))
-                .and_then(|v| v.as_str()?.parse().ok())
-        });
-    let lon = item
-        .get("longitude")
-        .or_else(|| item.get("lon"))
-        .or_else(|| item.get("lng"))
-        .and_then(|v| v.as_f64())
-        .or_else(|| {
-            item.get("longitude")
-                .or_else(|| item.get("lon"))
-                .or_else(|| item.get("lng"))
-                .and_then(|v| v.as_str()?.parse().ok())
-        });
+    // return lat/lon pairs directly, as a JSON number or a numeric string.
+    let lat = parse_coord(item, &["latitude", "lat"]);
+    let lon = parse_coord(item, &["longitude", "lon", "lng"]);
     if let (Some(la), Some(lo)) = (lat, lon)
         && (-90.0..=90.0).contains(&la)
         && (-180.0..=180.0).contains(&lo)
@@ -686,21 +653,23 @@ fn extract_entities(
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
         if lower.contains('@') && seen.insert(lower) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
-            e.tag(tags::BREACH);
-            e.tag("see-know");
-            e.add_evidence(ev.clone());
-            result.push(e);
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Email, &email, 0.70, scan_id),
+                &ev,
+                &[],
+            );
         }
     }
     if let Some(uname) = val_str(item, "username") {
         let lower = uname.to_lowercase();
         if lower.len() >= 3 && seen.insert(lower) {
-            let mut e = Entity::new(EntityKind::Username, &uname, 0.65, scan_id);
-            e.tag(tags::BREACH);
-            e.tag("see-know");
-            e.add_evidence(ev.clone());
-            result.push(e);
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Username, &uname, 0.65, scan_id),
+                &ev,
+                &[],
+            );
         }
     }
     if let Some(phone) = val_str(item, "phone").or_else(|| val_str(item, "phone_number"))
@@ -712,56 +681,59 @@ fn extract_entities(
         } else {
             0.55
         };
-        let mut e = Entity::new(EntityKind::Phone, &phone, conf, scan_id);
-        e.tag(tags::BREACH);
-        e.tag("see-know");
-        e.add_evidence(ev.clone());
-        result.push(e);
+        push_breach_entity(
+            result,
+            Entity::new(EntityKind::Phone, &phone, conf, scan_id),
+            &ev,
+            &[],
+        );
     }
     if let Some(name) = val_str(item, "full_name").or_else(|| val_str(item, "name"))
         && name.trim().contains(' ')
         && seen.insert(name.to_lowercase())
     {
-        let mut e = Entity::new(EntityKind::Person, name.trim(), 0.65, scan_id);
-        e.tag(tags::BREACH);
-        e.tag("see-know");
-        e.add_evidence(ev.clone());
-        result.push(e);
+        push_breach_entity(
+            result,
+            Entity::new(EntityKind::Person, name.trim(), 0.65, scan_id),
+            &ev,
+            &[],
+        );
     }
     if let Some(ip) = val_str(item, "ip")
         && ip.len() >= 7
         && seen.insert(ip.clone())
     {
-        let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id);
-        e.tag(tags::BREACH);
-        e.tag("see-know");
-        e.tag("geolocation-lead");
-        e.add_evidence(ev.clone());
-        result.push(e);
+        push_breach_entity(
+            result,
+            Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
+            &ev,
+            &["geolocation-lead"],
+        );
     }
     if let Some(country) = val_str(item, "country")
         && seen.insert(format!("@country:{country}"))
     {
-        let mut e = Entity::new(EntityKind::Address, &country, 0.55, scan_id);
-        e.tag(tags::BREACH);
-        e.tag("see-know");
-        e.add_evidence(ev.clone());
-        result.push(e);
+        push_breach_entity(
+            result,
+            Entity::new(EntityKind::Address, &country, 0.55, scan_id),
+            &ev,
+            &[],
+        );
     }
     if let Some(did) = val_str(item, "discord_id").or_else(|| val_str(item, "discordid"))
         && seen.insert(format!("@discord:{did}"))
     {
-        let mut e = Entity::new(
-            EntityKind::Username,
-            format!("discord:{did}"),
-            0.60,
-            scan_id,
+        push_breach_entity(
+            result,
+            Entity::new(
+                EntityKind::Username,
+                format!("discord:{did}"),
+                0.60,
+                scan_id,
+            ),
+            &ev,
+            &["discord"],
         );
-        e.tag(tags::BREACH);
-        e.tag("see-know");
-        e.tag("discord");
-        e.add_evidence(ev.clone());
-        result.push(e);
     }
     // Steam ID — 17-digit 64-bit SteamIDs (steamID64). Surface as a
     // Username with `steam:<id>` prefix so the gaming endpoint pivot
@@ -773,13 +745,15 @@ fn extract_entities(
         && looks_like_steam_id(&sid)
         && seen.insert(format!("@steam:{sid}"))
     {
-        let mut e = Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.60, scan_id);
-        e.tag(tags::BREACH);
-        e.tag("see-know");
-        e.tag("steam");
-        e.add_evidence(ev.clone());
-        result.push(e);
+        push_breach_entity(
+            result,
+            Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.60, scan_id),
+            &ev,
+            &["steam"],
+        );
     }
+    // Domain is infrastructure, not a leaked credential, so it is the one kind
+    // NOT tagged `breach` — keep its inline tail (and consume the last `ev`).
     if let Some(domain) = val_str(item, "domain")
         && domain.contains('.')
         && seen.insert(domain.to_lowercase())
@@ -791,6 +765,25 @@ fn extract_entities(
     }
 }
 
+/// Apply see_know's standard breach tags (`breach`, `see-know`, plus any
+/// endpoint-specific `extra_tags`) and a cloned evidence record to `e`, then
+/// push it onto `result`. Centralises the tag+evidence+push tail that every
+/// breach-derived entity kind shares.
+fn push_breach_entity(
+    result: &mut ModuleResult,
+    mut e: Entity,
+    ev: &Evidence,
+    extra_tags: &[&str],
+) {
+    e.tag(tags::BREACH);
+    e.tag("see-know");
+    for t in extra_tags {
+        e.tag(*t);
+    }
+    e.add_evidence(ev.clone());
+    result.push(e);
+}
+
 // Pre-flight validators (`is_private_ip`, `is_local_domain`,
 // `is_placeholder_username`) live in `crate::util::preflight` —
 // shared with the oathnet_pro module so a target rejected by one
@@ -799,6 +792,218 @@ fn extract_entities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_timeout_exceeds_seeknow_curl_outer_budget() {
+        // Regression: the engine aborts a module at max_timeout_ms. see_know's
+        // name/auto search legitimately takes ~55s (server cap) and the curl
+        // client's outer timeout is 78s; the module budget must exceed that so
+        // the engine doesn't kill see_know before the upstream responds. Was
+        // 45s — below the cap — which guaranteed truncation on name seeds.
+        assert!(
+            SeekNow.max_timeout_ms() >= 78_000,
+            "see_know max_timeout_ms {} must be >= 78_000 (curl-client outer timeout)",
+            SeekNow.max_timeout_ms()
+        );
+    }
+
+    #[test]
+    fn should_skip_seed_matches_preflight_policy() {
+        // Skipped (junk) seeds.
+        assert!(should_skip_seed(TargetKind::Email, "x@localhost"));
+        assert!(should_skip_seed(TargetKind::Username, "abc")); // < 4
+        assert!(should_skip_seed(TargetKind::Username, "12345")); // all digits
+        assert!(should_skip_seed(TargetKind::Phone, "12345")); // < 6 digits
+        assert!(should_skip_seed(TargetKind::FullName, "Jordan")); // no space
+        assert!(should_skip_seed(TargetKind::IpAddress, "192.168.1.1"));
+        assert!(should_skip_seed(TargetKind::Coordinates, "0,0")); // unsupported kind
+        // Accepted (real) seeds.
+        assert!(!should_skip_seed(
+            TargetKind::Email,
+            "jordan.meyer@wartburg.edu"
+        ));
+        assert!(!should_skip_seed(TargetKind::Username, "jmeyer82291"));
+        assert!(!should_skip_seed(TargetKind::Phone, "+15551234567"));
+        assert!(!should_skip_seed(TargetKind::FullName, "Jordan Meyer"));
+        assert!(!should_skip_seed(TargetKind::IpAddress, "8.8.8.8"));
+        assert!(!should_skip_seed(TargetKind::Domain, "example.com"));
+    }
+
+    #[test]
+    fn extract_entities_characterization() {
+        use serde_json::json;
+        let item = json!({
+            "dbname": "TestBreach",
+            "email": "Jordan.Meyer@Example.com",
+            "username": "jmeyer",
+            "phone": "15551234567",
+            "full_name": "Jordan Meyer",
+            "ip": "8.8.8.8",
+            "country": "US",
+            "discord_id": "123456789012345678",
+            "steam_id": "76561198000000000",
+            "domain": "example.com"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(&item, "15551234567", "scan", &mut seen, &mut result);
+
+        // One entity per recognised field.
+        assert_eq!(
+            result.entities.len(),
+            9,
+            "kinds: {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| (e.kind.to_string(), e.value.clone()))
+                .collect::<Vec<_>>()
+        );
+        // Every entity carries `see-know`; all but the Domain carry `breach`.
+        for e in &result.entities {
+            assert!(e.has_tag("see-know"), "{} missing see-know", e.value);
+            assert_eq!(
+                e.has_tag("breach"),
+                e.kind != EntityKind::Domain,
+                "breach tag policy wrong for {} ({})",
+                e.value,
+                e.kind
+            );
+        }
+        // Kind-specific values + endpoint-specific tags.
+        let has =
+            |k: EntityKind, v: &str| result.entities.iter().any(|e| e.kind == k && e.value == v);
+        assert!(has(EntityKind::Email, "jordan.meyer@example.com"));
+        assert!(has(EntityKind::Username, "jmeyer"));
+        assert!(has(EntityKind::Phone, "15551234567"));
+        assert!(has(EntityKind::Person, "Jordan Meyer"));
+        assert!(has(EntityKind::Address, "US"));
+        assert!(has(EntityKind::Domain, "example.com"));
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::IpAddress && e.has_tag("geolocation-lead"))
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.value == "discord:123456789012345678" && e.has_tag("discord"))
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.value == "steam:76561198000000000" && e.has_tag("steam"))
+        );
+    }
+
+    #[test]
+    fn extract_geo_entities_characterization() {
+        use serde_json::json;
+
+        // Coordinates from f64 fields, tagged with the endpoint.
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"lat": 40.7128, "lon": -74.0060}),
+                "ip_info",
+                "s",
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                r.entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Coordinates && e.has_tag("via:ip_info")),
+                "f64 coords"
+            );
+        }
+        // Coordinates from STRING fields (the dual f64/str parse path).
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"latitude": "51.5", "longitude": "-0.12"}),
+                "phone_info",
+                "s",
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+                "string coords"
+            );
+        }
+        // Out-of-range coordinates are rejected.
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"lat": 999.0, "lon": 0.0}),
+                "ip_info",
+                "s",
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                !r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+                "out-of-range rejected"
+            );
+        }
+        // Location hint, timezone, ASN + org (ip_info only).
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"location": "Sydney, NSW", "timezone": "Australia/Sydney", "asn": "AS15169", "org": "Google"}),
+                "ip_info",
+                "s",
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                r.entities
+                    .iter()
+                    .any(|e| e.value == "Sydney, NSW" && e.has_tag("geo-hint"))
+            );
+            assert!(
+                r.entities
+                    .iter()
+                    .any(|e| e.value == "tz:Australia/Sydney" && e.has_tag("timezone"))
+            );
+            assert!(
+                r.entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Asn && e.value == "AS15169")
+            );
+            assert!(
+                r.entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Organisation)
+            );
+        }
+        // ASN/org gated to the ip_info endpoint.
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(&json!({"asn": "AS1"}), "phone_info", "s", &mut seen, &mut r);
+            assert!(!r.entities.iter().any(|e| e.kind == EntityKind::Asn));
+        }
+        // WHOIS registrant address (>= 2 parts) on the whois endpoint.
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"registrant_city": "Reno", "registrant_state": "NV", "registrant_country": "US"}),
+                "whois",
+                "s",
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                r.entities
+                    .iter()
+                    .any(|e| e.value == "Reno, NV, US" && e.has_tag("whois-registrant"))
+            );
+        }
+    }
 
     #[test]
     fn accepts_six_target_kinds() {

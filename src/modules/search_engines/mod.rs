@@ -458,6 +458,117 @@ async fn recycle_entities(
     }
 }
 
+/// FullName search-dork set. Extracted verbatim from `build_queries` — the
+/// largest, most self-contained arm (~100 lines of person-centric dorks:
+/// social/professional, AU people-search, courts/registries, news, diaspora
+/// platforms, email-discovery). Pure (`&str -> Vec<String>`) so it is
+/// unit-testable in isolation. `v` is the already-trimmed target value.
+fn build_queries_fullname(v: &str) -> Vec<String> {
+    let parts: Vec<&str> = v.split_whitespace().collect();
+    let mut q = vec![
+        format!("\"{v}\""),
+        format!("\"{v}\" site:linkedin.com OR site:facebook.com OR site:twitter.com"),
+    ];
+    if parts.len() >= 2 {
+        let first = parts[0];
+        let last = parts[parts.len() - 1];
+        let fl = format!("{first} {last}");
+
+        // First+Last without middle names — broader match
+        if parts.len() > 2 {
+            q.push(format!("\"{fl}\""));
+        }
+
+        // Social / professional
+        q.push(format!(
+            "{fl} site:instagram.com OR site:github.com OR site:reddit.com"
+        ));
+        q.push(format!("\"{v}\" email OR contact OR profile"));
+        q.push(format!(
+            "\"{v}\" site:peekyou.com OR site:spokeo.com \
+             OR site:nuwber.com OR site:pipl.com"
+        ));
+        q.push(format!("\"{v}\" address OR location OR city OR suburb"));
+
+        // Middle names as potential usernames (3+ part names)
+        if parts.len() >= 3 {
+            let middle = parts[1..parts.len() - 1].join(" ");
+            // Common username patterns from multi-part names
+            let fl_concat = format!("{}{}", first.to_lowercase(), last.to_lowercase());
+            let fml = format!(
+                "{}{}{}",
+                &first.to_lowercase()[..1.min(first.len())],
+                middle.to_lowercase(),
+                last.to_lowercase()
+            );
+            q.push(format!("\"{fl_concat}\" OR \"{fml}\" profile OR account"));
+        }
+
+        // Business / corporate
+        q.push(format!("\"{v}\" ABN OR ACN OR \"Pty Ltd\" OR director"));
+
+        // Australian people-search directories
+        q.push(format!(
+            "\"{v}\" site:whitepages.com.au OR site:locatefamily.com \
+             OR site:peoplefinder.com.au OR site:searchfind.com.au"
+        ));
+
+        // Australian public records — courts, electoral, property.
+        // QLD + NSW are the largest jurisdictions by population so
+        // they get the dedicated dork; the broader state coverage
+        // below catches VIC/WA/SA/TAS/ACT/NT court mentions.
+        q.push(format!(
+            "\"{v}\" site:courts.qld.gov.au OR site:ecourts.justice.nsw.gov.au \
+             OR site:austlii.edu.au OR site:jade.io"
+        ));
+        q.push(format!(
+            "\"{v}\" site:supremecourt.vic.gov.au OR site:supremecourt.wa.gov.au \
+             OR site:courts.sa.gov.au OR site:supremecourt.tas.gov.au \
+             OR site:courts.act.gov.au OR site:supremecourt.nt.gov.au"
+        ));
+        // Health-practitioner registry — covers doctors, nurses,
+        // dentists, pharmacists, psychologists, physios across
+        // every AU state. High-yield when the seed is a medical
+        // professional's name.
+        q.push(format!("\"{v}\" site:ahpra.gov.au OR site:apra.gov.au"));
+        q.push(format!(
+            "\"{fl}\" Queensland OR Brisbane OR \"Gold Coast\" OR Cairns"
+        ));
+
+        // Email discovery dork — search for the name near email addresses
+        q.push(format!(
+            "\"{fl}\" \"@gmail.com\" OR \"@hotmail.com\" OR \"@outlook.com\" OR \"@yahoo.com\""
+        ));
+
+        // News / media mentions
+        q.push(format!(
+            "\"{v}\" site:abc.net.au OR site:news.com.au \
+             OR site:smh.com.au OR site:couriermail.com.au"
+        ));
+
+        // Forum / community (usernames often match real names)
+        q.push(format!(
+            "\"{fl}\" site:whirlpool.net.au OR site:forums.realestate.com.au \
+             OR site:ozbargain.com.au"
+        ));
+
+        // Post-Soviet / European social platforms — VK + OK
+        // people search. Significant global diaspora presence
+        // (incl. ~70k VK users in AU per public estimates), so
+        // worth dorking even on Anglophone names.
+        q.push(format!("\"{fl}\" site:vk.com OR site:ok.ru"));
+
+        // Telegram public-presence + gaming-platform dorks.
+        // Names sometimes appear in channel descriptions,
+        // public group rosters, and Steam profile bios.
+        q.push(format!(
+            "\"{fl}\" site:t.me OR site:steamcommunity.com \
+             OR site:twitch.tv"
+        ));
+    }
+    q
+}
+
 fn build_queries(target: &Target) -> Vec<String> {
     let v = target.value.trim();
     if v.is_empty() {
@@ -556,111 +667,7 @@ fn build_queries(target: &Target) -> Vec<String> {
                  OR site:check-username.com"
             ),
         ],
-        TargetKind::FullName => {
-            let parts: Vec<&str> = v.split_whitespace().collect();
-            let mut q = vec![
-                format!("\"{v}\""),
-                format!("\"{v}\" site:linkedin.com OR site:facebook.com OR site:twitter.com"),
-            ];
-            if parts.len() >= 2 {
-                let first = parts[0];
-                let last = parts[parts.len() - 1];
-                let fl = format!("{first} {last}");
-
-                // First+Last without middle names — broader match
-                if parts.len() > 2 {
-                    q.push(format!("\"{fl}\""));
-                }
-
-                // Social / professional
-                q.push(format!(
-                    "{fl} site:instagram.com OR site:github.com OR site:reddit.com"
-                ));
-                q.push(format!("\"{v}\" email OR contact OR profile"));
-                q.push(format!(
-                    "\"{v}\" site:peekyou.com OR site:spokeo.com \
-                     OR site:nuwber.com OR site:pipl.com"
-                ));
-                q.push(format!("\"{v}\" address OR location OR city OR suburb"));
-
-                // Middle names as potential usernames (3+ part names)
-                if parts.len() >= 3 {
-                    let middle = parts[1..parts.len() - 1].join(" ");
-                    // Common username patterns from multi-part names
-                    let fl_concat = format!("{}{}", first.to_lowercase(), last.to_lowercase());
-                    let fml = format!(
-                        "{}{}{}",
-                        &first.to_lowercase()[..1.min(first.len())],
-                        middle.to_lowercase(),
-                        last.to_lowercase()
-                    );
-                    q.push(format!("\"{fl_concat}\" OR \"{fml}\" profile OR account"));
-                }
-
-                // Business / corporate
-                q.push(format!("\"{v}\" ABN OR ACN OR \"Pty Ltd\" OR director"));
-
-                // Australian people-search directories
-                q.push(format!(
-                    "\"{v}\" site:whitepages.com.au OR site:locatefamily.com \
-                     OR site:peoplefinder.com.au OR site:searchfind.com.au"
-                ));
-
-                // Australian public records — courts, electoral, property.
-                // QLD + NSW are the largest jurisdictions by population so
-                // they get the dedicated dork; the broader state coverage
-                // below catches VIC/WA/SA/TAS/ACT/NT court mentions.
-                q.push(format!(
-                    "\"{v}\" site:courts.qld.gov.au OR site:ecourts.justice.nsw.gov.au \
-                     OR site:austlii.edu.au OR site:jade.io"
-                ));
-                q.push(format!(
-                    "\"{v}\" site:supremecourt.vic.gov.au OR site:supremecourt.wa.gov.au \
-                     OR site:courts.sa.gov.au OR site:supremecourt.tas.gov.au \
-                     OR site:courts.act.gov.au OR site:supremecourt.nt.gov.au"
-                ));
-                // Health-practitioner registry — covers doctors, nurses,
-                // dentists, pharmacists, psychologists, physios across
-                // every AU state. High-yield when the seed is a medical
-                // professional's name.
-                q.push(format!("\"{v}\" site:ahpra.gov.au OR site:apra.gov.au"));
-                q.push(format!(
-                    "\"{fl}\" Queensland OR Brisbane OR \"Gold Coast\" OR Cairns"
-                ));
-
-                // Email discovery dork — search for the name near email addresses
-                q.push(format!(
-                    "\"{fl}\" \"@gmail.com\" OR \"@hotmail.com\" OR \"@outlook.com\" OR \"@yahoo.com\""
-                ));
-
-                // News / media mentions
-                q.push(format!(
-                    "\"{v}\" site:abc.net.au OR site:news.com.au \
-                     OR site:smh.com.au OR site:couriermail.com.au"
-                ));
-
-                // Forum / community (usernames often match real names)
-                q.push(format!(
-                    "\"{fl}\" site:whirlpool.net.au OR site:forums.realestate.com.au \
-                     OR site:ozbargain.com.au"
-                ));
-
-                // Post-Soviet / European social platforms — VK + OK
-                // people search. Significant global diaspora presence
-                // (incl. ~70k VK users in AU per public estimates), so
-                // worth dorking even on Anglophone names.
-                q.push(format!("\"{fl}\" site:vk.com OR site:ok.ru"));
-
-                // Telegram public-presence + gaming-platform dorks.
-                // Names sometimes appear in channel descriptions,
-                // public group rosters, and Steam profile bios.
-                q.push(format!(
-                    "\"{fl}\" site:t.me OR site:steamcommunity.com \
-                     OR site:twitch.tv"
-                ));
-            }
-            q
-        }
+        TargetKind::FullName => build_queries_fullname(v),
         TargetKind::Phone => {
             let mut q = vec![format!("\"{v}\"")];
             let digits: String = v.chars().filter(char::is_ascii_digit).collect();
@@ -1340,6 +1347,25 @@ mod tests {
         let q = build_queries(&t);
         assert!(q.len() >= 2);
         assert!(q[0].contains("\"123 Main St, Springfield\""));
+    }
+
+    #[test]
+    fn build_queries_fullname_pure_fn_matches_dispatch() {
+        // The extracted pure helper must produce exactly what the FullName
+        // dispatch arm produces (verbatim extraction, no behaviour change).
+        let direct = build_queries_fullname("Jordan Lee Meyer");
+        let viadispatch = build_queries(&Target::new(TargetKind::FullName, "Jordan Lee Meyer"));
+        assert_eq!(direct, viadispatch);
+
+        // Single-token name → only the two base dorks, no first/last expansion.
+        let single = build_queries_fullname("Jordan");
+        assert_eq!(single.len(), 2, "single token → 2 base queries: {single:?}");
+
+        // Three-part name unlocks the AU registries + middle-name username pattern.
+        assert!(direct.len() > 15, "multi-part name → rich dork set");
+        assert!(direct.iter().any(|s| s.contains("ahpra.gov.au")));
+        assert!(direct.iter().any(|s| s.contains("profile OR account")));
+        assert!(direct.iter().all(|s| !s.is_empty()));
     }
 
     #[test]

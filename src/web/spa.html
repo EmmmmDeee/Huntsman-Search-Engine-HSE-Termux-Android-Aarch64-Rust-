@@ -4,6 +4,13 @@
   <meta charset="utf-8">
   <title>Huntsman Search Engine</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Colours Chrome-on-Android's address bar to match the dark navbar. -->
+  <meta name="theme-color" content="#222222">
+  <!-- Inline SVG favicon (hunting-crosshair, brand cyan on navbar dark). Being a
+       data URI, modern Chrome uses it directly and never requests /favicon.ico —
+       which would otherwise fall through to the SPA fallback and return the whole
+       HTML document as an image. Fully offline; no extra route or binary asset. -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23222222'/><circle cx='16' cy='16' r='8' fill='none' stroke='%2307aef1' stroke-width='2'/><circle cx='16' cy='16' r='2.4' fill='%2307aef1'/><path d='M16 2v6M16 24v6M2 16h6M24 16h6' stroke='%2307aef1' stroke-width='2'/></svg>">
 
   <!-- Spiderfoot's exact vendor stack: Bootstrap 3.4.1, jQuery 3.7.1,
        D3 v3, tablesorter 2.31, alertify 1.13. Served from the embedded
@@ -91,11 +98,20 @@
     #graph-svg{display:block;width:100%;height:560px;
                background:radial-gradient(circle at 50% 40%,#fbfbfb 0%,#f4f4f4 70%);
                border:1px solid #e3e3e3;border-radius:3px;cursor:grab}
+    /* SpiderFoot-style by-type bar in the scan summary */
+    .kbar-cell{min-width:120px}
+    .kbar-track{position:relative;height:14px;background:#eee;border-radius:2px;overflow:hidden}
+    .kbar-fill{position:absolute;left:0;top:0;height:100%;background:#07aef1;border-radius:2px}
+    .kbar-pct{position:absolute;right:4px;top:0;line-height:14px;font-size:10px;color:#444}
+    body.dark-theme .kbar-track{background:#333}
+    body.dark-theme .kbar-pct{color:#ccc}
     .graph-legend{position:absolute;top:8px;right:14px;background:rgba(255,255,255,.92);
                   border:1px solid #ddd;border-radius:3px;padding:6px 10px;font-size:11px}
     .graph-legend .lr{display:flex;align-items:center;gap:6px;margin-bottom:2px;color:#555}
     .graph-legend .sw{width:10px;height:10px;border-radius:50%;display:inline-block}
     .graph-ctl{position:absolute;bottom:10px;left:14px}
+    .graph-hint{position:absolute;bottom:14px;right:14px;font-size:11px;
+                background:rgba(255,255,255,.85);padding:2px 8px;border-radius:3px}
     .help-panel{background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;
                 padding:10px;font-size:12px}
     .help-panel b{color:#333}
@@ -154,6 +170,7 @@
     body.dark-theme .help-panel{background:#222;border-color:#333}
     body.dark-theme .help-panel b{color:#eee}
     body.dark-theme #graph-svg{background:radial-gradient(circle at 50% 40%,#222 0%,#1a1a1a 70%)}
+    body.dark-theme .graph-hint{background:rgba(20,20,20,.85);color:#999}
     body.dark-theme #log-box{background:#222;border-color:#333;color:#ddd}
     body.dark-theme .keyrow{background:#222;border-color:#333}
     body.dark-theme .mod-grid{background:#1f1f1f;border-color:#333}
@@ -182,7 +199,7 @@
       </ul>
       <form class="navbar-form navbar-left" style="margin-left:10px" onsubmit="globalSearch(event)">
         <div class="input-group input-group-sm" style="width:220px">
-          <input type="search" id="global-q" class="form-control" placeholder="Search all entities…">
+          <input type="search" id="global-q" class="form-control" placeholder="Search all entities…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
           <span class="input-group-btn"><button class="btn btn-default" type="submit"><i class="glyphicon glyphicon-search"></i></button></span>
         </div>
       </form>
@@ -372,6 +389,7 @@ const API = {
   remove:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id),{method:'DELETE'}),
   csvUrl:    id=>'/api/v1/scans/'+encodeURIComponent(id)+'/entities.csv',
   reportUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json',
+  gexfUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/graph.gexf',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
   keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body})
 };
@@ -427,25 +445,25 @@ async function renderDash(v){
       <h3 style="margin:0"><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Dashboard</h3>
     </div>
     <div class="row">
-      <div class="col-md-3 col-sm-6">
+      <div class="col-md-3 col-sm-6 col-xs-6">
         <div class="stat-card">
           <div class="lab">Total Scans</div>
           <div class="val">${s.scans_total||0}</div>
         </div>
       </div>
-      <div class="col-md-3 col-sm-6">
+      <div class="col-md-3 col-sm-6 col-xs-6">
         <div class="stat-card">
           <div class="lab">Total Entities</div>
           <div class="val">${s.entities_total||0}</div>
         </div>
       </div>
-      <div class="col-md-3 col-sm-6">
+      <div class="col-md-3 col-sm-6 col-xs-6">
         <div class="stat-card">
           <div class="lab">Modules Loaded</div>
           <div class="val">${s.modules||0}</div>
         </div>
       </div>
-      <div class="col-md-3 col-sm-6">
+      <div class="col-md-3 col-sm-6 col-xs-6">
         <div class="stat-card">
           <div class="lab">Live Sessions</div>
           <div class="val">${s.live_sessions||0}</div>
@@ -572,12 +590,12 @@ function renderScansTable(scans){
       </td>
     </tr>`;
   }).join('');
-  return `<table class="table table-striped table-condensed tablesorter" id="scans-table">
+  return `<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="scans-table">
     <thead><tr>
       <th>Target</th><th>Type</th><th>Created</th><th>Duration</th>
       <th>Status</th><th class="text-right">Entities</th>
       <th class="sorter-false">Actions</th>
-    </tr></thead><tbody>${rows}</tbody></table>`;
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function wireScansTable(){
   if (window.jQuery && jQuery.fn.tablesorter) {
@@ -900,10 +918,10 @@ async function renderScanInfo(v){
     <hr style="margin:8px 0 14px 0">
 
     <div class="row">
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Entities</div><div class="val">${scan.entity_count || S.entities.length}</div></div></div>
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Correlations</div><div class="val" style="color:${S.correlations.length?'#9b1f9b':'#888'}">${S.correlations.length}</div></div></div>
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Started</div><div class="val dim">${esc(fmtDate(scan.started_at))}</div></div></div>
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Duration</div><div class="val dim">${esc(fmtDuration(dur))}</div></div></div>
+      <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Entities</div><div class="val">${scan.entity_count || S.entities.length}</div></div></div>
+      <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Correlations</div><div class="val" style="color:${S.correlations.length?'#9b1f9b':'#888'}">${S.correlations.length}</div></div></div>
+      <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Started</div><div class="val dim">${esc(fmtDate(scan.started_at))}</div></div></div>
+      <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Duration</div><div class="val dim">${esc(fmtDuration(dur))}</div></div></div>
     </div>
 
     <ul class="nav nav-tabs">
@@ -967,9 +985,14 @@ function subTab(name, label, count, active){
 function renderStatus(host, scan){
   const byKind = new Map();
   for (const e of S.entities) byKind.set(e.kind, (byKind.get(e.kind)||0) + 1);
-  const kindRows = Array.from(byKind.entries()).sort((a,b)=>b[1]-a[1]).map(([k,n])=>
-    `<tr><td>${kindPill(k)}</td><td class="text-right">${n}</td>
-         <td class="text-right text-muted">${((n/Math.max(1,S.entities.length))*100).toFixed(0)}%</td></tr>`).join('');
+  const kindSorted = Array.from(byKind.entries()).sort((a,b)=>b[1]-a[1]);
+  const kindMax = kindSorted.length ? kindSorted[0][1] : 1;  // scale bars to the largest type
+  const kindRows = kindSorted.map(([k,n])=>{
+    const share = ((n/Math.max(1,S.entities.length))*100).toFixed(0);
+    const barW = ((n/Math.max(1,kindMax))*100).toFixed(1);
+    return `<tr><td>${kindPill(k)}</td><td class="text-right">${n}</td>
+         <td class="kbar-cell"><div class="kbar-track"><div class="kbar-fill" style="width:${barW}%"></div><span class="kbar-pct">${share}%</span></div></td></tr>`;
+  }).join('');
 
   const byMod = new Map();
   for (const e of S.entities) for (const ev of (e.evidence||[])) byMod.set(ev.source, (byMod.get(ev.source)||0)+1);
@@ -989,7 +1012,7 @@ function renderStatus(host, scan){
           <div class="panel-heading"><b>Entities by type</b></div>
           ${kindRows
             ? `<table class="table table-striped table-condensed" style="margin-bottom:0">
-                 <thead><tr><th>Type</th><th class="text-right">Count</th><th class="text-right">Share</th></tr></thead>
+                 <thead><tr><th>Type</th><th class="text-right">Count</th><th>Share</th></tr></thead>
                  <tbody>${kindRows}</tbody></table>`
             : '<div class="empty-state"><p>No entities yet.</p></div>'}
         </div>
@@ -1043,7 +1066,21 @@ function renderStatus(host, scan){
 function renderBrowse(host){
   const kinds = Array.from(new Set(S.entities.map(e=>e.kind))).sort();
   const qKind = S.route.query.k || '';
+  // SpiderFoot 4.0-style data-element rollup: per-kind Unique + Total (sum of corroboration)
+  const roll = {};
+  S.entities.forEach(e=>{ const r = roll[e.kind] || (roll[e.kind] = {u:0, t:0}); r.u++; r.t += (e.corroboration||1); });
+  const rollRows = Object.keys(roll).sort((a,b)=>roll[b].u-roll[a].u);
+  const rollupHtml = rollRows.length ? `
+    <table class="table table-striped table-condensed" id="browse-rollup" style="margin-bottom:14px">
+      <thead><tr><th>Data Element</th><th class="text-right">Unique</th><th class="text-right">Total</th></tr></thead>
+      <tbody>${rollRows.map(k=>`<tr class="rollup-row" data-kind="${attr(k)}" style="cursor:pointer">
+        <td>${kindPill(k)}</td>
+        <td class="text-right"><code>${roll[k].u}</code></td>
+        <td class="text-right"><code>${roll[k].t}</code></td>
+      </tr>`).join('')}</tbody>
+    </table>` : '';
   host.innerHTML = `
+    ${rollupHtml}
     <div class="row" style="margin-bottom:12px">
       <div class="col-sm-4">
         <input type="search" id="b-q" class="form-control input-sm" placeholder="Filter value, evidence, tags…">
@@ -1085,6 +1122,12 @@ function renderBrowse(host){
   $('#b-q').addEventListener('input', refresh);
   $('#b-kind').addEventListener('change', refresh);
   $('#b-cls').addEventListener('change', refresh);
+  host.querySelectorAll('.rollup-row').forEach(tr=>tr.addEventListener('click', ()=>{
+    const k = tr.getAttribute('data-kind');
+    const sel = $('#b-kind');
+    sel.value = (sel.value === k) ? '' : k;  // toggle drill-down, SpiderFoot-style
+    refresh();
+  }));
   refresh();
 }
 function renderBrowseTable(rows){
@@ -1114,12 +1157,12 @@ function renderBrowseTable(rows){
       ${evDetail || '<span class="text-muted">No evidence attached</span>'}
     </div></td></tr>`;
   }).join('');
-  return `<table class="table table-striped table-condensed tablesorter" id="browse-table">
+  return `<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="browse-table">
     <thead><tr>
       <th>Type</th><th>Value</th><th class="text-right">C_eff</th>
       <th class="text-right">Corr</th><th>Tier</th>
       <th class="sorter-false">Tags</th><th class="sorter-false">Sources</th><th>Observed</th>
-    </tr></thead><tbody>${body}</tbody></table>`;
+    </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 /* ── Correlations tab ── */
@@ -1158,11 +1201,15 @@ function renderGraph(host){
       </div>
       <div class="graph-ctl">
         <button class="btn btn-default btn-xs" id="g-relayout"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Re-layout</button>
+        <button class="btn btn-default btn-xs" id="g-reset"><i class="glyphicon glyphicon-fullscreen"></i>&nbsp;Reset view</button>
+        <a class="btn btn-default btn-xs" href="${API.gexfUrl(S.scan.id)}" title="Export graph as GEXF (Gephi)"><i class="glyphicon glyphicon-export"></i>&nbsp;GEXF</a>
       </div>
+      <div class="graph-hint text-muted">Drag nodes · pinch or scroll to zoom · drag canvas to pan</div>
     </div>
   `;
   buildD3Graph();
   $('#g-relayout').addEventListener('click', buildD3Graph);
+  $('#g-reset').addEventListener('click', ()=>{ if (window.__graphResetZoom) window.__graphResetZoom(); });
 }
 
 const NODE_COLOR = {
@@ -1179,6 +1226,20 @@ function buildD3Graph(){
   const W = rect.width, H = rect.height || 560;
   svg.selectAll('*').remove();
   svg.attr('viewBox', `0 0 ${W} ${H}`);
+
+  // Pan/zoom container — pinch-zoom + one-finger pan work natively on
+  // Chrome-on-Android via d3 v3's touch-aware zoom behavior. Without this a
+  // multi-node graph is unusable on a phone screen (SpiderFoot 4.0 parity).
+  const container = svg.append('g').attr('class','zoom-container');
+  const zoom = d3.behavior.zoom().scaleExtent([0.2, 5]).on('zoom', ()=>{
+    container.attr('transform', `translate(${d3.event.translate})scale(${d3.event.scale})`);
+  });
+  svg.call(zoom).on('dblclick.zoom', null);
+  // Expose a reset so the "Reset view" button can recentre/rescale.
+  window.__graphResetZoom = ()=>{
+    zoom.translate([0,0]).scale(1);
+    container.transition().duration(250).attr('transform', 'translate(0,0)scale(1)');
+  };
 
   // Build nodes/edges.
   const seedId = '__seed__';
@@ -1213,7 +1274,7 @@ function buildD3Graph(){
   const seedNode = nodes.find(n=>n.isSeed);
   if (seedNode){ seedNode.fixed = true; seedNode.x = W/2; seedNode.y = H/2; }
 
-  const link = svg.append('g').selectAll('line')
+  const link = container.append('g').selectAll('line')
     .data(validLinks).enter().append('line')
     .style('stroke', d=>d.rel?'#d9822b':(d.corr?'#9b1f9b':'#bbb'))
     .style('stroke-opacity', d=>d.rel?0.85:(d.corr?0.7:0.3))
@@ -1224,7 +1285,9 @@ function buildD3Graph(){
 
   const drag = force.drag().on('dragstart', function(){ d3.select(this).style('cursor','grabbing'); });
 
-  const nodeG = svg.append('g').selectAll('g').data(nodes).enter().append('g').call(drag);
+  const nodeG = container.append('g').selectAll('g').data(nodes).enter().append('g').call(drag);
+  // Stop a node-drag from also panning the canvas (d3 v3 zoom vs drag).
+  nodeG.on('mousedown', ()=>{ if (d3.event) d3.event.stopPropagation(); });
   nodeG.append('circle')
     .attr('r', d=>d.r)
     .style('fill', d=>d.isSeed?'#059CD7':(NODE_COLOR[d.kind]||'#888'))

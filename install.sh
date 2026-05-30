@@ -2,7 +2,7 @@
 # Huntsman Search Engine (HSE) — one-shot installer.
 #
 # Designed primarily for Termux on Android aarch64 (no root). Also works on
-# any Linux / macOS with rustc 1.85+ and git. Idempotent: re-running upgrades
+# any Linux / macOS with rustc 1.88+ and git. Idempotent: re-running upgrades
 # in place.
 #
 # Usage (Termux or any Unix):
