@@ -24,7 +24,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::Evidence,
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -121,6 +121,10 @@ impl Module for XposedOrNot {
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Breach
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

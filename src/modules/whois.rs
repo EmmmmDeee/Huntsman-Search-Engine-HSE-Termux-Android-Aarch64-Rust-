@@ -14,7 +14,7 @@ use tokio::time::timeout;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -51,6 +51,21 @@ impl Module for Whois {
             t.kind,
             TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url
         )
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::DnsRecon
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Address,
+            EntityKind::Domain,
+            EntityKind::Email,
+            EntityKind::Organisation,
+            EntityKind::Person,
+        ];
+        KINDS
     }
 
     async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {

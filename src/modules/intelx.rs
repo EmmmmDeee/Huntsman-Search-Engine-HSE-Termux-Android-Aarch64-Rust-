@@ -42,7 +42,7 @@ use serde_json::json;
 use crate::core::{
     entity::Evidence,
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -158,6 +158,10 @@ impl Module for IntelX {
     }
     fn max_timeout_ms(&self) -> u64 {
         15_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Breach
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

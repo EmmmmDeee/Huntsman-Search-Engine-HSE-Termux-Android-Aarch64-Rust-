@@ -17,7 +17,7 @@ use tokio::process::Command;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -55,6 +55,20 @@ impl Module for AbnLookup {
 
     fn is_passive(&self) -> bool {
         true
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Corporate
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::AbnAcn,
+            EntityKind::Address,
+            EntityKind::Organisation,
+            EntityKind::Person,
+        ];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

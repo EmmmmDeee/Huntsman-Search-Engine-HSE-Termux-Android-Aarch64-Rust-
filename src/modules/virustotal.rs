@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -37,6 +37,10 @@ impl Module for VirusTotal {
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Threat
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

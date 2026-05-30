@@ -22,7 +22,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::Target,
 };
 use crate::util::geo::is_valid_coords;
@@ -146,6 +146,15 @@ impl Module for CellIntel {
 
     fn max_timeout_ms(&self) -> u64 {
         15_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Sensor
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates, EntityKind::DeviceId];
+        KINDS
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::{Entity, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -68,6 +68,10 @@ impl Module for WebserverBanner {
         // Two HEAD attempts (HTTPS → HTTP fallback). Each on a fresh
         // socket if the connection pool is empty.
         6_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Web
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

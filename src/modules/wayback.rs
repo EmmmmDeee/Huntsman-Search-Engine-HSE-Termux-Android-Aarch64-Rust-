@@ -18,7 +18,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::Evidence,
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::freq::top_n;
@@ -50,6 +50,10 @@ impl Module for Wayback {
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain | TargetKind::Url)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Web
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

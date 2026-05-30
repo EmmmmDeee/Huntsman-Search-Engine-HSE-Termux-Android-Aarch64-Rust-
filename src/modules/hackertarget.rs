@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -47,6 +47,15 @@ impl Module for HackerTarget {
 
     fn max_timeout_ms(&self) -> u64 {
         10_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::DnsRecon
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

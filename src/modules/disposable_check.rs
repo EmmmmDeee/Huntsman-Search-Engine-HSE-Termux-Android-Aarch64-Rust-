@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::Evidence,
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -41,6 +41,10 @@ impl Module for DisposableCheck {
     }
     fn is_passive(&self) -> bool {
         true
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Email
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

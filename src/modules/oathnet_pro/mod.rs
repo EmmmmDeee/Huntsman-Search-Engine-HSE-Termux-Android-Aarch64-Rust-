@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -63,6 +63,26 @@ impl Module for OathnetPro {
 
     fn max_timeout_ms(&self) -> u64 {
         30_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::People
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Address,
+            EntityKind::Credential,
+            EntityKind::Domain,
+            EntityKind::Email,
+            EntityKind::IpAddress,
+            EntityKind::Password,
+            EntityKind::Person,
+            EntityKind::Phone,
+            EntityKind::Url,
+            EntityKind::Username,
+        ];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

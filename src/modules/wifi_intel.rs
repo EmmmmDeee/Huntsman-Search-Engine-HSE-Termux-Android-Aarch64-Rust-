@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::Target,
 };
 use crate::util::geo::is_valid_coords;
@@ -110,6 +110,19 @@ impl Module for WifiIntel {
 
     fn max_timeout_ms(&self) -> u64 {
         20_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Geo
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Address,
+            EntityKind::Coordinates,
+            EntityKind::MacAddress,
+        ];
+        KINDS
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

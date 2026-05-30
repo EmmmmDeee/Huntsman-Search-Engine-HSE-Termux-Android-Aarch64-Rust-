@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -78,6 +78,10 @@ impl Module for HudsonRock {
             t.kind,
             TargetKind::Email | TargetKind::Username | TargetKind::Domain
         )
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
