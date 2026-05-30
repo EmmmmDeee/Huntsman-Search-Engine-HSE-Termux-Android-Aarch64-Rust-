@@ -10,6 +10,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+
+- **see_know `/search` transient empties no longer poison the scan; curl errors
+  are diagnosable.** The name/auto `/search` path intermittently returns
+  `total:0` for records that exist (server-side cap races). Previously that empty
+  was cached, so every later lookup of the same query returned nothing for the
+  life of the process — and when curl itself failed, the module logged an opaque
+  `[seek_now] curl failed`. Two fixes: (1) `cache_put` now refuses to memoise an
+  empty result (covers `/search` *and* every `get_path` endpoint), and `search`
+  retries once on a transient empty; (2) the shared `CurlClient` now reports
+  curl's exit code + a trimmed stderr snippet (`curl exited 28: …`) instead of
+  `curl failed`. Live `hse scan --kind name --value "Jordan Meyer" --modules
+  see_know` now returns 185 entities on a single attempt where it intermittently
+  returned 0. Regression tests pin both invariants (empty-never-cached;
+  error-carries-exit-code), each proven by reverting the fix in place.
+
 ### Changed
 
 - **whois response parsing extracted to a pure `parse_whois`.** The ~55-line
