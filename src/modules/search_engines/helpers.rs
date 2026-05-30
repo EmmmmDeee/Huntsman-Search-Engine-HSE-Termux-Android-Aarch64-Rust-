@@ -1245,12 +1245,14 @@ pub(super) fn extract_abn_acn_from_text(text: &str) -> Vec<(String, &'static str
             let num: String = digits.iter().map(|&b| b as char).collect();
             let before = text[..start].to_lowercase();
             let trimmed = before.trim_end();
-            if trimmed.ends_with("acn")
+            let has_context = trimmed.ends_with("acn")
                 || trimmed.ends_with("acn:")
                 || trimmed.ends_with("a.c.n.")
                 || trimmed.ends_with("company number")
-                || trimmed.ends_with("company number:")
-            {
+                || trimmed.ends_with("company number:");
+            // Require the ASIC check-digit too (symmetric with the ABN path) so a
+            // random 9-digit number next to the word "acn" is rejected.
+            if has_context && crate::util::abn::is_valid_acn(&num) {
                 results.push((num, "ACN"));
                 if results.len() >= 10 {
                     break;
@@ -1262,24 +1264,8 @@ pub(super) fn extract_abn_acn_from_text(text: &str) -> Vec<(String, &'static str
 }
 
 pub(super) fn is_valid_abn(s: &str) -> bool {
-    if s.len() != 11 {
-        return false;
-    }
-    let weights = [10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19];
-    let digits: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
-    if digits.len() != 11 {
-        return false;
-    }
-    let mut sum = 0u32;
-    for (i, &w) in weights.iter().enumerate() {
-        let d = if i == 0 {
-            digits[i].wrapping_sub(1)
-        } else {
-            digits[i]
-        };
-        sum += d * w;
-    }
-    sum.is_multiple_of(89)
+    // Shared, checksum-validated implementation (see `util::abn`).
+    crate::util::abn::is_valid_abn(s)
 }
 
 /// Extract organisation names from text. Looks for patterns like

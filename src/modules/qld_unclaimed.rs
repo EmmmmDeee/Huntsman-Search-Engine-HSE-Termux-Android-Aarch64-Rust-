@@ -222,6 +222,24 @@ fn records_to_entities(
         });
         entity.add_evidence(ev);
         out.push(entity);
+
+        // Unclaimed money is often owed to *companies* (dividends, refunds). When
+        // the owner carries a corporate legal form, also emit an `Organisation`
+        // so the engine's expansion pivots it to abn_lookup / opencorporates and
+        // resolves its ABN/ACN — incorporating the federal business registry into
+        // the unclaimed-money graph.
+        if crate::util::abn::looks_like_company(&owner) {
+            let mut org = Entity::new(EntityKind::Organisation, &owner, find_conf, scan_id);
+            org.tag(SRC);
+            org.tag("unclaimed-money");
+            org.tag("country:AU");
+            org.tag("company-owner");
+            org.add_evidence(
+                Evidence::new(SRC, format!("Company owed unclaimed money: {owner}"))
+                    .with_attr("register", "QLD Public Trustee unclaimed monies"),
+            );
+            out.push(org);
+        }
     }
     out
 }
@@ -249,7 +267,7 @@ impl Module for QldUnclaimed {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address];
+        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Organisation];
         KINDS
     }
 
@@ -380,6 +398,40 @@ mod tests {
         assert!(!exact(&curt[2]), "ERIK row is only a surname match");
         // Exact hits outrank family candidates on confidence.
         assert!(curt[1].confidence > curt[2].confidence);
+    }
+
+    #[test]
+    fn company_owner_emits_organisation_for_abn_pivot() {
+        // Unclaimed money owed to a company → an extra Organisation entity that
+        // the engine will expand into abn_lookup / opencorporates.
+        let raw = r#"{"result":{"total":1,"records":[
+            {"_id":7,"Owner":"ACME WIDGETS PTY LTD","Amount":"1200.00","SenderName":"ASX","PCode":"4000"}
+        ]}}"#;
+        let resp: CkanResp = serde_json::from_str(raw).unwrap();
+        let recs = resp.result.unwrap().records;
+        let ents = records_to_entities(&recs, 1, "ACME Widgets", "s");
+        // Address (geo) + Organisation (ABN pivot).
+        assert_eq!(ents.len(), 2);
+        assert!(ents.iter().any(|e| e.kind == EntityKind::Address));
+        let org = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Organisation)
+            .expect("company owner must emit an Organisation");
+        assert_eq!(org.value, "ACME WIDGETS PTY LTD");
+        assert!(org.tags.iter().any(|t| t.as_str() == "company-owner"));
+
+        // An individual owner emits no Organisation (no ABN pivot noise).
+        let raw2 = r#"{"result":{"total":1,"records":[
+            {"_id":8,"Owner":"JANE CITIZEN","Amount":"5.00","PCode":"4000"}
+        ]}}"#;
+        let recs2: Vec<Map<String, Value>> = serde_json::from_str::<CkanResp>(raw2)
+            .unwrap()
+            .result
+            .unwrap()
+            .records;
+        let ents2 = records_to_entities(&recs2, 1, "Jane Citizen", "s");
+        assert_eq!(ents2.len(), 1, "individual owner → no Organisation");
+        assert!(ents2.iter().all(|e| e.kind != EntityKind::Organisation));
     }
 
     #[test]

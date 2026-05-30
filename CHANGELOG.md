@@ -12,6 +12,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`util::abn` — shared, checksum-validated ABN/ACN identification, wired into
+  the OSINT graph.** Probing established the ABR ABN Lookup web service is
+  strictly GUID-gated (both `AbnDetails` and `MatchingNames` reject any call
+  without a registered GUID), so there is no keyless name→ABN lookup; the
+  existing key-gated `abn_lookup` remains the only direct resolver. Instead,
+  ABNs are *incorporated algorithmically*: a new `util::abn` validates an ABN by
+  its ATO modulus-89 weighted checksum and — newly — an ACN by its ASIC
+  check-digit (the prior search-engine extractor validated ABNs but accepted any
+  9-digit number next to the word "acn"; that path now requires the ACN
+  check-digit too). `looks_like_company` detects corporate legal forms (PTY LTD /
+  LIMITED / LTD / INC / NL / & CO) at word boundaries. `qld_unclaimed` now uses
+  it to emit an `Organisation` entity for company-form unclaimed-money owners, so
+  the engine's expansion pivots them into `abn_lookup`/`opencorporates` and
+  resolves the ABN/ACN — connecting the unclaimed-money graph to the federal
+  business registry. Canonical-value unit tests (ATO ABN 51824753556; ASIC ACN
+  000000019) pin both checksums and the company/individual split.
+
 - **`qld_unclaimed` module — Queensland Public Trustee unclaimed-money register
   (free, keyless).** Searches the Public Trustee's unclaimed-monies register
   (money owed from deceased estates, insurance refunds, payroll remainders,
