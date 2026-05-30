@@ -83,6 +83,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Dashboard KPI cards sit 2×2 on a phone instead of one tall column.** The four
+  stat cards (Total Scans / Entities / Modules / Live Sessions) were `col-md-3
+  col-sm-6` with no `col-xs` class, so below Bootstrap 3's 768px breakpoint each
+  went full-width — four large cards stacked vertically, pushing the rest of the
+  dashboard far down on a Chrome-on-Android screen. Added `col-xs-6` so they form
+  a compact 2×2 grid on phones (still 4-up on desktop, 2-up on tablet). The three
+  taller content panels below keep full-width stacking, which suits their height.
+  SPA-only; suite unchanged at 1328.
+
 - **Global entity search hardened against Android-Chrome keyboard corruption.**
   The seed-target input already disabled autocomplete/autocorrect/autocapitalize
   + spellcheck (case/spelling-sensitive OSINT values must pass through verbatim),
