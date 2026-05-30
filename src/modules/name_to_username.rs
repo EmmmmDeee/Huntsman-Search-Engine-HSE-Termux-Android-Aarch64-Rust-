@@ -15,7 +15,22 @@ use crate::core::{
 };
 
 const SRC: &str = "name_to_username";
-const MAX_DERIVATIONS: usize = 12;
+// Raised from 12 to fit the expanded real-world handle pattern set below.
+// Still a hard, bounded cap (the seed round emits at most this many Username
+// entities per name, which the visited-set then dedups) — keeps the username
+// sweep within the per-scan budget on a 4 GB device. A digit-suffix brute
+// (00–99 per base) was rejected: it would explode to ~900 candidates × 159
+// sites and breach the memory/quota ceiling.
+const MAX_DERIVATIONS: usize = 28;
+
+/// First Unicode scalar of `s` as a `String` — char-safe replacement for the
+/// previous `&s[..s.len().min(1)]`, which byte-sliced and PANICKED on any
+/// non-ASCII name (e.g. `Çağla`, `Øyvind`, `José`): `len().min(1)` cut 1 byte
+/// out of a multi-byte codepoint. Real OSINT targets routinely have non-ASCII
+/// names, so this was a live crash, not a theoretical one.
+fn first_char(s: &str) -> String {
+    s.chars().next().map(String::from).unwrap_or_default()
+}
 
 pub struct NameToUsername;
 
@@ -93,22 +108,50 @@ fn derive_usernames(parts_list: &[NameParts]) -> Vec<String> {
     for p in parts_list {
         let f = &p.first;
         let l = &p.last;
-        let fi = &f[..f.len().min(1)];
+        let fi = first_char(f); // char-safe initial
+        let li = first_char(l);
 
-        out.push(format!("{f}{l}"));
-        out.push(format!("{f}.{l}"));
-        out.push(format!("{f}_{l}"));
-        out.push(format!("{fi}{l}"));
-        out.push(format!("{f}{}", &l[..l.len().min(1)]));
-        out.push(format!("{l}{f}"));
-        out.push(format!("{l}.{f}"));
+        // ── Core first+last patterns ──────────────────────────────────────
+        out.push(format!("{f}{l}")); // jordanmeyer
+        out.push(format!("{f}.{l}")); // jordan.meyer
+        out.push(format!("{f}_{l}")); // jordan_meyer
+        out.push(format!("{f}-{l}")); // jordan-meyer (hyphenated handles)
+        // ── Initial + last / first + initial ──────────────────────────────
+        out.push(format!("{fi}{l}")); // jmeyer
+        out.push(format!("{fi}.{l}")); // j.meyer
+        out.push(format!("{fi}_{l}")); // j_meyer
+        out.push(format!("{f}{li}")); // jordanm
+        // ── Last-first orderings (common on AU/EU platforms) ──────────────
+        out.push(format!("{l}{f}")); // meyerjordan
+        out.push(format!("{l}.{f}")); // meyer.jordan
+        out.push(format!("{l}{fi}")); // meyerj
+        out.push(format!("{l}_{f}")); // meyer_jordan
+        // ── Bare components (single-handle accounts) ──────────────────────
+        out.push(f.clone()); // jordan
+        out.push(l.clone()); // meyer
+        // ── Digit-suffixed handles — the single highest-yield real-world
+        //    pattern the old generator missed entirely. Bounded to a tiny
+        //    curated set (birth-year-ish + the ubiquitous trailing 1), NOT a
+        //    00–99 brute force, to stay within the per-scan budget.
+        out.push(format!("{f}{l}1"));
+        out.push(format!("{fi}{l}1"));
+        for yy in ["7", "23", "92", "99"] {
+            out.push(format!("{f}{l}{yy}"));
+        }
 
+        // ── Middle-name permutations ──────────────────────────────────────
         if let Some(ref m) = p.middle {
-            let mi = &m[..m.len().min(1)];
-            out.push(format!("{f}{mi}{l}"));
-            out.push(format!("{fi}{mi}{l}"));
+            let mi = first_char(m);
+            out.push(format!("{f}{mi}{l}")); // jordanlmeyer
+            out.push(format!("{fi}{mi}{l}")); // jlmeyer
+            out.push(format!("{f}.{m}.{l}")); // jordan.leigh.meyer
+            out.push(format!("{f}{m}{l}")); // jordanleighmeyer
         }
     }
+    // Drop empties (defensive: empty first/last yields no useful handle),
+    // then sort+dedup so the bounded `take(MAX_DERIVATIONS)` downstream keeps
+    // a stable, high-value prefix.
+    out.retain(|u| u.len() >= 2);
     out.sort();
     out.dedup();
     out
@@ -136,6 +179,34 @@ mod tests {
         let usernames = derive_usernames(&parts);
         assert!(usernames.contains(&"jordanlmeyer".to_string()));
         assert!(usernames.contains(&"jlmeyer".to_string()));
+    }
+
+    #[test]
+    fn non_ascii_name_does_not_panic() {
+        // Regression: the old `&first[..len().min(1)]` byte-slice panicked on
+        // multi-byte first chars. These must derive handles without crashing.
+        for name in ["Çağla Yılmaz", "Øyvind Ådne", "José Müller", "Renée Noël"] {
+            let parts = parse_name_parts(name);
+            let usernames = derive_usernames(&parts); // must not panic
+            assert!(!usernames.is_empty(), "{name} should yield handles");
+        }
+    }
+
+    #[test]
+    fn expanded_patterns_cover_real_world_handles() {
+        let parts = parse_name_parts("Jordan Meyer");
+        let u = derive_usernames(&parts);
+        // hyphen, digit-suffix, last-first, bare, initial-dot forms.
+        for want in ["jordan-meyer", "jordanmeyer1", "meyerj", "jordan", "j.meyer"] {
+            assert!(u.contains(&want.to_string()), "missing real-world handle: {want}");
+        }
+    }
+
+    #[test]
+    fn first_char_is_char_safe() {
+        assert_eq!(first_char("çağla"), "ç");
+        assert_eq!(first_char("jordan"), "j");
+        assert_eq!(first_char(""), "");
     }
 
     #[test]
