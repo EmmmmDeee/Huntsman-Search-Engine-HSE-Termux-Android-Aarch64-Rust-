@@ -303,11 +303,16 @@ pub enum Command {
 }
 
 pub async fn run() -> Result<()> {
+    // Logs go to stderr so stdout carries only the requested payload. Without
+    // this, `tracing_subscriber::fmt()` defaults to stdout and interleaves
+    // INFO lines into `--output json` (and live/export streams), producing
+    // output that downstream parsers cannot consume.
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_target(false)
+        .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
