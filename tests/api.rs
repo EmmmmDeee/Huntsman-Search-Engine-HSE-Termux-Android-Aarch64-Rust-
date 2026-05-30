@@ -792,3 +792,44 @@ async fn live_stop_not_found() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 }
+
+#[tokio::test]
+async fn sub_resource_endpoints_404_for_unknown_scan() {
+    // Regression: every /scans/{id}/<sub> must 404 for an unknown scan —
+    // consistent with GET /scans/{id} and report.json — instead of a
+    // misleading empty 200 a client can't distinguish from "found nothing".
+    let (app, sid) = create_scan("subres404").await;
+    let bad = "nonexistent0000000000000000000000000000000000000000000000000000";
+
+    for ep in [
+        "entities",
+        "entities/facets",
+        "entities/filter?kind=email",
+        "correlations",
+        "relations",
+        "entities.csv",
+    ] {
+        let unknown = app
+            .clone()
+            .oneshot(get(&format!("/api/v1/scans/{bad}/{ep}")))
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), 404, "unknown scan {ep} must 404");
+    }
+
+    // A real scan still serves each sub-resource (no success-path regression).
+    for ep in [
+        "entities",
+        "entities/facets",
+        "correlations",
+        "relations",
+        "entities.csv",
+    ] {
+        let known = app
+            .clone()
+            .oneshot(get(&format!("/api/v1/scans/{sid}/{ep}")))
+            .await
+            .unwrap();
+        assert_eq!(known.status(), 200, "known scan {ep} must 200");
+    }
+}

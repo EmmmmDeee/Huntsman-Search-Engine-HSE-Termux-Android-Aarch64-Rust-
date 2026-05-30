@@ -142,10 +142,26 @@ pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     }
 }
 
+/// `Some(404)` when no scan with `id` exists (or `Some(500)` on a store error),
+/// else `None`. Sub-resource handlers call this first so an unknown scan yields
+/// 404 — consistent with `GET /scans/{id}` and `report.json` — rather than a
+/// misleading empty `200` that a client cannot distinguish from a real scan
+/// that simply found nothing.
+fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
+    match s.store.get_scan(id) {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(not_found()),
+        Err(e) => Some(internal_error(&e)),
+    }
+}
+
 pub async fn scan_entities(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     match s.store.entities_for_scan(&id) {
         Ok(entities) => ok_list("entities", entities),
         Err(e) => internal_error(&e),
@@ -157,6 +173,9 @@ pub async fn scan_entities_filter(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     if params.get("kind").is_some_and(|k| k.len() > 32) {
         return (
             StatusCode::BAD_REQUEST,
@@ -187,6 +206,9 @@ pub async fn scan_entities_facets(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     match s.store.entity_facets(&id) {
         Ok(facets) => {
             let items: Vec<serde_json::Value> = facets
@@ -203,6 +225,9 @@ pub async fn scan_correlations(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     match s.store.correlations_for_scan(&id) {
         Ok(corr) => ok_list("correlations", corr),
         Err(e) => internal_error(&e),
@@ -215,6 +240,9 @@ pub async fn scan_relations(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     match s.store.relations_for_scan(&id) {
         Ok(rels) => ok_list("relations", rels),
         Err(e) => internal_error(&e),
@@ -281,6 +309,9 @@ pub async fn scan_entities_csv(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     let entities = match s.store.entities_for_scan(&id) {
         Ok(es) => es,
         Err(e) => return internal_error(&e),
