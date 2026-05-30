@@ -1265,21 +1265,24 @@ pub(super) fn is_valid_abn(s: &str) -> bool {
     if s.len() != 11 {
         return false;
     }
-    let weights = [10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19];
-    let digits: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
+    let weights = [10i64, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19];
+    let digits: Vec<i64> = s.chars().filter_map(|c| c.to_digit(10)).map(i64::from).collect();
     if digits.len() != 11 {
         return false;
     }
-    let mut sum = 0u32;
+    // ATO checksum: subtract 1 from the leading digit, weight-sum, mod 89.
+    // Use a signed-and-wide accumulator so a scraped candidate with a leading
+    // '0' (→ -1 after the subtraction) neither overflows nor panics — it just
+    // fails the `% 89` test. The previous `u32::wrapping_sub(1)` produced
+    // u32::MAX and then `u32::MAX * 10` overflowed, panicking the whole
+    // module in debug (and silently wrapping in release) on any 11-digit
+    // string starting with '0' lifted out of a live search result.
+    let mut sum = 0i64;
     for (i, &w) in weights.iter().enumerate() {
-        let d = if i == 0 {
-            digits[i].wrapping_sub(1)
-        } else {
-            digits[i]
-        };
+        let d = if i == 0 { digits[i] - 1 } else { digits[i] };
         sum += d * w;
     }
-    sum.is_multiple_of(89)
+    sum.rem_euclid(89) == 0
 }
 
 /// Extract organisation names from text. Looks for patterns like
@@ -1439,4 +1442,42 @@ pub(super) fn is_email_local_char(b: u8) -> bool {
 
 pub(super) fn is_domain_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'.' || b == b'-'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abn_validator_does_not_panic_on_leading_zero() {
+        // Regression: an 11-digit candidate starting with '0' lifted from a
+        // live search result used to overflow (0u32.wrapping_sub(1) * 10) and
+        // panic the search_engines module mid-scan. Must now return false.
+        assert!(!is_valid_abn("01234567890"));
+        assert!(!is_valid_abn("00000000000"));
+    }
+
+    #[test]
+    fn abn_validator_accepts_known_valid() {
+        // ATO worked-example ABN (also the README's `--kind abn` example).
+        assert!(is_valid_abn("51824753556"));
+    }
+
+    #[test]
+    fn abn_validator_rejects_wrong_length_and_checksum() {
+        assert!(!is_valid_abn("123")); // too short
+        assert!(!is_valid_abn("123456789012")); // too long
+        assert!(!is_valid_abn("51824753557")); // valid length, bad checksum
+        assert!(!is_valid_abn("abcdefghijk")); // non-digits → <11 digits
+    }
+
+    #[test]
+    fn abn_validator_handles_all_leading_digits_without_panic() {
+        // No 11-digit string should ever panic the validator, whatever the
+        // leading digit — the whole point of the signed-wide accumulator.
+        for first in '0'..='9' {
+            let candidate = format!("{first}1824753556");
+            let _ = is_valid_abn(&candidate); // must not panic
+        }
+    }
 }
