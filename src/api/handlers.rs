@@ -21,10 +21,25 @@ use serde_json::{Value, json};
 use tokio_stream::{StreamExt as _, wrappers::BroadcastStream};
 
 use super::AppState;
-use crate::core::{module::ModuleContext, scan::Target};
+use crate::core::{
+    module::ModuleContext,
+    scan::{Target, TargetKind},
+};
 use crate::util::keys;
 
 // ─── Shared response helpers ───────────────────────────────────────────────
+
+/// Construct and validate a `Target`, mapping a validation failure to the
+/// canonical client-facing `invalid target: …` message. The single source of
+/// truth for target admission shared by the scan-create and live-create paths,
+/// so the rule and its error wording can't diverge between them.
+pub(crate) fn validated_target(kind: TargetKind, value: String) -> Result<Target, String> {
+    let target = Target::new(kind, value);
+    target
+        .validate()
+        .map_err(|msg| format!("invalid target: {msg}"))?;
+    Ok(target)
+}
 
 pub(crate) fn internal_error(err: &impl ToString) -> axum::response::Response {
     (
@@ -447,14 +462,12 @@ pub async fn live_create(
     State(s): State<Arc<AppState>>,
     Json(req): Json<crate::core::live::LiveRequest>,
 ) -> impl IntoResponse {
-    let target = Target::new(req.kind, req.value);
-    if let Err(msg) = target.validate() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("invalid target: {msg}") })),
-        )
-            .into_response();
-    }
+    let target = match validated_target(req.kind, req.value) {
+        Ok(t) => t,
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+        }
+    };
     let live_id = s.live.start(target, req.options, req.live);
     (
         StatusCode::ACCEPTED,
@@ -526,6 +539,20 @@ pub async fn live_events_sse(
 #[cfg(test)]
 mod tests {
     use crate::api::scan_handlers::csv_escape;
+
+    #[test]
+    fn validated_target_accepts_good_and_prefixes_bad() {
+        use super::validated_target;
+        use crate::core::scan::TargetKind;
+        let ok = validated_target(TargetKind::Domain, "example.com".to_string());
+        assert!(ok.is_ok());
+        assert_eq!(ok.unwrap().value, "example.com");
+        let err = validated_target(TargetKind::Domain, "no-dot".to_string()).unwrap_err();
+        assert!(
+            err.starts_with("invalid target: "),
+            "must carry client-facing prefix, got: {err}"
+        );
+    }
 
     #[test]
     fn aggregate_scan_stats_sums_counts_and_histograms_status() {

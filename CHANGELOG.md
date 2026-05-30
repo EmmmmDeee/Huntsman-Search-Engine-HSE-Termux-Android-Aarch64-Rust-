@@ -91,6 +91,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Unified target validation across the scan- and live-create endpoints.**
+  `live_create` (`POST /live`) repeated the same `Target::new` + `validate()` +
+  `invalid target: …` error construction that the scan path already had, so the
+  admission rule and its error wording lived in two places and could drift.
+  Extracted `validated_target(kind, value) -> Result<Target, String>` as the
+  single source of truth; both `build_scan_from_request` and `live_create` now
+  funnel through it. Added a unit test for the accept/reject-prefix behaviour.
+  Behaviour-preserving: the `live_create_rejects_invalid_target` and
+  `scan_create_*` end-to-end API tests pass unchanged. Suite +1 at 1334.
+
 - **De-duplicated scan construction shared by `scan_create` and `scan_batch`.**
   Both the single-scan `POST /scans` and the batch `POST /scans/batch` handlers
   carried an identical eight-line sequence — target construction, `validate()`

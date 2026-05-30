@@ -8,7 +8,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tracing::info;
 
-use super::handlers::{internal_error, not_found, ok_list, spawn_scan};
+use super::handlers::{internal_error, not_found, ok_list, spawn_scan, validated_target};
 use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target};
@@ -19,10 +19,7 @@ use crate::core::scan::{Scan, ScanRequest, Target};
 /// and `profile`→options resolution can't drift between the two paths. Pure:
 /// no store or engine access, so it's unit-testable on its own.
 fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target), String> {
-    let target = Target::new(req.kind, req.value.clone());
-    target
-        .validate()
-        .map_err(|msg| format!("invalid target: {msg}"))?;
+    let target = validated_target(req.kind, req.value.clone())?;
     let sid = scan_id(req.kind.canonical_str(), &req.value);
     let mut opts = req.options;
     if let Some(ref profile_name) = opts.profile
