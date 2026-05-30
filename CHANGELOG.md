@@ -91,6 +91,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Refactored `Store::open` (102→27-line body) behind a schema characterisation
+  test.** The SQLite bootstrap — the most Termux-essential function, run on every
+  launch — was a 102-line body dominated by an inline DDL string, with the two
+  env-tunable pragma reads duplicating the same `env::var().and_then().unwrap_or()`
+  dance. Lifted the static schema into a `SCHEMA_DDL` constant and the idempotent
+  observation backfill into `BACKFILL_OBSERVATIONS_SQL`, and extracted an
+  `env_i64` helper for the pragma reads; `open` is now a short orchestrator and
+  the schema lives in one greppable place. Behaviour-preserving: pragmas + schema
+  still execute in a single batch, and a new characterisation test
+  (`open_produces_exact_schema_and_pragmas`) pins the exact `sqlite_master` table/
+  index set plus `foreign_keys=ON` / `journal_mode=WAL` — verified passing before
+  the refactor, still passing after. Suite +1 at 1330.
+
 - **Refactored `entities_to_gexf` (109→30-line body) behind a byte-exact golden
   test.** The GEXF graph export (the SpiderFoot-style "Export GEXF" the Graph tab
   now offers) was one monolithic function that also inlined the uid-truncation

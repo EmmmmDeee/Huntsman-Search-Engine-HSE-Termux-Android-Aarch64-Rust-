@@ -13,27 +13,12 @@ pub struct Store {
     conn: Mutex<Connection>,
 }
 
-impl Store {
-    pub fn open(path: &str) -> Result<Self> {
-        let cache_kb: i64 = std::env::var("HSE_SQLITE_CACHE_KB")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(2000);
-        let mmap: i64 = std::env::var("HSE_SQLITE_MMAP")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(67_108_864);
-
-        let conn = Connection::open(path)?;
-        conn.execute_batch(&format!(
-            "
-            PRAGMA journal_mode=WAL;
-            PRAGMA synchronous=NORMAL;
-            PRAGMA temp_store=MEMORY;
-            PRAGMA foreign_keys=ON;
-            PRAGMA cache_size=-{cache_kb};
-            PRAGMA mmap_size={mmap};
-
+/// Static schema (tables + indexes), `CREATE … IF NOT EXISTS` so it's safe to
+/// run on every open. Kept as a constant so [`Store::open`] reads as a short
+/// orchestrator and the schema lives in one greppable place. Executed in the
+/// same batch as the (env-tunable) pragmas, so the resulting database is
+/// byte-for-byte what the previous inline DDL produced.
+const SCHEMA_DDL: &str = "
             CREATE TABLE IF NOT EXISTS scans (
                 id           TEXT PRIMARY KEY,
                 target_kind  TEXT NOT NULL,
@@ -103,13 +88,44 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
             CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
+            ";
+
+/// Idempotent backfill of the observation junction table from `entities`.
+const BACKFILL_OBSERVATIONS_SQL: &str =
+    "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
+     SELECT uid, scan_id, observed_at FROM entities;";
+
+/// Read an `i64` from an environment variable, falling back to `default` when
+/// unset or unparseable. Used for the env-tunable SQLite performance pragmas.
+fn env_i64(var: &str, default: i64) -> i64 {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+impl Store {
+    pub fn open(path: &str) -> Result<Self> {
+        // Performance pragmas are env-tunable (low-RAM Termux devices may want a
+        // smaller page cache / mmap); the schema itself is static (SCHEMA_DDL).
+        let cache_kb = env_i64("HSE_SQLITE_CACHE_KB", 2000);
+        let mmap = env_i64("HSE_SQLITE_MMAP", 67_108_864);
+
+        let conn = Connection::open(path)?;
+        conn.execute_batch(&format!(
             "
+            PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=NORMAL;
+            PRAGMA temp_store=MEMORY;
+            PRAGMA foreign_keys=ON;
+            PRAGMA cache_size=-{cache_kb};
+            PRAGMA mmap_size={mmap};
+            {SCHEMA_DDL}"
         ))?;
 
-        conn.execute_batch(
-            "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
-             SELECT uid, scan_id, observed_at FROM entities;",
-        )?;
+        // Idempotent backfill: populate entity_observations for stores created
+        // before that table existed (and for any rows missing an observation).
+        conn.execute_batch(BACKFILL_OBSERVATIONS_SQL)?;
 
         let _ = conn.execute_batch("PRAGMA optimize;");
 
@@ -1450,6 +1466,58 @@ mod tests {
         assert_eq!(store.relations_for_scan("rd-scan").unwrap().len(), 1);
         assert!(store.delete_scan("rd-scan").unwrap());
         assert!(store.relations_for_scan("rd-scan").unwrap().is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+    /// Characterisation: pins the EXACT schema (tables + indexes) and the
+    /// connection pragmas a freshly-opened store produces, so the `Store::open`
+    /// refactor that lifts the DDL into a constant can be proven schema-identical.
+    #[test]
+    fn open_produces_exact_schema_and_pragmas() {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        let conn = store.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT type || '|' || name FROM sqlite_master ORDER BY type, name")
+            .unwrap();
+        let got: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        drop(stmt);
+        let expected = [
+            "index|idx_corr_scan",
+            "index|idx_entities_kind",
+            "index|idx_entities_scan",
+            "index|idx_events_scan",
+            "index|idx_obs_entity",
+            "index|idx_obs_scan",
+            "index|idx_relations_scan",
+            "index|idx_scans_started",
+            "index|sqlite_autoindex_correlations_1",
+            "index|sqlite_autoindex_entities_1",
+            "index|sqlite_autoindex_entity_observations_1",
+            "index|sqlite_autoindex_relations_1",
+            "index|sqlite_autoindex_scans_1",
+            "table|correlations",
+            "table|entities",
+            "table|entity_observations",
+            "table|events",
+            "table|relations",
+            "table|scans",
+            "table|sqlite_sequence",
+        ];
+        assert_eq!(got, expected, "schema (tables + indexes) must be identical");
+
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        let jm: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1, "foreign_keys must stay ON");
+        assert_eq!(jm, "wal", "journal_mode must stay WAL");
+        drop(conn);
         let _ = std::fs::remove_file(&path);
     }
 }
