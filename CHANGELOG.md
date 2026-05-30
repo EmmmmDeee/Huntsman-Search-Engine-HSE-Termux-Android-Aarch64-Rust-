@@ -12,6 +12,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **see_know pre-flight skip logic extracted to a testable predicate.** The
+  ~38-line per-target-kind junk-seed skip block inside `SeekNow::process` (local
+  domains, too-short/all-digit/placeholder usernames, under-length phones/names,
+  private IPs, unsupported kinds) is now a pure `should_skip_seed(kind, value)`
+  function with its own unit test, shrinking `process()` from 147 to 112 lines.
+  Behaviour-identical (same conditions, same early-return); live "Jordan Meyer"
+  still returns 185 entities.
+
 - **see_know endpoint dispatch is now table-driven.** Each of the 19 typed
   SeekNow endpoints used to be encoded in four places — an `EndpointCall`
   variant, a 19-arm `label()` match, a 19-arm `invoke()` match, and a

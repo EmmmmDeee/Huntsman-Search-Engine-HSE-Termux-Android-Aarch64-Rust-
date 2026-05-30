@@ -115,46 +115,11 @@ impl Module for SeekNow {
         seen.insert(target.value.to_lowercase());
         let v = target.value.trim();
 
-        // Pre-flight skips — same pattern as oathnet_pro. Catching junk
-        // before any HTTP call saves quota and pool noise.
-        match target.kind {
-            TargetKind::Email => {
-                if let Some((_, host)) = v.split_once('@')
-                    && is_local_domain(host)
-                {
-                    return Ok(result);
-                }
-            }
-            TargetKind::Username => {
-                if v.len() < 4
-                    || v.chars().all(|c| c.is_ascii_digit())
-                    || is_placeholder_username(v)
-                {
-                    return Ok(result);
-                }
-            }
-            TargetKind::Phone => {
-                let digits = v.chars().filter(|c| c.is_ascii_digit()).count();
-                if digits < 6 {
-                    return Ok(result);
-                }
-            }
-            TargetKind::FullName => {
-                if !v.contains(' ') || v.len() < 5 {
-                    return Ok(result);
-                }
-            }
-            TargetKind::IpAddress => {
-                if is_private_ip(v) {
-                    return Ok(result);
-                }
-            }
-            TargetKind::Domain => {
-                if is_local_domain(v) {
-                    return Ok(result);
-                }
-            }
-            _ => return Ok(result),
+        // Pre-flight skip — junk seeds (local domains, too-short usernames,
+        // placeholder values, private IPs, unsupported kinds) never reach an
+        // HTTP call, saving quota and pool noise.
+        if should_skip_seed(target.kind, v) {
+            return Ok(result);
         }
 
         // ── Query 1: universal /search ─────────────────────────────────
@@ -253,6 +218,26 @@ impl Module for SeekNow {
         }
 
         Ok(result)
+    }
+}
+
+/// True if a seed is junk that should never reach a SeekNow HTTP call — local
+/// domains, too-short / all-digit / placeholder usernames, under-length phones
+/// and names, private IPs, and any unsupported target kind. Pure function of
+/// `(kind, value)` so the skip policy is testable in isolation.
+fn should_skip_seed(kind: TargetKind, v: &str) -> bool {
+    match kind {
+        TargetKind::Email => v
+            .split_once('@')
+            .is_some_and(|(_, host)| is_local_domain(host)),
+        TargetKind::Username => {
+            v.len() < 4 || v.chars().all(|c| c.is_ascii_digit()) || is_placeholder_username(v)
+        }
+        TargetKind::Phone => v.chars().filter(|c| c.is_ascii_digit()).count() < 6,
+        TargetKind::FullName => !v.contains(' ') || v.len() < 5,
+        TargetKind::IpAddress => is_private_ip(v),
+        TargetKind::Domain => is_local_domain(v),
+        _ => true,
     }
 }
 
@@ -803,6 +788,28 @@ mod tests {
             "see_know max_timeout_ms {} must be >= 78_000 (curl-client outer timeout)",
             SeekNow.max_timeout_ms()
         );
+    }
+
+    #[test]
+    fn should_skip_seed_matches_preflight_policy() {
+        // Skipped (junk) seeds.
+        assert!(should_skip_seed(TargetKind::Email, "x@localhost"));
+        assert!(should_skip_seed(TargetKind::Username, "abc")); // < 4
+        assert!(should_skip_seed(TargetKind::Username, "12345")); // all digits
+        assert!(should_skip_seed(TargetKind::Phone, "12345")); // < 6 digits
+        assert!(should_skip_seed(TargetKind::FullName, "Jordan")); // no space
+        assert!(should_skip_seed(TargetKind::IpAddress, "192.168.1.1"));
+        assert!(should_skip_seed(TargetKind::Coordinates, "0,0")); // unsupported kind
+        // Accepted (real) seeds.
+        assert!(!should_skip_seed(
+            TargetKind::Email,
+            "jordan.meyer@wartburg.edu"
+        ));
+        assert!(!should_skip_seed(TargetKind::Username, "jmeyer82291"));
+        assert!(!should_skip_seed(TargetKind::Phone, "+15551234567"));
+        assert!(!should_skip_seed(TargetKind::FullName, "Jordan Meyer"));
+        assert!(!should_skip_seed(TargetKind::IpAddress, "8.8.8.8"));
+        assert!(!should_skip_seed(TargetKind::Domain, "example.com"));
     }
 
     #[test]
