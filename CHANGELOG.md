@@ -55,6 +55,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Browse tab gains a SpiderFoot 4.0-style data-element rollup table.** Above
+  the entity element list, `renderBrowse` now renders a `Data Element | Unique |
+  Total` summary table (`#browse-rollup`) computed from `S.entities`: Unique is
+  the per-kind entity count, Total is the per-kind sum of `corroboration`,
+  mirroring SpiderFoot's Browse rollup (unique values vs total data elements).
+  Rows are sorted by Unique descending and are clickable — clicking a type drives
+  the existing `#b-kind` dropdown + `refresh()` to drill the element list down to
+  that type (clicking the active type toggles back to All), reusing the filter
+  infrastructure rather than adding a parallel path. SPA-only change (re-embedded
+  via `include_str!`); no Rust logic touched, suite unchanged at 1326 passed.
+
 - **search_engines FullName dork set extracted to a pure `build_queries_fullname`.**
   `build_queries` was a 331-line per-`TargetKind` match whose FullName arm alone
   was ~100 lines of person-centric Google dorks (social/professional, AU

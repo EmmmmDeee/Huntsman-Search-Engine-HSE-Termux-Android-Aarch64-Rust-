@@ -1043,7 +1043,21 @@ function renderStatus(host, scan){
 function renderBrowse(host){
   const kinds = Array.from(new Set(S.entities.map(e=>e.kind))).sort();
   const qKind = S.route.query.k || '';
+  // SpiderFoot 4.0-style data-element rollup: per-kind Unique + Total (sum of corroboration)
+  const roll = {};
+  S.entities.forEach(e=>{ const r = roll[e.kind] || (roll[e.kind] = {u:0, t:0}); r.u++; r.t += (e.corroboration||1); });
+  const rollRows = Object.keys(roll).sort((a,b)=>roll[b].u-roll[a].u);
+  const rollupHtml = rollRows.length ? `
+    <table class="table table-striped table-condensed" id="browse-rollup" style="margin-bottom:14px">
+      <thead><tr><th>Data Element</th><th class="text-right">Unique</th><th class="text-right">Total</th></tr></thead>
+      <tbody>${rollRows.map(k=>`<tr class="rollup-row" data-kind="${attr(k)}" style="cursor:pointer">
+        <td>${kindPill(k)}</td>
+        <td class="text-right"><code>${roll[k].u}</code></td>
+        <td class="text-right"><code>${roll[k].t}</code></td>
+      </tr>`).join('')}</tbody>
+    </table>` : '';
   host.innerHTML = `
+    ${rollupHtml}
     <div class="row" style="margin-bottom:12px">
       <div class="col-sm-4">
         <input type="search" id="b-q" class="form-control input-sm" placeholder="Filter value, evidence, tags…">
@@ -1085,6 +1099,12 @@ function renderBrowse(host){
   $('#b-q').addEventListener('input', refresh);
   $('#b-kind').addEventListener('change', refresh);
   $('#b-cls').addEventListener('change', refresh);
+  host.querySelectorAll('.rollup-row').forEach(tr=>tr.addEventListener('click', ()=>{
+    const k = tr.getAttribute('data-kind');
+    const sel = $('#b-kind');
+    sel.value = (sel.value === k) ? '' : k;  // toggle drill-down, SpiderFoot-style
+    refresh();
+  }));
   refresh();
 }
 function renderBrowseTable(rows){
