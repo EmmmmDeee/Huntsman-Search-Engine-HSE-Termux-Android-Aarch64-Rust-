@@ -174,21 +174,81 @@ fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
 
 // ── GPS parsing ─────────────────────────────────────────────────────────
 
+/// True if `(lat, lon)` is a usable geographic fix.
+///
+/// Rejects two failure modes a real `termux-location` payload can produce:
+/// out-of-range values (`|lat| > 90`, `|lon| > 180`) from a malformed or
+/// sensor-error response, and the `0.0, 0.0` "Null Island" sentinel that the
+/// Android location stack emits when it has no actual fix but still returns a
+/// (zeroed) object. Without this, either becomes a high-confidence
+/// `Coordinates` entity and poisons the geolocation pipeline with a false
+/// position.
+///
+/// Also rejects non-finite values (NaN/±inf) defensively.
+fn is_valid_fix(lat: f64, lon: f64) -> bool {
+    lat.is_finite()
+        && lon.is_finite()
+        && (-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
+        && !(lat == 0.0 && lon == 0.0)
+}
+
+/// Confidence for an on-device location fix.
+///
+/// The provider sets the ceiling — GPS (0.90) can reach metre/cm scale,
+/// network (0.65) is tens-of-metres at best — and the device-reported
+/// `accuracy_m` radius scales it down when the fix is imprecise, so a 2 km
+/// "GPS" fix can't masquerade as a tight one. Accuracy of 0 / absent means
+/// "unreported", not "perfect", so it leaves the provider ceiling untouched.
+fn fix_confidence(provider: &str, accuracy_m: Option<f64>) -> f64 {
+    let ceiling: f64 = if provider == "gps" { 0.90 } else { 0.65 };
+    match accuracy_m {
+        Some(a) if a > 0.0 => {
+            let scaled = if a <= 20.0 {
+                ceiling
+            } else if a <= 100.0 {
+                ceiling - 0.05
+            } else if a <= 500.0 {
+                ceiling - 0.15
+            } else if a <= 2000.0 {
+                ceiling - 0.25
+            } else {
+                ceiling - 0.35
+            };
+            scaled.clamp(0.30, 0.90)
+        }
+        _ => ceiling,
+    }
+}
+
 fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
     let fix: Fix = match serde_json::from_slice(stdout) {
         Ok(v) => v,
         Err(_) => return ModuleResult::new(),
     };
 
+    // Reject out-of-range / Null-Island / non-finite fixes before they become
+    // a high-confidence Coordinates entity.
+    if !is_valid_fix(fix.latitude, fix.longitude) {
+        tracing::debug!(
+            lat = fix.latitude,
+            lon = fix.longitude,
+            "device_sensors: rejecting invalid location fix"
+        );
+        return ModuleResult::new();
+    }
+
     let provider = fix.provider.as_deref().unwrap_or("network");
-    // GPS provider gets higher confidence (cm-scale accuracy possible);
-    // network provider is m-scale at best.
-    let confidence = if provider == "gps" { 0.90 } else { 0.65 };
+    let confidence = fix_confidence(provider, fix.accuracy);
     let coords = format!("{:.7},{:.7}", fix.latitude, fix.longitude);
 
     let mut e = Entity::new(EntityKind::Coordinates, coords, confidence, scan_id);
     e.tag("geoint");
+    e.tag("device-sensor");
     e.tag(format!("provider:{provider}"));
+    if let Some(a) = fix.accuracy.filter(|a| *a > 0.0) {
+        e.tag(format!("accuracy:{}m", a as u64));
+    }
     e.add_evidence(
         Evidence::new(SRC, format!("Location fix via {provider}"))
             .with_attr("latitude", fix.latitude.to_string())
@@ -325,9 +385,64 @@ mod tests {
 
     #[test]
     fn gps_provider_tag() {
-        let json = br#"{"latitude":0.0,"longitude":0.0,"provider":"gps"}"#;
+        // Use a real coordinate — 0,0 is now rejected as Null Island.
+        let json = br#"{"latitude":-27.4698,"longitude":153.0251,"provider":"gps"}"#;
         let r = parse_fix(json, "test");
         assert!(r.entities[0].has_tag("provider:gps"));
+        assert!(r.entities[0].has_tag("device-sensor"));
+    }
+
+    #[test]
+    fn null_island_rejected() {
+        // The Android location stack returns 0,0 when it has no real fix.
+        let json = br#"{"latitude":0.0,"longitude":0.0,"provider":"gps"}"#;
+        assert_eq!(parse_fix(json, "test").entities.len(), 0);
+    }
+
+    #[test]
+    fn out_of_range_coords_rejected() {
+        for json in [
+            &br#"{"latitude":91.0,"longitude":10.0}"#[..],
+            &br#"{"latitude":-90.1,"longitude":10.0}"#[..],
+            &br#"{"latitude":10.0,"longitude":181.0}"#[..],
+            &br#"{"latitude":10.0,"longitude":-180.5}"#[..],
+        ] {
+            assert_eq!(
+                parse_fix(json, "test").entities.len(),
+                0,
+                "out-of-range fix must be rejected: {}",
+                String::from_utf8_lossy(json)
+            );
+        }
+    }
+
+    #[test]
+    fn boundary_coords_accepted() {
+        // Exact poles / antimeridian are valid.
+        let json = br#"{"latitude":90.0,"longitude":180.0,"provider":"gps"}"#;
+        assert_eq!(parse_fix(json, "test").entities.len(), 1);
+    }
+
+    #[test]
+    fn accuracy_scales_confidence_below_provider_ceiling() {
+        // A wide-radius "gps" fix must score below a tight one.
+        let tight = br#"{"latitude":-27.47,"longitude":153.02,"accuracy":5.0,"provider":"gps"}"#;
+        let wide = br#"{"latitude":-27.47,"longitude":153.02,"accuracy":3000.0,"provider":"gps"}"#;
+        let ct = parse_fix(tight, "t").entities[0].confidence;
+        let cw = parse_fix(wide, "t").entities[0].confidence;
+        assert!(
+            (ct - 0.90).abs() < 1e-6,
+            "tight gps fix keeps ceiling: {ct}"
+        );
+        assert!(cw < ct, "wide fix ({cw}) must score below tight ({ct})");
+        assert!(cw >= 0.30, "confidence floored: {cw}");
+    }
+
+    #[test]
+    fn accuracy_tag_emitted() {
+        let json = br#"{"latitude":-27.47,"longitude":153.02,"accuracy":42.0,"provider":"gps"}"#;
+        let r = parse_fix(json, "test");
+        assert!(r.entities[0].has_tag("accuracy:42m"));
     }
 
     #[test]
