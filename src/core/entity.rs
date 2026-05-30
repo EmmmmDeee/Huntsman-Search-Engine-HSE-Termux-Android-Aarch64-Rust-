@@ -219,15 +219,17 @@ impl Entity {
 
     // ── Derived metrics ──────────────────────────────────────────────────────
 
-    /// `C_eff = clamp(confidence × (1 + 0.15 × ln(min(corroboration, 10))), 0.0, 1.0)`
+    /// `C_eff = clamp(confidence × (1 + 0.15 × ln(corroboration)), 0.0, 1.0)`
     ///
-    /// Corroboration is capped at 10 for the boost calculation to prevent
-    /// runaway c_eff from redundant/overlapping sources. Beyond 10
-    /// independent sources, additional corroboration still accumulates
-    /// in the raw field but doesn't further inflate c_eff.
+    /// Corroboration is floored at 1 (so a never-corroborated entity gets
+    /// `ln(1) = 0`, i.e. no boost) and is otherwise uncapped — the canonical
+    /// formula applies the logarithm directly to the corroboration count.
+    /// The outer `clamp(.., 0.0, 1.0)` keeps the result a valid confidence,
+    /// so additional sources have sharply diminishing effect near the ceiling
+    /// without an explicit cap on the count.
     #[inline]
     pub fn c_effective(&self) -> f64 {
-        let corr = (self.corroboration.max(1) as f64).min(10.0);
+        let corr = self.corroboration.max(1) as f64;
         let boost = CORROBORATION_COEFF.mul_add(corr.ln(), 1.0);
         (self.confidence * boost).clamp(0.0, 1.0)
     }
