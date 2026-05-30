@@ -12,6 +12,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **oathnet_pro breach-entity tagging centralised; extraction characterised.**
+  Applied the same cleanup as `see_know` to `oathnet_pro::extract_breach_entities`:
+  its thirteen per-field blocks each repeated `tag(breach) + tag("oathnet-pro")
+  + [record-specific tag] + add_evidence(ev.clone()) + push`. Lifted that into a
+  `push_oathnet_entity(result, e, ev, extra_tags)` helper, with `extra_tags`
+  preserving the exact serialised tag order (`candidate`, `geolocation-lead`,
+  `discord`, `linkedin`, `email-domain`, `password-hash`, …). Added two
+  characterization tests that pin the **exact ordered tag vectors** for every
+  kind (and the non-target `candidate` path) — written green against the
+  pre-refactor code, so any reordered/dropped tag fails. Behaviour-identical;
+  the function had no test coverage before.
+
 - **see_know coordinate parsing extracted to `parse_coord`.** The lat/lon
   extraction in `extract_geo_entities` was two 10-line `or_else` ladders that
   each tried a JSON number then a numeric string across the candidate keys

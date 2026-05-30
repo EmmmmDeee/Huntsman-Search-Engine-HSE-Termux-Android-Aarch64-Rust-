@@ -330,6 +330,26 @@ fn breach_evidence(item: &Value) -> Evidence {
     ev
 }
 
+/// Apply oathnet_pro's standard breach tags (`breach`, `oathnet-pro`, plus any
+/// record-specific `extra_tags` in order) and a cloned evidence record to `e`,
+/// then push it. Centralises the tag+evidence+push tail shared by every
+/// breach-derived entity kind; `extra_tags` preserves the exact serialised tag
+/// order (e.g. `candidate`, `geolocation-lead`, `discord`).
+fn push_oathnet_entity(
+    result: &mut ModuleResult,
+    mut e: Entity,
+    ev: &Evidence,
+    extra_tags: &[&str],
+) {
+    e.tag(tags::BREACH);
+    e.tag("oathnet-pro");
+    for t in extra_tags {
+        e.tag(*t);
+    }
+    e.add_evidence(ev.clone());
+    result.push(e);
+}
+
 fn extract_breach_entities(
     item: &Value,
     target_value: &str,
@@ -364,22 +384,24 @@ fn extract_breach_entities(
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
         if lower.contains('@') && seen.insert(lower) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
-            e.tag(tags::BREACH);
-            e.tag("oathnet-pro");
-            e.add_evidence(ev.clone());
-            result.push(e);
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Email, &email, 0.70, scan_id),
+                &ev,
+                &[],
+            );
         }
     }
 
     if let Some(uname) = val_str(item, "username") {
         let lower = uname.to_lowercase();
         if lower.len() >= 3 && seen.insert(lower) {
-            let mut e = Entity::new(EntityKind::Username, &uname, 0.65, scan_id);
-            e.tag(tags::BREACH);
-            e.tag("oathnet-pro");
-            e.add_evidence(ev.clone());
-            result.push(e);
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Username, &uname, 0.65, scan_id),
+                &ev,
+                &[],
+            );
         }
     }
 
@@ -392,27 +414,25 @@ fn extract_breach_entities(
         && ph.len() >= 7
         && seen.insert(ph.to_lowercase())
     {
-        let mut e = Entity::new(EntityKind::Phone, &ph, conf(0.70), scan_id);
-        e.tag(tags::BREACH);
-        e.tag("oathnet-pro");
-        if !is_target_row {
-            e.tag("candidate");
-        }
-        e.add_evidence(ev.clone());
-        result.push(e);
+        let extra: &[&str] = if is_target_row { &[] } else { &["candidate"] };
+        push_oathnet_entity(
+            result,
+            Entity::new(EntityKind::Phone, &ph, conf(0.70), scan_id),
+            &ev,
+            extra,
+        );
     }
 
     if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
         let t = n.trim();
         if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
-            let mut e = Entity::new(EntityKind::Person, t, conf(0.70), scan_id);
-            e.tag(tags::BREACH);
-            e.tag("oathnet-pro");
-            if !is_target_row {
-                e.tag("candidate");
-            }
-            e.add_evidence(ev.clone());
-            result.push(e);
+            let extra: &[&str] = if is_target_row { &[] } else { &["candidate"] };
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Person, t, conf(0.70), scan_id),
+                &ev,
+                extra,
+            );
         }
     }
 
@@ -420,25 +440,24 @@ fn extract_breach_entities(
         && ip.len() >= 7
         && seen.insert(ip.clone())
     {
-        let mut e = Entity::new(EntityKind::IpAddress, &ip, conf(0.60), scan_id);
-        e.tag(tags::BREACH);
-        e.tag("oathnet-pro");
-        e.tag("geolocation-lead");
-        e.add_evidence(ev.clone());
-        result.push(e);
+        push_oathnet_entity(
+            result,
+            Entity::new(EntityKind::IpAddress, &ip, conf(0.60), scan_id),
+            &ev,
+            &["geolocation-lead"],
+        );
     }
 
     if let Some(country) = val_str(item, "country")
         && seen.insert(format!("@country:{country}"))
     {
-        let mut e = Entity::new(EntityKind::Address, &country, conf(0.55), scan_id);
-        e.tag(tags::BREACH);
-        e.tag("oathnet-pro");
-        if !is_target_row {
-            e.tag("candidate");
-        }
-        e.add_evidence(ev.clone());
-        result.push(e);
+        let extra: &[&str] = if is_target_row { &[] } else { &["candidate"] };
+        push_oathnet_entity(
+            result,
+            Entity::new(EntityKind::Address, &country, conf(0.55), scan_id),
+            &ev,
+            extra,
+        );
     }
 
     let street = val_str(item, "address_street");
@@ -452,39 +471,40 @@ fn extract_breach_entities(
             .collect::<Vec<&str>>()
             .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
-            let mut e = Entity::new(EntityKind::Address, &addr, 0.65, scan_id);
-            e.tag(tags::BREACH);
-            e.tag("oathnet-pro");
-            e.add_evidence(ev.clone());
-            result.push(e);
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Address, &addr, 0.65, scan_id),
+                &ev,
+                &[],
+            );
         }
     }
 
     if let Some(did) = val_str(item, "discordid")
         && seen.insert(format!("@discord:{did}"))
     {
-        let mut e = Entity::new(
-            EntityKind::Username,
-            format!("discord:{did}"),
-            0.55,
-            scan_id,
+        push_oathnet_entity(
+            result,
+            Entity::new(
+                EntityKind::Username,
+                format!("discord:{did}"),
+                0.55,
+                scan_id,
+            ),
+            &ev,
+            &["discord"],
         );
-        e.tag(tags::BREACH);
-        e.tag("oathnet-pro");
-        e.tag("discord");
-        e.add_evidence(ev.clone());
-        result.push(e);
     }
 
     if let Some(ig) = val_str(item, "instagram")
         && seen.insert(format!("@ig:{}", ig.to_lowercase()))
     {
-        let mut e = Entity::new(EntityKind::Username, &ig, 0.55, scan_id);
-        e.tag(tags::BREACH);
-        e.tag("oathnet-pro");
-        e.tag("instagram");
-        e.add_evidence(ev.clone());
-        result.push(e);
+        push_oathnet_entity(
+            result,
+            Entity::new(EntityKind::Username, &ig, 0.55, scan_id),
+            &ev,
+            &["instagram"],
+        );
     }
 
     // LinkedIn handle — unlocks proxycurl (paid LinkedIn enrichment).
@@ -499,25 +519,25 @@ fn extract_breach_entities(
                 } else {
                     format!("https://{li}")
                 };
-                let mut e = Entity::new(EntityKind::Url, &url_val, 0.60, scan_id);
-                e.tag(tags::BREACH);
-                e.tag("oathnet-pro");
-                e.tag("linkedin");
-                e.add_evidence(ev.clone());
-                result.push(e);
+                push_oathnet_entity(
+                    result,
+                    Entity::new(EntityKind::Url, &url_val, 0.60, scan_id),
+                    &ev,
+                    &["linkedin"],
+                );
             }
         } else if seen.insert(format!("@li-handle:{lower}")) {
-            let mut e = Entity::new(
-                EntityKind::Username,
-                format!("linkedin:{li}"),
-                0.55,
-                scan_id,
+            push_oathnet_entity(
+                result,
+                Entity::new(
+                    EntityKind::Username,
+                    format!("linkedin:{li}"),
+                    0.55,
+                    scan_id,
+                ),
+                &ev,
+                &["linkedin"],
             );
-            e.tag(tags::BREACH);
-            e.tag("oathnet-pro");
-            e.tag("linkedin");
-            e.add_evidence(ev.clone());
-            result.push(e);
         }
     }
 
@@ -528,12 +548,12 @@ fn extract_breach_entities(
     if let Some(ed) = val_str(item, "email_domain") {
         let lower = ed.to_lowercase();
         if lower.contains('.') && !lower.contains('@') && seen.insert(format!("@edomain:{lower}")) {
-            let mut e = Entity::new(EntityKind::Domain, &lower, 0.55, scan_id);
-            e.tag(tags::BREACH);
-            e.tag("oathnet-pro");
-            e.tag("email-domain");
-            e.add_evidence(ev.clone());
-            result.push(e);
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Domain, &lower, 0.55, scan_id),
+                &ev,
+                &["email-domain"],
+            );
         }
     }
 
@@ -544,12 +564,12 @@ fn extract_breach_entities(
         && ph.len() >= 32
         && seen.insert(format!("@pwhash:{}", &ph[..16.min(ph.len())]))
     {
-        let mut e = Entity::new(EntityKind::Password, &ph, 0.50, scan_id);
-        e.tag(tags::BREACH);
-        e.tag("oathnet-pro");
-        e.tag("password-hash");
-        e.add_evidence(ev);
-        result.push(e);
+        push_oathnet_entity(
+            result,
+            Entity::new(EntityKind::Password, &ph, 0.50, scan_id),
+            &ev,
+            &["password-hash"],
+        );
     }
 }
 
@@ -655,6 +675,99 @@ fn extract_stealer_entities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_breach_entities_characterization() {
+        use serde_json::json;
+        let item = json!({
+            "email": "jordan.meyer@example.com",
+            "username": "jmeyer",
+            "phone_number": "15551234567",
+            "ip": "8.8.8.8",
+            "country": "US",
+            "discordid": "123456789012345678",
+            "email_domain": "example.com",
+            "password_hash": "0123456789abcdef0123456789abcdef",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        // Target matches the email -> is_target_row = true (no "candidate" tags).
+        extract_breach_entities(
+            &item,
+            "jordan.meyer@example.com",
+            "scan",
+            &mut seen,
+            &mut result,
+        );
+
+        // Exact, ordered tag vectors — locks byte-stable serialization across
+        // the refactor (a reordered tag would fail here).
+        let tags_of = |k: EntityKind, needle: &str| -> Vec<String> {
+            result
+                .entities
+                .iter()
+                .find(|e| e.kind == k && e.value.contains(needle))
+                .map(|e| e.tags.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            tags_of(EntityKind::Email, "jordan.meyer"),
+            ["breach", "oathnet-pro"]
+        );
+        assert_eq!(
+            tags_of(EntityKind::Username, "jmeyer"),
+            ["breach", "oathnet-pro"]
+        );
+        assert_eq!(
+            tags_of(EntityKind::Phone, "15551234567"),
+            ["breach", "oathnet-pro"]
+        );
+        assert_eq!(
+            tags_of(EntityKind::IpAddress, "8.8.8.8"),
+            ["breach", "oathnet-pro", "geolocation-lead"]
+        );
+        assert_eq!(
+            tags_of(EntityKind::Username, "discord:"),
+            ["breach", "oathnet-pro", "discord"]
+        );
+        assert_eq!(
+            tags_of(EntityKind::Domain, "example.com"),
+            ["breach", "oathnet-pro", "email-domain"]
+        );
+        assert_eq!(
+            tags_of(EntityKind::Password, "0123456789"),
+            ["breach", "oathnet-pro", "password-hash"]
+        );
+    }
+
+    #[test]
+    fn extract_breach_entities_non_target_row_tags_candidate() {
+        use serde_json::json;
+        // A row whose fields do NOT match the target: phone/person/country are
+        // preserved at candidate confidence with a `candidate` tag (order:
+        // breach, oathnet-pro, candidate).
+        let item = json!({ "phone_number": "19998887777", "source": "TestDB" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "unrelated-target-xyz",
+            "scan",
+            &mut seen,
+            &mut result,
+        );
+        let phone = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Phone)
+            .unwrap();
+        assert_eq!(phone.tags, ["breach", "oathnet-pro", "candidate"]);
+        assert!(
+            (phone.confidence - 0.25).abs() < 1e-9,
+            "non-target conf is 0.25"
+        );
+    }
 
     #[test]
     fn accepts_identity_and_infra_kinds() {
