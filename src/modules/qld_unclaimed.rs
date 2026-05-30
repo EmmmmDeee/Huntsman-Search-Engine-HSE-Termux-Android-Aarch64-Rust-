@@ -79,14 +79,57 @@ fn postcode(rec: &Map<String, Value>) -> Option<String> {
     (p.len() == 4 && p.bytes().all(|b| b.is_ascii_digit())).then_some(p)
 }
 
+/// The register's full-text search ANDs multi-word queries, so seeding a full
+/// name (`"Matthew Diegmann"`) only matches a row whose owner contains *both*
+/// tokens — which silently misses the deceased-estate funds the register mostly
+/// holds, where the money is owed to a *relative* (a different given name, same
+/// surname). For a multi-token `FullName` we therefore search the **surname**
+/// (last token) to surface the whole family, then classify each row back against
+/// the full seed (see [`owner_matches_full_name`]). Single-token names and
+/// organisations are searched verbatim.
+fn derive_query(target: &Target) -> &str {
+    let v = target.value.trim();
+    if matches!(target.kind, TargetKind::FullName)
+        && let Some(surname) = v.split_whitespace().next_back()
+        && surname.len() >= 3
+        && surname.len() < v.len()
+    {
+        return surname;
+    }
+    v
+}
+
+/// True if `owner` contains every whitespace token of the seed name (case-
+/// insensitive) — i.e. this row is the seeded person, not merely a surname-match
+/// relative. Used to tag exact hits vs family candidates and weight confidence.
+fn owner_matches_full_name(owner: &str, seed: &str) -> bool {
+    let owner_up = owner.to_uppercase();
+    let mut any = false;
+    for tok in seed.split_whitespace() {
+        any = true;
+        if !owner_up.contains(&tok.to_uppercase()) {
+            return false;
+        }
+    }
+    any
+}
+
 /// Pure transform: CKAN records → entities. One entity per record — a geocodable
 /// `Address` built from the lodged postcode when present (so geocode/coords can
 /// pivot on it), otherwise an `unclaimed_money` finding so the record is never
 /// dropped. Each carries owner / amount / sender / date / reference as evidence.
-fn records_to_entities(records: &[Map<String, Value>], total: u64, scan_id: &str) -> Vec<Entity> {
+fn records_to_entities(
+    records: &[Map<String, Value>],
+    total: u64,
+    seed: &str,
+    scan_id: &str,
+) -> Vec<Entity> {
     let mut out = Vec::new();
     for rec in records.iter().take(MAX_RECORDS) {
         let owner = field_str(rec, "Owner").unwrap_or_else(|| "(unknown owner)".to_string());
+        // Is this the seeded person, or a same-surname relative the broadened
+        // surname search swept in? Exact hits rank higher and are tagged so.
+        let exact = owner_matches_full_name(&owner, seed);
         let amount = field_str(rec, "Amount");
         let sender = field_str(rec, "SenderName");
         let date = field_str(rec, "DateRec");
@@ -113,13 +156,17 @@ fn records_to_entities(records: &[Map<String, Value>], total: u64, scan_id: &str
             .with_attr("register", "QLD Public Trustee unclaimed monies")
             .with_attr("total_matches", total.to_string());
 
+        // Exact-name hits are worth more than surname-only family candidates;
+        // weight confidence and tag accordingly so the engine ranks them.
+        let (addr_conf, find_conf) = if exact { (0.50, 0.60) } else { (0.40, 0.50) };
+
         // Geo pivot when we have a usable postcode; otherwise a plain finding.
         let mut entity = match postcode(rec) {
             Some(p) => {
                 let mut e = Entity::new(
                     EntityKind::Address,
                     format!("QLD {p}, Australia"),
-                    0.45,
+                    addr_conf,
                     scan_id,
                 );
                 e.tag("postcode-only");
@@ -130,7 +177,7 @@ fn records_to_entities(records: &[Map<String, Value>], total: u64, scan_id: &str
                 Entity::new(
                     EntityKind::Other("unclaimed_money".to_string()),
                     format!("{owner} — ${amt}"),
-                    0.55,
+                    find_conf,
                     scan_id,
                 )
             }
@@ -139,6 +186,11 @@ fn records_to_entities(records: &[Map<String, Value>], total: u64, scan_id: &str
         entity.tag("unclaimed-money");
         entity.tag("country:AU");
         entity.tag("geoint");
+        entity.tag(if exact {
+            "exact-name-match"
+        } else {
+            "family-candidate"
+        });
         entity.add_evidence(ev);
         out.push(entity);
     }
@@ -177,7 +229,10 @@ impl Module for QldUnclaimed {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let query = target.value.trim();
+        // Search broadens a full name to its surname to catch deceased-estate
+        // funds owed to relatives; the original full name is kept to classify
+        // exact hits vs family candidates.
+        let query = derive_query(target);
         // The register full-text search needs a meaningful token; a 1–2 char
         // query would match noise across a 240 MB dataset.
         if query.len() < 3 {
@@ -196,7 +251,12 @@ impl Module for QldUnclaimed {
         let total = result.total.unwrap_or(result.records.len() as u64);
 
         let mut out = ModuleResult::new();
-        out.extend(records_to_entities(&result.records, total, &ctx.scan_id));
+        out.extend(records_to_entities(
+            &result.records,
+            total,
+            target.value.trim(),
+            &ctx.scan_id,
+        ));
         Ok(out)
     }
 }
@@ -238,10 +298,64 @@ mod tests {
     }
 
     #[test]
+    fn derive_query_broadens_full_name_to_surname() {
+        // Full name → surname (so the AND search surfaces relatives' estate funds).
+        assert_eq!(
+            derive_query(&Target::new(TargetKind::FullName, "Matthew Diegmann")),
+            "Diegmann"
+        );
+        assert_eq!(
+            derive_query(&Target::new(TargetKind::FullName, "  Curt   Diegmann  ")),
+            "Diegmann"
+        );
+        // Single-token name → verbatim.
+        assert_eq!(
+            derive_query(&Target::new(TargetKind::FullName, "Cher")),
+            "Cher"
+        );
+        // Organisation → verbatim (no surname semantics).
+        assert_eq!(
+            derive_query(&Target::new(TargetKind::Organisation, "ACME Pty Ltd")),
+            "ACME Pty Ltd"
+        );
+    }
+
+    #[test]
+    fn classifies_exact_person_vs_surname_only_family() {
+        let resp = sample();
+        let result = resp.result.unwrap();
+
+        // Seeding the user's full name (no register row contains "MATTHEW"):
+        // every Diegmann row is a family candidate, none an exact match.
+        let fam = records_to_entities(&result.records, 3, "Matthew Diegmann", "s");
+        assert!(
+            fam.iter()
+                .all(|e| e.tags.iter().any(|t| t.as_str() == "family-candidate")),
+            "surname-only relatives must be tagged family-candidate"
+        );
+        assert!(
+            fam.iter()
+                .all(|e| !e.tags.iter().any(|t| t.as_str() == "exact-name-match"))
+        );
+
+        // Seeding "Curt Diegmann": the two Curt rows are exact, Erik is family.
+        let resp2 = sample();
+        let result2 = resp2.result.unwrap();
+        let curt = records_to_entities(&result2.records, 3, "Curt Diegmann", "s");
+        let exact = |e: &Entity| e.tags.iter().any(|t| t.as_str() == "exact-name-match");
+        assert!(exact(&curt[0]), "HAYLEY & CURT row is an exact Curt match");
+        assert!(exact(&curt[1]), "CURT DIEGMANN row is an exact Curt match");
+        assert!(!exact(&curt[2]), "ERIK row is only a surname match");
+        // Exact hits outrank family candidates on confidence.
+        assert!(curt[1].confidence > curt[2].confidence);
+    }
+
+    #[test]
     fn parses_records_into_geo_addresses() {
         let resp = sample();
         let result = resp.result.unwrap();
-        let ents = records_to_entities(&result.records, result.total.unwrap(), "scan-1");
+        let ents =
+            records_to_entities(&result.records, result.total.unwrap(), "Diegmann", "scan-1");
         assert_eq!(ents.len(), 3, "one entity per record");
 
         // All three rows have valid 4-digit postcodes → geocodable Address entities.
@@ -277,7 +391,7 @@ mod tests {
         ]}}"#;
         let resp: CkanResp = serde_json::from_str(raw).unwrap();
         let result = resp.result.unwrap();
-        let ents = records_to_entities(&result.records, 1, "scan-1");
+        let ents = records_to_entities(&result.records, 1, "NO POSTCODE PERSON", "scan-1");
         assert_eq!(ents.len(), 1, "no-postcode record must still surface");
         assert_eq!(
             ents[0].kind,
@@ -295,7 +409,7 @@ mod tests {
         ]}}"#;
         let resp: CkanResp = serde_json::from_str(raw).unwrap();
         let result = resp.result.unwrap();
-        let ents = records_to_entities(&result.records, 1, "scan-1");
+        let ents = records_to_entities(&result.records, 1, "NUMERIC FIELDS", "scan-1");
         assert_eq!(ents.len(), 1);
         // PCode 4000 (numeric) is recognised as a valid postcode → Address.
         assert_eq!(ents[0].kind, EntityKind::Address);
