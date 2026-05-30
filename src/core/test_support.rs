@@ -73,7 +73,8 @@ impl StoragePort for InMemoryStore {
         // in-memory port is deterministic and matches production ordering
         // (HashMap iteration order is otherwise arbitrary across runs).
         let mut scans: Vec<Scan> = self.inner.lock().scans.values().cloned().collect();
-        scans.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        // newest-first by started_at (Reverse for descending key sort)
+        scans.sort_by_key(|s| std::cmp::Reverse(s.started_at));
         scans.truncate(limit);
         Ok(scans)
     }
