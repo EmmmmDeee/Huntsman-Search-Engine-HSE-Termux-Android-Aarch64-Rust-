@@ -33,6 +33,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
   semantics are unchanged. Tests: `au_019_reports_true_window_span_not_a_fixed_30_days`,
   `au_019_requires_at_least_three_breaches`.
 
+### Added
+
+- **Synchronized FTS5 full-text index over entity values.** Entity search was
+  a substring `value LIKE '%q%'` scan with no tokenization or relevance. A
+  contentless-external SQLite **FTS5** virtual table (`entities_fts`, unicode61
+  tokenizer, `prefix='2 3'`) now mirrors the entity store and is maintained
+  **inside the same transaction as every entity write** (`merge_and_persist_
+  entity`), so the index never drifts from the graph (the always-synchronized-
+  index invariant). `Store::open` backfills the index for pre-existing rows.
+  `search_entities` now runs a ranked FTS `MATCH` (bm25, confidence tiebreak)
+  with a per-token prefix query, falling back to the legacy `LIKE` scan for
+  infix/substring queries FTS's token model can't reach — preserving the prior
+  contract. This immediately upgrades the existing `GET /api/v1/search`
+  endpoint (and the web UI's search) to tokenized, word-order-independent,
+  ranked results with no caller changes. ARM64-cheap; no new dependencies
+  (FTS5 ships in the bundled SQLite). Tests: token prefix match, token-order
+  independence (FTS-only, proven to fail under the LIKE fallback), merge sync,
+  and reopen backfill.
+
 ### Fixed
 
 - **HTTP curl-fallback no longer reports a transport failure as a clean "404 /
