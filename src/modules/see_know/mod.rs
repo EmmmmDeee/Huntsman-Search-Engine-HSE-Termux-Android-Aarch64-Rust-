@@ -99,11 +99,12 @@ impl Module for SeekNow {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // Concurrent endpoint dispatch lets us call ~10 endpoints in
-        // ~the time of one — but the upper bound is still gated by the
-        // slowest individual lookup. 45s leaves room for stealer +
-        // breachhub (the heaviest paths) on slow upstreams.
-        45_000
+        // The name/auto `/search` path has a ~55s server cap and routinely
+        // takes 50–60s to return real data. The module budget must exceed both
+        // that cap and the 78s curl-client outer timeout so the engine does not
+        // abort see_know before the upstream responds. 80s gives headroom while
+        // staying bounded.
+        80_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -799,6 +800,20 @@ fn extract_entities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_timeout_exceeds_seeknow_curl_outer_budget() {
+        // Regression: the engine aborts a module at max_timeout_ms. see_know's
+        // name/auto search legitimately takes ~55s (server cap) and the curl
+        // client's outer timeout is 78s; the module budget must exceed that so
+        // the engine doesn't kill see_know before the upstream responds. Was
+        // 45s — below the cap — which guaranteed truncation on name seeds.
+        assert!(
+            SeekNow.max_timeout_ms() >= 78_000,
+            "see_know max_timeout_ms {} must be >= 78_000 (curl-client outer timeout)",
+            SeekNow.max_timeout_ms()
+        );
+    }
 
     #[test]
     fn accepts_six_target_kinds() {

@@ -44,7 +44,13 @@ static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
 
 /// Shared curl-subprocess client. Bearer auth, 12s curl timeout
 /// (matches the legacy `--max-time 12`), 15s outer tokio timeout.
-static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::Bearer, 12, 15_000);
+// The name/auto `/search` path has a server-side cap of ~55s and routinely
+// responds in 50–60s with real data. The previous 12s curl / 15s outer budget
+// guaranteed a timeout-exit (curl 28) on every name search, surfacing as an
+// opaque "curl failed" with zero entities. Budget above the cap: 75s curl,
+// 78s outer (curl < outer so curl's own exit code is observed), paired with an
+// 80s module max_timeout in `modules::see_know`.
+static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::Bearer, 75, 78_000);
 
 /// Per-scan + per-session quota budget for SeekNow API calls.
 ///
@@ -401,6 +407,28 @@ pub fn val_str(item: &Value, key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn client_timeout_budget_exceeds_name_search_server_cap() {
+        // Regression: see-know.eu's name/auto `/search` path has a ~55s server
+        // cap and returns real data in 50–60s. A curl budget below that (was
+        // 12s) guarantees a timeout-exit on every name search — observed live
+        // as an opaque "curl failed" with zero entities. The curl ceiling must
+        // exceed the cap, and the outer tokio timeout must exceed the curl
+        // ceiling so curl's own exit code (28) is what surfaces.
+        const SERVER_CAP_SECS: u64 = 55;
+        assert!(
+            CLIENT.curl_timeout_secs() > SERVER_CAP_SECS,
+            "curl --max-time {}s must exceed the ~{SERVER_CAP_SECS}s name-search cap",
+            CLIENT.curl_timeout_secs()
+        );
+        assert!(
+            CLIENT.outer_timeout_ms() > CLIENT.curl_timeout_secs() * 1000,
+            "outer timeout ({}ms) must exceed curl timeout ({}s) so curl's exit code is observed",
+            CLIENT.outer_timeout_ms(),
+            CLIENT.curl_timeout_secs()
+        );
+    }
 
     #[test]
     fn resolve_key_uses_provided_when_non_empty() {

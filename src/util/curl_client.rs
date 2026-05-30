@@ -104,6 +104,19 @@ impl CurlClient {
         }
     }
 
+    /// curl `--max-time` ceiling in seconds. Exposed so per-module tests can
+    /// assert the budget sits above a known slow upstream's response time.
+    #[cfg(test)]
+    pub(crate) const fn curl_timeout_secs(&self) -> u64 {
+        self.curl_timeout_secs
+    }
+
+    /// Outer tokio timeout in milliseconds.
+    #[cfg(test)]
+    pub(crate) const fn outer_timeout_ms(&self) -> u64 {
+        self.outer_timeout_ms
+    }
+
     /// Issue a `GET <url>` with the configured auth header.
     /// Returns the response body on success (curl exit 0).
     pub async fn get(&self, url: &str, key: &str) -> Result<String> {

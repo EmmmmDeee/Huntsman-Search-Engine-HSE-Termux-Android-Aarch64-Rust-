@@ -10,6 +10,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+
+- **see_know name/auto search no longer times out on every query.** The
+  see-know.eu name/auto `/search` path has a ~55s server-side cap and returns
+  real data in 50–60s, but the `seek_now` curl client was budgeted at 12s curl
+  / 15s outer and the module's `max_timeout_ms` at 45s — so every name search
+  hit a curl timeout-exit (28) and surfaced as an opaque `[seek_now] curl
+  failed` with zero entities. Raised the budget above the cap: 75s curl, 78s
+  outer (curl < outer so curl's own exit code is observed), and an 80s module
+  timeout. Live `hse scan --kind name --value "Jordan Meyer"` now returns 185
+  entities (1 person, 96 emails, 81 phones, 6 addresses) where it previously
+  returned 0. Fast endpoints are unaffected — `--max-time` is a ceiling, not a
+  wait. Two regression tests pin the ordering (curl > server cap; outer > curl;
+  module ≥ outer) so the budget can't silently regress.
+
 ### Performance
 
 - **Batched entity persistence.** `ScanEngine::finalise_scan` now writes a
