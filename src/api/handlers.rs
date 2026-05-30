@@ -53,6 +53,18 @@ pub(crate) fn not_found() -> axum::response::Response {
     (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
 }
 
+/// 400 with a `{ "error": <msg> }` body — the client-error sibling of
+/// [`internal_error`] / [`not_found`]. Accepts both `&'static str` literals and
+/// owned `String`s (e.g. a `format!`-built validation message), so the ~10
+/// open-coded `(BAD_REQUEST, Json(json!({"error": …})))` sites share one shape.
+pub(crate) fn bad_request(msg: impl Into<String>) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": msg.into() })),
+    )
+        .into_response()
+}
+
 pub(crate) fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response::Response {
     let n = items.len();
     let mut map = serde_json::Map::new();
@@ -317,18 +329,10 @@ pub async fn search_entities(
     let query = match params.get("q") {
         Some(q) if !q.trim().is_empty() && q.len() <= 256 => q.trim(),
         Some(q) if q.len() > 256 => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "query too long (max 256 chars)"})),
-            )
-                .into_response();
+            return bad_request("query too long (max 256 chars)");
         }
         _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "missing or empty 'q' parameter"})),
-            )
-                .into_response();
+            return bad_request("missing or empty 'q' parameter");
         }
     };
     let limit = params
@@ -425,11 +429,7 @@ pub async fn settings_keys_put(
             .into_response();
     }
     if req.updates.is_empty() && req.deletes.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "no updates or deletes"})),
-        )
-            .into_response();
+        return bad_request("no updates or deletes");
     }
     match keys::write_keys(&req.updates, &req.deletes) {
         Ok(()) => {
@@ -448,11 +448,7 @@ pub async fn settings_keys_put(
             )
                 .into_response()
         }
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
+        Err(e) => bad_request(e.to_string()),
     }
 }
 
@@ -464,9 +460,7 @@ pub async fn live_create(
 ) -> impl IntoResponse {
     let target = match validated_target(req.kind, req.value) {
         Ok(t) => t,
-        Err(msg) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
-        }
+        Err(msg) => return bad_request(msg),
     };
     let live_id = s.live.start(target, req.options, req.live);
     (

@@ -91,6 +91,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Added a `bad_request` response helper, collapsing 10 open-coded 400 sites.**
+  `internal_error` and `not_found` already existed as shared response builders,
+  but every `400` was hand-written as `(StatusCode::BAD_REQUEST, Json(json!({
+  "error": … })))` — ten times across the scan/live/search/settings handlers,
+  each an opportunity for an inconsistent body shape. Introduced
+  `bad_request(impl Into<String>)` (accepts `&str` literals and `format!`/`String`
+  messages alike) and routed all ten through it; the open-coded `BAD_REQUEST`
+  count in `src/api` drops from 10 to 1 (the helper). Behaviour-preserving — the
+  status and `{"error": …}` body are byte-identical, proven by the existing API
+  tests that assert the exact 400 responses (`*_rejects_invalid_target`, the
+  filter length-guards, the batch size guards). Suite unchanged at 1334.
+
 - **Unified target validation across the scan- and live-create endpoints.**
   `live_create` (`POST /live`) repeated the same `Target::new` + `validate()` +
   `invalid target: …` error construction that the scan path already had, so the

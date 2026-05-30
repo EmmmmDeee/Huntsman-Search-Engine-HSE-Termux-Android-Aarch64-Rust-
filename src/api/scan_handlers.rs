@@ -8,7 +8,9 @@ use serde_json::json;
 use std::sync::Arc;
 use tracing::info;
 
-use super::handlers::{internal_error, not_found, ok_list, spawn_scan, validated_target};
+use super::handlers::{
+    bad_request, internal_error, not_found, ok_list, spawn_scan, validated_target,
+};
 use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target};
@@ -37,9 +39,7 @@ pub async fn scan_create(
 ) -> impl IntoResponse {
     let (scan, target) = match build_scan_from_request(req) {
         Ok(pair) => pair,
-        Err(msg) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
-        }
+        Err(msg) => return bad_request(msg),
     };
 
     if let Err(e) = s.store.upsert_scan(&scan) {
@@ -61,18 +61,10 @@ pub async fn scan_batch(
     Json(requests): Json<Vec<ScanRequest>>,
 ) -> impl IntoResponse {
     if requests.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "empty batch" })),
-        )
-            .into_response();
+        return bad_request("empty batch");
     }
     if requests.len() > 50 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "batch too large (max 50)" })),
-        )
-            .into_response();
+        return bad_request("batch too large (max 50)");
     }
 
     let mut scan_ids = Vec::with_capacity(requests.len());
@@ -180,18 +172,10 @@ pub async fn scan_entities_filter(
         return resp;
     }
     if params.get("kind").is_some_and(|k| k.len() > 32) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "kind too long (max 32 chars)"})),
-        )
-            .into_response();
+        return bad_request("kind too long (max 32 chars)");
     }
     if params.get("q").is_some_and(|v| v.len() > 256) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "query too long (max 256 chars)"})),
-        )
-            .into_response();
+        return bad_request("query too long (max 256 chars)");
     }
     let kind = params.get("kind").map(String::as_str);
     let min_conf = params
