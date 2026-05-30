@@ -103,6 +103,8 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 - **Web analysis**: `web_crawler`, `webserver_banner`, `search_engines`
 - **Phone**: `phone_intl` (offline, 175 country prefixes)
 - **Corporate**: `opencorporates` (AU jurisdiction focus)
+- **AU public records**: `qld_unclaimed` (Queensland Public Trustee
+  unclaimed-money register via the Open Data Portal CKAN API — keyless)
 - **Termux sensors**: `gps_fix`, `wifi_scan`, `wifi_connect`, `arp_scan`,
   `cell_survey`, `net_interfaces`
 

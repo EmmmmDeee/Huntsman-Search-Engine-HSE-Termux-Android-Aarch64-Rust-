@@ -10,6 +10,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **`qld_unclaimed` module — Queensland Public Trustee unclaimed-money register
+  (free, keyless).** Searches the Public Trustee's unclaimed-monies register
+  (money owed from deceased estates, insurance refunds, payroll remainders,
+  government refunds, …) for a `FullName`/`Organisation` seed via the Queensland
+  Open Data Portal's CKAN `datastore_search` API — public, weekly-refreshed, no
+  key. For each matching record it emits the owner's lodged postcode as a
+  geocodable `Address` (so the existing geocode→coordinates pipeline can pivot on
+  it), carrying owner, amount, sender, date and reference number as evidence;
+  records without a usable postcode still surface as an `unclaimed_money` finding
+  so nothing is dropped. A pure `records_to_entities` transform is unit-tested
+  against the register's real JSON shape (incl. CKAN numeric-field coercion and
+  the no-postcode path). Exactly the Australian people-centric public-records
+  source the charter targets; brings the registry to 87 modules.
+
 ### Removed
 
 - **Deleted two dead `pub fn`s (~110 lines).** `util::see_know::credits` and
