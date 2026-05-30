@@ -232,9 +232,19 @@ pub fn parse_date(raw: &str) -> Option<(u64, String)> {
     if let Some(t) = time_part {
         let t = t.trim_end_matches('Z');
         let mut tit = t.split(':');
-        hh = tit.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-        mm = tit.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-        // Seconds may carry a fractional part / offset; take the leading int.
+        // A present time component must actually parse — otherwise a malformed
+        // time (e.g. "2019-03-15Tinvalid") would silently coerce to 00:00:00
+        // and be accepted as midnight. The hour is mandatory once a time part
+        // exists; the minute is mandatory when present (no standard format
+        // glues a timezone offset onto it).
+        hh = tit.next()?.parse().ok()?;
+        mm = match tit.next() {
+            Some(v) => v.parse().ok()?,
+            None => 0,
+        };
+        // Seconds may carry a fractional part / timezone offset, which split(':')
+        // glues onto this token (e.g. "00+05" from "+05:00"); take the leading
+        // integer and tolerate the rest rather than rejecting offset timestamps.
         ss = tit
             .next()
             .map(|v| v.trim_matches(|c: char| !c.is_ascii_digit() && c != '-'))
@@ -321,6 +331,30 @@ mod tests {
     #[test]
     fn parses_bare_year() {
         assert_eq!(parse_date("1998").unwrap().1, "1998-01-01");
+    }
+
+    #[test]
+    fn rejects_malformed_time_but_tolerates_offset() {
+        // A present-but-unparseable time must be rejected, not coerced to
+        // midnight (00:00:00) and silently accepted.
+        assert!(parse_date("2019-03-15Tinvalid").is_none());
+        assert!(parse_date("2019-03-15T08:bad").is_none()); // garbage minute
+        assert!(parse_date("2019-03-15T").is_none()); // empty time part
+        // Out-of-range components still reject.
+        assert!(parse_date("2019-03-15T25:00:00").is_none());
+        // Hour- and minute-only times remain valid (trailing parts default 0).
+        assert_eq!(
+            parse_date("2019-03-15T08").unwrap().1,
+            "2019-03-15T08:00:00Z"
+        );
+        assert_eq!(
+            parse_date("2019-03-15T08:30").unwrap().1,
+            "2019-03-15T08:30:00Z"
+        );
+        // Seconds stay lenient so a timezone offset (split onto the seconds
+        // token by ':') doesn't reject an otherwise-valid timestamp.
+        let (_, iso) = parse_date("2019-03-15T08:30:00+05:00").unwrap();
+        assert_eq!(iso, "2019-03-15T08:30:00Z");
     }
 
     #[test]

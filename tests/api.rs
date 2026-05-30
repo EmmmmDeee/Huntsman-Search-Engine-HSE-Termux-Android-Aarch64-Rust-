@@ -837,6 +837,8 @@ async fn sub_resource_endpoints_404_for_unknown_scan() {
         "correlations",
         "relations",
         "entities.csv",
+        "events.history",
+        "graph.gexf",
     ] {
         let unknown = app
             .clone()
@@ -853,6 +855,8 @@ async fn sub_resource_endpoints_404_for_unknown_scan() {
         "correlations",
         "relations",
         "entities.csv",
+        "events.history",
+        "graph.gexf",
     ] {
         let known = app
             .clone()

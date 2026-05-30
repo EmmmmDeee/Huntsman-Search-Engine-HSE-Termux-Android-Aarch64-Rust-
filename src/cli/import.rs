@@ -818,18 +818,24 @@ fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>) {
     // (engine::finalise_module_result) for the import path, which builds
     // entities directly. RFC1918 private / loopback are intentionally kept —
     // they can be genuine local findings in a stealer log.
-    entities.retain(|e| {
-        e.kind != crate::core::entity::EntityKind::IpAddress
-            || !crate::core::validation::is_bogus_ip(&e.value)
-    });
-    // Drop IP literals mis-classified as domains: the HTML/TXT parsers' domain
-    // regex matches dotted-decimal IPs (8.8.8.8, 192.0.2.1) and emits them as
-    // Domain entities, which both duplicates the real ip_address entity and
-    // smuggles bogus documentation IPs past the IP-kind filter above. A real
+    //
+    // Combined with the domain check below into a single retain pass (the two
+    // predicates apply to disjoint entity kinds, so this is behaviour-identical)
+    // to avoid a second full traversal + element shift on large imports.
+    //
+    // Domain branch: drop IP literals mis-classified as domains — the HTML/TXT
+    // parsers' domain regex matches dotted-decimal IPs (8.8.8.8, 192.0.2.1) and
+    // emits them as Domain entities, which both duplicates the real ip_address
+    // entity and smuggles bogus documentation IPs past the IP-kind filter. A real
     // domain never parses as an IP address, so this has no false positives.
     entities.retain(|e| {
-        e.kind != crate::core::entity::EntityKind::Domain
-            || e.value.parse::<std::net::IpAddr>().is_err()
+        if e.kind == crate::core::entity::EntityKind::IpAddress {
+            !crate::core::validation::is_bogus_ip(&e.value)
+        } else if e.kind == crate::core::entity::EntityKind::Domain {
+            e.value.parse::<std::net::IpAddr>().is_err()
+        } else {
+            true
+        }
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     entities.retain(|e| seen.insert(e.uid.clone()));

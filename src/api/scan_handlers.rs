@@ -299,6 +299,9 @@ pub async fn scan_events_history(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     match s.store.events_for_scan(&id) {
         Ok(events) => ok_list("events", events),
         Err(e) => internal_error(&e),
@@ -410,6 +413,9 @@ pub async fn scan_export_gexf(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
     let entities = match s.store.entities_for_scan(&id) {
         Ok(entities) => entities,
         Err(e) => return internal_error(&e),

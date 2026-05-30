@@ -39,6 +39,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`events.history` and `graph.gexf` now 404 for unknown scans (PR #87 review).**
+  Both sub-resource handlers skipped the `scan_missing` guard that the other
+  `/scans/{id}/…` endpoints use, so an unknown scan id returned `200` with an
+  empty events list / empty-graph GEXF document — the misleading "found nothing"
+  response the guard exists to eliminate. Added the early-return to both and
+  extended `sub_resource_endpoints_404_for_unknown_scan` to cover them so the
+  consistency invariant can't silently regress.
+
+- **Timeline date parser no longer accepts a malformed time as midnight (PR #87
+  review).** In `parse_date`, when a `T`/space time part was present but its
+  components failed to parse (e.g. `2019-03-15Tinvalid`), each fell back to `0`
+  via `unwrap_or(0)`, so validation passed and the value was accepted as
+  `00:00:00`. The hour is now mandatory and the minute mandatory-when-present
+  (a present-but-unparseable component rejects the whole timestamp). Seconds
+  stay lenient on purpose — `split(':')` glues a timezone offset onto that token
+  (`00+05` from `+05:00`), so strict parsing there would wrongly reject valid
+  offset timestamps. New test covers malformed rejection, hour/minute-only
+  validity, and offset tolerance.
+
 - **see_know `/search` transient empties no longer poison the scan; curl errors
   are diagnosable.** The name/auto `/search` path intermittently returns
   `total:0` for records that exist (server-side cap races). Previously that empty
@@ -54,6 +73,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   error-carries-exit-code), each proven by reverting the fix in place.
 
 ### Changed
+
+- **Import bogus-IP/domain filtering now runs in a single pass (PR #87 review).**
+  The stealer-log import dropped bogus IP-kind entities and IP-literals
+  mis-classified as domains in two consecutive `retain` calls; since the
+  predicates apply to disjoint entity kinds, they're merged into one traversal
+  (behaviour-identical) to avoid a second full pass + element shift on large
+  imports. Both rationale comments are preserved.
 
 - **Exposed the GEXF graph export in the browser UI (was backend-only).** The
   `GET /scans/{id}/graph.gexf` endpoint — Gephi-compatible graph export with a
