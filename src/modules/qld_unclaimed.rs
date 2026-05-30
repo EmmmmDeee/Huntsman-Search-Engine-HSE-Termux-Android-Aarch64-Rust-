@@ -351,6 +351,54 @@ mod tests {
     }
 
     #[test]
+    fn common_polysemous_surname_produces_no_false_exact_matches() {
+        // Real rows from q=Kareem — a common name appearing as given name, surname
+        // and middle element across UNRELATED people state-wide. Seeding "Ali
+        // Kareem" (no row contains "ALI") must classify every row as a low-weight
+        // family-candidate and zero as an exact match, so a common surname can't
+        // masquerade as the seeded person or auto-expand (0.40 C_eff < 0.50 floor).
+        let raw = r#"{"result":{"total":17,"records":[
+            {"_id":1,"Owner":"KAREEM AYALA","Amount":"4.45","SenderName":"GOLDEN CASKET","DateRec":"2024-03-19","PCode":"4740"},
+            {"_id":2,"Owner":"MS SILVA KAREEM","Amount":"387.54","SenderName":"QLD URBAN UTILITIES","DateRec":"2024-07-25","PCode":"4305"},
+            {"_id":3,"Owner":"HUSSEIN KHALEEL KAREEM","Amount":"267.45","SenderName":"DEPT TPT MAIN ROADS","DateRec":"2021-02-18","PCode":"4118"},
+            {"_id":4,"Owner":"MR J KAREEM","Amount":"1.95","SenderName":"ENERGEX","DateRec":"2006-02-16","PCode":"2880"}
+        ]}}"#;
+        let resp: CkanResp = serde_json::from_str(raw).unwrap();
+        let recs = resp.result.unwrap().records;
+        let ents = records_to_entities(&recs, 17, "Ali Kareem", "s");
+        assert_eq!(ents.len(), 4);
+        for e in &ents {
+            assert!(
+                e.tags.iter().any(|t| t.as_str() == "family-candidate"),
+                "common-surname row must be a family candidate, not the seed"
+            );
+            assert!(!e.tags.iter().any(|t| t.as_str() == "exact-name-match"));
+            // Below the 0.50 expansion floor, so state-wide name noise can't pivot.
+            assert!(e.confidence < 0.50);
+        }
+        // The interstate row (Broken Hill, NSW 2880) is still surfaced, not dropped.
+        assert!(ents.iter().any(|e| e.value.contains("2880")));
+
+        // Control: a seed that genuinely matches one row ("Silva Kareem") flips
+        // exactly that row to an exact match — the classifier is not just always-family.
+        let silva = records_to_entities(&recs, 17, "Silva Kareem", "s");
+        assert!(
+            silva[1]
+                .tags
+                .iter()
+                .any(|t| t.as_str() == "exact-name-match"),
+            "MS SILVA KAREEM must be exact for seed 'Silva Kareem'"
+        );
+        assert!(
+            !silva[0]
+                .tags
+                .iter()
+                .any(|t| t.as_str() == "exact-name-match"),
+            "KAREEM AYALA must stay a family candidate for seed 'Silva Kareem'"
+        );
+    }
+
+    #[test]
     fn parses_records_into_geo_addresses() {
         let resp = sample();
         let result = resp.result.unwrap();
