@@ -225,70 +225,16 @@ pub async fn credits(key: &str) -> Result<Option<u64>> {
     Ok(remaining)
 }
 
-/// Stealer-log search via GET /api/v1/stealer?q=<value>
-pub async fn stealer(key: &str, query: &str) -> Result<Vec<Value>> {
-    get_path(key, "stealer", &[("q", query)]).await
-}
-
-/// Breach record search via GET /api/v1/breachhub/search?q=<value>
-pub async fn breachhub(key: &str, query: &str) -> Result<Vec<Value>> {
-    get_path(key, "breachhub/search", &[("q", query)]).await
-}
-
-/// Domain intel via GET /api/v1/domain/intel?domain=<value>
-pub async fn domain_intel(key: &str, domain: &str) -> Result<Vec<Value>> {
-    get_path(key, "domain/intel", &[("domain", domain)]).await
-}
-
-/// IP enrichment via GET /api/v1/network/ip?ip=<value>
-pub async fn ip_info(key: &str, ip: &str) -> Result<Vec<Value>> {
-    get_path(key, "network/ip", &[("ip", ip)]).await
-}
-
-/// Phone enrichment via GET /api/v1/network/phone?phone=<value>
-pub async fn phone_info(key: &str, phone: &str) -> Result<Vec<Value>> {
-    get_path(key, "network/phone", &[("phone", phone)]).await
-}
-
-/// Email-check via GET /api/v1/network/email-check?email=<value>
-pub async fn email_check(key: &str, email: &str) -> Result<Vec<Value>> {
-    get_path(key, "network/email-check", &[("email", email)]).await
-}
-
-// ── Username-side identity-to-geolocation bridges ───────────────────────
+// Single-parameter GET endpoints (stealer, breachhub/search, domain/intel,
+// network/{ip,phone,email-check}, username/{github,twitter,reddit,tiktok,
+// social,history}, gaming/{roblox,xbox,minecraft}, domain/whois) carry no
+// behaviour beyond `get_path(path, &[(param, value)])`, so they are dispatched
+// table-driven from `EndpointCall::spec` in `modules::see_know` via the shared
+// [`get_path`] rather than one near-identical wrapper each.
 //
-// These endpoints turn a username into platform-specific profiles that
-// frequently carry location/timezone/bio data, feeding the geo pipeline.
-
-/// GitHub profile lookup via GET /api/v1/username/github?username=<value>
-pub async fn github_profile(key: &str, username: &str) -> Result<Vec<Value>> {
-    get_path(key, "username/github", &[("username", username)]).await
-}
-
-/// Twitter / X profile via GET /api/v1/username/twitter?username=<value>
-pub async fn twitter_profile(key: &str, username: &str) -> Result<Vec<Value>> {
-    get_path(key, "username/twitter", &[("username", username)]).await
-}
-
-/// Reddit profile via GET /api/v1/username/reddit?username=<value>
-pub async fn reddit_profile(key: &str, username: &str) -> Result<Vec<Value>> {
-    get_path(key, "username/reddit", &[("username", username)]).await
-}
-
-/// TikTok profile via GET /api/v1/username/tiktok?username=<value>
-pub async fn tiktok_profile(key: &str, username: &str) -> Result<Vec<Value>> {
-    get_path(key, "username/tiktok", &[("username", username)]).await
-}
-
-/// Cross-platform social hits via GET /api/v1/username/social?username=<value>
-pub async fn social_aggregate(key: &str, username: &str) -> Result<Vec<Value>> {
-    get_path(key, "username/social", &[("username", username)]).await
-}
-
-/// Username change history via GET /api/v1/username/history?username=<value>
-pub async fn username_history(key: &str, username: &str) -> Result<Vec<Value>> {
-    get_path(key, "username/history", &[("username", username)]).await
-}
+// The two Discord bridges keep named wrappers because the module's pivot
+// discovery calls them directly (chasing discovered Discord IDs), not only
+// through the endpoint planner.
 
 /// Discord user info — captures region/timezone/connected-accounts via
 /// GET /api/v1/discord/user?id=<value>
@@ -301,27 +247,10 @@ pub async fn discord_to_roblox(key: &str, discord_id: &str) -> Result<Vec<Value>
     get_path(key, "discord/to-roblox", &[("id", discord_id)]).await
 }
 
-/// Roblox profile via GET /api/v1/gaming/roblox?username=<value>
-pub async fn roblox_profile(key: &str, username: &str) -> Result<Vec<Value>> {
-    get_path(key, "gaming/roblox", &[("username", username)]).await
-}
-
-/// Xbox profile via GET /api/v1/gaming/xbox?gamertag=<value>
-pub async fn xbox_profile(key: &str, gamertag: &str) -> Result<Vec<Value>> {
-    get_path(key, "gaming/xbox", &[("gamertag", gamertag)]).await
-}
-
-/// Minecraft username history via GET /api/v1/gaming/minecraft?username=<value>
-pub async fn minecraft_profile(key: &str, username: &str) -> Result<Vec<Value>> {
-    get_path(key, "gaming/minecraft", &[("username", username)]).await
-}
-
-/// WHOIS via GET /api/v1/domain/whois?domain=<value>
-pub async fn whois(key: &str, domain: &str) -> Result<Vec<Value>> {
-    get_path(key, "domain/whois", &[("domain", domain)]).await
-}
-
-async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> Result<Vec<Value>> {
+/// Shared single-parameter GET dispatcher for the typed SeekNow endpoints.
+/// Public within the crate so `EndpointCall::invoke` can drive every endpoint
+/// from its `(label, path, param)` spec table without per-endpoint wrappers.
+pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> Result<Vec<Value>> {
     let qs = params
         .iter()
         .map(|(k, v)| format!("{}={}", k, crate::util::http::urlencode(v)))

@@ -10,6 +10,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **see_know endpoint dispatch is now table-driven.** Each of the 19 typed
+  SeekNow endpoints used to be encoded in four places — an `EndpointCall`
+  variant, a 19-arm `label()` match, a 19-arm `invoke()` match, and a
+  near-identical `util::see_know` wrapper that did nothing but
+  `get_path(path, &[(param, value)])`. Collapsed the per-endpoint truth into a
+  single `EndpointCall::spec() -> (label, path, param)` table that drives both
+  `label()` and `invoke()` (the latter calling the now-`pub(crate)` `get_path`
+  directly), and removed the 16 single-use wrappers. The two Discord bridges
+  keep named wrappers because pivot discovery calls them outside the planner.
+  Behaviour-preserving: identical labels/paths/params, 37 see_know tests green,
+  and live `see_know` on the "Jordan Meyer" name seed still returns the same 185
+  entities (1 person, 96 emails, 81 phones, 6 addresses). Net −81 lines.
+
 ### Fixed
 
 - **see_know name/auto search no longer times out on every query.** The

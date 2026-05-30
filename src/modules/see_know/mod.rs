@@ -478,54 +478,44 @@ enum EndpointCall {
 }
 
 impl EndpointCall {
-    /// Stable identifier used by `extract_geo_entities` to choose
-    /// endpoint-specific geo extractors (e.g. WHOIS registrant fields).
-    fn label(self) -> &'static str {
+    /// The endpoint's `(label, path, param)` spec. `label` is the stable
+    /// identifier `extract_geo_entities` uses to pick endpoint-specific geo
+    /// extractors; `path` and `param` form the SeekNow `/api/v1/<path>?<param>=`
+    /// single-parameter GET. This one table is the single source of truth that
+    /// drives both [`label`](Self::label) and [`invoke`](Self::invoke).
+    fn spec(self) -> (&'static str, &'static str, &'static str) {
         match self {
-            Self::Stealer => "stealer",
-            Self::BreachHub => "breachhub",
-            Self::EmailCheck => "email_check",
-            Self::SocialAggregate => "social",
-            Self::GithubProfile => "github",
-            Self::TwitterProfile => "twitter",
-            Self::RedditProfile => "reddit",
-            Self::TiktokProfile => "tiktok",
-            Self::UsernameHistory => "username_history",
-            Self::RobloxProfile => "roblox",
-            Self::XboxProfile => "xbox",
-            Self::MinecraftProfile => "minecraft",
-            Self::SteamProfile => "steam",
-            Self::DiscordUser => "discord_user",
-            Self::DiscordToRoblox => "discord_to_roblox",
-            Self::PhoneInfo => "phone_info",
-            Self::IpInfo => "ip_info",
-            Self::DomainIntel => "domain_intel",
-            Self::Whois => "whois",
+            Self::Stealer => ("stealer", "stealer", "q"),
+            Self::BreachHub => ("breachhub", "breachhub/search", "q"),
+            Self::EmailCheck => ("email_check", "network/email-check", "email"),
+            Self::SocialAggregate => ("social", "username/social", "username"),
+            Self::GithubProfile => ("github", "username/github", "username"),
+            Self::TwitterProfile => ("twitter", "username/twitter", "username"),
+            Self::RedditProfile => ("reddit", "username/reddit", "username"),
+            Self::TiktokProfile => ("tiktok", "username/tiktok", "username"),
+            Self::UsernameHistory => ("username_history", "username/history", "username"),
+            Self::RobloxProfile => ("roblox", "gaming/roblox", "username"),
+            Self::XboxProfile => ("xbox", "gaming/xbox", "gamertag"),
+            Self::MinecraftProfile => ("minecraft", "gaming/minecraft", "username"),
+            Self::SteamProfile => ("steam", "gaming/steam", "id"),
+            Self::DiscordUser => ("discord_user", "discord/user", "id"),
+            Self::DiscordToRoblox => ("discord_to_roblox", "discord/to-roblox", "id"),
+            Self::PhoneInfo => ("phone_info", "network/phone", "phone"),
+            Self::IpInfo => ("ip_info", "network/ip", "ip"),
+            Self::DomainIntel => ("domain_intel", "domain/intel", "domain"),
+            Self::Whois => ("whois", "domain/whois", "domain"),
         }
     }
 
+    /// Stable identifier used by `extract_geo_entities` to choose
+    /// endpoint-specific geo extractors (e.g. WHOIS registrant fields).
+    fn label(self) -> &'static str {
+        self.spec().0
+    }
+
     async fn invoke(self, key: &str, value: &str) -> Result<Vec<Value>> {
-        match self {
-            Self::Stealer => see_know::stealer(key, value).await,
-            Self::BreachHub => see_know::breachhub(key, value).await,
-            Self::EmailCheck => see_know::email_check(key, value).await,
-            Self::SocialAggregate => see_know::social_aggregate(key, value).await,
-            Self::GithubProfile => see_know::github_profile(key, value).await,
-            Self::TwitterProfile => see_know::twitter_profile(key, value).await,
-            Self::RedditProfile => see_know::reddit_profile(key, value).await,
-            Self::TiktokProfile => see_know::tiktok_profile(key, value).await,
-            Self::UsernameHistory => see_know::username_history(key, value).await,
-            Self::RobloxProfile => see_know::roblox_profile(key, value).await,
-            Self::XboxProfile => see_know::xbox_profile(key, value).await,
-            Self::MinecraftProfile => see_know::minecraft_profile(key, value).await,
-            Self::SteamProfile => see_know::steam_profile(key, value).await,
-            Self::DiscordUser => see_know::discord_user(key, value).await,
-            Self::DiscordToRoblox => see_know::discord_to_roblox(key, value).await,
-            Self::PhoneInfo => see_know::phone_info(key, value).await,
-            Self::IpInfo => see_know::ip_info(key, value).await,
-            Self::DomainIntel => see_know::domain_intel(key, value).await,
-            Self::Whois => see_know::whois(key, value).await,
-        }
+        let (_, path, param) = self.spec();
+        see_know::get_path(key, path, &[(param, value)]).await
     }
 }
 
