@@ -53,6 +53,12 @@ pub struct QldUnclaimed;
 
 #[derive(Deserialize)]
 struct CkanResp {
+    /// CKAN action endpoints return HTTP 200 even on application errors (bad
+    /// resource id, datastore offline, rate-limit), signalling failure via
+    /// `success: false`. Captured so we can surface those rather than silently
+    /// treating a missing `result` as "no findings".
+    #[serde(default)]
+    success: Option<bool>,
     #[serde(default)]
     result: Option<CkanResult>,
 }
@@ -371,6 +377,14 @@ impl Module for QldUnclaimed {
 
         // Broad query (surname, or the verbatim value): family-level recall.
         let broad: CkanResp = fetch_json(&ctx.http, SRC, &query_url(surname)).await?;
+        // Surface an application-level CKAN failure (success=false) as a module
+        // error rather than masquerading as "no findings".
+        if broad.success == Some(false) {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                "CKAN datastore_search returned success=false (bad resource id or portal error)",
+            ));
+        }
         let Some(broad_res) = broad.result else {
             return Ok(ModuleResult::new());
         };
@@ -640,6 +654,22 @@ mod tests {
         };
         assert_eq!(attr("suburb"), Some("Maleny"));
         assert_eq!(attr("postcode"), Some("4552"));
+    }
+
+    #[test]
+    fn ckan_success_false_is_captured() {
+        // A CKAN application error (HTTP 200, success=false) must be visible so
+        // process() can surface it instead of treating it as "no findings".
+        let err: CkanResp =
+            serde_json::from_str(r#"{"success":false,"error":{"message":"Resource not found"}}"#)
+                .unwrap();
+        assert_eq!(err.success, Some(false));
+        assert!(err.result.is_none());
+        // A normal empty result is success=true with an empty record set.
+        let ok: CkanResp =
+            serde_json::from_str(r#"{"success":true,"result":{"total":0,"records":[]}}"#).unwrap();
+        assert_eq!(ok.success, Some(true));
+        assert_eq!(ok.result.unwrap().records.len(), 0);
     }
 
     #[test]
