@@ -5,7 +5,6 @@
 //! Compiled only under `#[cfg(test)]` — never part of the shipped binary.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use parking_lot::Mutex;
 
@@ -13,10 +12,9 @@ use crate::core::correlator::Correlation;
 use crate::core::entity::Entity;
 use crate::core::error::Result;
 use crate::core::event::Event;
-use crate::core::module::{Module, ModuleContext, ModuleResult};
 use crate::core::port::StoragePort;
 use crate::core::relation::Relation;
-use crate::core::scan::{Scan, Target, TargetKind};
+use crate::core::scan::Scan;
 
 /// Fully in-memory [`StoragePort`]. Pure HashMap/Vec state behind a single
 /// `parking_lot::Mutex`, so engine tests are deterministic, allocation-bounded,
@@ -46,12 +44,6 @@ impl InMemoryStore {
     /// count the halting test asserts against.
     pub fn entity_count(&self) -> usize {
         self.inner.lock().entities.len()
-    }
-
-    /// Number of events of a given `EventKind` discriminant string that were
-    /// persisted. Used to count `ModuleStart` dispatches (= expansions).
-    pub fn count_events_matching(&self, pred: impl Fn(&Event) -> bool) -> usize {
-        self.inner.lock().events.iter().filter(|e| pred(e)).count()
     }
 }
 
@@ -245,83 +237,4 @@ impl StoragePort for InMemoryStore {
             .cloned()
             .collect())
     }
-}
-
-/// Deterministic, offline mock module for halting/budget proofs.
-///
-/// Given a fixed adjacency map `value -> Vec<(kind, value, confidence)>`, it
-/// emits exactly those entities whenever dispatched on a matching target. The
-/// complete reachable entity set is therefore computable by hand, so a test can
-/// assert the scan ends frontier-empty with an expansion count within the
-/// `entities × tiers` bound. No network, no timers — `process` is synchronous
-/// work wrapped in an async fn.
-pub struct MockModule {
-    pub module_name: &'static str,
-    pub module_priority: u8,
-    /// `seed value` → entities to emit (kind, value, confidence).
-    pub edges: HashMap<String, Vec<(TargetKind, String, f64)>>,
-}
-
-impl MockModule {
-    pub fn new(name: &'static str, priority: u8) -> Self {
-        Self {
-            module_name: name,
-            module_priority: priority,
-            edges: HashMap::new(),
-        }
-    }
-
-    /// Add an emission edge: when dispatched on `from`, emit entity `to`.
-    pub fn with_edge(
-        mut self,
-        from: &str,
-        to_kind: TargetKind,
-        to_value: &str,
-        confidence: f64,
-    ) -> Self {
-        self.edges.entry(from.to_string()).or_default().push((
-            to_kind,
-            to_value.to_string(),
-            confidence,
-        ));
-        self
-    }
-}
-
-#[async_trait::async_trait]
-impl Module for MockModule {
-    fn name(&self) -> &'static str {
-        self.module_name
-    }
-
-    fn priority(&self) -> u8 {
-        self.module_priority
-    }
-
-    fn accepts(&self, _target: &Target) -> bool {
-        true
-    }
-
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut result = ModuleResult::new();
-        if let Some(emits) = self.edges.get(&target.value) {
-            for (kind, value, confidence) in emits {
-                let entity = Entity::new(
-                    kind.to_entity_kind(),
-                    value.clone(),
-                    *confidence,
-                    &ctx.scan_id,
-                );
-                result.entities.push(entity);
-            }
-        }
-        Ok(result)
-    }
-}
-
-/// Build an `Arc<dyn Module>` list from owned `MockModule`s.
-pub fn mock_modules(mods: Vec<MockModule>) -> Vec<Arc<dyn Module>> {
-    mods.into_iter()
-        .map(|m| Arc::new(m) as Arc<dyn Module>)
-        .collect()
 }

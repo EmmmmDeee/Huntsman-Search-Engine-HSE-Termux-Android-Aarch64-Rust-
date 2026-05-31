@@ -257,17 +257,6 @@ impl KeyPool {
         }
     }
 
-    pub fn record_success(&self, service: &str, value: &str) {
-        let lower = service.to_lowercase();
-        let mut data = self.data.lock();
-        if let Some(entries) = data.services.get_mut(&lower)
-            && let Some(entry) = entries.iter_mut().find(|e| e.value == value)
-        {
-            entry.use_count = entry.use_count.saturating_add(1);
-            entry.last_used = Some(crate::core::entity::unix_now());
-        }
-    }
-
     /// Remove keys with error rates above the threshold. Returns the number
     /// of keys pruned.
     pub fn prune_degraded(&self, max_error_rate: f64, min_uses: u64) -> usize {
@@ -303,15 +292,6 @@ impl KeyPool {
             .map_or(0, std::vec::Vec::len)
     }
 
-    pub fn active_count(&self, service: &str) -> usize {
-        let data = self.data.lock();
-        data.services
-            .get(&service.to_lowercase())
-            .map_or(0, |entries| {
-                entries.iter().filter(|e| e.is_usable()).count()
-            })
-    }
-
     pub fn total_keys(&self) -> usize {
         let data = self.data.lock();
         data.services.values().map(std::vec::Vec::len).sum()
@@ -325,54 +305,6 @@ impl KeyPool {
             .filter(|e| e.is_usable())
             .count()
     }
-    pub fn health_report(&self) -> Vec<ServiceHealth> {
-        let data = self.data.lock();
-        let mut report = Vec::new();
-        for sdef in service_defs() {
-            let entries = data.services.get(sdef.name);
-            let (total, active, rate_limited, invalid, exhausted) =
-                entries.map_or((0, 0, 0, 0, 0), |es| {
-                    let t = es.len();
-                    let a = es.iter().filter(|e| e.status == KeyStatus::Active).count();
-                    let r = es
-                        .iter()
-                        .filter(|e| e.status == KeyStatus::RateLimited)
-                        .count();
-                    let i = es.iter().filter(|e| e.status == KeyStatus::Invalid).count();
-                    let x = es
-                        .iter()
-                        .filter(|e| e.status == KeyStatus::Exhausted)
-                        .count();
-                    (t, a, r, i, x)
-                });
-            let usable = entries.map_or(0, |es| es.iter().filter(|e| e.is_usable()).count());
-            report.push(ServiceHealth {
-                service: sdef.name,
-                env_var: sdef.env_var,
-                category: sdef.category,
-                total,
-                usable,
-                active,
-                rate_limited,
-                invalid,
-                exhausted,
-            });
-        }
-        report
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ServiceHealth {
-    pub service: &'static str,
-    pub env_var: &'static str,
-    pub category: &'static str,
-    pub total: usize,
-    pub usable: usize,
-    pub active: usize,
-    pub rate_limited: usize,
-    pub invalid: usize,
-    pub exhausted: usize,
 }
 
 // ── Persistence ──────────────────────────────────────────────────────────────

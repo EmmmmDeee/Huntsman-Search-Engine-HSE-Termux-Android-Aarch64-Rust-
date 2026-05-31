@@ -173,12 +173,6 @@ impl ModuleGraph {
         }
     }
 
-    /// Total module count (across all kinds, summed). Useful for
-    /// regression tests.
-    pub fn total_consumer_count(&self) -> usize {
-        self.consumer_count.values().sum()
-    }
-
     /// Entity kinds for which at least one module declares production.
     pub fn produced_kinds(&self) -> Vec<EntityKind> {
         let mut v: Vec<_> = self.producer_index.keys().cloned().collect();
