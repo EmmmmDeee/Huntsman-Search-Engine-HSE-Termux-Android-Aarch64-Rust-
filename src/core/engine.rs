@@ -1172,6 +1172,12 @@ impl ScanEngine {
         let sem = Arc::new(Semaphore::new(opts.max_concurrent));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
         let scan_id_arc: Arc<str> = scan_id.into();
+        // Share one context across all spawned modules in this round instead of
+        // deep-cloning the keys map + scan_id per dispatch. Modules take
+        // `&ModuleContext` (read-only) and ctx is stable within a round, so an
+        // Arc bump per spawn replaces N HashMap/String clones — a real win on a
+        // low-RAM phone with ~80 modules/round.
+        let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
 
         let target_sources = target_distinct_sources(entity_map, target);
         for &idx in self.graph.modules_for(target.kind) {
@@ -1212,7 +1218,7 @@ impl ScanEngine {
 
             let module_arc: Arc<dyn Module> = Arc::clone(module);
             let target = target.clone();
-            let ctx = ctx.clone();
+            let ctx = Arc::clone(&ctx_shared);
             let emitter = self.emitter.clone();
             let sid = Arc::clone(&scan_id_arc);
             let throttle_ms = opts.throttle_ms;
