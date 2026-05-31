@@ -13,7 +13,7 @@ use sha1::{Digest, Sha1};
 use crate::core::{
     entity::{Entity, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -31,6 +31,9 @@ impl Module for PwnedPasswords {
     }
     fn priority(&self) -> u8 {
         115
+    }
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Breach
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email | TargetKind::Username)

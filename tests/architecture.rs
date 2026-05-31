@@ -276,3 +276,37 @@ fn env_template_keys_are_all_consumed() {
         "NOT_YET_WIRED lists keys absent from the template (remove them): {stale:?}"
     );
 }
+
+#[test]
+fn every_declared_module_is_registered() {
+    // A `pub mod foo;` in src/modules/mod.rs that implements `Module` but is
+    // never pushed into `registry()` compiles cleanly, is invisible to clippy
+    // (unused pub item in a lib), and silently never runs — exactly how
+    // `pwned_passwords` was dead at runtime. Assert every declared module mod
+    // is instantiated somewhere in the registry body.
+    let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/modules/mod.rs"))
+        .expect("src/modules/mod.rs must exist");
+
+    let declared: Vec<String> = src
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            l.strip_prefix("pub mod ")
+                .and_then(|r| r.strip_suffix(';'))
+                .map(|n| n.trim().to_string())
+        })
+        .collect();
+
+    let body = src.split_once("fn registry(").map(|(_, b)| b).unwrap_or("");
+
+    let missing: Vec<&String> = declared
+        .iter()
+        .filter(|name| !body.contains(&format!("{name}::")))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "module mods declared in src/modules/mod.rs but never registered in \
+         registry() (dead at runtime): {missing:?}"
+    );
+}

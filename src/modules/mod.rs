@@ -103,6 +103,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(hibp::Hibp),
         Arc::new(hudsonrock::HudsonRock),
         Arc::new(xposed_or_not::XposedOrNot),
+        Arc::new(pwned_passwords::PwnedPasswords),
         Arc::new(ip_reputation::IpReputation),
         Arc::new(oathnet_pro::OathnetPro),
         Arc::new(see_know::SeekNow),

@@ -37,7 +37,12 @@ pub const DEFAULT_MIN_MARGINAL_YIELD: f64 = 0.75;
 /// True if an entity has reached the convergence threshold and should be
 /// skipped from further expansion under `max_roi` mode.
 pub fn is_saturated(entity: &Entity) -> bool {
-    entity.corroboration >= SATURATION_CORROBORATION
+    // Distinct corroborating SOURCES, not the summed `corroboration` magnitude.
+    // An 8-row single-source hit (corroboration=8, source_count=1) must NOT be
+    // treated as saturated and pruned from expansion — the rest of the engine
+    // deliberately migrated off the inflated counter to `source_count()`
+    // (see Entity::source_count), and this module's own doc says "≥2 sources".
+    entity.source_count() >= SATURATION_CORROBORATION
         && entity.c_effective() >= SATURATION_CONFIDENCE
 }
 
@@ -79,7 +84,7 @@ pub fn should_terminate_adaptive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
 
     fn make(conf: f64, corrob: u32) -> Entity {
         let mut e = Entity::new(EntityKind::Email, "x@y.com", conf, "scan");
@@ -95,6 +100,23 @@ mod tests {
         assert!(!is_saturated(&make(0.50, 5)));
         // Both above thresholds → saturated
         assert!(is_saturated(&make(0.90, 3)));
+    }
+
+    #[test]
+    fn single_source_high_magnitude_is_not_saturated() {
+        // 8 observations but all from ONE source (e.g. one hibp hit listing 8
+        // breaches): source_count()==1 < 2, so it stays expandable even though
+        // the summed corroboration magnitude is high. The pre-fix code read
+        // `corroboration` and would have wrongly pruned this pivot under --max-roi.
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.95, "scan");
+        e.corroboration = 8;
+        e.add_evidence(Evidence::new("hibp", "8 breaches"));
+        assert_eq!(e.source_count(), 1);
+        assert!(!is_saturated(&e), "one distinct source must not saturate");
+        // A second DISTINCT source at the same confidence does saturate.
+        e.add_evidence(Evidence::new("dehashed", "also seen"));
+        assert_eq!(e.source_count(), 2);
+        assert!(is_saturated(&e));
     }
 
     #[test]

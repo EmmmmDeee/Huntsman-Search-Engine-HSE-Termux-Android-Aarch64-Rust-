@@ -626,54 +626,6 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
     (depth, min_conf)
 }
 
-/// Net Present Value score for a seed type. Higher = more valuable as a
-/// starting point for recursive OSINT expansion. Based on empirical
-/// expected-value analysis of entity yield across expansion rounds.
-///
-/// Used by the engine to prioritise expansion candidates when multiple
-/// entities are available — higher-NPV seeds expand first.
-/// v1.0 recalibration: 11 new modules widen the entity yield.
-///   emailrep/epieos/seon/pwned_passwords add 4 Email consumers
-///   keybase/proxycurl add Username→Person+Email+Phone+Org chains
-///   opencorporates adds Organisation→Address chains
-///   photon/mylnikov add geo corroboration paths
-pub fn seed_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
-    match kind {
-        TargetKind::Email => {
-            if has_paid_keys {
-                348.0
-            } else {
-                26.5
-            }
-        }
-        TargetKind::Domain => 92.4,
-        TargetKind::FullName => {
-            if has_paid_keys {
-                195.0
-            } else {
-                82.0
-            }
-        }
-        TargetKind::IpAddress => 18.6,
-        TargetKind::Username => 28.4,
-        TargetKind::Phone => {
-            if has_paid_keys {
-                16.2
-            } else {
-                5.8
-            }
-        }
-        TargetKind::Asn => 10.2,
-        TargetKind::ApiKey => 9.7,
-        TargetKind::Url => 20.5,
-        TargetKind::Organisation => 9.4,
-        TargetKind::AbnAcn => 6.2,
-        TargetKind::MacAddress => 11.0,
-        TargetKind::Coordinates => 4.8,
-        TargetKind::Address => 18.5,
-    }
-}
-
 /// Geo-specific NPV: expected Coordinates + Address entity yield.
 ///
 /// v2.0 recalibration for 79-module pipeline. New geo paths:

@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (86 modules: 63 free · 18 key-gated · 5 paid)
+## Catalogue (87 modules: 64 free · 18 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -54,7 +54,7 @@ records. The engine knows nothing else — every module is a one-file change.
 |---|---|---|---|---|---|
 | `phone_intl` | phone | free | **yes** | 140 | phone |
 
-### breach (6)
+### breach (7)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -63,6 +63,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `hibp` | email, domain | key_gated | no | 120 | email, domain |
 | `dehashed` | email, username, phone, full_name, ip_address, domain | paid | no | 118 | — |
 | `intelx` | email, username, phone, full_name, ip_address, domain | paid | no | 116 | — |
+| `pwned_passwords` | email, username | free | no | 115 | — |
 | `leakix` | ip_address, domain | key_gated | no | 102 | — |
 
 ### threat (3)
