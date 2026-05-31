@@ -5,6 +5,7 @@
 
 pub mod correlator;
 pub mod dependency;
+pub mod diff;
 pub mod engine;
 pub mod entity;
 pub mod gexf;

@@ -8,6 +8,7 @@ suitable for scripting.
 ```
 hse scan      Run a single scan, print results
 hse live      Re-run a scan periodically (v0.5+)
+hse diff      Compare two scans: entities added / removed / re-scored
 hse modules   List registered modules with cost / target / passive flags
 hse doctor    Verify environment (DB, keys, Termux, modules)
 hse serve     Start the HTTP server + SPA (browse to http://127.0.0.1:8080)
@@ -306,6 +307,44 @@ hse live --kind domain --value example.com --interval 60 --iterations 5 --depth 
 # ... etc, one event per line ...
 # {"type":"live_stop","live_id":"...","reason":"iterations reached"}
 ```
+
+---
+
+## `hse diff`
+
+Compare two scans' entity graphs and report what each found that the other
+didn't, what they share, and which common entities were re-scored.
+
+```bash
+hse diff <FROM> <TO> [--format text|json]
+```
+
+Each of `<FROM>` / `<TO>` is either a **scan id** in the store (or `latest`
+for the most-recent completed scan) or a path to a **JSON entity snapshot**
+written by `hse export --format json`. Entities are matched by their
+deterministic uid (`SHA-256(kind:value)`).
+
+Two workflows:
+
+```bash
+# Link analysis — what two targets share (their common infrastructure /
+# identity surface) and where they diverge:
+hse scan --kind domain --value a.example --output json > /dev/null   # id A
+hse scan --kind domain --value b.example --output json > /dev/null   # id B
+hse diff <A> <B>
+
+# Time-series monitoring — a scan id is the deterministic SHA-256(kind:value),
+# so re-scanning a target overwrites its row. Snapshot first, re-scan later,
+# then diff against the snapshot file:
+hse scan --kind domain --value target.example --output json \
+  | jq .entities > before.json
+# ... time passes; re-scan the same target ...
+hse scan --kind domain --value target.example >/dev/null
+hse diff before.json latest
+```
+
+`text` (default) prints a `+added / -removed / ~re-scored` summary and lists;
+`json` emits `{ added, removed, common, confidence_shifts }` for tooling.
 
 ---
 
