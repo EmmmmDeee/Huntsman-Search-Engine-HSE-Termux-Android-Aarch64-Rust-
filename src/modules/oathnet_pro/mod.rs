@@ -533,7 +533,7 @@ fn extract_breach_entities(
         if lower.contains("linkedin.com") {
             if seen.insert(format!("@li:{lower}")) {
                 let url_val = if lower.starts_with("http") {
-                    li.clone()
+                    li
                 } else {
                     format!("https://{li}")
                 };
