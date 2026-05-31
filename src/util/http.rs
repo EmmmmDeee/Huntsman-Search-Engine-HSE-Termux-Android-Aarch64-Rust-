@@ -49,8 +49,37 @@ fn redirect_to_private_ip(host: Option<&str>) -> bool {
     host.is_some_and(crate::util::preflight::is_private_ip)
 }
 
+/// Drop private/reserved IPs from a resolved address set — the SSRF DNS filter.
+fn filter_public(addrs: impl Iterator<Item = std::net::SocketAddr>) -> Vec<std::net::SocketAddr> {
+    addrs
+        .filter(|a| !crate::util::preflight::is_private_addr(a.ip()))
+        .collect()
+}
+
+/// reqwest DNS resolver that refuses private/reserved addresses. This is the
+/// TOCTOU-safe half of the SSRF defense: a discovered hostname that resolves
+/// (via DNS rebinding, or an internal name like `intranet`) to an RFC1918 /
+/// loopback / link-local / 169.254 metadata address yields **no connectable
+/// address**, so the request fails instead of reaching an internal service.
+/// reqwest connects only to the addresses returned here, so there is no
+/// resolve-then-connect race. Delegates the actual lookup to the system
+/// resolver (`getaddrinfo` via `tokio::net::lookup_host`) — no root, Termux-ok.
+struct SsrfResolver;
+
+impl reqwest::dns::Resolve for SsrfResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str().to_owned();
+            let addrs = tokio::net::lookup_host((host.as_str(), 0)).await?;
+            let public = filter_public(addrs);
+            Ok(Box::new(public.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
+        .dns_resolver(std::sync::Arc::new(SsrfResolver))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 10 {
                 attempt.error("too many redirects")
@@ -470,6 +499,30 @@ pub fn scan_for_api_keys_with_source(text: &str, source: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ssrf_dns_filter_drops_private_and_metadata() {
+        let addrs: Vec<std::net::SocketAddr> = [
+            "10.0.0.1:80",
+            "8.8.8.8:443",
+            "169.254.169.254:80",
+            "127.0.0.1:80",
+            "[::1]:80",
+            "[2606:4700:4700::1111]:443",
+        ]
+        .iter()
+        .map(|x| x.parse().unwrap())
+        .collect();
+        let kept: Vec<String> = super::filter_public(addrs.into_iter())
+            .iter()
+            .map(|a| a.ip().to_string())
+            .collect();
+        assert!(kept.contains(&"8.8.8.8".to_string()), "public v4 kept");
+        assert!(kept.contains(&"2606:4700:4700::1111".to_string()), "public v6 kept");
+        for blocked in ["10.0.0.1", "169.254.169.254", "127.0.0.1", "::1"] {
+            assert!(!kept.iter().any(|i| i == blocked), "{blocked} must be filtered");
+        }
+    }
+
     #[test]
     fn redirect_to_private_ip_blocks_metadata_and_internal() {
         use super::redirect_to_private_ip as blk;

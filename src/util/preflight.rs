@@ -55,10 +55,11 @@ pub fn should_skip_external_ip(ip: &str) -> bool {
 ///
 /// Returns false for any string that doesn't parse as an IP — callers
 /// that want stricter shape rejection should validate separately.
-pub fn is_private_ip(ip: &str) -> bool {
-    let Ok(addr) = ip.parse::<std::net::IpAddr>() else {
-        return false;
-    };
+/// Core SSRF predicate over a resolved [`std::net::IpAddr`]: loopback / RFC1918
+/// / link-local (incl. 169.254 metadata) / CGNAT / multicast / unspecified /
+/// broadcast (v4); loopback / ULA / link-local / multicast / unspecified (v6).
+/// Shared by the string host gate and the HTTP client's SSRF DNS filter.
+pub fn is_private_addr(addr: std::net::IpAddr) -> bool {
     match addr {
         std::net::IpAddr::V4(v4) => {
             v4.is_loopback()
@@ -80,6 +81,14 @@ pub fn is_private_ip(ip: &str) -> bool {
                 || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xC0) == 0x80)
         }
     }
+}
+
+/// String form of [`is_private_addr`]. Non-IP strings (hostnames) return false
+/// — those are vetted at resolution time by the HTTP client's SSRF DNS filter.
+pub fn is_private_ip(ip: &str) -> bool {
+    ip.parse::<std::net::IpAddr>()
+        .map(is_private_addr)
+        .unwrap_or(false)
 }
 
 /// True if the domain is one of the IANA-reserved special-use names
