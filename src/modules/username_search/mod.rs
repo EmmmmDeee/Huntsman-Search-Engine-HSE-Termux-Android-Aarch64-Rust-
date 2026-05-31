@@ -27,6 +27,9 @@ use std::time::Duration;
 /// concurrent + 4.5s/probe + 334 sites that's ~47s — fits inside the
 /// 60s `max_timeout_ms` budget below with comfortable slack.
 const MAX_CONCURRENT_PROBES: usize = 32;
+/// Cap each profile-probe body read so a hostile site can't OOM the 32-way
+/// fan-out; 256 KiB is far more than any needle check needs.
+const BODY_PROBE_CAP: usize = 256 * 1024;
 
 /// Browser-shaped User-Agent for the per-site probes.
 ///
@@ -158,10 +161,11 @@ impl Module for UsernameSearch {
                         if status != want {
                             return ProbeResult::NotFound;
                         }
-                        let body = match resp.text().await {
-                            Ok(t) => t,
-                            Err(_) => return ProbeResult::Error,
-                        };
+                        let body =
+                            match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
+                                Some(t) => t,
+                                None => return ProbeResult::Error,
+                            };
                         scan_text_for_keys(&body);
                         if body.contains(needle) {
                             ProbeResult::Found(url)
@@ -173,10 +177,11 @@ impl Module for UsernameSearch {
                         if status != want {
                             return ProbeResult::NotFound;
                         }
-                        let body = match resp.text().await {
-                            Ok(t) => t,
-                            Err(_) => return ProbeResult::Error,
-                        };
+                        let body =
+                            match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
+                                Some(t) => t,
+                                None => return ProbeResult::Error,
+                            };
                         scan_text_for_keys(&body);
                         if body.contains(needle) {
                             ProbeResult::NotFound

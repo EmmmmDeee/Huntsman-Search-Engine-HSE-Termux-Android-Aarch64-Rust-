@@ -67,7 +67,8 @@ async fn fetch_exit_set(http: &reqwest::Client) -> Option<HashSet<String>> {
         if !resp.status().is_success() {
             return None;
         }
-        resp.text().await.ok()
+        // Cap the body so a hostile reputation endpoint can't OOM a phone.
+        crate::util::http::read_body_capped(resp, 256 * 1024).await
     })
     .await
     .ok()

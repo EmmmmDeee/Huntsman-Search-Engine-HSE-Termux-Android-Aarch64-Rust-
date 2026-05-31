@@ -123,7 +123,7 @@ async fn check_http_fingerprint(http: &reqwest::Client, domain: &str, fingerprin
     let url = format!("http://{domain}");
     match tokio::time::timeout(std::time::Duration::from_secs(5), http.get(&url).send()).await {
         Ok(Ok(resp)) => {
-            if let Ok(body) = resp.text().await {
+            if let Some(body) = crate::util::http::read_body_capped(resp, 256 * 1024).await {
                 body.contains(fingerprint)
             } else {
                 false

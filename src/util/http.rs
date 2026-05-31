@@ -110,6 +110,31 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
     }
 }
 
+/// Read a response body but stop after `cap` bytes. A hostile or misconfigured
+/// upstream could otherwise return a multi-MB/GB body that `resp.text()`
+/// accumulates whole, exhausting RAM on a low-memory Termux device — a real
+/// risk under the username_search 32-way probe fan-out. Returns lossy UTF-8 of
+/// what was read (sufficient for substring/needle checks), or `None` on a
+/// transport error.
+pub async fn read_body_capped(resp: reqwest::Response, cap: usize) -> Option<String> {
+    use futures::StreamExt as _;
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::with_capacity(8 * 1024);
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(bytes) => {
+                buf.extend_from_slice(&bytes);
+                if buf.len() >= cap {
+                    buf.truncate(cap);
+                    break;
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// GET `url` and deserialise the JSON body as `T`. Errors on any
 /// non-2xx, including 404.
 ///
