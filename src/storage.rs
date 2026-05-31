@@ -1504,65 +1504,6 @@ mod tests {
     }
 
     #[test]
-    fn zz_scratch_delete_command_is_valid_and_removes_stale_hit() {
-        // Exercise the contentless-external 'delete' command directly (the
-        // merge-path branch in merge_and_persist_entity is dead because uid
-        // derives from value, so this is the only way to prove that branch's
-        // SQL would actually work and clear a stale hit).
-        let path = tmp_db();
-        let store = Store::open(&path).unwrap();
-        insert_scan(&store, "del-scan");
-        store
-            .upsert_entity(&Entity::new(
-                EntityKind::Domain,
-                "staleexample.com",
-                0.9,
-                "del-scan",
-            ))
-            .unwrap();
-        assert_eq!(store.search_entities("staleexample", 10).unwrap().len(), 1);
-        {
-            let conn = store.conn.lock();
-            let rowid: i64 = conn
-                .query_row(
-                    "SELECT rowid FROM entities WHERE value = 'staleexample.com'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            // Mirror exactly what the merge-path branch emits.
-            conn.execute(
-                "INSERT INTO entities_fts(entities_fts, rowid, value, kind)
-                 VALUES('delete', ?1, ?2, ?3)",
-                params![rowid, "staleexample.com", "Domain"],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO entities_fts(rowid, value, kind) VALUES(?1, ?2, ?3)",
-                params![rowid, "freshexample.com", "Domain"],
-            )
-            .unwrap();
-            // Also change the base-table value so the LIKE fallback can't mask
-            // an FTS desync (isolates the FTS index behaviour).
-            conn.execute(
-                "UPDATE entities SET value = 'freshexample.com' WHERE rowid = ?1",
-                params![rowid],
-            )
-            .unwrap();
-        }
-        assert!(
-            store.search_entities("staleexample", 10).unwrap().is_empty(),
-            "after delete-then-insert the old token must NOT match"
-        );
-        assert_eq!(
-            store.search_entities("freshexample", 10).unwrap().len(),
-            1,
-            "new token must match"
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
     fn fts_index_stays_synchronized_on_value_change() {
         // The FTS index must track entity-value changes inside the same write
         // (the 'always-synchronized index' invariant). Simulate a value change
@@ -1949,7 +1890,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("search_entities({q:?}) ERRORED: {e}"));
         }
         // entities table still present after the injection-y query
-        assert!(store.search_entities("jordan", 10).unwrap().len() >= 1);
+        assert!(!store.search_entities("jordan", 10).unwrap().is_empty());
         let _ = std::fs::remove_file(&path);
     }
 }
