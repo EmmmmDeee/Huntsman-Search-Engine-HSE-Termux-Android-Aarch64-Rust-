@@ -88,6 +88,36 @@ impl Module for UsernameToPhoneSynth {
     }
 }
 
+/// Adversarial generative module: for an Email target it emits a *brand-new,
+/// never-before-seen* Email each call (local part grows by one char), so the
+/// monotone visited-set can never block it. Left unbounded it would expand
+/// forever — used to prove the recursion HALTS purely on the entity budget.
+struct HydraModule;
+
+#[async_trait]
+impl Module for HydraModule {
+    fn name(&self) -> &'static str {
+        "hydra"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let local = target.value.split('@').next().unwrap_or("a");
+        // High confidence so it always clears the expansion floor; unique each
+        // round so `visited` never short-circuits it.
+        let next = format!("{local}x@h.test");
+        let mut e = Entity::new(EntityKind::Email, next, 0.95, &ctx.scan_id);
+        e.tag("hydra");
+        r.push(e);
+        Ok(r)
+    }
+}
+
 /// Accepts Email, produces a low-confidence Username — should be ignored
 /// by expansion when min_expand_confidence is 0.75.
 struct LowConfidenceModule;
@@ -357,6 +387,45 @@ async fn engine_dispatches_synthetic_module_end_to_end() {
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].value, "test@example.com");
     assert!(stored[0].has_tag("synthetic"));
+}
+
+/// HALT PROOF (M1 / BOUNDED invariant): a module that generates a fresh entity
+/// every round — so the visited-set offers no protection — must still terminate,
+/// bounded purely by `max_entities`, even with a large depth. Wrapped in a hard
+/// wall-clock timeout so a regression that breaks termination FAILS rather than
+/// hangs the suite.
+#[tokio::test]
+async fn recursion_halts_under_unbounded_generation() {
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(HydraModule)],
+        "halt_generative",
+        TargetKind::Email,
+        "a@h.test",
+    );
+    let opts = ScanOptions {
+        depth: 100,             // far more rounds than the budget will allow
+        max_entities: Some(10), // the only thing that can stop the Hydra
+        min_expand_confidence: 0.5,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        engine.run(scan, target, ctx),
+    )
+    .await
+    .expect("recursion MUST halt under unbounded generation (timed out)")
+    .unwrap();
+
+    // Generation is bounded by the entity budget (small slack for the per-round
+    // boundary at which the cap is observed), not left to run for 100 rounds.
+    assert!(
+        result.entity_count <= 13,
+        "max_entities budget must bound generation, got {}",
+        result.entity_count
+    );
+    assert!(store.entities_for_scan(&sid).unwrap().len() <= 13);
 }
 
 #[tokio::test]
@@ -846,41 +915,67 @@ async fn concurrent_dispatch_is_faster_than_sequential() {
     // with max_concurrent=4 should complete in ≈ 200 ms.
     let counters = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let modules: Vec<Arc<dyn Module>> = (0..4)
-        .map(|i| {
-            let name: &'static str = match i {
-                0 => "slow0",
-                1 => "slow1",
-                2 => "slow2",
-                _ => "slow3",
-            };
-            Arc::new(SlowEchoModule {
-                name_str: name,
-                delay_ms: 200,
-                in_flight: Arc::clone(&counters),
-                peak_in_flight: Arc::clone(&peak),
-            }) as Arc<dyn Module>
-        })
-        .collect();
 
-    let (engine, _store, sid, target, ctx) =
-        setup(modules, "concurrent_fast", TargetKind::Email, "x@y.com");
+    // Build a fresh identical module set for each run (modules are consumed
+    // by `setup`/`run`). Helper closure so seq and concurrent are comparable.
+    let make_modules = || -> Vec<Arc<dyn Module>> {
+        (0..4)
+            .map(|i| {
+                let name: &'static str = match i {
+                    0 => "slow0",
+                    1 => "slow1",
+                    2 => "slow2",
+                    _ => "slow3",
+                };
+                Arc::new(SlowEchoModule {
+                    name_str: name,
+                    delay_ms: 200,
+                    in_flight: Arc::clone(&counters),
+                    peak_in_flight: Arc::clone(&peak),
+                }) as Arc<dyn Module>
+            })
+            .collect()
+    };
 
-    let opts = ScanOptions {
+    // Sequential baseline (max_concurrent=0): four 200ms modules ≈ 800ms.
+    let (eng_s, _ss, sid_s, tgt_s, ctx_s) = setup(
+        make_modules(),
+        "concurrent_seq",
+        TargetKind::Email,
+        "x@y.com",
+    );
+    let scan_s = Scan::new(sid_s.clone(), tgt_s.clone()).with_options(ScanOptions {
+        max_concurrent: 0,
+        ..Default::default()
+    });
+    let t0 = std::time::Instant::now();
+    let res_s = eng_s.run(scan_s, tgt_s, ctx_s).await.unwrap();
+    let seq = t0.elapsed();
+
+    // Concurrent (max_concurrent=4): same work should overlap to ≈ 200ms.
+    let (eng_c, _sc, sid_c, tgt_c, ctx_c) = setup(
+        make_modules(),
+        "concurrent_fast",
+        TargetKind::Email,
+        "x@y.com",
+    );
+    let scan_c = Scan::new(sid_c.clone(), tgt_c.clone()).with_options(ScanOptions {
         max_concurrent: 4,
         ..Default::default()
-    };
-    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    });
+    let t1 = std::time::Instant::now();
+    let res_c = eng_c.run(scan_c, tgt_c, ctx_c).await.unwrap();
+    let con = t1.elapsed();
 
-    let started = std::time::Instant::now();
-    let result = engine.run(scan, target, ctx).await.unwrap();
-    let elapsed = started.elapsed();
-
-    assert_eq!(result.entity_count, 1, "4 modules echo the same email UID");
-    // Sequential would be 800 ms; concurrent should clear well under 600 ms.
+    assert_eq!(res_s.entity_count, 1, "4 modules echo the same email UID");
+    assert_eq!(res_c.entity_count, 1, "4 modules echo the same email UID");
+    // RELATIVE assertion — immune to absolute CI-runner slowness (a 3x-slower
+    // box scales both runs together). Concurrent must be clearly faster than
+    // sequential; require at least 1.5x speedup (true ratio ≈ 4x, so this is
+    // a wide margin that still catches a regression where concurrency breaks).
     assert!(
-        elapsed < std::time::Duration::from_millis(600),
-        "concurrent dispatch took {elapsed:?} — expected < 600ms"
+        con.as_secs_f64() * 1.5 < seq.as_secs_f64(),
+        "concurrent ({con:?}) should be >=1.5x faster than sequential ({seq:?})"
     );
 }
 
@@ -1257,6 +1352,45 @@ fn oathnet_priority_above_free_geo_modules() {
         "oathnet_pro ({}) must run BEFORE ip_geo ({}) to produce IPs first",
         oathnet.priority(),
         ip_geo.priority()
+    );
+}
+
+/// Synergy invariant: every entity kind a module *declares* it produces, and
+/// which maps to a scannable `TargetKind`, must be accepted by at least one
+/// module — otherwise it's a dead-end pivot the engine can never expand. Guards
+/// the producer→consumer wiring so a future module can't declare an output that
+/// nothing consumes (or a `produces()` typo can't silently orphan a kind).
+#[test]
+fn every_declared_produced_pivot_has_a_consumer() {
+    use huntsman_search_engine::core::scan::TargetKind;
+    let modules = huntsman_search_engine::modules::registry();
+
+    let mut consumed: std::collections::HashSet<TargetKind> = std::collections::HashSet::new();
+    for m in &modules {
+        for k in m.consumes() {
+            consumed.insert(k);
+        }
+    }
+
+    let mut orphans = Vec::new();
+    for m in &modules {
+        for ek in m.produces() {
+            // Kinds with no scan target (Credential/Password/DeviceId/Other) are
+            // intentionally terminal — they never expand, so they can't orphan.
+            if let Some(tk) = TargetKind::from_entity_kind(ek)
+                && !consumed.contains(&tk)
+            {
+                orphans.push(format!(
+                    "{} produces {ek:?} → {tk:?} (no consumer)",
+                    m.name()
+                ));
+            }
+        }
+    }
+    assert!(
+        orphans.is_empty(),
+        "declared produced pivots with no consumer:\n  {}",
+        orphans.join("\n  ")
     );
 }
 

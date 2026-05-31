@@ -15,9 +15,10 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::geo::is_valid_coords;
 use crate::util::http::fetch_json;
 
 const SRC: &str = "ip_whois_geo";
@@ -76,6 +77,26 @@ impl Module for IpWhois {
         matches!(t.kind, TargetKind::IpAddress)
     }
 
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Asn,
+            EntityKind::Organisation,
+        ];
+        KINDS
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        // Single network request with no per-request timeout; the 3s default
+        // would kill a slow-but-connected response as a spurious "timeout".
+        10_000
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let url = format!("https://ipwho.is/{}", target.value);
         let data: Resp = fetch_json(&ctx.http, SRC, &url).await?;
@@ -87,7 +108,9 @@ impl Module for IpWhois {
         let mut result = ModuleResult::new();
 
         if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
-            if lat == 0.0 && lon == 0.0 {
+            // Shared validator: rejects Null Island AND out-of-range / non-finite
+            // values a malformed ipwho.is payload could carry (see util::geo).
+            if !is_valid_coords(lat, lon) {
                 return Ok(result);
             }
 

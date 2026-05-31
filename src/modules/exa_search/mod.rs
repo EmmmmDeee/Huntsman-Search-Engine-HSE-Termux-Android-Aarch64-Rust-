@@ -27,7 +27,7 @@ use std::time::Duration;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -95,6 +95,20 @@ impl Module for ExaSearch {
 
     fn max_timeout_ms(&self) -> u64 {
         20_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Search
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Url,
+            EntityKind::Domain,
+            EntityKind::Email,
+            EntityKind::Phone,
+        ];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

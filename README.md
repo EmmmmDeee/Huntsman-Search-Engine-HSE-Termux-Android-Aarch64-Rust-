@@ -82,37 +82,34 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 ---
 
-## Module Overview (60+ modules)
+## Module Overview (86 modules — 63 free, 23 key-gated/paid)
+
+> Generated from `hse modules --json`. The full catalogue with target
+> kinds and output entities (kept honest by the
+> `modules_md_lists_every_registered_module` CI test) lives in
+> [`docs/MODULES.md`](docs/MODULES.md); run `hse modules` for the live list.
 
 **API-Free (no keys required):**
-- **Search engines** (13 engines): Yahoo, Bing, AOL, DuckDuckGo, Google,
-  Brave, Mojeek, Startpage, Yandex, Ecosia, Qwant, Dogpile, Swisscows —
-  paginated crawling with CAPTCHA detection, recursive entity recycling,
-  and username variant generation
-- **Breach/identity**: `hudsonrock`, `xposed_or_not`, `username_search`
-  (150+ sites), `social_probe` (20+ platforms), `github_user`, `gravatar`,
-  `keybase`, `pwned_passwords`
-- **DNS/domain**: `crtsh`, `dns_resolver`, `dns_brute`, `reverse_dns`,
-  `ssl_probe`, `whois`, `rdap_domain`, `caa_records`, `wayback`
-- **IP/infrastructure**: `ip_geo`, `ip_whois_geo`, `ip_rdap`, `bgpview`,
-  `shodan_internetdb`, `tor_exit_check`, `dns_blocklist`
-- **Geolocation**: `geocode` (OSM Nominatim), `photon` (Komoot),
-  `overpass` (OSM infrastructure), `sunrise_sunset` (chronolocation),
-  `mylnikov` (BSSID geolocation)
-- **Threat intel**: `alienvault_otx`, `threatfox`, `urlhaus`
-- **Web analysis**: `web_crawler`, `webserver_banner`, `search_engines`
-- **Phone**: `phone_intl` (offline, 175 country prefixes)
-- **Corporate**: `opencorporates` (AU jurisdiction focus)
-- **Termux sensors**: `gps_fix`, `wifi_scan`, `wifi_connect`, `arp_scan`,
-  `cell_survey`, `net_interfaces`
+- **Breach/identity**: `xposed_or_not`
+- **Social**: `github_user`, `keybase`, `social_probe`, `username_search`
+- **People**: `contact_enrich`, `employer_pivot`, `name_intel`
+- **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `whois`
+- **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `shodan`, `urlscan`
+- **Geolocation**: `breach_timezone`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_area_geo`, `phone_carrier_geo`, `photon`, `social_location`, `sunrise_sunset`
+- **Threat intel**: `urlhaus`
+- **Email**: `disposable_check`, `email_parse`, `smtp_vrfy`
+- **Phone**: `phone_intl`
+- **Corporate**: `opencorporates`
+- **Search**: `search_engines`
+- **Web analysis**: `cloud_storage`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
+- **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`
+- **Other**: `api_key_probe`, `qld_unclaimed`
 
 **Key-gated / Paid:**
-- `shodan`, `dehashed`, `intelx`, `securitytrails`, `leakix`,
-  `criminal_ip`, `ipqs`, `numverify`, `wigle`, `oathnet_pro`,
-  `abn_lookup`, `api_key_probe`, `seon`, `emailrep`, `epieos`,
-  `proxycurl`
-
----
+- `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `emailrep`
+- `epieos`, `exa_search`, `hibp`, `hunter_io`, `intelx`, `ipqs`
+- `leakix`, `oathnet_pro`, `proxycurl`, `securitytrails`, `see_know`, `seon`
+- `threatfox`, `virustotal`, `whoisxml`, `wifi_intel`, `wigle`
 
 ## Web UI (SpiderFoot-style)
 
@@ -181,6 +178,40 @@ Round 2: Discovered IPs → geo modules → coordinates → address.
 | `--max-entities N` | none | Stop at N total entities |
 | `--max-wall-time SECS` | none | Stop after SECS wall-time |
 | `--max-concurrent N` | `0` | Parallel module dispatch (0=sequential) |
+
+---
+
+## Name Intelligence (NAMINT-style)
+
+The `name_intel` module is a bounded, offline port of
+[NAMINT](https://seintpl.github.io/NAMINT/). From a full name (plus an
+optional trailing year, e.g. `"Jordan Leigh Meyers 1987"`) it derives — with
+**no network calls and zero native deps** — the identifiers and pivots a human
+analyst would build by hand:
+
+```bash
+hse scan --kind name --value "Jordan Leigh Meyers 1987" --modules name_intel --output json
+```
+
+- **Usernames** (≤24, scored): `first.last`, `flast`, `firstl`, reversed,
+  hyphen/underscore joins, middle-initial blends, year suffixes → feed
+  `username_search`, `social_probe`, `github_user`, `keybase`.
+- **Emails** (≤16): top handle shapes × a provider set (Gmail/Outlook/iCloud/
+  Yahoo/Hotmail/Proton, override with `HUNTSMAN_EMAIL_DOMAINS`) → feed the email
+  pipeline (`hibp`, `hunter_io`, `epieos`, `emailrep`, …). Each email carries its
+  **Gravatar** avatar URL (`MD5(email)`).
+- **Search pivots** (≤18): ready-to-click Google (web/face/email/phone/document/
+  paste) dorks, Bing, DuckDuckGo, Yandex face, LinkedIn, Facebook, X, Instagram,
+  TikTok, GitHub, WhatsMyName, Epieos — surfaced as clickable `Url` entities in
+  the Web UI Browse table.
+
+Permutations are low-confidence *candidates*, so they enrich the graph and the
+correlator without auto-spending API budget. To recurse on them, lower the
+expansion floor:
+
+```bash
+hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confidence 0.40
+```
 
 ---
 

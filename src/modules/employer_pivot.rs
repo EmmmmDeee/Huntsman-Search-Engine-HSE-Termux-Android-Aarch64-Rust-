@@ -28,7 +28,7 @@ use regex::Regex;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::address_au;
@@ -64,6 +64,20 @@ impl Module for EmployerPivot {
 
     fn max_timeout_ms(&self) -> u64 {
         12_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::People
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Address,
+            EntityKind::Phone,
+            EntityKind::Email,
+            EntityKind::Url,
+        ];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

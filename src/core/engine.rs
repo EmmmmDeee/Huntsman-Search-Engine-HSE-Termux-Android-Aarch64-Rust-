@@ -153,6 +153,18 @@ impl ScanEngine {
         self.emitter.emit(scan_id, kind);
     }
 
+    /// Emit a `ModuleSkipped` event — the gate-rejection path shared by
+    /// `run_expansion` and both dispatchers (cancel/quota/cost-dedup/skip-rule).
+    fn emit_skipped(&self, scan_id: &str, module: &str, reason: &str) {
+        self.emit(
+            scan_id,
+            EventKind::ModuleSkipped {
+                module: module.into(),
+                reason: reason.into(),
+            },
+        );
+    }
+
     pub fn modules(&self) -> &[Arc<dyn Module>] {
         &self.modules
     }
@@ -196,6 +208,26 @@ impl ScanEngine {
 
         let opts = scan.options.clone();
         let started = Instant::now();
+
+        // Wall-time watchdog. `budget_check` only enforces the wall budget
+        // BETWEEN expansion candidates, so the seed round (all accepting
+        // modules fan out at once) and any long in-flight concurrent batch
+        // could blow far past `max_wall_time_secs` — observed: a
+        // `--max-wall-time 5` scan ran until an external SIGKILL because no
+        // deadline was checked during the seed round. This watchdog fires the
+        // engine-wide cancel flag at the deadline; every dispatch loop already
+        // polls `ctx.cancel`, and finalise treats cancellation as a clean
+        // `Aborted` with all collected entities persisted — so the scan stops
+        // promptly AND still prints/streams what it found (the "always display
+        // results" + "fallback bound that actually bounds" requirements).
+        let wall_watchdog = opts.max_wall_time_secs.map(|secs| {
+            let cancel = ctx.cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+                cancel.cancel();
+            })
+        });
+
         let mut entity_map: HashMap<String, Entity> =
             HashMap::with_capacity(opts.max_entities.unwrap_or(256).min(4096));
         let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
@@ -248,6 +280,13 @@ impl ScanEngine {
                     &mut emitted_corr,
                 )
                 .await;
+        }
+
+        // Scan body done — stop the wall-time watchdog so it can't fire after
+        // we've already finished (and is reaped promptly rather than sleeping
+        // out its full deadline in the background on a long-lived `serve`).
+        if let Some(handle) = wall_watchdog {
+            handle.abort();
         }
 
         self.finalise_scan(&mut scan, entity_map, &ctx, stats, lineage, emitted_corr)
@@ -351,6 +390,15 @@ impl ScanEngine {
             warn!("failed to save key pool after scan: {e}");
         }
 
+        // Scan-boundary WAL checkpoint: fold the WAL into the main DB and
+        // truncate the -wal file back to zero. Bounds the on-disk/mmap WAL
+        // footprint between scans under a long-lived `serve`/`live` process
+        // (the 'everything bounded' invariant). Best-effort — a busy
+        // checkpoint just defers to the next scan boundary.
+        if let Err(e) = self.store.checkpoint_truncate() {
+            warn!(scan_id = %scan.id, error = %e, "WAL checkpoint deferred (busy)");
+        }
+
         self.emit(
             &scan.id,
             EventKind::ScanComplete {
@@ -447,10 +495,21 @@ impl ScanEngine {
         entities: &[Entity],
         emitted: &mut HashSet<String>,
     ) {
-        for c in crate::core::correlator::correlate_entities(entities, scan_id) {
-            if !emitted.insert(correlation_key(&c)) {
-                continue;
-            }
+        // Rank live-streamed correlations with the same severity × max-child-
+        // C_eff score the finalize pass uses, so a scan that is killed at its
+        // wall/entity budget (and never reaches finalize) still persists ranked
+        // correlations — not rank=0.0 rows. Build the C_eff map once per call.
+        let ceff: HashMap<String, f64> = entities
+            .iter()
+            .map(|e| (e.uid.clone(), e.c_effective()))
+            .collect();
+        let mut fresh: Vec<crate::core::correlator::Correlation> =
+            crate::core::correlator::correlate_entities(entities, scan_id)
+                .into_iter()
+                .filter(|c| emitted.insert(correlation_key(c)))
+                .collect();
+        crate::core::correlator::rank_and_sort(&mut fresh, &ceff);
+        for c in fresh {
             if let Err(e) = self.store.upsert_correlation(&c) {
                 warn!(scan_id, error = %e, "live correlation persist failed");
             }
@@ -494,21 +553,11 @@ impl ScanEngine {
         // per-candidate allocation; the key clones are bounded by max_entities.
         let mut before: HashSet<String> = HashSet::new();
         for depth in 1..=opts.depth {
-            // Refresh keys from the pool at the start of each round.
-            // Keys discovered during the previous round (oathnet_pro breach
-            // data, api_key_probe validation, web_crawler credential scraping)
-            // become available to modules in this round automatically.
-            {
-                let pool = crate::util::key_pool::global_pool();
-                for svc in crate::util::key_pool::service_defs() {
-                    if ctx.keys.contains_key(svc.env_var) {
-                        continue;
-                    }
-                    if let Some(key) = pool.next_key(svc.name) {
-                        ctx.keys.insert(svc.env_var.to_string(), key);
-                    }
-                }
-            }
+            // Refresh keys from the pool at the start of each round. Keys
+            // discovered during the previous round (oathnet_pro breach data,
+            // api_key_probe validation, web_crawler scraping) become available
+            // to this round's modules automatically.
+            hot_inject_keys(&mut ctx.keys);
 
             if ctx.cancel.is_cancelled() {
                 let stop = StopReason::Cancelled;
@@ -720,9 +769,55 @@ fn visit_key(target: &Target) -> (TargetKind, String) {
     (target.kind, normalised)
 }
 
+/// Upper bound (ms) on any single module's timeout when running on Termux and
+/// the operator hasn't pinned `--module-timeout`. On a low-power, metered,
+/// often-flaky mobile connection a 90–120 s module (search_engines, api_key_probe)
+/// can stall the whole scan; capping the worst offenders keeps a phone scan
+/// responsive. Desktop and any explicit user timeout are unaffected.
+const TERMUX_MODULE_TIMEOUT_CAP_MS: u64 = 60_000;
+
 fn resolve_timeout(opts: &ScanOptions, module: &dyn Module) -> u64 {
-    opts.module_timeout_ms
-        .unwrap_or_else(|| module.max_timeout_ms())
+    let user_set = opts.module_timeout_ms;
+    let base = user_set.unwrap_or_else(|| module.max_timeout_ms());
+    apply_termux_cap(base, user_set.is_some(), crate::is_termux())
+}
+
+/// Pure timeout-capping policy (split out so it's unit-testable without env):
+/// on Termux with no user override, clamp to [`TERMUX_MODULE_TIMEOUT_CAP_MS`];
+/// otherwise pass the resolved value through unchanged.
+fn apply_termux_cap(base_ms: u64, user_set: bool, is_termux: bool) -> u64 {
+    if is_termux && !user_set {
+        base_ms.min(TERMUX_MODULE_TIMEOUT_CAP_MS)
+    } else {
+        base_ms
+    }
+}
+
+/// Pull any newly-available pooled API key into `keys` for every service that
+/// doesn't already have one. This is the key-cascade that makes recursion pay
+/// off: a key a module just discovered (oathnet breach data, api_key_probe
+/// validation, web_crawler scraping) becomes usable by the next module in the
+/// round and by the next expansion round. Idempotent — only fills gaps, never
+/// overwrites an operator-supplied key. Shared by `run_expansion` (per-round
+/// refresh) and both dispatchers (per-module hot-inject).
+fn hot_inject_keys(keys: &mut HashMap<String, String>) {
+    let pool = crate::util::key_pool::global_pool();
+    for svc in crate::util::key_pool::service_defs() {
+        if keys.contains_key(svc.env_var) {
+            continue;
+        }
+        if let Some(key) = pool.next_key(svc.name) {
+            let roi = crate::util::key_roi::classify(svc.name);
+            info!(
+                service = svc.name,
+                env_var = svc.env_var,
+                roi = roi.label(),
+                "hot-inject: pooled key available ({} tier)",
+                roi.label()
+            );
+            keys.insert(svc.env_var.to_string(), key);
+        }
+    }
 }
 
 fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> Option<StopReason> {
@@ -912,6 +1007,9 @@ impl ScanEngine {
         // a `Vec<Arc<dyn Module>>` and Arc-cloning per target) avoids
         // a heap allocation + N atomic increments per dispatch — meaningful
         // on the hot path that runs once per expansion candidate.
+        // Distinct-source count of the target entity (for the high-value-API
+        // cross-correlation gate); computed once per target, not per module.
+        let target_sources = target_distinct_sources(entity_map, target);
         for &idx in self.graph.modules_for(target.kind) {
             let Some(module) = self.modules.get(idx) else {
                 continue;
@@ -930,27 +1028,17 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) = module_skip_reason(&**module, target, opts, is_expansion) {
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: reason.into(),
-                    },
-                );
+            if let Some(reason) =
+                module_skip_reason(&**module, target, opts, is_expansion, target_sources)
+            {
+                self.emit_skipped(scan_id, name, reason);
                 continue;
             }
             if !matches!(module.cost(), ModuleCost::Free)
                 && !dispatched.insert(dispatch_key(name, target))
             {
                 stats.deduped += 1;
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "already dispatched for this target".into(),
-                    },
-                );
+                self.emit_skipped(scan_id, name, "already dispatched for this target");
                 continue;
             }
 
@@ -976,25 +1064,7 @@ impl ScanEngine {
                 stats,
             );
 
-            {
-                let pool = crate::util::key_pool::global_pool();
-                for svc in crate::util::key_pool::service_defs() {
-                    if ctx.keys.contains_key(svc.env_var) {
-                        continue;
-                    }
-                    if let Some(key) = pool.next_key(svc.name) {
-                        let roi = crate::util::key_roi::classify(svc.name);
-                        info!(
-                            service = svc.name,
-                            env_var = svc.env_var,
-                            roi = roi.label(),
-                            "hot-inject: key available — {} tier",
-                            roi.label()
-                        );
-                        ctx.keys.insert(svc.env_var.to_string(), key);
-                    }
-                }
-            }
+            hot_inject_keys(&mut ctx.keys);
 
             // Re-check the cancel flag before the throttle sleep so an
             // operator cancel between modules doesn't pay the full
@@ -1042,6 +1112,7 @@ impl ScanEngine {
 
         // Phase 1: Run Paid modules synchronously so discovered keys are
         // available via hot-inject before the concurrent phase begins.
+        let target_sources = target_distinct_sources(entity_map, target);
         for &idx in self.graph.modules_for(target.kind) {
             let Some(module) = self.modules.get(idx) else {
                 continue;
@@ -1056,25 +1127,15 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) = module_skip_reason(&**module, target, opts, is_expansion) {
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: reason.into(),
-                    },
-                );
+            if let Some(reason) =
+                module_skip_reason(&**module, target, opts, is_expansion, target_sources)
+            {
+                self.emit_skipped(scan_id, name, reason);
                 continue;
             }
             if !dispatched.insert(dispatch_key(name, target)) {
                 stats.deduped += 1;
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "already dispatched for this target".into(),
-                    },
-                );
+                self.emit_skipped(scan_id, name, "already dispatched for this target");
                 continue;
             }
             self.emit(
@@ -1099,25 +1160,8 @@ impl ScanEngine {
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
             // cascade — their outputs feed web_crawler/search_engines, which
-            // discover MORE keys. Tier is logged for operator visibility.
-            {
-                let pool = crate::util::key_pool::global_pool();
-                for svc in crate::util::key_pool::service_defs() {
-                    if ctx.keys.contains_key(svc.env_var) {
-                        continue;
-                    }
-                    if let Some(key) = pool.next_key(svc.name) {
-                        let roi = crate::util::key_roi::classify(svc.name);
-                        info!(
-                            service = svc.name,
-                            roi = roi.label(),
-                            "hot-inject: key available for concurrent phase ({})",
-                            roi.label()
-                        );
-                        ctx.keys.insert(svc.env_var.to_string(), key);
-                    }
-                }
-            }
+            // discover MORE keys.
+            hot_inject_keys(&mut ctx.keys);
         }
 
         // Phase 2: Spawn remaining (Free + KeyGated) modules concurrently.
@@ -1129,6 +1173,7 @@ impl ScanEngine {
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
         let scan_id_arc: Arc<str> = scan_id.into();
 
+        let target_sources = target_distinct_sources(entity_map, target);
         for &idx in self.graph.modules_for(target.kind) {
             let Some(module) = self.modules.get(idx) else {
                 continue;
@@ -1147,27 +1192,17 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) = module_skip_reason(&**module, target, opts, is_expansion) {
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: reason.into(),
-                    },
-                );
+            if let Some(reason) =
+                module_skip_reason(&**module, target, opts, is_expansion, target_sources)
+            {
+                self.emit_skipped(scan_id, name, reason);
                 continue;
             }
             if !matches!(module.cost(), ModuleCost::Free)
                 && !dispatched.insert(dispatch_key(name, target))
             {
                 stats.deduped += 1;
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "already dispatched for this target".into(),
-                    },
-                );
+                self.emit_skipped(scan_id, name, "already dispatched for this target");
                 continue;
             }
 
@@ -1253,11 +1288,27 @@ pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] =
 /// Returns `Some(reason)` if `module` should be skipped under `opts`.
 /// `accepts(target)` is intentionally NOT checked here — that case skips
 /// silently with no `ModuleSkipped` event, the others all emit one.
+/// Count the DISTINCT evidence sources backing the entity that `target`
+/// refers to, by re-deriving the entity UID the same way `Entity::new` does.
+/// Used to gate high-value paid modules behind "sufficient cross-correlation"
+/// on expansion rounds. Returns 0 when the target isn't (yet) in the map — the
+/// seed target itself isn't an entity, but seed dispatch (`!is_expansion`)
+/// never consults this gate, so 0 is safe there.
+fn target_distinct_sources(entity_map: &HashMap<String, Entity>, target: &Target) -> usize {
+    let entity_kind = target.kind.to_entity_kind();
+    let normalised = normalise(&entity_kind, &target.value);
+    let uid = crate::core::entity::derive_uid(&entity_kind, &normalised);
+    entity_map
+        .get(&uid)
+        .map_or(0, |e| e.evidence_sources().len())
+}
+
 fn module_skip_reason(
     module: &dyn Module,
     target: &Target,
     opts: &ScanOptions,
     is_expansion: bool,
+    target_distinct_sources: usize,
 ) -> Option<&'static str> {
     let name = module.name();
     if !is_expansion
@@ -1278,16 +1329,27 @@ fn module_skip_reason(
     if is_expansion && module.is_passive() && LOCAL_PASSIVE_MODULES.contains(&name) {
         return Some("sensor (already ran on seed round)");
     }
-    // oathnet_pro stays seed-only — it has the heaviest per-query weight
-    // and its own internal pivot logic. SeekNow (`see_know`) was previously
-    // gated here too, but the per-scan budget cap inside
-    // `util::see_know` (default 24, env-tunable) already protects the
-    // quota while letting expansion rounds pivot on newly-discovered
-    // identities. The /credits endpoint plus the `is_quota_exhausted`
-    // flag in the util layer collapse any post-quota calls to no-ops.
-    const SEED_ONLY_MODULES: &[&str] = &["oathnet_pro"];
-    if is_expansion && SEED_ONLY_MODULES.contains(&name) {
-        return Some("API-expensive (seed round only)");
+    // High-value-only modules: the heaviest paid API (oathnet_pro, priority
+    // 127, Paid, 30s) burns one query per target and a low-specificity seed
+    // fans out into a large unrelated corpus — a live `name="Onur Ada"` scan
+    // pulled 172 unrelated US-banking breach records that buried the real
+    // findings. Per the operator's rule, such a module may fire when the
+    // target is EITHER the initial seed query OR a discovered entity that has
+    // reached *sufficient cross-correlation* — i.e. corroborated by at least
+    // `CROSS_CORRELATION_MIN_SOURCES` DISTINCT evidence sources, not just a
+    // bumped corroboration counter. On the live scan this admits the genuinely
+    // on-target pivots (the breach email at 4 sources, the person at 3, the
+    // employer domain at 2) while excluding the 97 single-source banking
+    // emails that would otherwise trigger fresh fan-out. SeekNow (`see_know`)
+    // is intentionally NOT gated here: its own per-scan budget in
+    // `util::see_know` bounds the quota while letting it pivot freely.
+    const HIGH_VALUE_ONLY_MODULES: &[&str] = &["oathnet_pro"];
+    const CROSS_CORRELATION_MIN_SOURCES: usize = 2;
+    if is_expansion
+        && HIGH_VALUE_ONLY_MODULES.contains(&name)
+        && target_distinct_sources < CROSS_CORRELATION_MIN_SOURCES
+    {
+        return Some("high-value API — awaiting cross-correlation (>=2 sources)");
     }
     // ── Universal preflight: reject private IPs / local domains for
     // modules that talk to external APIs. Sensor modules opt out via
@@ -1472,6 +1534,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn termux_cap_bounds_long_modules_only_on_termux_without_override() {
+        // Desktop (not Termux): full timeout preserved, even 120 s.
+        assert_eq!(apply_termux_cap(120_000, false, false), 120_000);
+        // Termux, no user override: the worst offenders are clamped...
+        assert_eq!(
+            apply_termux_cap(120_000, false, true),
+            TERMUX_MODULE_TIMEOUT_CAP_MS
+        );
+        assert_eq!(
+            apply_termux_cap(90_000, false, true),
+            TERMUX_MODULE_TIMEOUT_CAP_MS
+        );
+        // ...while the common short timeouts pass through unchanged.
+        assert_eq!(apply_termux_cap(8_000, false, true), 8_000);
+        assert_eq!(apply_termux_cap(60_000, false, true), 60_000);
+        // An explicit --module-timeout is honoured verbatim, even on Termux,
+        // even above the cap (the operator asked for it).
+        assert_eq!(apply_termux_cap(120_000, true, true), 120_000);
+    }
+
+    #[test]
     fn visit_key_normalises_email() {
         let t = Target::new(TargetKind::Email, "ALICE@Example.COM");
         let (kind, val) = visit_key(&t);
@@ -1591,7 +1674,7 @@ mod tests {
     fn skip_reason_none_for_default_opts() {
         let m = free_active();
         let opts = ScanOptions::default();
-        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
     }
 
     #[test]
@@ -1602,7 +1685,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            module_skip_reason(&m, &pub_target(), &opts, false),
+            module_skip_reason(&m, &pub_target(), &opts, false, 0),
             Some("not in allowlist")
         );
     }
@@ -1614,7 +1697,7 @@ mod tests {
             modules: Some(vec!["test_free".into()]),
             ..Default::default()
         };
-        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
     }
 
     #[test]
@@ -1625,7 +1708,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            module_skip_reason(&m, &pub_target(), &opts, false),
+            module_skip_reason(&m, &pub_target(), &opts, false, 0),
             Some("excluded")
         );
     }
@@ -1638,7 +1721,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            module_skip_reason(&m, &pub_target(), &opts, false),
+            module_skip_reason(&m, &pub_target(), &opts, false, 0),
             Some("requires key/payment")
         );
     }
@@ -1650,7 +1733,7 @@ mod tests {
             free_only: true,
             ..Default::default()
         };
-        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
     }
 
     #[test]
@@ -1661,7 +1744,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            module_skip_reason(&m, &pub_target(), &opts, false),
+            module_skip_reason(&m, &pub_target(), &opts, false, 0),
             Some("not passive")
         );
     }
@@ -1673,7 +1756,65 @@ mod tests {
             passive_only: true,
             ..Default::default()
         };
-        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
+    }
+
+    // ── high-value-API cross-correlation gate (oathnet_pro) ────────────────
+
+    /// Stub standing in for the high-value paid module by name.
+    fn high_value() -> StubModule {
+        StubModule {
+            name: "oathnet_pro",
+            cost: ModuleCost::Paid,
+            passive: false,
+        }
+    }
+
+    #[test]
+    fn high_value_module_runs_on_seed_regardless_of_sources() {
+        // Seed round (is_expansion=false): always allowed, even with 0 sources
+        // (the seed target isn't an entity yet).
+        let m = high_value();
+        let opts = ScanOptions::default();
+        assert!(
+            module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
+            "high-value module must run on the initial seed query"
+        );
+    }
+
+    #[test]
+    fn high_value_module_skipped_on_expansion_below_cross_correlation() {
+        // Expansion, target corroborated by only 1 distinct source → skip.
+        let m = high_value();
+        let opts = ScanOptions::default();
+        assert_eq!(
+            module_skip_reason(&m, &pub_target(), &opts, true, 1),
+            Some("high-value API — awaiting cross-correlation (>=2 sources)"),
+            "single-source discovered entity must NOT trigger the high-value API"
+        );
+        // 0 sources (not yet in map) on expansion is likewise gated.
+        assert!(module_skip_reason(&m, &pub_target(), &opts, true, 0).is_some());
+    }
+
+    #[test]
+    fn high_value_module_runs_on_expansion_when_cross_correlated() {
+        // Expansion, target corroborated by >=2 distinct sources → allowed.
+        let m = high_value();
+        let opts = ScanOptions::default();
+        assert!(
+            module_skip_reason(&m, &pub_target(), &opts, true, 2).is_none(),
+            "cross-correlated (>=2 sources) entity must reach the high-value API on expansion"
+        );
+        assert!(module_skip_reason(&m, &pub_target(), &opts, true, 5).is_none());
+    }
+
+    #[test]
+    fn non_high_value_module_unaffected_by_source_gate() {
+        // A normal module is never subject to the high-value cross-correlation
+        // gate, even at 0 sources on expansion.
+        let m = free_active();
+        let opts = ScanOptions::default();
+        assert!(module_skip_reason(&m, &pub_target(), &opts, true, 0).is_none());
     }
 
     #[test]
@@ -1685,7 +1826,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            module_skip_reason(&m, &pub_target(), &opts, false),
+            module_skip_reason(&m, &pub_target(), &opts, false, 0),
             Some("excluded")
         );
     }
@@ -1698,7 +1839,7 @@ mod tests {
         let private = Target::new(TargetKind::IpAddress, "192.168.1.1");
         let opts = ScanOptions::default();
         assert_eq!(
-            module_skip_reason(&m, &private, &opts, false),
+            module_skip_reason(&m, &private, &opts, false, 0),
             Some("private/reserved IP — external API would reject")
         );
     }
@@ -1709,7 +1850,7 @@ mod tests {
         let local = Target::new(TargetKind::Domain, "router.local");
         let opts = ScanOptions::default();
         assert_eq!(
-            module_skip_reason(&m, &local, &opts, false),
+            module_skip_reason(&m, &local, &opts, false, 0),
             Some("local/reserved domain — external API would reject")
         );
     }
@@ -1725,14 +1866,14 @@ mod tests {
         };
         let private = Target::new(TargetKind::IpAddress, "192.168.1.1");
         let opts = ScanOptions::default();
-        assert!(module_skip_reason(&m, &private, &opts, false).is_none());
+        assert!(module_skip_reason(&m, &private, &opts, false, 0).is_none());
     }
 
     #[test]
     fn skip_reason_passes_public_ip_through() {
         let m = free_active();
         let opts = ScanOptions::default();
-        assert!(module_skip_reason(&m, &pub_target(), &opts, false).is_none());
+        assert!(module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
     }
 
     #[test]
@@ -1751,7 +1892,7 @@ mod tests {
         ] {
             let t = Target::new(TargetKind::IpAddress, v6);
             assert!(
-                module_skip_reason(&m, &t, &opts, false).is_none(),
+                module_skip_reason(&m, &t, &opts, false, 0).is_none(),
                 "public IPv6 {v6} should NOT be rejected by the universal gate",
             );
         }
@@ -1775,7 +1916,7 @@ mod tests {
             "https://intra.internal/api",
         ] {
             let t = Target::new(TargetKind::Url, hostile);
-            let reason = module_skip_reason(&m, &t, &opts, false);
+            let reason = module_skip_reason(&m, &t, &opts, false, 0);
             assert!(
                 reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
                 "Url {hostile} should be SSRF-rejected, got {reason:?}",
@@ -1794,7 +1935,7 @@ mod tests {
         ] {
             let t = Target::new(TargetKind::Url, benign);
             assert!(
-                module_skip_reason(&m, &t, &opts, false).is_none(),
+                module_skip_reason(&m, &t, &opts, false, 0).is_none(),
                 "Url {benign} should pass through",
             );
         }
@@ -1809,7 +1950,7 @@ mod tests {
         for private_v6 in ["::1", "fc00::1", "fe80::1"] {
             let t = Target::new(TargetKind::IpAddress, private_v6);
             assert!(
-                module_skip_reason(&m, &t, &opts, false).is_some(),
+                module_skip_reason(&m, &t, &opts, false, 0).is_some(),
                 "private IPv6 {private_v6} should be rejected",
             );
         }

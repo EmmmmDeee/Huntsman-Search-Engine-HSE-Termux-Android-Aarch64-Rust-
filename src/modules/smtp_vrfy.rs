@@ -18,7 +18,7 @@ use tokio::net::TcpStream;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -46,6 +46,15 @@ impl Module for SmtpVrfy {
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Email
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Email];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

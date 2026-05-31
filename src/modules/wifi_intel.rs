@@ -15,9 +15,10 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::Target,
 };
+use crate::util::geo::is_valid_coords;
 use crate::util::http::error_snippet;
 use crate::util::termux::termux_cmd;
 
@@ -96,6 +97,15 @@ impl Module for WifiIntel {
     }
 
     fn is_passive(&self) -> bool {
+        // Classed passive as a local sensor: the primary action is reading
+        // on-device Wi-Fi radios via termux-wifi-scaninfo, and off-Termux
+        // the module no-ops before any network use. CAVEAT: when run
+        // on-device with scan results, the top-N strongest BSSIDs are
+        // enriched via the WiGLE API — so under --passive-only this module
+        // CAN still egress for geolocation. This is intentional (it lives in
+        // engine::LOCAL_PASSIVE_MODULES as a seed-round sensor); a strict
+        // no-egress guarantee would require gating the WiGLE step on a
+        // passive flag. Documented in docs/MODULES.md.
         true
     }
 
@@ -109,6 +119,19 @@ impl Module for WifiIntel {
 
     fn max_timeout_ms(&self) -> u64 {
         20_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Geo
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::MacAddress,
+            EntityKind::Coordinates,
+            EntityKind::Address,
+        ];
+        KINDS
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -165,7 +188,8 @@ impl Module for WifiIntel {
             if let Ok(Some(detail)) = query_wigle_detail(&ctx.http, user, token, &ap.bssid).await
                 && let (Some(lat), Some(lon)) = (detail.trilat, detail.trilong)
             {
-                if lat == 0.0 && lon == 0.0 {
+                // Shared validator: Null Island + out-of-range + non-finite.
+                if !is_valid_coords(lat, lon) {
                     continue;
                 }
 
@@ -271,14 +295,16 @@ async fn query_wigle_detail(
 
     let status = resp.status();
     if status.as_u16() == 429 {
-        let retry_secs = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(60);
-        tracing::warn!("WiGLE 429 — backing off {retry_secs}s");
-        tokio::time::sleep(std::time::Duration::from_secs(retry_secs.min(120))).await;
+        // Return the rate-limit to the caller immediately. The previous code
+        // slept up to 120 s here before returning Err, but this module's 20 s
+        // budget (max_timeout_ms) meant the engine killed process() mid-sleep
+        // — discarding the entire module result, including the phase-1 AP
+        // survey already collected, and mislabelling the 429 as a "timeout".
+        // No retry follows this branch, so the sleep bought nothing. The
+        // value is logged only (not slept on), so the ceiling just bounds the
+        // displayed number.
+        let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 60, 120);
+        tracing::warn!("WiGLE 429 — rate-limited (server requested {retry_secs}s backoff)");
         return Err(Error::module(SOURCE, "rate-limited (429)"));
     }
     if status.as_u16() == 404 {

@@ -16,6 +16,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::geo::is_valid_coords;
 use crate::util::http::{error_snippet, handle_keyed_error, urlencode};
 
 const ID_ENV: &str = "HUNTSMAN_CENSYS_ID";
@@ -245,8 +246,11 @@ impl Module for Censys {
         if let Some(loc) = &host.location
             && let Some(coords) = &loc.coordinates
             && let (Some(lat), Some(lon)) = (coords.latitude, coords.longitude)
-            && (-90.0..=90.0).contains(&lat)
-            && (-180.0..=180.0).contains(&lon)
+            // Shared validator: finite + in-range + not-Null-Island. Censys
+            // (and data-centre geo APIs generally) emit 0,0 as an
+            // "unknown location" placeholder, which the prior range-only
+            // check let through as a false Coordinates entity.
+            && is_valid_coords(lat, lon)
         {
             let coord_str = format!("{lat:.6},{lon:.6}");
             let mut geo = Entity::new(EntityKind::Coordinates, &coord_str, 0.65, &ctx.scan_id);
@@ -401,5 +405,16 @@ mod tests {
         let json = r"{}";
         let resp: CensysResp = serde_json::from_str(json).unwrap();
         assert!(resp.result.is_none());
+    }
+
+    #[test]
+    fn coordinate_gate_rejects_null_island() {
+        // Censys uses the shared validator for its coordinates gate: a 0,0
+        // "unknown location" placeholder must NOT become a Coordinates entity,
+        // while an in-range data-centre coord passes. (Validates the policy the
+        // process() if-let chain depends on.)
+        assert!(!is_valid_coords(0.0, 0.0));
+        assert!(!is_valid_coords(91.0, 10.0));
+        assert!(is_valid_coords(-33.8688, 151.2093));
     }
 }

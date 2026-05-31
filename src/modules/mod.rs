@@ -56,7 +56,7 @@ pub mod leakix;
 pub mod local_net;
 pub mod mls;
 pub mod mylnikov;
-pub mod name_to_username;
+pub mod name_intel;
 pub mod oathnet_pro;
 pub mod opencorporates;
 pub mod overpass;
@@ -66,6 +66,7 @@ pub mod phone_intl;
 pub mod photon;
 pub mod proxycurl;
 pub mod pwned_passwords;
+pub mod qld_unclaimed;
 pub mod rdap_domain;
 pub mod search_engines;
 pub mod securitytrails;
@@ -185,10 +186,11 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(cloud_storage::CloudStorage),
         Arc::new(bgpview::BgpView),
         // People-centric enrichment
-        Arc::new(name_to_username::NameToUsername),
+        Arc::new(name_intel::NameIntel),
         Arc::new(social_location::SocialLocation),
         // Australian OSINT modules
         Arc::new(opencorporates::OpenCorporates),
+        Arc::new(qld_unclaimed::QldUnclaimed),
     ]
 }
 

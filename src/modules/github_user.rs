@@ -20,7 +20,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::error_snippet;
@@ -64,6 +64,23 @@ impl Module for GithubUser {
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Username)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Social
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Person,
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Domain,
+            EntityKind::Url,
+            EntityKind::Organisation,
+            EntityKind::Address,
+        ];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

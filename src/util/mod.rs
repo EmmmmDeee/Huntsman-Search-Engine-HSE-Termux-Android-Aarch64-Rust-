@@ -1,5 +1,6 @@
 //! Utilities: HTTP client, DNS resolver, key loading, UID generation, Termux helpers.
 
+pub mod abn;
 pub mod address_au;
 pub mod budget;
 pub mod curl;
@@ -14,6 +15,7 @@ pub mod key_roi;
 pub mod keys;
 pub mod oathnet;
 pub mod oui;
+pub mod postcode_au;
 pub mod preflight;
 pub mod proxy;
 pub mod response_cache;
@@ -51,6 +53,71 @@ pub mod str_util {
         }
         &s[..end]
     }
+
+    /// Fold common Latin diacritics to their base ASCII letter, lowercase, and
+    /// drop everything else. Pure and dependency-free (no `deunicode`/ICU — keeps
+    /// the Termux single-binary lean). A name like `"José Müller-Łódź"` folds to
+    /// the ASCII stem real platforms actually use (`josemullerlodz`), so derived
+    /// usernames/emails match. Multi-char expansions (`æ→ae`, `ß→ss`, `þ→th`) are
+    /// handled; non-Latin scripts (Arabic, CJK) have no ASCII fold and are
+    /// dropped — callers should split into words *before* folding each token.
+    pub fn fold_ascii_lower(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for ch in s.chars() {
+            match ch {
+                'a'..='z' | '0'..='9' => out.push(ch),
+                'A'..='Z' => out.push(ch.to_ascii_lowercase()),
+                'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' | 'ā'
+                | 'ă' | 'ą' => out.push('a'),
+                'ç' | 'Ç' | 'ć' | 'č' | 'ĉ' | 'ċ' => out.push('c'),
+                'è' | 'é' | 'ê' | 'ë' | 'È' | 'É' | 'Ê' | 'Ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => {
+                    out.push('e')
+                }
+                'ì' | 'í' | 'î' | 'ï' | 'Ì' | 'Í' | 'Î' | 'Ï' | 'ī' | 'ĭ' | 'į' | 'ı' => {
+                    out.push('i')
+                }
+                'ñ' | 'Ñ' | 'ń' | 'ņ' | 'ň' => out.push('n'),
+                'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' | 'Ø' | 'ō'
+                | 'ŏ' | 'ő' => out.push('o'),
+                'ù' | 'ú' | 'û' | 'ü' | 'Ù' | 'Ú' | 'Û' | 'Ü' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => {
+                    out.push('u')
+                }
+                'ý' | 'ÿ' | 'Ý' | 'Ŷ' | 'ŷ' => out.push('y'),
+                'ł' | 'Ł' => out.push('l'),
+                'ś' | 'š' | 'ş' | 'Ś' | 'Š' | 'Ş' => out.push('s'),
+                'ź' | 'ż' | 'ž' | 'Ź' | 'Ż' | 'Ž' => out.push('z'),
+                'ð' | 'Đ' | 'đ' => out.push('d'),
+                'ț' | 'ţ' | 'Ț' | 'Ţ' => out.push('t'),
+                'ğ' | 'Ğ' => out.push('g'),
+                'ř' | 'Ř' => out.push('r'),
+                'æ' | 'Æ' => out.push_str("ae"),
+                'œ' | 'Œ' => out.push_str("oe"),
+                'ß' => out.push_str("ss"),
+                'þ' | 'Þ' => out.push_str("th"),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::fold_ascii_lower;
+
+        #[test]
+        fn folds_latin_diacritics() {
+            assert_eq!(fold_ascii_lower("José"), "jose");
+            assert_eq!(fold_ascii_lower("Müller"), "muller");
+            assert_eq!(fold_ascii_lower("Łódź"), "lodz");
+            assert_eq!(fold_ascii_lower("Çağrı"), "cagri"); // ç→c, ğ→g, ı→i
+            assert_eq!(fold_ascii_lower("Straße"), "strasse"); // ß → ss
+            assert_eq!(fold_ascii_lower("Æon"), "aeon"); // æ → ae
+            // ASCII passes through lowercased; punctuation/space dropped.
+            assert_eq!(fold_ascii_lower("O'Brien-Smith"), "obriensmith");
+            // Non-Latin has no ASCII fold → dropped.
+            assert_eq!(fold_ascii_lower("علي"), "");
+        }
+    }
 }
 
 pub mod geo {
@@ -69,6 +136,51 @@ pub mod geo {
             .parse()
             .map_err(|_| Error::module("geo", "invalid longitude"))?;
         Ok((lat, lon))
+    }
+
+    /// Canonical validity check for a geographic coordinate, shared by every
+    /// module that turns an external lat/lon into a `Coordinates` entity
+    /// (`geo_intel`, `ip_whois_geo`, `wifi_intel`, `mylnikov`, `cell_intel`,
+    /// `exif_geo`, `censys`, `device_sensors`, …). Each previously hand-rolled
+    /// some subset of these guards — most only rejected `0,0` and let
+    /// out-of-range/NaN values through, which then became high-confidence false
+    /// fixes that poison the geo-cluster correlator. One definition keeps the
+    /// policy consistent.
+    ///
+    /// Rejects:
+    ///   - non-finite values (NaN, ±inf) from malformed JSON,
+    ///   - out-of-range values (`|lat| > 90`, `|lon| > 180`), and
+    ///   - the `0.0, 0.0` "Null Island" sentinel that geo APIs and the Android
+    ///     location stack emit when they have no real fix.
+    #[must_use]
+    pub fn is_valid_coords(lat: f64, lon: f64) -> bool {
+        lat.is_finite()
+            && lon.is_finite()
+            && (-90.0..=90.0).contains(&lat)
+            && (-180.0..=180.0).contains(&lon)
+            && !(lat == 0.0 && lon == 0.0)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn valid_coords_accepts_real_positions() {
+            assert!(is_valid_coords(-27.4766, 153.0166)); // Brisbane
+            assert!(is_valid_coords(51.5074, -0.1278)); // London
+            assert!(is_valid_coords(90.0, 180.0)); // boundaries
+            assert!(is_valid_coords(-90.0, -180.0));
+        }
+
+        #[test]
+        fn valid_coords_rejects_bad_fixes() {
+            assert!(!is_valid_coords(0.0, 0.0)); // Null Island
+            assert!(!is_valid_coords(91.0, 10.0)); // lat out of range
+            assert!(!is_valid_coords(10.0, 181.0)); // lon out of range
+            assert!(!is_valid_coords(f64::NAN, 10.0)); // non-finite
+            assert!(!is_valid_coords(10.0, f64::INFINITY));
+        }
     }
 }
 
@@ -104,12 +216,36 @@ pub mod dns {
     pub fn shared_resolver() -> &'static TokioResolver {
         static RESOLVER: OnceLock<TokioResolver> = OnceLock::new();
         RESOLVER.get_or_init(|| {
-            TokioResolver::builder_with_config(
+            use hickory_resolver::config::LookupIpStrategy;
+            let mut builder = TokioResolver::builder_with_config(
                 ResolverConfig::udp_and_tcp(&CLOUDFLARE),
                 TokioRuntimeProvider::default(),
-            )
-            .build()
-            .expect("hardcoded Cloudflare resolver config must build")
+            );
+            // Bound DNS like every other external call (Requirement: a slow or
+            // dead service degrades the scan, never freezes it). hickory's
+            // defaults are 5s timeout x 2 attempts = ~10s PER lookup, and
+            // dns_intel issues A/AAAA/MX/NS/SOA/TXT (+ DNSBL) lookups, so a
+            // stalled resolver stacked well past the module's 15s budget — an
+            // IP scan was observed wedging ~25s on a single DNSBL AAAA query
+            // when IPv6 nameserver connect failed (os error 97) and the
+            // resolver paid the full v6→v4 failover tax on every lookup.
+            //
+            // - timeout 2s, attempts 1: a wedged query fails fast and the scan
+            //   moves on, staying inside dns_intel's 15s declaration even when
+            //   several lookups are slow.
+            // - Ipv4thenIpv6: try the v4 nameserver first so a v6-less host
+            //   (this container, many mobile networks) doesn't stall on an
+            //   unreachable AAAA nameserver, while v6 still resolves where
+            //   available.
+            {
+                let opts = builder.options_mut();
+                opts.timeout = std::time::Duration::from_secs(2);
+                opts.attempts = 1;
+                opts.ip_strategy = LookupIpStrategy::Ipv4thenIpv6;
+            }
+            builder
+                .build()
+                .expect("hardcoded Cloudflare resolver config must build")
         })
     }
 }

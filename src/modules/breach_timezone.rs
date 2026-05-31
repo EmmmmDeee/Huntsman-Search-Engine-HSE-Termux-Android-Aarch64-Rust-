@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -43,6 +43,15 @@ impl Module for BreachTimezone {
             t.kind,
             TargetKind::Email | TargetKind::Username | TargetKind::Phone
         )
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Geo
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Address];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -78,6 +78,16 @@ impl Module for HudsonRock {
             t.kind,
             TargetKind::Email | TargetKind::Username | TargetKind::Domain
         )
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        // Single network request with no per-request timeout; the 3s default
+        // would kill a slow-but-connected response as a spurious "timeout".
+        10_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

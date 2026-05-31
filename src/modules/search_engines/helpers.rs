@@ -1245,12 +1245,14 @@ pub(super) fn extract_abn_acn_from_text(text: &str) -> Vec<(String, &'static str
             let num: String = digits.iter().map(|&b| b as char).collect();
             let before = text[..start].to_lowercase();
             let trimmed = before.trim_end();
-            if trimmed.ends_with("acn")
+            let has_context = trimmed.ends_with("acn")
                 || trimmed.ends_with("acn:")
                 || trimmed.ends_with("a.c.n.")
                 || trimmed.ends_with("company number")
-                || trimmed.ends_with("company number:")
-            {
+                || trimmed.ends_with("company number:");
+            // Require the ASIC check-digit too (symmetric with the ABN path) so a
+            // random 9-digit number next to the word "acn" is rejected.
+            if has_context && crate::util::abn::is_valid_acn(&num) {
                 results.push((num, "ACN"));
                 if results.len() >= 10 {
                     break;
@@ -1262,24 +1264,8 @@ pub(super) fn extract_abn_acn_from_text(text: &str) -> Vec<(String, &'static str
 }
 
 pub(super) fn is_valid_abn(s: &str) -> bool {
-    if s.len() != 11 {
-        return false;
-    }
-    let weights = [10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19];
-    let digits: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
-    if digits.len() != 11 {
-        return false;
-    }
-    let mut sum = 0u32;
-    for (i, &w) in weights.iter().enumerate() {
-        let d = if i == 0 {
-            digits[i].wrapping_sub(1)
-        } else {
-            digits[i]
-        };
-        sum += d * w;
-    }
-    sum.is_multiple_of(89)
+    // Shared, checksum-validated implementation (see `util::abn`).
+    crate::util::abn::is_valid_abn(s)
 }
 
 /// Extract organisation names from text. Looks for patterns like
@@ -1439,4 +1425,42 @@ pub(super) fn is_email_local_char(b: u8) -> bool {
 
 pub(super) fn is_domain_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'.' || b == b'-'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abn_validator_does_not_panic_on_leading_zero() {
+        // Regression: an 11-digit candidate starting with '0' lifted from a
+        // live search result used to overflow (0u32.wrapping_sub(1) * 10) and
+        // panic the search_engines module mid-scan. Must now return false.
+        assert!(!is_valid_abn("01234567890"));
+        assert!(!is_valid_abn("00000000000"));
+    }
+
+    #[test]
+    fn abn_validator_accepts_known_valid() {
+        // ATO worked-example ABN (also the README's `--kind abn` example).
+        assert!(is_valid_abn("51824753556"));
+    }
+
+    #[test]
+    fn abn_validator_rejects_wrong_length_and_checksum() {
+        assert!(!is_valid_abn("123")); // too short
+        assert!(!is_valid_abn("123456789012")); // too long
+        assert!(!is_valid_abn("51824753557")); // valid length, bad checksum
+        assert!(!is_valid_abn("abcdefghijk")); // non-digits → <11 digits
+    }
+
+    #[test]
+    fn abn_validator_handles_all_leading_digits_without_panic() {
+        // No 11-digit string should ever panic the validator, whatever the
+        // leading digit — the whole point of the signed-wide accumulator.
+        for first in '0'..='9' {
+            let candidate = format!("{first}1824753556");
+            let _ = is_valid_abn(&candidate); // must not panic
+        }
+    }
 }

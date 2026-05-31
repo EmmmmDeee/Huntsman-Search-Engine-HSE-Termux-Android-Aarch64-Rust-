@@ -24,7 +24,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::Evidence,
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -121,6 +121,17 @@ impl Module for XposedOrNot {
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Breach
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        // Up to ~3 sequential network requests, none with a per-request
+        // timeout. The 3s default could not cover even one slow response,
+        // let alone the chain; budget for the full sequence.
+        15_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

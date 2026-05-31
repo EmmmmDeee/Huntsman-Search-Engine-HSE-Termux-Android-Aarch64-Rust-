@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::urlencode;
@@ -101,6 +101,21 @@ impl Module for Keybase {
     }
     fn max_timeout_ms(&self) -> u64 {
         4_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Social
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Person,
+            EntityKind::Username,
+            EntityKind::Email,
+            EntityKind::Domain,
+            EntityKind::Address,
+        ];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

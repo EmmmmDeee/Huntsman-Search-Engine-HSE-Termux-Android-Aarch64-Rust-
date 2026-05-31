@@ -36,11 +36,19 @@ impl Module for PwnedPasswords {
         matches!(t.kind, TargetKind::Email | TargetKind::Username)
     }
     fn max_timeout_ms(&self) -> u64 {
-        3_000
+        // Single k-anonymity range GET with no per-request timeout; the 3s
+        // default would kill a slow-but-connected response as a spurious
+        // engine "timeout".
+        10_000
     }
 
     fn is_passive(&self) -> bool {
-        true
+        // NOT passive: this module makes an outbound request to
+        // api.pwnedpasswords.com. `--passive-only` is documented as "skip
+        // network-reaching modules", and the trait defines passive as
+        // local-sensor / no-network — so a module that queries a remote API
+        // must report false or it would silently egress under passive-only.
+        false
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -146,8 +154,9 @@ mod tests {
     fn module_metadata() {
         assert_eq!(PwnedPasswords.name(), "pwned_passwords");
         assert_eq!(PwnedPasswords.priority(), 115);
-        assert_eq!(PwnedPasswords.max_timeout_ms(), 3_000);
-        assert!(PwnedPasswords.is_passive());
+        assert_eq!(PwnedPasswords.max_timeout_ms(), 10_000);
+        // Network-reaching (api.pwnedpasswords.com) → not passive.
+        assert!(!PwnedPasswords.is_passive());
     }
 
     #[test]

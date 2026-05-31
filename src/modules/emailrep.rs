@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::Evidence,
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::{error_snippet, urlencode};
@@ -93,6 +93,10 @@ impl Module for EmailRep {
     }
     fn max_timeout_ms(&self) -> u64 {
         5_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Email
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

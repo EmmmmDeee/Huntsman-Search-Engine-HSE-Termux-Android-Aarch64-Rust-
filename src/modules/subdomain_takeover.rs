@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -37,6 +37,15 @@ impl Module for SubdomainTakeover {
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::DnsRecon
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Domain];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

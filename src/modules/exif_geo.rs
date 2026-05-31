@@ -226,9 +226,12 @@ fn extract_gps(exif: &exif::Exif) -> Option<(f64, f64)> {
     } else {
         lon_deg
     };
-    // Sanity-bound — anything outside [-90,90] x [-180,180] is
-    // either malformed EXIF or a synthesised tag we don't trust.
-    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+    // Validate with the shared policy (finite + in-range + not-Null-Island).
+    // EXIF specifically needs the 0,0 rejection: a metadata-stripped or
+    // sensor-zeroed image commonly encodes GPSLatitude/Longitude as the
+    // `0/1,0/1,0/1` DMS triple, which decodes to a "valid"-looking 0.0,0.0
+    // Null-Island fix. The prior inline range check let that through.
+    if !crate::util::geo::is_valid_coords(lat, lon) {
         return None;
     }
     Some((lat, lon))
@@ -395,5 +398,21 @@ mod tests {
         // 1/0 D should produce non-finite — dms_to_decimal returns None.
         let v = Value::Rational(vec![rat(1, 0), rat(0, 1), rat(0, 1)]);
         assert!(dms_to_decimal(&v).is_none());
+    }
+
+    #[test]
+    fn shared_validator_rejects_exif_null_island() {
+        // Regression: a sensor-zeroed / metadata-stripped image encodes GPS as
+        // the 0/1,0/1,0/1 DMS triple → decodes to 0.0,0.0. dms_to_decimal still
+        // converts each axis to 0.0 (it's just arithmetic), but extract_gps now
+        // rejects the resulting Null-Island pair via the shared validator, so
+        // no false Coordinates entity is emitted.
+        assert_eq!(
+            dms_to_decimal(&Value::Rational(vec![rat(0, 1), rat(0, 1), rat(0, 1)])),
+            Some(0.0)
+        );
+        assert!(!crate::util::geo::is_valid_coords(0.0, 0.0));
+        // A real fix still passes.
+        assert!(crate::util::geo::is_valid_coords(-27.4766, 153.0166));
     }
 }

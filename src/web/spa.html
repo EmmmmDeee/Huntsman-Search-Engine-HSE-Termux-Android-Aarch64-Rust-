@@ -352,7 +352,29 @@ function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${
 function statusPill(s){const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending',aborted:'s-aborted'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
 function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
 function kindPill(k){return `<span class="kind-pill k-${attr(k)}">${esc(k)}</span>`;}
-function effC(e){const c=e.confidence??0;const corr=Math.max(1,e.corroboration??1);return Math.min(1,Math.max(0,c*(1+0.15*Math.log(corr))));}
+// Distinct corroborating sources drive the C_eff boost — must match the
+// backend's Entity::source_count(): count distinct evidence.source strings;
+// when no evidence is present, fall back to the corroboration field. (The old
+// version boosted on the raw corroboration field, which over-credited
+// single-source findings whose within-module counts were summed by merge.)
+function sourceCount(e){
+  const evs=e.evidence||[];
+  if(evs.length){const s=new Set();for(const ev of evs){if(ev&&ev.source)s.add(ev.source);}if(s.size)return Math.max(1,s.size);}
+  return Math.max(1,e.corroboration??1);
+}
+function effC(e){const c=e.confidence??0;const n=sourceCount(e);return Math.min(1,Math.max(0,c*(1+0.15*Math.log(n))));}
+function trunc(s,n){s=String(s||'');return s.length>n?s.slice(0,n)+'…':s;}
+/* Linkify http(s) values only (javascript:/data: stay inert escaped text), so
+   URL entities and pivot/avatar evidence are clickable — SpiderFoot/NAMINT UX. */
+/* Stringify any attribute value for display: null/undefined -> '', objects ->
+   JSON (not "[object Object]"), and numeric 0 preserved (not dropped by ||). */
+function attrText(v){return v==null?'':(typeof v==='object'?JSON.stringify(v):String(v));}
+function extLink(url,maxText){
+  url=url==null?'':String(url);
+  const text=esc(maxText?trunc(url,maxText):url);
+  if(!/^https?:\/\//i.test(url)) return text;
+  return `<a href="${attr(url)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+}
 function classify(eff){return eff>=0.75?'VERIFIED':eff>=0.4?'PROBABLE':'CANDIDATE';}
 function toast(msg,kind){
   if (typeof alertify === 'undefined') return;
@@ -1026,7 +1048,7 @@ function renderStatus(host, scan){
               <div class="col-xs-4"><div class="stat-card"><div class="lab c-PROBABLE">Probable</div><div class="val" style="color:#8a6d3b">${probable}</div></div></div>
               <div class="col-xs-4"><div class="stat-card"><div class="lab c-CANDIDATE">Candidate</div><div class="val" style="color:#a94442">${candidate}</div></div></div>
             </div>
-            <p class="help-block">Tiers derived from <code>C_eff = clamp(C × (1 + 0.15·ln(corroboration)), 0, 1)</code>.</p>
+            <p class="help-block">Tiers derived from <code>C_eff = clamp(C × (1 + 0.15·ln(distinct_sources)), 0, 1)</code>.</p>
           </div>
         </div>
       </div>
@@ -1138,12 +1160,12 @@ function renderBrowseTable(rows){
     const eff = effC(e), tier = classify(eff);
     const sources = Array.from(new Set((e.evidence||[]).map(ev=>ev.source))).sort();
     const evDetail = (e.evidence||[]).map(ev=>{
-      const attrs = Object.entries(ev.attributes||{}).map(([k,v])=>`<span class="ev-attr"><span class="ak">${esc(k)}:</span> ${esc((v||'').substring(0,120))}</span>`).join('');
+      const attrs = Object.entries(ev.attributes||{}).map(([k,v])=>`<span class="ev-attr"><span class="ak">${esc(k)}:</span> ${extLink(attrText(v),90)}</span>`).join('');
       return `<div class="ev-block"><span class="ev-src">${esc(ev.source)}</span><div class="ev-sum">${esc(ev.summary)}</div>${attrs?`<div class="ev-attrs">${attrs}</div>`:''}</div>`;
     }).join('');
     return `<tr onclick="toggleDetail(this)" data-idx="${idx}">
       <td>${kindPill(e.kind)}</td>
-      <td style="word-break:break-word"><code>${esc(e.raw_value||e.value)}</code></td>
+      <td style="word-break:break-word"><code>${extLink(e.raw_value||e.value)}</code></td>
       <td class="text-right"><code>${eff.toFixed(3)}</code></td>
       <td class="text-right">${e.corroboration||1}</td>
       <td><span class="cls c-${attr(tier)}">${tier}</span></td>
@@ -1171,10 +1193,14 @@ function renderCorrelations(host){
     host.innerHTML = '<div class="empty-state"><h3>No correlations fired</h3><p>Correlation rules evaluate post-scan against the entities produced. They surface multi-source breach clusters, infrastructure consensus, and other high-signal aggregations.</p></div>';
     return;
   }
+  // Server returns correlations pre-ranked by severity × max child C_eff
+  // (highest-value first). Surface the rank score so the ordering is legible.
   host.innerHTML = S.correlations.map(c=>{
     const sev = (c.severity||'low').toLowerCase();
+    const rank = (typeof c.rank === 'number' && c.rank > 0)
+      ? `<span class="pull-right" title="rank = severity × max child C_eff">rank ${c.rank.toFixed(2)}</span>` : '';
     return `<div class="corr-card cv-${attr(sev)}">
-      <div class="corr-h"><b>${esc(sev.toUpperCase())}</b> · ${esc(c.rule_id||'')}</div>
+      <div class="corr-h"><b>${esc(sev.toUpperCase())}</b> · ${esc(c.rule_id||'')}${rank}</div>
       <div class="corr-name">${esc(c.rule_name||c.rule_id||'—')}</div>
       <div class="corr-d">${esc(c.description||c.summary||'')}</div>
     </div>`;

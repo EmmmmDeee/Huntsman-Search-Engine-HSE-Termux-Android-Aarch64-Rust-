@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::urlencode;
@@ -87,6 +87,15 @@ impl Module for Photon {
     }
     fn max_timeout_ms(&self) -> u64 {
         4_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Geo
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates, EntityKind::Address];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

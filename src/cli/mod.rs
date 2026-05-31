@@ -41,7 +41,7 @@ use crate::{
     version = crate::VERSION,
     about = "Huntsman Search Engine — Termux aarch64 OSINT / GEOINT prototype",
     long_about = "Pure-Rust OSINT scaffold for Termux on Android aarch64.\n\
-                  Five free modules, autonomous depth-bounded expansion.\n\
+                  80+ modules (most free, no key), autonomous depth-bounded expansion.\n\
                   Docs: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-"
 )]
 pub struct Cli {
@@ -60,7 +60,10 @@ pub enum Command {
         #[arg(short, long)]
         kind: String,
         /// Target value (e.g. example.com, foo@bar.com).
-        #[arg(short, long)]
+        // allow_hyphen_values so a value that legitimately begins with `-`
+        // (e.g. a southern-hemisphere coordinate `-33.86,151.20`) is taken as
+        // the value, not parsed by clap as an unknown short flag.
+        #[arg(short, long, allow_hyphen_values = true)]
         value: String,
         /// Comma-separated allowlist of module names.
         #[arg(short, long)]
@@ -231,7 +234,10 @@ pub enum Command {
         #[arg(short, long)]
         kind: String,
         /// Target value.
-        #[arg(short, long)]
+        // allow_hyphen_values so a value that legitimately begins with `-`
+        // (e.g. a southern-hemisphere coordinate `-33.86,151.20`) is taken as
+        // the value, not parsed by clap as an unknown short flag.
+        #[arg(short, long, allow_hyphen_values = true)]
         value: String,
         /// Seconds between iterations.
         #[arg(short, long, default_value_t = crate::LIVE_DEFAULT_INTERVAL_SECS)]
@@ -303,15 +309,33 @@ pub enum Command {
 }
 
 pub async fn run() -> Result<()> {
-    // Logs go to stderr so stdout carries only the requested payload. Without
-    // this, `tracing_subscriber::fmt()` defaults to stdout and interleaves
-    // INFO lines into `--output json` (and live/export streams), producing
-    // output that downstream parsers cannot consume.
+    // Raw logs by default (operator directive: the entire project outputs raw
+    // logs). When `RUST_LOG` is unset we default to TRACE — the rawest level —
+    // so every curl invocation, full endpoint payload, JSON-parse step, and
+    // retry/backoff decision is emitted without the operator having to opt in.
+    // An explicit `RUST_LOG` still wins (e.g. `RUST_LOG=warn` to quieten, or
+    // `RUST_LOG=hyper=info,huntsman_search_engine=trace` to scope).
+    //
+    // Logs go to STDERR so stdout carries only the requested payload — without
+    // this, log lines interleave into `--output json` (and live/export
+    // streams), producing output downstream parsers cannot consume. `with_target`
+    // and line numbers are on so each raw line shows its module-path + site.
+    // Default filter: HSE's own crate at TRACE (raw logs for every module,
+    // curl call, parse, retry), but the TLS/HTTP plumbing crates capped at
+    // INFO — at TRACE, hyper/h2/rustls/reqwest emit per-frame/per-byte IO spam
+    // that buries the project's own raw logs (observed ~160 dep lines vs ~260
+    // HSE lines on a single IP lookup). This keeps "the entire project outputs
+    // raw logs" meaningful: maximal verbosity for HSE, signal not framing noise
+    // from its dependencies. An explicit `RUST_LOG` overrides this wholesale.
+    const DEFAULT_RAW_LOG: &str = "trace,\
+        hyper=info,hyper_util=info,h2=info,rustls=info,reqwest=info,\
+        tokio_util=info,tower=info,want=info,mio=info";
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_RAW_LOG)),
         )
-        .with_target(false)
+        .with_target(true)
+        .with_line_number(true)
         .with_writer(std::io::stderr)
         .init();
 

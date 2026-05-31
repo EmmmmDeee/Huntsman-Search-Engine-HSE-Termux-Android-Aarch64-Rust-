@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -33,6 +33,23 @@ impl Module for AbuseIpDb {
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::IpAddress];
+        KINDS
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        // Single keyed request via fetch_keyed_json (no internal total
+        // timeout, only the client's 5s connect). On the 3s default the
+        // engine killed a slow-but-connected response as a spurious
+        // "timeout".
+        10_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

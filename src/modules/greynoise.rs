@@ -16,7 +16,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::{fetch_json_or_404, urlencode};
@@ -71,6 +71,22 @@ impl Module for GreyNoise {
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::IpAddress];
+        KINDS
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        // Single network request with no per-request timeout (governed only
+        // by the client's 5s connect timeout). On the 3s default the engine
+        // killed a slow-but-connected response as a spurious "timeout".
+        10_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
