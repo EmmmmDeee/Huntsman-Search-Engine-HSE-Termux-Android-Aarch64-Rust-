@@ -42,6 +42,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`username_variants` module — alternate-handle derivation (free, offline).**
+  Turns a discovered `Username` seed into the handful of high-likelihood
+  alternate handles a target reuses across platforms, feeding `username_search`,
+  `social_probe`, `github_user`, and `keybase` at `--depth 1+`. Pure string
+  transforms — no network, no new deps. Two *normalisation* families only,
+  never speculative additions: **separator swaps** (`john.doe` → `john_doe` /
+  `john-doe` / `johndoe`, the same handle for each platform's punctuation
+  rules) and **de-decoration** (strip a trailing disambiguator `jdoe1990` →
+  `jdoe`, or separator-bounded vanity tokens `the_real_jdoe` / `jdoe_official`
+  → `jdoe`). A plain, undecorated handle yields nothing — there is no
+  defensible transform and `username_search` already probes the exact handle —
+  and additions like `jdoe1` are deliberately not produced (noise). Variants
+  are emitted as 0.42 *candidates* (below the 0.50 expansion floor) so a
+  `--depth` scan never auto-spends on a guess; they enrich the graph and feed
+  the new AU-034 handle-reuse correlator, crossing the floor only when an
+  independent source corroborates them. Output is capped at 12 per seed for
+  Termux. Brings the registry to **88 modules**; 11 unit tests cover every
+  transform and suppression path.
+
 - **`AU-034` — handle-reuse identity link (username ↔ email).** A new
   cross-correlation rule: when a discovered `Username` and the local-part of a
   discovered `Email` share the same separator-insensitive handle (`jmeyers` ↔

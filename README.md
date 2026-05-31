@@ -67,7 +67,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 | Seed | Flag | Example | Modules |
 |------|------|---------|---------|
 | Email | `--kind email` | `user@example.com` | 34 |
-| Username | `--kind username` | `johndoe` | 13 |
+| Username | `--kind username` | `johndoe` | 14 |
 | Phone | `--kind phone` | `+61400000000` | 8 |
 | Full Name | `--kind name` | `Jordan Leigh Meyers` | 6 |
 | IP Address | `--kind ip` | `1.1.1.1` | 33 |
@@ -82,7 +82,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 ---
 
-## Module Overview (87 modules — 64 free, 23 key-gated/paid)
+## Module Overview (88 modules — 65 free, 23 key-gated/paid)
 
 > Generated from `hse modules --json`. The full catalogue with target
 > kinds and output entities (kept honest by the
@@ -91,7 +91,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 **API-Free (no keys required):**
 - **Breach/identity**: `pwned_passwords`, `xposed_or_not`
-- **Social**: `github_user`, `keybase`, `social_probe`, `username_search`
+- **Social**: `github_user`, `keybase`, `social_probe`, `username_search`, `username_variants`
 - **People**: `contact_enrich`, `employer_pivot`, `name_intel`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `shodan`, `urlscan`
