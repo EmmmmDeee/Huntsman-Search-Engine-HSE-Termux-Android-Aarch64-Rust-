@@ -1485,6 +1485,18 @@ async function renderLog(host, scan){
     openSse(scan.id, ev=>{
       if (bufferingMode) buffered.push(ev);
       else appendLog(ev);
+    }, (state, es)=>{
+      const st = $('#log-status'); if (!st) return;
+      if (state === 'open'){
+        st.className = 'label label-info';
+        st.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;live';
+      } else if (es.readyState === 2){ // CLOSED — server idle-closed or unreachable
+        st.className = 'label label-default';
+        st.textContent = 'disconnected';
+      } else { // CONNECTING — auto-reconnecting
+        st.className = 'label label-warning';
+        st.textContent = 'reconnecting…';
+      }
     });
   }
 
@@ -1591,10 +1603,16 @@ function mapEvent(ev){
   if (t==='correlations_done') return {typ:'corr', lv:'info', msg:`correlations done · ${ev.count}`};
   return {typ: esc(t||'?'), lv:'info', msg: esc(JSON.stringify(ev).slice(0,220))};
 }
-function openSse(scanId, onEv){
+function openSse(scanId, onEv, onState){
   closeSse();
   const es = new EventSource('/api/v1/scans/'+encodeURIComponent(scanId)+'/events');
   es.onmessage = e => { try { onEv(JSON.parse(e.data)); } catch {} };
+  if (onState){
+    // EventSource auto-reconnects on its own; we only reflect the state so a
+    // dropped stream on a flaky mobile link doesn't look frozen-but-live.
+    es.onopen  = () => onState('open', es);
+    es.onerror = () => onState('error', es);
+  }
   S.sse = es;
 }
 function closeSse(){ if (S.sse){ S.sse.close(); S.sse = null; } }
