@@ -90,7 +90,7 @@ pub enum Command {
         /// entities back as new scan targets, up to N rounds deep.
         #[arg(short, long, default_value_t = 0)]
         depth: u32,
-        /// Shorthand for deep recursive expansion: sets depth=5,
+        /// Shorthand for deep recursive expansion: sets depth to MAX_DEPTH (3),
         /// min_expand_confidence=0.50, max_concurrent=4. Overridden by
         /// explicit --depth / --min-expand-confidence / --max-concurrent.
         #[arg(short = 'R', long)]

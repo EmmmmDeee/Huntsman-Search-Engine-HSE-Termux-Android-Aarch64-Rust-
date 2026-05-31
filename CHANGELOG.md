@@ -12,6 +12,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Hard `MAX_DEPTH=3` recursion ceiling, enforced at every operator boundary.**
+  `ScanOptions::clamp_depth()` caps operator-requested expansion depth (CLI
+  `scan`/`--recursive`/`--auto`, the HTTP scan-create/batch path, and live
+  sessions) at `MAX_DEPTH` (3), warning once when it clamps. The engine already
+  cannot infinite-loop (visited-set + entity budget + wall-time watchdog — see
+  `tests/halting.rs`); this is a Termux resource guard so a stray `--depth 1000`
+  can't fan the frontier out exponentially on a phone. `--recursive` now targets
+  the ceiling (was 7) and `optimal_depth` (`--auto`) is clamped too; the engine
+  core stays uncapped so the halting proofs still drive it at high depth.
+
 - **`AU-033` — Australian business identity correlation (ABN/ACN ↔ organisation).**
   Links an ABN/ACN registration to the registered organisation(s) it belongs to
   when both surface from an Australian registry (`abn_lookup`/`opencorporates`),

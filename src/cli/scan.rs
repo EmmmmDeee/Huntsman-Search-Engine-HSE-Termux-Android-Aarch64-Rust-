@@ -52,7 +52,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         (auto_depth, auto_conf, cmd.max_concurrent.max(4))
     } else if cmd.recursive && cmd.depth == 0 {
         (
-            7,
+            crate::core::scan::MAX_DEPTH,
             cmd.min_expand_confidence.min(0.40),
             cmd.max_concurrent.max(4),
         )
@@ -121,7 +121,8 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         min_marginal_yield: cmd.min_marginal_yield,
         expansion_strategy,
         seeknow_scan_cap: cmd.seeknow_scan_cap,
-    };
+    }
+    .clamp_depth();
     if cmd.max_roi {
         eprintln!(
             "max-roi: convergence-pruning + top-K gate + adaptive-depth (floor={:.2})",

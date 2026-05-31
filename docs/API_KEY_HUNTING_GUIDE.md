@@ -8,7 +8,7 @@ running scans — the ordering matters.
 
 ```bash
 # The single command that yields the most keys per OathNet lookup:
-hse scan --kind domain --value <target.com> --depth 5 -A
+hse scan --kind domain --value <target.com> --depth 3 -A
 ```
 
 That's it. The rest of this guide explains *why* that works, what each
@@ -176,7 +176,7 @@ explodes.
 ### Find keys for a specific domain
 
 ```bash
-hse scan --kind domain --value target.com --depth 5 -A --max-concurrent 4
+hse scan --kind domain --value target.com --depth 3 -A --max-concurrent 4
 ```
 
 This runs:
@@ -202,7 +202,7 @@ hse scan ... --output json | \
 ### Find keys for a target's email
 
 ```bash
-hse scan --kind email --value user@target.com --depth 5 -A
+hse scan --kind email --value user@target.com --depth 3 -A
 ```
 
 R0 produces emails + domains + IPs. R1 runs web_crawler on every
@@ -212,7 +212,7 @@ domain discovered. Same chain, different seed.
 
 ```bash
 for d in target1.com target2.com target3.com; do
-  hse scan --kind domain --value "$d" --depth 5 -A --output json \
+  hse scan --kind domain --value "$d" --depth 3 -A --output json \
     > /tmp/scan_$d.json
 done
 
@@ -400,7 +400,7 @@ Categories:
 To run with maximum throughput:
 ```bash
 HUNTSMAN_OATHNET_SESSION_CAP=500 \
-  hse scan --kind domain --value target.com --depth 5 -A \
+  hse scan --kind domain --value target.com --depth 3 -A \
            --max-concurrent 16 --min-expand-confidence 0.30
 ```
 

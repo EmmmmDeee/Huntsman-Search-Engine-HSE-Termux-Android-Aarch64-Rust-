@@ -481,6 +481,33 @@ impl std::str::FromStr for ExpansionStrategy {
     }
 }
 
+/// Hard ceiling on recursive expansion depth, enforced at every operator-input
+/// boundary (CLI / API / live) via [`ScanOptions::clamp_depth`]. The engine
+/// itself cannot infinite-loop regardless (per-target visited-set + entity
+/// budget + wall-time watchdog — see `tests/halting.rs`), but on a low-RAM
+/// Termux device each extra hop fans the frontier out roughly exponentially, so
+/// operator-requested depth is capped here. Change this one constant to raise
+/// or lower the ceiling.
+pub const MAX_DEPTH: u32 = 3;
+
+impl ScanOptions {
+    /// Clamp `depth` to [`MAX_DEPTH`], warning once if it actually clamps.
+    /// Applied at the CLI/API/live input boundaries — deliberately NOT inside
+    /// the engine core, whose halting proofs are driven at high depth on purpose.
+    #[must_use]
+    pub fn clamp_depth(mut self) -> Self {
+        if self.depth > MAX_DEPTH {
+            tracing::warn!(
+                requested = self.depth,
+                cap = MAX_DEPTH,
+                "expansion depth clamped to MAX_DEPTH (Termux resource guard)"
+            );
+            self.depth = MAX_DEPTH;
+        }
+        self
+    }
+}
+
 impl Default for ScanOptions {
     fn default() -> Self {
         Self {
@@ -623,7 +650,7 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
 
     let min_conf = if has_paid_keys { 0.40 } else { 0.45 };
 
-    (depth, min_conf)
+    (depth.min(MAX_DEPTH), min_conf)
 }
 
 /// Geo-specific NPV: expected Coordinates + Address entity yield.
@@ -910,6 +937,41 @@ mod tests {
         assert_eq!(o.depth, 0);
         assert!((o.min_expand_confidence - 0.50).abs() < 1e-9);
         assert_eq!(o.max_concurrent, 4);
+    }
+
+    #[test]
+    fn clamp_depth_enforces_max_depth() {
+        assert_eq!(MAX_DEPTH, 3);
+        let over = ScanOptions {
+            depth: 99,
+            ..Default::default()
+        };
+        assert_eq!(
+            over.clamp_depth().depth,
+            MAX_DEPTH,
+            "deep request is capped"
+        );
+        let under = ScanOptions {
+            depth: 2,
+            ..Default::default()
+        };
+        assert_eq!(under.clamp_depth().depth, 2, "in-range depth is untouched");
+    }
+
+    #[test]
+    fn optimal_depth_never_exceeds_max_depth() {
+        for kind in [
+            TargetKind::Email,
+            TargetKind::Username,
+            TargetKind::FullName,
+            TargetKind::Domain,
+            TargetKind::IpAddress,
+            TargetKind::Phone,
+        ] {
+            for paid in [true, false] {
+                assert!(optimal_depth(kind, paid).0 <= MAX_DEPTH);
+            }
+        }
     }
 
     #[test]
