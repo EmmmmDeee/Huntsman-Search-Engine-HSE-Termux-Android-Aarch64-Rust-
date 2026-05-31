@@ -1205,6 +1205,257 @@ pub(super) fn rule_au_033_abn_organisation_link(
     )]
 }
 
+/// Role-mailbox / shared-inbox handles that identify an organisation function,
+/// not a person — matching identities on these links unrelated people, so they
+/// are excluded from AU-034. Complements `preflight::is_placeholder_username`
+/// (admin/test/guest/…) with the shared-mailbox local-parts that pad email
+/// sets. Entries are stored in canonical (separator-free, lowercase) form to
+/// match [`canonical_handle`] output.
+const GENERIC_HANDLES: &[&str] = &[
+    "info",
+    "contact",
+    "support",
+    "sales",
+    "help",
+    "hello",
+    "office",
+    "mail",
+    "team",
+    "noreply",
+    "donotreply",
+    "service",
+    "services",
+    "billing",
+    "marketing",
+    "press",
+    "media",
+    "jobs",
+    "careers",
+    "abuse",
+    "postmaster",
+    "webmaster",
+    "hostmaster",
+    "enquiries",
+    "enquiry",
+    "general",
+    "accounts",
+    "account",
+    "newsletter",
+    "subscribe",
+];
+
+/// Canonical comparison form of a handle: ASCII-lowercased with the handle
+/// separators (`.`, `_`, `-`) removed, so the same handle written with
+/// inconsistent punctuation collapses to one token (`jordan.meyers`,
+/// `jordan_meyers`, `jordanmeyers` → `jordanmeyers`). People reuse a single
+/// handle across services with different separators; this is the comparison
+/// the match needs.
+fn canonical_handle(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '.' | '_' | '-'))
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// True if `handle` (already canonicalised) is too generic to identify a
+/// person — a placeholder username or a role mailbox.
+fn is_generic_handle(handle: &str) -> bool {
+    crate::util::preflight::is_placeholder_username(handle) || GENERIC_HANDLES.contains(&handle)
+}
+
+/// AU-034 — Handle reuse linking a username and an email.
+///
+/// When a discovered `Username` and the local-part of a discovered `Email`
+/// share the same separator-insensitive handle (username `jmeyers` ↔
+/// `jmeyers@gmail.com`), they very likely belong to the same person — the
+/// everyday analyst pivot the kind-specific identity rules don't make
+/// (AU-011 is one username across many platforms; AU-020/AU-023 cluster
+/// `Person` entities). Gmail-style `+tag` suffixes are stripped before the
+/// comparison so `jmeyers+news@…` still matches.
+///
+/// Gated to stay low-noise:
+///   * the handle must be ≥ `MIN_HANDLE_LEN` chars and neither a placeholder
+///     nor a role mailbox (`info@`, `admin`, …);
+///   * the username and its matched emails must carry ≥ `MIN_DISTINCT_SOURCES`
+///     *distinct* evidence sources between them, so a single module that mints
+///     both a candidate username and a candidate email from one seed (e.g.
+///     `name_intel`) can't self-correlate — the reuse must be independently
+///     observed. This mirrors the ≥2-source gate AU-001/AU-023 use.
+pub(super) fn rule_au_034_handle_reuse_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    const MIN_HANDLE_LEN: usize = 4;
+    const MIN_DISTINCT_SOURCES: usize = 2;
+
+    let usernames = entities_of_kind(entities, EntityKind::Username);
+    let emails = entities_of_kind(entities, EntityKind::Email);
+    if usernames.is_empty() || emails.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for u in &usernames {
+        let handle = canonical_handle(&u.value);
+        if handle.len() < MIN_HANDLE_LEN || is_generic_handle(&handle) {
+            continue;
+        }
+        let mut sources: HashSet<&str> = u.evidence_sources();
+        let mut matched_uids: Vec<String> = Vec::new();
+        let mut matched_values: Vec<&str> = Vec::new();
+        for e in &emails {
+            // local-part, minus any Gmail-style `+tag` suffix.
+            let local = e.value.split('@').next().unwrap_or_default();
+            let base = local.split('+').next().unwrap_or_default();
+            if !base.is_empty() && canonical_handle(base) == handle {
+                matched_uids.push(e.uid.clone());
+                matched_values.push(e.value.as_str());
+                sources.extend(e.evidence_sources());
+            }
+        }
+        if matched_uids.is_empty() || sources.len() < MIN_DISTINCT_SOURCES {
+            continue;
+        }
+        matched_uids.sort_unstable();
+        matched_values.sort_unstable();
+        let mut uids = Vec::with_capacity(1 + matched_uids.len());
+        uids.push(u.uid.clone());
+        uids.extend(matched_uids);
+        out.push(Correlation::new(
+            "AU-034",
+            "Handle reuse (username \u{2194} email)",
+            Severity::Medium,
+            format!(
+                "Username '{}' shares its handle with {} email(s): {}",
+                u.value,
+                matched_values.len(),
+                matched_values.join(", ")
+            ),
+            uids,
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
+/// Modules that *derive* a username by inference — a name permutation, an email
+/// local-part, or a handle variant — rather than observing it on a platform.
+const USERNAME_DERIVATION_SOURCES: &[&str] = &["name_intel", "email_parse", "username_variants"];
+
+/// Modules that *discover* a username by observing it live on a real platform /
+/// corpus, confirming the handle exists.
+const USERNAME_DISCOVERY_SOURCES: &[&str] = &[
+    "username_search",
+    "github_user",
+    "keybase",
+    "social_probe",
+    "proxycurl",
+    "epieos",
+    "see_know",
+    "oathnet_pro",
+];
+
+/// AU-035 — Inferred handle confirmed in the wild.
+///
+/// A `Username` that was first *derived* by inference (a name permutation from
+/// `name_intel`, an email local-part from `email_parse`, or a handle variant
+/// from `username_variants`) and then *independently observed* on a real
+/// platform (`username_search`, `github_user`, `keybase`, …) is a high-value
+/// identity hit: a guessed handle that turned out to exist. This is the payoff
+/// the derivation modules set up but no rule surfaced — distinct from AU-011
+/// (one handle across many platforms) and AU-034 (username ↔ email handle
+/// reuse). Both an inference source and a discovery source must be present on
+/// the same merged entity, so a handle that was only ever observed (a normal
+/// find) or only ever guessed (an unconfirmed candidate) does not fire.
+pub(super) fn rule_au_035_confirmed_derived_handle(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    for e in entities_of_kind(entities, EntityKind::Username) {
+        let sources = e.evidence_sources();
+        let mut inferred_by: Vec<&str> = sources
+            .iter()
+            .copied()
+            .filter(|s| USERNAME_DERIVATION_SOURCES.contains(s))
+            .collect();
+        let mut confirmed_by: Vec<&str> = sources
+            .iter()
+            .copied()
+            .filter(|s| USERNAME_DISCOVERY_SOURCES.contains(s))
+            .collect();
+        if inferred_by.is_empty() || confirmed_by.is_empty() {
+            continue;
+        }
+        inferred_by.sort_unstable();
+        confirmed_by.sort_unstable();
+        out.push(Correlation::new(
+            "AU-035",
+            "Inferred handle confirmed in the wild",
+            Severity::Medium,
+            format!(
+                "Handle '{}' was inferred ({}) and then independently confirmed ({})",
+                e.value,
+                inferred_by.join(", "),
+                confirmed_by.join(", ")
+            ),
+            vec![e.uid.clone()],
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
+/// AU-036 — Email alias convergence (one mailbox).
+///
+/// Multiple distinct addresses that `email_canonical` reduced to the SAME
+/// mailbox (e.g. `j.doe@gmail.com` and `jdoe+news@gmail.com` both →
+/// `jdoe@gmail.com`) are aliases of a single inbox: a strong same-person link
+/// and useful intel in itself. Reads the canonical `Email` entity's
+/// accumulated `email_canonical` evidence — each record carries the
+/// `source_email` it was folded from (the per-source summaries survive the
+/// merge-dedup) — and fires when ≥2 distinct source addresses converged. This
+/// closes the `email_canonical` loop the way AU-035 closes the handle-
+/// derivation loop. Deterministic; no module logic is duplicated.
+pub(super) fn rule_au_036_email_alias_convergence(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    for e in entities_of_kind(entities, EntityKind::Email) {
+        let mut aliases: Vec<&str> = e
+            .evidence
+            .iter()
+            .filter(|ev| ev.source == "email_canonical")
+            .filter_map(|ev| ev.attributes.get("source_email").map(String::as_str))
+            .collect();
+        aliases.sort_unstable();
+        aliases.dedup();
+        if aliases.len() >= 2 {
+            out.push(Correlation::new(
+                "AU-036",
+                "Email alias convergence (one mailbox)",
+                Severity::Medium,
+                format!(
+                    "{} addresses resolve to one mailbox '{}': {}",
+                    aliases.len(),
+                    e.value,
+                    aliases.join(", ")
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}
+
 /// Tags that mark an entity as known-bad for adjacency analysis.
 const ADJACENCY_BAD_TAGS: &[&str] = &["malicious", "threat-intel", "vulnerable"];
 

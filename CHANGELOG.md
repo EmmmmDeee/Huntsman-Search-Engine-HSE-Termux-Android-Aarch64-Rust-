@@ -10,7 +10,114 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Security
+
+- **Closed an IPv4-mapped IPv6 SSRF-filter bypass.** `util::preflight::is_private_addr`
+  — the single predicate behind every SSRF chokepoint (the reqwest DNS filter
+  `http::SsrfResolver`, the redirect-hop gate, the curl `--resolve` pin, and the
+  engine's `Url`-target admission gate `url_host_is_private`) — range-tested the
+  raw address, so an IPv4-mapped IPv6 literal or `AAAA` record such as
+  `::ffff:169.254.169.254` parsed as `V6`, missed every v6 reserved-range check,
+  and was treated as **public** — reaching the underlying IPv4 host (cloud
+  metadata, loopback, RFC1918) the OS connects an IPv4-mapped address to. The
+  predicate now canonicalises with `IpAddr::to_canonical()` before testing, so a
+  mapped address is judged by the v4 arm; `::1`, `::`, ULA/link-local and real
+  public v6 are untouched. Because the check is centralised, the one-line fix
+  closes the bypass on all four paths at once. New regression tests pin the
+  mapped-private and mapped-public cases, proven by reverting the fix in place.
+
+### Fixed
+
+- **`redact_credentials` no longer mojibakes non-ASCII error text.** The
+  credential-masking pass — which scrubs `?api_key=…`-style secrets out of
+  upstream error bodies before they reach module errors and logs — copied
+  non-matching input one byte at a time as `byte as char`, reinterpreting every
+  multi-byte UTF-8 sequence as Latin-1. The secret was still masked, but a
+  provider's localised error (`clé API invalide`), an IDN host, or an em-dash
+  surfaced as `clÃ©` / `â`. It now assembles output on a byte buffer and decodes
+  once; redacted runs are ASCII-delimited (`name=` … `& \n \r "` / EOF), so
+  verbatim byte-runs never split a char and the result is valid UTF-8 by
+  construction. Masking is byte-identical on ASCII input (the six existing tests
+  pass unchanged); a new test pins credential-masked **and** non-ASCII-preserved.
+
 ### Added
+
+- **`email_canonical` module — canonical-mailbox normalisation (free, offline).**
+  Emits the provably-equivalent canonical address for an `Email` seed so the
+  same mailbox written several ways collapses to one identity node instead of
+  fragmenting the graph: `+tag` subaddressing is stripped (`jdoe+news@x.com` →
+  `jdoe@x.com`, as supported by Gmail / Microsoft / Fastmail / Proton / iCloud),
+  Gmail dot-blindness is applied (`j.doe@gmail.com` → `jdoe@gmail.com`), and the
+  `googlemail.com` alias folds to `gmail.com`. Pure string transform — no
+  network, no new deps. Because the result is a documented routing equivalence
+  (not a guess), it is emitted at 0.80 — above the 0.50 expansion floor — so a
+  `--depth 1+` scan pivots the whole email pipeline (`hibp`, `hunter_io`,
+  `epieos`, …) onto the canonical mailbox; an already-canonical seed emits
+  nothing. Directly serves cross-correlation: the shared canonical address
+  accumulates corroboration where the look-alike variants were weak singletons.
+  Brings the registry to **89 modules**; 10 unit tests cover each equivalence
+  and the already-canonical / malformed-address paths.
+
+- **`username_variants` module — alternate-handle derivation (free, offline).**
+  Turns a discovered `Username` seed into the handful of high-likelihood
+  alternate handles a target reuses across platforms, feeding `username_search`,
+  `social_probe`, `github_user`, and `keybase` at `--depth 1+`. Pure string
+  transforms — no network, no new deps. Two *normalisation* families only,
+  never speculative additions: **separator swaps** (`john.doe` → `john_doe` /
+  `john-doe` / `johndoe`, the same handle for each platform's punctuation
+  rules) and **de-decoration** (strip a trailing disambiguator `jdoe1990` →
+  `jdoe`, or separator-bounded vanity tokens `the_real_jdoe` / `jdoe_official`
+  → `jdoe`). A plain, undecorated handle yields nothing — there is no
+  defensible transform and `username_search` already probes the exact handle —
+  and additions like `jdoe1` are deliberately not produced (noise). Variants
+  are emitted as 0.42 *candidates* (below the 0.50 expansion floor) so a
+  `--depth` scan never auto-spends on a guess; they enrich the graph and feed
+  the new AU-034 handle-reuse correlator, crossing the floor only when an
+  independent source corroborates them. Output is capped at 12 per seed for
+  Termux. Brings the registry to **88 modules**; 11 unit tests cover every
+  transform and suppression path.
+
+- **`AU-034` — handle-reuse identity link (username ↔ email).** A new
+  cross-correlation rule: when a discovered `Username` and the local-part of a
+  discovered `Email` share the same separator-insensitive handle (`jmeyers` ↔
+  `jmeyers@gmail.com` — dots/underscores/hyphens folded and Gmail `+tag`
+  suffixes stripped), they are linked as one identity. This is the everyday
+  analyst pivot the kind-specific rules don't make (AU-011 is one username
+  across many platforms; AU-020/AU-023 cluster `Person` entities). Gated to
+  stay quiet: the handle must be ≥4 chars and neither a placeholder (`admin`)
+  nor a role mailbox (`info@`, `support@`, …), and the username plus its
+  matched emails must carry ≥2 *distinct* evidence sources between them — so a
+  single module that mints both a candidate username and a candidate email from
+  one seed (e.g. `name_intel`) can't self-correlate; the reuse must be
+  independently observed (mirroring the ≥2-source gate AU-001/AU-023 use).
+  Brings the correlator to 34 rules. Six unit tests cover the match, the
+  separator/`+tag` folding, multi-email grouping, and every suppression path.
+
+- **`AU-035` — inferred handle confirmed in the wild.** Closes the
+  derivation→discovery loop: a `Username` that was first *derived* by inference
+  (a `name_intel` permutation, an `email_parse` local-part, or a
+  `username_variants` handle) and then *independently observed* on a real
+  platform (`username_search`, `github_user`, `keybase`, `social_probe`, …) is
+  surfaced as a high-value identity hit — a guessed handle that turned out to
+  exist. Both an inference source and a discovery source must be present on the
+  same merged entity, so a handle that was only observed (an ordinary find) or
+  only guessed (an unconfirmed candidate) does not fire; distinct from AU-011
+  (one handle across many platforms) and AU-034 (username ↔ email handle reuse).
+  This is the payoff the derivation modules set up but no rule rewarded. Brings
+  the correlator to **35 rules**; three unit tests pin the confirm path and both
+  single-source suppression paths.
+
+- **`AU-036` — email alias convergence (one mailbox).** Closes the
+  `email_canonical` loop the way AU-035 closes handle derivation: when ≥2
+  distinct addresses fold to the *same* canonical mailbox (e.g.
+  `j.doe@gmail.com` and `jdoe+news@gmail.com` both → `jdoe@gmail.com`), they
+  are aliases of one inbox — a strong same-person link and useful intel in
+  itself. The rule reads the canonical `Email` entity's accumulated
+  `email_canonical` evidence (each record carries the `source_email` it was
+  folded from; the per-source summaries survive the merge dedup) and fires at
+  ≥2 distinct sources — no module logic duplicated. Brings the correlator to
+  **36 rules**; three unit tests cover the convergence, the single-alias no-op,
+  and non-canonical evidence.
 
 - **Hard `MAX_DEPTH=3` recursion ceiling, enforced at every operator boundary.**
   `ScanOptions::clamp_depth()` caps operator-requested expansion depth (CLI

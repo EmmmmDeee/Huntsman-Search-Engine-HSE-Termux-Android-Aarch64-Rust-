@@ -66,8 +66,8 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 | Seed | Flag | Example | Modules |
 |------|------|---------|---------|
-| Email | `--kind email` | `user@example.com` | 34 |
-| Username | `--kind username` | `johndoe` | 13 |
+| Email | `--kind email` | `user@example.com` | 35 |
+| Username | `--kind username` | `johndoe` | 14 |
 | Phone | `--kind phone` | `+61400000000` | 8 |
 | Full Name | `--kind name` | `Jordan Leigh Meyers` | 6 |
 | IP Address | `--kind ip` | `1.1.1.1` | 33 |
@@ -82,7 +82,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 ---
 
-## Module Overview (87 modules — 64 free, 23 key-gated/paid)
+## Module Overview (89 modules — 66 free, 23 key-gated/paid)
 
 > Generated from `hse modules --json`. The full catalogue with target
 > kinds and output entities (kept honest by the
@@ -91,13 +91,13 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 **API-Free (no keys required):**
 - **Breach/identity**: `pwned_passwords`, `xposed_or_not`
-- **Social**: `github_user`, `keybase`, `social_probe`, `username_search`
+- **Social**: `github_user`, `keybase`, `social_probe`, `username_search`, `username_variants`
 - **People**: `contact_enrich`, `employer_pivot`, `name_intel`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `shodan`, `urlscan`
 - **Geolocation**: `breach_timezone`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_area_geo`, `phone_carrier_geo`, `photon`, `social_location`, `sunrise_sunset`
 - **Threat intel**: `urlhaus`
-- **Email**: `disposable_check`, `email_parse`, `smtp_vrfy`
+- **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_intl`
 - **Corporate**: `opencorporates`
 - **Search**: `search_engines`
@@ -222,7 +222,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 1400+ tests (unit + API integration + architecture boundary enforcement)
-- 33 correlator rules (AU-001 through AU-033), incl. 2 graph-aware edge rules
+- 36 correlator rules (AU-001 through AU-036), incl. 2 graph-aware edge rules
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 

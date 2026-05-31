@@ -24,6 +24,7 @@ pub mod dns_axfr;
 pub mod dns_intel;
 pub mod doh_resolver;
 pub mod domainsdb;
+pub mod email_canonical;
 pub mod email_header_geo;
 pub mod email_locale;
 pub mod email_parse;
@@ -82,6 +83,7 @@ pub mod threatfox;
 pub mod urlhaus;
 pub mod urlscan;
 pub mod username_search;
+pub mod username_variants;
 pub mod virustotal;
 pub mod waf_detect;
 pub mod wayback;
@@ -148,9 +150,11 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(web_crawler::WebCrawler),
         Arc::new(urlscan::UrlScan),
         Arc::new(email_parse::EmailParse),
+        Arc::new(email_canonical::EmailCanonical),
         Arc::new(employer_pivot::EmployerPivot),
         Arc::new(social_probe::SocialProbe),
         Arc::new(username_search::UsernameSearch),
+        Arc::new(username_variants::UsernameVariants),
         Arc::new(github_user::GithubUser),
         Arc::new(phone_intl::PhoneIntl),
         Arc::new(wayback::Wayback),

@@ -59,8 +59,16 @@ pub fn should_skip_external_ip(ip: &str) -> bool {
 /// / link-local (incl. 169.254 metadata) / CGNAT / multicast / unspecified /
 /// broadcast (v4); loopback / ULA / link-local / multicast / unspecified (v6).
 /// Shared by the string host gate and the HTTP client's SSRF DNS filter.
+///
+/// IPv4-mapped IPv6 (`::ffff:a.b.c.d`) is normalised to its IPv4 form first:
+/// the OS connects such an address to the underlying IPv4 host, so e.g.
+/// `::ffff:169.254.169.254` must be judged by the v4 reserved-range arm.
+/// Without this it parses as `V6`, misses every v6 check, and is treated as
+/// public — an SSRF-filter bypass. `to_canonical()` rewrites only genuine
+/// IPv4-mapped addresses; `::1`, `::`, ULA/link-local and real public v6 are
+/// left untouched.
 pub fn is_private_addr(addr: std::net::IpAddr) -> bool {
-    match addr {
+    match addr.to_canonical() {
         std::net::IpAddr::V4(v4) => {
             v4.is_loopback()
                 || v4.is_private()
@@ -186,6 +194,33 @@ mod tests {
     fn public_v6_accepted() {
         assert!(!is_private_ip("2606:4700:4700::1111"));
         assert!(!is_private_ip("2001:4860:4860::8888"));
+    }
+
+    #[test]
+    fn ipv4_mapped_private_v6_rejected() {
+        // IPv4-mapped IPv6 (`::ffff:a.b.c.d`) is connected by the OS to the
+        // underlying IPv4 address, so the v4 reserved ranges must apply.
+        // Without canonicalisation these parse as V6, slip past every v6
+        // check, and reach internal hosts — a classic SSRF-filter bypass.
+        for ip in [
+            "::ffff:127.0.0.1",       // loopback
+            "::ffff:10.0.0.1",        // RFC1918
+            "::ffff:192.168.1.1",     // RFC1918
+            "::ffff:172.16.0.1",      // RFC1918
+            "::ffff:169.254.169.254", // cloud-metadata
+            "::ffff:100.64.0.1",      // CGNAT
+            "::ffff:a9fe:a9fe",       // hex form of 169.254.169.254
+        ] {
+            assert!(is_private_ip(ip), "expected IPv4-mapped {ip} private");
+        }
+    }
+
+    #[test]
+    fn ipv4_mapped_public_v6_accepted() {
+        // A mapped *public* address must still pass — canonicalisation only
+        // reclassifies, it doesn't blanket-block the mapped range.
+        assert!(!is_private_ip("::ffff:8.8.8.8"));
+        assert!(!is_private_ip("::ffff:1.1.1.1"));
     }
 
     #[test]
