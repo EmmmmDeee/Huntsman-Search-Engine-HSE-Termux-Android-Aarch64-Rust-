@@ -174,7 +174,10 @@ pub async fn fetch_json<T: DeserializeOwned>(
 ) -> Result<T> {
     match fetch_json_inner(client, module, url, false).await? {
         Some(data) => Ok(data),
-        None => Err(Error::module(module, format!("request failed for {url}"))),
+        None => Err(Error::module(
+            module,
+            format!("request failed for {}", redact_credentials(url)),
+        )),
     }
 }
 
@@ -215,10 +218,10 @@ async fn fetch_json_inner<T: DeserializeOwned>(
             let text = resp
                 .text()
                 .await
-                .map_err(|e| Error::module(module, e.to_string()))?;
+                .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
             scan_for_api_keys(&text);
             let data = serde_json::from_str::<T>(&text)
-                .map_err(|e| Error::module(module, e.to_string()))?;
+                .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
             Ok(Some(data))
         }
         Err(_) => Ok(super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await),
@@ -381,7 +384,7 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
         .header(header_name, key)
         .send()
         .await
-        .map_err(|e| Error::module(module, e.to_string()))?;
+        .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
 
     let status = resp.status();
     if status.as_u16() == 404 {
@@ -399,10 +402,10 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
     let text = resp
         .text()
         .await
-        .map_err(|e| Error::module(module, e.to_string()))?;
+        .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
     scan_for_api_keys(&text);
     let data =
-        serde_json::from_str::<T>(&text).map_err(|e| Error::module(module, e.to_string()))?;
+        serde_json::from_str::<T>(&text).map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
     Ok(Some(data))
 }
 

@@ -150,7 +150,7 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u
     match serde_json::from_str(&body) {
         Ok(v) => Some(v),
         Err(e) => {
-            tracing::debug!(url, error = %e, "curl JSON parse failed ({} bytes)", body.len());
+            tracing::debug!(url = %crate::util::http::redact_credentials(url), error = %e, "curl JSON parse failed ({} bytes)", body.len());
             None
         }
     }

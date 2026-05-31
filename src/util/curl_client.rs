@@ -171,7 +171,11 @@ impl CurlClient {
             let detail = if snippet.is_empty() {
                 format!("curl exited {code}")
             } else {
-                format!("curl exited {code}: {snippet}")
+                // Redact in case curl echoes an effective URL carrying a key.
+                format!(
+                    "curl exited {code}: {}",
+                    crate::util::http::redact_credentials(&snippet)
+                )
             };
             return Err(Error::module(self.module, detail));
         }
