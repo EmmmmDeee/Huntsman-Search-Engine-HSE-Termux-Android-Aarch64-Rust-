@@ -845,6 +845,47 @@ async fn live_get_not_found() {
     assert_eq!(resp.status(), 404);
 }
 
+#[tokio::test]
+async fn live_create_list_get_stop_roundtrip() {
+    let app = test_app("live_rt");
+    // Empty module allowlist => the spawned iteration runs no modules (instant,
+    // no network), so this exercises the create/list/get/stop API the Live
+    // Monitor UI drives, deterministically.
+    let body = r#"{"kind":"domain","value":"example.com","options":{"modules":[]},"live":{"interval_secs":3600}}"#;
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/v1/live", body))
+        .await
+        .unwrap();
+    // 202 Accepted: the session is registered and its loop spawned. With a
+    // 3600s interval and no iteration cap it stays running after the first
+    // (instant, module-less) iteration, so the list/get/stop below are stable.
+    assert_eq!(resp.status(), 202);
+    let created = body_json(resp).await;
+    let id = created["live_id"].as_str().expect("live_id").to_string();
+    assert_eq!(created["status"], "running");
+
+    let resp = app.clone().oneshot(get("/api/v1/live")).await.unwrap();
+    let list = body_json(resp).await;
+    assert_eq!(list["count"].as_u64().unwrap(), 1);
+    assert_eq!(list["sessions"][0]["id"].as_str().unwrap(), id);
+    assert_eq!(list["sessions"][0]["target"]["value"], "example.com");
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/live/{id}")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = app
+        .oneshot(delete(&format!("/api/v1/live/{id}")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(body_json(resp).await["status"], "stopping");
+}
+
 // ── Live stop not found ─────────────────────────────────────────────────
 
 #[tokio::test]

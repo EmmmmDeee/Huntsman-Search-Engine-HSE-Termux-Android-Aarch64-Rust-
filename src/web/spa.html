@@ -207,6 +207,7 @@
         <li id="nav-dash"   ><a href="#/dash"   ><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Dashboard</a></li>
         <li id="nav-newscan"><a href="#/newscan"><i class="glyphicon glyphicon-screenshot"></i>&nbsp;New Scan</a></li>
         <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
+        <li id="nav-live"   ><a href="#/live"   ><i class="glyphicon glyphicon-record"></i>&nbsp;Live</a></li>
         <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a></li>
       </ul>
       <form class="navbar-form navbar-left" style="margin-left:10px" onsubmit="globalSearch(event)">
@@ -427,7 +428,10 @@ const API = {
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
   keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
   stats:     ()=>API._req('/api/v1/stats'),
-  search:    (q,limit)=>API._req('/api/v1/search?q='+encodeURIComponent(q)+'&limit='+(limit||50))
+  search:    (q,limit)=>API._req('/api/v1/search?q='+encodeURIComponent(q)+'&limit='+(limit||50)),
+  liveList:   ()=>API._req('/api/v1/live'),
+  liveCreate: body=>API._req('/api/v1/live',{method:'POST',body}),
+  liveStop:   id=>API._req('/api/v1/live/'+encodeURIComponent(id),{method:'DELETE'})
 };
 
 /* ─── Router (hash-based, mirrors SpiderFoot's path semantics) ─── */
@@ -444,6 +448,7 @@ function parseHash(){
   if (segs[0]==='newscan')                  return {name:'newscan', params:{}, query};
   if (segs[0]==='opts'||segs[0]==='settings') return {name:'opts', params:{}, query};
   if (segs[0]==='search')                   return {name:'search', params:{}, query};
+  if (segs[0]==='live')                     return {name:'live', params:{}, query};
   if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
   return {name:'dash', params:{}, query};
 }
@@ -453,9 +458,10 @@ window.addEventListener('hashchange', ()=>render());
 /* ─── Top-level dispatcher ─── */
 async function render(){
   closeSse();
+  clearLiveTimer();
   S.route = parseHash();
   $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
-  const navMap = {dash:'nav-dash', scans:'nav-scans', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans'};
+  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
   const v = $('#view');
@@ -467,6 +473,7 @@ async function render(){
     if (S.route.name==='scaninfo') return await renderScanInfo(v);
     if (S.route.name==='opts')     return await renderOpts(v);
     if (S.route.name==='search')   return await renderSearch(v);
+    if (S.route.name==='live')     return await renderLive(v);
   } catch(e){
     v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
                    <button class="btn btn-default btn-sm" style="margin-left:12px" onclick="render()">Retry</button></div>`;
@@ -1763,6 +1770,91 @@ async function renderSearch(v){
   if (window.jQuery && jQuery.fn.tablesorter && rows.length){
     try { jQuery('#browse-table').tablesorter(); } catch(_){}
   }
+}
+
+/* ═══════════ Page: LIVE MONITOR (#/live) — continuous re-scan ═══════════ */
+function clearLiveTimer(){ if (S.liveTimer){ clearInterval(S.liveTimer); S.liveTimer = null; } }
+function wireLiveStops(){
+  $$('button[data-livestop]').forEach(b=>b.addEventListener('click', async ()=>{
+    try { await API.liveStop(b.dataset.livestop); toast('Stopping session'); render(); }
+    catch(e){ if (typeof alertify !== 'undefined') alertify.error(e.message); }
+  }));
+}
+function renderLiveSessions(sessions){
+  if (!sessions.length){
+    return '<div class="empty-state"><h3>No active sessions</h3>'
+      + '<p>Start one above to continuously re-scan a target on an interval — new '
+      + 'entities and correlations accrue as they appear.</p></div>';
+  }
+  const rows = sessions.map(s=>`<tr>
+    <td>${kindPill(s.target&&s.target.kind)} <code>${esc((s.target&&s.target.value)||s.id)}</code></td>
+    <td>${statusPill(s.status)}</td>
+    <td class="text-right">${s.iteration||0}${(s.live_options&&s.live_options.iterations)?` / ${s.live_options.iterations}`:''}</td>
+    <td class="text-right">${(s.live_options&&s.live_options.interval_secs)||'?'}s</td>
+    <td>${esc(fmtDate(s.started_at))}</td>
+    <td>${s.last_iteration_at?esc(fmtDate(s.last_iteration_at)):'<span class="text-muted">—</span>'}</td>
+    <td class="text-right">${(s.scan_ids||[]).length}</td>
+    <td class="text-right"><button class="btn btn-danger btn-xs" data-livestop="${attr(s.id)}" title="Stop"><i class="glyphicon glyphicon-stop"></i></button></td>
+  </tr>`).join('');
+  return `<div class="table-responsive"><table class="table table-condensed table-striped">
+    <thead><tr><th>Target</th><th>Status</th><th class="text-right">Iter</th>
+      <th class="text-right">Interval</th><th>Started</th><th>Last run</th>
+      <th class="text-right">Scans</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+async function renderLive(v){
+  const data = await API.liveList();
+  const sessions = data.sessions || [];
+  v.innerHTML = `
+    <h2>Live Monitor <small class="text-muted">continuous re-scan of a target on an interval</small>
+      <div class="pull-right"><button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button></div>
+    </h2>
+    <hr style="margin:8px 0 14px 0">
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Start a live session</b></div>
+      <div class="panel-body">
+        <form id="live-form" class="form-inline" onsubmit="return false">
+          <select id="live-kind" class="form-control input-sm">
+            ${TARGET_KINDS.map(k=>`<option value="${attr(k.v)}"${k.v==='domain'?' selected':''}>${esc(k.label)}</option>`).join('')}
+          </select>
+          <input id="live-value" type="text" class="form-control input-sm" placeholder="target value…" style="min-width:200px" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <label class="text-muted" style="font-weight:normal;margin-left:8px">every</label>
+          <input id="live-interval" type="number" class="form-control input-sm" value="60" min="1" style="width:80px"> s
+          <label class="text-muted" style="font-weight:normal;margin-left:8px">for</label>
+          <input id="live-iters" type="number" class="form-control input-sm" placeholder="∞" min="1" style="width:80px"> iterations
+          <button id="live-start" class="btn btn-danger btn-sm" style="margin-left:8px"><i class="glyphicon glyphicon-play"></i>&nbsp;Start</button>
+        </form>
+        <p class="text-muted" style="margin:8px 0 0 0;font-size:12px">Each iteration runs a fresh depth-bounded scan against the same target; leave iterations blank to run until stopped. Tuned low (long interval) for Termux battery/data.</p>
+      </div>
+    </div>
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Active sessions</b> <span class="badge">${sessions.length}</span></div>
+      <div id="live-sessions">${renderLiveSessions(sessions)}</div>
+    </div>`;
+  $('#live-start').addEventListener('click', async ()=>{
+    const kind = $('#live-kind').value;
+    const value = (($('#live-value')||{}).value || '').trim();
+    if (!value){ if (typeof alertify !== 'undefined') alertify.warning('Enter a target value'); return; }
+    const interval_secs = Math.max(1, parseInt(($('#live-interval')||{}).value || '60', 10) || 60);
+    const itersRaw = (($('#live-iters')||{}).value || '').trim();
+    const live = { interval_secs };
+    if (itersRaw){ const n = parseInt(itersRaw, 10); if (n>=1) live.iterations = n; }
+    try {
+      await API.liveCreate({ kind, value, options: {}, live });
+      if (typeof alertify !== 'undefined') alertify.success('Live session started');
+      render();
+    } catch(e){ if (typeof alertify !== 'undefined') alertify.error('Start failed: '+e.message); }
+  });
+  wireLiveStops();
+  // Poll the session list while this page is open so iteration counts climb live.
+  clearLiveTimer();
+  S.liveTimer = setInterval(async ()=>{
+    try {
+      const d = await API.liveList();
+      const host = $('#live-sessions');
+      if (host){ host.innerHTML = renderLiveSessions(d.sessions || []); wireLiveStops(); }
+    } catch(_){}
+  }, 8000);
 }
 
 function applyTheme(){
