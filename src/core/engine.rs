@@ -1918,6 +1918,10 @@ mod tests {
             "http://10.0.0.1:8080/",
             "http://127.0.0.1/health",
             "http://[::1]/",
+            // IPv4-mapped IPv6 literal: the OS connects this to the underlying
+            // IPv4 metadata host, so the bracket-stripped host must canonicalise
+            // to v4 and be refused (regression guard for the to_canonical fix).
+            "http://[::ffff:169.254.169.254]/latest/meta-data/",
             "http://router.local/",
             "https://intra.internal/api",
         ] {
