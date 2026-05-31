@@ -18,7 +18,7 @@ use huntsman_search_engine::{
         error::Result,
         live::LiveScanner,
         module::{Module, ModuleContext, ModuleResult},
-        scan::{Target, TargetKind},
+        scan::{Scan, Target, TargetKind},
     },
     storage::Store,
 };
@@ -96,6 +96,41 @@ fn test_app(suffix: &str) -> axum::Router {
         )),
     });
     router(state, "127.0.0.1:8080")
+}
+
+/// Like [`test_app`] but also hands back the shared store so a test can seed
+/// entities directly (synchronous, FTS-indexed in the same transaction as the
+/// write) without depending on an async scan completing.
+fn test_app_with_store(suffix: &str) -> (axum::Router, Arc<Store>) {
+    let path = tmp_db(suffix);
+    let store = Arc::new(Store::open(&path).unwrap());
+    let (bus, _rx) = tokio::sync::broadcast::channel(256);
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
+    let engine = Arc::new(ScanEngine::new(
+        modules,
+        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
+        bus.clone(),
+    ));
+    let live = LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        reqwest::Client::new(),
+        Default::default(),
+    );
+    let state = Arc::new(AppState {
+        store: Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
+        engine,
+        bus,
+        live,
+        http: reqwest::Client::new(),
+        allow_key_write: false,
+        cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+        proxy_pool: Default::default(),
+        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
+            huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
+        )),
+    });
+    (router(state, "127.0.0.1:8080"), store)
 }
 
 /// Parse a response body into a `serde_json::Value`.
@@ -865,4 +900,59 @@ async fn sub_resource_endpoints_404_for_unknown_scan() {
             .unwrap();
         assert_eq!(known.status(), 200, "known scan {ep} must 200");
     }
+}
+
+#[tokio::test]
+async fn search_endpoint_returns_fts_indexed_entities() {
+    let (app, store) = test_app_with_store("search");
+    let scan = Scan::new(
+        "s-search",
+        Target::new(TargetKind::FullName, "Jordan Leigh Meyers"),
+    );
+    store.upsert_scan(&scan).unwrap();
+    for v in ["jordoftw123", "Jordan Leigh Meyers", "unrelated_handle"] {
+        let kind = if v.contains(' ') {
+            EntityKind::Person
+        } else {
+            EntityKind::Username
+        };
+        store
+            .upsert_entity(&Entity::new(kind, v, 0.9, "s-search"))
+            .unwrap();
+    }
+
+    let vals = |json: &Value| -> Vec<String> {
+        json["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["value"].as_str().unwrap_or("").to_lowercase())
+            .collect()
+    };
+
+    // Prefix-token FTS: "jordo" matches "jordoftw123".
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/search?q=jordo"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let v = vals(&body_json(resp).await);
+    assert!(
+        v.iter().any(|x| x.contains("jordoftw123")),
+        "prefix hit, got {v:?}"
+    );
+
+    // Word-order-independent ranked MATCH (FTS, not a substring LIKE):
+    // "meyers jordan" must still find "Jordan Leigh Meyers".
+    let resp = app
+        .oneshot(get("/api/v1/search?q=meyers%20jordan"))
+        .await
+        .unwrap();
+    let v = vals(&body_json(resp).await);
+    assert!(
+        v.iter()
+            .any(|x| x.contains("jordan") && x.contains("meyers")),
+        "any-order hit, got {v:?}"
+    );
 }
