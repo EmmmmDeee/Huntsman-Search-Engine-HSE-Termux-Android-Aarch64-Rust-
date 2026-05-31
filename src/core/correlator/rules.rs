@@ -1205,6 +1205,141 @@ pub(super) fn rule_au_033_abn_organisation_link(
     )]
 }
 
+/// Role-mailbox / shared-inbox handles that identify an organisation function,
+/// not a person — matching identities on these links unrelated people, so they
+/// are excluded from AU-034. Complements `preflight::is_placeholder_username`
+/// (admin/test/guest/…) with the shared-mailbox local-parts that pad email
+/// sets. Entries are stored in canonical (separator-free, lowercase) form to
+/// match [`canonical_handle`] output.
+const GENERIC_HANDLES: &[&str] = &[
+    "info",
+    "contact",
+    "support",
+    "sales",
+    "help",
+    "hello",
+    "office",
+    "mail",
+    "team",
+    "noreply",
+    "donotreply",
+    "service",
+    "services",
+    "billing",
+    "marketing",
+    "press",
+    "media",
+    "jobs",
+    "careers",
+    "abuse",
+    "postmaster",
+    "webmaster",
+    "hostmaster",
+    "enquiries",
+    "enquiry",
+    "general",
+    "accounts",
+    "account",
+    "newsletter",
+    "subscribe",
+];
+
+/// Canonical comparison form of a handle: ASCII-lowercased with the handle
+/// separators (`.`, `_`, `-`) removed, so the same handle written with
+/// inconsistent punctuation collapses to one token (`jordan.meyers`,
+/// `jordan_meyers`, `jordanmeyers` → `jordanmeyers`). People reuse a single
+/// handle across services with different separators; this is the comparison
+/// the match needs.
+fn canonical_handle(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '.' | '_' | '-'))
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// True if `handle` (already canonicalised) is too generic to identify a
+/// person — a placeholder username or a role mailbox.
+fn is_generic_handle(handle: &str) -> bool {
+    crate::util::preflight::is_placeholder_username(handle) || GENERIC_HANDLES.contains(&handle)
+}
+
+/// AU-034 — Handle reuse linking a username and an email.
+///
+/// When a discovered `Username` and the local-part of a discovered `Email`
+/// share the same separator-insensitive handle (username `jmeyers` ↔
+/// `jmeyers@gmail.com`), they very likely belong to the same person — the
+/// everyday analyst pivot the kind-specific identity rules don't make
+/// (AU-011 is one username across many platforms; AU-020/AU-023 cluster
+/// `Person` entities). Gmail-style `+tag` suffixes are stripped before the
+/// comparison so `jmeyers+news@…` still matches.
+///
+/// Gated to stay low-noise:
+///   * the handle must be ≥ `MIN_HANDLE_LEN` chars and neither a placeholder
+///     nor a role mailbox (`info@`, `admin`, …);
+///   * the username and its matched emails must carry ≥ `MIN_DISTINCT_SOURCES`
+///     *distinct* evidence sources between them, so a single module that mints
+///     both a candidate username and a candidate email from one seed (e.g.
+///     `name_intel`) can't self-correlate — the reuse must be independently
+///     observed. This mirrors the ≥2-source gate AU-001/AU-023 use.
+pub(super) fn rule_au_034_handle_reuse_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    const MIN_HANDLE_LEN: usize = 4;
+    const MIN_DISTINCT_SOURCES: usize = 2;
+
+    let usernames = entities_of_kind(entities, EntityKind::Username);
+    let emails = entities_of_kind(entities, EntityKind::Email);
+    if usernames.is_empty() || emails.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for u in &usernames {
+        let handle = canonical_handle(&u.value);
+        if handle.len() < MIN_HANDLE_LEN || is_generic_handle(&handle) {
+            continue;
+        }
+        let mut sources: HashSet<&str> = u.evidence_sources();
+        let mut matched_uids: Vec<String> = Vec::new();
+        let mut matched_values: Vec<&str> = Vec::new();
+        for e in &emails {
+            // local-part, minus any Gmail-style `+tag` suffix.
+            let local = e.value.split('@').next().unwrap_or_default();
+            let base = local.split('+').next().unwrap_or_default();
+            if !base.is_empty() && canonical_handle(base) == handle {
+                matched_uids.push(e.uid.clone());
+                matched_values.push(e.value.as_str());
+                sources.extend(e.evidence_sources());
+            }
+        }
+        if matched_uids.is_empty() || sources.len() < MIN_DISTINCT_SOURCES {
+            continue;
+        }
+        matched_uids.sort_unstable();
+        matched_values.sort_unstable();
+        let mut uids = Vec::with_capacity(1 + matched_uids.len());
+        uids.push(u.uid.clone());
+        uids.extend(matched_uids);
+        out.push(Correlation::new(
+            "AU-034",
+            "Handle reuse (username \u{2194} email)",
+            Severity::Medium,
+            format!(
+                "Username '{}' shares its handle with {} email(s): {}",
+                u.value,
+                matched_values.len(),
+                matched_values.join(", ")
+            ),
+            uids,
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
 /// Tags that mark an entity as known-bad for adjacency analysis.
 const ADJACENCY_BAD_TAGS: &[&str] = &["malicious", "threat-intel", "vulnerable"];
 

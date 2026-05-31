@@ -220,6 +220,7 @@ const RULES: &[RuleFn] = &[
     rule_au_029_cloud_storage_exposure,
     rule_au_030_geo_convergence_score,
     rule_au_033_abn_organisation_link,
+    rule_au_034_handle_reuse_identity,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -456,6 +457,14 @@ mod tests {
         e
     }
 
+    fn username(value: &str, sources: &[&str]) -> Entity {
+        let mut e = Entity::new(EntityKind::Username, value, 0.9, "scan-test");
+        for src in sources {
+            e.add_evidence(Evidence::new(*src, "test"));
+        }
+        e
+    }
+
     #[test]
     fn au033_links_abn_to_registry_organisation() {
         let entities = vec![
@@ -488,6 +497,94 @@ mod tests {
             &["opencorporates"],
         )];
         assert!(rule_au_033_abn_organisation_link(&only_org, "scan-test", 0).is_empty());
+    }
+
+    // ── AU-034 ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn au034_links_username_to_email_by_shared_handle() {
+        // Username from one source, matching email from another → ≥2 distinct
+        // sources → fires, linking both uids.
+        let entities = vec![
+            username("jmeyers", &["github_user"]),
+            email("jmeyers@gmail.com", &["name_intel"]),
+        ];
+        let r = rule_au_034_handle_reuse_identity(&entities, "scan-test", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-034");
+        assert_eq!(r[0].severity, Severity::Medium);
+        assert_eq!(r[0].entity_uids.len(), 2);
+        assert!(r[0].description.contains("jmeyers@gmail.com"));
+    }
+
+    #[test]
+    fn au034_handle_match_is_separator_insensitive_and_strips_plus_tag() {
+        // `jordanmeyers` ↔ `jordan.meyers+news@x.com`: dots removed and the
+        // Gmail `+tag` stripped, so the canonical handles match.
+        let entities = vec![
+            username("jordanmeyers", &["search_engines"]),
+            email("jordan.meyers+news@x.com", &["hunter_io"]),
+        ];
+        let r = rule_au_034_handle_reuse_identity(&entities, "scan-test", 0);
+        assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn au034_groups_multiple_emails_under_one_correlation() {
+        // One username matching the same handle across two providers →
+        // a single correlation linking the username + both emails (3 uids).
+        let entities = vec![
+            username("jmeyers", &["github_user"]),
+            email("jmeyers@gmail.com", &["name_intel"]),
+            email("j.meyers@outlook.com", &["hunter_io"]),
+        ];
+        let r = rule_au_034_handle_reuse_identity(&entities, "scan-test", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].entity_uids.len(), 3);
+    }
+
+    #[test]
+    fn au034_no_fire_on_single_source_self_correlation() {
+        // Both candidates minted by the SAME single module (e.g. name_intel
+        // derives both a username and an email from one name) → only one
+        // distinct source → suppressed, so the rule can't self-correlate.
+        let entities = vec![
+            username("jmeyers", &["name_intel"]),
+            email("jmeyers@gmail.com", &["name_intel"]),
+        ];
+        assert!(rule_au_034_handle_reuse_identity(&entities, "scan-test", 0).is_empty());
+    }
+
+    #[test]
+    fn au034_no_fire_on_role_or_placeholder_handle() {
+        // Role mailbox (`info`) and placeholder (`admin`) link organisation
+        // functions, not people — excluded even across distinct sources.
+        let role = vec![
+            username("info", &["github_user"]),
+            email("info@company.com", &["hunter_io"]),
+        ];
+        assert!(rule_au_034_handle_reuse_identity(&role, "scan-test", 0).is_empty());
+        let placeholder = vec![
+            username("admin", &["github_user"]),
+            email("admin@company.com", &["hunter_io"]),
+        ];
+        assert!(rule_au_034_handle_reuse_identity(&placeholder, "scan-test", 0).is_empty());
+    }
+
+    #[test]
+    fn au034_no_fire_on_short_handle_or_no_match() {
+        // A handle < 4 chars is too weak to identify; distinct handles never
+        // match.
+        let short = vec![
+            username("abc", &["github_user"]),
+            email("abc@x.com", &["hunter_io"]),
+        ];
+        assert!(rule_au_034_handle_reuse_identity(&short, "scan-test", 0).is_empty());
+        let nomatch = vec![
+            username("alice", &["github_user"]),
+            email("bob@x.com", &["hunter_io"]),
+        ];
+        assert!(rule_au_034_handle_reuse_identity(&nomatch, "scan-test", 0).is_empty());
     }
 
     fn tagged(kind: EntityKind, value: &str, tags: &[&str]) -> Entity {

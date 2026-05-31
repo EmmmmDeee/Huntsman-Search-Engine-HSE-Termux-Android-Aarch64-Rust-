@@ -42,6 +42,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`AU-034` — handle-reuse identity link (username ↔ email).** A new
+  cross-correlation rule: when a discovered `Username` and the local-part of a
+  discovered `Email` share the same separator-insensitive handle (`jmeyers` ↔
+  `jmeyers@gmail.com` — dots/underscores/hyphens folded and Gmail `+tag`
+  suffixes stripped), they are linked as one identity. This is the everyday
+  analyst pivot the kind-specific rules don't make (AU-011 is one username
+  across many platforms; AU-020/AU-023 cluster `Person` entities). Gated to
+  stay quiet: the handle must be ≥4 chars and neither a placeholder (`admin`)
+  nor a role mailbox (`info@`, `support@`, …), and the username plus its
+  matched emails must carry ≥2 *distinct* evidence sources between them — so a
+  single module that mints both a candidate username and a candidate email from
+  one seed (e.g. `name_intel`) can't self-correlate; the reuse must be
+  independently observed (mirroring the ≥2-source gate AU-001/AU-023 use).
+  Brings the correlator to 34 rules. Six unit tests cover the match, the
+  separator/`+tag` folding, multi-email grouping, and every suppression path.
+
 - **Hard `MAX_DEPTH=3` recursion ceiling, enforced at every operator boundary.**
   `ScanOptions::clamp_depth()` caps operator-requested expansion depth (CLI
   `scan`/`--recursive`/`--auto`, the HTTP scan-create/batch path, and live
