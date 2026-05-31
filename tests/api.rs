@@ -1204,3 +1204,17 @@ async fn scan_diff_404_for_unknown_scan() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 }
+
+#[tokio::test]
+async fn keys_status_endpoint_returns_service_summary_shape() {
+    // Reads the process-global key pool (env-dependent contents), so this
+    // asserts the wire contract, not specific data: a `{ count, services[] }`
+    // object with the two in sync. The per-service counting + value-free
+    // guarantee are unit-tested in handlers::tests::summarize_pool_*.
+    let app = test_app("keys-status");
+    let resp = app.oneshot(get("/api/v1/keys/status")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let j = body_json(resp).await;
+    let services = j["services"].as_array().expect("services array");
+    assert_eq!(j["count"].as_u64().unwrap() as usize, services.len());
+}

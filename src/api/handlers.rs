@@ -233,6 +233,61 @@ pub async fn keys_patterns() -> Json<Value> {
     }))
 }
 
+/// Per-service key-pool status summary. **Value-free by construction** — no
+/// `KeyEntry.value` is ever copied here — so it is safe to surface to the
+/// (localhost-only) operator dashboard.
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct ServiceQuota {
+    pub service: String,
+    pub total: usize,
+    pub active: usize,
+    pub rate_limited: usize,
+    pub exhausted: usize,
+    pub invalid: usize,
+    pub untested: usize,
+    pub uses: u64,
+    pub errors: u64,
+}
+
+/// Summarise a key-pool snapshot into per-service status counts, dropping every
+/// key value. Pure (no global state) so it is unit-testable; sorted by service.
+pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<ServiceQuota> {
+    use crate::util::key_pool::KeyStatus;
+    let mut out: Vec<ServiceQuota> = data
+        .services
+        .iter()
+        .map(|(service, entries)| {
+            let mut q = ServiceQuota {
+                service: service.clone(),
+                total: entries.len(),
+                ..Default::default()
+            };
+            for e in entries {
+                match e.status {
+                    KeyStatus::Active => q.active += 1,
+                    KeyStatus::RateLimited => q.rate_limited += 1,
+                    KeyStatus::Exhausted => q.exhausted += 1,
+                    KeyStatus::Invalid => q.invalid += 1,
+                    KeyStatus::Untested => q.untested += 1,
+                }
+                q.uses += e.use_count;
+                q.errors += e.error_count;
+            }
+            q
+        })
+        .collect();
+    out.sort_by(|a, b| a.service.cmp(&b.service));
+    out
+}
+
+/// `GET /api/v1/keys/status` — per-service key-pool health (counts by status +
+/// aggregate use/error totals) for the operator quota view. Never exposes key
+/// values. Reads the process-global pool.
+pub async fn keys_status() -> Json<Value> {
+    let services = summarize_pool(&crate::util::key_pool::global_pool().snapshot());
+    Json(json!({ "count": services.len(), "services": services }))
+}
+
 pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
     let mods: Vec<Value> = s
         .engine
@@ -663,5 +718,41 @@ mod tests {
         assert_eq!(csv_escape("hello"), "hello");
         assert_eq!(csv_escape("3 apples"), "3 apples");
         assert_eq!(csv_escape("Mr. Jones"), "Mr. Jones");
+    }
+
+    #[test]
+    fn summarize_pool_counts_by_status_and_never_leaks_values() {
+        use super::summarize_pool;
+        use crate::util::key_pool::{KeyEntry, KeyStatus, PoolData};
+        let mut data = PoolData::default();
+        let mut active = KeyEntry::new("SECRET-ACTIVE");
+        active.status = KeyStatus::Active;
+        active.use_count = 5;
+        let mut limited = KeyEntry::new("SECRET-RL");
+        limited.status = KeyStatus::RateLimited;
+        limited.error_count = 2;
+        data.services.insert("shodan".into(), vec![active, limited]);
+        let mut invalid = KeyEntry::new("SECRET-INVALID");
+        invalid.status = KeyStatus::Invalid;
+        data.services.insert("censys".into(), vec![invalid]);
+
+        let summary = summarize_pool(&data);
+        // Sorted by service name.
+        assert_eq!(summary[0].service, "censys");
+        assert_eq!(summary[1].service, "shodan");
+        let shodan = &summary[1];
+        assert_eq!(shodan.total, 2);
+        assert_eq!(shodan.active, 1);
+        assert_eq!(shodan.rate_limited, 1);
+        assert_eq!(shodan.uses, 5);
+        assert_eq!(shodan.errors, 2);
+        assert_eq!(summary[0].invalid, 1);
+
+        // CRITICAL: no key value may appear in the serialised summary.
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(
+            !json.contains("SECRET"),
+            "key values must never be exposed: {json}"
+        );
     }
 }
