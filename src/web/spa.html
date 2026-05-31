@@ -363,6 +363,15 @@ function sourceCount(e){
   return Math.max(1,e.corroboration??1);
 }
 function effC(e){const c=e.confidence??0;const n=sourceCount(e);return Math.min(1,Math.max(0,c*(1+0.15*Math.log(n))));}
+function trunc(s,n){s=String(s||'');return s.length>n?s.slice(0,n)+'…':s;}
+/* Linkify http(s) values only (javascript:/data: stay inert escaped text), so
+   URL entities and pivot/avatar evidence are clickable — SpiderFoot/NAMINT UX. */
+function extLink(url,maxText){
+  url=String(url||'');
+  const text=esc(maxText?trunc(url,maxText):url);
+  if(!/^https?:\/\//i.test(url)) return text;
+  return `<a href="${attr(url)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+}
 function classify(eff){return eff>=0.75?'VERIFIED':eff>=0.4?'PROBABLE':'CANDIDATE';}
 function toast(msg,kind){
   if (typeof alertify === 'undefined') return;
@@ -1148,12 +1157,12 @@ function renderBrowseTable(rows){
     const eff = effC(e), tier = classify(eff);
     const sources = Array.from(new Set((e.evidence||[]).map(ev=>ev.source))).sort();
     const evDetail = (e.evidence||[]).map(ev=>{
-      const attrs = Object.entries(ev.attributes||{}).map(([k,v])=>`<span class="ev-attr"><span class="ak">${esc(k)}:</span> ${esc((v||'').substring(0,120))}</span>`).join('');
+      const attrs = Object.entries(ev.attributes||{}).map(([k,v])=>`<span class="ev-attr"><span class="ak">${esc(k)}:</span> ${extLink(v,90)}</span>`).join('');
       return `<div class="ev-block"><span class="ev-src">${esc(ev.source)}</span><div class="ev-sum">${esc(ev.summary)}</div>${attrs?`<div class="ev-attrs">${attrs}</div>`:''}</div>`;
     }).join('');
     return `<tr onclick="toggleDetail(this)" data-idx="${idx}">
       <td>${kindPill(e.kind)}</td>
-      <td style="word-break:break-word"><code>${esc(e.raw_value||e.value)}</code></td>
+      <td style="word-break:break-word"><code>${extLink(e.raw_value||e.value)}</code></td>
       <td class="text-right"><code>${eff.toFixed(3)}</code></td>
       <td class="text-right">${e.corroboration||1}</td>
       <td><span class="cls c-${attr(tier)}">${tier}</span></td>

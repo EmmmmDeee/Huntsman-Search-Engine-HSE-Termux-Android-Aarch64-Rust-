@@ -13,20 +13,24 @@ records. The engine knows nothing else — every module is a one-file change.
 
 ### dns_recon (12)
 
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `dns_axfr` | free | no | 60 | domain |
-| `whoisxml` | key_gated | no | 58 | email, person, organisation, domain |
-| `securitytrails` | key_gated | no | 45 | domain |
-| `subdomain_takeover` | free | no | 40 | domain |
-| `doh_resolver` | free | no | 34 | domain, ip_address |
-| `cert_intel` | free | no | 33 | domain |
-| `whois` | free | no | 32 | address, domain, email, organisation, person |
-| `dns_intel` | free | no | 31 | ip_address, domain, email |
-| `rdap_domain` | free | no | 31 | domain |
-| `crtsh` | free | no | 29 | domain, email, organisation |
-| `hackertarget` | free | no | 24 | domain, ip_address |
-| `domainsdb` | free | no | 19 | domain |
+| Module | Targets | Cost | Passive | Priority | Output kinds |
+|--------|---------|------|---------|----------|--------------|
+| [`phone_intl`](#phone_intl)                 | `phone`               | free | **yes** | 140 | Phone (E.164, country) — offline |
+| [`hudsonrock`](#hudsonrock)                 | `email`, `domain`     | free | no  | 130 | Email / Domain (stealer-log evidence) |
+| `xposed_or_not`                             | `email`               | free | no  | 128 | Email (named-breach list) — pairs with hudsonrock for AU-001 |
+| `username_search`                           | `username`            | free | no  | 110 | Url × N (per-platform profile links) — Sherlock/Maigret-style |
+| `github_user`                               | `username`            | free | no  | 108 | Username + Person + Email + Url (GitHub public profile) |
+| [`name_intel`](#name_intel)                 | `name`                | free | **yes** | 97  | Username + Email + Url (NAMINT-style permutations + Gravatar + search pivots) — offline |
+| [`email_to_username`](#email_to_username)   | `email`               | free | **yes** | 95  | Username × N candidates |
+| `gravatar`                                  | `email`               | free | no  | 85  | Email (Gravatar profile metadata) |
+| [`alienvault_otx`](#alienvault_otx)         | `ip`, `domain`        | free | no  | 78  | IpAddress / Domain (threat-intel pulses + tags + TLP) |
+| `wayback`                                   | `domain`              | free | no  | 38  | Domain (snapshot count + first/last seen) |
+| [`crtsh`](#crtsh)                           | `domain`              | free | no  | 35  | Domain (subdomains via certificate transparency) |
+| [`whois`](#whois)                           | `domain`, `ip`        | free | no  | 32  | Domain / IpAddress + contact Emails + nameserver Domains (18 fields) |
+| [`dns_resolver`](#dns_resolver)             | `domain`              | free | no  | 30  | IpAddress (A/AAAA), Domain (MX/NS/SOA), Email (SOA admin) |
+| `reverse_dns`                               | `ip`                  | free | no  | 29  | Domain × N (PTR records) |
+| [`ip_geo`](#ip_geo)                         | `ip`                  | free | no  | 28  | Coordinates, Organisation |
+| `bgpview`                                   | `asn`, `ip`           | free | no  | 25  | Asn (holder + contacts) — also reverse-maps IPs to announcing ASN |
 
 ### infrastructure (16)
 
@@ -250,6 +254,34 @@ candidates (deduplicated, each `length > 2`):
 Confidence: 0.45 (Probable) — low enough that, with the default
 `min_expand_confidence = 0.75`, derived usernames do NOT auto-trigger
 further scans. Pass `--min-expand-confidence 0.4` to opt into chaining.
+
+### `name_intel`
+
+Pure local derivation. **No network**. Marked `is_passive() == true`. A bounded
+port of [NAMINT](https://seintpl.github.io/NAMINT/).
+
+**Targets accepted**: `name`. An optional 2–4 digit run is captured as a
+year/number (`"Jordan Leigh Meyers 1987"`).
+
+**Emits** (all `MAX_*`-capped so a name target is constant-bounded):
+
+1. **Usernames** (≤24, scored best-first): `first.last`, `firstlast`, `flast`,
+   `firstl`, reversed (`last.first`), hyphen/underscore joins, middle-initial
+   blends (`fmiddlel`, `fmil`), and year-suffixed variants. Weights:
+   primary 0.42, secondary/year 0.30, middle 0.28.
+2. **Emails** (≤16): the highest-signal handle shapes crossed with a provider
+   set — Gmail/Outlook/iCloud/Yahoo/Hotmail/Proton by default, overridable via
+   the `HUNTSMAN_EMAIL_DOMAINS` env var (comma-separated). Confidence 0.30. Each
+   email's evidence carries a **Gravatar** URL (`MD5(lowercased email)`).
+3. **Search pivots** (≤18) as `Url` entities (confidence 0.20, tagged
+   `search-pivot`): Google web/face/email/phone/document/paste dorks, Bing,
+   DuckDuckGo, Yandex face, LinkedIn, Facebook, X, Instagram, TikTok, GitHub,
+   WhatsMyName, and Epieos (when an email was derived). Query values are
+   percent-encoded; the Web UI renders them as clickable links.
+
+All outputs sit below the default `min_expand_confidence = 0.50`, so a `--depth`
+scan does not auto-spend API budget on guesses. Pass `--min-expand-confidence
+0.40` to chain on the strongest usernames.
 
 ### `crtsh`
 
