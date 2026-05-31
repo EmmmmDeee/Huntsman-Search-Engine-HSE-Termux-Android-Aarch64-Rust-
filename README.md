@@ -16,7 +16,7 @@ SpiderFoot-style Web UI, zero native dependencies.
 Open Termux and paste:
 
 ```bash
-pkg install -y git rust && git clone --depth 1 https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release && cp target/release/hse $PREFIX/bin/
+pkg install -y git rust binutils clang && git clone --depth 1 https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
 ```
 
 Then launch the Web UI:
@@ -32,7 +32,7 @@ wizard, entity browser with D3 force graph, correlations, and settings.
 ### Update existing install
 
 ```bash
-cd ~/hse && git pull origin main && cargo build --release && cp target/release/hse $PREFIX/bin/
+cd ~/hse && git pull origin main && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
 ```
 
 ### Full installer (handles all edge cases)
