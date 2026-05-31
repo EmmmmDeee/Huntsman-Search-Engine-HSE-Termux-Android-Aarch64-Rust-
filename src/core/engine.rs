@@ -390,6 +390,15 @@ impl ScanEngine {
             warn!("failed to save key pool after scan: {e}");
         }
 
+        // Scan-boundary WAL checkpoint: fold the WAL into the main DB and
+        // truncate the -wal file back to zero. Bounds the on-disk/mmap WAL
+        // footprint between scans under a long-lived `serve`/`live` process
+        // (the 'everything bounded' invariant). Best-effort — a busy
+        // checkpoint just defers to the next scan boundary.
+        if let Err(e) = self.store.checkpoint_truncate() {
+            warn!(scan_id = %scan.id, error = %e, "WAL checkpoint deferred (busy)");
+        }
+
         self.emit(
             &scan.id,
             EventKind::ScanComplete {

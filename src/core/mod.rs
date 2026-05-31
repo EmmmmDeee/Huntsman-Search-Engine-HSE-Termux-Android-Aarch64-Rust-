@@ -500,6 +500,14 @@ pub mod port {
         // ── Events ─────────────────────────────────────────────────────────────
         fn insert_event(&self, event: &Event) -> Result<()>;
         fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>>;
+
+        // ── Maintenance ─────────────────────────────────────────────────────────
+        /// Bound the backing store's write-ahead footprint at a safe boundary
+        /// (e.g. a completed scan). Default is a no-op for backends without a
+        /// WAL; the SQLite store truncates its `-wal` file. Best-effort.
+        fn checkpoint_truncate(&self) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[cfg(test)]

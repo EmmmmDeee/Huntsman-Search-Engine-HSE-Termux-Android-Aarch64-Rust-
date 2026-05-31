@@ -60,7 +60,10 @@ pub enum Command {
         #[arg(short, long)]
         kind: String,
         /// Target value (e.g. example.com, foo@bar.com).
-        #[arg(short, long)]
+        // allow_hyphen_values so a value that legitimately begins with `-`
+        // (e.g. a southern-hemisphere coordinate `-33.86,151.20`) is taken as
+        // the value, not parsed by clap as an unknown short flag.
+        #[arg(short, long, allow_hyphen_values = true)]
         value: String,
         /// Comma-separated allowlist of module names.
         #[arg(short, long)]
@@ -231,7 +234,10 @@ pub enum Command {
         #[arg(short, long)]
         kind: String,
         /// Target value.
-        #[arg(short, long)]
+        // allow_hyphen_values so a value that legitimately begins with `-`
+        // (e.g. a southern-hemisphere coordinate `-33.86,151.20`) is taken as
+        // the value, not parsed by clap as an unknown short flag.
+        #[arg(short, long, allow_hyphen_values = true)]
         value: String,
         /// Seconds between iterations.
         #[arg(short, long, default_value_t = crate::LIVE_DEFAULT_INTERVAL_SECS)]
