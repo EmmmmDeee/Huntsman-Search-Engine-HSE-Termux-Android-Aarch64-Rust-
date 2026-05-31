@@ -30,6 +30,24 @@ pub(super) async fn cmd_doctor() -> Result<()> {
         Err(e) => println!("  FAIL — {e}"),
     }
 
+    println!("\nExternal tools:");
+    let curl_ok = std::process::Command::new("curl")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if curl_ok {
+        println!("  curl:      present");
+    } else {
+        println!(
+            "  curl:      MISSING — search_engines + social_probe (default modules), plus\n             \
+             see_know, oathnet_pro, api_key_probe and abn_lookup, shell out to curl and\n             \
+             will silently return nothing. Install it: pkg install curl"
+        );
+    }
+
     println!("\nModules ({} registered):", mods.len());
     let mut by_cost = std::collections::BTreeMap::<&str, usize>::new();
     for m in &mods {

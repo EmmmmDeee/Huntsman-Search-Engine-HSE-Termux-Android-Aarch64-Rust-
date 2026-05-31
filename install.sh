@@ -151,7 +151,7 @@ fi
 # ─── Install system dependencies ─────────────────────────────────────────────
 if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
     if [[ $IS_TERMUX -eq 1 ]]; then
-        step "Installing Termux packages (rust, git, clang, make, pkg-config, openssl-tool)"
+        step "Installing Termux packages (rust, git, clang, make, pkg-config, openssl-tool, curl)"
 
         # Termux package list refresh — retry, pkg can fail on flaky mobile networks.
         attempts=0
@@ -163,7 +163,7 @@ if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
         done
 
         # Install build chain. clang covers all C dep build.rs cases on Termux.
-        pkg install -y rust git clang make pkg-config openssl-tool || \
+        pkg install -y rust git clang make pkg-config openssl-tool curl || \
             die "pkg install failed — check $LOG_FILE for missing packages"
 
         # Optional: termux-api is needed for sensor modules (v0.6+).
