@@ -66,21 +66,31 @@ impl Module for NameIntel {
         };
         let sid = &ctx.scan_id;
 
+        // Non-Latin names ASCII-fold to empty handle tokens; skip username/email
+        // permutation (which would be meaningless) but still emit search pivots
+        // built from the display name.
+        let has_handle = !name.first.is_empty() && !name.last.is_empty();
+
         // ── Usernames ───────────────────────────────────────────────────────
-        for u in permute::usernames(&name) {
-            let mut e = Entity::new(EntityKind::Username, &u.handle, u.weight, sid);
-            e.tag("derived");
-            e.tag("name-derived");
-            e.add_evidence(
-                Evidence::new(SRC, format!("Username '{}' derived from name", u.handle))
-                    .with_attr("source_name", &target.value),
-            );
-            result.push(e);
+        if has_handle {
+            for u in permute::usernames(&name) {
+                let mut e = Entity::new(EntityKind::Username, &u.handle, u.weight, sid);
+                e.tag("derived");
+                e.tag("name-derived");
+                e.add_evidence(
+                    Evidence::new(SRC, format!("Username '{}' derived from name", u.handle))
+                        .with_attr("source_name", &target.value),
+                );
+                result.push(e);
+            }
         }
 
         // ── Emails (+ Gravatar) ─────────────────────────────────────────────
-        let domains = permute::email_domains();
-        let emails = permute::emails(&name, &domains);
+        let emails = if has_handle {
+            permute::emails(&name, &permute::email_domains())
+        } else {
+            Vec::new()
+        };
         for addr in &emails {
             let mut e = Entity::new(EntityKind::Email, addr, permute::EMAIL_CONF, sid);
             e.tag("derived");

@@ -104,9 +104,11 @@ pub struct Pivot {
 /// Parse a free-form name string into [`ParsedName`].
 ///
 /// Returns `None` when fewer than two alphabetic tokens survive cleaning (a
-/// single name cannot seed `first`/`last` permutations). An optional 2–4 digit
-/// run anywhere in the input is captured as `number` (NAMINT's "year" field),
-/// e.g. `"Jordan Meyers 1987"`.
+/// single name cannot seed search pivots). The ASCII-folded `first`/`last`
+/// handle tokens may be empty for non-Latin scripts; the caller skips
+/// username/email permutation in that case but still emits search pivots. An
+/// optional 2–4 digit run anywhere in the input is captured as `number`
+/// (NAMINT's "year" field), e.g. `"Jordan Meyers 1987"`.
 pub fn parse(raw: &str) -> Option<ParsedName> {
     let number = extract_number(raw);
 
@@ -121,11 +123,11 @@ pub fn parse(raw: &str) -> Option<ParsedName> {
         return None;
     }
 
+    // ASCII-folded handle tokens. These may be empty for non-Latin names
+    // (e.g. Cyrillic/CJK), in which case username/email permutation is skipped
+    // by the caller but the display-name search pivots still generate.
     let first = sanitize(&display_words[0]);
     let last = sanitize(display_words.last().unwrap());
-    if first.is_empty() || last.is_empty() {
-        return None;
-    }
     let middle = if display_words.len() >= 3 {
         let m = sanitize(&display_words[1]);
         (!m.is_empty()).then_some(m)
@@ -169,6 +171,11 @@ fn default_domains() -> Vec<String> {
 /// Generate scored login/username permutations, deduplicated (keeping the
 /// highest weight) and capped at [`MAX_USERNAMES`], best-first.
 pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
+    // Non-Latin names ASCII-fold to empty handle tokens; there are no
+    // meaningful login/email permutations without a first+last handle.
+    if p.first.is_empty() || p.last.is_empty() {
+        return Vec::new();
+    }
     let f = p.first.as_str();
     let l = p.last.as_str();
     let fi = initial(f);
@@ -192,7 +199,6 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
         format!("{l}.{f}"),
         format!("{l}{f}"),
         format!("{l}{fi}"),
-        format!("{f}{li}"),
         format!("{f}.{li}"),
         format!("{l}_{f}"),
         format!("{f}-{l}"),
@@ -248,6 +254,11 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
 /// `domains`, capped at [`MAX_EMAILS`]. Handle-major ordering so the most
 /// probable patterns appear across providers first.
 pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
+    // Non-Latin names ASCII-fold to empty handle tokens; there are no
+    // meaningful login/email permutations without a first+last handle.
+    if p.first.is_empty() || p.last.is_empty() {
+        return Vec::new();
+    }
     let f = p.first.as_str();
     let l = p.last.as_str();
     let fi = initial(f);
@@ -307,6 +318,7 @@ pub fn pivots(p: &ParsedName, top_email: Option<&str>) -> Vec<Pivot> {
     let first = q(p.display_first());
     let last = q(p.display_last());
     let handle = p.plain_handle();
+    let has_handle = !handle.is_empty();
     let fb = p.display_hyphen();
 
     let mut out: Vec<Pivot> = vec![
@@ -370,10 +382,6 @@ pub fn pivots(p: &ParsedName, top_email: Option<&str>) -> Vec<Pivot> {
             format!("https://x.com/search?q={qn}&f=user"),
         ),
         pv(
-            "Instagram — handle",
-            format!("https://www.instagram.com/{handle}/"),
-        ),
-        pv(
             "TikTok — people",
             format!("https://www.tiktok.com/search/user?q={}", q(&name)),
         ),
@@ -381,11 +389,18 @@ pub fn pivots(p: &ParsedName, top_email: Option<&str>) -> Vec<Pivot> {
             "GitHub — users",
             format!("https://github.com/search?q={}&type=users", q(&name)),
         ),
-        pv(
+    ];
+
+    if has_handle {
+        out.push(pv(
+            "Instagram — handle",
+            format!("https://www.instagram.com/{handle}/"),
+        ));
+        out.push(pv(
             "WhatsMyName — username",
             format!("https://whatsmyname.app/?q={handle}"),
-        ),
-    ];
+        ));
+    }
 
     if let Some(email) = top_email {
         out.push(pv(
@@ -416,18 +431,28 @@ fn q(s: &str) -> String {
 
 /// First 2–4 digit run in the input, captured as the NAMINT "number"/year.
 fn extract_number(raw: &str) -> Option<String> {
+    // Collect every 2–4 digit run, then prefer a 4-digit run (a likely birth
+    // year) over shorter ones; fall back to the first run otherwise. This keeps
+    // `"Jordan 12 Meyers 1987"` → `1987` rather than the leading `12`.
+    let mut runs: Vec<String> = Vec::new();
     let mut run = String::new();
     for c in raw.chars() {
         if c.is_ascii_digit() {
             run.push(c);
-        } else if !run.is_empty() {
+        } else {
             if (2..=4).contains(&run.len()) {
-                return Some(run);
+                runs.push(std::mem::take(&mut run));
             }
             run.clear();
         }
     }
-    (2..=4).contains(&run.len()).then_some(run)
+    if (2..=4).contains(&run.len()) {
+        runs.push(run);
+    }
+    runs.iter()
+        .find(|r| r.len() == 4)
+        .or_else(|| runs.first())
+        .cloned()
 }
 
 /// Clean a raw token to its display form: letters plus internal hyphen/
@@ -438,10 +463,12 @@ fn clean_display_token(tok: &str) -> Option<String> {
         .filter(|c| c.is_alphabetic() || *c == '-' || *c == '\'')
         .collect();
     let kept = kept.trim_matches(|c| c == '-' || c == '\'').to_string();
-    if kept.chars().any(|c| c.is_alphabetic()) {
-        Some(titlecase(&kept))
-    } else {
+    // After filtering to letters (+ internal hyphen/apostrophe) and trimming
+    // those, any non-empty remainder is guaranteed to contain a letter.
+    if kept.is_empty() {
         None
+    } else {
+        Some(titlecase(&kept))
     }
 }
 
@@ -528,6 +555,39 @@ mod tests {
         assert!(parse("Jordan").is_none());
         assert!(parse("   1987   ").is_none());
         assert!(parse("").is_none());
+    }
+
+    #[test]
+    fn extract_number_prefers_four_digit_year() {
+        // A leading 2-digit run must not shadow the real 4-digit birth year.
+        assert_eq!(p("Jordan 12 Meyers 1987").number.as_deref(), Some("1987"));
+        // With no 4-digit run present, the first 2–4 digit run is taken.
+        assert_eq!(p("Jordan Meyers 71").number.as_deref(), Some("71"));
+    }
+
+    #[test]
+    fn non_latin_name_yields_pivots_but_no_handles() {
+        // Cyrillic ASCII-folds to empty handle tokens: the name still parses so
+        // display-name search pivots generate, but username/email permutation
+        // (which needs ASCII handles) is empty.
+        let n = parse(
+            "\u{0418}\u{0432}\u{0430}\u{043d} \u{041f}\u{0435}\u{0442}\u{0440}\u{043e}\u{0432}",
+        )
+        .expect("non-Latin name parses for pivots");
+        assert!(n.first.is_empty() && n.last.is_empty());
+        assert!(usernames(&n).is_empty(), "no ASCII handle => no usernames");
+        assert!(emails(&n, &default_domains()).is_empty());
+        let pivots = pivots(&n, None);
+        assert!(!pivots.is_empty(), "display-name pivots still generate");
+        // Handle-only platforms are skipped when there is no ASCII handle.
+        assert!(
+            !pivots
+                .iter()
+                .any(|pv| pv.platform.starts_with("Instagram")
+                    || pv.platform.starts_with("WhatsMyName")),
+            "handle-only pivots must be skipped without an ASCII handle"
+        );
+        assert!(pivots.iter().any(|pv| pv.url.contains("google.com/search")));
     }
 
     #[test]

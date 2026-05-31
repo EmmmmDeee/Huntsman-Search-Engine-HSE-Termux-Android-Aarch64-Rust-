@@ -4,174 +4,167 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (85 modules: 62 free · 18 key-gated · 5 paid)
+## Catalogue (86 modules: 63 free · 18 key-gated · 5 paid)
 
-> This section is generated from the registry (`hse modules --json`).
-> The `modules_md_lists_every_registered_module` test in
-> `tests/architecture.rs` fails CI if a registered module is missing here,
-> so the catalogue cannot silently drift from the code again.
-
-### dns_recon (12)
-
-| Module | Targets | Cost | Passive | Priority | Output kinds |
-|--------|---------|------|---------|----------|--------------|
-| [`phone_intl`](#phone_intl)                 | `phone`               | free | **yes** | 140 | Phone (E.164, country) — offline |
-| [`hudsonrock`](#hudsonrock)                 | `email`, `domain`     | free | no  | 130 | Email / Domain (stealer-log evidence) |
-| `xposed_or_not`                             | `email`               | free | no  | 128 | Email (named-breach list) — pairs with hudsonrock for AU-001 |
-| `username_search`                           | `username`            | free | no  | 110 | Url × N (per-platform profile links) — Sherlock/Maigret-style |
-| `github_user`                               | `username`            | free | no  | 108 | Username + Person + Email + Url (GitHub public profile) |
-| [`name_intel`](#name_intel)                 | `name`                | free | **yes** | 97  | Username + Email + Url (NAMINT-style permutations + Gravatar + search pivots) — offline |
-| [`email_to_username`](#email_to_username)   | `email`               | free | **yes** | 95  | Username × N candidates |
-| `gravatar`                                  | `email`               | free | no  | 85  | Email (Gravatar profile metadata) |
-| [`alienvault_otx`](#alienvault_otx)         | `ip`, `domain`        | free | no  | 78  | IpAddress / Domain (threat-intel pulses + tags + TLP) |
-| `wayback`                                   | `domain`              | free | no  | 38  | Domain (snapshot count + first/last seen) |
-| [`crtsh`](#crtsh)                           | `domain`              | free | no  | 35  | Domain (subdomains via certificate transparency) |
-| [`whois`](#whois)                           | `domain`, `ip`        | free | no  | 32  | Domain / IpAddress + contact Emails + nameserver Domains (18 fields) |
-| [`dns_resolver`](#dns_resolver)             | `domain`              | free | no  | 30  | IpAddress (A/AAAA), Domain (MX/NS/SOA), Email (SOA admin) |
-| `reverse_dns`                               | `ip`                  | free | no  | 29  | Domain × N (PTR records) |
-| [`ip_geo`](#ip_geo)                         | `ip`                  | free | no  | 28  | Coordinates, Organisation |
-| `bgpview`                                   | `asn`, `ip`           | free | no  | 25  | Asn (holder + contacts) — also reverse-maps IPs to announcing ASN |
-
-### infrastructure (16)
-
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `hudsonrock` | free | no | 130 | — |
-| `shodan` | free | no | 105 | domain, url, asn, organisation, address |
-| `criminal_ip` | key_gated | no | 103 | asn, organisation |
-| `ipqs` | key_gated | no | 100 | — |
-| `ip_reputation` | free | no | 78 | ip_address |
-| `abuseipdb` | key_gated | no | 52 | ip_address |
-| `bgpview` | free | no | 35 | asn, domain, ip_address |
-| `censys` | key_gated | no | 35 | ip_address, coordinates, address |
-| `greynoise` | free | no | 30 | ip_address |
-| `ip_whois_geo` | free | no | 27 | address, asn, coordinates, organisation |
-| `ipquery` | free | no | 27 | address, asn, coordinates, organisation |
-| `ip2location` | free | no | 26 | address, asn, coordinates, organisation |
-| `ipapi` | free | no | 26 | address, asn, coordinates, domain, organisation |
-| `ipinfo` | free | no | 25 | address, asn, coordinates, domain, organisation |
-| `ip_registry` | free | no | 23 | asn, email, ip_address, url |
-| `urlscan` | free | no | 15 | ip_address |
-
-### breach (6)
-
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `xposed_or_not` | free | no | 128 | — |
-| `see_know` | paid | no | 126 | email, username, phone, person, ip_address, domain, address, coordinates, organisation, asn, credential, api_key |
-| `hibp` | key_gated | no | 120 | email, domain |
-| `dehashed` | paid | no | 118 | — |
-| `intelx` | paid | no | 116 | — |
-| `leakix` | key_gated | no | 102 | — |
-
-### threat (3)
-
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `urlhaus` | free | no | 110 | — |
-| `threatfox` | key_gated | no | 109 | domain, ip_address, url |
-| `virustotal` | key_gated | no | 55 | — |
-
-### geo (18)
-
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `geo_domain_classifier` | free | yes | 94 | address |
-| `phone_area_geo` | free | yes | 93 | address |
-| `email_header_geo` | free | yes | 92 | address |
-| `phone_carrier_geo` | free | yes | 92 | address |
-| `email_locale` | free | yes | 91 | address |
-| `wifi_intel` | key_gated | yes | 65 | address, coordinates, mac_address |
-| `exif_geo` | free | no | 28 | coordinates |
-| `ip_geo` | free | no | 28 | coordinates, address, asn, organisation |
-| `geo_intel` | free | no | 22 | coordinates |
-| `geocode` | free | no | 21 | coordinates, address |
-| `photon` | free | no | 20 | address, coordinates |
-| `wigle` | key_gated | no | 18 | coordinates, address, mac_address, organisation |
-| `mylnikov` | free | no | 17 | coordinates |
-| `overpass` | free | no | 15 | coordinates |
-| `social_location` | free | no | 15 | address |
-| `mls` | free | no | 12 | coordinates |
-| `sunrise_sunset` | free | no | 10 | coordinates |
-| `breach_timezone` | free | yes | 7 | address |
-
-### social (5)
-
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `username_search` | free | no | 111 | url, username |
-| `social_probe` | free | no | 108 | url, username, person |
-| `github_user` | free | no | 107 | address, domain, email, organisation, person, url, username |
-| `keybase` | free | no | 100 | address, domain, email, person, username |
-| `name_to_username` | free | yes | 97 | username |
-
-### people (6)
-
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `oathnet_pro` | paid | no | 127 | address, credential, domain, email, ip_address, password, person, phone, url, username |
-| `seon` | key_gated | no | 95 | person |
-| `employer_pivot` | free | no | 92 | address, email, phone, url |
-| `epieos` | key_gated | no | 92 | address, person, username |
-| `proxycurl` | paid | no | 88 | address, domain, email, organisation, person, phone |
-| `contact_enrich` | free | no | 85 | address, person, url, username |
-
-### email (5)
-
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `disposable_check` | free | yes | 97 | — |
-| `email_parse` | free | yes | 96 | domain, person, username |
-| `emailrep` | key_gated | no | 90 | — |
-| `smtp_vrfy` | free | no | 85 | email |
-| `hunter_io` | key_gated | no | 62 | email, person, organisation |
-
-### phone (1)
-
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `phone_intl` | free | yes | 140 | phone |
-
-### corporate (2)
-
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `abn_lookup` | key_gated | no | 80 | abn_acn, address, organisation, person |
-| `opencorporates` | free | no | 80 | abn_acn, address, organisation |
+> Generated from `hse modules --json`; kept honest by the
+> `modules_md_lists_every_registered_module` CI test. Each module's
+> `category` is the SpiderFoot-style bucket it appears under in the Web UI.
 
 ### search (2)
 
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `exa_search` | key_gated | no | 87 | domain, email, phone, url |
-| `search_engines` | free | no | 25 | url, domain, email, username, phone, address, person, organisation |
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `exa_search` | email, username, phone, full_name, domain, organisation | key_gated | no | 87 | url, domain, email, phone |
+| `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 25 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
+
+### social (4)
+
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `username_search` | username | free | no | 111 | url, username |
+| `social_probe` | username, full_name | free | no | 108 | url, username, person, domain |
+| `github_user` | username | free | no | 107 | person, email, username, domain, url, organisation, address |
+| `keybase` | username | free | no | 100 | person, username, email, domain, address |
+
+### people (7)
+
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `oathnet_pro` | email, username, phone, full_name, ip_address, domain | paid | no | 127 | email, username, phone, person, ip_address, address, url, domain |
+| `name_intel` | full_name | free | **yes** | 97 | username, email, url |
+| `seon` | email, phone | key_gated | no | 95 | person |
+| `employer_pivot` | email, domain | free | no | 92 | address, phone, email, url |
+| `epieos` | email | key_gated | no | 92 | person, username, address |
+| `proxycurl` | email, username, url | paid | no | 88 | person, address, email, domain, phone, organisation |
+| `contact_enrich` | email, phone | free | no | 85 | person, username, address, url |
+
+### email (5)
+
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `disposable_check` | email | free | **yes** | 97 | — |
+| `email_parse` | email | free | **yes** | 96 | domain, username, person |
+| `emailrep` | email | key_gated | no | 90 | — |
+| `smtp_vrfy` | email | free | no | 85 | email |
+| `hunter_io` | domain | key_gated | no | 62 | email, person, organisation |
+
+### phone (1)
+
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `phone_intl` | phone | free | **yes** | 140 | phone |
+
+### breach (6)
+
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `xposed_or_not` | email | free | no | 128 | — |
+| `see_know` | email, username, phone, full_name, ip_address, domain | paid | no | 126 | email, username, phone, person, ip_address, domain, address, coordinates, organisation, asn, credential, api_key |
+| `hibp` | email, domain | key_gated | no | 120 | email, domain |
+| `dehashed` | email, username, phone, full_name, ip_address, domain | paid | no | 118 | — |
+| `intelx` | email, username, phone, full_name, ip_address, domain | paid | no | 116 | — |
+| `leakix` | ip_address, domain | key_gated | no | 102 | — |
+
+### threat (3)
+
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `urlhaus` | ip_address, domain | free | no | 110 | — |
+| `threatfox` | ip_address, domain | key_gated | no | 109 | domain, ip_address, url |
+| `virustotal` | ip_address, domain | key_gated | no | 55 | — |
+
+### corporate (2)
+
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `abn_lookup` | full_name, organisation, abn_acn | key_gated | no | 80 | abn_acn, address, organisation, person |
+| `opencorporates` | full_name, organisation, abn_acn | free | no | 80 | organisation, abn_acn, address |
+
+### dns_recon (12)
+
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `dns_axfr` | domain | free | no | 60 | domain |
+| `whoisxml` | domain | key_gated | no | 58 | email, person, organisation, domain |
+| `securitytrails` | ip_address, domain | key_gated | no | 45 | domain |
+| `subdomain_takeover` | domain | free | no | 40 | domain |
+| `doh_resolver` | domain, url | free | no | 34 | ip_address, domain |
+| `cert_intel` | ip_address, domain | free | no | 33 | domain |
+| `whois` | ip_address, domain, url | free | no | 32 | domain, email, person, organisation, address |
+| `dns_intel` | ip_address, domain, url | free | no | 31 | ip_address, domain, email |
+| `rdap_domain` | domain, url | free | no | 31 | domain |
+| `crtsh` | email, domain, url | free | no | 29 | domain, email, organisation |
+| `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
+| `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
+
+### infrastructure (16)
+
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `hudsonrock` | email, username, domain | free | no | 130 | — |
+| `shodan` | ip_address | free | no | 105 | domain, url, asn, organisation, address, ip_address |
+| `criminal_ip` | ip_address | key_gated | no | 103 | organisation, asn |
+| `ipqs` | email, phone, ip_address | key_gated | no | 100 | — |
+| `ip_reputation` | ip_address, domain | free | no | 78 | ip_address |
+| `abuseipdb` | ip_address | key_gated | no | 52 | ip_address |
+| `bgpview` | ip_address, asn | free | no | 35 | ip_address, domain, asn |
+| `censys` | ip_address | key_gated | no | 35 | ip_address, coordinates, address |
+| `greynoise` | ip_address | free | no | 30 | ip_address |
+| `ip_whois_geo` | ip_address | free | no | 27 | coordinates, address, asn, organisation |
+| `ipquery` | ip_address | free | no | 27 | coordinates, address, asn, organisation |
+| `ip2location` | ip_address | free | no | 26 | coordinates, address, asn, organisation |
+| `ipapi` | ip_address | free | no | 26 | coordinates, address, asn, organisation, domain |
+| `ipinfo` | ip_address | free | no | 25 | coordinates, address, asn, organisation, domain |
+| `ip_registry` | ip_address, asn | free | no | 23 | ip_address, asn, email, url |
+| `urlscan` | ip_address, domain, url | free | no | 15 | ip_address |
 
 ### web (5)
 
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `wayback` | free | no | 38 | — |
-| `webserver_banner` | free | no | 36 | — |
-| `waf_detect` | free | no | 30 | domain |
-| `cloud_storage` | free | no | 25 | url |
-| `web_crawler` | free | no | 20 | email, url, domain, phone, api_key |
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `wayback` | domain, url | free | no | 38 | — |
+| `webserver_banner` | ip_address, domain, url | free | no | 36 | domain, ip_address, url |
+| `waf_detect` | domain, url | free | no | 30 | domain |
+| `cloud_storage` | domain, organisation | free | no | 25 | url |
+| `web_crawler` | domain, url | free | no | 20 | email, url, domain, phone, api_key |
+
+### geo (18)
+
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `geo_domain_classifier` | domain, url | free | **yes** | 94 | address |
+| `phone_area_geo` | phone | free | **yes** | 93 | address |
+| `email_header_geo` | email | free | **yes** | 92 | address |
+| `phone_carrier_geo` | phone | free | **yes** | 92 | address |
+| `email_locale` | email | free | **yes** | 91 | address |
+| `wifi_intel` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | key_gated | **yes** | 65 | mac_address, coordinates, address |
+| `exif_geo` | — | free | no | 28 | coordinates |
+| `ip_geo` | ip_address | free | no | 28 | coordinates, address, asn, organisation |
+| `geo_intel` | phone, ip_address | free | no | 22 | coordinates |
+| `geocode` | coordinates, address | free | no | 21 | coordinates, address |
+| `photon` | coordinates, address | free | no | 20 | coordinates, address |
+| `wigle` | coordinates, mac_address | key_gated | no | 18 | coordinates, address, mac_address, organisation |
+| `mylnikov` | mac_address | free | no | 17 | coordinates |
+| `overpass` | coordinates | free | no | 15 | coordinates |
+| `social_location` | — | free | no | 15 | address |
+| `mls` | mac_address | free | no | 12 | coordinates |
+| `sunrise_sunset` | coordinates | free | no | 10 | coordinates |
+| `breach_timezone` | email, username, phone | free | **yes** | 7 | address |
 
 ### sensor (3)
 
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `device_sensors` | free | yes | 70 | coordinates, mac_address |
-| `cell_intel` | free | yes | 64 | coordinates, device_id |
-| `local_net` | free | yes | 58 | ip_address, mac_address |
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `device_sensors` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 70 | coordinates, mac_address, ip_address |
+| `cell_intel` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 64 | coordinates |
+| `local_net` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 58 | mac_address, ip_address |
 
-### other (1)
+### other (2)
 
-| Module | Cost | Passive | Pri | Produces |
-|---|---|---|---|---|
-| `api_key_probe` | free | yes | 200 | api_key, domain |
-
-
----
+| Module | Targets | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|---|
+| `api_key_probe` | api_key | free | **yes** | 200 | api_key, domain |
+| `qld_unclaimed` | full_name, organisation | free | no | 58 | address, coordinates, organisation |
 
 ## Synergy map
 

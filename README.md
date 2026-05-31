@@ -82,16 +82,17 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 ---
 
-## Module Overview (85 modules — 62 free, 23 key-gated/paid)
+## Module Overview (86 modules — 63 free, 23 key-gated/paid)
 
-> Generated from `hse modules --json`; kept honest by the
-> `modules_md_lists_every_registered_module` CI test. Run `hse modules`
-> for the live list with target kinds and output entities.
+> Generated from `hse modules --json`. The full catalogue with target
+> kinds and output entities (kept honest by the
+> `modules_md_lists_every_registered_module` CI test) lives in
+> [`docs/MODULES.md`](docs/MODULES.md); run `hse modules` for the live list.
 
 **API-Free (no keys required):**
 - **Breach/identity**: `xposed_or_not`
-- **Social**: `github_user`, `keybase`, `name_to_username`, `social_probe`, `username_search`
-- **People**: `contact_enrich`, `employer_pivot`
+- **Social**: `github_user`, `keybase`, `social_probe`, `username_search`
+- **People**: `contact_enrich`, `employer_pivot`, `name_intel`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `shodan`, `urlscan`
 - **Geolocation**: `breach_timezone`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_area_geo`, `phone_carrier_geo`, `photon`, `social_location`, `sunrise_sunset`
@@ -102,7 +103,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 - **Search**: `search_engines`
 - **Web analysis**: `cloud_storage`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`
-- **Other**: `api_key_probe`
+- **Other**: `api_key_probe`, `qld_unclaimed`
 
 **Key-gated / Paid:**
 - `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `emailrep`
