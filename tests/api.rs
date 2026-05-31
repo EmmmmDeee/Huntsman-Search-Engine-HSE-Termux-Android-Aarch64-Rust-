@@ -1133,3 +1133,29 @@ async fn spa_references_only_served_static_assets() {
         assert!(!body.is_empty(), "vendored asset /static/{f} served empty");
     }
 }
+
+// ── Live event stream (SSE) contract ────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_events_endpoint_is_server_sent_events() {
+    // The live event stream is the project's realisation of the "live updates"
+    // requirement: one-way server→browser push over SSE, not WebSockets (see
+    // the rationale at `handlers::scan_events_sse`). Guard the wire contract the
+    // browser's `EventSource` depends on — a 200 typed `text/event-stream`. The
+    // body is an open keep-alive stream, so it is deliberately never read here.
+    let (app, scan_id) = create_scan("sse-contract").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{scan_id}/events")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct.starts_with("text/event-stream"),
+        "scan events must stream as SSE, got content-type {ct:?}"
+    );
+}

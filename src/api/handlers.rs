@@ -347,6 +347,20 @@ pub async fn search_entities(
 }
 
 // ─── SSE event stream ──────────────────────────────────────────────────────
+//
+// The live event stream (scan progress + log lines pushed to the browser as
+// the graph grows) uses **Server-Sent Events, deliberately not WebSockets**.
+// The channel is strictly one-way (server → browser): there is no client→
+// server messaging over it — control actions (cancel a scan, stop a live
+// session) go through ordinary REST endpoints (`POST /scans/{id}/cancel`,
+// `DELETE /live/{id}`). For one-way server push, SSE is the lighter, simpler
+// fit: it is plain HTTP/1.1 with no upgrade handshake, the browser's native
+// `EventSource` reconnects automatically, and it avoids the bidirectional
+// framing/ping-pong machinery a WebSocket stack would add for zero benefit
+// here — which matters on low-power Termux. axum's `Sse` response sets the
+// `text/event-stream` content-type the `EventSource` client requires; the
+// `scan_events_endpoint_is_server_sent_events` test in `tests/api.rs` pins
+// that wire contract.
 
 const SSE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
