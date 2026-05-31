@@ -46,24 +46,34 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `name_intel` search pivots and Gravatar URLs are one click away — matching
   SpiderFoot's URL-event affordance and NAMINT's link-generator workflow.
 
+- **Synchronized FTS5 full-text entity index (the indexing layer, from #90).**
+  Entity search was a substring `value LIKE '%q%'` scan — no tokenization, no
+  relevance, no word-order independence. Added a contentless-external SQLite FTS5
+  table (`entities_fts`, `unicode61`, `prefix='2 3'`) maintained **inside the same
+  transaction** as every entity write, so the index can never drift from the graph;
+  it backfills pre-existing rows on open. `search_entities` now runs a ranked FTS
+  `MATCH` (bm25 + confidence tiebreak) over per-token prefix queries with a `LIKE`
+  fallback for infix queries, upgrading `GET /api/v1/search` and the Web UI search
+  to tokenized, word-order-independent, ranked results with zero caller changes.
+  No new deps (FTS5 ships in bundled SQLite); ARM64-friendly.
+
 ### Changed
 
-- **NAMINT-grade name→username engine: diacritic folding + broader permutations.**
-  `name_to_username` is the recursion seed for identity OSINT (its `Username`
-  outputs feed username_search/social_probe/keybase/github_user, whose hits then
-  cross-correlate). Two issues, fixed Turing-style (measure → fix): (1) a real
-  correctness bug — `parse_name_parts` filtered on `is_alphabetic()`, which
-  *keeps* diacritics, so `"José Müller"` derived un-matchable `josé…`/`müller…`
-  handles; international/migrant names (common in AU OSINT) were silently
-  mis-derived. Added a pure, dependency-free `util::str_util::fold_ascii_lower`
-  (Latin diacritics → base ASCII incl. `æ→ae`, `ß→ss`, apostrophe/hyphen folding;
-  non-Latin dropped) and fold every name token through it. (2) Broadened the
-  permutation set from 9 to 16 ordered-by-likelihood patterns (adds `j.doe`,
-  `doej`, `jd`, `doe_john`, `john-doe`, `john.michael.doe`, …), deduped in
-  priority order and bounded so the highest-value handles survive the cap. Pure,
-  keyless, no network — ideal for Termux. New tests pin the fold (`José`→`jose`,
-  `Çağrı`→`cagri`, Arabic→dropped) and the new patterns; existing patterns
-  preserved. Suite +3 at 1360.
+- **Bounded the SQLite WAL footprint on aarch64 (from #90).** `PRAGMA
+  wal_autocheckpoint=512` (~2 MB) plus `Store::checkpoint_truncate()` (a
+  `wal_checkpoint(TRUNCATE)` run at each scan boundary in `finalise_scan`) keep the
+  live `-wal` file from high-water-marking and holding under a long-lived `serve`/
+  `live` process on a 4 GB phone. Exposed on `StoragePort` with a default no-op for
+  non-WAL backends.
+
+- **`name_intel` handles diacritics: `José` → `jose`, not `jos`.** The handle
+  tokeniser now folds Latin diacritics to their base ASCII letter via the
+  shared `util::str_util::fold_ascii_lower` (é→e, ü→u, ł→l, ç→c, ß→ss, æ→ae,
+  …) instead of dropping the accented character outright, so migrant/EU names
+  (common in AU OSINT) derive the matchable handle real platforms use. Non-Latin
+  scripts (Cyrillic/CJK) have no ASCII fold and still yield no handle — the name
+  parses for display-name search pivots only. Revives the previously-orphaned
+  `fold_ascii_lower` helper (its only caller, `name_to_username`, was removed).
 
 - **Refactored the recursion core's duplicated key-cascade and skip-emit.** The
   hot-inject key-cascade — the mechanism that makes recursion compound (a key one
@@ -94,6 +104,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   hang.)
 
 ### Fixed
+
+- **`--value` accepts a leading `-` so southern-hemisphere coordinates scan (from #90).**
+  `hse scan --kind coordinates --value "-27.47,153.02"` (Brisbane) aborted with
+  clap's *unexpected argument '-2'*; the scan/live `--value` args now set
+  `allow_hyphen_values`, so a negative latitude is taken as the value. A real
+  AU-OSINT failure mode (the entire southern hemisphere has negative latitude).
 
 - **Module synergy graph made truthful: completed `produces()` across ~60
   modules.** Empirical audit of the producer→consumer graph (via

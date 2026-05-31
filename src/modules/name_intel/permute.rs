@@ -482,12 +482,13 @@ fn titlecase(s: &str) -> String {
     }
 }
 
-/// ASCII-fold to lowercase letters only — safe for byte slicing and handle use.
+/// Fold a display token to a lowercase ASCII handle token, safe for byte
+/// slicing. Delegates to the shared [`fold_ascii_lower`] so Latin diacritics
+/// map to their base letter (`José` → `jose`, `Müller` → `muller`) and derived
+/// handles match what platforms actually use; non-Latin scripts have no ASCII
+/// fold and yield an empty token (handled by the caller).
 fn sanitize(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_ascii_alphabetic())
-        .map(|c| c.to_ascii_lowercase())
-        .collect()
+    crate::util::str_util::fold_ascii_lower(s)
 }
 
 /// Deduplicate `(handle, weight)` pairs keeping the highest weight per handle,
@@ -591,10 +592,23 @@ mod tests {
     }
 
     #[test]
+    fn latin_diacritics_fold_to_ascii_handles() {
+        // Migrant/EU names must derive matchable ASCII handles, not drop the
+        // accented letter (José → jose, not jos).
+        let n = p("José Müller");
+        assert_eq!(n.first, "jose");
+        assert_eq!(n.last, "muller");
+        assert!(usernames(&n).iter().any(|u| u.handle == "jose.muller"));
+        // Display form preserves the original accents for quoted searches.
+        assert_eq!(n.display_full(), "José Müller");
+    }
+
+    #[test]
     fn folds_punctuation_and_accents() {
         let n = p("José O'Brien-Smith");
-        // Apostrophe/hyphen folded out of handle tokens; accent dropped.
-        assert_eq!(n.first, "jos");
+        // Apostrophe/hyphen folded out of handle tokens; Latin accent folded to
+        // its base letter (é → e) so the handle matches real-world accounts.
+        assert_eq!(n.first, "jose");
         assert_eq!(n.last, "obriensmith");
     }
 
