@@ -459,6 +459,7 @@ window.addEventListener('hashchange', ()=>render());
 async function render(){
   closeSse();
   clearLiveTimer();
+  clearScanTimer();
   S.route = parseHash();
   $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
   const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans'};
@@ -510,10 +511,10 @@ async function renderDash(v){
         </div>
       </div>
       <div class="col-md-3 col-sm-6 col-xs-6">
-        <div class="stat-card">
+        <a href="#/live" class="stat-card" style="display:block;text-decoration:none;color:inherit" title="Open Live Monitor">
           <div class="lab">Live Sessions</div>
           <div class="val">${s.live_sessions||0}</div>
-        </div>
+        </a>
       </div>
     </div>
     <div class="row" style="margin-top:12px">
@@ -1034,6 +1035,15 @@ async function renderScanInfo(v){
   else if (tab==='corr')   renderCorrelations(body);
   else if (tab==='info')   renderInfo(body, scan);
   else                     renderStatus(body, scan);
+
+  // SpiderFoot-style live refresh: while the scan is still running, re-pull and
+  // re-render every 8s so entity/correlation counts and duration climb on their
+  // own. The Log tab is excluded — it owns a live SSE stream a re-render would
+  // tear down. Re-render re-arms the timer; it stops once status != running.
+  clearScanTimer();
+  if ((scan.status === 'running' || scan.status === 'pending') && tab !== 'log'){
+    S.scanTimer = setTimeout(()=>{ if (S.route.name === 'scaninfo') render(); }, 8000);
+  }
 }
 function subTab(name, label, count, active){
   return `<li class="${active===name?'active':''}"><a href="#" data-sub="${attr(name)}">
@@ -1774,6 +1784,7 @@ async function renderSearch(v){
 
 /* ═══════════ Page: LIVE MONITOR (#/live) — continuous re-scan ═══════════ */
 function clearLiveTimer(){ if (S.liveTimer){ clearInterval(S.liveTimer); S.liveTimer = null; } }
+function clearScanTimer(){ if (S.scanTimer){ clearTimeout(S.scanTimer); S.scanTimer = null; } }
 function wireLiveStops(){
   $$('button[data-livestop]').forEach(b=>b.addEventListener('click', async ()=>{
     try { await API.liveStop(b.dataset.livestop); toast('Stopping session'); render(); }
