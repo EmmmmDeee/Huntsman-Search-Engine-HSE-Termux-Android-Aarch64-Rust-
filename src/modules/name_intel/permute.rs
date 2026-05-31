@@ -319,7 +319,9 @@ pub fn pivots(p: &ParsedName, top_email: Option<&str>) -> Vec<Pivot> {
     let last = q(p.display_last());
     let handle = p.plain_handle();
     let has_handle = !handle.is_empty();
-    let fb = p.display_hyphen();
+    // Percent-encode the hyphen-joined display name like every other pivot value,
+    // so a non-Latin name doesn't embed raw UTF-8 in the Facebook path.
+    let fb = q(&p.display_hyphen());
 
     let mut out: Vec<Pivot> = vec![
         pv(
