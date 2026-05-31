@@ -466,8 +466,9 @@ async function render(){
 
 /* ═══════════ Page: DASHBOARD (#/dash) ═══════════ */
 async function renderDash(v){
-  const [stats, mods] = await Promise.all([API.stats(), API.modules()]);
+  const [stats, mods, scansData] = await Promise.all([API.stats(), API.modules(), API.scans()]);
   const s = stats;
+  const recent = (scansData.scans || []).slice(0, 8);
   const byStatus = s.scans_by_status || {};
   v.innerHTML = `
     <div class="page-header" style="margin-top:0;border-bottom:1px solid #eee;padding-bottom:8px">
@@ -535,7 +536,16 @@ async function renderDash(v){
           </div>
         </div>
       </div>
+    </div>
+
+    <div class="panel panel-default" style="margin-top:12px">
+      <div class="panel-heading"><b>Recent Scans</b>
+        <a href="#/scans" class="pull-right" style="font-size:12px">View all &rarr;</a>
+      </div>
+      ${recent.length ? renderScansTable(recent)
+        : '<div class="panel-body text-center text-muted">No scans yet — start one from <a href="#/newscan">New Scan</a>.</div>'}
     </div>`;
+  if (recent.length) wireScansTable();
 }
 
 /* ═══════════ Page: SCANLIST (#/scans) ═══════════ */
@@ -1238,16 +1248,31 @@ function renderCorrelations(host){
   }
   // Server returns correlations pre-ranked by severity × max child C_eff
   // (highest-value first). Surface the rank score so the ordering is legible.
+  // Each card expands to the entities it links (resolved against this scan),
+  // so the cross-correlation is inspectable — SpiderFoot's correlation drill-in.
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
   host.innerHTML = S.correlations.map(c=>{
     const sev = (c.severity||'low').toLowerCase();
     const rank = (typeof c.rank === 'number' && c.rank > 0)
       ? `<span class="pull-right" title="rank = severity × max child C_eff">rank ${c.rank.toFixed(2)}</span>` : '';
-    return `<div class="corr-card cv-${attr(sev)}">
-      <div class="corr-h"><b>${esc(sev.toUpperCase())}</b> · ${esc(c.rule_id||'')}${rank}</div>
+    const uids = c.entity_uids || [];
+    const members = uids.map(u=>{
+      const e = byUid[u];
+      return e ? `<div class="corr-member">${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code></div>`
+               : `<div class="corr-member"><code class="text-muted" style="font-size:10px">${esc(String(u).slice(0,16))}…</code></div>`;
+    }).join('');
+    return `<div class="corr-card cv-${attr(sev)}" onclick="toggleCorrMembers(this)" style="cursor:pointer" title="Click to show the ${uids.length} linked entit${uids.length===1?'y':'ies'}">
+      <div class="corr-h"><b>${esc(sev.toUpperCase())}</b> · ${esc(c.rule_id||'')} <span class="badge">${uids.length}</span>${rank}</div>
       <div class="corr-name">${esc(c.rule_name||c.rule_id||'—')}</div>
       <div class="corr-d">${esc(c.description||c.summary||'')}</div>
+      <div class="corr-members" style="display:none;margin-top:8px;border-top:1px dashed #d8d8d8;padding-top:6px">${members||'<span class="text-muted">No member entities in this scan view</span>'}</div>
     </div>`;
   }).join('');
+}
+function toggleCorrMembers(card){
+  const m = card.querySelector('.corr-members');
+  if (m) m.style.display = (m.style.display==='none') ? '' : 'none';
 }
 
 /* ── Graph tab (D3 v3 force layout — matches Spiderfoot's stack) ── */
