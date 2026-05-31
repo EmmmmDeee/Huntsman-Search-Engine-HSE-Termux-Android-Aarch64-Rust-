@@ -43,6 +43,25 @@ pub fn pick_ua(idx: usize) -> &'static str {
 /// (e.g. `socks5://127.0.0.1:9050` or `http://user:pass@host:port`),
 /// the proxy is passed to curl via `-x`. This enables Tor routing,
 /// residential proxy services, or any SOCKS/HTTP proxy chain.
+/// Resolve `url`'s host, drop private/reserved IPs, and return curl `--resolve`
+/// args pinning host:port to a vetted PUBLIC IP — TOCTOU-safe, since curl then
+/// will not re-resolve the initial host. Returns `None` when the host resolves
+/// only to private/reserved space (or is unparseable), so the caller refuses
+/// the fetch. This is the curl-fallback half of the SSRF defense, mirroring
+/// `http::SsrfResolver`; it covers attacker-controlled hosts such as
+/// employer_pivot's `https://{discovered_domain}/...`.
+async fn ssrf_resolve_pin(url: &str) -> Option<Vec<String>> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let port = parsed.port_or_known_default()?;
+    let ip = tokio::net::lookup_host((host, port))
+        .await
+        .ok()?
+        .map(|a| a.ip())
+        .find(|ip| !crate::util::preflight::is_private_addr(*ip))?;
+    Some(vec!["--resolve".to_string(), format!("{host}:{port}:{ip}")])
+}
+
 async fn curl_exec(
     url: &str,
     timeout_ms: u64,
@@ -63,10 +82,23 @@ async fn curl_exec(
         cmd.args(["-d", data]);
     }
 
-    if let Ok(proxy) = std::env::var("HUNTSMAN_SEARCH_PROXY")
-        && !proxy.is_empty()
-    {
-        cmd.args(["-x", &proxy]);
+    let proxy = std::env::var("HUNTSMAN_SEARCH_PROXY")
+        .ok()
+        .filter(|p| !p.is_empty());
+
+    if let Some(ref p) = proxy {
+        cmd.args(["-x", p]);
+    } else {
+        // Direct connection: pin curl to a vetted public IP so an
+        // attacker-controlled host can't be rebound onto an internal address.
+        // (When proxied, the proxy resolves and isolates us, so pinning is both
+        // inapplicable and unnecessary.) Refuse the fetch if no public IP.
+        match ssrf_resolve_pin(url).await {
+            Some(pin) => {
+                cmd.args(&pin);
+            }
+            None => return None,
+        }
     }
 
     cmd.args(["--proto", "=http,https", "--proto-redir", "=http,https", "--max-redirs", "5"]);
