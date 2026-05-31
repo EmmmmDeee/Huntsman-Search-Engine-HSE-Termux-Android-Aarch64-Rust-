@@ -219,6 +219,7 @@ All endpoints are under `/api/v1/`.
 | GET    | `/scans`                   | 200 most recent scans. |
 | GET    | `/scans/{id}`              | Single scan record. 404 if unknown. |
 | GET    | `/scans/{id}/entities`     | `{ count, entities: [Entity, ...] }`. |
+| GET    | `/scans/{a}/diff/{b}`      | `ScanDiff` of scan `a` vs `b`: `{ added, removed, common, confidence_shifts }`. 404 if either unknown. The HTTP surface of `hse diff`. |
 | GET    | `/scans/{id}/correlations` | `{ count, correlations: [Correlation, ...] }` (v0.4+). |
 | GET    | `/scans/{id}/events`       | **SSE** — `text/event-stream` of `EventKind` JSON payloads. |
 | POST   | `/live`                    | `LiveRequest` body. Returns `202 { live_id, status }` (v0.5+). |

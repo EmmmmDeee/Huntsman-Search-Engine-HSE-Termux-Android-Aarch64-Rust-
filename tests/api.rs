@@ -1159,3 +1159,48 @@ async fn scan_events_endpoint_is_server_sent_events() {
         "scan events must stream as SSE, got content-type {ct:?}"
     );
 }
+
+// ── Scan diff endpoint ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_diff_endpoint_reports_added_removed_common() {
+    let (app, store) = test_app_with_store("diff");
+    // Scan A: keep@x.com + gone@x.com
+    let a = Scan::new("s-a", Target::new(TargetKind::FullName, "Target A"));
+    store.upsert_scan(&a).unwrap();
+    for v in ["keep@x.com", "gone@x.com"] {
+        store
+            .upsert_entity(&Entity::new(EntityKind::Email, v, 0.8, "s-a"))
+            .unwrap();
+    }
+    // Scan B: keep@x.com + new@x.com
+    let b = Scan::new("s-b", Target::new(TargetKind::FullName, "Target B"));
+    store.upsert_scan(&b).unwrap();
+    for v in ["keep@x.com", "new@x.com"] {
+        store
+            .upsert_entity(&Entity::new(EntityKind::Email, v, 0.8, "s-b"))
+            .unwrap();
+    }
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/s-a/diff/s-b"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let j = body_json(resp).await;
+    assert_eq!(j["common"], 1, "keep@x.com is in both");
+    assert_eq!(j["added"].as_array().unwrap().len(), 1);
+    assert_eq!(j["removed"].as_array().unwrap().len(), 1);
+    assert_eq!(j["added"][0]["value"], "new@x.com", "in B, not A");
+    assert_eq!(j["removed"][0]["value"], "gone@x.com", "in A, not B");
+}
+
+#[tokio::test]
+async fn scan_diff_404_for_unknown_scan() {
+    let (app, _store) = test_app_with_store("diff-404");
+    let resp = app
+        .oneshot(get("/api/v1/scans/nope-a/diff/nope-b"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
