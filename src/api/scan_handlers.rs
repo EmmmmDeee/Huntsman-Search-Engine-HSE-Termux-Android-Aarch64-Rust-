@@ -499,4 +499,37 @@ mod tests {
             "error must carry the client-facing prefix, got: {err}"
         );
     }
+
+    #[test]
+    fn entities_to_csv_assembles_header_and_escaped_rows() {
+        use crate::core::entity::{Entity, EntityKind};
+
+        // Empty input still emits exactly the column header — export consumers
+        // (the SPA download button, external tooling) parse this header row.
+        assert_eq!(
+            entities_to_csv(&[]).trim_end(),
+            "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,tags"
+        );
+
+        let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.60, "src");
+        e.tag("plain");
+        e.tag("has,comma"); // a comma inside an assembled field must be quoted
+        let csv = entities_to_csv(&[e]);
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 2, "header + exactly one row per entity");
+
+        let row = lines[1];
+        // Column order + 3-dp numeric formatting (kind,value,raw_value,conf,c_eff,…).
+        assert!(
+            row.starts_with("email,a@b.com,a@b.com,0.600,0.600,"),
+            "field order / numeric formatting drifted: {row}"
+        );
+        // `tags` is the final column; the comma-bearing tag is RFC-4180 quoted,
+        // proving entities_to_csv routes assembled fields through csv_escape.
+        // (The GEXF export has a byte-golden test; this is the CSV analogue.)
+        assert!(
+            row.ends_with(",\"plain|has,comma\""),
+            "tags column not escaped through csv_escape: {row}"
+        );
+    }
 }
