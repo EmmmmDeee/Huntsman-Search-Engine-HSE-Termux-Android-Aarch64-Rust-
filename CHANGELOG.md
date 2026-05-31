@@ -10,6 +10,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Security
+
+- **Closed an IPv4-mapped IPv6 SSRF-filter bypass.** `util::preflight::is_private_addr`
+  — the single predicate behind every SSRF chokepoint (the reqwest DNS filter
+  `http::SsrfResolver`, the redirect-hop gate, the curl `--resolve` pin, and the
+  engine's `Url`-target admission gate `url_host_is_private`) — range-tested the
+  raw address, so an IPv4-mapped IPv6 literal or `AAAA` record such as
+  `::ffff:169.254.169.254` parsed as `V6`, missed every v6 reserved-range check,
+  and was treated as **public** — reaching the underlying IPv4 host (cloud
+  metadata, loopback, RFC1918) the OS connects an IPv4-mapped address to. The
+  predicate now canonicalises with `IpAddr::to_canonical()` before testing, so a
+  mapped address is judged by the v4 arm; `::1`, `::`, ULA/link-local and real
+  public v6 are untouched. Because the check is centralised, the one-line fix
+  closes the bypass on all four paths at once. New regression tests pin the
+  mapped-private and mapped-public cases, proven by reverting the fix in place.
+
 ### Added
 
 - **Hard `MAX_DEPTH=3` recursion ceiling, enforced at every operator boundary.**
