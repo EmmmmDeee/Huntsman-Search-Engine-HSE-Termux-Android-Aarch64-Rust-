@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -36,6 +36,10 @@ impl Module for WafDetect {
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain | TargetKind::Url)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Web
     }
 
     fn produces(&self) -> &'static [EntityKind] {

@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::Evidence,
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -41,6 +41,19 @@ impl Module for DisposableCheck {
     }
     fn is_passive(&self) -> bool {
         true
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Email
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        // The request carries a 5s reqwest timeout; on the 3s default
+        // MODULE_TIMEOUT_MS the engine would kill process() before that
+        // timeout could fire, so a slow endpoint yielded a spurious engine
+        // "timeout" instead of the module's own clean no-op. Budget above
+        // the request timeout with headroom for JSON read.
+        8_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -33,6 +33,10 @@ impl Module for BgpView {
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Asn | TargetKind::IpAddress)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
     }
 
     fn produces(&self) -> &'static [EntityKind] {

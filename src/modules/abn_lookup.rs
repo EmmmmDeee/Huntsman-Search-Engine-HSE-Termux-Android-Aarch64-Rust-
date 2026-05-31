@@ -17,7 +17,7 @@ use tokio::process::Command;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -54,17 +54,35 @@ impl Module for AbnLookup {
     }
 
     fn is_passive(&self) -> bool {
-        true
+        // NOT passive: fetch_jsonp curls the Australian Business Register
+        // API. Passive is defined as local-sensor / no-network, and
+        // `--passive-only` is documented as skipping network-reaching
+        // modules, so this outbound lookup must report false.
+        false
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Corporate
     }
 
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
-            EntityKind::Organisation,
             EntityKind::AbnAcn,
             EntityKind::Address,
+            EntityKind::Organisation,
             EntityKind::Person,
         ];
         KINDS
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        // fetch_jsonp does a curl with a 10s --max-time (wrapped in a 12s
+        // tokio timeout) and, on a 429, sleeps 5s before a second identical
+        // curl — a ~29s worst case. The default 3s MODULE_TIMEOUT_MS killed
+        // process() before even the first fetch could complete, so this
+        // module returned nothing on any real-latency network. Budget for
+        // the full retry path with headroom.
+        30_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -491,5 +509,22 @@ mod tests {
         let raw = r#"cb({"Abn":"123"})"#;
         let json_str = raw.strip_prefix("cb(").and_then(|s| s.strip_suffix(')'));
         assert_eq!(json_str, Some(r#"{"Abn":"123"}"#));
+    }
+
+    #[test]
+    fn max_timeout_covers_worst_case_retry_path() {
+        // Regression guard: fetch_jsonp's worst case is curl(12s tokio
+        // timeout) + sleep(5s on 429) + curl(12s) ≈ 29s. If a future edit
+        // drops the override back to the 3s default, the engine kills
+        // process() before the first fetch returns and the module silently
+        // yields nothing on any real network.
+        let curl_timeout_ms = 10_000 + 2_000; // see curl_with_status
+        let sleep_ms = 5_000; // 429 backoff in fetch_jsonp
+        let worst_case = curl_timeout_ms * 2 + sleep_ms;
+        assert!(
+            AbnLookup.max_timeout_ms() >= worst_case,
+            "budget {} < worst-case retry path {worst_case}ms",
+            AbnLookup.max_timeout_ms()
+        );
     }
 }

@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -291,6 +291,10 @@ impl Module for PhoneIntl {
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Phone)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Phone
     }
 
     fn produces(&self) -> &'static [EntityKind] {

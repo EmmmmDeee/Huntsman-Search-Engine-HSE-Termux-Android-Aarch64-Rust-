@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::key_pool::{self, KeyEntry, KeyStatus};
@@ -53,6 +53,10 @@ impl Module for ApiKeyProbe {
 
     fn max_timeout_ms(&self) -> u64 {
         90_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Other
     }
 
     fn produces(&self) -> &'static [EntityKind] {

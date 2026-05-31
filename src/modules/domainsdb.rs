@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -63,6 +63,10 @@ impl Module for DomainsDb {
     }
     fn max_timeout_ms(&self) -> u64 {
         12_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::DnsRecon
     }
 
     fn produces(&self) -> &'static [EntityKind] {

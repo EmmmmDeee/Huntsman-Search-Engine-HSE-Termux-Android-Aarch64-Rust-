@@ -4,88 +4,168 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (v1.0 — 63 modules)
+## Catalogue (85 modules: 62 free · 18 key-gated · 5 paid)
 
-### Network / identity modules (target-driven)
+> This section is generated from the registry (`hse modules --json`).
+> The `modules_md_lists_every_registered_module` test in
+> `tests/architecture.rs` fails CI if a registered module is missing here,
+> so the catalogue cannot silently drift from the code again.
 
-All free, no API key required. Sorted by priority (engine runs
-higher-priority first; ordering doesn't affect output).
+### dns_recon (12)
 
-| Module | Targets | Cost | Passive | Priority | Output kinds |
-|--------|---------|------|---------|----------|--------------|
-| [`phone_intl`](#phone_intl)                 | `phone`               | free | **yes** | 140 | Phone (E.164, country) — offline |
-| [`hudsonrock`](#hudsonrock)                 | `email`, `domain`     | free | no  | 130 | Email / Domain (stealer-log evidence) |
-| `xposed_or_not`                             | `email`               | free | no  | 128 | Email (named-breach list) — pairs with hudsonrock for AU-001 |
-| `username_search`                           | `username`            | free | no  | 110 | Url × N (per-platform profile links) — Sherlock/Maigret-style |
-| `github_user`                               | `username`            | free | no  | 108 | Username + Person + Email + Url (GitHub public profile) |
-| [`email_to_username`](#email_to_username)   | `email`               | free | **yes** | 95  | Username × N candidates |
-| `gravatar`                                  | `email`               | free | no  | 85  | Email (Gravatar profile metadata) |
-| [`alienvault_otx`](#alienvault_otx)         | `ip`, `domain`        | free | no  | 78  | IpAddress / Domain (threat-intel pulses + tags + TLP) |
-| `wayback`                                   | `domain`              | free | no  | 38  | Domain (snapshot count + first/last seen) |
-| [`crtsh`](#crtsh)                           | `domain`              | free | no  | 35  | Domain (subdomains via certificate transparency) |
-| [`whois`](#whois)                           | `domain`, `ip`        | free | no  | 32  | Domain / IpAddress + contact Emails + nameserver Domains (18 fields) |
-| [`dns_resolver`](#dns_resolver)             | `domain`              | free | no  | 30  | IpAddress (A/AAAA), Domain (MX/NS/SOA), Email (SOA admin) |
-| `reverse_dns`                               | `ip`                  | free | no  | 29  | Domain × N (PTR records) |
-| [`ip_geo`](#ip_geo)                         | `ip`                  | free | no  | 28  | Coordinates, Organisation |
-| `bgpview`                                   | `asn`, `ip`           | free | no  | 25  | Asn (holder + contacts) — also reverse-maps IPs to announcing ASN |
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `dns_axfr` | free | no | 60 | domain |
+| `whoisxml` | key_gated | no | 58 | email, person, organisation, domain |
+| `securitytrails` | key_gated | no | 45 | domain |
+| `subdomain_takeover` | free | no | 40 | domain |
+| `doh_resolver` | free | no | 34 | domain, ip_address |
+| `cert_intel` | free | no | 33 | domain |
+| `whois` | free | no | 32 | address, domain, email, organisation, person |
+| `dns_intel` | free | no | 31 | ip_address, domain, email |
+| `rdap_domain` | free | no | 31 | domain |
+| `crtsh` | free | no | 29 | domain, email, organisation |
+| `hackertarget` | free | no | 24 | domain, ip_address |
+| `domainsdb` | free | no | 19 | domain |
 
-### OSINT orchestration modules (v1.0+)
+### infrastructure (16)
 
-| Module | Targets | Cost | Passive | Priority | Output kinds |
-|--------|---------|------|---------|----------|--------------|
-| `keybase`          | `username`              | free      | no | 100 | Username + Person + Address + Domain (identity graph with crypto proofs) |
-| `seon`             | `email`, `phone`        | key-gated | no | 95  | Email/Phone (cross-platform presence across 250+ services) |
-| `epieos`           | `email`                 | key-gated | no | 92  | Email + Person + Username + Address (Google profile, Maps reviews, Skype) |
-| `emailrep`         | `email`                 | key-gated | no | 90  | Email (reputation score, breach exposure, social profiles) |
-| `proxycurl`        | `username`, `url`, `email` | paid      | no | 88  | Person + Email + Phone + Organisation + Address (LinkedIn extraction) |
-| `opencorporates`   | `organisation`, `name`, `abn_acn` | free      | no | 80  | Organisation + Address (AU company registry) |
-| `photon`           | `address`, `coordinates`| free      | no | 20  | Coordinates / Address (Komoot geocoder for corroboration) |
-| `mylnikov`         | `mac_address`           | free      | no | 17  | Coordinates (free BSSID-to-GPS, no auth) |
-| `overpass`         | `coordinates`           | free      | no | 15  | Coordinates (OSM infrastructure — towers, substations, cameras) |
-| `pwned_passwords`  | `email`, `username`     | free      | yes| 115 | Email/Username (HIBP k-Anonymity SHA-1 breach check) |
-| `sunrise_sunset`   | `coordinates`           | free      | no | 10  | Coordinates (solar phase timestamps for chronolocation) |
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `hudsonrock` | free | no | 130 | — |
+| `shodan` | free | no | 105 | domain, url, asn, organisation, address |
+| `criminal_ip` | key_gated | no | 103 | asn, organisation |
+| `ipqs` | key_gated | no | 100 | — |
+| `ip_reputation` | free | no | 78 | ip_address |
+| `abuseipdb` | key_gated | no | 52 | ip_address |
+| `bgpview` | free | no | 35 | asn, domain, ip_address |
+| `censys` | key_gated | no | 35 | ip_address, coordinates, address |
+| `greynoise` | free | no | 30 | ip_address |
+| `ip_whois_geo` | free | no | 27 | address, asn, coordinates, organisation |
+| `ipquery` | free | no | 27 | address, asn, coordinates, organisation |
+| `ip2location` | free | no | 26 | address, asn, coordinates, organisation |
+| `ipapi` | free | no | 26 | address, asn, coordinates, domain, organisation |
+| `ipinfo` | free | no | 25 | address, asn, coordinates, domain, organisation |
+| `ip_registry` | free | no | 23 | asn, email, ip_address, url |
+| `urlscan` | free | no | 15 | ip_address |
 
-### Termux sensors (v0.6+, environmental — accept any target)
+### breach (6)
 
-| Module | Cost | Passive | Priority | Output kinds | Needs `termux-api` |
-|--------|------|---------|----------|--------------|---------------------|
-| [`wifi_connect`](#wifi_connect)   | free | **yes** | 70 | MacAddress (connected AP), IpAddress (local) | yes |
-| [`gps_fix`](#gps_fix)             | free | **yes** | 68 | Coordinates                                 | yes |
-| [`wifi_scan`](#wifi_scan)         | free | **yes** | 65 | MacAddress × N (visible APs)                | yes |
-| [`cell_survey`](#cell_survey)     | free | **yes** | 62 | DeviceId × N (cell towers)                  | yes |
-| [`arp_scan`](#arp_scan)           | free | **yes** | 58 | IpAddress + MacAddress per ARP entry        | no  |
-| [`net_interfaces`](#net_interfaces) | free | **yes** | 55 | MacAddress per local interface              | no  |
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `xposed_or_not` | free | no | 128 | — |
+| `see_know` | paid | no | 126 | email, username, phone, person, ip_address, domain, address, coordinates, organisation, asn, credential, api_key |
+| `hibp` | key_gated | no | 120 | email, domain |
+| `dehashed` | paid | no | 118 | — |
+| `intelx` | paid | no | 116 | — |
+| `leakix` | key_gated | no | 102 | — |
 
-All sensor modules are **free** (no API key required). Sensors fire on
-every scan as environmental enrichment; off-device, the `termux-*`
-binary-based modules no-op cleanly (no `module_error` events).
+### threat (3)
 
-### Target-kind coverage matrix
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `urlhaus` | free | no | 110 | — |
+| `threatfox` | key_gated | no | 109 | domain, ip_address, url |
+| `virustotal` | key_gated | no | 55 | — |
 
-| Target | Modules that fire |
-|---|---|
-| `email`       | hudsonrock + xposed_or_not + email_to_username + gravatar + seon + emailrep + epieos + pwned_passwords + hibp + dehashed + contact_enrich |
-| `username`    | username_search + github_user + keybase + proxycurl + social_probe |
-| `phone`       | phone_intl + seon + contact_enrich |
-| `full_name`   | dehashed + opencorporates + proxycurl |
-| `domain`      | hudsonrock + alienvault_otx + crtsh + dns_resolver + whois + wayback + dehashed |
-| `ip`          | alienvault_otx + whois + reverse_dns + ip_geo + bgpview + shodan |
-| `asn`         | bgpview |
-| `coordinates` | wigle + overpass + sunrise_sunset + photon + geocode |
-| `address`     | geocode + photon |
-| `mac_address` | wigle + mylnikov |
-| `url`         | proxycurl + web_crawler + wayback |
-| `organisation`| opencorporates + abn_lookup |
+### geo (18)
 
-Any target also fires the 6 Termux sensors (passive, no-op without `termux-api`).
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `geo_domain_classifier` | free | yes | 94 | address |
+| `phone_area_geo` | free | yes | 93 | address |
+| `email_header_geo` | free | yes | 92 | address |
+| `phone_carrier_geo` | free | yes | 92 | address |
+| `email_locale` | free | yes | 91 | address |
+| `wifi_intel` | key_gated | yes | 65 | address, coordinates, mac_address |
+| `exif_geo` | free | no | 28 | coordinates |
+| `ip_geo` | free | no | 28 | coordinates, address, asn, organisation |
+| `geo_intel` | free | no | 22 | coordinates |
+| `geocode` | free | no | 21 | coordinates, address |
+| `photon` | free | no | 20 | address, coordinates |
+| `wigle` | key_gated | no | 18 | coordinates, address, mac_address, organisation |
+| `mylnikov` | free | no | 17 | coordinates |
+| `overpass` | free | no | 15 | coordinates |
+| `social_location` | free | no | 15 | address |
+| `mls` | free | no | 12 | coordinates |
+| `sunrise_sunset` | free | no | 10 | coordinates |
+| `breach_timezone` | free | yes | 7 | address |
 
-Suppress the sensor suite for a particular scan with:
-```bash
-hse scan --kind email --value foo@bar.com \
-  --exclude arp_scan,net_interfaces,wifi_scan,wifi_connect,gps_fix,cell_survey
-```
-…or use the allowlist `--modules` flag to opt in only the modules you
-want.
+### social (5)
+
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `username_search` | free | no | 111 | url, username |
+| `social_probe` | free | no | 108 | url, username, person |
+| `github_user` | free | no | 107 | address, domain, email, organisation, person, url, username |
+| `keybase` | free | no | 100 | address, domain, email, person, username |
+| `name_to_username` | free | yes | 97 | username |
+
+### people (6)
+
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `oathnet_pro` | paid | no | 127 | address, credential, domain, email, ip_address, password, person, phone, url, username |
+| `seon` | key_gated | no | 95 | person |
+| `employer_pivot` | free | no | 92 | address, email, phone, url |
+| `epieos` | key_gated | no | 92 | address, person, username |
+| `proxycurl` | paid | no | 88 | address, domain, email, organisation, person, phone |
+| `contact_enrich` | free | no | 85 | address, person, url, username |
+
+### email (5)
+
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `disposable_check` | free | yes | 97 | — |
+| `email_parse` | free | yes | 96 | domain, person, username |
+| `emailrep` | key_gated | no | 90 | — |
+| `smtp_vrfy` | free | no | 85 | email |
+| `hunter_io` | key_gated | no | 62 | email, person, organisation |
+
+### phone (1)
+
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `phone_intl` | free | yes | 140 | phone |
+
+### corporate (2)
+
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `abn_lookup` | key_gated | no | 80 | abn_acn, address, organisation, person |
+| `opencorporates` | free | no | 80 | abn_acn, address, organisation |
+
+### search (2)
+
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `exa_search` | key_gated | no | 87 | domain, email, phone, url |
+| `search_engines` | free | no | 25 | url, domain, email, username, phone, address, person, organisation |
+
+### web (5)
+
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `wayback` | free | no | 38 | — |
+| `webserver_banner` | free | no | 36 | — |
+| `waf_detect` | free | no | 30 | domain |
+| `cloud_storage` | free | no | 25 | url |
+| `web_crawler` | free | no | 20 | email, url, domain, phone, api_key |
+
+### sensor (3)
+
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `device_sensors` | free | yes | 70 | coordinates, mac_address |
+| `cell_intel` | free | yes | 64 | coordinates, device_id |
+| `local_net` | free | yes | 58 | ip_address, mac_address |
+
+### other (1)
+
+| Module | Cost | Passive | Pri | Produces |
+|---|---|---|---|---|
+| `api_key_probe` | free | yes | 200 | api_key, domain |
+
 
 ---
 
@@ -93,20 +173,21 @@ want.
 
 The expansion engine chains modules by producing entities whose `EntityKind`
 maps to a `TargetKind` other modules accept. With **`hse scan --depth 2`**
-the following chains emerge automatically from the 5 modules above:
+chains like the following emerge automatically (module names current as of
+the generated Catalogue above):
 
 ```
 Seed: Email (foo@example.com)
-├─ hudsonrock       → Email (with breach evidence — same as input)
-└─ email_to_username → Username × N
-   └─ (no v0.2 module accepts Username yet — chain ends here)
+├─ hudsonrock        → Email (with breach evidence — same as input)
+└─ name_to_username  → Username × N
+   └─ username_search / github_user / keybase accept Username → profiles
 
 Seed: Domain (example.com)
 ├─ hudsonrock      → Domain (with breach evidence)
 ├─ crtsh           → Domain × N subdomains  ↘
 │                                            ↓ depth=2 round
-└─ dns_resolver    → IpAddress, Domain (MX) — re-feed via expansion
-   └─ per subdomain (depth=1): dns_resolver, hudsonrock, crtsh
+└─ dns_intel       → IpAddress, Domain (MX) — re-feed via expansion
+   └─ per subdomain (depth=1): dns_intel, hudsonrock, crtsh
       └─ per discovered IP (depth=2): ip_geo → Coordinates, Organisation
 ```
 
@@ -116,6 +197,15 @@ expansions from runaway. Adjust as needed via `--min-expand-confidence`.
 ---
 
 ## Modules in detail
+
+> **Legacy / illustrative.** The deep-dives below were written for the
+> original module set and have not been kept in lockstep with the registry.
+> Several describe modules that were since merged or renamed (e.g.
+> `wifi_scan` + `bssid_locate` → `wifi_intel`, `cell_survey` → `cell_intel`,
+> `dns_resolver` → `dns_intel`, `email_to_username` → `name_to_username`).
+> They remain as worked examples of how a module is structured. For the
+> authoritative, always-current list of what ships, see the generated
+> **Catalogue** above or run `hse modules` / `hse modules --json`.
 
 ### `hudsonrock`
 
@@ -351,7 +441,12 @@ Before opening the PR, confirm:
 - [ ] `name()` is `snake_case` and unique
 - [ ] `priority()` slots sensibly into the existing ordering
 - [ ] `cost()` is correctly `Free` / `KeyGated` / `Paid`
-- [ ] `is_passive()` returns `true` only for genuinely zero-network modules
+- [ ] `is_passive()` returns `true` only for zero-network modules — the
+      sole exceptions are the on-device sensors in
+      `engine::LOCAL_PASSIVE_MODULES` (`wifi_intel`, `cell_intel`), which read
+      local radios but may enrich them via an API; see the passive caveat above.
+      The `non_passive_modules_budget_above_default` test also requires any
+      non-passive module to set `max_timeout_ms()` above the 3s default.
 - [ ] `accepts()` covers every `TargetKind` the module can handle and only those
 - [ ] If key-gated: uses `ctx.key("HUNTSMAN_FOO_KEY")?` (returns `Error::MissingKey`,
   which the engine handles as a logged skip rather than scan failure)

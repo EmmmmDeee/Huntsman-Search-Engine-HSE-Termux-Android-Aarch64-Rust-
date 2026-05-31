@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -67,7 +67,15 @@ impl Module for SunriseSunset {
         matches!(t.kind, TargetKind::Coordinates)
     }
     fn max_timeout_ms(&self) -> u64 {
-        3_000
+        // Two sequential network requests, neither with a per-request
+        // timeout. The explicit 3s matched MODULE_TIMEOUT_MS, so the engine
+        // killed the module before even one slow response returned. Budget
+        // for both requests.
+        12_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Geo
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -205,7 +213,7 @@ mod tests {
     fn module_metadata() {
         assert_eq!(SunriseSunset.name(), "sunrise_sunset");
         assert_eq!(SunriseSunset.priority(), 10);
-        assert_eq!(SunriseSunset.max_timeout_ms(), 3_000);
+        assert_eq!(SunriseSunset.max_timeout_ms(), 12_000);
     }
 
     #[test]

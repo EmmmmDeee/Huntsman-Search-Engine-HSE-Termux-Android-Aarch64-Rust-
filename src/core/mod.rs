@@ -14,6 +14,8 @@ pub mod profiles;
 pub mod relation;
 pub mod roi;
 pub mod scan;
+#[cfg(test)]
+pub mod test_support;
 pub mod timeline;
 pub mod validation;
 pub mod webhook;

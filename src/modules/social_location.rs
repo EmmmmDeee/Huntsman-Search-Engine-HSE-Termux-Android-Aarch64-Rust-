@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -42,6 +42,10 @@ impl Module for SocialLocation {
         }
         let lower = t.value.to_lowercase();
         SUPPORTED_HOSTS.iter().any(|h| lower.contains(h))
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Geo
     }
 
     fn produces(&self) -> &'static [EntityKind] {

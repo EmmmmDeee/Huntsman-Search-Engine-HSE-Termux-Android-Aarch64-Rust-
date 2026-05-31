@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::error_snippet;
@@ -90,6 +90,10 @@ impl Module for Epieos {
     }
     fn max_timeout_ms(&self) -> u64 {
         15_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::People
     }
 
     fn produces(&self) -> &'static [EntityKind] {

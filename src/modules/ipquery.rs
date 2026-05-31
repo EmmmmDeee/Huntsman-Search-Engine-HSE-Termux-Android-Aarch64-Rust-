@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
@@ -92,6 +92,10 @@ impl Module for IpQuery {
     }
     fn max_timeout_ms(&self) -> u64 {
         8_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
     }
 
     fn produces(&self) -> &'static [EntityKind] {

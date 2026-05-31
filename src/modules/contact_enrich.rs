@@ -18,7 +18,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::{error_snippet, urlencode};
@@ -136,6 +136,10 @@ impl Module for ContactEnrich {
 
     fn max_timeout_ms(&self) -> u64 {
         6_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::People
     }
 
     fn produces(&self) -> &'static [EntityKind] {

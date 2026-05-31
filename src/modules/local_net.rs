@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::Target,
 };
 
@@ -41,6 +41,10 @@ impl Module for LocalNet {
     }
     fn accepts(&self, _t: &Target) -> bool {
         true
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Sensor
     }
 
     fn produces(&self) -> &'static [EntityKind] {

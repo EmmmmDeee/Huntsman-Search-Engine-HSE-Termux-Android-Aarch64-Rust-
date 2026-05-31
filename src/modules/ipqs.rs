@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::Evidence,
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::{error_snippet, handle_keyed_error, urlencode};
@@ -102,6 +102,10 @@ impl Module for IpQs {
     }
     fn max_timeout_ms(&self) -> u64 {
         8_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

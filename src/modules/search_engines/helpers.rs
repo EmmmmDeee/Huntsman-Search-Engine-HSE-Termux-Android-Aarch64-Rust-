@@ -1426,3 +1426,41 @@ pub(super) fn is_email_local_char(b: u8) -> bool {
 pub(super) fn is_domain_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'.' || b == b'-'
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abn_validator_does_not_panic_on_leading_zero() {
+        // Regression: an 11-digit candidate starting with '0' lifted from a
+        // live search result used to overflow (0u32.wrapping_sub(1) * 10) and
+        // panic the search_engines module mid-scan. Must now return false.
+        assert!(!is_valid_abn("01234567890"));
+        assert!(!is_valid_abn("00000000000"));
+    }
+
+    #[test]
+    fn abn_validator_accepts_known_valid() {
+        // ATO worked-example ABN (also the README's `--kind abn` example).
+        assert!(is_valid_abn("51824753556"));
+    }
+
+    #[test]
+    fn abn_validator_rejects_wrong_length_and_checksum() {
+        assert!(!is_valid_abn("123")); // too short
+        assert!(!is_valid_abn("123456789012")); // too long
+        assert!(!is_valid_abn("51824753557")); // valid length, bad checksum
+        assert!(!is_valid_abn("abcdefghijk")); // non-digits → <11 digits
+    }
+
+    #[test]
+    fn abn_validator_handles_all_leading_digits_without_panic() {
+        // No 11-digit string should ever panic the validator, whatever the
+        // leading digit — the whole point of the signed-wide accumulator.
+        for first in '0'..='9' {
+            let candidate = format!("{first}1824753556");
+            let _ = is_valid_abn(&candidate); // must not panic
+        }
+    }
+}

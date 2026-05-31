@@ -17,7 +17,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::Evidence,
     error::{Error, Result},
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::{error_snippet, handle_keyed_error};
@@ -70,6 +70,10 @@ impl Module for LeakIx {
     }
     fn max_timeout_ms(&self) -> u64 {
         10_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Breach
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -35,6 +35,10 @@ impl Module for NameToUsername {
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::FullName)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Social
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -171,6 +175,43 @@ mod tests {
         let usernames = derive_usernames(&parts);
         assert!(usernames.contains(&"jordanlmeyer".to_string()));
         assert!(usernames.contains(&"jlmeyer".to_string()));
+    }
+
+    #[test]
+    fn non_ascii_name_does_not_panic() {
+        // Regression: the old `&first[..len().min(1)]` byte-slice panicked on
+        // multi-byte first chars. These must derive handles without crashing.
+        for name in ["Çağla Yılmaz", "Øyvind Ådne", "José Müller", "Renée Noël"] {
+            let parts = parse_name_parts(name);
+            let usernames = derive_usernames(&parts); // must not panic
+            assert!(!usernames.is_empty(), "{name} should yield handles");
+        }
+    }
+
+    #[test]
+    fn expanded_patterns_cover_real_world_handles() {
+        let parts = parse_name_parts("Jordan Meyer");
+        let u = derive_usernames(&parts);
+        // hyphen, digit-suffix, last-first, bare, initial-dot forms.
+        for want in [
+            "jordan-meyer",
+            "jordanmeyer1",
+            "meyerj",
+            "jordan",
+            "j.meyer",
+        ] {
+            assert!(
+                u.contains(&want.to_string()),
+                "missing real-world handle: {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn first_char_is_char_safe() {
+        assert_eq!(first_char("çağla"), "ç");
+        assert_eq!(first_char("jordan"), "j");
+        assert_eq!(first_char(""), "");
     }
 
     #[test]

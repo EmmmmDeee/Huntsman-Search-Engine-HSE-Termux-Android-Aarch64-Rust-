@@ -20,7 +20,7 @@ use serde::Deserialize;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::fetch_json_or_404;
@@ -161,6 +161,10 @@ impl Module for IpRegistry {
 
     fn max_timeout_ms(&self) -> u64 {
         8_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
     }
 
     fn produces(&self) -> &'static [EntityKind] {

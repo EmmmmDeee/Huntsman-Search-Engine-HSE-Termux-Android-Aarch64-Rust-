@@ -32,6 +32,7 @@ use crate::core::{
     tags,
 };
 use crate::modules::oathnet_pro::key_harvest::{extract_api_keys_from_item, store_api_credential};
+use crate::util::geo::is_valid_coords;
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
 use crate::util::see_know::{self, val_str};
 
@@ -527,9 +528,11 @@ fn extract_geo_entities(
     // return lat/lon pairs directly, as a JSON number or a numeric string.
     let lat = parse_coord(item, &["latitude", "lat"]);
     let lon = parse_coord(item, &["longitude", "lon", "lng"]);
+    // Shared validator: finite + in-range + not-Null-Island. Breach/OSINT
+    // aggregators commonly carry 0,0 as a null-location value in records,
+    // which the prior range-only check admitted as a false Coordinates entity.
     if let (Some(la), Some(lo)) = (lat, lon)
-        && (-90.0..=90.0).contains(&la)
-        && (-180.0..=180.0).contains(&lo)
+        && is_valid_coords(la, lo)
     {
         let coord_val = format!("{la:.5},{lo:.5}");
         if seen.insert(format!("@coord:{coord_val}")) {
@@ -948,6 +951,22 @@ mod tests {
             assert!(
                 !r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
                 "out-of-range rejected"
+            );
+        }
+        // Null Island (0,0) is rejected — common null-location value in breach
+        // aggregator records; the shared validator drops it.
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"lat": 0.0, "lon": 0.0}),
+                "ip_info",
+                "s",
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                !r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+                "Null Island rejected"
             );
         }
         // Location hint, timezone, ASN + org (ip_info only).

@@ -50,7 +50,7 @@ const BROWSER_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;\
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::urlencode;
@@ -99,6 +99,10 @@ impl Module for UsernameSearch {
         // social-analyzer's published research flags as the dominant
         // failure mode for username-enumeration tools.
         60_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Social
     }
 
     fn produces(&self) -> &'static [EntityKind] {
