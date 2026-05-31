@@ -69,6 +69,7 @@ async fn curl_exec(
         cmd.args(["-x", &proxy]);
     }
 
+    cmd.args(["--proto", "=http,https", "--proto-redir", "=http,https", "--max-redirs", "5"]);
     cmd.args(["-L", "--", url]);
     cmd.kill_on_drop(true);
 
@@ -125,6 +126,7 @@ pub async fn fetch_via_proxy(url: &str, timeout_ms: u64, ua: &str, proxy: &str) 
     ]);
     cmd.args(["-H", "Accept-Language: en-US,en;q=0.9"]);
     cmd.args(["-x", proxy]);
+    cmd.args(["--proto", "=http,https", "--proto-redir", "=http,https", "--max-redirs", "5"]);
     cmd.args(["-L", "--", url]);
     cmd.kill_on_drop(true);
 

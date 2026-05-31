@@ -39,8 +39,27 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// No client-level total timeout — see module docstring. A short
 /// `connect_timeout` is set so unreachable hosts fail fast.
+/// True if a redirect's next-hop `host` must be refused as an SSRF risk — i.e.
+/// it is a private/reserved IP literal (cloud-metadata 169.254.169.254,
+/// loopback, RFC1918, ULA, …). Hostnames are not judged here (they are resolved
+/// at connect time); the engine's `url_host_is_private` gate already rejects
+/// private-host *targets*, and this extends the guard to every redirect hop so
+/// a public URL can't 3xx us onto an internal address.
+fn redirect_to_private_ip(host: Option<&str>) -> bool {
+    host.is_some_and(crate::util::preflight::is_private_ip)
+}
+
 pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                attempt.error("too many redirects")
+            } else if redirect_to_private_ip(attempt.url().host_str()) {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
         .connect_timeout(CONNECT_TIMEOUT)
         .pool_max_idle_per_host(5)
         .pool_idle_timeout(Duration::from_secs(90))
@@ -448,6 +467,18 @@ pub fn scan_for_api_keys_with_source(text: &str, source: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn redirect_to_private_ip_blocks_metadata_and_internal() {
+        use super::redirect_to_private_ip as blk;
+        assert!(blk(Some("169.254.169.254")), "cloud-metadata IP must be refused");
+        assert!(blk(Some("127.0.0.1")));
+        assert!(blk(Some("10.0.0.5")));
+        assert!(blk(Some("192.168.1.1")));
+        assert!(!blk(Some("8.8.8.8")), "public IP follows");
+        assert!(!blk(Some("example.com")), "hostnames resolved at connect, not judged here");
+        assert!(!blk(None));
+    }
+
     use super::*;
 
     #[test]

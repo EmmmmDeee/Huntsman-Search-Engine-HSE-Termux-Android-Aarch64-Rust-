@@ -134,6 +134,7 @@ impl CurlClient {
 
         let mut cmd = Command::new("curl");
         cmd.args(["-s", "-L", "--max-time", &secs, "-A", DEFAULT_UA]);
+        cmd.args(["--proto", "=http,https", "--proto-redir", "=http,https", "--max-redirs", "5"]);
         if let Some(ref h) = auth_header {
             cmd.args(["-H", h]);
         }
