@@ -97,7 +97,10 @@
     .lv-found .typ{color:#2c7c40} .lv-corr .typ{color:#9b1f9b}
     #graph-svg{display:block;width:100%;height:560px;
                background:radial-gradient(circle at 50% 40%,#fbfbfb 0%,#f4f4f4 70%);
-               border:1px solid #e3e3e3;border-radius:3px;cursor:grab}
+               border:1px solid #e3e3e3;border-radius:3px;cursor:grab;
+               /* Own touch gestures inside the canvas so one-finger pan/drag
+                  works on Chrome-Android instead of scrolling the page. */
+               touch-action:none}
     /* SpiderFoot-style by-type bar in the scan summary */
     .kbar-cell{min-width:120px}
     .kbar-track{position:relative;height:14px;background:#eee;border-radius:2px;overflow:hidden}
@@ -413,7 +416,9 @@ const API = {
   reportUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json',
   gexfUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/graph.gexf',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
-  keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body})
+  keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
+  stats:     ()=>API._req('/api/v1/stats'),
+  search:    (q,limit)=>API._req('/api/v1/search?q='+encodeURIComponent(q)+'&limit='+(limit||50))
 };
 
 /* ─── Router (hash-based, mirrors SpiderFoot's path semantics) ─── */
@@ -429,6 +434,7 @@ function parseHash(){
   if (segs[0]==='scans')                    return {name:'scans', params:{}, query};
   if (segs[0]==='newscan')                  return {name:'newscan', params:{}, query};
   if (segs[0]==='opts'||segs[0]==='settings') return {name:'opts', params:{}, query};
+  if (segs[0]==='search')                   return {name:'search', params:{}, query};
   if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
   return {name:'dash', params:{}, query};
 }
@@ -451,6 +457,7 @@ async function render(){
     if (S.route.name==='newscan')  return await renderNewScan(v);
     if (S.route.name==='scaninfo') return await renderScanInfo(v);
     if (S.route.name==='opts')     return await renderOpts(v);
+    if (S.route.name==='search')   return await renderSearch(v);
   } catch(e){
     v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
                    <button class="btn btn-default btn-sm" style="margin-left:12px" onclick="render()">Retry</button></div>`;
@@ -911,13 +918,17 @@ async function submitWizard(){
 /* ═══════════ Page: SCANINFO (#/scaninfo?id=X[&tab=Y]) ═══════════ */
 async function renderScanInfo(v){
   const {id, tab} = S.route.params;
-  const [scan, ents, corrs, rels] = await Promise.all([
+  // Only the scan itself is required; correlations/relations can 500 on a
+  // legacy scan, so one failing sub-resource must not blank the whole page.
+  const [scanR, entsR, corrsR, relsR] = await Promise.allSettled([
     API.scan(id), API.entities(id), API.correlations(id), API.relations(id)
   ]);
+  if (scanR.status !== 'fulfilled') throw scanR.reason;
+  const scan = scanR.value;
   S.scan = scan;
-  S.entities = ents.entities||[];
-  S.correlations = corrs.correlations||[];
-  S.relations = rels.relations||[];
+  S.entities     = entsR.status ==='fulfilled' ? (entsR.value.entities||[])      : [];
+  S.correlations = corrsR.status==='fulfilled' ? (corrsR.value.correlations||[]) : [];
+  S.relations    = relsR.status ==='fulfilled' ? (relsR.value.relations||[])     : [];
 
   const dur = scan.finished_at && scan.started_at ? scan.finished_at - scan.started_at
             : scan.status==='running' ? nowSec() - (scan.started_at||nowSec()) : null;
@@ -950,6 +961,7 @@ async function renderScanInfo(v){
       ${subTab('status',  'Status',       null,                tab)}
       ${subTab('browse',  'Browse',       S.entities.length,   tab)}
       ${subTab('graph',   'Graph',        null,                tab)}
+      ${subTab('rels',    'Relations',    S.relations.length,  tab)}
       ${subTab('log',     'Scan Log',     null,                tab)}
       ${subTab('corr',    'Correlations', S.correlations.length, tab)}
       ${subTab('info',    'Scan Settings',null,                tab)}
@@ -991,16 +1003,47 @@ async function renderScanInfo(v){
   if (tab==='status')      renderStatus(body, scan);
   else if (tab==='browse') renderBrowse(body);
   else if (tab==='graph')  renderGraph(body);
+  else if (tab==='rels')   renderRelations(body);
   else if (tab==='log')    renderLog(body, scan);
   else if (tab==='corr')   renderCorrelations(body);
   else if (tab==='info')   renderInfo(body, scan);
   else                     renderStatus(body, scan);
 }
 function subTab(name, label, count, active){
-  const sid = S.route.params.id;
   return `<li class="${active===name?'active':''}"><a href="#" data-sub="${attr(name)}">
     ${esc(label)}${count!=null?` <span class="badge">${count}</span>`:''}
   </a></li>`;
+}
+
+/* ── Relations tab — typed edges from the recursive crawl (provenance) ── */
+function renderRelations(host){
+  const rels = S.relations||[];
+  if (!rels.length){
+    host.innerHTML = '<div class="empty-state"><h3>No relations yet</h3>'
+      + '<p>Typed edges (<code>derived_from</code>, <code>subdomain_of</code>, '
+      + '<code>hosted_on</code>, …) appear here as the recursive crawl links entities. '
+      + 'Run a deeper scan (<code>--depth ≥ 1</code>) to populate them.</p></div>';
+    return;
+  }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const cell = uid => {
+    const e = byUid[uid];
+    return e ? `${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code>`
+             : `<code class="text-muted" style="font-size:10px">${esc(String(uid).slice(0,16))}…</code>`;
+  };
+  const rows = rels.map(r=>`<tr>
+      <td>${cell(r.from_uid)}</td>
+      <td class="text-center"><span class="tag">${esc(r.kind)}</span></td>
+      <td>${cell(r.to_uid)}</td>
+      <td class="text-right"><code>${r.confidence!=null?Number(r.confidence).toFixed(2):''}</code></td>
+    </tr>`).join('');
+  host.innerHTML = `<p class="text-muted" style="margin-bottom:8px">`
+    + `${rels.length} typed edge${rels.length===1?'':'s'} — the provenance graph the recursive expansion built.</p>`
+    + `<div class="table-responsive"><table class="table table-condensed table-striped tablesorter" id="rel-table">`
+    + `<thead><tr><th>From</th><th class="text-center">Relation</th><th>To</th><th class="text-right">Conf</th></tr></thead>`
+    + `<tbody>${rows}</tbody></table></div>`;
+  if (window.jQuery && jQuery.fn.tablesorter){ try{ jQuery('#rel-table').tablesorter(); }catch(_){} }
 }
 
 /* ── Status tab ── */
@@ -1653,25 +1696,38 @@ function toggleDetail(tr){
   }
 }
 
-async function globalSearch(e){
+function globalSearch(e){
   e.preventDefault();
-  const q = ($('#global-q')||{}).value;
-  if (!q || q.trim().length < 2) return;
-  try {
-    const resp = await fetch(`/api/v1/search?q=${encodeURIComponent(q.trim())}&limit=50`);
-    const data = await resp.json();
-    const entities = data.entities || [];
-    if (!entities.length){
-      if (typeof alertify !== 'undefined') alertify.warning('No entities match "'+q+'"');
-      return;
-    }
-    S.entities = entities;
-    S.correlations = [];
-    S.route = {page:'scan',id:'search',tab:'browse',query:{}};
-    render();
-    if (typeof alertify !== 'undefined') alertify.success(entities.length+' entities found');
-  } catch(err){
-    if (typeof alertify !== 'undefined') alertify.error('Search failed: '+err.message);
+  const q = (($('#global-q')||{}).value || '').trim();
+  if (q.length < 2){
+    if (typeof alertify !== 'undefined') alertify.warning('Enter at least 2 characters to search');
+    return;
+  }
+  // Navigate to a real route so the result survives render()'s hash re-parse
+  // (the old code hand-mutated S.route, which render() immediately overwrote).
+  nav('#/search?q='+encodeURIComponent(q));
+}
+
+/* ═══════════ Page: GLOBAL SEARCH (#/search?q=…) — FTS5-backed ═══════════ */
+async function renderSearch(v){
+  const q = (S.route.query.q||'').trim();
+  if (q.length < 2){
+    v.innerHTML = '<div class="empty-state"><h3>Search all entities</h3>'
+      + '<p>Type at least 2 characters in the search box above. Matching is tokenized, '
+      + 'word-order-independent and relevance-ranked (SQLite FTS5) across every scan.</p></div>';
+    return;
+  }
+  const data = await API.search(q, 200);
+  const rows = data.entities || [];
+  v.innerHTML = `
+    <div class="page-header" style="margin-top:0;border-bottom:1px solid #eee;padding-bottom:8px">
+      <h3 style="margin:0"><i class="glyphicon glyphicon-search"></i>&nbsp;Search results
+        <small>${rows.length} match${rows.length===1?'':'es'} for <code>${esc(q)}</code> across all scans</small>
+      </h3>
+    </div>
+    ${renderBrowseTable(rows)}`;
+  if (window.jQuery && jQuery.fn.tablesorter && rows.length){
+    try { jQuery('#browse-table').tablesorter(); } catch(_){}
   }
 }
 
