@@ -104,7 +104,24 @@ impl Module for EmployerPivot {
         let mut visited: Vec<String> = Vec::new();
         for path in paths {
             let url = format!("https://{}{}", domain, path);
-            if let Some(html) = curl::fetch_with_ua(&url, 6_000, curl::UA_DESKTOP).await {
+            // The host is an attacker-influenceable discovered domain, so fetch
+            // through the SSRF-guarded reqwest client (private-IP-filtering DNS
+            // resolver + redirect policy cover the initial request AND every
+            // redirect hop) rather than the curl fallback. Keep the desktop UA.
+            let fetched = match ctx
+                .http
+                .get(&url)
+                .header(reqwest::header::USER_AGENT, curl::UA_DESKTOP)
+                .timeout(std::time::Duration::from_millis(6_000))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    crate::util::http::read_body_capped(resp, 512 * 1024).await
+                }
+                _ => None,
+            };
+            if let Some(html) = fetched {
                 if html.len() < 200 {
                     continue;
                 }
