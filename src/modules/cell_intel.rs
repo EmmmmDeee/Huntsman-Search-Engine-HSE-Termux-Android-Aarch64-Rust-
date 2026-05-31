@@ -87,6 +87,11 @@ impl Module for CellIntel {
         15_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
+        KINDS
+    }
+
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         // Single invocation — the key performance win over two separate modules.
         let Some(stdout) = termux_cmd("termux-telephony-cellinfo", &[], 5000).await else {

@@ -38,6 +38,11 @@ impl Module for CloudStorage {
         matches!(t.kind, TargetKind::Domain | TargetKind::Organisation)
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Url];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let base = extract_base_name(&target.value);

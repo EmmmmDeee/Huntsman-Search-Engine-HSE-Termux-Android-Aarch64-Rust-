@@ -66,6 +66,19 @@ impl Module for GithubUser {
         matches!(t.kind, TargetKind::Username)
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Person,
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Domain,
+            EntityKind::Url,
+            EntityKind::Organisation,
+            EntityKind::Address,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let login = target.value.trim();
         // GitHub login rules: alphanumeric and hyphens, max 39 chars,

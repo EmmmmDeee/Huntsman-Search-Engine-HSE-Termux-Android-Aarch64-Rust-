@@ -35,6 +35,11 @@ impl Module for AbuseIpDb {
         matches!(t.kind, TargetKind::IpAddress)
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::IpAddress];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
 

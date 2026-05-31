@@ -66,6 +66,7 @@ pub mod phone_intl;
 pub mod photon;
 pub mod proxycurl;
 pub mod pwned_passwords;
+pub mod qld_unclaimed;
 pub mod rdap_domain;
 pub mod search_engines;
 pub mod securitytrails;
@@ -189,6 +190,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(social_location::SocialLocation),
         // Australian OSINT modules
         Arc::new(opencorporates::OpenCorporates),
+        Arc::new(qld_unclaimed::QldUnclaimed),
     ]
 }
 

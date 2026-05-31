@@ -57,6 +57,16 @@ impl Module for AbnLookup {
         true
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Organisation,
+            EntityKind::AbnAcn,
+            EntityKind::Address,
+            EntityKind::Person,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let guid = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,

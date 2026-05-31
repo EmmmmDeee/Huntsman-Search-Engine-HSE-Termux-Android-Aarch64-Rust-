@@ -1,6 +1,9 @@
 # Rust build artefacts
 /target/
 
+# Generated delivery package (git archive of the tree — circular to commit)
+/huntsman_refactored.zip
+
 # IDE / editor
 .idea/
 .vscode/

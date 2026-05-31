@@ -73,7 +73,11 @@ impl Module for DeviceSensors {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Coordinates, EntityKind::MacAddress];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Coordinates,
+            EntityKind::MacAddress,
+            EntityKind::IpAddress,
+        ];
         KINDS
     }
 

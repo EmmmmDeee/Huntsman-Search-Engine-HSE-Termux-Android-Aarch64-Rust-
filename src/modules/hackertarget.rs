@@ -49,6 +49,11 @@ impl Module for HackerTarget {
         10_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let val = match target.kind {
             TargetKind::Url => match crate::util::url_util::host_from_url(&target.value) {

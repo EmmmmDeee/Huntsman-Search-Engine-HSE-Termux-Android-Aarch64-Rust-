@@ -10,6 +10,138 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **NAMINT-grade name→username engine: diacritic folding + broader permutations.**
+  `name_to_username` is the recursion seed for identity OSINT (its `Username`
+  outputs feed username_search/social_probe/keybase/github_user, whose hits then
+  cross-correlate). Two issues, fixed Turing-style (measure → fix): (1) a real
+  correctness bug — `parse_name_parts` filtered on `is_alphabetic()`, which
+  *keeps* diacritics, so `"José Müller"` derived un-matchable `josé…`/`müller…`
+  handles; international/migrant names (common in AU OSINT) were silently
+  mis-derived. Added a pure, dependency-free `util::str_util::fold_ascii_lower`
+  (Latin diacritics → base ASCII incl. `æ→ae`, `ß→ss`, apostrophe/hyphen folding;
+  non-Latin dropped) and fold every name token through it. (2) Broadened the
+  permutation set from 9 to 16 ordered-by-likelihood patterns (adds `j.doe`,
+  `doej`, `jd`, `doe_john`, `john-doe`, `john.michael.doe`, …), deduped in
+  priority order and bounded so the highest-value handles survive the cap. Pure,
+  keyless, no network — ideal for Termux. New tests pin the fold (`José`→`jose`,
+  `Çağrı`→`cagri`, Arabic→dropped) and the new patterns; existing patterns
+  preserved. Suite +3 at 1360.
+
+- **Refactored the recursion core's duplicated key-cascade and skip-emit.** The
+  hot-inject key-cascade — the mechanism that makes recursion compound (a key one
+  module discovers becomes usable by the next module and the next round) — was
+  copy-pasted in three places (`run_expansion` per-round refresh, plus the
+  sequential and concurrent dispatchers' per-module inject), and the
+  `ModuleSkipped` event was hand-built at six call sites. Extracted a single
+  `hot_inject_keys(&mut keys)` (idempotent, gap-filling) and an `emit_skipped`
+  helper. Behaviour-preserving: which keys land in `ctx` and which skip events
+  fire is unchanged (the only delta is `run_expansion` now logs hot-injects too,
+  matching the dispatchers — observable scan behaviour is identical). Proven by
+  the `key_chaining_*` smoke tests and the engine suite, full run unchanged at
+  1353.
+
+- **Termux-aware per-module timeout cap so a slow upstream can't stall a phone
+  scan.** Audit of `max_timeout_ms` found a handful of modules legitimately set
+  very long timeouts (search_engines 120 s, api_key_probe 90 s, hibp/web_crawler
+  60 s) — fine on desktop, but on a low-power, metered, often-flaky mobile
+  connection a single such module can hang the whole scan for minutes.
+  `resolve_timeout` now clamps any module to 60 s **only on Termux and only when
+  the operator hasn't pinned `--module-timeout`** (an explicit timeout is honoured
+  verbatim; desktop is unchanged). Split into a pure `apply_termux_cap` with a
+  unit test covering desktop pass-through, Termux clamping of the 90/120 s
+  offenders, short-timeout pass-through, and user-override precedence. (Verified
+  in the same pass that absent external binaries already degrade fast: the
+  curl-subprocess modules return `None` on an immediate spawn error rather than
+  burning their timeout, so a minimal Termux without `curl`/`termux-api` doesn't
+  hang.)
+
+### Fixed
+
+- **Module synergy graph made truthful: completed `produces()` across ~60
+  modules.** Empirical audit of the producer→consumer graph (via
+  `/api/v1/modules/graph`) found the dispatch index is built from `consumes()`
+  (so runtime expansion always worked), but the `produces()` declarations that
+  drive the *displayed* synergy graph were absent on 62 modules — the default
+  returns `&[]` ("hasn't declared its outputs yet"). So the graph the operator
+  navigates in Chrome under-reported producers (e.g. `abn_acn` showed
+  produced-by-nobody while `abn_lookup`/`opencorporates` both emit it). Declared
+  the real outputs for every module that emits entities (driven by each module's
+  `Entity::new(EntityKind::…)` sites), fixing partial declarations
+  (`search_engines` +Coordinates/AbnAcn, `social_probe` +Domain, `shodan`/
+  `device_sensors` +IpAddress, `qld_unclaimed` +Coordinates) and adding full
+  `produces()` to ~55 others (whois, github_user, keybase, the IP-geo family,
+  the DNS/reputation modules, …). Modules declaring ≥1 output went from ~24 to
+  **75/86**; hub-producer counts roughly tripled (address 8→32, domain 9→31,
+  coordinates 8→22, organisation 9→20, person 5→15). New invariant test
+  `every_declared_produced_pivot_has_a_consumer` proves every produced pivot
+  kind has a consumer (zero dead-ends) and guards against future drift.
+
+### Added
+
+- **`util::postcode_au` + suburb-level enumeration for `qld_unclaimed`.** The
+  register carries only a 4-digit postcode, but a QLD postcode is not one place —
+  `4552` spans Maleny, Landsborough, Booroobin, Conondale, Witta and more.
+  Probing established that data.qld's locality datasets are spatial-only
+  (`datastore_active=false`, shapefiles/WMS) and a Nominatim postcode query
+  returns a single centroid, so neither enumerates; **Zippopotam**
+  (`api.zippopotam.us/au/{pc}`, keyless JSON) does — it returns each locality
+  with a lat/lon. New `util::postcode_au` resolves a postcode to its localities
+  (best-effort: any failure → empty, so the module degrades to the bare
+  postcode). `qld_unclaimed` now expands each distinct result postcode (capped at
+  6 lookups × 8 suburbs) into a postcode-centroid `Coordinates` anchor plus one
+  suburb-precise, individually geocodable `Address` per locality
+  (`"Maleny, QLD 4552, Australia"`), tagged `candidate-suburb` at low confidence
+  (below the 0.50 expansion floor) since the owner is in *one* of them — depth
+  for disambiguation, not auto-expansion. Pure parse + entity-build are
+  unit-tested against the real 4552 payload (which enumerates Booroobin).
+
+- **`util::abn` — shared, checksum-validated ABN/ACN identification, wired into
+  the OSINT graph.** Probing established the ABR ABN Lookup web service is
+  strictly GUID-gated (both `AbnDetails` and `MatchingNames` reject any call
+  without a registered GUID), so there is no keyless name→ABN lookup; the
+  existing key-gated `abn_lookup` remains the only direct resolver. Instead,
+  ABNs are *incorporated algorithmically*: a new `util::abn` validates an ABN by
+  its ATO modulus-89 weighted checksum and — newly — an ACN by its ASIC
+  check-digit (the prior search-engine extractor validated ABNs but accepted any
+  9-digit number next to the word "acn"; that path now requires the ACN
+  check-digit too). `looks_like_company` detects corporate legal forms (PTY LTD /
+  LIMITED / LTD / INC / NL / & CO) at word boundaries. `qld_unclaimed` now uses
+  it to emit an `Organisation` entity for company-form unclaimed-money owners, so
+  the engine's expansion pivots them into `abn_lookup`/`opencorporates` and
+  resolves the ABN/ACN — connecting the unclaimed-money graph to the federal
+  business registry. Canonical-value unit tests (ATO ABN 51824753556; ASIC ACN
+  000000019) pin both checksums and the company/individual split.
+
+- **`qld_unclaimed` module — Queensland Public Trustee unclaimed-money register
+  (free, keyless).** Searches the Public Trustee's unclaimed-monies register
+  (money owed from deceased estates, insurance refunds, payroll remainders,
+  government refunds, …) for a `FullName`/`Organisation` seed via the Queensland
+  Open Data Portal's CKAN `datastore_search` API — public, weekly-refreshed, no
+  key. For each matching record it emits the owner's lodged postcode as a
+  geocodable `Address` (so the existing geocode→coordinates pipeline can pivot on
+  it), carrying owner, amount, sender, date and reference number as evidence;
+  records without a usable postcode still surface as an `unclaimed_money` finding
+  so nothing is dropped. A pure `records_to_entities` transform is unit-tested
+  against the register's real JSON shape (incl. CKAN numeric-field coercion and
+  the no-postcode path). Exactly the Australian people-centric public-records
+  source the charter targets; brings the registry to 87 modules.
+
+  Query strategy (refined against live data): the register's full-text search
+  ANDs multi-word terms, so a full-name seed alone misses the deceased-estate
+  funds owed to *relatives* (same surname, different given name). The module
+  therefore runs a **two-tier query** — an exact full-name probe whose rows lead
+  (so the seeded person's own record can't be capped out behind a common
+  surname's namesakes) merged ahead of a broadened **surname** probe for family
+  recall — then classifies each row `exact-name-match` vs `family-candidate`,
+  weighting confidence so common-surname noise (verified to stay at C_eff 0.40,
+  below the 0.50 expansion floor) is surfaced but never auto-expanded.
+  Reconnaissance note: QLD is the only AU jurisdiction that publishes its full
+  per-owner unclaimed-money register as a queryable open dataset — NSW/VIC expose
+  aggregates only, WA/ASIC are search-portal-gated — so this is deliberately a
+  single-jurisdiction module, not the first of N state clones.
+
 ### Removed
 
 - **Deleted two dead `pub fn`s (~110 lines).** `util::see_know::credits` and

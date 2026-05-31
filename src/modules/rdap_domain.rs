@@ -113,6 +113,11 @@ impl Module for RdapDomain {
         15_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Domain];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let domain = match target.kind {
             TargetKind::Url => match crate::util::url_util::host_from_url(&target.value) {

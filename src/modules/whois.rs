@@ -53,6 +53,17 @@ impl Module for Whois {
         )
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Domain,
+            EntityKind::Email,
+            EntityKind::Person,
+            EntityKind::Organisation,
+            EntityKind::Address,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
         let query_value = match target.kind {
             TargetKind::Url => {

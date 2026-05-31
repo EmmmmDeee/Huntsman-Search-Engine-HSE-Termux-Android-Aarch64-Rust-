@@ -56,6 +56,11 @@ impl Module for Mylnikov {
         3_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let bssid = target.value.trim();
         if bssid.len() < 12 {

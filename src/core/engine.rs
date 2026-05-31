@@ -153,6 +153,18 @@ impl ScanEngine {
         self.emitter.emit(scan_id, kind);
     }
 
+    /// Emit a `ModuleSkipped` event — the gate-rejection path shared by
+    /// `run_expansion` and both dispatchers (cancel/quota/cost-dedup/skip-rule).
+    fn emit_skipped(&self, scan_id: &str, module: &str, reason: &str) {
+        self.emit(
+            scan_id,
+            EventKind::ModuleSkipped {
+                module: module.into(),
+                reason: reason.into(),
+            },
+        );
+    }
+
     pub fn modules(&self) -> &[Arc<dyn Module>] {
         &self.modules
     }
@@ -494,21 +506,11 @@ impl ScanEngine {
         // per-candidate allocation; the key clones are bounded by max_entities.
         let mut before: HashSet<String> = HashSet::new();
         for depth in 1..=opts.depth {
-            // Refresh keys from the pool at the start of each round.
-            // Keys discovered during the previous round (oathnet_pro breach
-            // data, api_key_probe validation, web_crawler credential scraping)
-            // become available to modules in this round automatically.
-            {
-                let pool = crate::util::key_pool::global_pool();
-                for svc in crate::util::key_pool::service_defs() {
-                    if ctx.keys.contains_key(svc.env_var) {
-                        continue;
-                    }
-                    if let Some(key) = pool.next_key(svc.name) {
-                        ctx.keys.insert(svc.env_var.to_string(), key);
-                    }
-                }
-            }
+            // Refresh keys from the pool at the start of each round. Keys
+            // discovered during the previous round (oathnet_pro breach data,
+            // api_key_probe validation, web_crawler scraping) become available
+            // to this round's modules automatically.
+            hot_inject_keys(&mut ctx.keys);
 
             if ctx.cancel.is_cancelled() {
                 let stop = StopReason::Cancelled;
@@ -720,9 +722,55 @@ fn visit_key(target: &Target) -> (TargetKind, String) {
     (target.kind, normalised)
 }
 
+/// Upper bound (ms) on any single module's timeout when running on Termux and
+/// the operator hasn't pinned `--module-timeout`. On a low-power, metered,
+/// often-flaky mobile connection a 90–120 s module (search_engines, api_key_probe)
+/// can stall the whole scan; capping the worst offenders keeps a phone scan
+/// responsive. Desktop and any explicit user timeout are unaffected.
+const TERMUX_MODULE_TIMEOUT_CAP_MS: u64 = 60_000;
+
 fn resolve_timeout(opts: &ScanOptions, module: &dyn Module) -> u64 {
-    opts.module_timeout_ms
-        .unwrap_or_else(|| module.max_timeout_ms())
+    let user_set = opts.module_timeout_ms;
+    let base = user_set.unwrap_or_else(|| module.max_timeout_ms());
+    apply_termux_cap(base, user_set.is_some(), crate::is_termux())
+}
+
+/// Pure timeout-capping policy (split out so it's unit-testable without env):
+/// on Termux with no user override, clamp to [`TERMUX_MODULE_TIMEOUT_CAP_MS`];
+/// otherwise pass the resolved value through unchanged.
+fn apply_termux_cap(base_ms: u64, user_set: bool, is_termux: bool) -> u64 {
+    if is_termux && !user_set {
+        base_ms.min(TERMUX_MODULE_TIMEOUT_CAP_MS)
+    } else {
+        base_ms
+    }
+}
+
+/// Pull any newly-available pooled API key into `keys` for every service that
+/// doesn't already have one. This is the key-cascade that makes recursion pay
+/// off: a key a module just discovered (oathnet breach data, api_key_probe
+/// validation, web_crawler scraping) becomes usable by the next module in the
+/// round and by the next expansion round. Idempotent — only fills gaps, never
+/// overwrites an operator-supplied key. Shared by `run_expansion` (per-round
+/// refresh) and both dispatchers (per-module hot-inject).
+fn hot_inject_keys(keys: &mut HashMap<String, String>) {
+    let pool = crate::util::key_pool::global_pool();
+    for svc in crate::util::key_pool::service_defs() {
+        if keys.contains_key(svc.env_var) {
+            continue;
+        }
+        if let Some(key) = pool.next_key(svc.name) {
+            let roi = crate::util::key_roi::classify(svc.name);
+            info!(
+                service = svc.name,
+                env_var = svc.env_var,
+                roi = roi.label(),
+                "hot-inject: pooled key available ({} tier)",
+                roi.label()
+            );
+            keys.insert(svc.env_var.to_string(), key);
+        }
+    }
 }
 
 fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> Option<StopReason> {
@@ -931,26 +979,14 @@ impl ScanEngine {
                 continue;
             }
             if let Some(reason) = module_skip_reason(&**module, target, opts, is_expansion) {
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: reason.into(),
-                    },
-                );
+                self.emit_skipped(scan_id, name, reason);
                 continue;
             }
             if !matches!(module.cost(), ModuleCost::Free)
                 && !dispatched.insert(dispatch_key(name, target))
             {
                 stats.deduped += 1;
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "already dispatched for this target".into(),
-                    },
-                );
+                self.emit_skipped(scan_id, name, "already dispatched for this target");
                 continue;
             }
 
@@ -976,25 +1012,7 @@ impl ScanEngine {
                 stats,
             );
 
-            {
-                let pool = crate::util::key_pool::global_pool();
-                for svc in crate::util::key_pool::service_defs() {
-                    if ctx.keys.contains_key(svc.env_var) {
-                        continue;
-                    }
-                    if let Some(key) = pool.next_key(svc.name) {
-                        let roi = crate::util::key_roi::classify(svc.name);
-                        info!(
-                            service = svc.name,
-                            env_var = svc.env_var,
-                            roi = roi.label(),
-                            "hot-inject: key available — {} tier",
-                            roi.label()
-                        );
-                        ctx.keys.insert(svc.env_var.to_string(), key);
-                    }
-                }
-            }
+            hot_inject_keys(&mut ctx.keys);
 
             // Re-check the cancel flag before the throttle sleep so an
             // operator cancel between modules doesn't pay the full
@@ -1057,24 +1075,12 @@ impl ScanEngine {
                 continue;
             }
             if let Some(reason) = module_skip_reason(&**module, target, opts, is_expansion) {
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: reason.into(),
-                    },
-                );
+                self.emit_skipped(scan_id, name, reason);
                 continue;
             }
             if !dispatched.insert(dispatch_key(name, target)) {
                 stats.deduped += 1;
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "already dispatched for this target".into(),
-                    },
-                );
+                self.emit_skipped(scan_id, name, "already dispatched for this target");
                 continue;
             }
             self.emit(
@@ -1099,25 +1105,8 @@ impl ScanEngine {
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
             // cascade — their outputs feed web_crawler/search_engines, which
-            // discover MORE keys. Tier is logged for operator visibility.
-            {
-                let pool = crate::util::key_pool::global_pool();
-                for svc in crate::util::key_pool::service_defs() {
-                    if ctx.keys.contains_key(svc.env_var) {
-                        continue;
-                    }
-                    if let Some(key) = pool.next_key(svc.name) {
-                        let roi = crate::util::key_roi::classify(svc.name);
-                        info!(
-                            service = svc.name,
-                            roi = roi.label(),
-                            "hot-inject: key available for concurrent phase ({})",
-                            roi.label()
-                        );
-                        ctx.keys.insert(svc.env_var.to_string(), key);
-                    }
-                }
-            }
+            // discover MORE keys.
+            hot_inject_keys(&mut ctx.keys);
         }
 
         // Phase 2: Spawn remaining (Free + KeyGated) modules concurrently.
@@ -1148,26 +1137,14 @@ impl ScanEngine {
                 continue;
             }
             if let Some(reason) = module_skip_reason(&**module, target, opts, is_expansion) {
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: reason.into(),
-                    },
-                );
+                self.emit_skipped(scan_id, name, reason);
                 continue;
             }
             if !matches!(module.cost(), ModuleCost::Free)
                 && !dispatched.insert(dispatch_key(name, target))
             {
                 stats.deduped += 1;
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason: "already dispatched for this target".into(),
-                    },
-                );
+                self.emit_skipped(scan_id, name, "already dispatched for this target");
                 continue;
             }
 
@@ -1470,6 +1447,27 @@ fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn termux_cap_bounds_long_modules_only_on_termux_without_override() {
+        // Desktop (not Termux): full timeout preserved, even 120 s.
+        assert_eq!(apply_termux_cap(120_000, false, false), 120_000);
+        // Termux, no user override: the worst offenders are clamped...
+        assert_eq!(
+            apply_termux_cap(120_000, false, true),
+            TERMUX_MODULE_TIMEOUT_CAP_MS
+        );
+        assert_eq!(
+            apply_termux_cap(90_000, false, true),
+            TERMUX_MODULE_TIMEOUT_CAP_MS
+        );
+        // ...while the common short timeouts pass through unchanged.
+        assert_eq!(apply_termux_cap(8_000, false, true), 8_000);
+        assert_eq!(apply_termux_cap(60_000, false, true), 60_000);
+        // An explicit --module-timeout is honoured verbatim, even on Termux,
+        // even above the cap (the operator asked for it).
+        assert_eq!(apply_termux_cap(120_000, true, true), 120_000);
+    }
 
     #[test]
     fn visit_key_normalises_email() {

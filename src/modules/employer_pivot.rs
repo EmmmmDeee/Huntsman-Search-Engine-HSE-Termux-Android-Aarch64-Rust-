@@ -66,6 +66,16 @@ impl Module for EmployerPivot {
         12_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Address,
+            EntityKind::Phone,
+            EntityKind::Email,
+            EntityKind::Url,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let Some(domain) = domain_for_target(target) else {

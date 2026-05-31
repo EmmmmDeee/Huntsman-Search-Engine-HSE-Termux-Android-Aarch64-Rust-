@@ -293,6 +293,11 @@ impl Module for PhoneIntl {
         matches!(t.kind, TargetKind::Phone)
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Phone];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         // Strip every char except digits (drop +, spaces, dashes, parens).
         let mut digits = String::with_capacity(target.value.len());

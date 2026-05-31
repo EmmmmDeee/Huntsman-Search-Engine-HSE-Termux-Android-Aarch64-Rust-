@@ -59,6 +59,11 @@ impl Module for Overpass {
         30_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 

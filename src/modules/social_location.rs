@@ -44,6 +44,11 @@ impl Module for SocialLocation {
         SUPPORTED_HOSTS.iter().any(|h| lower.contains(h))
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Address];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let url = target.value.trim();

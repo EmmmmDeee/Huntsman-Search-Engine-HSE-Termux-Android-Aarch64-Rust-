@@ -76,6 +76,16 @@ impl Module for IpWhois {
         matches!(t.kind, TargetKind::IpAddress)
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Asn,
+            EntityKind::Organisation,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let url = format!("https://ipwho.is/{}", target.value);
         let data: Resp = fetch_json(&ctx.http, SRC, &url).await?;

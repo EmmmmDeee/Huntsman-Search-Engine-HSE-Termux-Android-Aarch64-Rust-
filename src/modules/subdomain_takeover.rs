@@ -39,6 +39,11 @@ impl Module for SubdomainTakeover {
         matches!(t.kind, TargetKind::Domain)
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Domain];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let domain = target.value.clone();

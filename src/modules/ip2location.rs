@@ -69,6 +69,16 @@ impl Module for Ip2Location {
         8_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Asn,
+            EntityKind::Organisation,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         // ip2location.io free tier is IPv4-only — universal dispatcher
         // gate lets public IPv6 through, so reject it here.

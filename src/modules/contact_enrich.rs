@@ -138,6 +138,16 @@ impl Module for ContactEnrich {
         6_000
     }
 
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Person,
+            EntityKind::Username,
+            EntityKind::Address,
+            EntityKind::Url,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         match target.kind {
             TargetKind::Phone => process_phone(target, ctx).await,
