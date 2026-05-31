@@ -215,10 +215,12 @@ All endpoints are under `/api/v1/`.
 | GET    | `/health`                  | `{ "status": "ok", "version": "0.3.0" }` |
 | GET    | `/version`                 | `{ "version": "0.3.0" }` |
 | GET    | `/modules`                 | `{ "count": N, "modules": [{ name, priority, cost, passive }, ...] }` |
+| GET    | `/keys/status`             | `{ count, services: [{ service, total, active, rate_limited, exhausted, invalid, untested, uses, errors }, ...] }` — key-pool quota health, **never key values**. |
 | POST   | `/scans`                   | Body: `ScanRequest` (`{ kind, value, options? }`). Returns `202 { scan_id, status }`. |
 | GET    | `/scans`                   | 200 most recent scans. |
 | GET    | `/scans/{id}`              | Single scan record. 404 if unknown. |
 | GET    | `/scans/{id}/entities`     | `{ count, entities: [Entity, ...] }`. |
+| GET    | `/scans/{a}/diff/{b}`      | `ScanDiff` of scan `a` vs `b`: `{ added, removed, common, confidence_shifts }`. 404 if either unknown. The HTTP surface of `hse diff`. |
 | GET    | `/scans/{id}/correlations` | `{ count, correlations: [Correlation, ...] }` (v0.4+). |
 | GET    | `/scans/{id}/events`       | **SSE** — `text/event-stream` of `EventKind` JSON payloads. |
 | POST   | `/live`                    | `LiveRequest` body. Returns `202 { live_id, status }` (v0.5+). |

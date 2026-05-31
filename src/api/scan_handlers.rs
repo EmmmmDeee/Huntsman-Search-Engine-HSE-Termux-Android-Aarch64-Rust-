@@ -163,6 +163,33 @@ pub async fn scan_entities(
     }
 }
 
+/// `GET /api/v1/scans/{a}/diff/{b}` — entity-level diff of scan `a` (baseline)
+/// vs scan `b`. The HTTP surface of `hse diff`: returns the `ScanDiff` JSON
+/// (`{ added, removed, common, confidence_shifts }`) computed by the shared
+/// `core::diff`. 404 if either scan is unknown, matching the other
+/// `/scans/{id}/...` sub-resources.
+pub async fn scan_diff(
+    State(s): State<Arc<AppState>>,
+    Path((a, b)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &a) {
+        return resp;
+    }
+    if let Some(resp) = scan_missing(&s, &b) {
+        return resp;
+    }
+    let baseline = match s.store.entities_for_scan(&a) {
+        Ok(e) => e,
+        Err(e) => return internal_error(&e),
+    };
+    let later = match s.store.entities_for_scan(&b) {
+        Ok(e) => e,
+        Err(e) => return internal_error(&e),
+    };
+    let diff = crate::core::diff::diff_entities(&baseline, &later);
+    (StatusCode::OK, Json(diff)).into_response()
+}
+
 pub async fn scan_entities_filter(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

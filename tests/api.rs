@@ -1159,3 +1159,62 @@ async fn scan_events_endpoint_is_server_sent_events() {
         "scan events must stream as SSE, got content-type {ct:?}"
     );
 }
+
+// ── Scan diff endpoint ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_diff_endpoint_reports_added_removed_common() {
+    let (app, store) = test_app_with_store("diff");
+    // Scan A: keep@x.com + gone@x.com
+    let a = Scan::new("s-a", Target::new(TargetKind::FullName, "Target A"));
+    store.upsert_scan(&a).unwrap();
+    for v in ["keep@x.com", "gone@x.com"] {
+        store
+            .upsert_entity(&Entity::new(EntityKind::Email, v, 0.8, "s-a"))
+            .unwrap();
+    }
+    // Scan B: keep@x.com + new@x.com
+    let b = Scan::new("s-b", Target::new(TargetKind::FullName, "Target B"));
+    store.upsert_scan(&b).unwrap();
+    for v in ["keep@x.com", "new@x.com"] {
+        store
+            .upsert_entity(&Entity::new(EntityKind::Email, v, 0.8, "s-b"))
+            .unwrap();
+    }
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/s-a/diff/s-b"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let j = body_json(resp).await;
+    assert_eq!(j["common"], 1, "keep@x.com is in both");
+    assert_eq!(j["added"].as_array().unwrap().len(), 1);
+    assert_eq!(j["removed"].as_array().unwrap().len(), 1);
+    assert_eq!(j["added"][0]["value"], "new@x.com", "in B, not A");
+    assert_eq!(j["removed"][0]["value"], "gone@x.com", "in A, not B");
+}
+
+#[tokio::test]
+async fn scan_diff_404_for_unknown_scan() {
+    let (app, _store) = test_app_with_store("diff-404");
+    let resp = app
+        .oneshot(get("/api/v1/scans/nope-a/diff/nope-b"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn keys_status_endpoint_returns_service_summary_shape() {
+    // Reads the process-global key pool (env-dependent contents), so this
+    // asserts the wire contract, not specific data: a `{ count, services[] }`
+    // object with the two in sync. The per-service counting + value-free
+    // guarantee are unit-tested in handlers::tests::summarize_pool_*.
+    let app = test_app("keys-status");
+    let resp = app.oneshot(get("/api/v1/keys/status")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let j = body_json(resp).await;
+    let services = j["services"].as_array().expect("services array");
+    assert_eq!(j["count"].as_u64().unwrap() as usize, services.len());
+}

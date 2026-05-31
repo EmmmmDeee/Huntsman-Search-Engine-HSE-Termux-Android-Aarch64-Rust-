@@ -134,6 +134,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/stats", get(handlers::stats))
         // ── key-detector catalogue (v1.4+) ──
         .route("/keys/patterns", get(handlers::keys_patterns))
+        .route("/keys/status", get(handlers::keys_status))
         // ── scans ──
         .route(
             "/scans",
@@ -172,6 +173,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(scan_handlers::scan_correlations),
         )
         .route("/scans/{id}/relations", get(scan_handlers::scan_relations))
+        .route("/scans/{a}/diff/{b}", get(scan_handlers::scan_diff))
         .route("/scans/{id}/events", get(handlers::scan_events_sse))
         .route(
             "/scans/{id}/events.history",
