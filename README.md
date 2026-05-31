@@ -66,7 +66,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 | Seed | Flag | Example | Modules |
 |------|------|---------|---------|
-| Email | `--kind email` | `user@example.com` | 34 |
+| Email | `--kind email` | `user@example.com` | 35 |
 | Username | `--kind username` | `johndoe` | 14 |
 | Phone | `--kind phone` | `+61400000000` | 8 |
 | Full Name | `--kind name` | `Jordan Leigh Meyers` | 6 |
@@ -82,7 +82,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 ---
 
-## Module Overview (88 modules — 65 free, 23 key-gated/paid)
+## Module Overview (89 modules — 66 free, 23 key-gated/paid)
 
 > Generated from `hse modules --json`. The full catalogue with target
 > kinds and output entities (kept honest by the
@@ -97,7 +97,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `shodan`, `urlscan`
 - **Geolocation**: `breach_timezone`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_area_geo`, `phone_carrier_geo`, `photon`, `social_location`, `sunrise_sunset`
 - **Threat intel**: `urlhaus`
-- **Email**: `disposable_check`, `email_parse`, `smtp_vrfy`
+- **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_intl`
 - **Corporate**: `opencorporates`
 - **Search**: `search_engines`

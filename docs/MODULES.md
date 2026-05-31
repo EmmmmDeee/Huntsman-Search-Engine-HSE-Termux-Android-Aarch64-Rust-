@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (88 modules: 65 free · 18 key-gated · 5 paid)
+## Catalogue (89 modules: 66 free · 18 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -39,12 +39,13 @@ records. The engine knows nothing else — every module is a one-file change.
 | `proxycurl` | email, username, url | paid | no | 88 | person, address, email, domain, phone, organisation |
 | `contact_enrich` | email, phone | free | no | 85 | person, username, address, url |
 
-### email (5)
+### email (6)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `disposable_check` | email | free | **yes** | 97 | — |
 | `email_parse` | email | free | **yes** | 96 | domain, username, person |
+| `email_canonical` | email | free | **yes** | 95 | email |
 | `emailrep` | email | key_gated | no | 90 | — |
 | `smtp_vrfy` | email | free | no | 85 | email |
 | `hunter_io` | domain | key_gated | no | 62 | email, person, organisation |

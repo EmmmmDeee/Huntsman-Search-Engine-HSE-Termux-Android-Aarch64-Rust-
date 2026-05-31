@@ -42,6 +42,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`email_canonical` module — canonical-mailbox normalisation (free, offline).**
+  Emits the provably-equivalent canonical address for an `Email` seed so the
+  same mailbox written several ways collapses to one identity node instead of
+  fragmenting the graph: `+tag` subaddressing is stripped (`jdoe+news@x.com` →
+  `jdoe@x.com`, as supported by Gmail / Microsoft / Fastmail / Proton / iCloud),
+  Gmail dot-blindness is applied (`j.doe@gmail.com` → `jdoe@gmail.com`), and the
+  `googlemail.com` alias folds to `gmail.com`. Pure string transform — no
+  network, no new deps. Because the result is a documented routing equivalence
+  (not a guess), it is emitted at 0.80 — above the 0.50 expansion floor — so a
+  `--depth 1+` scan pivots the whole email pipeline (`hibp`, `hunter_io`,
+  `epieos`, …) onto the canonical mailbox; an already-canonical seed emits
+  nothing. Directly serves cross-correlation: the shared canonical address
+  accumulates corroboration where the look-alike variants were weak singletons.
+  Brings the registry to **89 modules**; 10 unit tests cover each equivalence
+  and the already-canonical / malformed-address paths.
+
 - **`username_variants` module — alternate-handle derivation (free, offline).**
   Turns a discovered `Username` seed into the handful of high-likelihood
   alternate handles a target reuses across platforms, feeding `username_search`,

@@ -24,6 +24,7 @@ pub mod dns_axfr;
 pub mod dns_intel;
 pub mod doh_resolver;
 pub mod domainsdb;
+pub mod email_canonical;
 pub mod email_header_geo;
 pub mod email_locale;
 pub mod email_parse;
@@ -149,6 +150,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(web_crawler::WebCrawler),
         Arc::new(urlscan::UrlScan),
         Arc::new(email_parse::EmailParse),
+        Arc::new(email_canonical::EmailCanonical),
         Arc::new(employer_pivot::EmployerPivot),
         Arc::new(social_probe::SocialProbe),
         Arc::new(username_search::UsernameSearch),
