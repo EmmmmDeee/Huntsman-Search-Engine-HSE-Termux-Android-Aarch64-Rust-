@@ -433,8 +433,8 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
         .await
         .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
     scan_for_api_keys(&text);
-    let data =
-        serde_json::from_str::<T>(&text).map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
+    let data = serde_json::from_str::<T>(&text)
+        .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
     Ok(Some(data))
 }
 
@@ -517,21 +517,33 @@ mod tests {
             .map(|a| a.ip().to_string())
             .collect();
         assert!(kept.contains(&"8.8.8.8".to_string()), "public v4 kept");
-        assert!(kept.contains(&"2606:4700:4700::1111".to_string()), "public v6 kept");
+        assert!(
+            kept.contains(&"2606:4700:4700::1111".to_string()),
+            "public v6 kept"
+        );
         for blocked in ["10.0.0.1", "169.254.169.254", "127.0.0.1", "::1"] {
-            assert!(!kept.iter().any(|i| i == blocked), "{blocked} must be filtered");
+            assert!(
+                !kept.iter().any(|i| i == blocked),
+                "{blocked} must be filtered"
+            );
         }
     }
 
     #[test]
     fn redirect_to_private_ip_blocks_metadata_and_internal() {
         use super::redirect_to_private_ip as blk;
-        assert!(blk(Some("169.254.169.254")), "cloud-metadata IP must be refused");
+        assert!(
+            blk(Some("169.254.169.254")),
+            "cloud-metadata IP must be refused"
+        );
         assert!(blk(Some("127.0.0.1")));
         assert!(blk(Some("10.0.0.5")));
         assert!(blk(Some("192.168.1.1")));
         assert!(!blk(Some("8.8.8.8")), "public IP follows");
-        assert!(!blk(Some("example.com")), "hostnames resolved at connect, not judged here");
+        assert!(
+            !blk(Some("example.com")),
+            "hostnames resolved at connect, not judged here"
+        );
         assert!(!blk(None));
     }
 

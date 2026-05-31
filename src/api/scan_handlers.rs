@@ -261,8 +261,7 @@ pub async fn scan_rerun(
     };
 
     let sid = scan_id(original.target.kind.canonical_str(), &original.target.value);
-    let new_scan =
-        Scan::new(sid, original.target.clone()).with_options(original.options.clone());
+    let new_scan = Scan::new(sid, original.target.clone()).with_options(original.options.clone());
 
     if let Err(e) = s.store.upsert_scan(&new_scan) {
         return internal_error(&e);
