@@ -262,13 +262,13 @@ pub async fn scan_rerun(
 
     let sid = scan_id(original.target.kind.canonical_str(), &original.target.value);
     let new_scan =
-        Scan::new(sid.clone(), original.target.clone()).with_options(original.options.clone());
+        Scan::new(sid, original.target.clone()).with_options(original.options.clone());
 
     if let Err(e) = s.store.upsert_scan(&new_scan) {
         return internal_error(&e);
     }
 
-    spawn_scan(&s, new_scan.clone(), original.target.clone());
+    spawn_scan(&s, new_scan.clone(), original.target);
 
     info!(scan_id = %new_scan.id, source = %id, "scan rerun queued");
     (

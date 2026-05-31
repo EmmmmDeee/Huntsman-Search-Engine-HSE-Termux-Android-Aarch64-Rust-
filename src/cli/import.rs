@@ -454,8 +454,7 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
     for cap in domain_re.captures_iter(&lower) {
         let dom = &cap[1];
         if dom.len() > 4 && seen.insert(format!("d:{dom}")) {
-            let parts: Vec<&str> = dom.split('.').collect();
-            let is_sub = parts.len() >= 3;
+            let is_sub = dom.split('.').count() >= 3;
             let conf = if is_sub { 0.45 } else { 0.50 };
             let mut e = Entity::new(EntityKind::Domain, dom, conf, &sid);
             e.tag("import");
@@ -567,8 +566,7 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
                         .next()
                         .unwrap_or("");
                     if domain.contains('.') && seen.insert(format!("d:{domain}")) {
-                        let parts: Vec<&str> = domain.split('.').collect();
-                        let is_sub = parts.len() >= 3;
+                        let is_sub = domain.split('.').count() >= 3;
                         let mut de = Entity::new(
                             EntityKind::Domain,
                             domain,

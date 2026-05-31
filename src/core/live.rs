@@ -186,7 +186,7 @@ impl LiveScanner {
 
         let inner = Arc::clone(&self.inner);
         let live_id_for_task = live_id.clone();
-        let cancel_for_task = cancel.clone();
+        let cancel_for_task = cancel;
 
         // The JoinHandle is intentionally dropped — we don't need it for
         // shutdown (the tokio runtime cleans up tasks when it stops) or
