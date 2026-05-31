@@ -260,9 +260,52 @@ impl Store {
     // ── Correlations ───────────────────────────────────────────────────────
 
     pub fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
+        use std::collections::HashSet;
         let json = serde_json::to_string(c)?;
         let uids = serde_json::to_string(&c.entity_uids)?;
         let conn = self.conn.lock();
+
+        // Set-containment dedup so an aggregate correlation whose member set
+        // GROWS across expansion rounds is not persisted once per round.
+        // Entities are never removed mid-scan, so a cluster only grows: a new
+        // correlation whose member set is a strict superset of an existing one
+        // (same scan + rule) supersedes it; a subset/equal is a stale earlier
+        // emission and is skipped; disjoint sets (distinct clusters, or distinct
+        // pair-rule findings) coexist as separate rows. Without this, AU-002 /
+        // AU-013 / AU-018 / AU-019 … each re-fired with a larger uid set and a
+        // new count-bearing description every round, defeating both the
+        // in-memory (rule_id+uids) and DB (rule_id+description) dedup keys.
+        let new_set: HashSet<&str> = c.entity_uids.iter().map(String::as_str).collect();
+        let existing: Vec<(i64, Vec<String>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT rowid, entity_uids FROM correlations WHERE scan_id = ?1 AND rule_id = ?2",
+            )?;
+            let rows = stmt.query_map(params![c.scan_id, c.rule_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.filter_map(std::result::Result::ok)
+                .map(|(id, j)| {
+                    (
+                        id,
+                        serde_json::from_str::<Vec<String>>(&j).unwrap_or_default(),
+                    )
+                })
+                .collect()
+        };
+        let mut superseded: Vec<i64> = Vec::new();
+        for (rowid, old_uids) in &existing {
+            let old_set: HashSet<&str> = old_uids.iter().map(String::as_str).collect();
+            if new_set.is_subset(&old_set) {
+                // Subset of (or equal to) a stored correlation — already represented.
+                return Ok(());
+            }
+            if old_set.is_subset(&new_set) {
+                superseded.push(*rowid);
+            }
+        }
+        for rowid in superseded {
+            conn.execute("DELETE FROM correlations WHERE rowid = ?1", params![rowid])?;
+        }
         conn.execute(
             "INSERT INTO correlations(scan_id, rule_id, severity, description, entity_uids, ts, data_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -1077,6 +1120,64 @@ mod tests {
         assert_eq!(corrs[0].entity_uids, vec!["uid1".to_string()]);
         assert_eq!(corrs[0].scan_id, "corr-scan");
         assert_eq!(corrs[0].ts, 12345);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn upsert_correlation_supersedes_growing_aggregate_cluster() {
+        use crate::core::correlator::{Correlation, Severity};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "agg");
+        let mk = |desc: &str, uids: Vec<&str>, ts: u64| {
+            Correlation::new(
+                "AU-013",
+                "Local-network discovery",
+                Severity::Low,
+                desc.into(),
+                uids.into_iter().map(String::from).collect(),
+                "agg",
+                ts,
+            )
+        };
+        // Round 1: a partial cluster {A,B}.
+        store
+            .upsert_correlation(&mk("2 entities on the local network", vec!["A", "B"], 1))
+            .unwrap();
+        // Round 2: the SAME cluster grown to {A,B,C} with a new count — must
+        // supersede the partial row, not add a second one.
+        store
+            .upsert_correlation(&mk(
+                "3 entities on the local network",
+                vec!["A", "B", "C"],
+                2,
+            ))
+            .unwrap();
+        let got = store.correlations_for_scan("agg").unwrap();
+        assert_eq!(
+            got.len(),
+            1,
+            "growing aggregate must collapse to one row, got {got:?}"
+        );
+        assert_eq!(
+            got[0].entity_uids.len(),
+            3,
+            "the surviving row is the superset"
+        );
+        // A stale subset re-emission (round 1 again) is ignored.
+        store
+            .upsert_correlation(&mk("2 entities on the local network", vec!["A", "B"], 3))
+            .unwrap();
+        assert_eq!(store.correlations_for_scan("agg").unwrap().len(), 1);
+        // A genuinely distinct cluster (disjoint uids) coexists as its own row.
+        store
+            .upsert_correlation(&mk("cluster 2", vec!["X", "Y"], 4))
+            .unwrap();
+        assert_eq!(
+            store.correlations_for_scan("agg").unwrap().len(),
+            2,
+            "disjoint clusters must coexist"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
