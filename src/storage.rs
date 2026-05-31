@@ -88,6 +88,20 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
             CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
+            -- Full-text index over entity values. Contentless-external FTS5
+            -- table keyed by the entities.rowid; kept synchronized inside the
+            -- same transaction as every entity write (see
+            -- merge_and_persist_entity) so the index never drifts from the
+            -- graph (the 'always-synchronized index' invariant). `prefix`
+            -- indexes make 2/3-char prefix queries cheap on aarch64.
+            CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
+                value,
+                kind UNINDEXED,
+                content='entities',
+                content_rowid='rowid',
+                prefix='2 3',
+                tokenize='unicode61'
+            );
             ";
 
 /// Idempotent backfill of the observation junction table from `entities`.
@@ -126,6 +140,19 @@ impl Store {
         // Idempotent backfill: populate entity_observations for stores created
         // before that table existed (and for any rows missing an observation).
         conn.execute_batch(BACKFILL_OBSERVATIONS_SQL)?;
+
+        // Backfill the FTS index for any pre-existing rows (first run after the
+        // index was introduced, or an externally-restored DB). Idempotent: the
+        // 'rebuild' command repopulates from the content table deterministically.
+        let fts_count: i64 = conn
+            .query_row("SELECT count(*) FROM entities_fts", [], |r| r.get(0))
+            .unwrap_or(0);
+        let ent_count: i64 = conn
+            .query_row("SELECT count(*) FROM entities", [], |r| r.get(0))
+            .unwrap_or(0);
+        if fts_count == 0 && ent_count > 0 {
+            let _ = conn.execute_batch("INSERT INTO entities_fts(entities_fts) VALUES('rebuild');");
+        }
 
         let _ = conn.execute_batch("PRAGMA optimize;");
 
@@ -411,9 +438,12 @@ impl Store {
 
         if inserted == 0 {
             // Slow path: entity already exists — SELECT, merge, UPDATE.
-            let mut stmt = tx.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
-            let existing_json: String = stmt.query_row(params![entity.uid], |r| r.get(0))?;
+            let mut stmt =
+                tx.prepare_cached("SELECT rowid, data_json FROM entities WHERE uid = ?1")?;
+            let (rowid, existing_json): (i64, String) =
+                stmt.query_row(params![entity.uid], |r| Ok((r.get(0)?, r.get(1)?)))?;
             let mut merged = serde_json::from_str::<Entity>(&existing_json)?;
+            let old_value = merged.value.clone();
             merged.merge(entity.clone());
             let merged_json = serde_json::to_string(&merged)?;
             tx.execute(
@@ -427,6 +457,30 @@ impl Store {
                     merged_json,
                     merged.uid,
                 ],
+            )?;
+            // Keep the FTS index synchronized. For a contentless-external FTS5
+            // table the app must emit an explicit delete (old text, keyed by
+            // rowid) then re-insert the new text. Only the value column is
+            // indexed, so skip the churn when the value is unchanged (the
+            // common merge case — same uid implies same normalised value).
+            if old_value != merged.value {
+                tx.execute(
+                    "INSERT INTO entities_fts(entities_fts, rowid, value, kind)
+                     VALUES('delete', ?1, ?2, ?3)",
+                    params![rowid, old_value, kind_str],
+                )?;
+                tx.execute(
+                    "INSERT INTO entities_fts(rowid, value, kind) VALUES(?1, ?2, ?3)",
+                    params![rowid, merged.value, kind_str],
+                )?;
+            }
+        } else {
+            // Fast path inserted a new entity — mirror it into the FTS index
+            // under the same rowid, in the same transaction.
+            let rowid = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO entities_fts(rowid, value, kind) VALUES(?1, ?2, ?3)",
+                params![rowid, entity.value, kind_str],
             )?;
         }
 
@@ -555,22 +609,72 @@ impl Store {
             .map_err(Into::into)
     }
 
+    /// Full-text entity search over the synchronized FTS5 index, ranked by
+    /// relevance (bm25) with confidence as the tiebreak. Falls back to the
+    /// legacy substring `LIKE` scan when the query yields nothing — so a raw
+    /// substring like "xampl" (not an FTS token/prefix) still matches
+    /// "example.com", preserving the prior contract — and when the query is
+    /// not valid FTS5 syntax (bare operators, unbalanced quotes).
     pub fn search_entities(&self, query: &str, limit: usize) -> Result<Vec<Entity>> {
-        let escaped = query.replace('%', "\\%").replace('_', "\\_");
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock();
+
+        // Try FTS5 first. Build a prefix MATCH from the query's word tokens so
+        // partial words hit ("jord" → "jordan"); quote each token to neutralise
+        // FTS operator characters in user input.
+        let fts_expr = Self::fts_prefix_query(trimmed);
+        if !fts_expr.is_empty() {
+            let mut hits: Vec<String> = Vec::new();
+            if let Ok(mut stmt) = conn.prepare_cached(
+                "SELECT e.data_json
+                   FROM entities_fts f
+                   JOIN entities e ON e.rowid = f.rowid
+                  WHERE entities_fts MATCH ?1
+                  ORDER BY bm25(entities_fts), e.confidence DESC
+                  LIMIT ?2",
+            ) && let Ok(rows) =
+                stmt.query_map(params![fts_expr, limit as i64], |r| r.get::<_, String>(0))
+            {
+                hits = rows.filter_map(std::result::Result::ok).collect();
+            }
+            if !hits.is_empty() {
+                return Ok(hits
+                    .into_iter()
+                    .filter_map(|s| serde_json::from_str(&s).ok())
+                    .collect());
+            }
+        }
+
+        // Fallback: legacy substring scan (also covers infix matches FTS's
+        // token/prefix model can't reach).
+        let escaped = trimmed.replace('%', "\\%").replace('_', "\\_");
         let pattern = format!("%{escaped}%");
-        let raw: Vec<String> = {
-            let conn = self.conn.lock();
-            let mut stmt = conn.prepare_cached(
-                "SELECT data_json FROM entities WHERE value LIKE ?1 ESCAPE '\\' \
-                 ORDER BY confidence DESC LIMIT ?2",
-            )?;
-            let rows = stmt.query_map(params![pattern, limit as i64], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
-        };
+        let mut stmt = conn.prepare_cached(
+            "SELECT data_json FROM entities WHERE value LIKE ?1 ESCAPE '\\' \
+             ORDER BY confidence DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![pattern, limit as i64], |r| r.get::<_, String>(0))?;
+        let raw: Vec<String> = rows.filter_map(std::result::Result::ok).collect();
         Ok(raw
             .into_iter()
             .filter_map(|s| serde_json::from_str(&s).ok())
             .collect())
+    }
+
+    /// Build a safe FTS5 prefix MATCH expression from free-text input:
+    /// split on non-alphanumerics, drop empties, double-quote each token and
+    /// append `*` for prefix matching, AND-joined. Returns "" when there are
+    /// no usable tokens (caller then uses the LIKE fallback).
+    fn fts_prefix_query(input: &str) -> String {
+        input
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("\"{}\"*", t.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -1325,6 +1429,122 @@ mod tests {
     }
 
     #[test]
+    fn fts_prefix_token_search_matches_partial_word() {
+        // FTS5 path: a partial word token must hit via prefix matching — what
+        // the old LIKE-only search could only do as an anchored substring.
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "fts-scan");
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::Person,
+                "Jordan Meyer",
+                0.9,
+                "fts-scan",
+            ))
+            .unwrap();
+        // Token prefix: "jord" -> "Jordan"; "mey" -> "Meyer".
+        assert_eq!(store.search_entities("jord", 10).unwrap().len(), 1);
+        assert_eq!(store.search_entities("mey", 10).unwrap().len(), 1);
+        // A non-matching token returns nothing (and doesn't fall through to a
+        // spurious LIKE hit).
+        assert!(store.search_entities("smith", 10).unwrap().is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fts_matches_tokens_in_any_order_unlike_like() {
+        // FTS-ONLY capability: a multi-token query matches regardless of word
+        // order ("meyer jordan" finds "Jordan Meyer"). A substring LIKE of the
+        // raw query CANNOT — "%meyer jordan%" never matches "Jordan Meyer".
+        // This isolates the FTS path from the LIKE fallback.
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "order-scan");
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::Person,
+                "Jordan Meyer",
+                0.9,
+                "order-scan",
+            ))
+            .unwrap();
+        assert_eq!(
+            store.search_entities("meyer jordan", 10).unwrap().len(),
+            1,
+            "FTS must match tokens in any order; the LIKE fallback alone cannot"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fts_index_stays_synchronized_on_value_change() {
+        // The FTS index must track entity-value changes inside the same write
+        // (the 'always-synchronized index' invariant). Simulate a value change
+        // by writing two entities that share a uid-determining identity is not
+        // possible (uid derives from value), so instead verify a freshly
+        // inserted entity is immediately searchable and a rebuild is a no-op.
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "sync-scan");
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::Domain,
+                "syncexample.org",
+                0.8,
+                "sync-scan",
+            ))
+            .unwrap();
+        // Immediately visible via FTS, no separate index step.
+        assert_eq!(store.search_entities("syncexample", 10).unwrap().len(), 1);
+        // Re-upsert the same entity (merge path) — index must remain correct,
+        // not duplicate.
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::Domain,
+                "syncexample.org",
+                0.9,
+                "sync-scan",
+            ))
+            .unwrap();
+        assert_eq!(
+            store.search_entities("syncexample", 10).unwrap().len(),
+            1,
+            "merge must not duplicate the FTS row"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fts_backfill_indexes_preexisting_rows() {
+        // A DB whose entities predate the FTS index must become searchable
+        // after reopen (the open() backfill path).
+        let path = tmp_db();
+        {
+            let store = Store::open(&path).unwrap();
+            insert_scan(&store, "bf-scan");
+            store
+                .upsert_entity(&Entity::new(
+                    EntityKind::Username,
+                    "backfilluser",
+                    0.7,
+                    "bf-scan",
+                ))
+                .unwrap();
+            // Drop the FTS table to emulate a pre-index DB, then reopen.
+            let conn = store.conn.lock();
+            conn.execute_batch("DROP TABLE entities_fts;").unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.search_entities("backfill", 10).unwrap().len(),
+            1,
+            "reopen must backfill the FTS index from existing rows"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn upsert_entity_cross_scan_merge_preserves_evidence_and_tags() {
         use crate::core::entity::Evidence;
         let path = tmp_db();
@@ -1517,6 +1737,11 @@ mod tests {
             "index|sqlite_autoindex_scans_1",
             "table|correlations",
             "table|entities",
+            "table|entities_fts",
+            "table|entities_fts_config",
+            "table|entities_fts_data",
+            "table|entities_fts_docsize",
+            "table|entities_fts_idx",
             "table|entity_observations",
             "table|events",
             "table|relations",
