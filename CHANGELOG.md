@@ -107,6 +107,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   the correlator to **35 rules**; three unit tests pin the confirm path and both
   single-source suppression paths.
 
+- **`AU-036` — email alias convergence (one mailbox).** Closes the
+  `email_canonical` loop the way AU-035 closes handle derivation: when ≥2
+  distinct addresses fold to the *same* canonical mailbox (e.g.
+  `j.doe@gmail.com` and `jdoe+news@gmail.com` both → `jdoe@gmail.com`), they
+  are aliases of one inbox — a strong same-person link and useful intel in
+  itself. The rule reads the canonical `Email` entity's accumulated
+  `email_canonical` evidence (each record carries the `source_email` it was
+  folded from; the per-source summaries survive the merge dedup) and fires at
+  ≥2 distinct sources — no module logic duplicated. Brings the correlator to
+  **36 rules**; three unit tests cover the convergence, the single-alias no-op,
+  and non-canonical evidence.
+
 - **Hard `MAX_DEPTH=3` recursion ceiling, enforced at every operator boundary.**
   `ScanOptions::clamp_depth()` caps operator-requested expansion depth (CLI
   `scan`/`--recursive`/`--auto`, the HTTP scan-create/batch path, and live

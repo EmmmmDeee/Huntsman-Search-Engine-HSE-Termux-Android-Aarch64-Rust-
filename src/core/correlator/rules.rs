@@ -1410,6 +1410,52 @@ pub(super) fn rule_au_035_confirmed_derived_handle(
     out
 }
 
+/// AU-036 — Email alias convergence (one mailbox).
+///
+/// Multiple distinct addresses that `email_canonical` reduced to the SAME
+/// mailbox (e.g. `j.doe@gmail.com` and `jdoe+news@gmail.com` both →
+/// `jdoe@gmail.com`) are aliases of a single inbox: a strong same-person link
+/// and useful intel in itself. Reads the canonical `Email` entity's
+/// accumulated `email_canonical` evidence — each record carries the
+/// `source_email` it was folded from (the per-source summaries survive the
+/// merge-dedup) — and fires when ≥2 distinct source addresses converged. This
+/// closes the `email_canonical` loop the way AU-035 closes the handle-
+/// derivation loop. Deterministic; no module logic is duplicated.
+pub(super) fn rule_au_036_email_alias_convergence(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    for e in entities_of_kind(entities, EntityKind::Email) {
+        let mut aliases: Vec<&str> = e
+            .evidence
+            .iter()
+            .filter(|ev| ev.source == "email_canonical")
+            .filter_map(|ev| ev.attributes.get("source_email").map(String::as_str))
+            .collect();
+        aliases.sort_unstable();
+        aliases.dedup();
+        if aliases.len() >= 2 {
+            out.push(Correlation::new(
+                "AU-036",
+                "Email alias convergence (one mailbox)",
+                Severity::Medium,
+                format!(
+                    "{} addresses resolve to one mailbox '{}': {}",
+                    aliases.len(),
+                    e.value,
+                    aliases.join(", ")
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}
+
 /// Tags that mark an entity as known-bad for adjacency analysis.
 const ADJACENCY_BAD_TAGS: &[&str] = &["malicious", "threat-intel", "vulnerable"];
 

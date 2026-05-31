@@ -222,6 +222,7 @@ const RULES: &[RuleFn] = &[
     rule_au_033_abn_organisation_link,
     rule_au_034_handle_reuse_identity,
     rule_au_035_confirmed_derived_handle,
+    rule_au_036_email_alias_convergence,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -620,6 +621,52 @@ mod tests {
         assert!(
             rule_au_035_confirmed_derived_handle(&[only_discovered], "scan-test", 0).is_empty()
         );
+    }
+
+    // ── AU-036 ──────────────────────────────────────────────────────────
+
+    /// Build a canonical Email entity carrying one `email_canonical` evidence
+    /// record per source address it was folded from (mirroring how the merge
+    /// accumulates them — distinct per-source summaries survive the dedup).
+    fn canonical_email(value: &str, source_emails: &[&str]) -> Entity {
+        let mut e = Entity::new(EntityKind::Email, value, 0.8, "scan-test");
+        e.tag("canonical");
+        for src in source_emails {
+            e.add_evidence(
+                Evidence::new("email_canonical", format!("Canonical mailbox of {src}"))
+                    .with_attr("source_email", *src),
+            );
+        }
+        e
+    }
+
+    #[test]
+    fn au036_fires_when_two_addresses_converge() {
+        let e = canonical_email(
+            "jdoe@gmail.com",
+            &["j.doe@gmail.com", "jdoe+news@gmail.com"],
+        );
+        let r = rule_au_036_email_alias_convergence(&[e], "scan-test", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-036");
+        assert!(r[0].description.contains("jdoe@gmail.com"));
+        assert!(r[0].description.contains("j.doe@gmail.com"));
+        assert!(r[0].description.contains("jdoe+news@gmail.com"));
+    }
+
+    #[test]
+    fn au036_no_fire_on_single_alias() {
+        // Only one address folded in → nothing converged, no finding.
+        let e = canonical_email("jdoe@gmail.com", &["j.doe@gmail.com"]);
+        assert!(rule_au_036_email_alias_convergence(&[e], "scan-test", 0).is_empty());
+    }
+
+    #[test]
+    fn au036_ignores_non_canonical_evidence() {
+        // Two evidence records, but not from email_canonical → not alias
+        // convergence (could be two breach sources for one address).
+        let e = email("jdoe@gmail.com", &["hibp", "hudsonrock"]);
+        assert!(rule_au_036_email_alias_convergence(&[e], "scan-test", 0).is_empty());
     }
 
     fn tagged(kind: EntityKind, value: &str, tags: &[&str]) -> Entity {
