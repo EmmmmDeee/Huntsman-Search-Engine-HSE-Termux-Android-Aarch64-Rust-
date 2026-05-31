@@ -997,3 +997,165 @@ async fn search_endpoint_returns_fts_indexed_entities() {
         "any-order hit, got {v:?}"
     );
 }
+
+// ── SPA contract tests ──────────────────────────────────────────────────────
+//
+// Guard the embedded single-page app against the regression classes a Rust
+// suite can catch *without* a headless browser. A Chromium/Playwright harness
+// is deliberately avoided — it would pull a Node + native-browser toolchain
+// into a project that is rigorously pure-Rust / no-native-deps / Termux-minimal,
+// and would be slow and flaky in CI. Instead these assert, against the document
+// the real router actually serves:
+//   1. every `/api/v1/<base>` the SPA calls resolves to a registered route, not
+//      the `api_not_found` fallback (the `API.stats()`-style dead-endpoint bug
+//      that shipped once and is recorded in the changelog);
+//   2. every `/static/<file>` the SPA loads is served, non-empty, by the vendor
+//      handler (a broken vendored-asset link → unstyled / broken UI);
+//   3. the directive's required UI structural elements stay present.
+
+/// GET `uri` through a clone of `app`, returning `(status, body-as-text)`.
+async fn fetch_text(app: &axum::Router, uri: &str) -> (http::StatusCode, String) {
+    let resp = app.clone().oneshot(get(uri)).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 2_000_000)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Distinct path segment immediately following every occurrence of `prefix`,
+/// taking characters while `keep` holds. Pure-std (no regex dev-dep) discovery
+/// of which API / static paths the served SPA actually wires up.
+fn segments_after(text: &str, prefix: &str, keep: impl Fn(char) -> bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = text[from..].find(prefix) {
+        let start = from + rel + prefix.len();
+        let seg: String = text[start..].chars().take_while(|c| keep(*c)).collect();
+        if !seg.is_empty() {
+            out.push(seg);
+        }
+        from = start; // advance past this prefix so the next find can't re-match it
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+#[tokio::test]
+async fn spa_served_with_required_ui_structure() {
+    let app = test_app("spa-structure");
+    let (status, html) = fetch_text(&app, "/").await;
+    assert_eq!(status, http::StatusCode::OK);
+    assert!(
+        html.len() > 10_000,
+        "SPA document suspiciously small ({} bytes)",
+        html.len()
+    );
+    // Directive UI checklist — this scaffolding must stay present.
+    for marker in [
+        "<html",             // a real HTML document
+        "viewport",          // touch / mobile-optimised
+        "#222",              // dark theme (navbar dark)
+        "/static/d3.min.js", // interactive node graph (D3)
+        "tablesorter",       // sortable data tables
+        "#/dash",            // tabbed navigation (client-side hash routes)
+        "#/scans",
+        "#/newscan",
+        "EventSource", // live event log (SSE)
+    ] {
+        assert!(
+            html.contains(marker),
+            "SPA missing required UI element: {marker:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn spa_references_only_registered_api_endpoints() {
+    // Every `/api/v1/<base>` the SPA calls must resolve to a registered route,
+    // never the `api_not_found` fallback. A new SPA endpoint with no probe here
+    // fails loudly, forcing its route to be confirmed.
+    let app = test_app("spa-endpoints");
+    let (_, html) = fetch_text(&app, "/").await;
+
+    let bases = segments_after(&html, "/api/v1/", |c| c.is_ascii_lowercase() || c == '_');
+    assert!(
+        !bases.is_empty(),
+        "extracted no /api/v1 endpoints from the served SPA"
+    );
+
+    for base in &bases {
+        // A representative, parameter-free URL for this endpoint family.
+        let url = match base.as_str() {
+            "health" => "/api/v1/health".to_string(),
+            "version" => "/api/v1/version".to_string(),
+            "modules" => "/api/v1/modules".to_string(),
+            "stats" => "/api/v1/stats".to_string(),
+            "scans" => "/api/v1/scans".to_string(),
+            "search" => "/api/v1/search?q=x".to_string(),
+            "settings" => "/api/v1/settings/keys".to_string(),
+            "live" => "/api/v1/live".to_string(),
+            other => panic!(
+                "SPA references /api/v1/{other} but this test has no probe for it — \
+                 add one and confirm the route is registered in src/api/routes.rs"
+            ),
+        };
+        let (status, _) = fetch_text(&app, &url).await;
+        assert_ne!(
+            status,
+            http::StatusCode::NOT_FOUND,
+            "SPA calls /api/v1/{base} but {url} returned 404 (route not registered)",
+        );
+    }
+}
+
+#[tokio::test]
+async fn spa_references_only_served_static_assets() {
+    // Every vendored `/static/<file>` the SPA links must be served (200,
+    // non-empty) by the vendor handler — guards a broken-link regression.
+    let app = test_app("spa-static");
+    let (_, html) = fetch_text(&app, "/").await;
+    let files = segments_after(&html, "/static/", |c| {
+        c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_'
+    });
+    assert!(
+        files.len() >= 5,
+        "expected the SPA to load several vendored assets, found {files:?}"
+    );
+    for f in &files {
+        let (status, body) = fetch_text(&app, &format!("/static/{f}")).await;
+        assert_eq!(
+            status,
+            http::StatusCode::OK,
+            "vendored asset /static/{f} not served (broken link)"
+        );
+        assert!(!body.is_empty(), "vendored asset /static/{f} served empty");
+    }
+}
+
+// ── Live event stream (SSE) contract ────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_events_endpoint_is_server_sent_events() {
+    // The live event stream is the project's realisation of the "live updates"
+    // requirement: one-way server→browser push over SSE, not WebSockets (see
+    // the rationale at `handlers::scan_events_sse`). Guard the wire contract the
+    // browser's `EventSource` depends on — a 200 typed `text/event-stream`. The
+    // body is an open keep-alive stream, so it is deliberately never read here.
+    let (app, scan_id) = create_scan("sse-contract").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{scan_id}/events")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct.starts_with("text/event-stream"),
+        "scan events must stream as SSE, got content-type {ct:?}"
+    );
+}

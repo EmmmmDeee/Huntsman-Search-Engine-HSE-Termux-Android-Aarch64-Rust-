@@ -5,6 +5,7 @@
 //! `live` re-runs the same scan on a fixed interval (v0.5+). See
 //! `docs/USAGE.md` for the full reference.
 
+mod diff;
 mod doctor;
 mod export;
 mod keys_cmd;
@@ -306,6 +307,17 @@ pub enum Command {
         #[arg(short, long)]
         out: Option<String>,
     },
+
+    /// Compare two completed scans: entities added / removed / re-scored.
+    Diff {
+        /// Baseline scan ID (or `latest` for the most-recent completed scan).
+        from: String,
+        /// Later scan ID to compare against the baseline (or `latest`).
+        to: String,
+        /// Output format: text | json. Default `text`.
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -438,6 +450,7 @@ pub async fn run() -> Result<()> {
             format,
             out,
         } => export::cmd_export(scan_id, format, out).await,
+        Command::Diff { from, to, format } => diff::cmd_diff(from, to, format),
     }
 }
 
