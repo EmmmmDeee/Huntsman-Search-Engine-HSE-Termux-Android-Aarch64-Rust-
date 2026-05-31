@@ -26,6 +26,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   closes the bypass on all four paths at once. New regression tests pin the
   mapped-private and mapped-public cases, proven by reverting the fix in place.
 
+### Fixed
+
+- **`redact_credentials` no longer mojibakes non-ASCII error text.** The
+  credential-masking pass — which scrubs `?api_key=…`-style secrets out of
+  upstream error bodies before they reach module errors and logs — copied
+  non-matching input one byte at a time as `byte as char`, reinterpreting every
+  multi-byte UTF-8 sequence as Latin-1. The secret was still masked, but a
+  provider's localised error (`clé API invalide`), an IDN host, or an em-dash
+  surfaced as `clÃ©` / `â`. It now assembles output on a byte buffer and decodes
+  once; redacted runs are ASCII-delimited (`name=` … `& \n \r "` / EOF), so
+  verbatim byte-runs never split a char and the result is valid UTF-8 by
+  construction. Masking is byte-identical on ASCII input (the six existing tests
+  pass unchanged); a new test pins credential-masked **and** non-ASCII-preserved.
+
 ### Added
 
 - **Hard `MAX_DEPTH=3` recursion ceiling, enforced at every operator boundary.**

@@ -283,7 +283,13 @@ pub(crate) fn redact_credentials(text: &str) -> String {
         // for clarity.
         "key",
     ];
-    let mut out = String::with_capacity(text.len());
+    // Build on bytes, not chars: copying one byte at a time into a `String`
+    // via `byte as char` would reinterpret every multi-byte UTF-8 sequence as
+    // Latin-1 codepoints and mojibake any non-ASCII error text (e.g. a
+    // provider's localised message). Each redacted run is bounded by an ASCII
+    // delimiter (`name=` … `& \n \r "` / EOF), so copying verbatim byte-runs
+    // never splits a char and the assembled buffer is always valid UTF-8.
+    let mut out: Vec<u8> = Vec::with_capacity(text.len());
     let mut cursor = 0;
     let bytes = text.as_bytes();
     'outer: while cursor < bytes.len() {
@@ -311,17 +317,19 @@ pub(crate) fn redact_credentials(text: &str) -> String {
                     end += 1;
                 }
                 if end > val_start {
-                    out.push_str(&text[cursor..val_start]);
-                    out.push_str("***");
+                    out.extend_from_slice(&bytes[cursor..val_start]);
+                    out.extend_from_slice(b"***");
                     cursor = end;
                     continue 'outer;
                 }
             }
         }
-        out.push(bytes[cursor] as char);
+        out.push(bytes[cursor]);
         cursor += 1;
     }
-    out
+    // Valid UTF-8 by construction (see above); lossy is a defensive fallback
+    // that can't be reached for valid-UTF-8 input.
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 /// Parse the `Retry-After` header from a response, returning the number
@@ -676,5 +684,24 @@ mod tests {
         assert!(!r.contains("KEY1"));
         assert!(!r.contains("KEY2"));
         assert!(!r.contains("KEY3"));
+    }
+
+    #[test]
+    fn redact_preserves_non_ascii_text() {
+        // Provider error bodies can carry non-ASCII (localised messages, IDN,
+        // em-dashes). The credential must still be masked while the surrounding
+        // UTF-8 survives intact — a naïve byte→char copy would mojibake it.
+        let s = "{\"error\":\"clé API invalide — accès refusé\",\
+                 \"url\":\"https://api.x.com/?api_key=SECRET123456&q=café\"}";
+        let r = redact_credentials(s);
+        // Credential masked.
+        assert!(!r.contains("SECRET123456"), "credential must be redacted");
+        assert!(r.contains("api_key=***"));
+        // Non-ASCII text preserved verbatim (no mojibake).
+        assert!(r.contains("clé API invalide — accès refusé"), "got: {r}");
+        assert!(r.contains("q=café"), "got: {r}");
+        // Result is well-formed UTF-8 (String guarantees this; assert no
+        // replacement char leaked from a lossy fallback).
+        assert!(!r.contains('\u{FFFD}'), "no replacement chars: {r}");
     }
 }
