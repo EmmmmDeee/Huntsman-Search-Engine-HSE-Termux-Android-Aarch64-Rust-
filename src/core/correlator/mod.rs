@@ -219,6 +219,7 @@ const RULES: &[RuleFn] = &[
     rule_au_028_subdomain_takeover_risk,
     rule_au_029_cloud_storage_exposure,
     rule_au_030_geo_convergence_score,
+    rule_au_033_abn_organisation_link,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -453,6 +454,40 @@ mod tests {
             e.add_evidence(Evidence::new(*src, "test"));
         }
         e
+    }
+
+    #[test]
+    fn au033_links_abn_to_registry_organisation() {
+        let entities = vec![
+            tagged(EntityKind::AbnAcn, "51824753556", &["abr"]),
+            tagged(
+                EntityKind::Organisation,
+                "Example Pty Ltd",
+                &["abr", "australian"],
+            ),
+        ];
+        let r = rule_au_033_abn_organisation_link(&entities, "scan-test", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-033");
+        assert_eq!(r[0].entity_uids.len(), 2);
+    }
+
+    #[test]
+    fn au033_no_fire_without_registry_org_or_abn() {
+        // ABN + a non-registry Organisation (e.g. a search_engines org name)
+        // must NOT link — avoids joining unrelated company names.
+        let mixed = vec![
+            tagged(EntityKind::AbnAcn, "51824753556", &["abr"]),
+            Entity::new(EntityKind::Organisation, "Some Other Co", 0.9, "scan-test"),
+        ];
+        assert!(rule_au_033_abn_organisation_link(&mixed, "scan-test", 0).is_empty());
+        // A registry org with no ABN present also does not fire.
+        let only_org = vec![tagged(
+            EntityKind::Organisation,
+            "Example Pty Ltd",
+            &["opencorporates"],
+        )];
+        assert!(rule_au_033_abn_organisation_link(&only_org, "scan-test", 0).is_empty());
     }
 
     fn tagged(kind: EntityKind, value: &str, tags: &[&str]) -> Entity {

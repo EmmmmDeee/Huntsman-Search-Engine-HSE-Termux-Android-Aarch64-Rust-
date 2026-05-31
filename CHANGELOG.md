@@ -12,6 +12,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`AU-033` — Australian business identity correlation (ABN/ACN ↔ organisation).**
+  Links an ABN/ACN registration to the registered organisation(s) it belongs to
+  when both surface from an Australian registry (`abn_lookup`/`opencorporates`),
+  closing the registry-chain gap those modules produced but no rule joined.
+  Organisations are gated on a registry tag so unrelated org names don't link.
+
+- **Registered the orphaned `pwned_passwords` module.** It was fully implemented
+  (free HIBP k-anonymity breach check) but never in `registry()` — dead at
+  runtime. Now registered (87 modules) with a `every_declared_module_is_registered`
+  guard test so it can't silently regress.
+
 - **`name_intel` — NAMINT-style name intelligence (offline).** A faithful,
   bounded port of the methodology in [NAMINT](https://seintpl.github.io/NAMINT/)
   that supersedes the thin `name_to_username` module (12 naïve patterns, usernames
@@ -104,6 +115,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
   hang.)
 
 ### Fixed
+
+- **Aggregate correlations no longer persist a duplicate row per expansion round.**
+  Rules whose member set grows each round (AU-002/013/018/019/…) defeated both
+  the in-memory (rule_id+uids) and DB (rule_id+description) dedup keys.
+  `Store::upsert_correlation` now dedups by **set containment**: a superset
+  supersedes the stale subset row, a subset/equal is skipped, disjoint clusters
+  coexist — correct for singleton aggregates, multi-cluster aggregates and pair
+  rules alike, no schema change. Deterministic test pins it.
+
+- **Web UI: the Dashboard no longer crashes on load and the search box works.**
+  `renderDash` called a non-existent `API.stats()` (the default landing page
+  showed only an error banner); the global entity search hand-mutated `S.route`
+  in a shape `render()` discarded, so FTS results never displayed. Added
+  `API.stats`/`API.search` and a real `#/search` route; added a Relations
+  provenance tab and clickable correlation drill-in.
+
+- **ROI saturation prune counts distinct sources, not summed magnitude.**
+  `roi::is_saturated` read the inflated `corroboration` field, so an 8-row
+  single-source hit was wrongly pruned from expansion under `--max-roi`; it now
+  uses `source_count()` like the rest of the engine.
 
 - **`--value` accepts a leading `-` so southern-hemisphere coordinates scan (from #90).**
   `hse scan --kind coordinates --value "-27.47,153.02"` (Brisbane) aborted with

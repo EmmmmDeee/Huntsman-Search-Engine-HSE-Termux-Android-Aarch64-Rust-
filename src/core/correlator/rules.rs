@@ -1163,6 +1163,48 @@ pub(super) fn rule_au_030_geo_convergence_score(
     )]
 }
 
+/// AU-033 — Australian business identity. Links an ABN/ACN registration to the
+/// registered organisation(s) it belongs to when both are present from an
+/// Australian registry (`abn_lookup` → `abr`, `opencorporates`). Surfaces the
+/// ABN/ACN ↔ Organisation chain those modules produce but no prior rule joined
+/// (AU-025 covers Organisation ↔ Person). Organisations are gated on a registry
+/// tag so unrelated `Organisation` names (e.g. from search_engines) don't link.
+pub(super) fn rule_au_033_abn_organisation_link(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let abns: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::AbnAcn)
+        .collect();
+    let orgs: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Organisation && (e.has_tag("abr") || e.has_tag("opencorporates"))
+        })
+        .collect();
+    if abns.is_empty() || orgs.is_empty() {
+        return Vec::new();
+    }
+    let mut uids: Vec<String> = abns.iter().map(|a| a.uid.clone()).collect();
+    uids.extend(orgs.iter().map(|o| o.uid.clone()));
+    vec![Correlation::new(
+        "AU-033",
+        "Australian business identity (ABN/ACN \u{2194} organisation)",
+        Severity::Medium,
+        format!(
+            "{} ABN/ACN registration(s) linked to {} registered organisation(s) \
+             via the Australian Business Register / corporate registries",
+            abns.len(),
+            orgs.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
 /// Tags that mark an entity as known-bad for adjacency analysis.
 const ADJACENCY_BAD_TAGS: &[&str] = &["malicious", "threat-intel", "vulnerable"];
 
