@@ -77,6 +77,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   Brings the correlator to 34 rules. Six unit tests cover the match, the
   separator/`+tag` folding, multi-email grouping, and every suppression path.
 
+- **`AU-035` — inferred handle confirmed in the wild.** Closes the
+  derivation→discovery loop: a `Username` that was first *derived* by inference
+  (a `name_intel` permutation, an `email_parse` local-part, or a
+  `username_variants` handle) and then *independently observed* on a real
+  platform (`username_search`, `github_user`, `keybase`, `social_probe`, …) is
+  surfaced as a high-value identity hit — a guessed handle that turned out to
+  exist. Both an inference source and a discovery source must be present on the
+  same merged entity, so a handle that was only observed (an ordinary find) or
+  only guessed (an unconfirmed candidate) does not fire; distinct from AU-011
+  (one handle across many platforms) and AU-034 (username ↔ email handle reuse).
+  This is the payoff the derivation modules set up but no rule rewarded. Brings
+  the correlator to **35 rules**; three unit tests pin the confirm path and both
+  single-source suppression paths.
+
 - **Hard `MAX_DEPTH=3` recursion ceiling, enforced at every operator boundary.**
   `ScanOptions::clamp_depth()` caps operator-requested expansion depth (CLI
   `scan`/`--recursive`/`--auto`, the HTTP scan-create/batch path, and live

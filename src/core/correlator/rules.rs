@@ -1340,6 +1340,76 @@ pub(super) fn rule_au_034_handle_reuse_identity(
     out
 }
 
+/// Modules that *derive* a username by inference — a name permutation, an email
+/// local-part, or a handle variant — rather than observing it on a platform.
+const USERNAME_DERIVATION_SOURCES: &[&str] = &["name_intel", "email_parse", "username_variants"];
+
+/// Modules that *discover* a username by observing it live on a real platform /
+/// corpus, confirming the handle exists.
+const USERNAME_DISCOVERY_SOURCES: &[&str] = &[
+    "username_search",
+    "github_user",
+    "keybase",
+    "social_probe",
+    "proxycurl",
+    "epieos",
+    "see_know",
+    "oathnet_pro",
+];
+
+/// AU-035 — Inferred handle confirmed in the wild.
+///
+/// A `Username` that was first *derived* by inference (a name permutation from
+/// `name_intel`, an email local-part from `email_parse`, or a handle variant
+/// from `username_variants`) and then *independently observed* on a real
+/// platform (`username_search`, `github_user`, `keybase`, …) is a high-value
+/// identity hit: a guessed handle that turned out to exist. This is the payoff
+/// the derivation modules set up but no rule surfaced — distinct from AU-011
+/// (one handle across many platforms) and AU-034 (username ↔ email handle
+/// reuse). Both an inference source and a discovery source must be present on
+/// the same merged entity, so a handle that was only ever observed (a normal
+/// find) or only ever guessed (an unconfirmed candidate) does not fire.
+pub(super) fn rule_au_035_confirmed_derived_handle(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    for e in entities_of_kind(entities, EntityKind::Username) {
+        let sources = e.evidence_sources();
+        let mut inferred_by: Vec<&str> = sources
+            .iter()
+            .copied()
+            .filter(|s| USERNAME_DERIVATION_SOURCES.contains(s))
+            .collect();
+        let mut confirmed_by: Vec<&str> = sources
+            .iter()
+            .copied()
+            .filter(|s| USERNAME_DISCOVERY_SOURCES.contains(s))
+            .collect();
+        if inferred_by.is_empty() || confirmed_by.is_empty() {
+            continue;
+        }
+        inferred_by.sort_unstable();
+        confirmed_by.sort_unstable();
+        out.push(Correlation::new(
+            "AU-035",
+            "Inferred handle confirmed in the wild",
+            Severity::Medium,
+            format!(
+                "Handle '{}' was inferred ({}) and then independently confirmed ({})",
+                e.value,
+                inferred_by.join(", "),
+                confirmed_by.join(", ")
+            ),
+            vec![e.uid.clone()],
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
 /// Tags that mark an entity as known-bad for adjacency analysis.
 const ADJACENCY_BAD_TAGS: &[&str] = &["malicious", "threat-intel", "vulnerable"];
 

@@ -221,6 +221,7 @@ const RULES: &[RuleFn] = &[
     rule_au_030_geo_convergence_score,
     rule_au_033_abn_organisation_link,
     rule_au_034_handle_reuse_identity,
+    rule_au_035_confirmed_derived_handle,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -585,6 +586,40 @@ mod tests {
             email("bob@x.com", &["hunter_io"]),
         ];
         assert!(rule_au_034_handle_reuse_identity(&nomatch, "scan-test", 0).is_empty());
+    }
+
+    // ── AU-035 ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn au035_fires_when_inferred_then_confirmed() {
+        // Derived by name_intel, then observed live by username_search →
+        // a guessed handle confirmed real.
+        let e = username("jdoe", &["name_intel", "username_search"]);
+        let r = rule_au_035_confirmed_derived_handle(&[e], "scan-test", 0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].rule_id, "AU-035");
+        assert_eq!(r[0].entity_uids.len(), 1);
+        assert!(r[0].description.contains("name_intel"));
+        assert!(r[0].description.contains("username_search"));
+    }
+
+    #[test]
+    fn au035_fires_for_email_parse_plus_github() {
+        let e = username("jdoe", &["email_parse", "github_user"]);
+        let r = rule_au_035_confirmed_derived_handle(&[e], "scan-test", 0);
+        assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn au035_no_fire_when_only_inferred_or_only_discovered() {
+        // Guessed but never confirmed → unconfirmed candidate, no fire.
+        let only_inferred = username("jdoe", &["username_variants"]);
+        assert!(rule_au_035_confirmed_derived_handle(&[only_inferred], "scan-test", 0).is_empty());
+        // Observed but never inferred → an ordinary find, no fire.
+        let only_discovered = username("jdoe", &["github_user", "keybase"]);
+        assert!(
+            rule_au_035_confirmed_derived_handle(&[only_discovered], "scan-test", 0).is_empty()
+        );
     }
 
     fn tagged(kind: EntityKind, value: &str, tags: &[&str]) -> Entity {
