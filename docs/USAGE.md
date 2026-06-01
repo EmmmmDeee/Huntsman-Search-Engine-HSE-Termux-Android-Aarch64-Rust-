@@ -203,6 +203,7 @@ hse serve [--bind <HOST:PORT>]
 |------------|---------|-------|
 | `-b, --bind <HOST:PORT>` | `127.0.0.1:8080` | Localhost-only. Architecture invariant; change at your own risk. |
 | env `HSE_BIND`           | (overrides flag) | |
+| `--no-key-write`         | (writes **on**) | Disables the Settings page's key-write endpoint (`PUT /settings/keys`). Key editing is enabled by default; the endpoint *always* additionally requires a loopback peer, so a network-exposed bind still cannot write keys. Pass this to lock writes down for shared/hardened deployments. |
 
 Graceful shutdown on `Ctrl-C` / `SIGTERM`.
 
@@ -216,6 +217,8 @@ All endpoints are under `/api/v1/`.
 | GET    | `/version`                 | `{ "version": "0.3.0" }` |
 | GET    | `/modules`                 | `{ "count": N, "modules": [{ name, priority, cost, passive }, ...] }` |
 | GET    | `/keys/status`             | `{ count, services: [{ service, total, active, rate_limited, exhausted, invalid, untested, uses, errors }, ...] }` — key-pool quota health, **never key values**. |
+| GET    | `/settings/keys`           | `{ keys: [{ name, set }], count, write_enabled, env_path }` — which `HUNTSMAN_*` keys are configured, **never their values**. Drives the Settings page. |
+| PUT    | `/settings/keys`           | Body `{ updates: { "HUNTSMAN_X": "val", ... }, deletes: ["HUNTSMAN_Y", ...] }`. Atomically writes `~/.huntsman.env` (preserves comments). **Loopback-only**, enabled by default (`--no-key-write` to disable). Powers "paste & save a key" in the UI. |
 | POST   | `/scans`                   | Body: `ScanRequest` (`{ kind, value, options? }`). Returns `202 { scan_id, status }`. |
 | GET    | `/scans`                   | 200 most recent scans. |
 | GET    | `/scans/{id}`              | Single scan record. 404 if unknown. |
