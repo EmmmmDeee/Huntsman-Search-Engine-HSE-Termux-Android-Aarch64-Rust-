@@ -274,10 +274,39 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     }
     budget_increment();
     let url = format!("{}/{path}?{qs}", base_url());
-    let resp = get_json(&url, key).await?;
-    let items = extract_items(&resp);
-    cache_put(ck, items.clone());
-    Ok(items)
+    // One retry on a transient transport error — flaky mobile/Termux networks
+    // drop GETs, and a single-shot call silently loses that endpoint's data
+    // (the live transcripts are full of such drops). The retry reuses the same
+    // budget slot, so resilience costs no extra quota. We do NOT retry a
+    // successful-but-empty response: most of the 18-endpoint matrix legitimately
+    // returns empty for a given seed, and retrying those would double scan
+    // wall-time for no gain. `cache_put` already refuses to memoise an empty
+    // result, so a genuine miss never poisons a later lookup.
+    const MAX_ATTEMPTS: u32 = 2;
+    let mut last_err = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        match get_json(&url, key).await {
+            Ok(resp) => {
+                let items = extract_items(&resp);
+                cache_put(ck.clone(), items.clone());
+                return Ok(items);
+            }
+            Err(e) => {
+                if attempt + 1 < MAX_ATTEMPTS {
+                    tracing::debug!(
+                        path,
+                        attempt = attempt + 1,
+                        "see_know GET errored — retrying once"
+                    );
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    match last_err {
+        Some(e) => Err(e),
+        None => Ok(Vec::new()),
+    }
 }
 
 fn extract_items(v: &Value) -> Vec<Value> {
