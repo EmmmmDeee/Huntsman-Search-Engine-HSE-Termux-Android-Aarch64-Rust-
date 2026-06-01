@@ -10,6 +10,34 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **Web UI: a Timeline tab.** The flagship streaming-timeline reconstruction now
+  has a browser surface. A new `GET /api/v1/scans/{id}/timeline` endpoint reuses
+  the canonical `timeline::reconstruct` (single source of truth — no client-side
+  date parsing), and the scan view gains a **Timeline** tab rendering the
+  oldest-first chronology (date · event class · entity · source). Works for any
+  scan, including ones predating live timeline streaming.
+
+### Fixed
+
+- **Web UI ↔ engine confidence consistency.** The SPA recomputed `C_eff`
+  client-side with the *stale* multiplicative-only formula and counted *all*
+  evidence sources — so the browser showed different confidence + classification
+  than the engine, CSV, and dossier (it under-credited multi-source entities and
+  let internal `geo_normalize` enrichment inflate the source count). `effC` now
+  mirrors the engine exactly (max of the multiplicative boost and the
+  independent-agreement model), and `sourceCount` excludes internal-flagged
+  evidence (`ev.internal`) with the same three-way fallback as the server. The
+  stale `C_eff` formula shown in the Status tab was corrected to match.
+
+- **Web UI: live event log renders the new event types.** `timeline_event_found`,
+  `timeline_reconstructed`, and `entity_resolved` (the streaming timeline +
+  identity-resolution events) were falling through to a raw-JSON dump in the Scan
+  Log; they now render as readable lines (🕑 dated event, "timeline
+  reconstructed · N", "≡ identity resolved"). Relation edges also get
+  human-readable labels (`same_as` → "≡ same as", etc.).
+
 ### Changed
 
 - **Internal architecture: evidence provenance is now typed, not name-matched.**

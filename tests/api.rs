@@ -541,6 +541,22 @@ async fn scan_relations_endpoint_returns_list() {
     assert!(json["count"].as_u64().is_some());
 }
 
+#[tokio::test]
+async fn scan_timeline_endpoint_returns_list() {
+    let (app, scan_id) = create_scan("scan_tl").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{scan_id}/timeline")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert!(
+        json.get("timeline").is_some(),
+        "body must include 'timeline'"
+    );
+    assert!(json["count"].as_u64().is_some());
+}
+
 // ── 13. API not found (JSON) ─────────────────────────────────────────────
 
 #[tokio::test]

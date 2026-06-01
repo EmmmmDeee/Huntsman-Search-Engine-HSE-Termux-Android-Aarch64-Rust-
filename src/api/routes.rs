@@ -176,6 +176,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(scan_handlers::scan_correlations),
         )
         .route("/scans/{id}/relations", get(scan_handlers::scan_relations))
+        .route("/scans/{id}/timeline", get(scan_handlers::scan_timeline))
         .route("/scans/{a}/diff/{b}", get(scan_handlers::scan_diff))
         .route("/scans/{id}/events", get(handlers::scan_events_sse))
         .route(

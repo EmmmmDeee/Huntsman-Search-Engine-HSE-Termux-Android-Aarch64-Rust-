@@ -278,6 +278,24 @@ pub async fn scan_relations(
     }
 }
 
+/// Semantic chronology reconstructed from the scan's entity graph — the same
+/// `timeline::reconstruct` the CLI dossier and the live event stream use, so the
+/// Web UI's Timeline tab renders the engine's canonical timeline (single source
+/// of truth, no client-side date parsing). Works for any scan, including ones
+/// run before live timeline streaming existed.
+pub async fn scan_timeline(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match s.store.entities_for_scan(&id) {
+        Ok(entities) => ok_list("timeline", crate::core::timeline::reconstruct(&entities)),
+        Err(e) => internal_error(&e),
+    }
+}
+
 pub async fn scan_delete(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

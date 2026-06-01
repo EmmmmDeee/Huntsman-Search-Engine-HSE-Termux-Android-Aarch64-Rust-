@@ -370,12 +370,28 @@ function kindPill(k){return `<span class="kind-pill k-${attr(k)}">${esc(k)}</spa
 // when no evidence is present, fall back to the corroboration field. (The old
 // version boosted on the raw corroboration field, which over-credited
 // single-source findings whose within-module counts were summed by merge.)
+// MIRRORS the server (core/entity.rs Entity::source_count): count DISTINCT
+// INDEPENDENT sources — exclude the engine's own internal enrichment passes
+// (ev.internal, e.g. geo_normalize), which must not inflate cross-correlation.
+// Three-way fallback identical to the server: distinct non-internal sources;
+// else (evidence present but all internal) 1; else the corroboration field.
 function sourceCount(e){
   const evs=e.evidence||[];
-  if(evs.length){const s=new Set();for(const ev of evs){if(ev&&ev.source)s.add(ev.source);}if(s.size)return Math.max(1,s.size);}
+  let distinct=0;
+  if(evs.length){const s=new Set();for(const ev of evs){if(ev&&ev.source&&!ev.internal)s.add(ev.source);}distinct=s.size;}
+  if(distinct>0) return distinct;
+  if(evs.length) return 1;
   return Math.max(1,e.corroboration??1);
 }
-function effC(e){const c=e.confidence??0;const n=sourceCount(e);return Math.min(1,Math.max(0,c*(1+0.15*Math.log(n))));}
+// MIRRORS core/entity.rs Entity::c_effective EXACTLY: max of the multiplicative
+// boost and the independent-agreement (noisy-OR) model, so the UI's confidence /
+// classification matches the engine, CSV, and dossier. (COEFF=0.15, DECAY=0.65.)
+function effC(e){
+  const c=e.confidence??0, n=sourceCount(e);
+  const mult=c*(1+0.15*Math.log(n));
+  const agree=1-(1-c)*Math.pow(0.65,n-1);
+  return Math.min(1,Math.max(0,Math.max(mult,agree)));
+}
 function trunc(s,n){s=String(s||'');return s.length>n?s.slice(0,n)+'…':s;}
 /* Linkify http(s) values only (javascript:/data: stay inert escaped text), so
    URL entities and pivot/avatar evidence are clickable — SpiderFoot/NAMINT UX. */
@@ -418,6 +434,7 @@ const API = {
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
   correlations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/correlations'),
   relations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/relations'),
+  timeline: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/timeline'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
   rerun:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/rerun',{method:'POST'}),
   cancel:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/cancel',{method:'POST'}),
@@ -991,6 +1008,7 @@ async function renderScanInfo(v){
       ${subTab('browse',  'Browse',       S.entities.length,   tab)}
       ${subTab('graph',   'Graph',        null,                tab)}
       ${subTab('rels',    'Relations',    S.relations.length,  tab)}
+      ${subTab('timeline','Timeline',     null,                tab)}
       ${subTab('log',     'Scan Log',     null,                tab)}
       ${subTab('corr',    'Correlations', S.correlations.length, tab)}
       ${subTab('info',    'Scan Settings',null,                tab)}
@@ -1033,6 +1051,7 @@ async function renderScanInfo(v){
   else if (tab==='browse') renderBrowse(body);
   else if (tab==='graph')  renderGraph(body);
   else if (tab==='rels')   renderRelations(body);
+  else if (tab==='timeline') renderTimeline(body);
   else if (tab==='log')    renderLog(body, scan);
   else if (tab==='corr')   renderCorrelations(body);
   else if (tab==='info')   renderInfo(body, scan);
@@ -1070,9 +1089,10 @@ function renderRelations(host){
     return e ? `${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code>`
              : `<code class="text-muted" style="font-size:10px">${esc(String(uid).slice(0,16))}…</code>`;
   };
+  const REL_LABEL={same_as:'≡ same as',derived_from:'derived from',subdomain_of:'subdomain of',belongs_to_domain:'belongs to',hosted_on:'hosted on',resolves_to:'resolves to',registered_by:'registered by',co_located_with:'co-located'};
   const rows = rels.map(r=>`<tr>
       <td>${cell(r.from_uid)}</td>
-      <td class="text-center"><span class="tag">${esc(r.kind)}</span></td>
+      <td class="text-center"><span class="tag" title="${attr(r.kind)}">${esc(REL_LABEL[r.kind]||r.kind)}</span></td>
       <td>${cell(r.to_uid)}</td>
       <td class="text-right"><code>${r.confidence!=null?Number(r.confidence).toFixed(2):''}</code></td>
     </tr>`).join('');
@@ -1082,6 +1102,33 @@ function renderRelations(host){
     + `<thead><tr><th>From</th><th class="text-center">Relation</th><th>To</th><th class="text-right">Conf</th></tr></thead>`
     + `<tbody>${rows}</tbody></table></div>`;
   if (window.jQuery && jQuery.fn.tablesorter){ try{ jQuery('#rel-table').tablesorter(); }catch(_){} }
+}
+
+/* ── Timeline tab — semantic chronology reconstructed by the engine ── */
+async function renderTimeline(host){
+  host.innerHTML = '<div class="empty-state"><p>Reconstructing timeline…</p></div>';
+  let events = [];
+  try { const r = await API.timeline(S.route.params.id); events = r.timeline || []; }
+  catch(_){ host.innerHTML = '<div class="empty-state"><h3>Timeline unavailable</h3></div>'; return; }
+  if (!events.length){
+    host.innerHTML = '<div class="empty-state"><h3>No dated events</h3>'
+      + '<p>The timeline reconstructs dated events — breach dates, domain registration / expiry, '
+      + 'account creation, incorporation, … — from entity evidence. None were found in this graph.</p></div>';
+    return;
+  }
+  const KIND_LABEL={breach_exposure:'Breach exposure',registered:'Registered',expiry:'Expiry',account_created:'Account created',incorporation:'Incorporation',dissolution:'Dissolution',first_seen:'First seen',last_seen:'Last seen',date_of_birth:'Date of birth',generic:'Event'};
+  const rows = events.map(ev=>`<tr>
+      <td style="white-space:nowrap"><code>${esc(ev.iso||'')}</code></td>
+      <td><span class="tag" title="${attr(ev.kind||'')}">${esc(KIND_LABEL[ev.kind]||ev.kind||'')}</span></td>
+      <td>${kindPill(ev.entity_kind)} <code>${esc(ev.entity_value||'')}</code></td>
+      <td class="text-muted" style="font-size:11px">${esc(ev.source||'')}</td>
+    </tr>`).join('');
+  host.innerHTML = `<p class="text-muted" style="margin-bottom:8px">`
+    + `${events.length} dated event${events.length===1?'':'s'}, oldest first — the chronology the engine reconstructs continuously during ingestion.</p>`
+    + `<div class="table-responsive"><table class="table table-condensed table-striped tablesorter" id="tl-table">`
+    + `<thead><tr><th>Date</th><th>Event</th><th>Entity</th><th>Source</th></tr></thead>`
+    + `<tbody>${rows}</tbody></table></div>`;
+  if (window.jQuery && jQuery.fn.tablesorter){ try{ jQuery('#tl-table').tablesorter(); }catch(_){} }
 }
 
 /* ── Status tab ── */
@@ -1129,7 +1176,7 @@ function renderStatus(host, scan){
               <div class="col-xs-4"><div class="stat-card"><div class="lab c-PROBABLE">Probable</div><div class="val" style="color:#8a6d3b">${probable}</div></div></div>
               <div class="col-xs-4"><div class="stat-card"><div class="lab c-CANDIDATE">Candidate</div><div class="val" style="color:#a94442">${candidate}</div></div></div>
             </div>
-            <p class="help-block">Tiers derived from <code>C_eff = clamp(C × (1 + 0.15·ln(distinct_sources)), 0, 1)</code>.</p>
+            <p class="help-block">Tiers from <code>C_eff</code> — the stronger of a multiplicative boost and an independent-agreement model over the count of <b>distinct independent sources</b> (internal enrichment excluded). Verified ≥ 0.75, Probable ≥ 0.40.</p>
           </div>
         </div>
       </div>
@@ -1603,6 +1650,9 @@ function mapEvent(ev){
   if (t==='expansion_stop') return {typ:'expand', lv:'warn',  msg:`expansion stopped · ${esc(ev.reason)}`};
   if (t==='correlation_found') return {typ:'corr', lv:'corr', msg:`${esc(ev.correlation?.rule_name||ev.correlation?.rule_id||'?')}`};
   if (t==='correlations_done') return {typ:'corr', lv:'info', msg:`correlations done · ${ev.count}`};
+  if (t==='timeline_event_found'){ const x=ev.event||{}; return {typ:'time', lv:'info', msg:`🕑 <code>${esc(x.iso||'')}</code> <span class="text-muted">${esc(String(x.kind||'').replace(/_/g,' '))}</span> ${esc(x.entity_value||'')}`}; }
+  if (t==='timeline_reconstructed') return {typ:'time', lv:'info', msg:`timeline reconstructed · ${ev.count} event${ev.count===1?'':'s'}`};
+  if (t==='entity_resolved'){ const r=ev.relation||{}; return {typ:'resolve', lv:'ok', msg:`≡ identity resolved <span class="text-muted">(${esc(r.kind||'same_as')})</span>`}; }
   return {typ: esc(t||'?'), lv:'info', msg: esc(JSON.stringify(ev).slice(0,220))};
 }
 function openSse(scanId, onEv, onState){
