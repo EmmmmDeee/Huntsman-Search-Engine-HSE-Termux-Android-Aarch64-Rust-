@@ -133,12 +133,17 @@ mod tests {
 
     #[test]
     fn saturation_requires_both_corroboration_and_confidence() {
-        // High conf, low corrob → not saturated
+        // High conf but a SINGLE source → below the 2-source floor → not saturated.
         assert!(!is_saturated(&make(0.95, 1)));
-        // Low conf, high corrob → not saturated
-        assert!(!is_saturated(&make(0.50, 5)));
-        // Both above thresholds → saturated
+        // Moderate conf with only 2 sources → c_eff still < 0.85 → not saturated.
+        assert!(!is_saturated(&make(0.50, 2)));
+        // Both gates cleared → saturated.
         assert!(is_saturated(&make(0.90, 3)));
+        // Upgraded confidence model: enough INDEPENDENT sources lift even a
+        // moderate finding past the threshold — strong cross-source agreement IS
+        // high effective confidence (5 sources at C=0.50 → c_eff ≈ 0.91), so it
+        // saturates and is (correctly) pruned from re-expansion under max_roi.
+        assert!(is_saturated(&make(0.50, 5)));
     }
 
     #[test]

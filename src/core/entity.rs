@@ -19,6 +19,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Corroboration boost coefficient (architecture invariant).
 pub const CORROBORATION_COEFF: f64 = 0.15;
 
+/// Residual-doubt decay per *additional* independent source in the
+/// agreement model of [`Entity::c_effective`]. Each distinct corroborating
+/// source shrinks the remaining doubt `(1 − confidence)` by this factor, so
+/// independent agreement drives confidence toward certainty: at `0.65`, a
+/// moderate finding (C=0.6) reaches ~0.74 at 2 sources and ~0.83 (Verified) at
+/// 3 — which the purely-multiplicative model badly under-credits (0.66 / 0.73).
+pub const CORROBORATION_DOUBT_DECAY: f64 = 0.65;
+
 /// Confidence decay constant per hour (γ = 0.85).
 pub const GAMMA_PER_HOUR: f64 = 0.85;
 
@@ -282,18 +290,33 @@ impl Entity {
         }
     }
 
-    /// `C_eff = clamp(confidence × (1 + 0.15 × ln(source_count)), 0.0, 1.0)`
+    /// Cross-source effective confidence — the stronger of two models over the
+    /// number of DISTINCT corroborating sources `n` (see [`source_count`],
+    /// floored at 1):
     ///
-    /// `source_count` is the number of DISTINCT corroborating sources (see
-    /// [`source_count`]), floored at 1 (so a single-source entity gets
-    /// `ln(1) = 0`, i.e. no boost) and otherwise uncapped — the logarithm gives
-    /// additional sources sharply diminishing effect, and the outer
-    /// `clamp(.., 0.0, 1.0)` keeps the result a valid confidence.
+    /// * **Multiplicative** (legacy): `confidence × (1 + 0.15·ln n)` — a gentle,
+    ///   sharply-diminishing boost.
+    /// * **Independent-agreement** (noisy-OR): `1 − (1 − confidence)·γ^(n−1)`
+    ///   with `γ = `[`CORROBORATION_DOUBT_DECAY`] — each *additional* independent
+    ///   source shrinks the residual doubt, so N sources agreeing on a finding
+    ///   drive confidence toward certainty.
+    ///
+    /// `C_eff = clamp(max(multiplicative, agreement), 0, 1)`.
+    ///
+    /// At `n = 1` both models equal `confidence`, so a single-source entity is
+    /// unchanged. The agreement term is what gives genuine cross-correlation its
+    /// due: the multiplicative model alone caps four independent confirmations of
+    /// a moderate (C=0.6) finding at 0.73 ("Probable"); the agreement term lifts
+    /// it to ~0.89 ("Verified"), which is what four independent sources warrant.
+    /// `max` keeps the result monotonic and never below the legacy value, so the
+    /// change only ever *adds* confidence for genuinely multi-sourced entities.
     #[inline]
     pub fn c_effective(&self) -> f64 {
-        let sources = f64::from(self.source_count());
-        let boost = CORROBORATION_COEFF.mul_add(sources.ln(), 1.0);
-        (self.confidence * boost).clamp(0.0, 1.0)
+        let n = f64::from(self.source_count());
+        let multiplicative = self.confidence * CORROBORATION_COEFF.mul_add(n.ln(), 1.0);
+        let residual_doubt = (1.0 - self.confidence) * CORROBORATION_DOUBT_DECAY.powf(n - 1.0);
+        let agreement = 1.0 - residual_doubt;
+        multiplicative.max(agreement).clamp(0.0, 1.0)
     }
 
     /// Derived classification tier from `c_effective()`.
@@ -654,9 +677,16 @@ mod tests {
         let mut e = email("a@b.com");
         e.corroboration = 4;
         // No evidence attached → source_count() falls back to the field (4).
-        // c_eff = 0.6 * (1 + 0.15 * ln(4)) = 0.6 * 1.2079...
-        let expected = 0.6 * 0.15f64.mul_add(4f64.ln(), 1.0);
+        // C_eff = max(multiplicative, independent-agreement). At n=4 the
+        // agreement term dominates: 1 - 0.4·γ^3 ≈ 0.890 > 0.726 multiplicative.
+        let mult = 0.6 * 0.15f64.mul_add(4f64.ln(), 1.0);
+        let agreement = 1.0 - 0.4 * CORROBORATION_DOUBT_DECAY.powf(3.0);
+        let expected = mult.max(agreement);
         assert!((e.c_effective() - expected).abs() < 1e-9);
+        assert!(
+            e.c_effective() > 0.85,
+            "4 independent sources → near-Verified"
+        );
     }
 
     #[test]
@@ -668,10 +698,51 @@ mod tests {
         e.add_evidence(Evidence::new("hibp", "found in 5 breaches"));
         e.add_evidence(Evidence::new("search_engines", "5 engines agree"));
         assert_eq!(e.source_count(), 2, "distinct sources, not the summed 8");
-        let expected = 0.6 * 0.15f64.mul_add(2f64.ln(), 1.0);
+        // Boost is driven by the 2 DISTINCT sources, not the inflated count of 8.
+        let mult = 0.6 * 0.15f64.mul_add(2f64.ln(), 1.0);
+        let agreement = 1.0 - 0.4 * CORROBORATION_DOUBT_DECAY; // n=2 → γ^1
+        let expected = mult.max(agreement);
         assert!(
             (e.c_effective() - expected).abs() < 1e-9,
             "C_eff must boost on 2 distinct sources, not the inflated corroboration=8"
+        );
+        // A summed-corroboration of 8 would (wrongly) push c_eff much higher.
+        let if_summed = 1.0 - 0.4 * CORROBORATION_DOUBT_DECAY.powf(7.0);
+        assert!(
+            e.c_effective() < if_summed,
+            "must not credit the inflated 8"
+        );
+    }
+
+    #[test]
+    fn c_eff_independent_agreement_lifts_moderate_findings() {
+        // The grunt: independent corroboration of a MODERATE finding drives
+        // confidence toward certainty, where the multiplicative model alone
+        // would leave it merely "Probable". Monotonic non-decreasing in n.
+        let mut e = email("a@b.com");
+        e.confidence = 0.60;
+        let mut last = e.c_effective(); // n=1 → 0.60
+        assert!((last - 0.60).abs() < 1e-9, "single source unchanged");
+        for n in 2..=5u32 {
+            e.corroboration = n;
+            let c = e.c_effective();
+            assert!(
+                c >= last,
+                "c_eff must be monotonic non-decreasing in sources"
+            );
+            assert!(c <= 1.0);
+            last = c;
+        }
+        // 3 independent sources earn Verified (≥ 0.75); 5 are near-certain.
+        e.corroboration = 3;
+        assert!(
+            e.c_effective() >= 0.75,
+            "3 independent sources → Verified tier"
+        );
+        e.corroboration = 5;
+        assert!(
+            e.c_effective() >= 0.90,
+            "5 independent sources → near-certain"
         );
     }
 
