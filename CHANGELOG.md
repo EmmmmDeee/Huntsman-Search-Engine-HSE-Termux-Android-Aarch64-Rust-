@@ -52,6 +52,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   untouched). Per the operator's rule, inherently-unique secrets — passwords,
   API keys, raw credentials — are exempt even if they contain "example".
 
+- **CLI seeds weren't validated (`hse scan`/`hse live`).** `Target::validate`
+  rejected placeholders only on the HTTP API path; the CLI built the target and
+  dispatched without validating, so `hse scan --kind domain --value example.com`
+  still ran every module against a reserved domain. Both `cmd_scan` and the
+  `live` command now validate the seed first (rejecting placeholders and other
+  malformed targets), guarded by a binary-spawning integration test.
+
 - **AlienVault OTX threat-intel tag noise.** `ip_reputation` aggregated every
   pulse's `tags` (hashes, filenames, single chars, freeform notes), sorted them
   **alphabetically** and kept the first 50 — surfacing a junk blob (`.cc`,

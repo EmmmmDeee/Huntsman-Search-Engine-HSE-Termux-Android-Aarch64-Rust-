@@ -32,6 +32,14 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
 
     let target_kind = parse_target_kind(&cmd.kind)?;
     let target = Target::new(target_kind, cmd.value.clone());
+    // Reject junk/placeholder seeds at the CLI boundary (mirrors `cmd_scan`
+    // and the HTTP API's `validated_target`).
+    if let Err(msg) = target.validate() {
+        return Err(crate::core::error::Error::Other(format!(
+            "invalid target '{}': {msg}",
+            target.value
+        )));
+    }
 
     let scan_options = ScanOptions {
         modules: split_csv(cmd.modules),

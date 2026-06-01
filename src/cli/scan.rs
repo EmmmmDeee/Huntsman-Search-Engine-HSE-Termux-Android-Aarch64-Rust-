@@ -42,6 +42,18 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let target_kind = parse_target_kind(&cmd.kind)?;
     let target = Target::new(target_kind, cmd.value.clone());
 
+    // Reject junk/placeholder seeds at the CLI boundary too (the HTTP API
+    // already does this via `validated_target`). Without it, `hse scan --kind
+    // domain --value example.com` would dispatch every module against a reserved
+    // documentation domain — exactly the "example anything" the engine must not
+    // scan.
+    if let Err(msg) = target.validate() {
+        return Err(crate::core::error::Error::Other(format!(
+            "invalid target '{}': {msg}",
+            target.value
+        )));
+    }
+
     let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth == 0 {
         let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
         let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
