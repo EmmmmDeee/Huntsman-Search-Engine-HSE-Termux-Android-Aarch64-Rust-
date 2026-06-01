@@ -10,6 +10,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **`keybase` identity module reinvigorated.** It already pivoted a username to
+  its cryptographically-verified linked accounts, but discarded the verified
+  `service_url` of each proof and only recognised 4 platforms. It now surfaces
+  every proof's verified profile URL as a first-class `Url` entity, recognises
+  `gitlab`/`mastodon`/`facebook`/`twitch`, normalises website proofs to their
+  host, and tags verified links `verified`. The proof→entity mapping was
+  extracted into a pure `extract_proofs` and is now unit-tested (it had no
+  extraction test before). A roster audit confirmed all 89 modules are wired and
+  the free-API coverage (Keybase, Wayback, ip2location, ip_geo/ipinfo/ipapi,
+  cert_intel, hackertarget, dns_intel, rdap, social_probe, username_search, …)
+  is already comprehensive — the scan's "failing" modules were the junk/noise
+  fixed below plus key-gated providers awaiting their (mostly free) keys.
+
 ### Fixed
 
 - **Documentation / placeholder values polluting scans (`example.com` & co.).**

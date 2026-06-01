@@ -78,7 +78,6 @@ struct KbProof {
     proof_type: Option<String>,
     #[serde(default)]
     nametag: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     service_url: Option<String>,
     #[serde(default)]
@@ -232,67 +231,110 @@ impl Module for Keybase {
         }
 
         if let Some(proofs) = &user.proofs_summary {
-            for proof in &proofs.all {
-                if proof.state != Some(1) {
-                    continue;
-                }
-                let Some(ptype) = proof.proof_type.as_deref() else {
-                    continue;
-                };
-                let Some(nametag) = proof.nametag.as_deref() else {
-                    continue;
-                };
-                if nametag.is_empty() {
-                    continue;
-                }
-
-                match ptype {
-                    "twitter" | "github" | "reddit" | "hackernews" => {
-                        let mut ue = Entity::new(EntityKind::Username, nametag, 0.80, &ctx.scan_id);
-                        ue.tag("keybase");
-                        ue.tag(format!("platform:{ptype}"));
-                        ue.add_evidence(
-                            Evidence::new(
-                                SRC,
-                                format!("Cryptographic proof: {ptype}/@{nametag} linked to Keybase/{kb_username}"),
-                            )
-                            .with_attr("proof_type", ptype)
-                            .with_attr("keybase_user", kb_username),
-                        );
-                        result.push(ue);
-                    }
-                    "dns" | "generic_web_site" => {
-                        let mut de = Entity::new(EntityKind::Domain, nametag, 0.75, &ctx.scan_id);
-                        de.tag("keybase");
-                        de.add_evidence(
-                            Evidence::new(
-                                SRC,
-                                format!("Domain proof: {nametag} linked to Keybase/{kb_username}"),
-                            )
-                            .with_attr("keybase_user", kb_username),
-                        );
-                        result.push(de);
-                    }
-                    _ if nametag.contains('@') && nametag.contains('.') => {
-                        let mut ee = Entity::new(EntityKind::Email, nametag, 0.70, &ctx.scan_id);
-                        ee.tag("keybase");
-                        ee.tag(format!("proof:{ptype}"));
-                        ee.add_evidence(
-                            Evidence::new(
-                                SRC,
-                                format!("Verified {ptype} proof: {nametag} linked to Keybase/{kb_username}"),
-                            )
-                            .with_attr("proof_type", ptype)
-                            .with_attr("keybase_user", kb_username),
-                        );
-                        result.push(ee);
-                    }
-                    _ => {}
-                }
-            }
+            extract_proofs(&proofs.all, kb_username, &ctx.scan_id, &mut result);
         }
 
         Ok(result)
+    }
+}
+
+/// Fold the verified Keybase proofs into entities. Pure (no I/O) so the
+/// proof→entity mapping is unit-tested. Only `state == 1` (active) proofs are
+/// emitted; each cross-platform handle is a cryptographically-verified pivot,
+/// so we ALSO surface its `service_url` as a first-class (confirmed) profile
+/// link rather than discarding it.
+fn extract_proofs(proofs: &[KbProof], kb_username: &str, scan_id: &str, result: &mut ModuleResult) {
+    // Emit the verified profile URL a proof points at (when present + http).
+    let push_service_url = |result: &mut ModuleResult, ptype: &str, url: Option<&str>| {
+        if let Some(u) = url.filter(|u| u.starts_with("http")) {
+            let mut ue = Entity::new(EntityKind::Url, u, 0.85, scan_id);
+            ue.tag("keybase");
+            ue.tag("social-profile");
+            ue.tag("verified");
+            ue.add_evidence(Evidence::new(
+                SRC,
+                format!("Keybase-verified {ptype} profile of {kb_username}"),
+            ));
+            result.push(ue);
+        }
+    };
+
+    for proof in proofs {
+        if proof.state != Some(1) {
+            continue;
+        }
+        let Some(ptype) = proof.proof_type.as_deref() else {
+            continue;
+        };
+        let Some(nametag) = proof
+            .nametag
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        else {
+            continue;
+        };
+        let service_url = proof.service_url.as_deref();
+
+        match ptype {
+            "twitter" | "github" | "reddit" | "hackernews" | "gitlab" | "mastodon" | "facebook"
+            | "twitch" => {
+                let mut ue = Entity::new(EntityKind::Username, nametag, 0.80, scan_id);
+                ue.tag("keybase");
+                ue.tag("verified");
+                ue.tag(format!("platform:{ptype}"));
+                ue.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!(
+                            "Cryptographic proof: {ptype}/@{nametag} linked to Keybase/{kb_username}"
+                        ),
+                    )
+                    .with_attr("proof_type", ptype)
+                    .with_attr("keybase_user", kb_username),
+                );
+                result.push(ue);
+                push_service_url(result, ptype, service_url);
+            }
+            "dns" | "generic_web_site" | "https" | "http" | "web" => {
+                // nametag may be a bare host or a URL — reduce to the host.
+                let domain = nametag
+                    .trim_start_matches("https://")
+                    .trim_start_matches("http://")
+                    .split('/')
+                    .next()
+                    .unwrap_or(nametag);
+                let mut de = Entity::new(EntityKind::Domain, domain, 0.75, scan_id);
+                de.tag("keybase");
+                de.tag("verified");
+                de.tag("personal-site");
+                de.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Domain proof: {domain} linked to Keybase/{kb_username}"),
+                    )
+                    .with_attr("keybase_user", kb_username),
+                );
+                result.push(de);
+            }
+            _ if nametag.contains('@') && nametag.contains('.') => {
+                let mut ee = Entity::new(EntityKind::Email, nametag, 0.70, scan_id);
+                ee.tag("keybase");
+                ee.tag(format!("proof:{ptype}"));
+                ee.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!(
+                            "Verified {ptype} proof: {nametag} linked to Keybase/{kb_username}"
+                        ),
+                    )
+                    .with_attr("proof_type", ptype)
+                    .with_attr("keybase_user", kb_username),
+                );
+                result.push(ee);
+            }
+            _ => push_service_url(result, ptype, service_url),
+        }
     }
 }
 
@@ -345,5 +387,44 @@ mod tests {
             Some("Alice Smith")
         );
         assert_eq!(user.proofs_summary.as_ref().unwrap().all.len(), 3);
+    }
+
+    #[test]
+    fn extract_proofs_maps_verified_links_and_urls() {
+        // Shape captured from the live keybase.io lookup for `chris`.
+        let proofs: Vec<KbProof> = serde_json::from_str(
+            r#"[
+                {"proof_type":"twitter","nametag":"malgorithms","state":1,"service_url":"https://twitter.com/malgorithms"},
+                {"proof_type":"github","nametag":"malgorithms","state":1,"service_url":"https://github.com/malgorithms"},
+                {"proof_type":"gitlab","nametag":"mal","state":1,"service_url":"https://gitlab.com/mal"},
+                {"proof_type":"dns","nametag":"chriscoyne.com","state":1,"service_url":"http://chriscoyne.com"},
+                {"proof_type":"twitter","nametag":"revoked","state":2,"service_url":"https://twitter.com/revoked"}
+            ]"#,
+        )
+        .unwrap();
+        let mut r = ModuleResult::new();
+        extract_proofs(&proofs, "chris", "scan", &mut r);
+        let has = |k: EntityKind, v: &str| r.entities.iter().any(|e| e.kind == k && e.value == v);
+
+        // Cross-platform handles (incl. the newly-supported gitlab).
+        assert!(has(EntityKind::Username, "malgorithms"));
+        assert!(
+            has(EntityKind::Username, "mal"),
+            "gitlab proof now supported"
+        );
+        // Verified service_url surfaced as a first-class profile link.
+        assert!(has(EntityKind::Url, "https://github.com/malgorithms"));
+        // DNS proof → owned domain.
+        assert!(has(EntityKind::Domain, "chriscoyne.com"));
+        // Revoked (state != 1) proof dropped entirely.
+        assert!(!has(EntityKind::Username, "revoked"));
+        assert!(!has(EntityKind::Url, "https://twitter.com/revoked"));
+        // Verified handles carry the `verified` tag.
+        let gh = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "malgorithms")
+            .unwrap();
+        assert!(gh.has_tag("verified") && gh.has_tag("keybase"));
     }
 }
