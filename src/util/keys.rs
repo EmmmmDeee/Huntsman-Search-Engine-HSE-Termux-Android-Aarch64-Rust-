@@ -60,6 +60,10 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_EPIEOS_KEY",
     "HUNTSMAN_PROXYCURL_KEY",
     "HUNTSMAN_OPENCORP_KEY",
+    // Breach / search multipliers — high-leverage paid pools the Settings
+    // grid must surface so the operator can paste/rotate them in the UI.
+    "HUNTSMAN_SEEKNOW_KEY",
+    "HUNTSMAN_EXA_KEY",
 ];
 
 /// Resolve the keys env-file path.
@@ -159,49 +163,74 @@ pub async fn populate_and_load() -> HashMap<String, String> {
     load()
 }
 
-/// Write hardcoded API keys to the env file if not already present.
-/// Only fills empty slots — never overwrites user-provided keys.
-fn ensure_hardcoded_keys() {
-    const HARDCODED: &[(&str, &str)] = &[
-        (
-            "HUNTSMAN_OATHNET_KEY",
-            "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551409e4b47116f2",
-        ),
-        ("HUNTSMAN_HIBP_KEY", "42587552dce6424a87312941c8a2c3c5"),
-        ("HUNTSMAN_WIGLE_USER", "AID4493a33e2df9d07ab9666a27c8aead17"),
-        ("HUNTSMAN_WIGLE_TOKEN", "1aedb7ad0171ff3d6be5a844cca5d977"),
-        (
-            "HUNTSMAN_SEEKNOW_KEY",
-            "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25",
-        ),
-    ];
+/// API keys embedded in the build so a fresh install works zero-config.
+/// `ensure_hardcoded_keys` writes any that are absent from the env file.
+const HARDCODED: &[(&str, &str)] = &[
+    (
+        "HUNTSMAN_OATHNET_KEY",
+        "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551409e4b47116f2",
+    ),
+    ("HUNTSMAN_HIBP_KEY", "42587552dce6424a87312941c8a2c3c5"),
+    ("HUNTSMAN_WIGLE_USER", "AID4493a33e2df9d07ab9666a27c8aead17"),
+    ("HUNTSMAN_WIGLE_TOKEN", "1aedb7ad0171ff3d6be5a844cca5d977"),
+    (
+        "HUNTSMAN_SEEKNOW_KEY",
+        "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc",
+    ),
+];
 
-    let path = env_path();
-    let existing = load_from_file_only(Path::new(&path));
-    let mut to_write: Vec<(&str, &str)> = Vec::new();
+/// Embedded defaults that have been ROTATED. If the env file still carries an
+/// old embedded value (written by a previous build's `ensure_hardcoded_keys`),
+/// upgrade it in place to the current default so a rebuild picks up the new key
+/// without the operator re-entering it. Scoped to EXACT prior embedded values —
+/// a user's own custom key never matches one of these, so an intentional
+/// override is never clobbered.
+const SUPERSEDED: &[(&str, &str)] = &[(
+    "HUNTSMAN_SEEKNOW_KEY",
+    "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25",
+)];
 
+/// Compute the `{env_var: value}` writes needed to bring `existing` (the
+/// current env-file contents) up to date with the embedded defaults: fill any
+/// absent slot, and rotate any slot still holding a superseded embedded value.
+/// Pure so the fill-vs-rotate-vs-preserve policy is unit-testable. A slot the
+/// user has set to a custom (non-superseded) value is left untouched.
+fn hardcoded_key_writes(existing: &HashMap<String, String>) -> BTreeMap<String, String> {
+    let mut updates: BTreeMap<String, String> = BTreeMap::new();
+    // Rotate superseded embedded values to the current default.
+    for (env_var, old_value) in SUPERSEDED {
+        if existing.get(*env_var).map(String::as_str) == Some(*old_value)
+            && let Some((_, new_value)) = HARDCODED.iter().find(|(k, _)| k == env_var)
+        {
+            updates.insert((*env_var).to_string(), (*new_value).to_string());
+        }
+    }
+    // Fill empty slots (never overwrites a value already present).
     for (env_var, value) in HARDCODED {
         if !existing.contains_key(*env_var) {
-            to_write.push((env_var, value));
+            updates.insert((*env_var).to_string(), (*value).to_string());
         }
     }
+    updates
+}
 
-    if to_write.is_empty() {
+/// Ensure the embedded API keys are present and current in the env file:
+/// fill absent slots and rotate any superseded embedded value in place. Uses
+/// the atomic, comment-preserving [`write_keys`] path (so a rotation replaces
+/// the old line rather than appending a duplicate). Never overwrites a user's
+/// custom key — see [`hardcoded_key_writes`].
+fn ensure_hardcoded_keys() {
+    let path = env_path();
+    let existing = load_from_file_only(Path::new(&path));
+    let updates = hardcoded_key_writes(&existing);
+    if updates.is_empty() {
         return;
     }
-
-    let mut file = match fs::OpenOptions::new().create(true).append(true).open(&path) {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!("cannot write hardcoded keys to {path}: {e}");
-            return;
-        }
-    };
-
-    for (k, v) in &to_write {
-        let _ = writeln!(file, "{k}={v}");
+    let n = updates.len();
+    match write_keys(&updates, &[]) {
+        Ok(()) => tracing::info!("ensured {n} embedded key(s) current in {path}"),
+        Err(e) => tracing::warn!("cannot write embedded keys to {path}: {e}"),
     }
-    tracing::info!("wrote {} hardcoded key(s) to {path}", to_write.len());
 }
 
 /// Parse `HUNTSMAN_*` lines from the env file at `path`, **ignoring the
@@ -622,6 +651,44 @@ mod tests {
             msg.contains("read ") || msg.contains("open ") || msg.contains("write "),
             "expected a read/open/write error, got: {msg}"
         );
+    }
+
+    #[test]
+    fn hardcoded_key_writes_fills_rotates_and_preserves() {
+        const NEW: &str = "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
+        const OLD: &str = "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
+
+        // Empty file → embedded defaults filled (including the current SeekNow key).
+        let w = hardcoded_key_writes(&HashMap::new());
+        assert_eq!(w.get("HUNTSMAN_SEEKNOW_KEY").map(String::as_str), Some(NEW));
+        assert!(w.contains_key("HUNTSMAN_OATHNET_KEY"));
+
+        // Stale embedded value present → rotated in place to the new default.
+        let stale: HashMap<String, String> =
+            [("HUNTSMAN_SEEKNOW_KEY".to_string(), OLD.to_string())].into();
+        assert_eq!(
+            hardcoded_key_writes(&stale)
+                .get("HUNTSMAN_SEEKNOW_KEY")
+                .map(String::as_str),
+            Some(NEW),
+            "a superseded embedded key must rotate to the current default"
+        );
+
+        // A user's CUSTOM key is never matched by SUPERSEDED → preserved.
+        let custom: HashMap<String, String> = [(
+            "HUNTSMAN_SEEKNOW_KEY".to_string(),
+            "seek-my-own-personal-key".to_string(),
+        )]
+        .into();
+        assert!(
+            !hardcoded_key_writes(&custom).contains_key("HUNTSMAN_SEEKNOW_KEY"),
+            "a custom user key must be preserved, not rotated"
+        );
+
+        // Already-current → idempotent, no write queued.
+        let current: HashMap<String, String> =
+            [("HUNTSMAN_SEEKNOW_KEY".to_string(), NEW.to_string())].into();
+        assert!(!hardcoded_key_writes(&current).contains_key("HUNTSMAN_SEEKNOW_KEY"));
     }
 
     #[test]

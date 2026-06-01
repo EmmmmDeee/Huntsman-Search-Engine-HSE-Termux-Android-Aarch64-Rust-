@@ -2,8 +2,11 @@
 //!
 //! Boots axum on the given bind address. Wraps a shared
 //! `AppState` carrying the scan engine, live scanner, store and
-//! HTTP client. `--allow-key-write` opens the loopback-only key
-//! mutation endpoints; off by default.
+//! HTTP client. The loopback-only key-mutation endpoint
+//! (`PUT /api/v1/settings/keys`) is ENABLED BY DEFAULT so the Settings
+//! page works out of the box; `--no-key-write` disables it. The loopback
+//! peer check is unconditional, so a network-exposed bind still can't
+//! write keys regardless of the flag.
 
 use std::sync::Arc;
 
@@ -48,7 +51,9 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
     tracing::info!("hse v{} — listening on http://{}", crate::VERSION, bind);
     tracing::info!("  open in Chrome / Firefox on this device");
     if allow_key_write {
-        tracing::warn!("--allow-key-write: PUT /api/v1/settings/keys enabled (loopback only)");
+        tracing::info!("  Settings → API keys: editable here (loopback only)");
+    } else {
+        tracing::info!("  --no-key-write: Settings key editing is disabled");
     }
     tracing::info!("  Ctrl-C to stop");
 

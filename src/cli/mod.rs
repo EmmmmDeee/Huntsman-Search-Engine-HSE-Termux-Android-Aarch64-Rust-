@@ -139,7 +139,7 @@ pub enum Command {
         /// Per-scan SeekNow (see-know.eu) budget override. Caps the
         /// number of SeekNow API queries this scan may dispatch.
         /// Default (None) falls back to HUNTSMAN_SEEKNOW_SCAN_CAP env
-        /// (24). Hard-clamped at 200 to preserve the daily session
+        /// (160). Hard-clamped at 200 to preserve the daily session
         /// ceiling. Raise for investigative scans on high-value
         /// targets; lower for passive recces that shouldn't burn
         /// quota.
@@ -217,11 +217,15 @@ pub enum Command {
         /// Bind address. Localhost-only by default — change at your own risk.
         #[arg(short, long, default_value = crate::DEFAULT_BIND, env = "HSE_BIND")]
         bind: String,
-        /// Enable `PUT /api/v1/settings/keys` so the Settings page can write
-        /// `~/.huntsman.env`. Even with this flag the endpoint additionally
-        /// requires the request to originate from a loopback peer.
+        /// Disable the Settings page's key-write endpoint
+        /// (`PUT /api/v1/settings/keys`). Key writes are ENABLED BY DEFAULT so
+        /// the Settings page works out of the box on a personal device — and
+        /// the endpoint *always* additionally requires the request to originate
+        /// from a loopback peer, so a network-exposed bind still can't write
+        /// keys. Pass this to lock writes down entirely for shared/hardened
+        /// deployments.
         #[arg(long)]
-        allow_key_write: bool,
+        no_key_write: bool,
     },
     /// Manage the multi-key pool (add, list, validate, remove, status).
     Keys {
@@ -413,10 +417,7 @@ pub async fn run() -> Result<()> {
         Command::SetKey { name, value } => cmd_set_key(name, value),
         Command::Keys { action } => keys_cmd::cmd_keys(action).await,
         Command::Import { file, output } => cmd_import(&file, &output).await,
-        Command::Serve {
-            bind,
-            allow_key_write,
-        } => serve::cmd_serve(bind, allow_key_write).await,
+        Command::Serve { bind, no_key_write } => serve::cmd_serve(bind, !no_key_write).await,
         Command::Live {
             kind,
             value,

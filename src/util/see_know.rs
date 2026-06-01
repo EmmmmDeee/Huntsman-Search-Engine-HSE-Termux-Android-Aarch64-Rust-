@@ -33,7 +33,7 @@ use crate::util::response_cache::ResponseCache;
 // (`api::handlers::stats`) keep working through the original path.
 pub use crate::util::budget::BudgetSnapshot;
 
-const HARDCODED_KEY: &str = "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
+const HARDCODED_KEY: &str = "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
 
 pub const KEY_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";
 
