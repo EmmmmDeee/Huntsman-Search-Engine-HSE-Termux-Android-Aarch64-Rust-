@@ -29,7 +29,7 @@ fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target), String> {
     {
         opts = profile_opts;
     }
-    let scan = Scan::new(sid, target.clone()).with_options(opts.clamp_depth());
+    let scan = Scan::new(sid, target.clone()).with_options(opts.clamp());
     Ok((scan, target))
 }
 

@@ -536,7 +536,7 @@ impl std::str::FromStr for ExpansionStrategy {
 }
 
 /// Hard ceiling on recursive expansion depth, enforced at every operator-input
-/// boundary (CLI / API / live) via [`ScanOptions::clamp_depth`]. The engine
+/// boundary (CLI / API / live) via [`ScanOptions::clamp`]. The engine
 /// itself cannot infinite-loop regardless (per-target visited-set + entity
 /// budget + wall-time watchdog — see `tests/halting.rs`), but on a low-RAM
 /// Termux device each extra hop fans the frontier out roughly exponentially, so
@@ -544,12 +544,24 @@ impl std::str::FromStr for ExpansionStrategy {
 /// or lower the ceiling.
 pub const MAX_DEPTH: u32 = 3;
 
+/// Hard ceiling on parallel module dispatch (`max_concurrent`), enforced at the
+/// same boundaries via [`ScanOptions::clamp`] and defensively at the engine's
+/// `Semaphore`. Untrusted input (an API client) could otherwise request a
+/// `max_concurrent` that either **panics** `Semaphore::new` (above tokio's
+/// `MAX_PERMITS`) or floods a low-power Termux device with a request storm. 32
+/// is generous for a network-bound workload while staying safe on a 4 GB phone.
+pub const MAX_CONCURRENCY: usize = 32;
+
 impl ScanOptions {
-    /// Clamp `depth` to [`MAX_DEPTH`], warning once if it actually clamps.
-    /// Applied at the CLI/API/live input boundaries — deliberately NOT inside
-    /// the engine core, whose halting proofs are driven at high depth on purpose.
+    /// Clamp operator-supplied resource knobs to their Termux-safe ceilings
+    /// ([`MAX_DEPTH`], [`MAX_CONCURRENCY`]), warning if a value is actually
+    /// clamped. Applied at the CLI/API/live input boundaries — deliberately NOT
+    /// inside the engine core, whose halting proofs are driven at high depth on
+    /// purpose. Bounding `max_concurrent` here (and at the engine `Semaphore`)
+    /// stops untrusted input from panicking `Semaphore::new` or flooding a
+    /// low-power device with a request storm.
     #[must_use]
-    pub fn clamp_depth(mut self) -> Self {
+    pub fn clamp(mut self) -> Self {
         if self.depth > MAX_DEPTH {
             tracing::warn!(
                 requested = self.depth,
@@ -557,6 +569,14 @@ impl ScanOptions {
                 "expansion depth clamped to MAX_DEPTH (Termux resource guard)"
             );
             self.depth = MAX_DEPTH;
+        }
+        if self.max_concurrent > MAX_CONCURRENCY {
+            tracing::warn!(
+                requested = self.max_concurrent,
+                cap = MAX_CONCURRENCY,
+                "max_concurrent clamped to MAX_CONCURRENCY (Termux resource guard)"
+            );
+            self.max_concurrent = MAX_CONCURRENCY;
         }
         self
     }
@@ -1080,22 +1100,41 @@ mod tests {
     }
 
     #[test]
-    fn clamp_depth_enforces_max_depth() {
+    fn clamp_enforces_max_depth() {
         assert_eq!(MAX_DEPTH, 3);
         let over = ScanOptions {
             depth: 99,
             ..Default::default()
         };
-        assert_eq!(
-            over.clamp_depth().depth,
-            MAX_DEPTH,
-            "deep request is capped"
-        );
+        assert_eq!(over.clamp().depth, MAX_DEPTH, "deep request is capped");
         let under = ScanOptions {
             depth: 2,
             ..Default::default()
         };
-        assert_eq!(under.clamp_depth().depth, 2, "in-range depth is untouched");
+        assert_eq!(under.clamp().depth, 2, "in-range depth is untouched");
+    }
+
+    #[test]
+    fn clamp_bounds_max_concurrent() {
+        // Untrusted input must never reach `Semaphore::new` above MAX_CONCURRENCY
+        // (panics) or flood a low-power device. A huge request is capped; an
+        // in-range value (and 0 = sequential) is untouched.
+        let over = ScanOptions {
+            max_concurrent: 100_000,
+            ..Default::default()
+        };
+        assert_eq!(over.clamp().max_concurrent, MAX_CONCURRENCY);
+        for ok in [0usize, 1, 4, MAX_CONCURRENCY] {
+            let o = ScanOptions {
+                max_concurrent: ok,
+                ..Default::default()
+            };
+            assert_eq!(
+                o.clamp().max_concurrent,
+                ok,
+                "in-range concurrency untouched"
+            );
+        }
     }
 
     #[test]

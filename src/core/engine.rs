@@ -1373,7 +1373,16 @@ impl ScanEngine {
         // index-iteration pattern as Phase 1 — Arc::clone moves to the
         // single spawn site below, instead of being paid for every
         // candidate during candidate-list construction.
-        let sem = Arc::new(Semaphore::new(opts.max_concurrent));
+        // Defensive clamp at the chokepoint: `Semaphore::new` PANICS above
+        // tokio's permit ceiling, and a large permit count floods a low-power
+        // device. Inputs are already clamped at the CLI/API/live boundary
+        // (`ScanOptions::clamp`), but bound it here too so no current or future
+        // caller can reach this with an unbounded value. `.max(1)` keeps the
+        // concurrent path live even if a caller passed an out-of-band 0.
+        let permits = opts
+            .max_concurrent
+            .clamp(1, crate::core::scan::MAX_CONCURRENCY);
+        let sem = Arc::new(Semaphore::new(permits));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
         let scan_id_arc: Arc<str> = scan_id.into();
         // Share one context across all spawned modules in this round instead of

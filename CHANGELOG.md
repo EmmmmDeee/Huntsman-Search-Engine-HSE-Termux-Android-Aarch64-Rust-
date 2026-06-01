@@ -10,6 +10,24 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Robustness: two process-fatal panics on untrusted input removed.** The
+  release profile is `panic = "abort"`, so any unhandled panic — even on
+  malformed external data — takes down the whole process (including a
+  long-running `hse serve`), so these "fail safely" at the source:
+  - `oathnet_pro` built a redacted-password hint with **byte slicing**
+    (`&pw[..1]` / `&pw[pw.len()-1..]`) on an external breach password — a
+    non-ASCII value panics at a non-char boundary. Now uses char-safe
+    `chars().next()/last()`. +regression test with a multi-byte password.
+  - `max_concurrent` from an API request flowed unbounded into
+    `Semaphore::new`, which **panics** above tokio's permit ceiling (and a large
+    value floods a low-power device with a request storm). Added a
+    `MAX_CONCURRENCY` (32) ceiling enforced at the input boundary
+    (`ScanOptions::clamp`, the renamed-and-extended former `clamp_depth`, applied
+    at CLI/API/live) **and** defensively at the engine `Semaphore` chokepoint, so
+    no current or future caller can reach it with an unbounded value.
+
 ### Added
 
 - **Web UI: a Timeline tab.** The flagship streaming-timeline reconstruction now

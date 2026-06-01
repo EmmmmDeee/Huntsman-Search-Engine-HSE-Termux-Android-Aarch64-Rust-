@@ -667,12 +667,17 @@ fn extract_stealer_entities(
     }
     if let Some(pw) = val_str(item, "password") {
         ev = ev.with_attr("password", &pw);
-        if pw.contains("UPGRADE_TO_SEE") && pw.len() >= 3 {
-            let first = &pw[..1];
-            let last = &pw[pw.len() - 1..];
+        // Char-safe first/last hint: byte slicing (`&pw[..1]`) panics when the
+        // password starts or ends with a multi-byte UTF-8 char — and on this
+        // external breach value, under `panic=abort`, that aborts the process.
+        // `chars()` slices on grapheme-safe boundaries instead.
+        if pw.contains("UPGRADE_TO_SEE")
+            && pw.chars().count() >= 3
+            && let (Some(first), Some(last)) = (pw.chars().next(), pw.chars().last())
+        {
             ev = ev
-                .with_attr("password_hint_first", first)
-                .with_attr("password_hint_last", last)
+                .with_attr("password_hint_first", first.to_string())
+                .with_attr("password_hint_last", last.to_string())
                 .with_attr("password_redacted", "true");
         }
     }
@@ -755,6 +760,56 @@ fn extract_stealer_entities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stealer_password_hint_is_utf8_safe() {
+        use serde_json::json;
+        // A redacted-password value whose first AND last characters are
+        // multi-byte UTF-8. Byte slicing (`&pw[..1]`) would panic on a non-char
+        // boundary — fatal under panic=abort. extract_stealer_entities must not
+        // panic and must surface whole-char hints.
+        let item = json!({
+            "password": "élan UPGRADE_TO_SEE café",
+            "email": ["victim@example.com"],
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", &mut seen, &mut result); // must not panic
+        let ev = result
+            .entities
+            .iter()
+            .flat_map(|e| &e.evidence)
+            .find(|ev| ev.attributes.contains_key("password_hint_first"))
+            .expect("a stealer entity should carry the redacted-password hint");
+        assert_eq!(
+            ev.attributes.get("password_hint_first").map(String::as_str),
+            Some("é")
+        );
+        assert_eq!(
+            ev.attributes.get("password_hint_last").map(String::as_str),
+            Some("é")
+        );
+        assert_eq!(
+            ev.attributes.get("password_redacted").map(String::as_str),
+            Some("true")
+        );
+
+        // A non-ASCII value without the redaction marker → no hint, still no panic.
+        let mut seen2 = HashSet::new();
+        let mut r2 = ModuleResult::new();
+        extract_stealer_entities(
+            &json!({ "password": "é", "email": ["a@b.com"] }),
+            "scan",
+            &mut seen2,
+            &mut r2,
+        );
+        assert!(
+            r2.entities
+                .iter()
+                .flat_map(|e| &e.evidence)
+                .all(|ev| !ev.attributes.contains_key("password_hint_first"))
+        );
+    }
 
     #[test]
     fn extract_breach_entities_characterization() {

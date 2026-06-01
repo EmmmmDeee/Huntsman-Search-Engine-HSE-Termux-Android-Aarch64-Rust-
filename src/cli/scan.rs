@@ -146,7 +146,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         expansion_strategy,
         seeknow_scan_cap: cmd.seeknow_scan_cap,
     }
-    .clamp_depth();
+    .clamp();
     if max_roi {
         eprintln!(
             "max-roi: convergence-pruning + top-K gate + adaptive-depth (floor={:.2})",

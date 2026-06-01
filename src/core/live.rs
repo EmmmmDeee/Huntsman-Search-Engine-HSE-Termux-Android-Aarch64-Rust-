@@ -156,7 +156,7 @@ impl LiveScanner {
     /// detached on the tokio runtime; cancellation is via [`stop`](Self::stop).
     pub fn start(&self, target: Target, scan_options: ScanOptions, live: LiveOptions) -> String {
         // Live sessions re-scan on a loop; cap depth at the operator boundary too.
-        let scan_options = scan_options.clamp_depth();
+        let scan_options = scan_options.clamp();
         {
             let sessions = self.inner.sessions.read();
             let active = sessions
