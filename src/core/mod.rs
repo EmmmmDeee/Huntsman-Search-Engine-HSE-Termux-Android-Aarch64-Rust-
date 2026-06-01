@@ -270,6 +270,14 @@ pub mod event {
         TimelineReconstructed {
             count: usize,
         },
+        /// Two entities were resolved as the same real-world identity during
+        /// ingestion (v1.3+) — a non-destructive, reversible `SameAs` edge from
+        /// the entity-resolution engine. Streamed live and deduped across rounds
+        /// (by the edge's deterministic id) so the unified identity view updates
+        /// continuously rather than only at scan end.
+        EntityResolved {
+            relation: crate::core::relation::Relation,
+        },
         /// Live session started (v0.5+). `scan_id` field on the wrapping
         /// `Event` carries the live_id, not a scan_id.
         LiveStart {
@@ -312,6 +320,7 @@ pub mod event {
                 Self::CorrelationsDone { .. } => "correlations_done",
                 Self::TimelineEventFound { .. } => "timeline_event_found",
                 Self::TimelineReconstructed { .. } => "timeline_reconstructed",
+                Self::EntityResolved { .. } => "entity_resolved",
                 Self::LiveStart { .. } => "live_start",
                 Self::LiveTick { .. } => "live_tick",
                 Self::LiveStop { .. } => "live_stop",
@@ -463,6 +472,28 @@ pub mod event {
             match back {
                 EventKind::TimelineReconstructed { count } => assert_eq!(count, 7),
                 other => panic!("expected TimelineReconstructed, got: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn entity_resolved_json_round_trip() {
+            use crate::core::relation::{Relation, RelationKind};
+            let kind = EventKind::EntityResolved {
+                relation: Relation::new("uid-b", "uid-a", RelationKind::SameAs, 0.7, "scan-1"),
+            };
+            assert_eq!(kind.event_type_str(), "entity_resolved");
+            let json = serde_json::to_string(&kind).unwrap();
+            assert!(json.contains("\"type\":\"entity_resolved\""));
+            assert!(json.contains("\"kind\":\"same_as\""));
+
+            let back: EventKind = serde_json::from_str(&json).unwrap();
+            match back {
+                EventKind::EntityResolved { relation } => {
+                    assert_eq!(relation.from_uid, "uid-b");
+                    assert_eq!(relation.to_uid, "uid-a");
+                    assert_eq!(relation.kind, RelationKind::SameAs);
+                }
+                other => panic!("expected EntityResolved, got: {other:?}"),
             }
         }
 

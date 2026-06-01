@@ -21,6 +21,14 @@
 //! `DerivedFrom` (child → the entity whose expansion surfaced it) is **lineage**
 //! — recorded by the engine's `run_expansion` (not a post-scan builder) and
 //! persisted alongside the above.
+//!
+//! `derive_identity_equivalence` links `SameAs` (entity resolution): present
+//! Email entities whose **provable canonical mailbox** matches (dot/plus/alias
+//! variants) are tied into one equivalence class. Unlike the post-scan
+//! structural builders, the engine runs it **live during ingestion** (every
+//! round) so the unified identity view updates continuously; it is
+//! non-destructive (both surface forms are retained) and reversible (the class
+//! is the connected component over the edges).
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -49,6 +57,14 @@ pub enum RelationKind {
     CoLocatedWith,
     /// `from` was discovered by pivoting on `to` during expansion (lineage).
     DerivedFrom,
+    /// `from` and `to` are the **same real-world identifier** under a
+    /// deterministic, provider-documented canonicalisation (e.g. an email's
+    /// dot/plus/alias variants). The entity-resolution edge: a non-destructive,
+    /// reversible assertion that two distinct surface forms denote one identity.
+    /// Both nodes are retained with their own provenance; the resolved identity
+    /// is the connected component over these edges, and dropping an edge splits
+    /// the class back out (provenance-controlled rollback).
+    SameAs,
 }
 
 impl RelationKind {
@@ -61,6 +77,7 @@ impl RelationKind {
             Self::RegisteredBy => "registered_by",
             Self::CoLocatedWith => "co_located_with",
             Self::DerivedFrom => "derived_from",
+            Self::SameAs => "same_as",
         }
     }
 }
@@ -372,6 +389,120 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
                     link(dom, em, &mut out);
                 }
             }
+        }
+    }
+    out
+}
+
+/// Canonicalise an email address to the mailbox it provably routes to, or
+/// `None` if the value isn't a single well-formed address.
+///
+/// High-precision and provider-aware by design — it only collapses
+/// transformations the provider **documents** as address-equivalent, so it
+/// never fuses two genuinely distinct mailboxes (the cardinal sin of entity
+/// resolution):
+///
+/// - **Gmail / Googlemail**: dots in the local part are ignored and the two
+///   domains are aliases, so `John.Smith@googlemail.com` ≡ `johnsmith@gmail.com`.
+/// - **Sub-addressing (`+tag`)**: for providers that document plus-addressing
+///   (Gmail, Outlook/Hotmail/Live, iCloud, Proton, Fastmail), everything from
+///   the first `+` in the local part is a delivery tag and is dropped.
+/// - **Everything else**: returned lowercased but otherwise untouched, so a
+///   provider that treats dots or `+` as significant is never over-merged.
+fn canonical_mailbox(email: &str) -> Option<(String, String)> {
+    let e = email.trim().to_ascii_lowercase();
+    let (local, domain) = e.split_once('@')?;
+    // Reject multi-`@` / empty halves: not a single well-formed address.
+    if local.is_empty() || domain.is_empty() || domain.contains('@') || !domain.contains('.') {
+        return None;
+    }
+    // googlemail.com is a documented alias of gmail.com.
+    let domain = if domain == "googlemail.com" {
+        "gmail.com"
+    } else {
+        domain
+    };
+    let is_gmail = domain == "gmail.com";
+
+    // Providers that route `user+tag@domain` to `user@domain`. Conservative:
+    // only providers whose sub-addressing is documented are listed, so a `+`
+    // that is significant elsewhere is preserved.
+    const PLUS_PROVIDERS: &[&str] = &[
+        "gmail.com",
+        "outlook.com",
+        "hotmail.com",
+        "live.com",
+        "icloud.com",
+        "me.com",
+        "proton.me",
+        "protonmail.com",
+        "pm.me",
+        "fastmail.com",
+    ];
+
+    let base = match (PLUS_PROVIDERS.contains(&domain), local.split_once('+')) {
+        (true, Some((base, _tag))) => base,
+        _ => local,
+    };
+    let mut local = base.to_string();
+    // Gmail ignores dots in the local part.
+    if is_gmail {
+        local.retain(|c| c != '.');
+    }
+    // A local part that is empty after canonicalisation (e.g. "+tag@gmail.com"
+    // or ".@gmail.com") isn't a routable mailbox — don't resolve on it.
+    if local.is_empty() {
+        return None;
+    }
+    Some((local, domain.to_string()))
+}
+
+/// Derive `SameAs` identity-equivalence edges among the scan's Email entities.
+///
+/// Pure and deterministic — it honours this layer's "open math, no fuzzy
+/// matching" invariant: it groups present Email entities by their provable
+/// canonical mailbox ([`canonical_mailbox`]) and links every distinct surface
+/// form in a group to the group's representative (the lexicographically
+/// smallest UID) with a `SameAs` edge. A group with fewer than two **distinct**
+/// entities yields nothing, so only genuine cross-form duplicates produce
+/// edges. The star topology (member → representative) is O(k) per group and
+/// connects the whole equivalence class through the representative; one edge
+/// per (member, representative) pair, canonically directed, so re-scans upsert
+/// idempotently on the deterministic edge id.
+///
+/// Non-destructive and reversible: both surface-form nodes are retained with
+/// their own provenance; the resolved identity is the connected component over
+/// these edges, and dropping an edge "splits" the class back out.
+pub fn derive_identity_equivalence(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::BTreeMap;
+
+    // canonical mailbox -> the present Email entities resolving to it.
+    // BTreeMap keeps group iteration deterministic across runs.
+    let mut groups: BTreeMap<(String, String), Vec<&Entity>> = BTreeMap::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Email) {
+        if let Some(key) = canonical_mailbox(&e.value) {
+            groups.entry(key).or_default().push(e);
+        }
+    }
+
+    let mut out = Vec::new();
+    for (_canonical, mut members) in groups {
+        // Distinct UIDs only: two evidence copies of one entity value share a
+        // UID (they're already the same node), which is not a resolution.
+        members.sort_by(|a, b| a.uid.cmp(&b.uid));
+        members.dedup_by(|a, b| a.uid == b.uid);
+        if members.len() < 2 {
+            continue;
+        }
+        let rep = members[0]; // smallest UID = deterministic representative
+        for m in &members[1..] {
+            out.push(Relation::new(
+                m.uid.as_str(),
+                rep.uid.as_str(),
+                RelationKind::SameAs,
+                m.confidence.min(rep.confidence),
+                scan_id,
+            ));
         }
     }
     out
@@ -714,5 +845,122 @@ mod tests {
             1,
             "one edge per (domain, registrant)"
         );
+    }
+
+    // ── canonical_mailbox + derive_identity_equivalence (entity resolution) ─
+
+    #[test]
+    fn canonical_mailbox_gmail_ignores_dots_plus_and_alias() {
+        let canon = ("johnsmith".to_string(), "gmail.com".to_string());
+        assert_eq!(
+            canonical_mailbox("john.smith@gmail.com"),
+            Some(canon.clone())
+        );
+        assert_eq!(
+            canonical_mailbox("johnsmith@gmail.com"),
+            Some(canon.clone())
+        );
+        assert_eq!(
+            canonical_mailbox("j.o.h.n.smith+newsletter@gmail.com"),
+            Some(canon.clone())
+        );
+        // googlemail.com is an alias of gmail.com.
+        assert_eq!(canonical_mailbox("John.Smith@googlemail.com"), Some(canon));
+    }
+
+    #[test]
+    fn canonical_mailbox_preserves_dots_for_non_gmail() {
+        // Dots are gmail-specific: a non-gmail provider may route john.smith and
+        // johnsmith to different mailboxes, so they must NOT collapse.
+        assert_eq!(
+            canonical_mailbox("john.smith@outlook.com"),
+            Some(("john.smith".to_string(), "outlook.com".to_string()))
+        );
+        assert_ne!(
+            canonical_mailbox("john.smith@outlook.com"),
+            canonical_mailbox("johnsmith@outlook.com")
+        );
+    }
+
+    #[test]
+    fn canonical_mailbox_strips_plus_for_known_providers_only() {
+        // Known plus-addressing provider → tag stripped.
+        assert_eq!(
+            canonical_mailbox("user+promos@icloud.com"),
+            Some(("user".to_string(), "icloud.com".to_string()))
+        );
+        // Unknown provider → '+' may be significant, so it is preserved.
+        assert_eq!(
+            canonical_mailbox("user+promos@example.com"),
+            Some(("user+promos".to_string(), "example.com".to_string()))
+        );
+    }
+
+    #[test]
+    fn canonical_mailbox_rejects_malformed() {
+        assert_eq!(canonical_mailbox("not-an-email"), None);
+        assert_eq!(canonical_mailbox("@gmail.com"), None);
+        assert_eq!(canonical_mailbox("user@"), None);
+        assert_eq!(canonical_mailbox("a@b@gmail.com"), None);
+        assert_eq!(canonical_mailbox("user@localhost"), None); // no dot in domain
+        assert_eq!(canonical_mailbox("+tag@gmail.com"), None); // empty after canon
+    }
+
+    #[test]
+    fn identity_equivalence_links_gmail_dot_variants() {
+        let a = ent(EntityKind::Email, "john.smith@gmail.com", 0.9);
+        let b = ent(EntityKind::Email, "johnsmith@gmail.com", 0.7);
+        let rels = derive_identity_equivalence(&[a.clone(), b.clone()], "s");
+        assert_eq!(rels.len(), 1, "two surface forms of one mailbox → one edge");
+        assert_eq!(rels[0].kind, RelationKind::SameAs);
+        // Canonical direction: member (larger uid) → representative (smaller uid).
+        let (rep, member) = if a.uid <= b.uid { (&a, &b) } else { (&b, &a) };
+        assert_eq!(rels[0].from_uid, member.uid);
+        assert_eq!(rels[0].to_uid, rep.uid);
+        // Edge confidence is the weaker endpoint.
+        assert!((rels[0].confidence - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn identity_equivalence_never_merges_distinct_mailboxes() {
+        // Different gmail mailboxes, and dot-variant non-gmail addresses, must
+        // never be fused — a false merge is the cardinal entity-resolution sin.
+        let entities = vec![
+            ent(EntityKind::Email, "johnsmith@gmail.com", 0.9),
+            ent(EntityKind::Email, "janedoe@gmail.com", 0.9),
+            ent(EntityKind::Email, "john.smith@outlook.com", 0.9),
+            ent(EntityKind::Email, "johnsmith@outlook.com", 0.9),
+        ];
+        assert!(
+            derive_identity_equivalence(&entities, "s").is_empty(),
+            "distinct mailboxes (and dot-variant non-gmail) must not resolve"
+        );
+    }
+
+    #[test]
+    fn identity_equivalence_star_topology_for_three_variants() {
+        // Three surface forms of one gmail mailbox → 2 edges (each non-rep → rep),
+        // not 3 (a full clique): the star connects the class in O(k).
+        let entities = vec![
+            ent(EntityKind::Email, "john.smith@gmail.com", 0.9),
+            ent(EntityKind::Email, "johnsmith@gmail.com", 0.9),
+            ent(EntityKind::Email, "j.ohnsmith+work@googlemail.com", 0.9),
+        ];
+        let rels = derive_identity_equivalence(&entities, "s");
+        assert_eq!(rels.len(), 2, "star topology: k-1 edges for k=3 variants");
+        assert!(rels.iter().all(|r| r.kind == RelationKind::SameAs));
+        // Every edge points at the same representative (smallest UID present).
+        let rep_uid = entities.iter().map(|e| &e.uid).min().unwrap();
+        assert!(rels.iter().all(|r| &r.to_uid == rep_uid));
+    }
+
+    #[test]
+    fn identity_equivalence_ignores_non_email_entities() {
+        let entities = vec![
+            ent(EntityKind::Username, "johnsmith", 0.9),
+            ent(EntityKind::Domain, "gmail.com", 0.9),
+            ent(EntityKind::Email, "solo@gmail.com", 0.9), // single → no edge
+        ];
+        assert!(derive_identity_equivalence(&entities, "s").is_empty());
     }
 }

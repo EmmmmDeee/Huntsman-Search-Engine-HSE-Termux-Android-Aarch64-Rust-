@@ -2235,6 +2235,134 @@ async fn timeline_streams_live_during_ingestion_not_only_at_finalise() {
     );
 }
 
+// ── Continuous entity resolution (SameAs identity equivalence) ───────────────
+//
+// Proves the charter's "continuous entity resolution (merge/split/update in
+// real time)" superiority condition: provable identity equivalences are
+// resolved live during ingestion as non-destructive `SameAs` edges, not at
+// report time.
+
+/// Seed module: when run against the seed email, emits two gmail surface forms
+/// of one mailbox (`john.smith@gmail.com` ≡ `johnsmith+promos@gmail.com`) so the
+/// resolver ties them with a `SameAs` edge, plus a high-confidence Username so
+/// an expansion round occurs (the discriminating "after the seed round"
+/// marker). Bounded: it emits only when run against the seed value, so the
+/// variant email re-dispatched on expansion produces nothing.
+struct GmailVariantsSynth;
+
+#[async_trait]
+impl Module for GmailVariantsSynth {
+    fn name(&self) -> &'static str {
+        "gmail_variants"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        if target.value == "john.smith@gmail.com" {
+            r.push(Entity::new(
+                EntityKind::Email,
+                "john.smith@gmail.com",
+                0.95,
+                &ctx.scan_id,
+            ));
+            r.push(Entity::new(
+                EntityKind::Email,
+                "johnsmith+promos@gmail.com",
+                0.9,
+                &ctx.scan_id,
+            ));
+            r.push(Entity::new(
+                EntityKind::Username,
+                "jsmith",
+                0.95,
+                &ctx.scan_id,
+            ));
+        }
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn identity_resolution_streams_live_during_ingestion_not_only_at_finalise() {
+    use huntsman_search_engine::core::event::EventKind;
+    use huntsman_search_engine::core::relation::RelationKind;
+
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(GmailVariantsSynth), Arc::new(ExpansionMarker)],
+        "live-resolution",
+        TargetKind::Email,
+        "john.smith@gmail.com",
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+
+    let mut rx = engine.bus().subscribe();
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let mut first_res: Option<usize> = None;
+    let mut marker_start: Option<usize> = None;
+    let mut res_emits = 0usize;
+    let mut idx = 0usize;
+    while let Ok(ev) = rx.try_recv() {
+        match &ev.kind {
+            EventKind::EntityResolved { relation } if relation.kind == RelationKind::SameAs => {
+                res_emits += 1;
+                if first_res.is_none() {
+                    first_res = Some(idx);
+                }
+            }
+            EventKind::ModuleStart { module }
+                if module == "expansion_marker" && marker_start.is_none() =>
+            {
+                marker_start = Some(idx);
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+
+    let res_at = first_res.expect("a SameAs EntityResolved event should be emitted");
+    let marker_at = marker_start.expect("expansion_marker should run in expansion round 1");
+
+    // Discriminating assertion: the resolution streamed out *before* the
+    // expansion-only module started — impossible for a finalise-only resolver.
+    assert!(
+        res_at < marker_at,
+        "identity resolution fired at event #{res_at} but expansion started at #{marker_at}; \
+         resolution is not running live during ingestion"
+    );
+
+    // Dedup invariant: streamed exactly once across the seed, round, and
+    // finalise passes (the same edge has one deterministic id).
+    assert_eq!(res_emits, 1, "the SameAs edge should stream exactly once");
+
+    // The edge is persisted, and — crucially — it is NON-DESTRUCTIVE: both
+    // surface forms are retained as their own nodes with their own provenance.
+    let sameas: Vec<_> = store
+        .relations_for_scan(&sid)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.kind == RelationKind::SameAs)
+        .collect();
+    assert_eq!(sameas.len(), 1, "exactly one SameAs edge persisted");
+    let emails = store
+        .entities_filtered(&sid, Some("email"), None, None)
+        .unwrap();
+    assert_eq!(
+        emails.len(),
+        2,
+        "both surface forms retained (non-destructive, reversible resolution)"
+    );
+}
+
 // ── Crash-durability: entities are checkpointed each round ───────────────────
 //
 // Proves the charter's "fault-tolerant, resumable execution state" invariant:

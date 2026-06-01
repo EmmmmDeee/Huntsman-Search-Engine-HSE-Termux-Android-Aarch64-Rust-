@@ -12,6 +12,31 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Continuous entity resolution — identity equivalence is now resolved live
+  during ingestion as non-destructive `SameAs` edges.** The charter lists
+  *continuous entity resolution (merge/split/update in real time)* as a
+  SpiderFoot-superiority condition. Previously entities were only deduplicated
+  by exact normalised UID, so two surface forms of one mailbox
+  (`john.smith@gmail.com` vs `johnsmith+promos@googlemail.com`) lived as
+  separate, unlinked nodes. A new `relation::derive_identity_equivalence` groups
+  present Email entities by their **provable canonical mailbox** — gmail
+  dot-insensitivity, documented `+tag` sub-addressing, and the
+  `googlemail.com`→`gmail.com` alias — and links each surface form to its
+  equivalence-class representative with a new **`SameAs`** relation. The engine
+  runs it **live at every productive round boundary** (right beside the live
+  cross-correlation and timeline passes) and streams each newly-formed edge as a
+  new **`EntityResolved`** event, deduped across all rounds and finalise by the
+  edge's deterministic id. Crucially it is **non-destructive and reversible**
+  (the charter's "merge/split … reversible via provenance-controlled rollback"):
+  both surface-form nodes are retained with their own provenance, the resolved
+  identity is the connected component over the edges, and dropping an edge splits
+  the class back out — no node fusion, no data loss. Precision is paramount, so
+  the canonicaliser only collapses transformations a provider *documents* as
+  address-equivalent (dots stay significant for non-gmail; `+` stays significant
+  for providers without sub-addressing), guarded by tests that assert distinct
+  mailboxes are **never** fused. Honours the relation layer's "pure open math, no
+  fuzzy matching" invariant: deterministic, same-input-same-output.
+
 - **Streaming timeline reconstruction — the chronology now builds live during
   ingestion, not only at report time.** The charter lists *streaming timeline
   reconstruction (continuous, not batch-generated)* as a SpiderFoot-superiority

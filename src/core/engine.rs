@@ -279,6 +279,11 @@ impl ScanEngine {
         // continuously re-reconstructed chronology emits each point at most once
         // across the seed round, every expansion round, and finalise.
         let mut emitted_tl: HashSet<String> = HashSet::new();
+        // Entity-resolution dedup set, threaded the same way: the deterministic
+        // id of every `SameAs` identity-equivalence edge already streamed, so
+        // continuous resolution emits each edge at most once across all rounds
+        // and finalise.
+        let mut emitted_res: HashSet<String> = HashSet::new();
 
         visited.insert(visit_key(&target));
         self.dispatch_target(
@@ -301,6 +306,7 @@ impl ScanEngine {
         self.checkpoint_entities(&scan.id, &seed_snapshot);
         self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
         self.timeline_incremental(&scan.id, &seed_snapshot, &mut emitted_tl);
+        self.resolve_incremental(&scan.id, &seed_snapshot, &mut emitted_res);
 
         if opts.depth > 0 {
             let _ = self
@@ -316,6 +322,7 @@ impl ScanEngine {
                     &mut lineage,
                     &mut emitted_corr,
                     &mut emitted_tl,
+                    &mut emitted_res,
                 )
                 .await;
         }
@@ -335,6 +342,7 @@ impl ScanEngine {
             lineage,
             emitted_corr,
             emitted_tl,
+            emitted_res,
         )
     }
 
@@ -349,6 +357,7 @@ impl ScanEngine {
         lineage_relations: Vec<Relation>,
         mut emitted_corr: HashSet<String>,
         mut emitted_tl: HashSet<String>,
+        mut emitted_res: HashSet<String>,
     ) -> Result<Scan> {
         // Persist the scan's entities in a single transaction. On the common
         // path (every entity is new or a clean GREATEST-merge) this collapses
@@ -436,6 +445,12 @@ impl ScanEngine {
         // cancelled or budget-stopped mid-round never reached that round's
         // boundary) and emits the definitive `TimelineReconstructed` count.
         self.run_timeline(&scan.id, &entities, &mut emitted_tl);
+
+        // Authoritative finalise-time entity resolution over the persisted set:
+        // streams + persists any `SameAs` edge the round-boundary passes missed.
+        // Idempotent on the deterministic edge id, so a live-streamed edge is
+        // never re-emitted.
+        self.resolve_incremental(&scan.id, &entities, &mut emitted_res);
 
         // Persist the key pool to disk after every scan. Keys discovered
         // during this scan (from breach data, page bodies, entity values)
@@ -618,6 +633,36 @@ impl ScanEngine {
         self.emit(scan_id, EventKind::TimelineReconstructed { count });
     }
 
+    /// Continuous entity resolution during ingestion. Re-derives `SameAs`
+    /// identity-equivalence edges over the working entity set and streams +
+    /// persists any newly-formed edge immediately as an `EntityResolved`.
+    /// Idempotent across rounds: an edge's deterministic id is recorded in
+    /// `emitted` so it fires exactly once even though resolution is re-run every
+    /// round (and again at finalise). This is the engine half of the charter's
+    /// "continuous entity resolution (merge/split/update in real time)"
+    /// superiority condition.
+    ///
+    /// Non-destructive and reversible: the equivalence is recorded as an edge,
+    /// not a node fusion, so both surface forms keep their own provenance and
+    /// dropping the edge splits the class back out (provenance-controlled
+    /// rollback). Entities are checkpointed before this runs, so the edge's
+    /// endpoints are already durable.
+    fn resolve_incremental(
+        &self,
+        scan_id: &str,
+        entities: &[Entity],
+        emitted: &mut HashSet<String>,
+    ) {
+        for relation in crate::core::relation::derive_identity_equivalence(entities, scan_id) {
+            if emitted.insert(relation.id.clone()) {
+                if let Err(e) = self.store.upsert_relation(&relation) {
+                    warn!(scan_id, error = %e, "live identity-resolution persist failed");
+                }
+                self.emit(scan_id, EventKind::EntityResolved { relation });
+            }
+        }
+    }
+
     /// Checkpoint the working entity set to durable storage mid-scan so a crash
     /// or kill preserves discovered intel instead of losing everything until
     /// `finalise_scan`. Runs at every productive round boundary. The upsert is
@@ -648,6 +693,7 @@ impl ScanEngine {
         relations: &mut Vec<Relation>,
         emitted_corr: &mut HashSet<String>,
         emitted_tl: &mut HashSet<String>,
+        emitted_res: &mut HashSet<String>,
     ) -> StopReason {
         // Reused across candidates to capture lineage: the set of entity UIDs
         // present *before* a candidate's dispatch, so new UIDs afterward are
@@ -833,6 +879,7 @@ impl ScanEngine {
                 self.checkpoint_entities(scan_id, &snapshot);
                 self.correlate_incremental(scan_id, &snapshot, emitted_corr);
                 self.timeline_incremental(scan_id, &snapshot, emitted_tl);
+                self.resolve_incremental(scan_id, &snapshot, emitted_res);
             }
 
             let floor = opts
