@@ -170,7 +170,7 @@ fn delete(uri: &str) -> Request<Body> {
 /// requests see the scan that was just created.
 async fn create_scan(suffix: &str) -> (axum::Router, String) {
     let app = test_app(suffix);
-    let body = r#"{"kind":"email","value":"test@example.com","options":{}}"#;
+    let body = r#"{"kind":"email","value":"test@contoso.com","options":{}}"#;
     let resp = app
         .clone()
         .oneshot(post_json("/api/v1/scans", body))
@@ -277,7 +277,7 @@ async fn scan_create_accepts_expansion_strategy_option() {
     // the scan-create endpoint so the SPA can offer it as a setting.
     let app = test_app("scan_strategy");
     let body = r#"{
-        "kind":"domain","value":"example.com",
+        "kind":"domain","value":"contoso.com",
         "options":{"expansion_strategy":"richest_first","depth":0}
     }"#;
     let resp = app.oneshot(post_json("/api/v1/scans", body)).await.unwrap();
@@ -291,7 +291,7 @@ async fn scan_create_accepts_seeknow_scan_cap_option() {
     // quota on a single high-value scan.
     let app = test_app("scan_seeknow_cap");
     let body = r#"{
-        "kind":"email","value":"target@example.com",
+        "kind":"email","value":"target@contoso.com",
         "options":{"seeknow_scan_cap":80,"depth":0}
     }"#;
     let resp = app.oneshot(post_json("/api/v1/scans", body)).await.unwrap();
@@ -409,7 +409,7 @@ async fn stats_endpoint_includes_oathnet_block() {
 #[tokio::test]
 async fn scan_create_accepts_valid_request() {
     let app = test_app("scan_create");
-    let body = r#"{"kind":"email","value":"test@example.com","options":{}}"#;
+    let body = r#"{"kind":"email","value":"test@contoso.com","options":{}}"#;
     let resp = app.oneshot(post_json("/api/v1/scans", body)).await.unwrap();
     assert_eq!(resp.status(), 202);
     let json = body_json(resp).await;
@@ -851,7 +851,7 @@ async fn live_create_list_get_stop_roundtrip() {
     // Empty module allowlist => the spawned iteration runs no modules (instant,
     // no network), so this exercises the create/list/get/stop API the Live
     // Monitor UI drives, deterministically.
-    let body = r#"{"kind":"domain","value":"example.com","options":{"modules":[]},"live":{"interval_secs":3600}}"#;
+    let body = r#"{"kind":"domain","value":"contoso.com","options":{"modules":[]},"live":{"interval_secs":3600}}"#;
     let resp = app
         .clone()
         .oneshot(post_json("/api/v1/live", body))
@@ -869,7 +869,7 @@ async fn live_create_list_get_stop_roundtrip() {
     let list = body_json(resp).await;
     assert_eq!(list["count"].as_u64().unwrap(), 1);
     assert_eq!(list["sessions"][0]["id"].as_str().unwrap(), id);
-    assert_eq!(list["sessions"][0]["target"]["value"], "example.com");
+    assert_eq!(list["sessions"][0]["target"]["value"], "contoso.com");
 
     let resp = app
         .clone()

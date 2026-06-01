@@ -122,8 +122,8 @@ fn setup(
 /// Build a finite, ACYCLIC mock graph whose closure is computable by hand:
 ///
 /// ```text
-///   name "Onur Ada"  ──▶ email  onur@example.com   (0.95)
-///   email            ──▶ domain example.com        (0.85)
+///   name "Onur Ada"  ──▶ email  onur@contoso.com   (0.95)
+///   email            ──▶ domain contoso.com        (0.85)
 ///   email            ──▶ username onur             (0.80)
 ///   domain           ──▶ ip     93.184.216.34      (0.90)
 ///   username         ──▶ (nothing)
@@ -135,10 +135,10 @@ fn setup(
 /// so the frontier must empty on its own.
 fn dag() -> DagModule {
     DagModule::new()
-        .edge("Onur Ada", EntityKind::Email, "onur@example.com", 0.95)
-        .edge("onur@example.com", EntityKind::Domain, "example.com", 0.85)
-        .edge("onur@example.com", EntityKind::Username, "onur", 0.80)
-        .edge("example.com", EntityKind::IpAddress, "93.184.216.34", 0.90)
+        .edge("Onur Ada", EntityKind::Email, "onur@contoso.com", 0.95)
+        .edge("onur@contoso.com", EntityKind::Domain, "contoso.com", 0.85)
+        .edge("onur@contoso.com", EntityKind::Username, "onur", 0.80)
+        .edge("contoso.com", EntityKind::IpAddress, "93.184.216.34", 0.90)
 }
 
 #[tokio::test]
@@ -177,7 +177,7 @@ async fn scan_halts_frontier_empty_within_structural_bound() {
         entities.iter().map(|e| e.value.as_str()).collect();
     assert_eq!(
         values,
-        ["93.184.216.34", "example.com", "onur", "onur@example.com"]
+        ["93.184.216.34", "contoso.com", "onur", "onur@contoso.com"]
             .into_iter()
             .collect(),
         "reachable closure must be exactly the hand-computed set"
@@ -278,7 +278,7 @@ impl Module for SlowModule {
         let mut r = ModuleResult::new();
         r.push(Entity::new(
             EntityKind::Email,
-            "seed@found.example",
+            "seed@found-host.com",
             0.9,
             &ctx.scan_id,
         ));

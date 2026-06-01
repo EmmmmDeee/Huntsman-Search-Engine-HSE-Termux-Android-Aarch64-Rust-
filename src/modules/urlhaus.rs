@@ -1,14 +1,17 @@
-//! abuse.ch URLhaus — known-malicious URL/host check. Free, no key.
+//! abuse.ch URLhaus — known-malicious URL/host check.
 //!
 //! Endpoint: `POST https://urlhaus-api.abuse.ch/v1/host/`
 //! Form body: `host=<domain or ip>`
+//! Auth:      HTTP header `Auth-Key: <abuse.ch key>`
 //!
-//! Anonymous queries are subject to abuse.ch's standard rate limit
-//! (no key required for low-volume use). The response carries a
-//! `url_count` per host plus per-URL threat tags — we surface the
-//! aggregate (count, threat families seen, third-party blocklist
-//! hits) and never store the individual malicious URLs (they're often
-//! still live).
+//! As of 2024 abuse.ch deprecated anonymous access — every query now needs a
+//! free Auth-Key (register once at <https://auth.abuse.ch>). The SAME key
+//! powers URLhaus, ThreatFox and MalwareBazaar, so this module reads
+//! `HUNTSMAN_ABUSECH_KEY` and falls back to `HUNTSMAN_THREATFOX_KEY`. Without a
+//! key it skips cleanly (no doomed 401s). The response carries a `url_count`
+//! per host plus per-URL threat tags — we surface the aggregate (count, threat
+//! families seen, third-party blocklist hits) and never store the individual
+//! malicious URLs (they're often still live).
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -22,6 +25,11 @@ use crate::core::{
 use crate::util::http::error_snippet;
 
 const SRC: &str = "urlhaus";
+
+/// Canonical abuse.ch Auth-Key env var (shared across all abuse.ch services).
+const KEY_ENV: &str = "HUNTSMAN_ABUSECH_KEY";
+/// Fallback: the ThreatFox key is the same abuse.ch account key.
+const KEY_ENV_FALLBACK: &str = "HUNTSMAN_THREATFOX_KEY";
 
 pub struct UrlHaus;
 
@@ -96,15 +104,36 @@ impl Module for UrlHaus {
             return Ok(ModuleResult::new());
         }
 
+        // abuse.ch requires a free Auth-Key on every request since 2024. Without
+        // one, skip cleanly instead of erroring on every host with a 401.
+        let Some(key) = ctx
+            .key_opt(KEY_ENV)
+            .or_else(|| ctx.key_opt(KEY_ENV_FALLBACK))
+            .filter(|k| !k.is_empty())
+        else {
+            tracing::debug!(
+                target: "module.urlhaus",
+                "skipped — set HUNTSMAN_ABUSECH_KEY (free at auth.abuse.ch) to enable"
+            );
+            return Ok(ModuleResult::new());
+        };
+
         let resp = ctx
             .http
             .post("https://urlhaus-api.abuse.ch/v1/host/")
+            .header("Auth-Key", key)
             .form(&[("host", host)])
             .send()
             .await
             .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         let status = resp.status();
+        // A present-but-rejected key (401/403) degrades to a clean skip rather
+        // than spamming a module error on every host in the scan.
+        if matches!(status.as_u16(), 401 | 403) {
+            tracing::warn!(target: "module.urlhaus", %status, "abuse.ch rejected the Auth-Key");
+            return Ok(ModuleResult::new());
+        }
         if !status.is_success() {
             return Err(Error::module(
                 SRC,

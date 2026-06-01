@@ -201,6 +201,9 @@ impl Target {
                 if !host.contains('.') {
                     return Err("email host has no '.'");
                 }
+                if crate::core::validation::is_placeholder_domain(host) {
+                    return Err("email host is a reserved/placeholder (example) domain");
+                }
             }
             TargetKind::Domain => {
                 if !v.contains('.') {
@@ -211,6 +214,9 @@ impl Target {
                     .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
                 {
                     return Err("domain has invalid characters");
+                }
+                if crate::core::validation::is_placeholder_domain(v) {
+                    return Err("domain is a reserved/placeholder (example) domain");
                 }
             }
             TargetKind::IpAddress => {
@@ -1420,7 +1426,7 @@ mod tests {
     #[test]
     fn validate_domain() {
         assert!(
-            Target::new(TargetKind::Domain, "example.com")
+            Target::new(TargetKind::Domain, "cloudflare.com")
                 .validate()
                 .is_ok()
         );
@@ -1434,6 +1440,19 @@ mod tests {
                 .validate()
                 .is_err()
         ); // space
+        // Reserved/placeholder domains are rejected at the seed boundary.
+        assert!(
+            Target::new(TargetKind::Domain, "example.com")
+                .validate()
+                .is_err(),
+            "example.com is a reserved placeholder — must not be scannable"
+        );
+        assert!(
+            Target::new(TargetKind::Email, "jordan@example.com")
+                .validate()
+                .is_err(),
+            "placeholder email host must be rejected"
+        );
     }
 
     #[test]

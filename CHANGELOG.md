@@ -10,6 +10,36 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Documentation / placeholder values polluting scans (`example.com` & co.).**
+  `example.com` (and `.org`/`.net`), `jordan@example.com`, `http://example.com`,
+  the `example` username, `John Doe`, … now never enter the graph. The existing
+  `is_local_domain` check only caught the `.example`/`.test`/`.invalid` TLDs —
+  **not** the RFC 2606 second-level `example.com`, which is why a name-permuted
+  `example.com` got fully resolved into DNS/RDAP/WHOIS/IP infrastructure (with an
+  OTX threat-intel blob attached). A new `validation::is_placeholder_entity` is
+  enforced at the engine's admission gate (next to the bogus-IP filter) so it
+  covers every module, and `Target::validate` rejects placeholder domains/emails
+  at the seed boundary. Matched on whole DNS labels (so `exampleshop.com` is
+  untouched). Per the operator's rule, inherently-unique secrets — passwords,
+  API keys, raw credentials — are exempt even if they contain "example".
+
+- **AlienVault OTX threat-intel tag noise.** `ip_reputation` aggregated every
+  pulse's `tags` (hashes, filenames, single chars, freeform notes), sorted them
+  **alphabetically** and kept the first 50 — surfacing a junk blob (`.cc`,
+  `0007`, `MD5 Hash: …`, "NSO Group" all jumbled, as seen on the `example.com`
+  scan). Tags are now ranked by frequency across pulses and filtered to clean,
+  meaningful threat categories (≤12); pulse names capped at 5; the freeform
+  `adversary` paragraph trimmed to the group name.
+
+- **`urlhaus` 401-failing on every host.** abuse.ch deprecated anonymous access
+  in 2024, so URLhaus returned `HTTP 401` for every query. It now sends the free
+  abuse.ch `Auth-Key` (read from `HUNTSMAN_ABUSECH_KEY`, falling back to the
+  ThreatFox key since it's the same account key) and **skips cleanly when no key
+  is set** instead of erroring — no more 401 noise. Register a free key once at
+  `auth.abuse.ch` to enable URLhaus + ThreatFox + MalwareBazaar together.
+
 ### Changed
 
 - **`see_know` module de-monolithed.** Extracted the SeekNow endpoint matrix

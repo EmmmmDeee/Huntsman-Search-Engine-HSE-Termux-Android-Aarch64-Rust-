@@ -260,7 +260,7 @@ async fn key_chaining_sequential_dispatch() {
         vec![Arc::new(KeyDiscovererModule), Arc::new(KeyConsumerModule)],
         "chain-seq",
         TargetKind::Email,
-        "chain-seq@example.com",
+        "chain-seq@contoso.com",
     );
     let opts = ScanOptions {
         max_concurrent: 0, // sequential
@@ -291,7 +291,7 @@ async fn key_chaining_concurrent_dispatch() {
         vec![Arc::new(KeyDiscovererModule), Arc::new(KeyConsumerModule)],
         "chain-conc",
         TargetKind::Email,
-        "chain-conc@example.com",
+        "chain-conc@contoso.com",
     );
     let opts = ScanOptions {
         max_concurrent: 4, // concurrent (default)
@@ -376,7 +376,7 @@ async fn engine_dispatches_synthetic_module_end_to_end() {
         vec![Arc::new(SyntheticModule)],
         "end_to_end",
         TargetKind::Email,
-        "test@example.com",
+        "test@contoso.com",
     );
     let scan = Scan::new(sid.clone(), target.clone());
 
@@ -385,7 +385,7 @@ async fn engine_dispatches_synthetic_module_end_to_end() {
 
     let stored = store.entities_for_scan(&sid).unwrap();
     assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].value, "test@example.com");
+    assert_eq!(stored[0].value, "test@contoso.com");
     assert!(stored[0].has_tag("synthetic"));
 }
 
@@ -434,7 +434,7 @@ async fn scan_options_allowlist_excludes_module() {
         vec![Arc::new(SyntheticModule)],
         "allowlist",
         TargetKind::Email,
-        "test@example.com",
+        "test@contoso.com",
     );
     let opts = ScanOptions {
         modules: Some(vec!["nonexistent".into()]),
@@ -456,7 +456,7 @@ async fn expansion_depth_zero_is_single_round() {
         ],
         "depth_zero",
         TargetKind::Email,
-        "alice@example.com",
+        "alice@contoso.com",
     );
     // depth=0 — username produced, but never re-dispatched.
     let scan = Scan::new(sid.clone(), target.clone());
@@ -476,7 +476,7 @@ async fn expansion_depth_one_chains_two_modules() {
         ],
         "depth_one",
         TargetKind::Email,
-        "alice@example.com",
+        "alice@contoso.com",
     );
     let opts = ScanOptions {
         depth: 1,
@@ -504,7 +504,7 @@ async fn expansion_depth_two_chains_three_modules() {
         ],
         "depth_two",
         TargetKind::Email,
-        "bob@example.com",
+        "bob@contoso.com",
     );
     let opts = ScanOptions {
         depth: 2,
@@ -572,7 +572,7 @@ async fn expansion_respects_min_expand_confidence() {
         ],
         "low_conf",
         TargetKind::Email,
-        "alice@example.com",
+        "alice@contoso.com",
     );
     let opts = ScanOptions {
         depth: 1,
@@ -597,7 +597,7 @@ async fn expansion_respects_max_entities_budget() {
         ],
         "max_ent",
         TargetKind::Email,
-        "alice@example.com",
+        "alice@contoso.com",
     );
     let opts = ScanOptions {
         depth: 5,
@@ -624,7 +624,7 @@ async fn cancellation_pre_run_aborts_immediately() {
         vec![Arc::new(SyntheticModule)],
         "cancel-pre",
         TargetKind::Email,
-        "alice@example.com",
+        "alice@contoso.com",
     );
     ctx.cancel.cancel();
     let scan = Scan::new(sid.clone(), target.clone()).with_options(ScanOptions::default());
@@ -652,7 +652,7 @@ async fn pre_cancellation_aborts_scan_before_any_module_runs() {
         vec![Arc::new(SyntheticModule)],
         "cancel-pre",
         TargetKind::Email,
-        "bob@example.com",
+        "bob@contoso.com",
     );
     ctx.cancel.cancel();
     let opts = ScanOptions {
@@ -732,7 +732,7 @@ async fn mid_flight_cancellation_aborts_running_scan() {
         Arc::new(SyntheticModule),
     ];
     let (engine, _store, sid, target, ctx) =
-        setup(modules, "cancel-mid", TargetKind::Email, "mid@example.com");
+        setup(modules, "cancel-mid", TargetKind::Email, "mid@contoso.com");
     let cancel_handle = ctx.cancel.clone();
     let started_for_task = Arc::clone(&started);
 
@@ -774,7 +774,7 @@ async fn expansion_visited_prevents_cycle() {
         vec![Arc::new(SyntheticModule)],
         "cycle",
         TargetKind::Email,
-        "loop@example.com",
+        "loop@contoso.com",
     );
     let opts = ScanOptions {
         depth: 3,
@@ -823,7 +823,7 @@ async fn keyed_module_runs_exactly_once_per_target_in_expansion() {
         ],
         "dedup_keyed",
         TargetKind::Email,
-        "alice@example.com",
+        "alice@contoso.com",
     );
     let opts = ScanOptions {
         depth: 2,
@@ -853,7 +853,7 @@ async fn dispatch_dedup_allows_free_module_to_rerun() {
         vec![Arc::new(EmailToUsernameSynth), Arc::new(SyntheticModule)],
         "dedup_free",
         TargetKind::Email,
-        "alice@example.com",
+        "alice@contoso.com",
     );
     let opts = ScanOptions {
         depth: 1,
@@ -912,7 +912,7 @@ async fn radar_persistent_ledger_does_not_re_query_paid_apis_on_covered_seeds() 
         Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
         bus.clone(),
     );
-    let target = Target::new(TargetKind::Email, "alice@example.com");
+    let target = Target::new(TargetKind::Email, "alice@contoso.com");
     let opts = ScanOptions {
         depth: 0,
         ..Default::default()
@@ -1204,7 +1204,7 @@ async fn module_max_timeout_override_extends_engine_cap() {
         vec![Arc::new(SlowModule)],
         "slow_timeout",
         TargetKind::Email,
-        "slow@example.com",
+        "slow@contoso.com",
     );
     let scan = Scan::new(sid.clone(), target.clone()); // no opts.module_timeout_ms
 
@@ -1227,7 +1227,7 @@ async fn user_timeout_override_still_wins_over_module_max() {
         vec![Arc::new(SlowModule)],
         "user_timeout_wins",
         TargetKind::Email,
-        "slow@example.com",
+        "slow@contoso.com",
     );
     let opts = ScanOptions {
         module_timeout_ms: Some(500), // user says "kill at 500ms"
@@ -1301,7 +1301,7 @@ async fn live_session_runs_two_iterations_and_completes() {
         Default::default(),
     );
 
-    let target = Target::new(TargetKind::Email, "live@example.com");
+    let target = Target::new(TargetKind::Email, "live@contoso.com");
     let live_id = scanner.start(
         target,
         ScanOptions::default(),
@@ -1346,7 +1346,7 @@ async fn live_session_stops_on_explicit_cancel() {
         Default::default(),
     );
 
-    let target = Target::new(TargetKind::Email, "cancel-live@example.com");
+    let target = Target::new(TargetKind::Email, "cancel-live@contoso.com");
     let live_id = scanner.start(
         target,
         ScanOptions::default(),
@@ -1665,7 +1665,7 @@ async fn richest_first_strategy_prefers_high_unlock_targets() {
         async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
             // Produce a Domain so expansion has something to chase.
             let mut r = ModuleResult::new();
-            let mut e = Entity::new(EntityKind::Domain, "example.com", 0.95, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Domain, "contoso.com", 0.95, &ctx.scan_id);
             e.tag("derived");
             r.push(e);
             Ok(r)
@@ -1697,7 +1697,7 @@ async fn richest_first_strategy_prefers_high_unlock_targets() {
         vec![Arc::new(EmailOnly), Arc::new(DomainOnly)],
         "richest_first_strategy",
         TargetKind::Email,
-        "alice@example.com",
+        "alice@contoso.com",
     );
     let opts = ScanOptions {
         depth: 1,
@@ -1730,7 +1730,7 @@ async fn breadth_first_strategy_runs_chain_under_default_confidence() {
         ],
         "breadth_first_chain",
         TargetKind::Email,
-        "bf@example.com",
+        "bf@contoso.com",
     );
     let opts = ScanOptions {
         depth: 1,
@@ -1769,13 +1769,13 @@ impl Module for DomainPairModule {
         let mut r = ModuleResult::new();
         r.push(Entity::new(
             EntityKind::Domain,
-            "example.com",
+            "contoso.com",
             0.9,
             &ctx.scan_id,
         ));
         r.push(Entity::new(
             EntityKind::Domain,
-            "blog.example.com",
+            "blog.contoso.com",
             0.8,
             &ctx.scan_id,
         ));
@@ -1794,7 +1794,7 @@ async fn scan_persists_structural_subdomain_relation() {
         vec![Arc::new(DomainPairModule)],
         "rel-e2e",
         TargetKind::Domain,
-        "example.com",
+        "contoso.com",
     );
     let scan = Scan::new(sid.clone(), target.clone());
     let _ = engine.run(scan, target, ctx).await.unwrap();
@@ -1810,7 +1810,7 @@ async fn scan_persists_structural_subdomain_relation() {
         "expected one SubdomainOf edge, got: {relations:?}"
     );
 
-    // The edge must point child → parent (blog.example.com → example.com),
+    // The edge must point child → parent (blog.contoso.com → contoso.com),
     // with both endpoints resolving to persisted entities.
     let entities = store.entities_for_scan(&sid).unwrap();
     let by_uid = |uid: &str| {
@@ -1819,8 +1819,8 @@ async fn scan_persists_structural_subdomain_relation() {
             .find(|e| e.uid == uid)
             .map(|e| e.value.as_str())
     };
-    assert_eq!(by_uid(&sub[0].from_uid), Some("blog.example.com"));
-    assert_eq!(by_uid(&sub[0].to_uid), Some("example.com"));
+    assert_eq!(by_uid(&sub[0].from_uid), Some("blog.contoso.com"));
+    assert_eq!(by_uid(&sub[0].to_uid), Some("contoso.com"));
 }
 
 /// End-to-end: expansion must record `DerivedFrom` lineage edges attributing a
@@ -1838,7 +1838,7 @@ async fn expansion_records_derived_from_lineage() {
         ],
         "rel-lineage",
         TargetKind::Email,
-        "alice@example.com",
+        "alice@contoso.com",
     );
     let opts = ScanOptions {
         depth: 1,
@@ -2006,7 +2006,7 @@ async fn correlations_stream_live_during_ingestion_not_at_finalise() {
         vec![Arc::new(LanPairModule), Arc::new(ExpansionMarker)],
         "live-correlation",
         TargetKind::Email,
-        "host@example.com",
+        "host@contoso.com",
     );
     // depth=1 so expansion round 1 dispatches the Username-only marker module
     // against the username the seed round produced.
@@ -2190,8 +2190,8 @@ async fn entities_are_checkpointed_each_round_for_durability() {
         Arc::clone(&counting) as Arc<dyn StoragePort>,
         bus.clone(),
     );
-    let sid = scan_id("email", "alice@example.com");
-    let target = Target::new(TargetKind::Email, "alice@example.com".to_string());
+    let sid = scan_id("email", "alice@contoso.com");
+    let target = Target::new(TargetKind::Email, "alice@contoso.com".to_string());
     let ctx = ModuleContext {
         scan_id: sid.clone(),
         bus,
@@ -2295,7 +2295,7 @@ async fn non_routable_ips_are_not_expanded() {
         vec![Arc::new(DualIpModule), Arc::new(IpSeenMarker)],
         "non-routable-ip",
         TargetKind::Email,
-        "host@example.com",
+        "host@contoso.com",
     );
     let opts = ScanOptions {
         depth: 1,
@@ -2366,7 +2366,7 @@ async fn bogus_ips_are_dropped_at_admission() {
         vec![Arc::new(MixedIpModule)],
         "bogus-ip-admission",
         TargetKind::Email,
-        "host@example.com",
+        "host@contoso.com",
     );
     let scan = Scan::new(sid.clone(), target.clone());
     engine.run(scan, target, ctx).await.unwrap();

@@ -155,6 +155,22 @@ impl Module for IpReputation {
 
 // ── OTX sub-routine ────────────────────────────────────────────────
 
+/// True if an OTX pulse `tag` is a clean, human-meaningful threat category
+/// (e.g. "malware", "Mirai", "NSO Group") rather than the hashes, filenames,
+/// metadata lines, and single-character noise OTX also stuffs into `tags`.
+///
+/// Heuristic: 3–32 chars, starts with a letter, ≥50% alphabetic, at most four
+/// words, and free of path/metadata punctuation or an explicit "hash" marker.
+fn is_meaningful_tag(t: &str) -> bool {
+    let len = t.len();
+    (3..=32).contains(&len)
+        && t.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && t.chars().filter(|c| c.is_ascii_alphabetic()).count() * 2 >= len
+        && !t.contains(['/', '\\', ':', '|', '=', '(', ')'])
+        && !t.to_ascii_lowercase().contains("hash")
+        && t.split_whitespace().count() <= 4
+}
+
 async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult) {
     let itype = match target.kind {
         TargetKind::IpAddress => "IPv4",
@@ -187,24 +203,31 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
     let mut entity = target.to_entity(0.72, &ctx.scan_id);
     entity.tag("threat-intel");
 
-    // Surface up to 5 pulse names + tag aggregate.
+    // Surface a few pulse names + the most SIGNIFICANT tags. OTX pulses dump
+    // hashes, filenames, single characters and freeform notes into `tags`; the
+    // old code sorted them alphabetically and kept the first 50, which surfaced
+    // a noise blob (".cc", "0007", "MD5 Hash: …", "NSO Group" all jumbled). We
+    // now rank by frequency across pulses (the genuinely-recurring threat
+    // categories) and keep only clean, meaningful tags — see `is_meaningful_tag`.
     let pulse_names: Vec<&str> = pulse_info
         .pulses
         .iter()
         .filter_map(|p| p.name.as_deref())
-        .take(15)
+        .take(5)
         .collect();
-    let tag_count_estimate: usize = pulse_info.pulses.iter().map(|p| p.tags.len()).sum();
-    let mut all_tags: Vec<&str> = Vec::with_capacity(tag_count_estimate);
-    all_tags.extend(
-        pulse_info
-            .pulses
-            .iter()
-            .flat_map(|p| p.tags.iter().map(String::as_str)),
-    );
-    all_tags.sort_unstable();
-    all_tags.dedup();
-    all_tags.truncate(50);
+    let mut tag_freq: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    for p in &pulse_info.pulses {
+        for t in &p.tags {
+            let t = t.trim();
+            if is_meaningful_tag(t) {
+                *tag_freq.entry(t).or_default() += 1;
+            }
+        }
+    }
+    let mut ranked: Vec<(&str, u32)> = tag_freq.into_iter().collect();
+    // Most frequent first; alphabetical tiebreak for determinism.
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    let all_tags: Vec<&str> = ranked.into_iter().take(12).map(|(t, _)| t).collect();
     let adversary = pulse_info
         .pulses
         .iter()
@@ -238,7 +261,13 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
         ev = ev.with_attr("pulse_tags", all_tags.join(", "));
     }
     if let Some(a) = adversary {
-        ev = ev.with_attr("adversary", a);
+        // OTX `adversary` is sometimes a long freeform paragraph after the
+        // group name — keep just the lead name, capped.
+        let name = a.split('(').next().unwrap_or(a).trim();
+        let capped: String = name.chars().take(64).collect();
+        if !capped.is_empty() {
+            ev = ev.with_attr("adversary", &capped);
+        }
     }
     if let Some(t) = latest_tlp {
         ev = ev.with_attr("tlp", t);
@@ -283,6 +312,35 @@ async fn run_tor_check(target: &Target, ctx: &ModuleContext, result: &mut Module
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn meaningful_tag_keeps_threat_categories_drops_noise() {
+        // Signal — real threat categories from the scan's OTX dump.
+        for ok in [
+            "malware",
+            "Mirai",
+            "NSO Group",
+            "Pegasus",
+            "phishing",
+            "FormBook",
+        ] {
+            assert!(is_meaningful_tag(ok), "{ok:?} should be kept");
+        }
+        // Noise — exactly the junk that flooded the old alphabetical blob.
+        for junk in [
+            ".cc",
+            "0007",
+            "0pgtwhu",
+            "MD5 Hash: f8add7e7161460ea2b1970cf4ca535bf",
+            "Imphash: 9698f46495ce9401c8bcaf9a2afe1598",
+            "Compilation / Toolchain Compiler: Microsoft Visual C++ 2017",
+            "Filename: b47266fef17ad4b2e4ca6ee1d06c39a7.virus",
+            "cd3989830da99a69380901769fd78902efb3cd8ba",
+            "a",
+        ] {
+            assert!(!is_meaningful_tag(junk), "{junk:?} should be dropped");
+        }
+    }
 
     #[test]
     fn accepts_ip_and_domain() {

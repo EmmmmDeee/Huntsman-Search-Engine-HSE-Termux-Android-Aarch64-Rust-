@@ -23,6 +23,8 @@
 
 use std::net::IpAddr;
 
+use crate::core::entity::EntityKind;
+
 /// Result of running one or more validators against an entity value.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ValidationReport {
@@ -221,6 +223,99 @@ pub fn is_bogus_ip(s: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Documentation / placeholder values (RFC 2606 / RFC 6761 + `example.*`)
+// ---------------------------------------------------------------------------
+
+/// True if `host` is a reserved/documentation/placeholder domain that can never
+/// be a real OSINT target: the RFC 2606/6761 reserved names (via
+/// [`is_local_domain`](crate::util::preflight::is_local_domain)) plus the
+/// ubiquitous `example.*` documentation domains and the fake `*.tld` placeholder.
+///
+/// Matched on whole DNS labels after stripping a leading `www.` and trailing
+/// dot, so genuine domains that merely *contain* the substring — `exampleshop.com`,
+/// `myexample.io`, `testflight.apple.com` — are deliberately NOT rejected.
+pub fn is_placeholder_domain(host: &str) -> bool {
+    let owned = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let h = owned.strip_prefix("www.").unwrap_or(owned.as_str());
+    if h.is_empty() {
+        return true;
+    }
+    // RFC 2606/6761 reserved TLDs + the localhost/.local/.test/.invalid family.
+    if crate::util::preflight::is_local_domain(h) {
+        return true;
+    }
+    // Any whole label literally "example": example.com/.org/.net, foo.example.co.uk…
+    if h.split('.').any(|l| l == "example") {
+        return true;
+    }
+    // Fake `*.tld` placeholder + a curated set of pure doc placeholders.
+    let tld = h.rsplit('.').next().unwrap_or("");
+    tld == "tld"
+        || matches!(
+            h,
+            "domain.tld" | "yourdomain.com" | "yourdomain.tld" | "mydomain.com"
+        )
+}
+
+/// Host of a URL value is a [`is_placeholder_domain`]. Cheap hand-parse (no `url`
+/// crate dependency here): strips scheme, userinfo, port, and path/query/frag.
+fn url_host_is_placeholder(u: &str) -> bool {
+    let after_scheme = u.split_once("://").map(|(_, r)| r).unwrap_or(u);
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host);
+    !host.is_empty() && is_placeholder_domain(host)
+}
+
+/// Canonical placeholder person names (synthetic "John Doe"-style values that
+/// breach/permutation modules surface). Kept tight to avoid rejecting real
+/// people who happen to share a common name.
+fn is_placeholder_person(name: &str) -> bool {
+    let n = name.trim().to_ascii_lowercase();
+    matches!(
+        n.as_str(),
+        "john doe"
+            | "jane doe"
+            | "john q. public"
+            | "john q public"
+            | "test user"
+            | "first last"
+            | "firstname lastname"
+            | "first name last name"
+            | "full name"
+            | "your name"
+            | "name surname"
+    )
+}
+
+/// True if a discovered entity is a documentation/placeholder artifact that
+/// should never enter the graph — `example.com`, `jordan@example.com`,
+/// `http://example.com`, the `example` username, `John Doe`, … Enforced at the
+/// engine's admission gate alongside [`is_bogus_ip`] so it covers every module.
+///
+/// Exception (the operator's rule): kinds whose VALUE is inherently unique —
+/// passwords, API keys, raw credentials — are NEVER rejected, even if the value
+/// happens to contain the word "example", because the secret itself is the
+/// signal and is overwhelmingly unlikely to be a placeholder.
+pub fn is_placeholder_entity(kind: &EntityKind, value: &str) -> bool {
+    match kind {
+        // Inherently-unique secrets: always kept.
+        EntityKind::Password | EntityKind::ApiKey | EntityKind::Credential => false,
+        EntityKind::Domain => is_placeholder_domain(value),
+        EntityKind::Email => value
+            .rsplit_once('@')
+            .is_some_and(|(_, host)| is_placeholder_domain(host)),
+        EntityKind::Url => url_host_is_placeholder(value),
+        EntityKind::Username => crate::util::preflight::is_placeholder_username(value),
+        EntityKind::Person => is_placeholder_person(value),
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Domain shape
 // ---------------------------------------------------------------------------
 
@@ -283,6 +378,64 @@ pub fn validate_for_kind(kind: &str, value: &str) -> ValidationReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placeholder_domain_catches_reserved_and_example() {
+        for bad in [
+            "example.com",
+            "example.org",
+            "example.net",
+            "EXAMPLE.COM",
+            "www.example.com",
+            "foo.example.co.uk",
+            "sub.example.io",
+            "host.test",
+            "thing.invalid",
+            "x.localhost",
+            "anything.example",
+            "yourdomain.com",
+            "domain.tld",
+            "host.tld",
+        ] {
+            assert!(is_placeholder_domain(bad), "{bad} must be a placeholder");
+        }
+        // Real domains that merely CONTAIN the substring are NOT rejected.
+        for ok in [
+            "cloudflare.com",
+            "exampleshop.com",
+            "myexample.io",
+            "testflight.apple.com",
+            "github.com",
+            "wikipedia.org",
+        ] {
+            assert!(!is_placeholder_domain(ok), "{ok} is a real domain");
+        }
+    }
+
+    #[test]
+    fn placeholder_entity_filters_artifacts_but_keeps_secrets() {
+        use EntityKind::*;
+        assert!(is_placeholder_entity(&Domain, "example.com"));
+        assert!(is_placeholder_entity(&Email, "jordan@example.com"));
+        assert!(is_placeholder_entity(&Url, "https://example.com/login"));
+        assert!(is_placeholder_entity(
+            &Url,
+            "http://user:pw@example.org:8080/x"
+        ));
+        assert!(is_placeholder_entity(&Username, "example"));
+        assert!(is_placeholder_entity(&Person, "John Doe"));
+        // Real values pass through.
+        assert!(!is_placeholder_entity(&Domain, "cloudflare.com"));
+        assert!(!is_placeholder_entity(&Email, "matthewdiegmann@gmail.com"));
+        assert!(!is_placeholder_entity(&Person, "Matthew Diegmann"));
+        // Inherently-unique secrets are NEVER filtered, even containing "example".
+        assert!(!is_placeholder_entity(&Password, "example.com"));
+        assert!(!is_placeholder_entity(
+            &ApiKey,
+            "sk-example-9f8a7b6c5d4e3f2a1"
+        ));
+        assert!(!is_placeholder_entity(&Credential, "example:hunter2"));
+    }
 
     #[test]
     fn phone_e164_accepts_valid() {

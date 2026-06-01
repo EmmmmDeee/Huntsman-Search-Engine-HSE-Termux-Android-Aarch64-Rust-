@@ -970,6 +970,16 @@ impl ScanEngine {
                     {
                         continue;
                     }
+                    // Drop documentation / placeholder artifacts (example.com,
+                    // jordan@example.com, http://example.com, the `example`
+                    // username, "John Doe", …) at admission so they never enter
+                    // the graph, expand into whole infrastructure rounds, or
+                    // fire correlations. Inherently-unique secrets (passwords /
+                    // API keys / credentials) are exempt — see
+                    // `validation::is_placeholder_entity`.
+                    if crate::core::validation::is_placeholder_entity(&entity.kind, &entity.value) {
+                        continue;
+                    }
                     self.emit(
                         scan_id,
                         EventKind::EntityFound {

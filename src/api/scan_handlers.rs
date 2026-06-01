@@ -568,22 +568,22 @@ mod tests {
     fn build_scan_from_request_valid_is_deterministic() {
         let req = ScanRequest {
             kind: TargetKind::Domain,
-            value: "example.com".to_string(),
+            value: "cloudflare.com".to_string(),
             options: Default::default(),
         };
         let (scan, target) = build_scan_from_request(req).expect("valid domain should build");
-        assert_eq!(target.value, "example.com");
+        assert_eq!(target.value, "cloudflare.com");
         assert_eq!(target.kind, TargetKind::Domain);
         // The scan id is the deterministic content hash of (kind, value), so a
         // second build of the same request yields the identical id.
         let req2 = ScanRequest {
             kind: TargetKind::Domain,
-            value: "example.com".to_string(),
+            value: "cloudflare.com".to_string(),
             options: Default::default(),
         };
         let (scan2, _) = build_scan_from_request(req2).unwrap();
         assert_eq!(scan.id, scan2.id);
-        assert_eq!(scan.id, scan_id("domain", "example.com"));
+        assert_eq!(scan.id, scan_id("domain", "cloudflare.com"));
     }
 
     #[test]

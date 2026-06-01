@@ -635,9 +635,9 @@ mod tests {
     fn validated_target_accepts_good_and_prefixes_bad() {
         use super::validated_target;
         use crate::core::scan::TargetKind;
-        let ok = validated_target(TargetKind::Domain, "example.com".to_string());
+        let ok = validated_target(TargetKind::Domain, "cloudflare.com".to_string());
         assert!(ok.is_ok());
-        assert_eq!(ok.unwrap().value, "example.com");
+        assert_eq!(ok.unwrap().value, "cloudflare.com");
         let err = validated_target(TargetKind::Domain, "no-dot".to_string()).unwrap_err();
         assert!(
             err.starts_with("invalid target: "),
