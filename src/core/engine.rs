@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::time::{sleep, timeout};
-use tracing::{info, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::core::{
     dependency::ModuleGraph,
@@ -196,6 +196,19 @@ impl ScanEngine {
 
         let opts = scan.options.clone();
         let started = Instant::now();
+        debug!(
+            scan_id = %scan.id,
+            target_kind = %target.kind.canonical_str(),
+            target = %target.value,
+            depth = opts.depth,
+            max_entities = ?opts.max_entities,
+            max_wall_time_secs = ?opts.max_wall_time_secs,
+            max_concurrent = opts.max_concurrent,
+            max_roi = opts.max_roi,
+            free_only = opts.free_only,
+            passive_only = opts.passive_only,
+            "scan starting"
+        );
         let mut entity_map: HashMap<String, Entity> =
             HashMap::with_capacity(opts.max_entities.unwrap_or(256).min(4096));
         let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
@@ -489,24 +502,54 @@ impl ScanEngine {
             // `seen_this_round` de-duplicates distinct entities that normalise
             // to the same target within this round; `visited` skips targets
             // already dispatched in a prior round.
+            debug!(
+                depth,
+                entities = entity_map.len(),
+                visited = visited.len(),
+                strategy = ?opts.expansion_strategy,
+                max_roi = opts.max_roi,
+                min_expand_confidence = opts.min_expand_confidence,
+                "expansion round: selecting candidates"
+            );
             let mut seen_this_round: HashSet<(TargetKind, String)> = HashSet::new();
             let mut next: Vec<(Target, f64, String)> = Vec::new();
+            // Per-reason rejection tally — surfaces *why* the frontier shrank,
+            // the single most useful signal when a recursion stalls. Cheap
+            // (a few usize increments); emitted once per round at debug.
+            let (mut skip_conf, mut skip_sat, mut skip_no_tk, mut skip_visited, mut skip_dup) =
+                (0usize, 0usize, 0usize, 0usize, 0usize);
             for entity in entity_map.values() {
                 if entity.c_effective() < opts.min_expand_confidence {
+                    skip_conf += 1;
+                    trace!(depth, value = %entity.value, c_eff = entity.c_effective(),
+                        floor = opts.min_expand_confidence, "candidate skipped: below min_expand_confidence");
                     continue;
                 }
                 // ROI bundle: convergence-pruning. Once an entity has 2+
                 // corroborating sources at high confidence, further dispatch
                 // only re-confirms what we already know. Skip it.
                 if opts.max_roi && crate::core::roi::is_saturated(entity) {
+                    skip_sat += 1;
+                    trace!(depth, value = %entity.value, c_eff = entity.c_effective(),
+                        corroboration = entity.corroboration, "candidate skipped: ROI-saturated");
                     continue;
                 }
                 let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
+                    skip_no_tk += 1;
+                    trace!(depth, value = %entity.value, kind = ?entity.kind,
+                        "candidate skipped: entity kind is not a dispatchable target");
                     continue;
                 };
                 let new_target = Target::new(tk, entity.value.clone());
                 let key = visit_key(&new_target);
-                if visited.contains(&key) || !seen_this_round.insert(key) {
+                if visited.contains(&key) {
+                    skip_visited += 1;
+                    trace!(depth, value = %entity.value, kind = ?tk, "candidate skipped: already visited (prior round)");
+                    continue;
+                }
+                if !seen_this_round.insert(key) {
+                    skip_dup += 1;
+                    trace!(depth, value = %entity.value, kind = ?tk, "candidate skipped: duplicate target this round");
                     continue;
                 }
                 let richness = self.graph.richness_for(tk);
@@ -518,6 +561,8 @@ impl ScanEngine {
                     has_paid,
                     richness,
                 );
+                trace!(depth, value = %entity.value, kind = ?tk, weight, c_eff = entity.c_effective(),
+                    richness, "candidate eligible");
                 next.push((new_target, weight, entity.uid.clone()));
             }
 
@@ -525,22 +570,39 @@ impl ScanEngine {
             // The weight combines geo_npv with entity confidence and
             // dampens generic mega-domains that waste expansion budget.
             next.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let eligible = next.len();
 
             // ROI bundle: top-K gate. Keep only the top candidates by
             // weight, scaled with concurrency. Stops long-tail noise
             // (e.g. 80 low-weight domains from a single SERP) from
             // consuming the round.
+            let mut top_k_applied: Option<usize> = None;
             if opts.max_roi {
                 let k = crate::core::roi::top_k_for_round(opts.max_concurrent);
+                top_k_applied = Some(k);
                 if next.len() > k {
                     next.truncate(k);
                 }
             }
             let dispatched_this_round = next.len();
+            debug!(
+                depth,
+                eligible,
+                dispatching = dispatched_this_round,
+                deferred = eligible.saturating_sub(dispatched_this_round),
+                top_k = ?top_k_applied,
+                skip_below_conf = skip_conf,
+                skip_saturated = skip_sat,
+                skip_no_target_kind = skip_no_tk,
+                skip_visited,
+                skip_duplicate = skip_dup,
+                "expansion round: candidate selection complete"
+            );
             let next: Vec<(Target, String)> = next.into_iter().map(|(t, _, p)| (t, p)).collect();
 
             if next.is_empty() {
                 let stop = StopReason::NoMoreCandidates;
+                debug!(depth, "expansion halt: no eligible candidates remain");
                 self.emit(
                     scan_id,
                     EventKind::ExpansionStop {
@@ -571,6 +633,13 @@ impl ScanEngine {
                     return stop;
                 }
                 if let Some(stop) = budget_check(opts, started, entity_map.len()) {
+                    debug!(
+                        depth,
+                        reason = %stop.label(),
+                        entities = entity_map.len(),
+                        elapsed_secs = started.elapsed().as_secs(),
+                        "expansion halt: budget exhausted"
+                    );
                     self.emit(
                         scan_id,
                         EventKind::ExpansionStop {
@@ -585,6 +654,8 @@ impl ScanEngine {
                 // termination — while deferred (truncated) candidates, which
                 // never reach this loop, remain eligible for the next round.
                 visited.insert(visit_key(nt));
+                let entities_before_dispatch = entity_map.len();
+                trace!(depth, target = %nt.value, kind = ?nt.kind, "dispatching expansion candidate");
                 // Snapshot UIDs before dispatch so we can attribute the
                 // entities this candidate surfaces back to its parent.
                 before.clear();
@@ -614,6 +685,13 @@ impl ScanEngine {
                         ));
                     }
                 }
+                trace!(
+                    depth,
+                    target = %nt.value,
+                    surfaced = entity_map.len().saturating_sub(entities_before_dispatch),
+                    total_entities = entity_map.len(),
+                    "expansion candidate dispatched"
+                );
             }
 
             // ROI bundle: adaptive-depth termination. After the round,
@@ -623,6 +701,16 @@ impl ScanEngine {
             let floor = opts
                 .min_marginal_yield
                 .unwrap_or(crate::core::roi::DEFAULT_MIN_MARGINAL_YIELD);
+            let yield_ratio = crate::core::roi::marginal_yield(new_this_round, dispatched_this_round);
+            debug!(
+                depth,
+                dispatched = dispatched_this_round,
+                new_entities = new_this_round,
+                marginal_yield = yield_ratio,
+                floor,
+                total_entities = entity_map.len(),
+                "expansion round complete"
+            );
             if crate::core::roi::should_terminate_adaptive(
                 opts.max_roi,
                 new_this_round,
@@ -630,19 +718,24 @@ impl ScanEngine {
                 floor,
             ) {
                 let stop = StopReason::NoMoreCandidates;
+                debug!(
+                    depth,
+                    marginal_yield = yield_ratio,
+                    floor,
+                    "expansion halt: adaptive-depth termination (marginal yield below floor)"
+                );
                 self.emit(
                     scan_id,
                     EventKind::ExpansionStop {
                         reason: format!(
-                            "adaptive-depth: marginal yield {:.2} < floor {:.2}",
-                            crate::core::roi::marginal_yield(new_this_round, dispatched_this_round),
-                            floor
+                            "adaptive-depth: marginal yield {yield_ratio:.2} < floor {floor:.2}"
                         ),
                     },
                 );
                 return stop;
             }
         }
+        debug!(max_depth = opts.depth, "expansion halt: configured depth exhausted");
         StopReason::DepthExhausted
     }
 }
@@ -790,6 +883,14 @@ impl ScanEngine {
         stats: &mut ModuleStats,
         dispatched: &mut DispatchLog,
     ) -> Result<()> {
+        trace!(
+            scan_id,
+            target = %target.value,
+            kind = ?target.kind,
+            is_expansion,
+            mode = if opts.max_concurrent == 0 { "sequential" } else { "concurrent" },
+            "dispatch_target"
+        );
         if opts.max_concurrent == 0 {
             self.dispatch_target_sequential(
                 scan_id,

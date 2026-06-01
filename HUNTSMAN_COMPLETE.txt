@@ -64,6 +64,25 @@ FORWARD PLAN — ranked, each bounded + halt-proven. Locked one cycle at a time.
 ================================================================================
 SYNERGY LEDGER (per-file ticker — appended per reconciled cycle)
 ================================================================================
+OBS [DONE] Expansion-path observability — instrument before optimising.
+   core/engine.rs: debug! at scan-start (full options), per-round candidate
+                   selection (eligible/dispatching/deferred + per-reason skip
+                   tally: below_conf/saturated/no_target_kind/visited/duplicate),
+                   every halt path (no-candidates / budget / adaptive / depth-
+                   exhausted), round-complete (marginal yield vs floor); trace!
+                   per-candidate (eligible+weight / each skip reason / dispatch
+                   + entities surfaced) and dispatch_target mode.
+   levels       : debug/trace only — default `info` runs unchanged, lazy fields
+                   → ~zero cost when disabled (verified: 0 debug lines at info).
+   gate         : full suite 1324 green (logging additive, no behaviour change)
+                   · clippy --all-targets clean.
+   FINDING      : RUST_LOG=...engine=debug on `name --modules name_to_username
+                   --depth 1` shows seed yields 7 username entities, ALL skipped
+                   skip_below_conf=7 (each c_eff=0.35 < min_expand_confidence
+                   0.50) → depth>0 is a no-op for the name→username chain. Open
+                   question for next cycle: intended (don't recurse speculative
+                   guesses) vs missed recursion. Now measurable, not guessed.
+
 F0 [DONE] WAL footprint bound — closes the one under-asserted invariant.
    storage.rs   : PRAGMA wal_autocheckpoint=512 (explicit ~2MB bound, documented);
                   + Store::checkpoint_truncate() → PRAGMA wal_checkpoint(TRUNCATE).
