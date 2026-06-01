@@ -123,14 +123,15 @@ if [[ "$CURRENT_YEAR" -lt 2024 ]]; then
 fi
 
 # Disk space — release build takes ~500MB, target dir up to 2GB.
-# Use END + NF-based indexing — robust to df wrapping long filesystem names
-# onto a second line. Guard NF >= 4 to handle Termux/Android, where df may
-# print a single-field row (and `$(NF-2)` with NF<3 is a fatal awk error
-# that aborts the script under set -e). The `|| true` is belt-and-braces
-# for older awks that exit nonzero from the guard.
+# `df -Pk` (POSIX, 1 KiB blocks) is the portable form: Termux's toybox `df`
+# does NOT implement `-m` (the cause of the on-device "could not read" warning),
+# but `-P` + `-k` are universal and `-P` also guarantees one fixed 6-column row
+# per filesystem (no wrapping). Available is `$(NF-2)` in KiB → /1024 = MiB.
+# Guard NF >= 4 so a degenerate single-field row can't make `$(NF-2)` a fatal
+# awk error under `set -e`; the `|| true` is belt-and-braces.
 if command -v df >/dev/null 2>&1; then
-    DISK_AVAIL_MB=$({ df -m "$HOME" 2>/dev/null \
-        | awk 'END { if (NF >= 4) print $(NF-2) }' 2>/dev/null; } || true)
+    DISK_AVAIL_MB=$({ df -Pk "$HOME" 2>/dev/null \
+        | awk 'END { if (NF >= 4) print int($(NF-2)/1024) }' 2>/dev/null; } || true)
     if ! [[ "$DISK_AVAIL_MB" =~ ^[0-9]+$ ]]; then
         DISK_AVAIL_MB=0
     fi

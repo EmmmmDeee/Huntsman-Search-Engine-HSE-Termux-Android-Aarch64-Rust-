@@ -12,6 +12,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Self-validation harness** (`hse selftest`, `GET /api/v1/selftest`, and a
+  Settings → Diagnostics button). One offline suite validates every module and
+  core feature — registry integrity, the dispatch-index↔`accepts()` invariant,
+  `consumes()` coverage, an all-module metadata probe, core scoring maths, key
+  load, an end-to-end storage+correlator round-trip, log-capture wiring, and the
+  Termux environment. Runs automatically (`hse selftest` exits non-zero on
+  failure; `hse serve` runs it at startup and logs a summary) and on demand.
+- **Downloadable verbose debug logs.** A bounded in-memory ring buffer tees a
+  clean copy of the default TRACE-level logs, served as a text attachment at
+  `GET /api/v1/logs` / the Settings "Download debug log" button.
 - **Statistical yield-curve expansion depth.** `--auto` depth is now chosen by a
   geometric marginal-yield model (`m(d) = m₁·q^(d−1)`, cut at the engine's own
   `dE/dDispatch` floor) grounded in real scan telemetry, replacing hand-tuned
@@ -33,6 +43,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   unreachable on a flaky mobile connection.
 - **All-in-one installer converges in-place:** `./install.sh` run from inside an
   existing clone now upgrades that clone rather than maintaining a second one.
+
+### Performance
+
+- **Termux sensor fast-fail.** `util::termux::termux_cmd` now caches a tool that
+  times out or won't spawn as unavailable for 5 min and short-circuits it — so
+  an ungranted location/telephony/wifi permission costs its full timeout at most
+  once every few minutes instead of ~20-30 s of dead wait on **every** scan
+  (`device_sensors` + `wifi_intel` + `cell_intel`). Re-probes after the TTL so a
+  later-granted permission is still picked up.
 
 ### Changed
 
