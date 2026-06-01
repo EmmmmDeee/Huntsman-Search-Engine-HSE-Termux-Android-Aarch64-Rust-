@@ -2363,6 +2363,83 @@ async fn identity_resolution_streams_live_during_ingestion_not_only_at_finalise(
     );
 }
 
+// ── Panic isolation: a faulting module must not take down the scan ───────────
+//
+// Proves the "fail safely and predictably" invariant: a module that panics
+// (a bug, or a panic on malformed external data) is caught and degraded to a
+// ModuleError so the scan completes and co-dispatched modules' findings survive
+// — in BOTH dispatch modes (sequential `catch_unwind` + concurrent `JoinSet`).
+// Requires `panic = "unwind"` (the release profile; dev is unwind by default).
+
+/// Panics inside `process()`, standing in for a module bug / malformed-data panic.
+struct PanicModule;
+
+#[async_trait]
+impl Module for PanicModule {
+    fn name(&self) -> &'static str {
+        "panic_module"
+    }
+    fn priority(&self) -> u8 {
+        200 // dispatch early so the panic precedes the safe module
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, _c: &ModuleContext) -> Result<ModuleResult> {
+        panic!("boom — simulated module fault");
+    }
+}
+
+#[tokio::test]
+async fn a_panicking_module_is_isolated_and_the_scan_completes() {
+    use huntsman_search_engine::core::event::EventKind;
+    // Exercise both dispatch paths: sequential (max_concurrent=0 → catch_unwind)
+    // and concurrent (max_concurrent>0 → JoinSet).
+    for max_concurrent in [0usize, 4] {
+        let (engine, store, sid, target, ctx) = setup(
+            vec![Arc::new(PanicModule), Arc::new(SyntheticModule)],
+            &format!("panic-iso-{max_concurrent}"),
+            TargetKind::Email,
+            "victim@contoso.com",
+        );
+        let opts = ScanOptions {
+            max_concurrent,
+            ..Default::default()
+        };
+        let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+        let mut rx = engine.bus().subscribe();
+
+        // The scan must RETURN (not unwind out / abort).
+        let done = engine
+            .run(scan, target, ctx)
+            .await
+            .expect("scan completes despite a module panic");
+        assert!(matches!(
+            done.status,
+            ScanStatus::Complete | ScanStatus::Aborted
+        ));
+
+        // The co-dispatched safe module's entity survived the sibling's panic.
+        let ents = store.entities_for_scan(&sid).unwrap();
+        assert!(
+            ents.iter().any(|e| e.value == "victim@contoso.com"),
+            "co-dispatched module's finding must survive (max_concurrent={max_concurrent})"
+        );
+
+        // The panic surfaced as a ModuleError event, not a crash.
+        let mut saw_module_error = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(&ev.kind, EventKind::ModuleError { .. }) {
+                saw_module_error = true;
+            }
+        }
+        assert!(
+            saw_module_error,
+            "a module panic must surface as a ModuleError (max_concurrent={max_concurrent})"
+        );
+    }
+}
+
 // ── Crash-durability: entities are checkpointed each round ───────────────────
 //
 // Proves the charter's "fault-tolerant, resumable execution state" invariant:

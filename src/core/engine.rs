@@ -1029,6 +1029,50 @@ struct DispatchOutcome {
     result: TimeoutResult,
 }
 
+/// Run one module's `process` under its timeout, **catching any panic** so a
+/// single misbehaving module — or a panic on malformed external data — degrades
+/// to a `ModuleError` (the scan keeps going) instead of unwinding out of the
+/// dispatch loop. Used by the two *synchronous* dispatch paths (sequential
+/// dispatch + the concurrent dispatcher's Phase-1 paid modules); the concurrent
+/// Phase-2 modules are already panic-isolated by their `JoinSet`. Effective
+/// under `panic = "unwind"` (the release profile) — under `abort` a panic is
+/// still process-fatal, which is exactly why prevention is layered in too.
+async fn run_module_caught(
+    module: &dyn Module,
+    target: &Target,
+    ctx: &ModuleContext,
+    timeout_ms: u64,
+) -> TimeoutResult {
+    use futures::FutureExt;
+    let fut = timeout(
+        Duration::from_millis(timeout_ms),
+        module.process(target, ctx),
+    );
+    match std::panic::AssertUnwindSafe(fut).catch_unwind().await {
+        Ok(result) => result,
+        Err(panic) => {
+            let msg = panic_message(&*panic);
+            warn!(module = module.name(), "module panicked: {msg}");
+            Ok(Err(Error::module(
+                module.name(),
+                format!("panicked: {msg}"),
+            )))
+        }
+    }
+}
+
+/// Extract a human-readable message from a caught panic payload (the two shapes
+/// `panic!`/`assert!` produce: `&'static str` and `String`).
+fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = p.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = p.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 impl ScanEngine {
     /// Translate one module's `process()` result into engine events
     /// (`ModuleError` / `EntityFound` / `ModuleDone`) and merge any
@@ -1247,11 +1291,8 @@ impl ScanEngine {
                 },
             );
 
-            let result = timeout(
-                Duration::from_millis(resolve_timeout(opts, &**module)),
-                module.process(target, ctx),
-            )
-            .await;
+            let result =
+                run_module_caught(&**module, target, ctx, resolve_timeout(opts, &**module)).await;
 
             self.finalise_module_result(
                 scan_id,
@@ -1342,11 +1383,8 @@ impl ScanEngine {
                     module: name.into(),
                 },
             );
-            let result = timeout(
-                Duration::from_millis(resolve_timeout(opts, &**module)),
-                module.process(target, ctx),
-            )
-            .await;
+            let result =
+                run_module_caught(&**module, target, ctx, resolve_timeout(opts, &**module)).await;
             self.finalise_module_result(
                 scan_id,
                 name,

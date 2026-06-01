@@ -12,6 +12,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Resilience: a faulting module can no longer abort the process.** The release
+  profile was `panic = "abort"`, which silently defeated the engine's existing
+  per-module panic recovery — so a panic in any module (a bug, or a panic on
+  malformed external data) took down the whole process, fatal for a long-running
+  `hse serve`. Switched the release profile to `panic = "unwind"` and routed the
+  two *synchronous* dispatch paths (sequential dispatch + the concurrent
+  dispatcher's Phase-1 paid modules) through a `catch_unwind` helper
+  (`run_module_caught`); the concurrent Phase-2 modules were already isolated by
+  their `JoinSet`. A panicking module now degrades to a `ModuleError` and the
+  scan completes, in both dispatch modes (new integration test covers both). The
+  cost is modest unwind tables (~0.3–0.7 MB on the stripped binary); every other
+  size optimisation is retained, and the trade-off is a one-line revert in
+  `Cargo.toml` if absolute minimum size ever outweighs server resilience.
+
 - **Internal: consolidated host normalisation onto one function.** The engine
   had three copies of "lowercase + strip trailing `.` + strip leading `www.`"
   (`entity::normalise(Domain)`, a hand-rolled `relation::domain_key`, and the

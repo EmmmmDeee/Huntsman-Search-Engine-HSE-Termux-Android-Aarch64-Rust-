@@ -61,7 +61,14 @@ opt-level     = "s"
 lto           = true
 codegen-units = 1
 strip         = true
-panic         = "abort"
+# Unwind (not abort) so a panic in one module — e.g. on a malformed external
+# response — is caught and degraded to a ModuleError instead of aborting the
+# whole process (fatal for a long-running `hse serve`). This activates the
+# engine's existing per-module panic recovery (concurrent JoinSet + the
+# sequential/Phase-1 `catch_unwind`). The cost is modest unwind tables (~0.3-0.7
+# MB on the stripped binary); all other size optimisations above are retained.
+# Flip back to "abort" if absolute minimum size outweighs server resilience.
+panic         = "unwind"
 
 # Fast on-device build profile — the installer's default on Termux. Drops the
 # single-threaded LTO link (codegen-units=1, lto=true) that makes the `release`
