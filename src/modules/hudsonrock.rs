@@ -74,24 +74,16 @@ impl Module for HudsonRock {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        match t.kind {
-            TargetKind::Email | TargetKind::Domain => true,
-            // HudsonRock's `search-by-login` endpoint is keyed on a login that
-            // it validates as an email ("Email is required" / HTTP 400 for a
-            // bare handle, observed live on a `mdieg123` username scan). So a
-            // Username seed is only worth a call when it is itself email-shaped.
-            TargetKind::Username => t.value.contains('@'),
-            _ => false,
-        }
-    }
-
-    /// Static input set for the dispatch graph. `accepts()` gates Username on
-    /// the value being email-shaped, so Username is NOT a guaranteed input —
-    /// declare only the kinds always accepted. The trait's probe-based default
-    /// would wrongly include Username (the probe value contains '@'); a
-    /// value-shape gate must override `consumes()` per the trait contract.
-    fn consumes(&self) -> Vec<TargetKind> {
-        vec![TargetKind::Email, TargetKind::Domain]
+        // `search-by-login` validates its login as an email — a bare handle
+        // 400s with "Email is required" (observed live on a `mdieg123`
+        // username scan) — and `search-by-domain` takes a domain. So the
+        // honest input set is Email + Domain only. A Username seed is never
+        // routed here: the engine surfaces discovered emails as Email targets,
+        // which this module already consumes. Keeping `accepts()`
+        // value-INDEPENDENT is also what lets the dispatch index (built from
+        // `consumes()`) and `accepts()` agree for every probe value — a
+        // value-shape gate here diverged the two registry invariants.
+        matches!(t.kind, TargetKind::Email | TargetKind::Domain)
     }
 
     fn category(&self) -> ModuleCategory {
@@ -106,15 +98,12 @@ impl Module for HudsonRock {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let url = match target.kind {
-            // `search-by-login` requires an email-shaped login; `accepts` already
-            // gates Username on containing '@', but re-check here so a direct
-            // `process` call (tests, future callers) can't fire the doomed
-            // request that returns HTTP 400 "Email is required".
+            // `search-by-login` requires an email-shaped login (a bare handle
+            // 400s with "Email is required"). `accepts()` only admits Email and
+            // Domain, but a direct `process()` call (tests, future callers) with
+            // any other kind falls through to an empty result rather than firing
+            // the doomed request.
             TargetKind::Email => format!(
-                "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-login?username={}",
-                urlencode(&target.value)
-            ),
-            TargetKind::Username if target.value.contains('@') => format!(
                 "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-login?username={}",
                 urlencode(&target.value)
             ),
@@ -259,21 +248,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_email_domain_and_only_email_shaped_usernames() {
+    fn accepts_only_email_and_domain() {
         let m = HudsonRock;
         assert!(m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
         assert!(m.accepts(&Target::new(TargetKind::Domain, "b.com")));
-        // A bare handle must be REJECTED — search-by-login 400s ("Email is
-        // required") on it, as seen live on the `mdieg123` username scan.
+        // Usernames are NEVER routed here — search-by-login 400s ("Email is
+        // required") on a bare handle (seen live on the `mdieg123` scan), and
+        // the engine surfaces real emails as Email targets. Reject both a bare
+        // handle AND an email-shaped one so `accepts()` stays value-independent
+        // (the property the two registry-dispatch invariants rely on).
         assert!(!m.accepts(&Target::new(TargetKind::Username, "mdieg123")));
-        // …but an email-shaped username seed is a legitimate login lookup.
-        assert!(m.accepts(&Target::new(TargetKind::Username, "mdieg123@gmail.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::Username, "mdieg123@gmail.com")));
         assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
     }
 
     #[tokio::test]
-    async fn bare_username_yields_nothing_without_a_request() {
-        // process() on a non-email username returns empty (no doomed 400 call).
+    async fn username_target_yields_nothing_without_a_request() {
+        // A Username never reaches process() via the engine (accepts() rejects
+        // it); a direct call still falls through to empty — no doomed 400.
         let (bus, _rx) = tokio::sync::broadcast::channel(8);
         let ctx = ModuleContext {
             scan_id: "t".into(),
@@ -289,7 +281,7 @@ mod tests {
             .unwrap();
         assert!(
             r.is_empty(),
-            "bare username must not call the email-only endpoint"
+            "username must not call the email-only endpoint"
         );
     }
 
