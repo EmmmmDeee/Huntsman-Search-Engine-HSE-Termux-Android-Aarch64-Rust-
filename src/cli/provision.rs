@@ -378,10 +378,25 @@ async fn run_smoke(target: Target, options: ScanOptions) -> Result<SmokeResult> 
     // returns `Err(Empty)` once the buffer is exhausted, ending the loop.
     let mut missing_keys = Vec::<String>::new();
     while let Ok(ev) = rx.try_recv() {
-        if let EventKind::ModuleError { error, .. } = &ev.kind
-            && let Some(rest) = error.strip_prefix("missing key: ")
-        {
-            missing_keys.push(rest.to_string());
+        match &ev.kind {
+            // Legacy path: a module that still propagates `missing key: …`
+            // through a ModuleError.
+            EventKind::ModuleError { error, .. } => {
+                if let Some(rest) = error.strip_prefix("missing key: ") {
+                    missing_keys.push(rest.to_string());
+                }
+            }
+            // Current path: the engine turns `Error::MissingKey` into a clean
+            // ModuleSkipped("needs API key HUNTSMAN_X_KEY — <hint>").
+            EventKind::ModuleSkipped { reason, .. } => {
+                if let Some(rest) = reason.strip_prefix("needs API key ")
+                    && let Some(key) = rest.split_whitespace().next()
+                    && !key.is_empty()
+                {
+                    missing_keys.push(key.to_string());
+                }
+            }
+            _ => {}
         }
     }
 

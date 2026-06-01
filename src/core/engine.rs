@@ -27,12 +27,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::time::{sleep, timeout};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::core::{
     dependency::ModuleGraph,
     entity::{Entity, normalise},
-    error::Result,
+    error::{Error, Result},
     event::{Event, EventBus, EventKind},
     module::{Module, ModuleContext, ModuleCost},
     port::StoragePort,
@@ -70,6 +70,10 @@ pub(crate) struct ModuleStats {
     pub errored: usize,
     pub timed_out: usize,
     pub deduped: usize,
+    /// Modules that dispatched but cleanly opted out because a required API key
+    /// is absent — counted separately from `errored` so an unconfigured optional
+    /// provider is never reported as a failure.
+    pub skipped: usize,
 }
 
 /// Per-scan log of (module_name, target_kind, normalised_value) triples
@@ -370,6 +374,7 @@ impl ScanEngine {
         scan.modules_errored = stats.errored;
         scan.modules_timed_out = stats.timed_out;
         scan.modules_deduped = stats.deduped;
+        scan.modules_skipped = stats.skipped;
 
         if persisted == 0 && first_err.is_some() {
             scan.status = ScanStatus::Failed;
@@ -937,6 +942,25 @@ impl ScanEngine {
                     EventKind::ModuleError {
                         module: name.into(),
                         error: "timeout".into(),
+                    },
+                );
+            }
+            Ok(Err(Error::MissingKey(key))) => {
+                // An unconfigured optional provider is NOT a failure. Surface it
+                // as a clean "needs key" skip (with a free-signup hint where
+                // known) instead of a scary module error, and count it under
+                // `skipped` rather than `errored`.
+                stats.skipped += 1;
+                let reason = match crate::util::keys::signup_hint(&key) {
+                    Some(hint) => format!("needs API key {key} — {hint}"),
+                    None => format!("needs API key {key}"),
+                };
+                debug!(module = name, %key, "skipped — needs key");
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason,
                     },
                 );
             }

@@ -70,6 +70,27 @@ pub(super) async fn cmd_doctor() -> Result<()> {
         println!("  (none set; all free modules still work)");
     }
 
+    // ── Unset keys + where to get them (mostly free) ──────────────────
+    // The "failing modules" in a scan are usually just these — unconfigured
+    // optional providers, which now skip cleanly rather than erroring. List
+    // each missing key with its free-signup hint so enabling one is a copy-paste.
+    let missing: Vec<&&str> = keys::KNOWN_KEYS
+        .iter()
+        .filter(|k| !loaded.contains_key(**k))
+        .collect();
+    if !missing.is_empty() {
+        println!(
+            "\nUnset keys ({}): modules needing these skip cleanly (not errors).",
+            missing.len()
+        );
+        for k in missing {
+            match keys::signup_hint(k) {
+                Some(hint) => println!("  - {k}\n      → {hint}"),
+                None => println!("  - {k}"),
+            }
+        }
+    }
+
     // ── WiGLE account health (network call, best-effort) ──────────────
     // Poll /api/v2/profile/user + /apiUsage. Surfaces the
     // "email unverified → throttled" warning that the WiGLE account

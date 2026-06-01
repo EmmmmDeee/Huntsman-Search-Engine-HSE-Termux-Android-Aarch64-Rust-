@@ -66,6 +66,64 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_EXA_KEY",
 ];
 
+/// Human-readable provider + free-signup hint for a `HUNTSMAN_*` key, surfaced
+/// in the engine's "module skipped — needs key" notice (and `hse doctor`) so an
+/// unconfigured optional module tells the operator exactly where to get a key.
+/// `None` for keys without a known signup page. Most listed providers have a
+/// free tier; the few paid-only ones say so.
+pub fn signup_hint(env: &str) -> Option<&'static str> {
+    Some(match env {
+        "HUNTSMAN_ABUSECH_KEY" | "HUNTSMAN_THREATFOX_KEY" => {
+            "abuse.ch — free key at https://auth.abuse.ch (powers urlhaus + threatfox + malwarebazaar)"
+        }
+        "HUNTSMAN_VIRUSTOTAL_KEY" => {
+            "VirusTotal — free key at https://www.virustotal.com/gui/join-us"
+        }
+        "HUNTSMAN_ABUSEIPDB_KEY" => "AbuseIPDB — free key at https://www.abuseipdb.com/register",
+        "HUNTSMAN_SHODAN_KEY" => "Shodan — free key at https://account.shodan.io/register",
+        "HUNTSMAN_SECTRAILS_KEY" => {
+            "SecurityTrails — free tier at https://securitytrails.com/app/signup"
+        }
+        "HUNTSMAN_HUNTER_KEY" => "Hunter.io — free tier at https://hunter.io/users/sign_up",
+        "HUNTSMAN_GREYNOISE_KEY" => "GreyNoise — free key at https://viz.greynoise.io/signup",
+        "HUNTSMAN_URLSCAN_KEY" => "urlscan.io — free key at https://urlscan.io/user/signup",
+        "HUNTSMAN_LEAKIX_KEY" => "LeakIX — free key at https://leakix.net/auth/register",
+        "HUNTSMAN_INTELX_KEY" => "Intelligence X — free tier at https://intelx.io/signup",
+        "HUNTSMAN_EMAILREP_KEY" => "EmailRep — free key at https://emailrep.io/key",
+        "HUNTSMAN_CRIMINALIP_KEY" => {
+            "Criminal IP — free tier at https://www.criminalip.io/register"
+        }
+        "HUNTSMAN_IPQS_KEY" => {
+            "IPQualityScore — free tier at https://www.ipqualityscore.com/create-account"
+        }
+        "HUNTSMAN_CENSYS_ID" | "HUNTSMAN_CENSYS_SECRET" => {
+            "Censys — free tier at https://accounts.censys.io/register"
+        }
+        "HUNTSMAN_WHOISXML_KEY" => "WhoisXML — free tier at https://whois.whoisxmlapi.com",
+        "HUNTSMAN_ONYPHE_KEY" => "ONYPHE — free tier at https://www.onyphe.io/login/#register",
+        "HUNTSMAN_NETLAS_KEY" => "Netlas — free tier at https://app.netlas.io/registration",
+        "HUNTSMAN_PULSEDIVE_KEY" => "Pulsedive — free key at https://pulsedive.com/about/api",
+        "HUNTSMAN_OPENCORP_KEY" => "OpenCorporates — https://opencorporates.com/api_accounts/new",
+        "HUNTSMAN_NUMVERIFY_KEY" => "numverify — free tier at https://numverify.com/product",
+        "HUNTSMAN_OPENCELLID_KEY" => "OpenCelliD — free key at https://opencellid.org/register.php",
+        "HUNTSMAN_EXA_KEY" => "Exa AI — free tier at https://dashboard.exa.ai/api-keys",
+        "HUNTSMAN_WIGLE_TOKEN" | "HUNTSMAN_WIGLE_USER" => {
+            "WiGLE — free account at https://wigle.net/account"
+        }
+        // Paid-only / invite providers.
+        "HUNTSMAN_HIBP_KEY" => "Have I Been Pwned — paid key at https://haveibeenpwned.com/API/Key",
+        "HUNTSMAN_DEHASHED_KEY" | "HUNTSMAN_DEHASHED_USER" => {
+            "DeHashed — paid, https://dehashed.com"
+        }
+        "HUNTSMAN_PROXYCURL_KEY" => "Proxycurl — paid, https://nubela.co/proxycurl",
+        "HUNTSMAN_SEON_KEY" => "SEON — free trial at https://seon.io",
+        "HUNTSMAN_EPIEOS_KEY" => "Epieos — https://epieos.com",
+        "HUNTSMAN_SEEKNOW_KEY" => "SeekNow (see-know.eu) — https://see-know.eu",
+        "HUNTSMAN_OATHNET_KEY" => "OathNet — https://oathnet.org",
+        _ => return None,
+    })
+}
+
 /// Resolve the keys env-file path.
 ///
 /// Termux: `$HOME/.huntsman.env` (typically `/data/data/com.termux/files/home/...`).
@@ -432,6 +490,28 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
+
+    #[test]
+    fn signup_hint_covers_common_free_providers() {
+        // The providers that surfaced in the operator's scan as "failing".
+        let vt = signup_hint("HUNTSMAN_VIRUSTOTAL_KEY").unwrap();
+        assert!(vt.contains("virustotal.com"), "{vt}");
+        let abusech = signup_hint("HUNTSMAN_ABUSECH_KEY").unwrap();
+        assert!(abusech.contains("auth.abuse.ch"));
+        // The ThreatFox key shares the abuse.ch account.
+        assert_eq!(
+            signup_hint("HUNTSMAN_THREATFOX_KEY"),
+            signup_hint("HUNTSMAN_ABUSECH_KEY")
+        );
+        // Unknown keys have no hint.
+        assert!(signup_hint("HUNTSMAN_NOPE_KEY").is_none());
+        // Every hint that exists carries an https URL.
+        for k in KNOWN_KEYS {
+            if let Some(h) = signup_hint(k) {
+                assert!(h.contains("https://") || h.contains("http"), "{k}: {h}");
+            }
+        }
+    }
 
     fn map_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs

@@ -321,6 +321,10 @@ pub struct Scan {
     pub modules_timed_out: usize,
     #[serde(default)]
     pub modules_deduped: usize,
+    /// Modules that cleanly opted out because a required (optional) API key is
+    /// not configured — distinct from `modules_errored`.
+    #[serde(default)]
+    pub modules_skipped: usize,
     #[serde(default)]
     pub options: ScanOptions,
 }
@@ -339,6 +343,7 @@ impl Scan {
             modules_errored: 0,
             modules_timed_out: 0,
             modules_deduped: 0,
+            modules_skipped: 0,
             options: ScanOptions::default(),
         }
     }

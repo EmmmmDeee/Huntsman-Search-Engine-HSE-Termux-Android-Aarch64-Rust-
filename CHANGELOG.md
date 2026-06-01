@@ -12,6 +12,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Graceful key UX — unconfigured optional modules no longer look like
+  failures.** A module that needs an API key you haven't set returned
+  `Err(MissingKey)`, which the engine counted as a **module error** (the
+  `virustotal … missing key` noise in your scan). The engine now special-cases
+  `MissingKey` into a clean **`ModuleSkipped`** event with an actionable, mostly-
+  free signup hint (e.g. *"needs API key HUNTSMAN_VIRUSTOTAL_KEY — VirusTotal,
+  free key at …"*), tracked in a new **`modules_skipped`** scan-summary counter
+  distinct from `modules_errored`. `hse doctor` now lists every unset key with
+  its free-signup URL, and `hse provision --verify` detects missing keys via the
+  new skip event. A `keys::signup_hint` registry maps ~30 providers to their
+  (mostly free) signup pages.
+
 - **`keybase` identity module reinvigorated.** It already pivoted a username to
   its cryptographically-verified linked accounts, but discarded the verified
   `service_url` of each proof and only recognised 4 platforms. It now surfaces

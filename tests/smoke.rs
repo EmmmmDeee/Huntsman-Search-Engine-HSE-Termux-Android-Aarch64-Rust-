@@ -64,6 +64,28 @@ impl Module for EmailToUsernameSynth {
     }
 }
 
+/// A keyed module with no key configured: returns `Err(MissingKey)`, which the
+/// engine must treat as a CLEAN SKIP (needs-key notice), not a module error.
+struct NeedsKeyModule;
+
+#[async_trait]
+impl Module for NeedsKeyModule {
+    fn name(&self) -> &'static str {
+        "needs_key"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+        Err(huntsman_search_engine::core::error::Error::MissingKey(
+            "HUNTSMAN_VIRUSTOTAL_KEY".into(),
+        ))
+    }
+}
+
 /// Accepts Username, produces ONE Phone (synthetic).
 struct UsernameToPhoneSynth;
 
@@ -1243,6 +1265,32 @@ async fn user_timeout_override_still_wins_over_module_max() {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn missing_key_is_a_clean_skip_not_an_error() {
+    // A keyed module with no key must be counted as SKIPPED, never ERRORED, and
+    // must not stop the scan or stop other modules from producing findings.
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(NeedsKeyModule), Arc::new(SyntheticModule)],
+        "needs-key",
+        TargetKind::Email,
+        "alice@contoso.com",
+    );
+    let scan = Scan::new(sid.clone(), target.clone());
+    let result = engine.run(scan, target, ctx).await.unwrap();
+
+    assert_eq!(result.status, ScanStatus::Complete, "scan still completes");
+    assert_eq!(
+        result.modules_skipped, 1,
+        "the unconfigured keyed module is a clean skip"
+    );
+    assert_eq!(result.modules_errored, 0, "and is NOT reported as an error");
+    // The other module still ran and produced its finding.
+    assert!(
+        !store.entities_for_scan(&sid).unwrap().is_empty(),
+        "a needs-key skip must not suppress other modules' results"
+    );
+}
 
 fn setup(
     modules: Vec<Arc<dyn Module>>,
