@@ -5,16 +5,24 @@
 //! Multiplier-tier pools (separate quotas, overlapping but distinct
 //! data corpora — combining them maximises coverage).
 //!
-//! Per-target endpoint routing:
+//! Per-target endpoint routing (paid quota spent only where free can't reach):
 //!
-//!   Email      → /search + /stealer + /network/email-check
-//!   Username   → /search + /stealer
-//!   Phone      → /network/phone
-//!   Domain     → /domain/intel
+//!   Email      → /search + /stealer + /breachhub + /network/email-check
+//!   Username   → /search + /stealer + /username/social + /username/history
+//!                + /breachhub  (+ discord/steam ID-resolution pivots)
+//!   Phone      → /search + /network/phone + /breachhub
+//!   Domain     → /domain/intel + /domain/whois
 //!   IpAddress  → /network/ip
-//!   FullName   → /search (auto-detect)
+//!   FullName   → /search (auto-detect) + /breachhub
 //!
-//! Each scan spends 1-3 SeekNow lookups (bounded by MAX_QUERIES_PER_SCAN).
+//! Single-origin presence checks (github/twitter/reddit/tiktok/roblox/xbox/
+//! minecraft) are deliberately NOT dispatched — the free `username_search`
+//! stack (600+ sites), `social_probe`, and `search_engines` scraping already
+//! cover those, so SeekNow's paid lookups go only to breach / stealer /
+//! username-history aggregation and cross-platform ID resolution. See
+//! [`FREE_COVERED_SINGLE_ORIGIN`] / [`effective_plan`].
+//!
+//! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups (default 160).
 //! Discovered credentials feed the same key-harvest pipeline as oathnet_pro
 //! — extract_api_keys_from_item recognises the same 80+ prefix patterns.
 
@@ -156,31 +164,38 @@ impl Module for SeekNow {
             }
         }
 
-        // ── Per-seed endpoint matrix: maximise SeekNow API coverage ──
+        // ── Per-seed endpoint matrix: maximise SeekNow's UNIQUE coverage ──
         //
-        // Each target kind plans the FULL set of relevant SeekNow
-        // endpoints, then dispatches them concurrently (bounded by
-        // remaining scan + session budget). The previous implementation
-        // ran 2-4 endpoints sequentially per target, leaving 99%+ of
-        // the daily quota unused. The remodel:
+        // Each target kind plans the relevant SeekNow endpoints, then
+        // `effective_plan` strips the single-origin presence checks the free
+        // username stack already covers, and the remainder dispatch
+        // concurrently (bounded by remaining scan + session budget). What
+        // actually runs:
         //
         //   Email     → stealer, breachhub, email-check
-        //   Username  → stealer, social aggregate, github, twitter,
-        //               reddit, tiktok, history, gaming/{roblox, xbox,
-        //               minecraft}, breachhub, discord/user
-        //               (the latter when the value parses as a
-        //               Discord ID; see `looks_like_discord_id`).
+        //   Username  → stealer, social (multi-platform aggregate, 1 call),
+        //               username-history, breachhub
+        //               (+ discord/user + discord-to-roblox when the value
+        //                parses as a Discord ID; + steam when a Steam ID —
+        //                ID resolution, not single-site enumeration)
         //   Phone     → phone_info, breachhub, search(typed phone)
         //   Domain    → domain/intel, domain/whois
         //   IpAddress → network/ip
         //   FullName  → /search auto + breachhub
+        //
+        // The single-origin github/twitter/reddit/tiktok/roblox/xbox/minecraft
+        // endpoints are filtered out — free `username_search` handles those, so
+        // paid quota isn't wasted re-confirming them.
         //
         // Within each plan, calls run via `join_all` — the wall-time
         // collapses to the slowest single endpoint instead of summing
         // every call's latency. Budget gates inside util::see_know
         // turn no-quota calls into instant empty-vec returns.
         if !ctx.cancel.is_cancelled() && see_know::budget_remaining() {
-            let plan = plan_endpoints(target.kind, v);
+            // effective_plan() drops single-origin endpoints the free
+            // username stack already covers, so paid quota is spent only on
+            // breach / history / multi-platform aggregation and ID pivots.
+            let plan = effective_plan(target.kind, v);
             let endpoint_results = dispatch_plan(key, v, &plan).await;
 
             for (endpoint, items) in &endpoint_results {
@@ -242,10 +257,52 @@ fn should_skip_seed(kind: TargetKind, v: &str) -> bool {
     }
 }
 
+/// SeekNow endpoints that hit a SINGLE third-party site to check username
+/// presence — exactly what the FREE `username_search` module already covers
+/// across 600+ sites (GitHub, X/Twitter, Reddit, TikTok, Roblox, Xbox,
+/// Minecraft, …). Spending a paid SeekNow lookup to re-confirm one of these is
+/// pure waste, so [`effective_plan`] strips them from every plan by default.
+///
+/// They are deliberately NOT deleted: the response extractors stay intact and
+/// the capability remains one filter-flip away, but the standing policy is
+/// "free breadth first, paid quota only for what free can't do" — breach /
+/// stealer / username-history aggregation and cross-platform ID resolution
+/// (Discord/Steam), which `SocialAggregate` (one multi-platform call) and the
+/// breach endpoints provide. Search-engine scraping (`search_engines`) and
+/// `social_probe` are the other free breadth methods layered alongside
+/// `username_search`; SeekNow sits on top of all of them as the paid multiplier.
+const FREE_COVERED_SINGLE_ORIGIN: &[EndpointCall] = &[
+    EndpointCall::GithubProfile,
+    EndpointCall::TwitterProfile,
+    EndpointCall::RedditProfile,
+    EndpointCall::TiktokProfile,
+    EndpointCall::RobloxProfile,
+    EndpointCall::XboxProfile,
+    EndpointCall::MinecraftProfile,
+];
+
+/// True if `call` is a single-origin presence check the free username stack
+/// already covers (see [`FREE_COVERED_SINGLE_ORIGIN`]).
+fn is_free_covered_single_origin(call: EndpointCall) -> bool {
+    FREE_COVERED_SINGLE_ORIGIN.contains(&call)
+}
+
+/// The plan actually dispatched: [`plan_endpoints`] minus the single-origin
+/// endpoints free username search already covers. Centralised so the
+/// quota-conservation policy is enforced in exactly one place and is unit
+/// testable without an HTTP client.
+fn effective_plan(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
+    let mut plan = plan_endpoints(kind, value);
+    plan.retain(|&c| !is_free_covered_single_origin(c));
+    plan
+}
+
 /// Per-target endpoint plan — names that will be dispatched concurrently
 /// by `dispatch_plan`. Order is meaningful only for tiebreakers when
 /// the per-scan budget cuts the plan short; high-yield endpoints come
-/// first.
+/// first. The single-origin members are filtered out by [`effective_plan`]
+/// before dispatch — they remain here so the matrix stays self-documenting
+/// and the capability is one policy-flip away.
 fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
     match kind {
         TargetKind::Email => vec![
@@ -440,7 +497,7 @@ fn looks_like_steam_id(s: &str) -> bool {
 /// here makes the per-target dispatch plan trivially extensible — to
 /// wire up a new endpoint, add a variant + a match arm in
 /// `invoke()`/`label()`/`argument()`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EndpointCall {
     Stealer,
     BreachHub,
@@ -1129,6 +1186,61 @@ mod tests {
                 "username plan missing endpoint {ep}; got {labels:?}"
             );
         }
+    }
+
+    #[test]
+    fn effective_plan_drops_free_covered_single_origin_endpoints() {
+        // Quota conservation: SeekNow must not spend a paid lookup on a
+        // single-origin presence check the free username_search stack already
+        // covers. effective_plan() is what actually dispatches.
+        let labels: Vec<&str> = effective_plan(TargetKind::Username, "alice")
+            .iter()
+            .map(|c| c.label())
+            .collect();
+        for dropped in [
+            "github",
+            "twitter",
+            "reddit",
+            "tiktok",
+            "roblox",
+            "xbox",
+            "minecraft",
+        ] {
+            assert!(
+                !labels.contains(&dropped),
+                "effective plan must DROP free-covered '{dropped}'; got {labels:?}"
+            );
+        }
+        // …while keeping the paid-unique value: breach/stealer/history plus the
+        // multi-platform aggregate (one call across many sites — not single-origin).
+        for kept in ["stealer", "social", "username_history", "breachhub"] {
+            assert!(
+                labels.contains(&kept),
+                "effective plan must KEEP paid-unique '{kept}'; got {labels:?}"
+            );
+        }
+        // The full matrix stays self-documenting — only dispatch is gated.
+        assert!(
+            plan_endpoints(TargetKind::Username, "alice")
+                .iter()
+                .any(|c| c.label() == "github"),
+            "plan_endpoints retains the capability (one policy-flip away)"
+        );
+    }
+
+    #[test]
+    fn effective_plan_keeps_id_resolution_pivots() {
+        // Discord/Steam ID resolution is cross-platform identity linkage, NOT
+        // single-origin enumeration — it survives the filter even though the
+        // paths live under discord/ and gaming/.
+        let labels: Vec<&str> = effective_plan(TargetKind::Username, "359023095012345678")
+            .iter()
+            .map(|c| c.label())
+            .collect();
+        assert!(
+            labels.contains(&"discord_user") && labels.contains(&"discord_to_roblox"),
+            "ID-resolution pivots must survive; got {labels:?}"
+        );
     }
 
     #[test]
