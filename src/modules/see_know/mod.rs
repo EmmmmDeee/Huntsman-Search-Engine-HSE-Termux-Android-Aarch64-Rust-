@@ -44,6 +44,13 @@ use crate::util::geo::is_valid_coords;
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
 use crate::util::see_know::{self, val_str};
 
+mod pivots;
+
+use pivots::{
+    discover_discord_pivots, discover_steam_pivots, dispatch_discord_pivots, dispatch_steam_pivots,
+    looks_like_discord_id, looks_like_steam_id,
+};
+
 const SRC: &str = "see_know";
 
 /// Re-export budget reset for the engine.
@@ -209,31 +216,82 @@ impl Module for SeekNow {
                 }
             }
 
-            // Identity-pivot pass: any Discord ID or Steam ID
-            // surfaced by the entity extractor triggers its respective
-            // gaming/identity endpoint so the graph closes within one
-            // scan. Both pivot kinds run concurrently and are bounded
-            // by the remaining per-scan budget.
-            if !ctx.cancel.is_cancelled() && see_know::budget_remaining() {
-                let mut pivot_results: Vec<(&'static str, Vec<Value>)> = Vec::new();
-                let discord_pivots = discover_discord_pivots(&result);
-                if !discord_pivots.is_empty() {
-                    pivot_results.extend(dispatch_discord_pivots(key, discord_pivots).await);
-                }
-                let steam_pivots = discover_steam_pivots(&result);
-                if !steam_pivots.is_empty() && see_know::budget_remaining() {
-                    pivot_results.extend(dispatch_steam_pivots(key, steam_pivots).await);
-                }
-                for (endpoint, items) in &pivot_results {
-                    for item in items {
-                        extract_entities(item, v, &ctx.scan_id, &mut seen, &mut result);
-                        extract_geo_entities(item, endpoint, &ctx.scan_id, &mut seen, &mut result);
-                    }
-                }
+            // Identity-pivot pass — SeekNow's unique edge over the free
+            // username stack. Discord/Steam IDs surfaced by the extractor are
+            // resolved to their LINKED accounts, and because those links chain
+            // (discord → roblox → steam → …) we chase them across MULTIPLE hops
+            // within budget rather than a single round. See [`resolve_identity_pivots`].
+            if !ctx.cancel.is_cancelled() {
+                resolve_identity_pivots(key, v, &ctx.scan_id, &mut seen, &mut result).await;
             }
         }
 
         Ok(result)
+    }
+}
+
+/// Maximum cross-platform identity-pivot hops per scan. Each hop resolves the
+/// IDs surfaced by the previous one; 3 covers the realistic chains
+/// (discord → roblox → steam, …) without unbounded fan-out, and the per-scan
+/// SeekNow budget + a visited-set guarantee termination regardless.
+const MAX_PIVOT_HOPS: usize = 3;
+
+/// Iteratively resolve cross-platform identity pivots — SeekNow's unique value.
+///
+/// Each hop scans the accumulated `result` for Discord/Steam IDs not yet
+/// resolved, dispatches the unresolved ones concurrently, folds the responses
+/// (entities + geo) back into the graph, and repeats. It stops when no new IDs
+/// appear, a hop yields no new entities, the per-scan budget is spent, or
+/// [`MAX_PIVOT_HOPS`] is reached — so it always halts. Free modules can
+/// enumerate a username across sites; only a breach/identity pool turns a
+/// Discord snowflake or SteamID64 into its linked accounts, and those links
+/// chain — so we chase them hard, within budget. Replaces the prior single-pass
+/// pivot so a discord → roblox → steam chain closes inside one scan.
+async fn resolve_identity_pivots(
+    key: &str,
+    seed_value: &str,
+    scan_id: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    // Distinct IDs already dispatched, so a chain that loops back never
+    // re-resolves the same account. Namespaced by kind ("d:"/"s:") so a numeric
+    // collision across platforms can't suppress a real pivot.
+    let mut resolved: HashSet<String> = HashSet::new();
+    for _hop in 0..MAX_PIVOT_HOPS {
+        if !see_know::budget_remaining() {
+            break;
+        }
+        let discord: Vec<String> = discover_discord_pivots(result)
+            .into_iter()
+            .filter(|id| resolved.insert(format!("d:{id}")))
+            .collect();
+        let steam: Vec<String> = discover_steam_pivots(result)
+            .into_iter()
+            .filter(|id| resolved.insert(format!("s:{id}")))
+            .collect();
+        if discord.is_empty() && steam.is_empty() {
+            break; // converged — no unresolved IDs left
+        }
+
+        let mut pivot_results: Vec<(&'static str, Vec<Value>)> = Vec::new();
+        if !discord.is_empty() {
+            pivot_results.extend(dispatch_discord_pivots(key, discord).await);
+        }
+        if !steam.is_empty() && see_know::budget_remaining() {
+            pivot_results.extend(dispatch_steam_pivots(key, steam).await);
+        }
+
+        let before = result.entities.len();
+        for (endpoint, items) in &pivot_results {
+            for item in items {
+                extract_entities(item, seed_value, scan_id, seen, result);
+                extract_geo_entities(item, endpoint, scan_id, seen, result);
+            }
+        }
+        if result.entities.len() == before {
+            break; // a hop that surfaced nothing new — stop chasing
+        }
     }
 }
 
@@ -368,129 +426,6 @@ async fn dispatch_plan(
         }
     });
     join_all(futures).await
-}
-
-/// Discord IDs (the 17–20 digit `discord:<snowflake>` strings emitted
-/// by the entity extractor) → pairs of (id, EndpointCall) for the two
-/// discord pivots.
-fn discover_discord_pivots(result: &ModuleResult) -> Vec<String> {
-    discover_prefixed_ids(result, "discord:", looks_like_discord_id)
-}
-
-/// Steam ID64s surfaced from breach data — emitted by the entity
-/// extractor as `steam:<17-digit-id>` Username entities. Pivoted
-/// through gaming/steam to pull the public profile.
-fn discover_steam_pivots(result: &ModuleResult) -> Vec<String> {
-    discover_prefixed_ids(result, "steam:", looks_like_steam_id)
-}
-
-/// Generalised prefix-based ID collector. Iterates extracted Username
-/// entities, strips the prefix, validates the rest with `validator`,
-/// and dedupes preserving first-seen order.
-fn discover_prefixed_ids(
-    result: &ModuleResult,
-    prefix: &str,
-    validator: fn(&str) -> bool,
-) -> Vec<String> {
-    let mut ids: Vec<String> = Vec::new();
-    for e in &result.entities {
-        if matches!(e.kind, EntityKind::Username)
-            && let Some(rest) = e.value.strip_prefix(prefix)
-            && validator(rest)
-            && !ids.iter().any(|x| x == rest)
-        {
-            ids.push(rest.to_string());
-        }
-    }
-    ids
-}
-
-/// Concurrent discord/user + discord/to-roblox dispatch for every
-/// discovered Discord ID. Each ID consumes up to two budget slots;
-/// when the budget can fit only one of the pair the `discord_user`
-/// call takes priority (it's higher-yield).
-///
-/// User and to-roblox calls are pushed to separate per-endpoint Vecs
-/// so each Vec is homogeneously typed for `join_all`; both vecs are
-/// then awaited concurrently via `tokio::join!`.
-async fn dispatch_discord_pivots(key: &str, ids: Vec<String>) -> Vec<(&'static str, Vec<Value>)> {
-    let budget = see_know::scan_budget_remaining() as usize;
-    if budget == 0 || ids.is_empty() {
-        return Vec::new();
-    }
-    let mut user_futures = Vec::new();
-    let mut roblox_futures = Vec::new();
-    let mut used = 0usize;
-    for id in &ids {
-        if used >= budget {
-            break;
-        }
-        let id_for_user = id.clone();
-        user_futures.push(async move {
-            let items = see_know::discord_user(key, &id_for_user)
-                .await
-                .unwrap_or_default();
-            ("discord_user", items)
-        });
-        used += 1;
-        if used >= budget {
-            break;
-        }
-        let id_for_roblox = id.clone();
-        roblox_futures.push(async move {
-            let items = see_know::discord_to_roblox(key, &id_for_roblox)
-                .await
-                .unwrap_or_default();
-            ("discord_to_roblox", items)
-        });
-        used += 1;
-    }
-    let (mut user_results, roblox_results) =
-        tokio::join!(join_all(user_futures), join_all(roblox_futures));
-    user_results.extend(roblox_results);
-    user_results
-}
-
-/// Concurrent gaming/steam dispatch for every discovered Steam ID.
-/// Mirrors the discord-pivot shape so the caller can compose both.
-async fn dispatch_steam_pivots(key: &str, ids: Vec<String>) -> Vec<(&'static str, Vec<Value>)> {
-    let budget = see_know::scan_budget_remaining() as usize;
-    if budget == 0 || ids.is_empty() {
-        return Vec::new();
-    }
-    let mut futures = Vec::new();
-    for id in &ids {
-        if futures.len() >= budget {
-            break;
-        }
-        let call = {
-            let id = id.clone();
-            async move {
-                let items = see_know::steam_profile(key, &id).await.unwrap_or_default();
-                ("steam", items)
-            }
-        };
-        futures.push(call);
-    }
-    join_all(futures).await
-}
-
-/// Discord snowflake heuristic — 17 to 20 decimal digits, no leading
-/// zero. Strict enough to reject usernames that happen to be all
-/// digits (typical 6-12 chars).
-fn looks_like_discord_id(s: &str) -> bool {
-    let len = s.len();
-    (17..=20).contains(&len) && s.chars().all(|c| c.is_ascii_digit()) && !s.starts_with('0')
-}
-
-/// Steam ID64 heuristic — exactly 17 decimal digits, the public
-/// account universe always starts with "765611979..." (steamID64
-/// base = 76561197960265728). We don't enforce that prefix here so
-/// edge-case accounts still pivot, but the length + no-leading-zero
-/// pair is enough to reject usernames that happen to be 16-digit
-/// breach IDs.
-fn looks_like_steam_id(s: &str) -> bool {
-    s.len() == 17 && s.chars().all(|c| c.is_ascii_digit()) && !s.starts_with('0')
 }
 
 /// Enum of SeekNow endpoints the module can target. Centralising them
@@ -1262,19 +1197,6 @@ mod tests {
         assert!(labels.contains(&"whois"));
     }
 
-    #[test]
-    fn looks_like_discord_id_strict_heuristic() {
-        // 17–20 digits, no leading zero.
-        assert!(looks_like_discord_id("12345678901234567"));
-        assert!(looks_like_discord_id("12345678901234567890"));
-        // Too short, too long, leading-zero, non-digit — all reject.
-        assert!(!looks_like_discord_id("1234567890123456")); // 16 digits
-        assert!(!looks_like_discord_id("123456789012345678901")); // 21 digits
-        assert!(!looks_like_discord_id("0123456789012345678")); // leading zero
-        assert!(!looks_like_discord_id("alice1234567890"));
-        assert!(!looks_like_discord_id(""));
-    }
-
     #[tokio::test]
     async fn dispatch_plan_returns_empty_for_empty_plan() {
         // An empty plan never reaches the util layer; this path must
@@ -1285,73 +1207,22 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    #[test]
-    fn discover_discord_pivots_extracts_unique_ids() {
-        let mut r = ModuleResult::new();
-        r.push(Entity::new(
-            EntityKind::Username,
-            "discord:359023095012345678",
-            0.6,
-            "test",
-        ));
-        // Duplicate ID — must be deduplicated.
-        r.push(Entity::new(
-            EntityKind::Username,
-            "discord:359023095012345678",
-            0.6,
-            "test",
-        ));
-        // Non-Discord username — must be skipped.
-        r.push(Entity::new(EntityKind::Username, "alice", 0.7, "test"));
-        // Non-Username entity with `discord:` prefix — must be skipped.
-        r.push(Entity::new(
-            EntityKind::Email,
-            "discord:foo@bar",
-            0.5,
-            "test",
-        ));
-        let ids = discover_discord_pivots(&r);
-        assert_eq!(ids, vec!["359023095012345678".to_string()]);
-    }
-
-    #[test]
-    fn looks_like_steam_id_strict_heuristic() {
-        // Exactly 17 digits, no leading zero.
-        assert!(looks_like_steam_id("76561198000000000"));
-        assert!(looks_like_steam_id("76561198123456789"));
-        // 16 / 18 digits, leading-zero, non-digit — all reject.
-        assert!(!looks_like_steam_id("7656119800000000")); // 16
-        assert!(!looks_like_steam_id("765611980000000000")); // 18
-        assert!(!looks_like_steam_id("07561198000000000")); // leading zero
-        assert!(!looks_like_steam_id("765611x8000000000"));
-        assert!(!looks_like_steam_id(""));
-    }
-
-    #[test]
-    fn discover_steam_pivots_extracts_unique_ids() {
-        let mut r = ModuleResult::new();
-        r.push(Entity::new(
-            EntityKind::Username,
-            "steam:76561198000000000",
-            0.6,
-            "test",
-        ));
-        r.push(Entity::new(
-            EntityKind::Username,
-            "steam:76561198000000000",
-            0.6,
-            "test",
-        ));
-        // Mixed-in discord entity — must be ignored by the steam
-        // pivot collector.
-        r.push(Entity::new(
-            EntityKind::Username,
-            "discord:359023095012345678",
-            0.6,
-            "test",
-        ));
-        let ids = discover_steam_pivots(&r);
-        assert_eq!(ids, vec!["76561198000000000".to_string()]);
+    #[tokio::test]
+    async fn resolve_identity_pivots_is_noop_and_terminates_without_ids() {
+        // A graph with no discord:/steam: IDs converges on the first hop with
+        // no HTTP and no new entities — the termination guarantee on the empty
+        // case (the multi-hop network behaviour is covered at the util layer).
+        crate::util::see_know::reset_budget();
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        result.push(Entity::new(EntityKind::Email, "a@b.com", 0.8, "t"));
+        let before = result.entities.len();
+        resolve_identity_pivots("key", "seed", "t", &mut seen, &mut result).await;
+        assert_eq!(
+            result.entities.len(),
+            before,
+            "no pivot IDs ⇒ no dispatch, no growth, clean halt"
+        );
     }
 
     #[test]
