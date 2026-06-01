@@ -4,16 +4,24 @@
 //!   /api/json/v2/osint-tools/search-by-login?username=<email_or_username>
 //!   /api/json/v2/osint-tools/search-by-domain?domain=<domain>
 //!
-//! Security: stealer credentials are NEVER stored in evidence — only the
-//! aggregate compromise metadata (machine name, OS, date, malware family,
-//! credential count). Passwords, session cookies, and raw credential
-//! content are intentionally never read from the response.
+//! Output: the subject entity (Email/Domain) is tagged + enriched with the
+//! aggregate compromise metadata; victim device IPs and the victim's
+//! compromised-**service** domains (the hosts they had saved credentials for —
+//! their digital footprint) are surfaced as pivot entities so a stealer-log hit
+//! recursively expands ("every node becomes a new origin").
+//!
+//! Security: stealer **credentials** are NEVER read or stored — the `Credential`
+//! struct deliberately declares only the service locator (URL/host), so serde
+//! drops the username/password/cookie fields entirely. Only the public service
+//! host (e.g. `paypal.com`) is surfaced — that is the victim's footprint, not a
+//! secret — alongside the aggregate metadata (machine name, OS, date, malware
+//! family, credential count).
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::{Entity, Evidence},
+    entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -41,7 +49,85 @@ struct Stealer {
     ip: Option<String>,
     malware_path: Option<String>,
     #[serde(default)]
-    credentials: Vec<serde_json::Value>,
+    credentials: Vec<Credential>,
+}
+
+/// One credential record inside a stealer log.
+///
+/// **Security**: only the *service locator* (the URL/host the credential was
+/// for) is declared, so serde drops the `username`/`password` (and any other)
+/// fields entirely — they are never read, parsed, or stored. The host of a
+/// service the victim had a saved credential for is their digital footprint
+/// (public infrastructure), not a secret, and is the single richest pivot a
+/// stealer log offers: "this victim used these services".
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Credential {
+    #[serde(alias = "URL", alias = "Url")]
+    url: Option<String>,
+    #[serde(alias = "Domain", alias = "host", alias = "hostname")]
+    domain: Option<String>,
+}
+
+impl Credential {
+    /// The normalised host of the service this credential was for, if it can be
+    /// resolved to a real domain. Lowercased, `www.`-stripped; bare IPs, app
+    /// pseudo-hosts (`android://…`), and hostless junk are rejected.
+    fn locator_host(&self) -> Option<String> {
+        let raw = self.url.as_deref().or(self.domain.as_deref())?.trim();
+        if raw.is_empty() || raw.starts_with("android") {
+            return None;
+        }
+        // Full URL → take its host; bare "domain/path" or "domain" → first seg.
+        let host = if raw.contains("://") {
+            url::Url::parse(raw).ok()?.host_str()?.to_string()
+        } else {
+            raw.split('/').next().unwrap_or(raw).to_string()
+        };
+        let mut host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        if let Some(stripped) = host.strip_prefix("www.") {
+            host = stripped.to_string();
+        }
+        // Must look like a domain, and never an app pseudo-host or a bare IP
+        // (those are not pivotable Domain entities).
+        if host.is_empty()
+            || !host.contains('.')
+            || host.contains('@')
+            || host.parse::<std::net::IpAddr>().is_ok()
+        {
+            return None;
+        }
+        Some(host)
+    }
+}
+
+/// Upper bound on distinct service domains surfaced per stealer-log hit. A
+/// heavily-infected machine can carry hundreds of saved credentials; capping
+/// keeps the graph (and a low-power Termux device) bounded while still
+/// surfacing the victim's most significant service footprint.
+const MAX_SERVICE_DOMAINS: usize = 40;
+
+/// Distinct, normalised service domains the victim had saved credentials for,
+/// across all stealer logs — the victim's compromised-service footprint.
+/// Pure (no I/O), deduplicated, deterministic order, capped at
+/// [`MAX_SERVICE_DOMAINS`]. Reads only the service host, never credentials.
+fn service_domains(stealers: &[Stealer]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for s in stealers {
+        for c in &s.credentials {
+            let Some(host) = c.locator_host() else {
+                continue;
+            };
+            if seen.insert(host.clone()) {
+                out.push(host);
+                if out.len() >= MAX_SERVICE_DOMAINS {
+                    return out;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Base confidence for stealer-log hits. Stealer logs are high-fidelity
@@ -94,6 +180,16 @@ impl Module for HudsonRock {
         // Single network request with no per-request timeout; the 3s default
         // would kill a slow-but-connected response as a spurious "timeout".
         10_000
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        // Victim device IPs and the victim's compromised-service domains — the
+        // pivots that let a stealer-log hit expand into IP-geo / DNS / WHOIS
+        // recursion. (The subject Email/Domain is enriched in place, not
+        // "produced".) Declaring these wires the new fan-out into the
+        // dependency-graph pivot chain.
+        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Domain];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -181,6 +277,21 @@ impl Module for HudsonRock {
         }
         entity.tag(format!("stealer-count:{}", data.stealers.len()));
 
+        // The victim's compromised-service footprint: the distinct service
+        // domains they had saved credentials for. The single richest pivot a
+        // stealer log offers ("every node becomes a new origin") — surfaced as
+        // an aggregate on the subject entity AND as Domain pivots below.
+        let services = service_domains(&data.stealers);
+        if !services.is_empty() {
+            let sample: Vec<&str> = services.iter().take(10).map(String::as_str).collect();
+            entity.add_evidence(
+                Evidence::new(SRC, "Compromised-service footprint from stealer log")
+                    .with_attr("distinct_service_domains", services.len().to_string())
+                    .with_attr("services_sample", sample.join(", ")),
+            );
+            entity.tag(format!("services:{}", services.len()));
+        }
+
         let mut result = ModuleResult::new();
         result.push(entity);
 
@@ -191,12 +302,7 @@ impl Module for HudsonRock {
                 && ip.contains('.')
                 && seen_ips.insert(ip.to_string())
             {
-                let mut e = Entity::new(
-                    crate::core::entity::EntityKind::IpAddress,
-                    ip,
-                    0.70,
-                    &ctx.scan_id,
-                );
+                let mut e = Entity::new(EntityKind::IpAddress, ip, 0.70, &ctx.scan_id);
                 e.tag(tags::STEALER_LOG);
                 e.tag("hudsonrock");
                 e.tag(crate::core::tags::GEOLOCATION_LEAD);
@@ -206,6 +312,26 @@ impl Module for HudsonRock {
                 ));
                 result.push(e);
             }
+        }
+
+        // Emit the victim's compromised-service domains as Domain pivots. These
+        // are leads (the victim used the service): confidence 0.60 keeps them
+        // Probable but below the default expansion floor, so they enrich the
+        // graph and correlator without auto-spending budget on further fan-out
+        // (mirrors name_intel's candidate-pivot policy). Only the public host is
+        // ever surfaced — never the credential.
+        for dom in &services {
+            let mut e = Entity::new(EntityKind::Domain, dom, 0.60, &ctx.scan_id);
+            e.tag(tags::BREACH);
+            e.tag(tags::STEALER_LOG);
+            e.tag("compromised-service");
+            e.tag("hudsonrock");
+            e.add_evidence(Evidence::new(
+                SRC,
+                "Service domain from a stealer-log credential record (victim had a saved \
+                 credential here; the credential itself is never read)",
+            ));
+            result.push(e);
         }
 
         Ok(result)
@@ -321,5 +447,109 @@ mod tests {
         assert!(parse_iso_epoch("2025-06-15").is_some());
         assert!(parse_iso_epoch("garbage").is_none());
         assert!(parse_iso_epoch("").is_none());
+    }
+
+    // ── compromised-service footprint (credential → service-domain pivots) ──
+
+    fn cred(url: Option<&str>, domain: Option<&str>) -> Credential {
+        Credential {
+            url: url.map(str::to_string),
+            domain: domain.map(str::to_string),
+        }
+    }
+
+    fn stealer_with(credentials: Vec<Credential>) -> Stealer {
+        Stealer {
+            computer_name: None,
+            operating_system: None,
+            date_compromised: None,
+            date_uploaded: None,
+            stealer_family: None,
+            ip: None,
+            malware_path: None,
+            credentials,
+        }
+    }
+
+    #[test]
+    fn locator_host_extracts_and_normalises() {
+        // Full URL → host, lowercased, www-stripped.
+        assert_eq!(
+            cred(Some("https://www.PayPal.com/login"), None)
+                .locator_host()
+                .as_deref(),
+            Some("paypal.com")
+        );
+        // Subdomains are preserved (a distinct service surface).
+        assert_eq!(
+            cred(Some("https://accounts.google.com/signin"), None)
+                .locator_host()
+                .as_deref(),
+            Some("accounts.google.com")
+        );
+        // Bare domain field, and "domain/path" without a scheme.
+        assert_eq!(
+            cred(None, Some("Coinbase.com")).locator_host().as_deref(),
+            Some("coinbase.com")
+        );
+        assert_eq!(
+            cred(Some("vpn.company.com/path"), None)
+                .locator_host()
+                .as_deref(),
+            Some("vpn.company.com")
+        );
+    }
+
+    #[test]
+    fn locator_host_rejects_non_pivotable() {
+        // App pseudo-hosts, bare IPs, hostless junk, and empties never become
+        // Domain pivots.
+        assert!(
+            cred(Some("android://aGVsbG8=@com.spotify.music/"), None)
+                .locator_host()
+                .is_none()
+        );
+        assert!(
+            cred(Some("http://192.168.1.1/"), None)
+                .locator_host()
+                .is_none()
+        );
+        assert!(cred(Some("localhost"), None).locator_host().is_none());
+        assert!(cred(Some(""), None).locator_host().is_none());
+        assert!(cred(None, None).locator_host().is_none());
+    }
+
+    #[test]
+    fn service_domains_dedupe_and_order() {
+        // Dedup is global across stealers; first-seen order is preserved; a
+        // www/non-www pair collapses to one.
+        let s1 = stealer_with(vec![
+            cred(Some("https://paypal.com/"), None),
+            cred(Some("https://github.com/login"), None),
+        ]);
+        let s2 = stealer_with(vec![
+            cred(Some("https://www.paypal.com/account"), None),
+            cred(None, Some("coinbase.com")),
+        ]);
+        assert_eq!(
+            service_domains(&[s1, s2]),
+            vec![
+                "paypal.com".to_string(),
+                "github.com".to_string(),
+                "coinbase.com".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn service_domains_never_reads_credentials_and_caps() {
+        // A heavily-infected machine is capped, and only hosts are ever read —
+        // there is no field through which a username/password could surface
+        // (the Credential struct declares only url/domain).
+        let creds: Vec<Credential> = (0..100)
+            .map(|i| cred(Some(&format!("https://svc{i}.example{i}.com/login")), None))
+            .collect();
+        let doms = service_domains(&[stealer_with(creds)]);
+        assert_eq!(doms.len(), MAX_SERVICE_DOMAINS);
     }
 }

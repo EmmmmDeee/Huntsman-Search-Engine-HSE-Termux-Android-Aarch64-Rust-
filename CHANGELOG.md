@@ -12,6 +12,30 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Free breach layer is now graph-expanding — `hudsonrock` surfaces the
+  victim's compromised-service footprint as pivots.** The charter makes
+  *API-free recursive discovery* the **primary, graph-expanding** ingestion
+  layer, but the free breach modules barely pivoted: `xposed_or_not` and
+  `pwned_passwords` emit no new entities, and `hudsonrock` (the strongest free
+  source — real stealer-log/infostealer intel) surfaced only victim IPs while
+  **discarding its single richest signal: the service domains the victim had
+  saved credentials for** (their digital footprint, and the headline data of a
+  stealer log). `hudsonrock` now extracts the distinct service hosts from the
+  stealer-log credential records and emits them as `Domain` pivot entities
+  (tagged `breach` / `stealer-log` / `compromised-service`), plus an aggregate
+  *compromised-service footprint* on the subject entity — so a single
+  stealer-log hit recursively expands into IP-geo / DNS / WHOIS / cert
+  intelligence ("every node becomes a new origin"). Emitted at confidence 0.60
+  (Probable, but below the default expansion floor) and capped at 40 distinct
+  domains per hit, so they enrich the graph and correlator without auto-spending
+  expansion budget or flooding a low-power device — mirroring `name_intel`'s
+  candidate-pivot policy. **Security is preserved and tightened**: the
+  credential `username`/`password`/cookie fields are never deserialized (the
+  `Credential` struct declares only the service locator), so only the *public*
+  service host (e.g. `paypal.com`) is ever surfaced — the victim's footprint,
+  not a secret. `hudsonrock` now also declares `produces()` (`IpAddress`,
+  `Domain`), wiring the fan-out into the dependency-graph pivot chain.
+
 - **Continuous entity resolution — identity equivalence is now resolved live
   during ingestion as non-destructive `SameAs` edges.** The charter lists
   *continuous entity resolution (merge/split/update in real time)* as a
