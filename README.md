@@ -13,7 +13,22 @@ SpiderFoot-style Web UI, zero native dependencies.
 
 ## One-Click Install (Termux Android)
 
-Open Termux and paste:
+### Fastest — prebuilt binary (no toolchain, no build)
+
+Each release ships a prebuilt, stripped **aarch64 Termux** binary. Install it
+in two commands — no Rust, no compile, no extra `pkg` deps:
+
+```bash
+curl -fsSL https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest/download/hse-aarch64-linux-android -o "$PREFIX/bin/hse" && chmod +x "$PREFIX/bin/hse"
+```
+
+`curl` is preinstalled on Termux; if missing, `pkg install -y curl` first.
+(Optional integrity check: download the matching `.sha256` from the release
+and run `sha256sum -c hse-aarch64-linux-android.sha256`.)
+
+### Build from source
+
+If you'd rather build (or want an unreleased commit), paste:
 
 ```bash
 pkg install -y git rust binutils clang && git clone --depth 1 https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
