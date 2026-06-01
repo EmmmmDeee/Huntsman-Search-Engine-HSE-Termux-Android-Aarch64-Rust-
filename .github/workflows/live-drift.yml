@@ -1,0 +1,35 @@
+name: Live API drift
+
+# Opt-in, NON-BLOCKING wire-format drift detection for free/keyless modules.
+# Runs the `#[ignore]`d tests in tests/live_drift.rs, which hit real
+# third-party endpoints. Deliberately decoupled from the main CI workflow
+# (ci.yml) so a third-party outage can NEVER fail a pull request — this job
+# only runs on a weekly schedule and on manual dispatch, and is marked
+# continue-on-error so even a hard failure surfaces as a notification, not a
+# red required check.
+on:
+  schedule:
+    # Mondays 06:00 UTC — once a week is enough to catch upstream shape changes.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  drift:
+    name: Live drift (free modules)
+    runs-on: ubuntu-latest
+    # Never block anything: this is a diagnostic, not a gate.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Only the ignored live-drift tests; `--ignored` runs exactly those.
+      # A failure here means an upstream provider changed its wire shape (or is
+      # down) — investigate tests/live_drift.rs, don't ignore it.
+      - name: Run live-drift tests
+        run: cargo test --test live_drift --locked -- --ignored --nocapture
