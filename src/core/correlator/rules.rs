@@ -502,7 +502,10 @@ pub(super) fn rule_au_014_geo_cluster(
                     description: format!(
                         "Coordinates '{}' confirmed by {} geo source(s)",
                         e.value,
-                        sources.len().max(hits.len())
+                        // Report the true independent-source count, not
+                        // `max(sources, tag_hits)` — 2 matching tags on a
+                        // single-source entity must not read as "2 geo sources".
+                        sources.len()
                     ),
                     entity_uids: vec![e.uid.clone()],
                     scan_id: scan_id.into(),
@@ -581,9 +584,11 @@ pub(super) fn rule_au_016_breach_ip_geo_chain(
     let linked: Vec<&Entity> = coords
         .iter()
         .filter(|c| {
-            c.evidence
-                .iter()
-                .any(|ev| breach_ips.iter().any(|ip| ev.summary.contains(&ip.value)))
+            c.evidence.iter().any(|ev| {
+                breach_ips
+                    .iter()
+                    .any(|ip| summary_mentions_ip(&ev.summary, &ip.value))
+            })
         })
         .copied()
         .collect();
@@ -778,20 +783,59 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
 }
 
 pub(super) fn date_diff_days(a: &str, b: &str) -> u64 {
-    let parse = |s: &str| -> Option<u64> {
+    // True calendar day count via the shared civil-day serial number. The
+    // previous `y*365 + m*30 + d` model mismeasured across month/year
+    // boundaries (e.g. 2023-12-31 → 2024-01-01 is 1 day but computed as 5),
+    // wrongly splitting/merging the breach-date clusters AU-019 keys on this.
+    let parse = |s: &str| -> Option<i64> {
         let parts: Vec<&str> = s.split('-').collect();
         if parts.len() != 3 {
             return None;
         }
-        let y: u64 = parts[0].parse().ok()?;
-        let m: u64 = parts[1].parse().ok()?;
-        let d: u64 = parts[2].parse().ok()?;
-        Some(y * 365 + m * 30 + d)
+        let y: i64 = parts[0].parse().ok()?;
+        let m: i64 = parts[1].parse().ok()?;
+        let d: i64 = parts[2].parse().ok()?;
+        if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+            return None;
+        }
+        Some(crate::core::timeline::days_from_civil(y, m, d))
     };
     match (parse(a), parse(b)) {
         (Some(da), Some(db)) => da.abs_diff(db),
         _ => u64::MAX,
     }
+}
+
+/// True if `summary` mentions `ip` as a whole IP token, not as a substring of a
+/// larger literal. `"Geolocation for 11.2.3.40".contains("1.2.3.4")` is `true`,
+/// so AU-016 would otherwise chain a breach IP to a coordinate geolocated for a
+/// DIFFERENT IP. We require the match not to be flanked by a hex digit or `.`
+/// (i.e. not part of a longer numeric IP literal). `:` is deliberately NOT a
+/// boundary char: these summaries use it as the IP→text separator
+/// ("Geolocation for 1.2.3.4: …"), so treating it as a continuation would reject
+/// the legitimate match. The remaining v6-substring-of-v6 edge is bounded by the
+/// hex-digit guard and is not a real concern for full breach-IP values.
+pub(super) fn summary_mentions_ip(summary: &str, ip: &str) -> bool {
+    if ip.is_empty() {
+        return false;
+    }
+    let is_ip_char = |b: u8| b.is_ascii_hexdigit() || b == b'.';
+    let bytes = summary.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = summary[from..].find(ip) {
+        let start = from + rel;
+        let end = start + ip.len();
+        let before_ok = start == 0 || !is_ip_char(bytes[start - 1]);
+        let after_ok = end >= bytes.len() || !is_ip_char(bytes[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = start + 1; // ip is ASCII, so start+1 is a char boundary
+        if from >= summary.len() {
+            break;
+        }
+    }
+    false
 }
 
 pub(super) fn rule_au_020_person_entity_cluster(
@@ -1552,10 +1596,21 @@ pub(super) fn rule_au_032_colocation_cluster(
 ) -> Vec<Correlation> {
     use std::collections::{HashMap, HashSet};
 
-    // Undirected adjacency from CoLocatedWith edges only.
+    // Confirmed-entity lookup. AU-032 receives `entities` already filtered to
+    // confirmed-only (candidates quarantined), but `relations` is UNfiltered, so
+    // build adjacency ONLY from edges whose BOTH endpoints are confirmed —
+    // mirroring AU-031's guard. Without this a quarantined `candidate` coordinate
+    // leaks into the cluster (and inflates the "N coordinates converge" count),
+    // defeating the candidate quarantine the relation rules are meant to honour.
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+
+    // Undirected adjacency from CoLocatedWith edges between confirmed entities.
     let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
     for r in relations {
-        if r.kind == RelationKind::CoLocatedWith {
+        if r.kind == RelationKind::CoLocatedWith
+            && by_uid.contains_key(r.from_uid.as_str())
+            && by_uid.contains_key(r.to_uid.as_str())
+        {
             adj.entry(r.from_uid.as_str()).or_default().push(&r.to_uid);
             adj.entry(r.to_uid.as_str()).or_default().push(&r.from_uid);
         }
@@ -1563,8 +1618,6 @@ pub(super) fn rule_au_032_colocation_cluster(
     if adj.is_empty() {
         return Vec::new();
     }
-
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
     // Connected components via DFS (stack). Iterate seed nodes in sorted order
     // so the emitted clusters are deterministic regardless of edge ordering.
@@ -1609,4 +1662,34 @@ pub(super) fn rule_au_032_colocation_cluster(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn date_diff_days_is_calendar_accurate_across_boundaries() {
+        // Regression: the old y*365+m*30+d model gave 5 here, mis-clustering.
+        assert_eq!(date_diff_days("2024-01-01", "2023-12-31"), 1);
+        assert_eq!(date_diff_days("2023-02-15", "2023-01-15"), 31); // Jan = 31 days
+        assert_eq!(date_diff_days("2024-03-01", "2024-02-28"), 2); // 2024 is leap
+        assert_eq!(date_diff_days("2020-06-15", "2020-06-15"), 0);
+        assert_eq!(date_diff_days("garbage", "2020-01-01"), u64::MAX);
+        assert_eq!(date_diff_days("2020-13-40", "2020-01-01"), u64::MAX); // invalid m/d
+    }
+
+    #[test]
+    fn summary_mentions_ip_requires_a_token_boundary() {
+        assert!(summary_mentions_ip(
+            "Geolocation for 1.2.3.4: Brisbane",
+            "1.2.3.4"
+        ));
+        assert!(summary_mentions_ip("1.2.3.4", "1.2.3.4"));
+        assert!(summary_mentions_ip("(1.2.3.4)", "1.2.3.4"));
+        // The substring-in-a-larger-IP false positives that motivated the fix.
+        assert!(!summary_mentions_ip("Geolocation for 11.2.3.40", "1.2.3.4"));
+        assert!(!summary_mentions_ip("110.0.0.1 is the host", "10.0.0.1"));
+        assert!(!summary_mentions_ip("", "1.2.3.4"));
+    }
 }

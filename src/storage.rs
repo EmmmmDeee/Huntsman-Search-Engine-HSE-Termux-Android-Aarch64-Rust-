@@ -303,13 +303,24 @@ impl Store {
                 superseded.push(*rowid);
             }
         }
+        // Supersede-delete + insert must be atomic: an error between them (or an
+        // INSERT that no-ops on a description collision with a NON-superseded
+        // sibling) would otherwise drop the subset rows AND lose the new finding.
+        // A transaction makes it all-or-nothing, and `DO UPDATE` (not DO NOTHING)
+        // folds a colliding sibling into the superseding finding instead of
+        // silently discarding it.
+        let tx = conn.unchecked_transaction()?;
         for rowid in superseded {
-            conn.execute("DELETE FROM correlations WHERE rowid = ?1", params![rowid])?;
+            tx.execute("DELETE FROM correlations WHERE rowid = ?1", params![rowid])?;
         }
-        conn.execute(
+        tx.execute(
             "INSERT INTO correlations(scan_id, rule_id, severity, description, entity_uids, ts, data_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(scan_id, rule_id, description) DO NOTHING",
+             ON CONFLICT(scan_id, rule_id, description) DO UPDATE SET
+                 severity    = excluded.severity,
+                 entity_uids = excluded.entity_uids,
+                 ts          = excluded.ts,
+                 data_json   = excluded.data_json",
             params![
                 c.scan_id,
                 c.rule_id,
@@ -320,6 +331,7 @@ impl Store {
                 json,
             ],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -423,6 +435,35 @@ impl Store {
         )?;
         tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
         tx.execute("DELETE FROM relations WHERE scan_id = ?1", params![scan_id])?;
+        // `entities_fts` is an EXTERNAL-CONTENT fts5 index kept in sync manually
+        // (no triggers — see the CREATE VIRTUAL TABLE comment + upsert path). A
+        // plain `DELETE FROM entities` would leave the FTS index pointing at the
+        // freed rowids: the integrity-check then fails, and once SQLite reuses a
+        // freed rowid the stale term resolves to a DIFFERENT entity (a deleted
+        // value resurfacing under a new one). So emit the fts5 'delete' command
+        // for every orphaned row — keyed by rowid + its indexed value/kind —
+        // BEFORE removing it from the content table, in the same transaction.
+        {
+            let mut stmt = tx.prepare(
+                "SELECT rowid, value, kind FROM entities
+                 WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
+            )?;
+            let orphans = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            for orphan in orphans {
+                let (rowid, value, kind) = orphan?;
+                tx.execute(
+                    "INSERT INTO entities_fts(entities_fts, rowid, value, kind)
+                     VALUES('delete', ?1, ?2, ?3)",
+                    params![rowid, value, kind],
+                )?;
+            }
+        }
         tx.execute(
             "DELETE FROM entities
              WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
@@ -1946,6 +1987,77 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&wal);
         let _ = std::fs::remove_file(format!("{path}-shm"));
+    }
+
+    #[test]
+    fn delete_scan_purges_fts_index_no_dangling_entries() {
+        // `entities_fts` is external-content fts5 with NO triggers; delete_scan
+        // must emit the fts5 'delete' command or a dangling index entry survives.
+        // After SQLite reuses the freed rowid, the deleted value would resurface
+        // under a NEW entity (search corruption). Regression for that desync.
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "del-scan");
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::Domain,
+                "uniquedeletetarget.example",
+                0.8,
+                "del-scan",
+            ))
+            .unwrap();
+        assert_eq!(
+            store
+                .search_entities("uniquedeletetarget", 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store.delete_scan("del-scan").unwrap());
+
+        // Base table empty AND the FTS index purged (no dangling entry), and the
+        // fts5 integrity-check (detects content/index drift) must pass.
+        assert!(
+            store
+                .search_entities("uniquedeletetarget", 10)
+                .unwrap()
+                .is_empty()
+        );
+        {
+            let conn = store.conn.lock();
+            let dangling: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM entities_fts WHERE entities_fts MATCH 'uniquedeletetarget'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(dangling, 0, "delete_scan left a dangling FTS entry");
+            conn.execute(
+                "INSERT INTO entities_fts(entities_fts) VALUES('integrity-check')",
+                [],
+            )
+            .expect("fts5 integrity-check must pass after delete_scan");
+        }
+
+        // Rowid reuse must NOT resurface the deleted value under a new entity.
+        insert_scan(&store, "fresh-scan");
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::Domain,
+                "freshvalue.example",
+                0.8,
+                "fresh-scan",
+            ))
+            .unwrap();
+        assert!(
+            store
+                .search_entities("uniquedeletetarget", 10)
+                .unwrap()
+                .is_empty(),
+            "deleted term resurfaced under a reused rowid"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

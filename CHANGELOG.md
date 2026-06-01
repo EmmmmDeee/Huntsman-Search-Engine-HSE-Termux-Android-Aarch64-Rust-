@@ -44,6 +44,45 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+A whole-codebase audit (a fresh sweep beyond the session's own changes) found and
+fixed eight pre-existing defects:
+
+- **`delete_scan` desynced the FTS5 search index (HIGH).** `entities_fts` is an
+  external-content fts5 table kept in sync manually (no triggers), but
+  `delete_scan` removed rows from `entities` without emitting the fts5 `'delete'`
+  — leaving dangling index entries. The integrity-check then failed and, once
+  SQLite reused a freed rowid, a deleted entity's terms resolved to a *different*
+  entity (corrupt search). Now emits the `'delete'` for every orphaned row in the
+  same transaction. +regression test.
+- **`save_pool` could wipe the API-key pool (HIGH).** It did a truncate-then-write
+  with no temp+rename and no serialization, so a crash/power-loss (routine on
+  Termux) or two concurrent writers (Phase-2 modules hitting a 429) left a torn
+  file — which `load_pool` discards, losing every discovered key. Now writes a
+  unique temp file and atomically `rename`s it over the target.
+- **AU-032 leaked quarantined `candidate` entities into correlations (HIGH).** The
+  co-location-cluster rule built its adjacency from the *unfiltered* relations
+  slice, so a candidate coordinate joined (and inflated) a cluster — the exact
+  quarantine bypass the entity rules are protected against. Now gates edges on
+  both endpoints being confirmed, mirroring AU-031.
+- **UTF-8 panic slicing an external profile page (HIGH).** `social_location`
+  sliced the HTML body at a fixed `pos + 300` byte offset; a multi-byte char
+  straddling the cut (common in locations like "São Paulo"/"東京") panicked. Now
+  uses a char-boundary-clamped window. +regression test.
+- **`upsert_correlation` could lose a finding (MEDIUM).** The supersede-delete +
+  insert weren't transactional, and a description collision with a non-superseded
+  sibling made the insert `DO NOTHING` after the subset rows were already deleted.
+  Now wrapped in a transaction with `DO UPDATE`.
+- **AU-016 matched breach IPs by raw substring (MEDIUM).** `1.2.3.4` matched
+  inside `11.2.3.40`, chaining a breach IP to a coordinate geolocated for a
+  *different* IP. Now requires an IP-token boundary. +regression test.
+- **`date_diff_days` mis-measured across month/year boundaries (MEDIUM).** The
+  `y*365 + m*30 + d` model made `2023-12-31`→`2024-01-01` read as 5 days,
+  wrongly splitting the breach-date clusters AU-019 keys on. Now uses the shared
+  exact civil-day arithmetic (`timeline::days_from_civil`). +regression test.
+- **AU-014 over-reported the geo source count (LOW).** It printed
+  `max(sources, tag_hits)` as "N geo source(s)"; now reports the true independent
+  source count.
+
 - **Robustness: UTF-8 panic when title-casing an accented name.** `search_engines`
   family-name extraction built display names with byte slicing
   (`name[..1]`/`&name[1..]`) on the operator's target surname and email local

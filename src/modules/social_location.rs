@@ -97,10 +97,24 @@ impl Module for SocialLocation {
 
 const SUPPORTED_HOSTS: &[&str] = &["github.com", "reddit.com"];
 
+/// `&html[start..]` capped to ~`max_bytes`, with the END clamped DOWN to a UTF-8
+/// char boundary. The body is an external HTTP response, so a fixed `start +
+/// max_bytes` slice would panic ("byte index N is not a char boundary") whenever
+/// a multi-byte char straddles the cut — and profile locations are full of them
+/// ("São Paulo", "München", "東京"). `start` is always a `find()` index here, so
+/// already a boundary.
+fn bounded_window(html: &str, start: usize, max_bytes: usize) -> &str {
+    let mut end = html.len().min(start + max_bytes);
+    while end > start && !html.is_char_boundary(end) {
+        end -= 1;
+    }
+    &html[start..end]
+}
+
 fn extract_github_location(html: &str) -> Option<String> {
     let marker = "p-label";
     let pos = html.find(marker)?;
-    let after = &html[pos..html.len().min(pos + 300)];
+    let after = bounded_window(html, pos, 300);
     let start = after.find('>')? + 1;
     let end = after[start..].find('<')? + start;
     let text = &after[start..end];
@@ -130,7 +144,7 @@ fn extract_meta_location(html: &str) -> Option<String> {
         let pattern = "content=\"";
         let attr = format!("\"{tag}\"");
         if let Some(tag_pos) = html.find(&attr) {
-            let search_area = &html[tag_pos..html.len().min(tag_pos + 300)];
+            let search_area = bounded_window(html, tag_pos, 300);
             if let Some(content_pos) = search_area.find(pattern) {
                 let start = content_pos + pattern.len();
                 let end = search_area[start..].find('"').unwrap_or(0) + start;
@@ -149,6 +163,24 @@ fn extract_meta_location(html: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_window_never_splits_a_utf8_char() {
+        // 'é' (2 bytes) straddles byte 300 → `&s[..300]` would panic. The window
+        // must clamp the end down to a char boundary and never panic.
+        let s = format!("{}é{}", "x".repeat(299), "y".repeat(50));
+        let w = bounded_window(&s, 0, 300);
+        assert!(
+            s.is_char_boundary(w.len()),
+            "window end must be a char boundary"
+        );
+        assert!(w.len() <= 300);
+        // The real extractors must not panic on such an external body either.
+        let html = format!("<span class=\"p-label\">{}München</span>", "x".repeat(290));
+        let _ = extract_github_location(&html);
+        let meta = format!("\"og:locality\"{}content=\"São Paulo\"", "x".repeat(290));
+        let _ = extract_meta_location(&meta);
+    }
 
     #[test]
     fn extract_github_location_from_html() {

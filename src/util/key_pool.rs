@@ -335,15 +335,36 @@ pub fn load_pool() -> KeyPool {
     }
 }
 
+/// Monotonic per-process counter giving each `save_pool` call a unique temp-file
+/// name, so two concurrent writers never share (and corrupt) the same temp.
+static SAVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub fn save_pool(pool: &KeyPool) -> std::io::Result<()> {
     let path = pool_path();
     let data = pool.snapshot();
     let json = serde_json::to_string_pretty(&data).map_err(std::io::Error::other)?;
-    std::fs::write(&path, json)?;
+    // Atomic, crash- and concurrency-safe write: write a UNIQUE temp file in the
+    // same directory (perms first), then `rename` it over the target. `rename`
+    // is atomic on a POSIX filesystem, so a crash / power-loss (routine on
+    // Termux) or two concurrent writers (Phase-2 modules each hitting a 429 →
+    // `report_key_exhausted` → save_pool) can never leave a truncated/garbled
+    // pool. `load_pool` discards a corrupt file — wiping every discovered key —
+    // so the previous truncate-then-write was real data-loss exposure.
+    let seq = SAVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = std::path::PathBuf::from(format!(
+        "{}.tmp.{}.{seq}",
+        path.display(),
+        std::process::id()
+    ));
+    std::fs::write(&tmp, json.as_bytes())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
     Ok(())
 }
