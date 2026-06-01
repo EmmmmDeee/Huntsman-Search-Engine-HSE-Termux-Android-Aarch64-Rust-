@@ -605,6 +605,12 @@ impl ScanEngine {
                 let key = visit_key(&new_target);
                 if visited.insert(key) {
                     let richness = self.graph.richness_for(tk);
+                    // Strategy weight × a non-saturating corroboration prior.
+                    // c_effective() clamps at 1.0, erasing the cross-correlation
+                    // signal for confident pivots; re-apply it on the ranking so
+                    // a lead confirmed by N independent sources is dispatched
+                    // ahead of an equally-confident single-source lead (its
+                    // dispatch is likelier to yield genuine children).
                     let weight = crate::core::scan::expansion_weight_for_strategy(
                         opts.expansion_strategy,
                         tk,
@@ -612,7 +618,7 @@ impl ScanEngine {
                         &entity.value,
                         has_paid,
                         richness,
-                    );
+                    ) * crate::core::scan::corroboration_prior(entity.source_count());
                     next.push((new_target, weight, entity.uid.clone()));
                 }
             }
@@ -622,14 +628,17 @@ impl ScanEngine {
             // dampens generic mega-domains that waste expansion budget.
             next.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-            // ROI bundle: top-K gate. Keep only the top candidates by
-            // weight, scaled with concurrency. Stops long-tail noise
-            // (e.g. 80 low-weight domains from a single SERP) from
-            // consuming the round.
+            // ROI bundle: top-K gate + relative knee. Keep the leading
+            // candidates by weight (budget-bounded via top-K, scaled with
+            // concurrency) AND drop the long tail that sorts far below this
+            // round's best lead (quality-bounded via the knee). Stops both
+            // a flood of low-weight domains from a single SERP and the
+            // dampened mega-domain noise that survives top-K on a thin round.
             if opts.max_roi {
-                let k = crate::core::roi::top_k_for_round(opts.max_concurrent);
-                if next.len() > k {
-                    next.truncate(k);
+                let weights: Vec<f64> = next.iter().map(|(_, w, _)| *w).collect();
+                let keep = crate::core::roi::effective_cutoff(&weights, opts.max_concurrent);
+                if next.len() > keep {
+                    next.truncate(keep);
                 }
             }
             let dispatched_this_round = next.len();

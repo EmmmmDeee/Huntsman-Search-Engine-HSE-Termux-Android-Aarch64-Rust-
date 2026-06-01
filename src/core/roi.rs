@@ -52,6 +52,45 @@ pub fn top_k_for_round(max_concurrent: usize) -> usize {
     2 * max_concurrent.max(1) + 8
 }
 
+/// Fraction of the leading candidate's weight below which a candidate is
+/// treated as long-tail noise and dropped from the round — even if it would
+/// fit under [`top_k_for_round`]. Conservative (5%) so it only bites genuine
+/// bottom-feeders (dampened mega-domains, barely-above-floor leads) that sort
+/// 20×+ below a strong geo/identity pivot, never the contested middle.
+pub const KNEE_FRACTION: f64 = 0.05;
+
+/// How many candidates to keep from a round's **weight-sorted-descending**
+/// queue under `max_roi`: the smaller of the concurrency-scaled
+/// [`top_k_for_round`] cap and a *relative knee* — the count of candidates
+/// whose weight is within [`KNEE_FRACTION`] of the leader. Always keeps at
+/// least the leader, so a round never starves. Pure over the sorted weights.
+///
+/// The knee complements top-K: top-K bounds breadth by a fixed budget, the
+/// knee bounds it by *quality relative to this round's best lead*. A round
+/// topped by a corroborated address (weight ~50) drops facebook.com-class
+/// noise (weight ~5) that top-K alone would still dispatch; a flat round of
+/// similar-weight leads keeps them all (up to top-K).
+pub fn effective_cutoff(sorted_weights_desc: &[f64], max_concurrent: usize) -> usize {
+    if sorted_weights_desc.is_empty() {
+        return 0;
+    }
+    let cap = top_k_for_round(max_concurrent);
+    let top = sorted_weights_desc[0];
+    let knee = if top > 0.0 {
+        let threshold = top * KNEE_FRACTION;
+        sorted_weights_desc
+            .iter()
+            .take_while(|&&w| w >= threshold)
+            .count()
+            .max(1)
+    } else {
+        // Degenerate all-zero (or negative) round: no quality signal to knee
+        // on, so fall back to the top-K budget alone.
+        sorted_weights_desc.len()
+    };
+    knee.min(cap).max(1)
+}
+
 /// Marginal yield = new entities discovered last round / targets dispatched.
 /// Returns `f64::INFINITY` when no targets were dispatched (first round,
 /// or empty queue) — never terminates recursion on insufficient data.
@@ -124,6 +163,43 @@ mod tests {
         assert_eq!(top_k_for_round(0), 10); // 2*1+8
         assert_eq!(top_k_for_round(4), 16);
         assert_eq!(top_k_for_round(16), 40);
+    }
+
+    #[test]
+    fn effective_cutoff_drops_long_tail_below_the_knee() {
+        // Leader 50; tail of 5.0 (10%, kept) and 2.0 (4%, < 5% knee → dropped).
+        // facebook.com-class noise (weight ~5 vs a ~50 geo lead) sits right at
+        // the boundary; the sub-knee 2.0 entries are cut despite fitting top-K.
+        let w = [50.0, 40.0, 10.0, 5.0, 2.0, 2.0, 1.0, 0.5];
+        // knee keeps weights >= 2.5: 50,40,10,5 → 4 candidates.
+        assert_eq!(effective_cutoff(&w, 4), 4);
+    }
+
+    #[test]
+    fn effective_cutoff_keeps_a_flat_round_up_to_top_k() {
+        // All candidates within the knee of the leader → quality gate is inert,
+        // top-K is the only bound. 20 equal weights, top_k(4)=16.
+        let w = vec![1.0_f64; 20];
+        assert_eq!(effective_cutoff(&w, 4), 16);
+        // Fewer than top-K and all flat → keep them all.
+        let w2 = vec![1.0_f64; 5];
+        assert_eq!(effective_cutoff(&w2, 4), 5);
+    }
+
+    #[test]
+    fn effective_cutoff_is_bounded_and_never_starves() {
+        // Empty → 0.
+        assert_eq!(effective_cutoff(&[], 4), 0);
+        // Single candidate → always keep the leader.
+        assert_eq!(effective_cutoff(&[42.0], 4), 1);
+        // A lone leader towering over sub-knee noise still keeps >= 1.
+        assert_eq!(effective_cutoff(&[100.0, 0.1, 0.1], 4), 1);
+        // Degenerate all-zero round: no quality signal, fall back to top-K.
+        let z = vec![0.0_f64; 30];
+        assert_eq!(effective_cutoff(&z, 4), top_k_for_round(4));
+        // Never exceeds top-K.
+        let many = vec![10.0_f64; 100];
+        assert!(effective_cutoff(&many, 8) <= top_k_for_round(8));
     }
 
     #[test]

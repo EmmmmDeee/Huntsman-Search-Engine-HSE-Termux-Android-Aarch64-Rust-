@@ -812,6 +812,34 @@ fn geo_proximity_boost(kind: TargetKind) -> f64 {
     }
 }
 
+/// Coefficient on the corroboration prior. Larger than `c_eff`'s 0.15 because
+/// ranking can be more assertive than a calibrated confidence — but small
+/// enough that corroboration only *refines order within* a geo-proximity tier,
+/// never overrides geo-convergence (an 8-source far entity scores ×1.52, still
+/// under a 1-source IP's ×1.8 geo boost).
+const CORROBORATION_PRIOR_COEFF: f64 = 0.25;
+
+/// Non-saturating ranking multiplier rewarding independent cross-correlation.
+///
+/// `c_effective()` already folds corroboration in via `1 + 0.15·ln(sources)`,
+/// but it is **clamped to 1.0** — so for confident pivots the corroboration
+/// signal is erased: a c_eff=1.0 entity confirmed by six independent sources
+/// ranks identically to a single-source one. Expansion ranking is exactly
+/// where that signal matters most (a cross-corroborated lead is far likelier
+/// to be genuine, so its dispatch is likelier to yield real children), so we
+/// re-introduce it here as an *uncapped* factor on the expansion weight.
+///
+/// `1 + β·ln(source_count)` with `source_count ≥ 1`: a single source gives
+/// `ln(1)=0 → 1.0` (neutral — no penalty vs today's behaviour), and each
+/// additional independent source adds sharply diminishing weight. Uses the
+/// distinct-source count (the honest cross-correlation measure), never the
+/// inflatable `corroboration` magnitude.
+#[must_use]
+pub fn corroboration_prior(source_count: u32) -> f64 {
+    let sources = f64::from(source_count.max(1));
+    CORROBORATION_PRIOR_COEFF.mul_add(sources.ln(), 1.0)
+}
+
 /// Dampening factor for domain targets. Mega-domains (top internet
 /// properties that appear in nearly every search result) get a 0.15×
 /// penalty so they expand after target-specific entities.
@@ -985,7 +1013,10 @@ mod tests {
         for &kind in crate::core::dependency::ALL_TARGET_KINDS {
             for paid in [true, false] {
                 let (d, c) = optimal_depth(kind, paid);
-                assert!(d >= 1 && d <= MAX_DEPTH, "{kind:?} paid={paid}: depth {d}");
+                assert!(
+                    (1..=MAX_DEPTH).contains(&d),
+                    "{kind:?} paid={paid}: depth {d}"
+                );
                 assert!((0.40..=0.55).contains(&c), "{kind:?} paid={paid}: conf {c}");
             }
         }
@@ -1156,6 +1187,43 @@ mod tests {
         let high = expansion_weight(TargetKind::Domain, 0.90, "example.com", false);
         let low = expansion_weight(TargetKind::Domain, 0.45, "example.com", false);
         assert!(high > low * 1.9);
+    }
+
+    #[test]
+    fn corroboration_prior_is_neutral_at_one_source_and_grows_diminishingly() {
+        // Single source must not penalise vs today's behaviour: exactly 1.0.
+        assert!((corroboration_prior(1) - 1.0).abs() < 1e-12);
+        // 0 is floored to 1 (defensive).
+        assert!((corroboration_prior(0) - 1.0).abs() < 1e-12);
+        // Strictly increasing with independent sources…
+        assert!(corroboration_prior(2) > corroboration_prior(1));
+        assert!(corroboration_prior(4) > corroboration_prior(2));
+        assert!(corroboration_prior(8) > corroboration_prior(4));
+        // …with diminishing returns (concave: each doubling adds a constant,
+        // shrinking increment relative to the level).
+        let d_1_2 = corroboration_prior(2) - corroboration_prior(1);
+        let d_2_4 = corroboration_prior(4) - corroboration_prior(2);
+        assert!((d_1_2 - d_2_4).abs() < 1e-9, "ln doubling steps are equal");
+        assert!(corroboration_prior(4) - corroboration_prior(2) < d_1_2 * 1.0 + 1e-9);
+    }
+
+    #[test]
+    fn corroboration_prior_refines_within_tier_never_overrides_geo() {
+        // A heavily-corroborated FAR entity must still rank below a
+        // single-source geo-proximate IP — corroboration refines order within
+        // a geo tier, it does not invert the geo-convergence priority.
+        let far_8src =
+            expansion_weight(TargetKind::Organisation, 0.80, "x", false) * corroboration_prior(8);
+        let ip_1src = expansion_weight(TargetKind::IpAddress, 0.80, "8.8.8.8", false)
+            * corroboration_prior(1);
+        assert!(
+            ip_1src > far_8src,
+            "geo-proximate IP ({ip_1src:.1}) must outrank corroborated org ({far_8src:.1})"
+        );
+        // But within the SAME kind, corroboration breaks the c_eff=1.0 tie.
+        let a = expansion_weight(TargetKind::Email, 1.0, "a@x.com", true) * corroboration_prior(6);
+        let b = expansion_weight(TargetKind::Email, 1.0, "b@x.com", true) * corroboration_prior(1);
+        assert!(a > b, "6-source email must outrank 1-source at equal c_eff");
     }
 
     #[test]
