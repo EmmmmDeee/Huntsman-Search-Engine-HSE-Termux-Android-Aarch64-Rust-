@@ -88,10 +88,12 @@ pub enum Command {
         /// Per-module timeout override, in milliseconds.
         #[arg(long)]
         timeout: Option<u64>,
-        /// Recursive expansion depth. 0 = single round; 1+ auto-feeds discovered
-        /// entities back as new scan targets, up to N rounds deep.
-        #[arg(short, long, default_value_t = 0)]
-        depth: u32,
+        /// Recursive expansion depth. OMITTED (the default) auto-selects the
+        /// optimal depth for the seed kind + available keys — a deep,
+        /// ROI-bounded recursive scan out of the box. `--depth 0` forces a
+        /// single seed-only round; `--depth N` pins exactly N rounds.
+        #[arg(short, long)]
+        depth: Option<u32>,
         /// Shorthand for deep recursive expansion: sets depth to MAX_DEPTH (3),
         /// min_expand_confidence=0.50, max_concurrent=4. Overridden by
         /// explicit --depth / --min-expand-confidence / --max-concurrent.
@@ -128,7 +130,13 @@ pub enum Command {
         /// (default 0.75 new entities per dispatched target).
         #[arg(long)]
         max_roi: bool,
-        /// When `--max-roi` is set, override the default marginal-yield
+        /// Disable the ROI bounding that recursive scans now enable by default
+        /// (convergence-pruning + top-K candidate gate + adaptive-depth
+        /// termination). Use for an exhaustive, unpruned crawl. No effect on a
+        /// seed-only scan (`--depth 0`).
+        #[arg(long)]
+        no_roi: bool,
+        /// When ROI bounding is active, override the default marginal-yield
         /// floor (0.75). Lower = recurse further before giving up.
         #[arg(long)]
         min_marginal_yield: Option<f64>,
@@ -140,10 +148,9 @@ pub enum Command {
         /// Per-scan SeekNow (see-know.eu) budget override. Caps the
         /// number of SeekNow API queries this scan may dispatch.
         /// Default (None) falls back to HUNTSMAN_SEEKNOW_SCAN_CAP env
-        /// (160). Hard-clamped at 200 to preserve the daily session
-        /// ceiling. Raise for investigative scans on high-value
-        /// targets; lower for passive recces that shouldn't burn
-        /// quota.
+        /// (256). Hard-clamped at 512 (the session ceiling). Raise for
+        /// investigative scans on high-value targets; lower for passive
+        /// recces that shouldn't burn quota.
         #[arg(long)]
         seeknow_scan_cap: Option<u32>,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
@@ -406,6 +413,7 @@ pub async fn run() -> Result<()> {
             max_concurrent,
             adaptive,
             max_roi,
+            no_roi,
             min_marginal_yield,
             expansion_strategy,
             seeknow_scan_cap,
@@ -430,6 +438,7 @@ pub async fn run() -> Result<()> {
                 max_concurrent,
                 adaptive,
                 max_roi,
+                no_roi,
                 min_marginal_yield,
                 expansion_strategy,
                 seeknow_scan_cap,

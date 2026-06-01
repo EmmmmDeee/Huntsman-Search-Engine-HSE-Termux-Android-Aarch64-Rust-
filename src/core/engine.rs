@@ -222,11 +222,11 @@ impl ScanEngine {
         crate::modules::wigle::reset_budget();
 
         // Apply per-scan SeekNow budget override if the operator asked
-        // for one. Capped at 200 so a single scan cannot blow the
-        // per-session ceiling. `reset_budget` above cleared any prior
-        // override; this re-installs it for the current scan only.
+        // for one. Capped at 512 (the per-session ceiling) so a single scan
+        // cannot blow the session budget. `reset_budget` above cleared any
+        // prior override; this re-installs it for the current scan only.
         if let Some(cap) = scan.options.seeknow_scan_cap {
-            let clamped = cap.min(200);
+            let clamped = cap.min(512);
             crate::util::see_know::set_scan_cap_override(clamped);
         }
 

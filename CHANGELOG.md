@@ -10,6 +10,31 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **`hse scan` is now deep and recursive by default — effective out of the
+  box.** Previously a bare `hse scan` ran a single seed-only round (`depth=0`)
+  unless the operator remembered `--auto`/`--recursive`. Now an **omitted
+  `--depth` auto-selects the optimal depth** for the seed kind + available keys
+  (`optimal_depth`, the former `--auto` heuristic) and **enables ROI bounding by
+  default** (convergence-pruning + top-K candidate gate + adaptive-depth
+  termination) so the deeper default stays efficient and self-limiting. Power
+  users keep full control: `--depth 0` forces seed-only, `--depth N` pins N
+  rounds, `--no-roi` disables pruning for an exhaustive crawl. (`--depth` is now
+  optional rather than defaulting to `0`; the library `ScanOptions::default()`
+  is unchanged — this is an application-layer default, so the API/test contract
+  is preserved.)
+
+- **SeekNow (`see-know.eu`) is now the project workhorse — budgets raised.**
+  Per the standing "use SeekNow maximally" directive, the per-scan query budget
+  is raised **160 → 256** and the per-session ceiling **200 → 512** (the engine's
+  `seeknow_scan_cap` override clamp tracks it, 200 → 512). A 256-query scan lets
+  SeekNow's full 18-endpoint pool fire across ~16 recursively-discovered pivots
+  while still allowing ~19 full scans/day under the 5,000 daily ceiling; the 512
+  session ceiling keeps long-running radar/live sessions bounded ("bound
+  everything"). Env-tunable as before (`HUNTSMAN_SEEKNOW_SCAN_CAP`,
+  `HUNTSMAN_SEEKNOW_SESSION_CAP`).
+
 ### Added
 
 - **Free breach layer is now graph-expanding — `hudsonrock` surfaces the

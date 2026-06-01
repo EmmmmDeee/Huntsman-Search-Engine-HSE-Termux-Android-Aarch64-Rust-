@@ -23,7 +23,7 @@ pub(super) struct ScanCmd {
     pub free_only: bool,
     pub passive_only: bool,
     pub module_timeout_ms: Option<u64>,
-    pub depth: u32,
+    pub depth: Option<u32>,
     pub recursive: bool,
     pub auto: bool,
     pub min_expand_confidence: f64,
@@ -32,6 +32,7 @@ pub(super) struct ScanCmd {
     pub max_concurrent: usize,
     pub adaptive: bool,
     pub max_roi: bool,
+    pub no_roi: bool,
     pub min_marginal_yield: Option<f64>,
     pub expansion_strategy: String,
     pub seeknow_scan_cap: Option<u32>,
@@ -54,23 +55,30 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         )));
     }
 
-    let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth == 0 {
-        let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
-        let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
-        eprintln!(
-            "auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={})",
-            has_paid
-        );
-        (auto_depth, auto_conf, cmd.max_concurrent.max(4))
-    } else if cmd.recursive && cmd.depth == 0 {
+    // Effective-by-default: an OMITTED `--depth` auto-selects the optimal depth
+    // for the seed kind + available keys (a deep, ROI-bounded recursive scan out
+    // of the box). `--recursive` forces MAX_DEPTH; an explicit `--depth N`
+    // (including `0` = seed-only) pins exactly N — unless `--auto` overrides it.
+    let (depth, min_expand_confidence, max_concurrent) = if cmd.recursive && cmd.depth.is_none() {
         (
             crate::core::scan::MAX_DEPTH,
             cmd.min_expand_confidence.min(0.40),
             cmd.max_concurrent.max(4),
         )
+    } else if let Some(d) = cmd.depth.filter(|_| !cmd.auto) {
+        (d, cmd.min_expand_confidence, cmd.max_concurrent)
     } else {
-        (cmd.depth, cmd.min_expand_confidence, cmd.max_concurrent)
+        let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
+        let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
+        eprintln!("auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={has_paid})");
+        (auto_depth, auto_conf, cmd.max_concurrent.max(4))
     };
+
+    // ROI bounding (convergence-pruning + top-K gate + adaptive-depth) is ON by
+    // default for any recursive scan, so the deeper default depth stays
+    // efficient and self-limiting; `--no-roi` opts out for an exhaustive crawl,
+    // `--max-roi` forces it on even for a seed-only scan.
+    let max_roi = cmd.max_roi || (depth > 0 && !cmd.no_roi);
 
     let mut exclude_modules = split_csv(cmd.exclude).unwrap_or_default();
     if cmd.adaptive {
@@ -129,13 +137,13 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         notes: None,
         webhook_url: crate::core::webhook::webhook_url_from_env(),
         profile: None,
-        max_roi: cmd.max_roi,
+        max_roi,
         min_marginal_yield: cmd.min_marginal_yield,
         expansion_strategy,
         seeknow_scan_cap: cmd.seeknow_scan_cap,
     }
     .clamp_depth();
-    if cmd.max_roi {
+    if max_roi {
         eprintln!(
             "max-roi: convergence-pruning + top-K gate + adaptive-depth (floor={:.2})",
             cmd.min_marginal_yield
