@@ -5,6 +5,7 @@
 //! `live` re-runs the same scan on a fixed interval (v0.5+). See
 //! `docs/USAGE.md` for the full reference.
 
+mod device_scan;
 mod diff;
 mod doctor;
 mod export;
@@ -15,6 +16,7 @@ mod radar;
 mod scan;
 mod selftest;
 mod serve;
+mod sweep;
 
 use keys_cmd::KeysAction;
 
@@ -316,6 +318,27 @@ pub enum Command {
         #[arg(long)]
         free_only: bool,
     },
+    /// One-shot on-device sensor snapshot (the single-shot complement to
+    /// `radar`, which loops).
+    ///
+    /// Runs the local passive sensor modules — GPS, WiFi, cell towers,
+    /// ARP/LAN, network interfaces — exactly once, prints the captured
+    /// signals, and exits. With `--depth > 0`, each newly discovered signal is
+    /// pivoted once through the full OSINT module graph (sharing radar's
+    /// quota-protecting pivot rules). On a non-Termux host the sensor binaries
+    /// are absent; the scan fails safely and reports zero signals.
+    DeviceScan {
+        /// Pivot depth for each discovered signal. 0 (default) = collect only;
+        /// > 0 enriches each discovery through the full module graph.
+        #[arg(short, long, default_value_t = 0)]
+        depth: u32,
+        /// Restrict pivots to keyless (free) modules to preserve API quota.
+        #[arg(long)]
+        free_only: bool,
+        /// Output format: table | json | dossier. Default `table`.
+        #[arg(short, long, default_value = "table")]
+        output: String,
+    },
     /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report.
     ///
     /// JSON           — `[{ kind, value, ... }, ...]` flat entity list
@@ -496,6 +519,11 @@ pub async fn run() -> Result<()> {
             sweeps,
             free_only,
         } => radar::cmd_radar(interval, depth, sweeps, free_only).await,
+        Command::DeviceScan {
+            depth,
+            free_only,
+            output,
+        } => device_scan::cmd_device_scan(depth, free_only, output).await,
         Command::Export {
             scan_id,
             format,

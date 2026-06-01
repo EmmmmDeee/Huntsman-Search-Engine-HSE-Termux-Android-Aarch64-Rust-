@@ -14,13 +14,11 @@ use std::sync::Arc;
 use crate::core::error::Result;
 use crate::core::{
     module::ModuleContext,
-    scan::{Scan, ScanOptions, Target},
+    scan::{Scan, Target},
 };
 use crate::util::{http::build_client, keys, uid::scan_id};
 
 use super::{build_runtime, color_confidence, truncate, use_color};
-
-use crate::core::engine::LOCAL_PASSIVE_MODULES as SENSOR_MODULES;
 
 pub(super) async fn cmd_radar(
     interval: u64,
@@ -60,15 +58,8 @@ pub(super) async fn cmd_radar(
         // Phase 1: Sensor sweep (passive modules only, any target, depth=0)
         let sweep_sid = scan_id("radar", &format!("sweep-{sweep_num}"));
         let sweep_target = Target::new(crate::core::scan::TargetKind::Domain, "radar.local");
-        let sweep_opts = ScanOptions {
-            modules: Some(SENSOR_MODULES.iter().map(|s| (*s).to_string()).collect()),
-            passive_only: true,
-            depth: 0,
-            max_concurrent: 4,
-            ..Default::default()
-        };
-        let sweep_scan =
-            Scan::new(sweep_sid.clone(), sweep_target.clone()).with_options(sweep_opts);
+        let sweep_scan = Scan::new(sweep_sid.clone(), sweep_target.clone())
+            .with_options(super::sweep::sensor_sweep_options());
         let sweep_keys = keys::load();
         let sweep_ctx = ModuleContext {
             scan_id: sweep_sid.clone(),
@@ -116,33 +107,12 @@ pub(super) async fn cmd_radar(
             for (tk, value) in &new_targets {
                 let pivot_sid = scan_id(tk.canonical_str(), value);
                 let pivot_target = Target::new(*tk, value.clone());
-                // Exclude oathnet_pro from radar pivots on infra/sensor entities
-                // (IPs, domains, coords, MACs, ASNs). Sensor-discovered entities
-                // rarely yield OathNet breach results and the quota is better
-                // spent on identity-type entities discovered through other paths.
-                let is_infra = matches!(
-                    tk,
-                    crate::core::scan::TargetKind::IpAddress
-                        | crate::core::scan::TargetKind::Domain
-                        | crate::core::scan::TargetKind::Coordinates
-                        | crate::core::scan::TargetKind::MacAddress
-                        | crate::core::scan::TargetKind::Asn
-                );
-                let mut exclude = Vec::new();
-                if is_infra {
-                    exclude.push("oathnet_pro".to_string());
-                    exclude.push("see_know".to_string());
-                }
-                let pivot_opts = ScanOptions {
-                    depth,
-                    free_only,
-                    exclude_modules: exclude,
-                    max_concurrent: 4,
-                    min_expand_confidence: 0.50,
-                    ..Default::default()
-                };
-                let pivot_scan =
-                    Scan::new(pivot_sid.clone(), pivot_target.clone()).with_options(pivot_opts);
+                // Sensor-discovered infra (IPs, domains, coords, MACs, ASNs)
+                // sheds the paid identity modules so radar doesn't burn quota on
+                // them; identity kinds keep the full module set. Shared with
+                // `device-scan` via `super::sweep` so the two cannot drift.
+                let pivot_scan = Scan::new(pivot_sid.clone(), pivot_target.clone())
+                    .with_options(super::sweep::pivot_options(depth, free_only, *tk));
                 let pivot_keys = keys::load();
                 let pivot_ctx = ModuleContext {
                     scan_id: pivot_sid.clone(),

@@ -10,6 +10,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **`hse device-scan` — one-shot on-device sensor snapshot.** The single-shot
+  complement to `radar` (which loops): runs the local passive sensor modules
+  (GPS, WiFi, cell towers, ARP/LAN, network interfaces) exactly once, prints the
+  captured signals (`--output table|json|dossier`), and exits; with `--depth N`
+  it pivots each new discovery once through the full module graph. This closes
+  the spec's named `device-scan` subcommand (previously the only on-device entry
+  point was the continuous `radar` loop) and surfaces a capability SpiderFoot
+  structurally cannot offer — reading a handset's own sensors. On a non-Termux
+  host the sensor binaries are absent, so the modules fail safely and the scan
+  reports zero signals. The sweep/pivot *decision* logic (sensor module set,
+  paid-module quota excludes for infra kinds, pivot depth/confidence) is factored
+  into `cli::sweep` and shared with `radar`, so the one-shot and continuous paths
+  cannot drift; the infra-vs-identity classifier is a total, wildcard-free match
+  over `TargetKind`, so a new kind is a compile error until classified.
+
 ### Changed
 
 - **Resilience: a faulting module can no longer abort the process.** The release
