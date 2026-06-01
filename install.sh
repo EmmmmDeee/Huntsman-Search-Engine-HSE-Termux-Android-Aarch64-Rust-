@@ -216,15 +216,33 @@ step "Fetching source ($HSE_REF) → $HSE_INSTALL_DIR"
 
 mkdir -p "$(dirname "$HSE_INSTALL_DIR")"
 
+# Fail fast instead of hanging on an interactive username/password prompt:
+# a *public* repo never asks for credentials, so a prompt means the repo is
+# private (or the URL is wrong). GIT_TERMINAL_PROMPT=0 turns that prompt into
+# an immediate error we can explain, rather than a stuck install.
+export GIT_TERMINAL_PROMPT=0
+
+# Shared, credential-aware diagnosis for any clone/fetch auth failure.
+clone_help() {
+    log_warn "git could not access $HSE_REPO_URL without credentials."
+    hint "A *public* repo never asks for a username/password. This usually means:"
+    hint "  • the repository is PRIVATE — ask the owner to make it public, or"
+    hint "  • use SSH with a key already on your GitHub account:"
+    hint "      HSE_REPO_URL=git@github.com:EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git \\"
+    hint "        bash <(curl -fsSL .../install.sh)"
+    hint "  • or pass a token in the URL (kept out of shell history if exported):"
+    hint "      HSE_REPO_URL=https://<TOKEN>@github.com/EmmmmDeee/...git ./install.sh"
+}
+
 if [[ -d "$HSE_INSTALL_DIR/.git" ]]; then
     git -C "$HSE_INSTALL_DIR" fetch --depth 1 origin "$HSE_REF" \
-        || die "git fetch failed"
+        || { clone_help; die "git fetch failed"; }
     git -C "$HSE_INSTALL_DIR" checkout -B "$HSE_REF" "origin/$HSE_REF" \
         || die "git checkout failed"
     ok "Updated existing clone"
 else
     git clone --depth 1 --branch "$HSE_REF" "$HSE_REPO_URL" "$HSE_INSTALL_DIR" \
-        || die "git clone failed"
+        || { clone_help; die "git clone failed"; }
     ok "Cloned fresh"
 fi
 
