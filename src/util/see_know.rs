@@ -55,23 +55,24 @@ static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::Bearer, 75, 
 /// Per-scan + per-session quota budget for SeekNow API calls.
 ///
 /// SeekNow's premiumhq plan grants 5,000 daily lookups. The operator's
-/// standing directive is to use see-know.eu *maximally*, so each scan gets a
-/// 120-query envelope (env-tunable via `HUNTSMAN_SEEKNOW_SCAN_CAP`,
-/// runtime-overridable via `ScanOptions::seeknow_scan_cap`). A single Username
-/// seed alone plans up to 13 specialised endpoints (social aggregate, github,
-/// twitter, reddit, tiktok, history, breachhub, roblox, xbox, minecraft, +
-/// discord/steam pivots) on top of the universal `/search`; with depth
-/// expansion every discovered username/email/phone consumes its own matrix, so
-/// the previous 24-query cap throttled coverage to ~2 seeds' worth of endpoints
-/// and left most of the 18-endpoint pool unused. 120 lets the full matrix fire
-/// across a realistic pivot set in one scan while staying well under the
-/// session ceiling. The 200-query session ceiling (env-tunable via
-/// `HUNTSMAN_SEEKNOW_SESSION_CAP`, and hard-clamped to 200 by the engine) keeps
-/// long-running radar/live sessions bounded — the "bound everything" invariant
-/// for a 4 GB device — short of the daily 5,000 ceiling.
+/// standing directive is to use see-know.eu *maximally* — extensively, within
+/// reason, on every remotely promising seed — to maximise cross-correlation
+/// and the confidence of recursive searching. So each scan gets a 160-query
+/// envelope (env-tunable via `HUNTSMAN_SEEKNOW_SCAN_CAP`, runtime-overridable
+/// via `ScanOptions::seeknow_scan_cap`). A single Username seed alone plans up
+/// to 13 specialised endpoints (social aggregate, github, twitter, reddit,
+/// tiktok, history, breachhub, roblox, xbox, minecraft, + discord/steam pivots)
+/// on top of the universal `/search`; with depth expansion every discovered
+/// username/email/phone/domain consumes its own matrix, so a cap of 160 lets
+/// the full 18-endpoint pool fire across ~10 recursively-discovered pivots in
+/// one scan — corroborating far more of the graph — while still allowing ~31
+/// full scans before the daily 5,000 ceiling. The 200-query session ceiling
+/// (env-tunable via `HUNTSMAN_SEEKNOW_SESSION_CAP`, and hard-clamped to 200 by
+/// the engine) keeps long-running radar/live sessions bounded — the "bound
+/// everything" invariant for a 4 GB device — short of the daily 5,000 ceiling.
 static BUDGET: QuotaBudget = QuotaBudget::new(
     "seeknow",
-    120,
+    160,
     200,
     "HUNTSMAN_SEEKNOW_SCAN_CAP",
     "HUNTSMAN_SEEKNOW_SESSION_CAP",
@@ -491,14 +492,17 @@ mod tests {
 
     #[test]
     fn default_scan_cap_is_higher_than_legacy_eight() {
-        // Regression guard for the seek-eu remodel: the legacy cap was
-        // 8 lookups, leaving 99.84% of the daily quota unused. The new
-        // default must be at least 16.
+        // Regression guard for the operator's "use see-know.eu extensively"
+        // directive. The legacy cap was 8 lookups (99.84% of quota unused);
+        // it was raised to 120 and then to 160 so the full endpoint matrix
+        // fires across ~10 recursively-discovered pivots per scan. Lock the
+        // floor at 120 so coverage can't silently regress below "extensive",
+        // and keep it within the 200 session ceiling.
         reset_budget();
         let cap = budget_snapshot().scan_cap;
         assert!(
-            cap >= 16,
-            "scan cap dropped to {cap} — must remain ≥ 16 to leverage SeekNow quota"
+            (120..=200).contains(&cap),
+            "scan cap {cap} outside the extensive-use band [120, 200]"
         );
     }
 
