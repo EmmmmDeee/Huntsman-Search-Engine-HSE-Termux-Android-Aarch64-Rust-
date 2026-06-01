@@ -12,6 +12,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`hse scan` now defaults to the full `dossier` output — every scan is
+  maximally detailed and self-diagnosing.** The default output flips
+  `table` → `dossier`, which already renders the complete intelligence view:
+  every entity with its full unredacted evidence/attributes, correlations, typed
+  relations, the reconstructed timeline, geo intelligence + proximity graph, and
+  exhaustive per-module / per-source diagnostics (yield ranking, ROI hints,
+  confidence calibration). The dossier's execution ledger is now complete too —
+  the module line reports `run / errored / timed-out / skipped / deduped` (was
+  missing timed-out + skipped) and a one-line classification breakdown
+  (verified / probable / candidate) plus any scan error — so every part of a
+  scan can be inspected and tuned from a single default run. `--output table`
+  remains the terse one-line-per-entity view; `--output json` the full
+  machine-readable payload.
+
 - **`hse scan` is now deep and recursive by default — effective out of the
   box.** Previously a bare `hse scan` ran a single seed-only round (`depth=0`)
   unless the operator remembered `--auto`/`--recursive`. Now an **omitted

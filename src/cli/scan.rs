@@ -279,10 +279,33 @@ fn print_dossier(
     println!("  Target:    {} = {}", kind, value);
     println!("  Scan ID:   {}", &sid[..16]);
     println!("  Status:    {}", scan.status.as_str());
-    println!("  Entities:  {}", scan.entity_count);
+    if let Some(err) = &scan.error {
+        println!("  Error:     {err}");
+    }
+    // Full classification breakdown — the at-a-glance quality signal (how much
+    // of the graph is corroborated vs. a lead) that drives every tuning call.
+    let (mut verified, mut probable, mut candidate) = (0usize, 0usize, 0usize);
+    for e in entities {
+        match e.classify() {
+            crate::core::entity::Classification::Verified => verified += 1,
+            crate::core::entity::Classification::Probable => probable += 1,
+            crate::core::entity::Classification::Candidate => candidate += 1,
+        }
+    }
     println!(
-        "  Modules:   {} run, {} errored, {} deduped",
-        scan.modules_run, scan.modules_errored, scan.modules_deduped
+        "  Entities:  {} ({verified} verified, {probable} probable, {candidate} candidate)",
+        scan.entity_count
+    );
+    // Complete module-execution ledger: every disposition a module dispatch can
+    // reach, so a quiet scan can be diagnosed (errored vs. timed-out vs. skipped
+    // for a missing key vs. deduped) without re-running under a log capture.
+    println!(
+        "  Modules:   {} run, {} errored, {} timed out, {} skipped, {} deduped",
+        scan.modules_run,
+        scan.modules_errored,
+        scan.modules_timed_out,
+        scan.modules_skipped,
+        scan.modules_deduped
     );
     println!();
 

@@ -153,8 +153,16 @@ pub enum Command {
         /// recces that shouldn't burn quota.
         #[arg(long)]
         seeknow_scan_cap: Option<u32>,
-        /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
-        #[arg(short, long, default_value = "table")]
+        /// Output format: dossier | table | json. Default `dossier` — the
+        /// fully-detailed intelligence view: every entity with its complete
+        /// unredacted evidence/attributes, correlations, typed relations,
+        /// reconstructed timeline, geo intelligence, and exhaustive
+        /// per-module/per-source diagnostics (yield, ROI, confidence
+        /// calibration) so every part of a scan can be inspected and tuned.
+        /// `table` is the terse one-line-per-entity view; `json` is the full
+        /// machine-readable payload (entities + correlations + relations +
+        /// diagnostics).
+        #[arg(short, long, default_value = "dossier")]
         output: String,
     },
     /// List registered modules with their cost tier and accepted target kinds.
