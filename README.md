@@ -38,6 +38,14 @@ If you'd rather build (or want an unreleased commit), paste:
 pkg install -y git rust binutils clang && git clone --depth 1 https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
 ```
 
+> **Seeing a `Username for 'https://github.com':` prompt?** A public repo
+> never asks for credentials — that prompt means the repository is currently
+> **private**. No password is required once it's public; until then, clone
+> over SSH with a key already on your GitHub account (no typed password):
+> ```bash
+> pkg install -y git rust binutils clang openssh && git clone --depth 1 git@github.com:EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
+> ```
+
 Then launch the Web UI:
 
 ```bash
