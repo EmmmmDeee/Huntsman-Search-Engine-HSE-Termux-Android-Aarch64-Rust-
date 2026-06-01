@@ -30,6 +30,14 @@ wrapper + optional Termux:Boot autostart, writes the keys template, and runs
 rebuilds, **preserves your `~/.huntsman.env` keys**, and auto-rotates the
 embedded keys on first run. Idempotent — re-run any time to upgrade.
 
+**No-build fast path:** if a precompiled aarch64 `hse` (named `hse` or
+`hse-aarch64-linux-android`) is sitting in your **Downloads** folder, the
+installer validates it (ELF + optional `.sha256` + a run-test) and installs it
+directly — no Rust toolchain, no compile. And after a *source* build it caches
+the binary back to Downloads, so your next install (or another aarch64 phone)
+takes that instant path automatically. Point at a specific file with
+`HSE_PREBUILT=/path/to/hse`, or force a source build with `HSE_PREFER_BUILD=1`.
+
 Also works on Debian/Ubuntu and macOS. Full log at `~/.cache/hse-install.log`.
 See [`docs/INSTALL.md`](docs/INSTALL.md) for every install path, knobs
 (`HSE_REF`, `HSE_INSTALL_DIR`, …) and Termux quirks.

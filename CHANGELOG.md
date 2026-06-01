@@ -10,6 +10,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **Prebuilt-binary fast path in `install.sh` (primary; build is the fallback).**
+  The installer now scans Downloads / shared storage for a precompiled aarch64
+  `hse`, validates it (size + ELF magic + optional `.sha256` + a noexec-safe
+  run-test), and installs it directly — skipping the Rust toolchain and the
+  source build entirely (seconds, no build). If none is found it builds from
+  source as before, and then **caches the freshly-built binary back to
+  Downloads** as `hse-aarch64-linux-android` (+ `.sha256`), so the next
+  install — this device after a wipe, or another aarch64 phone — takes the
+  instant prebuilt path. Override with `HSE_PREBUILT=/abs/path`, add a search
+  dir with `HSE_DOWNLOADS`, or force a build with `HSE_PREFER_BUILD=1`.
+
 ### Performance
 
 - **Fast on-device build profile.** The `release` profile's single-threaded LTO

@@ -22,6 +22,11 @@
 #   HSE_BUILD_PROFILE release | fast  (default: fast on Termux, release elsewhere)
 #                     `fast` ≈4-6 min build; `release` ≈15-20 min, smallest binary
 #   HSE_FULL_BUILD    Set to 1 to force the size-optimised `release` profile
+#   HSE_PREBUILT      Abs path to a precompiled aarch64 `hse` to install directly
+#                     (validated + run-tested) instead of building. By default the
+#                     installer auto-scans Downloads / shared storage for one.
+#   HSE_DOWNLOADS     Extra dir to add to the prebuilt scan (before the defaults)
+#   HSE_PREFER_BUILD  Set to 1 to skip the prebuilt scan and always build
 #
 # Log file:
 #   $HOME/.cache/hse-install.log  (everything captured for post-mortem)
@@ -159,6 +164,92 @@ if [[ -r /proc/meminfo ]]; then
         ok "RAM: ${MEM_TOTAL_MB}MB"
     fi
 fi
+
+# ─── Prebuilt-binary fast path (PRIMARY; source build is the fallback) ───────
+# Look for a precompiled aarch64 `hse` in Downloads / shared storage; if one
+# validates and runs, install it and skip the toolchain + source build entirely
+# (seconds, no Rust needed). Robust to the usual Android gotchas: sdcard is
+# mounted noexec, so a candidate is copied into $HOME before the run-test;
+# integrity is checked against a sidecar `.sha256` when present; many download
+# dirs + filenames are probed. Override the file with HSE_PREBUILT=/abs/path;
+# force a source build with HSE_PREFER_BUILD=1.
+PREBUILT=0
+BUILT=""
+STAGED=""
+
+_prebuilt_dirs() {
+    [[ -n "${HSE_PREBUILT:-}" ]] && printf '%s\n' "$(dirname -- "$HSE_PREBUILT")"
+    printf '%s\n' \
+        "${HSE_DOWNLOADS:-}" \
+        "$HOME/storage/downloads" \
+        "$HOME/storage/shared/Download" "$HOME/storage/shared/Downloads" \
+        "$HOME/downloads" "$HOME/Download" "$HOME/Downloads" \
+        "/sdcard/Download" "/sdcard/Downloads" \
+        "/storage/emulated/0/Download" "/storage/emulated/0/Downloads"
+}
+
+_validate_prebuilt() {
+    # $1 = candidate path. On success sets STAGED to an exec-ok copy under $HOME.
+    local cand="$1" base sz magic want got ver staged
+    base="$(basename -- "$cand")"
+    [[ -f "$cand" && -r "$cand" ]] || return 1
+    sz=$(wc -c < "$cand" 2>/dev/null || echo 0)
+    [[ "$sz" =~ ^[0-9]+$ && "$sz" -gt 1000000 ]] || { log_warn "skip $base (size ${sz}B < 1MB)"; return 1; }
+    # ELF magic (\x7fELF) — cheap pre-filter before we bother exec-testing.
+    magic=$(od -An -tx1 -N4 "$cand" 2>/dev/null | tr -d ' \n')
+    [[ "$magic" == "7f454c46" ]] || { log_warn "skip $base (not an ELF binary)"; return 1; }
+    # Optional integrity check against a sidecar `<file>.sha256`.
+    if [[ -f "$cand.sha256" ]] && command -v sha256sum >/dev/null 2>&1; then
+        want=$(awk 'NR==1{print $1}' "$cand.sha256" 2>/dev/null)
+        got=$(sha256sum "$cand" 2>/dev/null | awk '{print $1}')
+        [[ -n "$want" && "$want" != "$got" ]] && { log_warn "skip $base (sha256 mismatch — corrupt/tampered)"; return 1; }
+        [[ -n "$want" ]] && ok "sha256 verified ($base)"
+    fi
+    # sdcard/Downloads is typically mounted noexec → copy into $HOME, then the
+    # run-test is the definitive arch/integrity check (a valid aarch64 binary
+    # runs on aarch64 Termux; wrong-arch or corrupt fails).
+    staged="$HOME/.cache/hse-prebuilt"
+    mkdir -p "$HOME/.cache"
+    cp -f "$cand" "$staged" 2>/dev/null || { log_warn "skip $base (copy into \$HOME failed)"; return 1; }
+    chmod 0755 "$staged" 2>/dev/null || true
+    if ver=$("$staged" --version 2>/dev/null) && [[ "$ver" == hse\ * ]]; then
+        ok "Prebuilt validated: $cand ($ver)"
+        STAGED="$staged"
+        return 0
+    fi
+    log_warn "skip $base (won't run --version — wrong arch or corrupt)"
+    rm -f "$staged" 2>/dev/null || true
+    return 1
+}
+
+maybe_use_prebuilt() {
+    [[ "${HSE_PREFER_BUILD:-0}" == "1" ]] && { hint "HSE_PREFER_BUILD=1 — skipping prebuilt scan, building from source"; return 1; }
+    step "Looking for a prebuilt aarch64 binary (Downloads / shared storage)"
+    local d n cand names
+    names=(hse-aarch64-linux-android hse-aarch64 hse hse.bin)
+    [[ -n "${HSE_PREBUILT:-}" ]] && names=("$(basename -- "$HSE_PREBUILT")" "${names[@]}")
+    while IFS= read -r d; do
+        [[ -n "$d" && -d "$d" ]] || continue
+        for n in "${names[@]}"; do
+            cand="$d/$n"
+            [[ -f "$cand" ]] || continue
+            if _validate_prebuilt "$cand"; then
+                BUILT="$STAGED"
+                PREBUILT=1
+                ok "Using prebuilt binary — skipping toolchain + source build"
+                return 0
+            fi
+        done
+    done < <(_prebuilt_dirs)
+    hint "No usable prebuilt in Downloads — building from source instead"
+    return 1
+}
+
+maybe_use_prebuilt || true
+
+# Everything from the toolchain install through the source build is skipped
+# when a validated prebuilt was found above (closed with `fi` before install).
+if [[ "$PREBUILT" != "1" ]]; then
 
 # ─── Install system dependencies ─────────────────────────────────────────────
 if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
@@ -328,11 +419,31 @@ BUILT="$CARGO_TARGET_DIR/$PROFILE/hse"
 [[ -x "$BUILT" ]] || die "Build claimed success but $BUILT is missing"
 ok "Built: $BUILT ($(du -h "$BUILT" | awk '{print $1}'))"
 
+fi  # end PREBUILT guard — toolchain + clone + source build skipped when a prebuilt was used
+
 # ─── Install binary ──────────────────────────────────────────────────────────
 step "Installing binary to $HSE_BIN_DIR/hse"
 
+[[ -n "$BUILT" && -x "$BUILT" ]] || die "internal: no binary to install (BUILT='$BUILT')"
 install -m 0755 "$BUILT" "$HSE_BIN_DIR/hse"
-ok "Installed"
+ok "Installed ($([[ "$PREBUILT" == "1" ]] && echo 'from prebuilt' || echo "built [$PROFILE]"))"
+
+# Self-bootstrapping prebuilt cache: copy a freshly-BUILT binary back to
+# Downloads so the next install — this device after a wipe, or another aarch64
+# phone — finds it on the prebuilt fast path and skips the build entirely. Skip
+# when we already came FROM a prebuilt (nothing new to cache). Best-effort.
+if [[ "$PREBUILT" != "1" && $IS_TERMUX -eq 1 ]]; then
+    for _dl in "$HOME/storage/downloads" "/sdcard/Download" "/storage/emulated/0/Download"; do
+        [[ -d "$_dl" && -w "$_dl" ]] || continue
+        if cp -f "$BUILT" "$_dl/hse-aarch64-linux-android" 2>/dev/null; then
+            if command -v sha256sum >/dev/null 2>&1; then
+                ( cd "$_dl" && sha256sum hse-aarch64-linux-android > hse-aarch64-linux-android.sha256 ) 2>/dev/null || true
+            fi
+            ok "Cached prebuilt → $_dl/hse-aarch64-linux-android (reused on the next install)"
+        fi
+        break
+    done
+fi
 
 # ─── PATH persistence ────────────────────────────────────────────────────────
 # Termux's $PREFIX/bin is already in PATH by default; only patch shell-rc
