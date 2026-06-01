@@ -6,32 +6,7 @@ upgrades in place.
 
 ---
 
-## Prebuilt Termux binary (fastest — no toolchain, no build)
-
-Every release ships a prebuilt, stripped **aarch64 Termux** binary. On a phone
-this is the quickest path — no Rust toolchain, no 1–3 min on-device compile, no
-extra `pkg` deps (the binary is pure rustls + bundled-SQLite; its only shared
-libs are Android's own `libc` / `libdl` / `libm`):
-
-```bash
-curl -fsSL https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest/download/hse-aarch64-linux-android -o "$PREFIX/bin/hse"
-chmod +x "$PREFIX/bin/hse"
-hse serve   # then open http://127.0.0.1:8080
-```
-
-Optional integrity check — verify the installed binary against the release's
-published hash:
-
-```bash
-echo "$(curl -fsSL https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest/download/hse-aarch64-linux-android.sha256 | cut -d' ' -f1)  $PREFIX/bin/hse" | sha256sum -c -
-```
-
-Prefer to build from source (or want an unreleased commit)? Use the one-liner
-or manual paths below.
-
----
-
-## The one-liner (Termux, Linux, macOS)
+## The one-liner — the single installation (Termux, Linux, macOS)
 
 Open Termux (or any shell) and paste:
 
@@ -52,6 +27,19 @@ That's everything. The installer:
 9. Runs `hse doctor` to verify.
 
 Everything is logged to `$HOME/.cache/hse-install.log` for post-mortem.
+
+### No-build fast path (no toolchain, no compile)
+
+The installer skips the Rust toolchain and the on-device build entirely when a
+precompiled aarch64 `hse` is available: drop a binary named `hse` or
+`hse-aarch64-linux-android` into your **Downloads** folder and the installer
+validates it (ELF magic + optional `.sha256` sidecar + a run-test) and installs
+it directly. After a *source* build it **caches the freshly-built binary back to
+Downloads**, so the next install — this device after a wipe, or another aarch64
+phone — takes the instant path automatically. Point at a specific file with
+`HSE_PREBUILT=/abs/path/to/hse`, or force a source build with
+`HSE_PREFER_BUILD=1`. (The cached binary is one you built from this repo — there
+is no separate release download to go stale.)
 
 ### Tuning knobs (environment variables)
 

@@ -10,6 +10,8 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-06-01
+
 ### Changed
 
 - **Graceful key UX — unconfigured optional modules no longer look like
