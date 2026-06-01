@@ -238,7 +238,7 @@ pub async fn steam_profile(key: &str, steam_id: &str) -> Result<Vec<Value>> {
 // network/{ip,phone,email-check}, username/{github,twitter,reddit,tiktok,
 // social,history}, gaming/{roblox,xbox,minecraft}, domain/whois) carry no
 // behaviour beyond `get_path(path, &[(param, value)])`, so they are dispatched
-// table-driven from `EndpointCall::spec` in `modules::see_know` via the shared
+// table-driven from `EndpointCall::spec` in `modules::see_know::endpoints` via the shared
 // [`get_path`] rather than one near-identical wrapper each.
 //
 // The two Discord bridges keep named wrappers because the module's pivot

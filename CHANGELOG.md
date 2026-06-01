@@ -10,6 +10,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **`see_know` module de-monolithed.** Extracted the SeekNow endpoint matrix
+  (the `EndpointCall` spec table, the per-target `plan_endpoints`, the
+  free-covered single-origin quota filter `effective_plan`, and the concurrent
+  `dispatch_plan` fan-out) out of the 1.2k-line `mod.rs` into a focused
+  `endpoints.rs`, mirroring the existing `pivots.rs` split. `mod.rs` now owns
+  only orchestration + response extraction (1264 → 897 lines); the dependency
+  direction stays one-way (`mod → {endpoints, pivots}`). Pure code-movement —
+  no behaviour change; the 10 endpoint unit tests moved with their code and a
+  whole-codebase debug sweep (unwrap/panic audit, log-site review, clippy)
+  confirmed the tree is otherwise healthy.
+
 ### Fixed
 
 - **Log flood on CLI scans.** Every event emission logged `broadcast dropped
