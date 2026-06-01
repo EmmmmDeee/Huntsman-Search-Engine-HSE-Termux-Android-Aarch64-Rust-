@@ -60,6 +60,37 @@ versions can include breaking changes; patch versions are bug-fix-only.
   covers a scan cancelled or budget-stopped mid-round (whose final partial round
   never reached a boundary), so the streamed timeline is always complete.
 
+### Fixed
+
+- **Internal enrichment no longer inflates confidence — fixes mass false
+  `VERIFIED` classifications.** Statistical analysis of a live `full_name`
+  scan (447 entities) found that **50 of its 56 `VERIFIED` entities were false
+  positives** — every one a single-source (`oathnet_pro`) breach-dump address
+  the engine had *itself* geocoded. The cause: `source_count()` (the
+  distinct-source cross-correlation signal behind `c_effective`) counted
+  `geo_normalize` — the engine's own internal geo-enrichment pass
+  (`enrich_geospatial`) — as if it were an independent corroborating source. So
+  a lone breach address with one real source read as "two sources" and the
+  independent-agreement model lifted it from 0.65 to 0.772, over the 0.75
+  `VERIFIED` line. A new `Entity::corroborating_sources()` excludes the engine's
+  internal passes (`NON_CORROBORATING_SOURCES`) from the count; `source_count()`
+  now uses it (falling back to a floor of 1 — never the raw `corroboration`
+  counter — when an entity's only evidence is internal). Re-running the model
+  over the same scan: **`VERIFIED` 56 → 6** (the 6 genuinely multi-sourced
+  entities survive; the 50 breach addresses correctly demote to `PROBABLE`). The
+  `geo_normalize` evidence is still retained — it carries the geohash/timezone
+  attributes the timeline, UI, and correlator read; only its weight as
+  *independent corroboration* is removed. Aligns with the charter: derived /
+  internal data is context, not structural authority — only independent sources
+  validate.
+
+- **The high-value-API expansion gate is no longer fooled by the same
+  inflation.** `target_distinct_sources()` — which gates the heaviest paid
+  module (`oathnet_pro`) behind "≥2 distinct sources" on expansion — also
+  counted `geo_normalize`, so a geocoded single-source entity could falsely
+  satisfy the cross-correlation gate and unlock a fresh breach-dump fan-out on
+  the next round. It now uses `corroborating_sources()` too, closing that path.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed

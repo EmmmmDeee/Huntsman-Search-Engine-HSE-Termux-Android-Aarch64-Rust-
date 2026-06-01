@@ -3,7 +3,9 @@
 //! # Architecture invariants
 //! - SHA-256 deterministic UIDs
 //! - GREATEST-semantics merge (confidence, corroboration only ever increase)
-//! - `C_eff = clamp(C × (1 + 0.15 × ln(corroboration)), 0.0, 1.0)`
+//! - `C_eff` rises with the count of DISTINCT INDEPENDENT corroborating
+//!   sources — not the raw `corroboration` field, and not the engine's own
+//!   internal enrichment passes (see [`source_count`] / [`NON_CORROBORATING_SOURCES`])
 //! - `Classify()` is derived-only from `C_eff`
 //! - No unsafe, no std::sync::Mutex (use tokio::sync)
 //! - Zero CGO / native deps
@@ -29,6 +31,25 @@ pub const CORROBORATION_DOUBT_DECAY: f64 = 0.65;
 
 /// Confidence decay constant per hour (γ = 0.85).
 pub const GAMMA_PER_HOUR: f64 = 0.85;
+
+/// Evidence `source` names that are the engine's **own internal enrichment /
+/// derivation passes**, not an independent external observation of the entity.
+/// They annotate an entity *already discovered by some module* (e.g. adding a
+/// geohash, timezone, and parsed admin-hierarchy to a Coordinates/Address), so
+/// they must NOT count toward the distinct-source cross-correlation signal in
+/// [`Entity::source_count`] — otherwise a single-source finding the engine
+/// merely geocodes looks "doubly sourced" and is over-promoted to *Verified*.
+///
+/// Statistical motivation (live `full_name` scan, 447 entities): counting
+/// `geo_normalize` as a source inflated **50 of 56** *Verified* classifications
+/// — every one a single-source (oathnet_pro) breach address the engine had
+/// geocoded. Excluding internal passes restores honest tiers (Verified 56→6).
+///
+/// The evidence itself is always retained (it carries the geo attributes the
+/// timeline/UI/correlator read); only its weight as *independent corroboration*
+/// is removed. Aligns with the charter: external/derived data is context, not
+/// structural authority — only independent sources validate.
+pub(crate) const NON_CORROBORATING_SOURCES: &[&str] = &["geo_normalize"];
 
 // ─── EntityKind ──────────────────────────────────────────────────────────────
 
@@ -276,17 +297,24 @@ impl Entity {
     /// signal for ranking/diagnostics; it no longer drives C_eff.
     #[inline]
     pub fn source_count(&self) -> u32 {
-        let distinct = self.evidence_sources().len() as u32;
+        let distinct = self.corroborating_sources().len() as u32;
         if distinct > 0 {
-            // Evidence is attached: distinct sources is the authoritative
-            // cross-correlation count. The summed `corroboration` magnitude is
-            // deliberately NOT allowed to inflate it — that was the bug.
+            // Independent sources is the authoritative cross-correlation count.
+            // Neither the summed `corroboration` magnitude (the original
+            // over-count bug) NOR the engine's own internal enrichment passes
+            // (the false-Verified bug — see [`NON_CORROBORATING_SOURCES`]) are
+            // allowed to inflate it.
             distinct
-        } else {
-            // No evidence (synthetic/test entity, or constructed pre-evidence):
-            // fall back to the explicitly-set field so a deliberate strength
-            // value is still honoured.
+        } else if self.evidence.is_empty() {
+            // No evidence at all (synthetic/test entity, or constructed
+            // pre-evidence): fall back to the explicitly-set field so a
+            // deliberate strength value is still honoured.
             self.corroboration.max(1)
+        } else {
+            // Evidence exists but ALL of it is internal enrichment — that is a
+            // single (effective) observation, never multi-source corroboration.
+            // Floor at 1 rather than the (possibly inflated) `corroboration`.
+            1
         }
     }
 
@@ -383,6 +411,19 @@ impl Entity {
 
     pub fn evidence_sources(&self) -> std::collections::HashSet<&str> {
         self.evidence.iter().map(|ev| ev.source.as_str()).collect()
+    }
+
+    /// Distinct **independent** evidence sources: [`evidence_sources`] minus the
+    /// engine's own internal enrichment passes ([`NON_CORROBORATING_SOURCES`]).
+    /// This is the honest cross-correlation count that drives [`source_count`]
+    /// (and hence [`c_effective`] / [`classify`]); `evidence_sources` remains
+    /// the raw set for callers that want every source regardless of provenance.
+    pub fn corroborating_sources(&self) -> std::collections::HashSet<&str> {
+        self.evidence
+            .iter()
+            .map(|ev| ev.source.as_str())
+            .filter(|s| !NON_CORROBORATING_SOURCES.contains(s))
+            .collect()
     }
 
     pub fn has_evidence_from(&self, source: &str) -> bool {
@@ -770,6 +811,60 @@ mod tests {
         let mut e = email("a@b.com");
         e.corroboration = 3;
         assert_eq!(e.source_count(), 3);
+    }
+
+    #[test]
+    fn internal_enrichment_is_not_independent_corroboration() {
+        // Reproduces the live false-Verified fault: a single-source (oathnet_pro)
+        // breach address the engine then geocodes (geo_normalize) must NOT count
+        // as two sources. With n=1 there is no agreement boost, so a moderate
+        // 0.65 finding stays Probable rather than being promoted to Verified.
+        let mut e = Entity::new(EntityKind::Address, "PO Box 1, Townsville, QLD", 0.65, "s");
+        e.add_evidence(Evidence::new("oathnet_pro", "breach record"));
+        e.add_evidence(Evidence::new(
+            "geo_normalize",
+            "Address parse + normalization",
+        ));
+        assert_eq!(
+            e.corroborating_sources().len(),
+            1,
+            "geo_normalize is internal enrichment, not an independent source"
+        );
+        assert_eq!(e.source_count(), 1);
+        assert!(
+            (e.c_effective() - 0.65).abs() < 1e-9,
+            "no agreement boost from a single real source + internal enrichment"
+        );
+        assert_eq!(e.classify(), Classification::Probable);
+    }
+
+    #[test]
+    fn genuine_second_source_still_boosts_alongside_internal_enrichment() {
+        // An independent module alongside the internal pass still counts as the
+        // 2nd source, so real cross-correlation is unaffected by the filter.
+        let mut e = Entity::new(EntityKind::Address, "1 Main St, Brisbane, QLD", 0.65, "s");
+        e.add_evidence(Evidence::new("oathnet_pro", "breach record"));
+        e.add_evidence(Evidence::new("geo_normalize", "enrichment"));
+        e.add_evidence(Evidence::new("whois", "registrant address"));
+        assert_eq!(
+            e.source_count(),
+            2,
+            "oathnet_pro + whois count; geo_normalize is excluded"
+        );
+        assert!(
+            e.c_effective() > 0.65,
+            "two genuinely independent sources still boost confidence"
+        );
+    }
+
+    #[test]
+    fn only_internal_evidence_floors_at_one_not_field() {
+        // Pathological: the only evidence is internal enrichment. It must read as
+        // a single observation, never inflated by a stale corroboration field.
+        let mut e = Entity::new(EntityKind::Coordinates, "-19.26,146.81", 0.6, "s");
+        e.corroboration = 9;
+        e.add_evidence(Evidence::new("geo_normalize", "enrichment"));
+        assert_eq!(e.source_count(), 1);
     }
 
     #[test]

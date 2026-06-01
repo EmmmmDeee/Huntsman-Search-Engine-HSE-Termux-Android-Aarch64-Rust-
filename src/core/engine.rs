@@ -1498,19 +1498,25 @@ pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] =
 /// Returns `Some(reason)` if `module` should be skipped under `opts`.
 /// `accepts(target)` is intentionally NOT checked here — that case skips
 /// silently with no `ModuleSkipped` event, the others all emit one.
-/// Count the DISTINCT evidence sources backing the entity that `target`
-/// refers to, by re-deriving the entity UID the same way `Entity::new` does.
-/// Used to gate high-value paid modules behind "sufficient cross-correlation"
-/// on expansion rounds. Returns 0 when the target isn't (yet) in the map — the
-/// seed target itself isn't an entity, but seed dispatch (`!is_expansion`)
-/// never consults this gate, so 0 is safe there.
+/// Count the DISTINCT INDEPENDENT evidence sources backing the entity that
+/// `target` refers to, by re-deriving the entity UID the same way `Entity::new`
+/// does. Used to gate high-value paid modules behind "sufficient
+/// cross-correlation" on expansion rounds. Returns 0 when the target isn't (yet)
+/// in the map — the seed target itself isn't an entity, but seed dispatch
+/// (`!is_expansion`) never consults this gate, so 0 is safe there.
+///
+/// Uses `corroborating_sources` (not raw `evidence_sources`) so the engine's own
+/// internal enrichment passes don't satisfy the gate: a geocoded single-source
+/// breach address must NOT look "cross-correlated" and unlock the heaviest paid
+/// API on expansion — the same internal-enrichment inflation that otherwise
+/// over-promoted such entities to *Verified*.
 fn target_distinct_sources(entity_map: &HashMap<String, Entity>, target: &Target) -> usize {
     let entity_kind = target.kind.to_entity_kind();
     let normalised = normalise(&entity_kind, &target.value);
     let uid = crate::core::entity::derive_uid(&entity_kind, &normalised);
     entity_map
         .get(&uid)
-        .map_or(0, |e| e.evidence_sources().len())
+        .map_or(0, |e| e.corroborating_sources().len())
 }
 
 fn module_skip_reason(
