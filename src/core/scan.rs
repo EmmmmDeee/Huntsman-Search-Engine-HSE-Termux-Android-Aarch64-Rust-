@@ -539,118 +539,138 @@ fn default_min_expand_confidence() -> f64 {
     0.50
 }
 
-/// Compute the geo-maximising expansion depth for a given seed type and
-/// API tier. Generous with depth — geolocation is paramount. Prioritises
-/// free API paths to amplify pivot economy before spending paid queries.
+/// Marginal-yield floor for the `--auto` depth curve, expressed as *new
+/// graph-advancing entities per dispatched pivot*. A round whose predicted
+/// marginal yield falls below this is dominated by re-confirmation rather than
+/// discovery, so `--auto` does not schedule it. Tied to the engine's own
+/// runtime adaptive-termination threshold so the planned depth and the live
+/// `dE/dDispatch → 0` cutoff agree by construction.
+pub const MARGINAL_YIELD_FLOOR: f64 = crate::core::roi::DEFAULT_MIN_MARGINAL_YIELD;
+
+/// Expected marginal yield of the **first** expansion round (round 1) for a
+/// seed of `kind` at the given API tier — `m₁` in the geometric yield model
+/// `m(d) = m₁ · q^(d−1)` used by [`optimal_depth`]. Units: new graph-advancing
+/// entities per dispatched pivot.
 ///
-/// Returns (depth, min_expand_confidence) tuple.
-pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
-    // Geolocation chain: Seed → IP/Domain → IP → Coords → Address → Coords
-    // Every identity seed needs at least 3 hops to reach refined geo.
-    // With paid keys, 5 hops catches OathNet → IP → geo → geocode → refine.
-    //
-    // v1.0 recalibration: 11 new modules widen the expansion graph.
-    //   keybase/proxycurl/epieos enrich Username/Email → Person + Address
-    //   opencorporates enriches Organisation → Address → geocode
-    //   photon/mylnikov/overpass add geo corroboration paths
-    let depth = match kind {
-        // Identity seeds: richest expansion graph.
-        //   R0: oathnet_pro/intelx/dehashed → IPs, emails, usernames, phones
-        //       seon/emailrep/epieos → Person, Address; search_engines → domains
-        //   R1: dns_intel/doh on domains → IPs; ip_geo → coords;
-        //       keybase/proxycurl on usernames → Person, Email, Phone, Org
-        //   R2: geocode/photon on coords → addresses; wigle → WiFi
-        //       opencorporates on Org → Address
-        //   R3: overpass on coords → infra; web_crawler → more emails
-        //   R4: (paid) secondary OathNet on R1 discovered emails → geo
-        TargetKind::Email | TargetKind::Username | TargetKind::FullName => {
-            if has_paid_keys {
-                5
-            } else {
-                4
-            }
-        }
-
-        TargetKind::Domain => {
-            if has_paid_keys {
-                5
-            } else {
-                4
-            }
-        }
-
-        TargetKind::IpAddress => {
-            if has_paid_keys {
-                4
-            } else {
-                3
-            }
-        }
-
-        TargetKind::Url => {
-            if has_paid_keys {
-                4
-            } else {
-                3
-            }
-        }
-
-        // Phone: seon → carrier/platform presence at R0; geo_intel → coords.
-        // R1 geocodes. R2 expands breach IPs → domains. R3 catches remaining.
-        TargetKind::Phone => {
-            if has_paid_keys {
-                4
-            } else {
-                3
-            }
-        }
-
-        TargetKind::Asn => {
-            if has_paid_keys {
-                4
-            } else {
-                3
-            }
-        }
-
-        // Coordinates: photon + geocode reverse → Address. R2 overpass + wigle.
-        // R3 sunrise_sunset chronolocation + BSSID expansion.
-        TargetKind::Coordinates => 3,
-
-        // Address is an extremely high-value pivot when validated:
-        //   R0: geocode/photon → Coordinates (bidirectional, dual-source)
-        //   R1: overpass → infrastructure nodes; wigle → WiFi/BSSIDs
-        //   R2: mylnikov on BSSIDs → more coords; sunrise_sunset → chronoloc
-        //   R3: search_engines → associated entities; geo_intel → breach context
-        TargetKind::Address => {
-            if has_paid_keys {
-                5
-            } else {
-                4
-            }
-        }
-
-        // Organisation/ABN: opencorporates → addresses + company registry.
-        // R1 geocode → coords. R2 overpass for nearby infrastructure.
-        // R3 catches cross-links from company → directors → identity.
-        TargetKind::Organisation | TargetKind::AbnAcn => {
-            if has_paid_keys {
-                4
-            } else {
-                3
-            }
-        }
-
-        TargetKind::ApiKey => 3,
-
-        // MacAddress: wigle + mylnikov → coords at R0.
-        // R1 geocode/photon → address. R2 overpass for infrastructure.
-        TargetKind::MacAddress => 3,
+/// Anchored to the two live Termux scans in the validation transcript:
+///   * a `FullName` seed surfaced 446 seed-round entities (oathnet 374,
+///     name_intel 51, social_probe 3, qld 18) → a dense round-1 pivot pool;
+///   * a `Username` seed surfaced 91 (username_search 65, social_probe 19,
+///     oathnet 6, variants 1) → a sparser pool.
+///
+/// The ordering `FullName (2.9) > Username (2.4)` reproduces that 446 ≫ 91 gap.
+/// Unobserved kinds are placed by their expandable-pivot fan-out: identity
+/// seeds richest; terminal geo/registry seeds (Coordinates, AbnAcn, ApiKey)
+/// sit near the 1.0 "one weak pivot" floor. Paid keys raise the ceiling
+/// because OathNet/IntelX re-queries on round-1 discoveries keep the frontier
+/// novel for an extra round instead of re-confirming.
+fn seed_marginal_yield(kind: TargetKind, has_paid_keys: bool) -> f64 {
+    let (paid, free) = match kind {
+        // Identity seeds — richest expandable fan-out (emails → usernames →
+        // domains → socials), and the only kinds the paid tier can keep novel
+        // for a third round.
+        TargetKind::Email => (3.2, 2.0),
+        TargetKind::FullName => (2.9, 1.9),
+        TargetKind::Username => (2.4, 1.6),
+        TargetKind::Domain => (2.2, 1.7),
+        // High-value geo pivots — one or two reliable hops to coordinates.
+        TargetKind::Address => (1.9, 1.5),
+        TargetKind::IpAddress => (1.6, 1.25),
+        TargetKind::MacAddress => (1.4, 1.4),
+        // Mid fan-out — a handful of corroborating leads per round.
+        TargetKind::Phone => (1.6, 1.15),
+        TargetKind::Asn => (1.6, 1.2),
+        TargetKind::Organisation => (1.6, 1.2),
+        TargetKind::Url => (1.55, 1.2),
+        // Terminal / registry seeds — resolve and stop.
+        TargetKind::AbnAcn => (1.3, 1.1),
+        TargetKind::Coordinates => (1.2, 1.2),
+        TargetKind::ApiKey => (1.1, 1.0),
     };
+    if has_paid_keys { paid } else { free }
+}
 
-    let min_conf = if has_paid_keys { 0.40 } else { 0.45 };
+/// Per-round retention `q ∈ (0,1)` — the fraction of a round's marginal yield
+/// carried into the next round before re-confirmation and frontier drift erode
+/// it. Identity seeds retain most (each round still surfaces independent new
+/// pivots); geo/terminal seeds collapse fast once the coordinate/address is
+/// resolved. Combined with [`seed_marginal_yield`] this fixes the shape of the
+/// decay curve [`optimal_depth`] integrates.
+fn round_retention(kind: TargetKind) -> f64 {
+    match kind {
+        TargetKind::Email | TargetKind::FullName | TargetKind::Username | TargetKind::Domain => {
+            0.60
+        }
+        TargetKind::Address | TargetKind::MacAddress => 0.55,
+        TargetKind::IpAddress | TargetKind::Asn | TargetKind::Organisation => 0.52,
+        TargetKind::Phone | TargetKind::Url => 0.50,
+        TargetKind::AbnAcn => 0.45,
+        TargetKind::Coordinates | TargetKind::ApiKey => 0.40,
+    }
+}
 
-    (depth.min(MAX_DEPTH), min_conf)
+/// Predicted marginal yield of expansion `round` (1-indexed) for a seed of
+/// `kind` — the geometric decay `m(round) = m₁ · q^(round−1)`. Exposed so the
+/// depth choice in [`optimal_depth`] and its statistical invariants are
+/// machine-checkable (see tests), and so callers can reason about the curve.
+#[must_use]
+pub fn predicted_marginal_yield(kind: TargetKind, has_paid_keys: bool, round: u32) -> f64 {
+    let m1 = seed_marginal_yield(kind, has_paid_keys);
+    let q = round_retention(kind);
+    m1 * q.powi(i32::try_from(round.saturating_sub(1)).unwrap_or(0))
+}
+
+/// Confidence floor for `--auto` expansion, scaled with the scheduled depth.
+/// Deeper auto-scans raise the bar — each extra round compounds false-positive
+/// risk through `c_eff`, so a higher floor keeps expected precision roughly
+/// constant across rounds; the paid tier starts marginally lower because its
+/// leads arrive better-corroborated. Clamped to a sane `[0.40, 0.55]` band.
+fn auto_min_expand_confidence(depth: u32, has_paid_keys: bool) -> f64 {
+    let base = if has_paid_keys { 0.42 } else { 0.46 };
+    (base + 0.03 * f64::from(depth.saturating_sub(1))).clamp(0.40, 0.55)
+}
+
+/// Statistically-grounded expansion depth for a seed and API tier, via a
+/// geometric **yield-curve** model rather than hand-tuned per-kind constants.
+///
+/// The previous constants (4–5 per kind) were silently flattened by the
+/// [`MAX_DEPTH`] = 3 clamp — every kind resolved to depth 3 — so depth carried
+/// no signal. This model instead schedules the *largest round whose predicted
+/// marginal yield still clears [`MARGINAL_YIELD_FLOOR`]*:
+///
+/// ```text
+///   m(d) = m₁ · q^(d−1)                          (geometric decay of new/dispatch)
+///   D*   = max{ d ∈ 1..=MAX_DEPTH : m(d) ≥ floor }    (≥ 1 — one round is cheap)
+/// ```
+///
+/// where `m₁` = [`seed_marginal_yield`] (anchored to the live transcript:
+/// FullName 446 vs Username 91 seed entities) and `q` = [`round_retention`].
+/// This is the same `dE/dDispatch → 0` cutoff the engine enforces at runtime
+/// via [`crate::core::roi::should_terminate_adaptive`]; computing it ahead of
+/// time lets `--auto` stop one round *before* paying for a round the curve
+/// already predicts is re-confirmation. Net effect: rich identity seeds earn
+/// the full depth-3 budget with paid keys and depth 2 keyless, while terminal
+/// seeds (Coordinates/AbnAcn/ApiKey) correctly resolve at depth 1 — the
+/// differentiation the old constants intended but the clamp erased.
+///
+/// Returns `(depth, min_expand_confidence)`.
+pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
+    // Walk the curve outward and keep the last round that clears the floor.
+    // Floor at 1: a single expansion round is cheap and almost always pays,
+    // and the runtime adaptive guard cuts it short anyway if it doesn't.
+    let mut depth: u32 = 1;
+    for round in 1..=MAX_DEPTH {
+        // `- f64::EPSILON` admits a round whose predicted yield sits exactly on
+        // the floor (e.g. Url paid R2) rather than letting FP error drop it.
+        if predicted_marginal_yield(kind, has_paid_keys, round)
+            >= MARGINAL_YIELD_FLOOR - f64::EPSILON
+        {
+            depth = round;
+        } else {
+            break;
+        }
+    }
+    (depth, auto_min_expand_confidence(depth, has_paid_keys))
 }
 
 /// Geo-specific NPV: expected Coordinates + Address entity yield.
@@ -790,6 +810,34 @@ fn geo_proximity_boost(kind: TargetKind) -> f64 {
         TargetKind::Asn => 1.2,
         _ => 1.0,
     }
+}
+
+/// Coefficient on the corroboration prior. Larger than `c_eff`'s 0.15 because
+/// ranking can be more assertive than a calibrated confidence — but small
+/// enough that corroboration only *refines order within* a geo-proximity tier,
+/// never overrides geo-convergence (an 8-source far entity scores ×1.52, still
+/// under a 1-source IP's ×1.8 geo boost).
+const CORROBORATION_PRIOR_COEFF: f64 = 0.25;
+
+/// Non-saturating ranking multiplier rewarding independent cross-correlation.
+///
+/// `c_effective()` already folds corroboration in via `1 + 0.15·ln(sources)`,
+/// but it is **clamped to 1.0** — so for confident pivots the corroboration
+/// signal is erased: a c_eff=1.0 entity confirmed by six independent sources
+/// ranks identically to a single-source one. Expansion ranking is exactly
+/// where that signal matters most (a cross-corroborated lead is far likelier
+/// to be genuine, so its dispatch is likelier to yield real children), so we
+/// re-introduce it here as an *uncapped* factor on the expansion weight.
+///
+/// `1 + β·ln(source_count)` with `source_count ≥ 1`: a single source gives
+/// `ln(1)=0 → 1.0` (neutral — no penalty vs today's behaviour), and each
+/// additional independent source adds sharply diminishing weight. Uses the
+/// distinct-source count (the honest cross-correlation measure), never the
+/// inflatable `corroboration` magnitude.
+#[must_use]
+pub fn corroboration_prior(source_count: u32) -> f64 {
+    let sources = f64::from(source_count.max(1));
+    CORROBORATION_PRIOR_COEFF.mul_add(sources.ln(), 1.0)
 }
 
 /// Dampening factor for domain targets. Mega-domains (top internet
@@ -959,18 +1007,158 @@ mod tests {
     }
 
     #[test]
-    fn optimal_depth_never_exceeds_max_depth() {
-        for kind in [
-            TargetKind::Email,
-            TargetKind::Username,
-            TargetKind::FullName,
-            TargetKind::Domain,
-            TargetKind::IpAddress,
-            TargetKind::Phone,
-        ] {
+    fn optimal_depth_never_exceeds_max_depth_and_is_at_least_one() {
+        // Iterate the CANONICAL kind list so a newly-added TargetKind is forced
+        // through the depth model (the exhaustive `match`es panic-free here).
+        for &kind in crate::core::dependency::ALL_TARGET_KINDS {
             for paid in [true, false] {
-                assert!(optimal_depth(kind, paid).0 <= MAX_DEPTH);
+                let (d, c) = optimal_depth(kind, paid);
+                assert!(
+                    (1..=MAX_DEPTH).contains(&d),
+                    "{kind:?} paid={paid}: depth {d}"
+                );
+                assert!((0.40..=0.55).contains(&c), "{kind:?} paid={paid}: conf {c}");
             }
+        }
+    }
+
+    #[test]
+    fn optimal_depth_is_differentiated_not_pinned_at_ceiling() {
+        // Regression guard for the old bug: the hand-tuned 4/5 constants were
+        // all flattened to 3 by `.min(MAX_DEPTH)`, so depth carried no signal.
+        // The yield model MUST spread depth across the [1, MAX_DEPTH] range.
+        let depths: std::collections::BTreeSet<u32> = crate::core::dependency::ALL_TARGET_KINDS
+            .iter()
+            .flat_map(|&k| [optimal_depth(k, true).0, optimal_depth(k, false).0])
+            .collect();
+        assert!(
+            depths.len() >= 3,
+            "depth must be differentiated across kinds, saw only {depths:?}"
+        );
+        assert!(
+            depths.contains(&1),
+            "some terminal seed must resolve at depth 1"
+        );
+        assert!(
+            depths.contains(&MAX_DEPTH),
+            "some rich seed must reach MAX_DEPTH"
+        );
+
+        // Rich identity seeds with paid keys earn the full budget…
+        for k in [
+            TargetKind::Email,
+            TargetKind::FullName,
+            TargetKind::Username,
+            TargetKind::Domain,
+        ] {
+            assert_eq!(
+                optimal_depth(k, true).0,
+                MAX_DEPTH,
+                "{k:?} paid → MAX_DEPTH"
+            );
+            assert_eq!(optimal_depth(k, false).0, 2, "{k:?} keyless → 2");
+        }
+        // …terminal / registry seeds resolve in a single round.
+        for k in [
+            TargetKind::Coordinates,
+            TargetKind::AbnAcn,
+            TargetKind::ApiKey,
+        ] {
+            assert_eq!(optimal_depth(k, true).0, 1, "{k:?} is terminal");
+            assert_eq!(optimal_depth(k, false).0, 1, "{k:?} is terminal");
+        }
+    }
+
+    #[test]
+    fn optimal_depth_paid_tier_is_never_shallower_than_free() {
+        for &kind in crate::core::dependency::ALL_TARGET_KINDS {
+            assert!(
+                optimal_depth(kind, true).0 >= optimal_depth(kind, false).0,
+                "{kind:?}: paid depth must be ≥ free depth"
+            );
+        }
+    }
+
+    #[test]
+    fn optimal_depth_respects_the_marginal_yield_floor() {
+        // The core statistical invariant: the chosen depth D is exactly the
+        // cutoff of the yield curve — round D clears the floor, and round D+1
+        // (if one exists below MAX_DEPTH) does not. This is what makes the
+        // depth a *decision* rather than a constant.
+        for &kind in crate::core::dependency::ALL_TARGET_KINDS {
+            for paid in [true, false] {
+                let (d, _) = optimal_depth(kind, paid);
+                assert!(
+                    predicted_marginal_yield(kind, paid, d) >= MARGINAL_YIELD_FLOOR - f64::EPSILON,
+                    "{kind:?} paid={paid}: round {d} must clear the floor"
+                );
+                if d < MAX_DEPTH {
+                    assert!(
+                        predicted_marginal_yield(kind, paid, d + 1) < MARGINAL_YIELD_FLOOR,
+                        "{kind:?} paid={paid}: round {} must fall below the floor",
+                        d + 1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn predicted_marginal_yield_decays_monotonically_with_round() {
+        // 0 < q < 1 and m₁ > 0 ⇒ each round is strictly less productive than
+        // the last — the property the depth cutoff relies on.
+        for &kind in crate::core::dependency::ALL_TARGET_KINDS {
+            for paid in [true, false] {
+                let mut prev = f64::INFINITY;
+                for round in 1..=MAX_DEPTH + 1 {
+                    let y = predicted_marginal_yield(kind, paid, round);
+                    assert!(y > 0.0, "{kind:?}: yield must stay positive");
+                    assert!(y < prev, "{kind:?} round {round}: yield must decay");
+                    prev = y;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn seed_yield_ordering_matches_observed_transcript() {
+        // Live transcript: FullName seed surfaced 446 entities, Username 91.
+        // The model's round-1 yields must preserve that ≫ ordering, and the
+        // richest identity seeds must out-yield terminal seeds.
+        for paid in [true, false] {
+            assert!(
+                seed_marginal_yield(TargetKind::FullName, paid)
+                    > seed_marginal_yield(TargetKind::Username, paid)
+            );
+            assert!(
+                seed_marginal_yield(TargetKind::Email, paid)
+                    >= seed_marginal_yield(TargetKind::FullName, paid)
+            );
+            assert!(
+                seed_marginal_yield(TargetKind::Username, paid)
+                    > seed_marginal_yield(TargetKind::ApiKey, paid)
+            );
+        }
+    }
+
+    #[test]
+    fn auto_min_expand_confidence_rises_with_depth_within_band() {
+        // Deeper scans are more selective; every value stays in [0.40, 0.55];
+        // the paid tier starts no higher than the free tier at equal depth.
+        for paid in [true, false] {
+            let c1 = auto_min_expand_confidence(1, paid);
+            let c2 = auto_min_expand_confidence(2, paid);
+            let c3 = auto_min_expand_confidence(3, paid);
+            assert!(
+                c1 <= c2 && c2 <= c3,
+                "confidence floor must rise with depth"
+            );
+            for c in [c1, c2, c3] {
+                assert!((0.40..=0.55).contains(&c));
+            }
+        }
+        for d in 1..=MAX_DEPTH {
+            assert!(auto_min_expand_confidence(d, true) <= auto_min_expand_confidence(d, false));
         }
     }
 
@@ -999,6 +1187,43 @@ mod tests {
         let high = expansion_weight(TargetKind::Domain, 0.90, "example.com", false);
         let low = expansion_weight(TargetKind::Domain, 0.45, "example.com", false);
         assert!(high > low * 1.9);
+    }
+
+    #[test]
+    fn corroboration_prior_is_neutral_at_one_source_and_grows_diminishingly() {
+        // Single source must not penalise vs today's behaviour: exactly 1.0.
+        assert!((corroboration_prior(1) - 1.0).abs() < 1e-12);
+        // 0 is floored to 1 (defensive).
+        assert!((corroboration_prior(0) - 1.0).abs() < 1e-12);
+        // Strictly increasing with independent sources…
+        assert!(corroboration_prior(2) > corroboration_prior(1));
+        assert!(corroboration_prior(4) > corroboration_prior(2));
+        assert!(corroboration_prior(8) > corroboration_prior(4));
+        // …with diminishing returns (concave: each doubling adds a constant,
+        // shrinking increment relative to the level).
+        let d_1_2 = corroboration_prior(2) - corroboration_prior(1);
+        let d_2_4 = corroboration_prior(4) - corroboration_prior(2);
+        assert!((d_1_2 - d_2_4).abs() < 1e-9, "ln doubling steps are equal");
+        assert!(corroboration_prior(4) - corroboration_prior(2) < d_1_2 * 1.0 + 1e-9);
+    }
+
+    #[test]
+    fn corroboration_prior_refines_within_tier_never_overrides_geo() {
+        // A heavily-corroborated FAR entity must still rank below a
+        // single-source geo-proximate IP — corroboration refines order within
+        // a geo tier, it does not invert the geo-convergence priority.
+        let far_8src =
+            expansion_weight(TargetKind::Organisation, 0.80, "x", false) * corroboration_prior(8);
+        let ip_1src = expansion_weight(TargetKind::IpAddress, 0.80, "8.8.8.8", false)
+            * corroboration_prior(1);
+        assert!(
+            ip_1src > far_8src,
+            "geo-proximate IP ({ip_1src:.1}) must outrank corroborated org ({far_8src:.1})"
+        );
+        // But within the SAME kind, corroboration breaks the c_eff=1.0 tie.
+        let a = expansion_weight(TargetKind::Email, 1.0, "a@x.com", true) * corroboration_prior(6);
+        let b = expansion_weight(TargetKind::Email, 1.0, "b@x.com", true) * corroboration_prior(1);
+        assert!(a > b, "6-source email must outrank 1-source at equal c_eff");
     }
 
     #[test]

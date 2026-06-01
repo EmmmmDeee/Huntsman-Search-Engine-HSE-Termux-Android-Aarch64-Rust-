@@ -150,6 +150,17 @@ impl Module for SearchEngines {
         120_000
     }
 
+    fn termux_timeout_ms(&self) -> u64 {
+        // Live Termux scans showed this burning the full cap (60 s, now 45 s)
+        // for ZERO results on a phone — mobile SERP scraping stalls behind
+        // captive-portal and rate-limit walls. The happy path across 13
+        // engines completes in ~20 s; 30 s preserves that recall while halving
+        // the dead-wait. `process()` reads this same budget on Termux so it
+        // returns whatever it gathered just under the deadline instead of
+        // being hard-killed (which discards all accumulated results).
+        30_000
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let queries = build_queries(target);
         if queries.is_empty() {
@@ -157,7 +168,18 @@ impl Module for SearchEngines {
         }
 
         let process_start = std::time::Instant::now();
-        let budget_ms = self.max_timeout_ms();
+        // Match the engine's actual deadline so the budget checks below fire
+        // BEFORE the hard timeout, letting the module finalise partial results.
+        // On Termux that's the trimmed budget; off Termux the full desktop one.
+        let budget_ms = if crate::is_termux() {
+            self.termux_timeout_ms()
+        } else {
+            self.max_timeout_ms()
+        };
+        // Reserve a quarter of the budget (min 8 s) for the secondary pivot +
+        // recycler passes, scaling with the budget instead of a flat 30 s that
+        // made the primary pass degenerate under the trimmed Termux budget.
+        let primary_reserve_ms = (budget_ms / 4).max(8_000);
         let mut all_results: Vec<SearchResult> = Vec::new();
 
         // Track engines that failed on the first query so we skip them
@@ -171,7 +193,7 @@ impl Module for SearchEngines {
                 break;
             }
             let elapsed = process_start.elapsed().as_millis() as u64;
-            if elapsed > budget_ms.saturating_sub(30_000) {
+            if elapsed > budget_ms.saturating_sub(primary_reserve_ms) {
                 break;
             }
 
@@ -1341,6 +1363,26 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::AbnAcn, "x")));
         assert!(m.accepts(&Target::new(TargetKind::Url, "http://x.com")));
         assert!(m.accepts(&Target::new(TargetKind::Coordinates, "0,0")));
+    }
+
+    #[test]
+    fn termux_budget_is_trimmed_below_desktop_and_the_cap() {
+        let m = SearchEngines;
+        // Desktop budget stays generous; Termux budget is strictly tighter and
+        // at/under the engine's 45 s Termux cap so it is honoured verbatim
+        // (the module then finalises partials just under that deadline).
+        assert_eq!(m.max_timeout_ms(), 120_000);
+        assert_eq!(m.termux_timeout_ms(), 30_000);
+        assert!(m.termux_timeout_ms() < m.max_timeout_ms());
+        assert!(m.termux_timeout_ms() <= 45_000);
+        // The proportional reserve preserves desktop behaviour exactly (the old
+        // flat 30 s) while staying sane under the trimmed Termux budget.
+        let reserve = |budget: u64| (budget / 4).max(8_000);
+        assert_eq!(reserve(120_000), 30_000);
+        assert_eq!(reserve(30_000), 8_000);
+        // Primary pass must retain a positive working window under both budgets.
+        assert!(120_000_u64.saturating_sub(reserve(120_000)) > 0);
+        assert!(30_000_u64.saturating_sub(reserve(30_000)) >= 20_000);
     }
 
     #[test]

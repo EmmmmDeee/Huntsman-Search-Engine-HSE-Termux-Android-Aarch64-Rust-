@@ -125,10 +125,15 @@ impl Module for OpenCorporates {
             .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         let status = resp.status();
-        if status.as_u16() == 404 {
-            return Ok(ModuleResult::new());
-        }
-        if status.as_u16() == 429 {
+        // Graceful no-op statuses. OpenCorporates' v0.4 search now answers 401
+        // (sometimes 403) to unauthenticated callers — its keyless public tier
+        // was withdrawn — so on a no-key scan this means "nothing to do", not an
+        // error worth a WARN (observed live: a keyless FullName scan logged
+        // `module error … HTTP 401 Unauthorized`). 404 = no match, 429 = rate
+        // limited. All degrade to an empty result (the module is best-effort).
+        // A *configured* key that gets 401/403 is a bad key, also nothing to
+        // surface as a scan error — the key pool handles key health separately.
+        if matches!(status.as_u16(), 401 | 403 | 404 | 429) {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {

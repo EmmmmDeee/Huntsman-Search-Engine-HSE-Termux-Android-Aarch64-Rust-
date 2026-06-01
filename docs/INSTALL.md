@@ -6,6 +6,31 @@ upgrades in place.
 
 ---
 
+## Prebuilt Termux binary (fastest — no toolchain, no build)
+
+Every release ships a prebuilt, stripped **aarch64 Termux** binary. On a phone
+this is the quickest path — no Rust toolchain, no 1–3 min on-device compile, no
+extra `pkg` deps (the binary is pure rustls + bundled-SQLite; its only shared
+libs are Android's own `libc` / `libdl` / `libm`):
+
+```bash
+curl -fsSL https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest/download/hse-aarch64-linux-android -o "$PREFIX/bin/hse"
+chmod +x "$PREFIX/bin/hse"
+hse serve   # then open http://127.0.0.1:8080
+```
+
+Optional integrity check — verify the installed binary against the release's
+published hash:
+
+```bash
+echo "$(curl -fsSL https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest/download/hse-aarch64-linux-android.sha256 | cut -d' ' -f1)  $PREFIX/bin/hse" | sha256sum -c -
+```
+
+Prefer to build from source (or want an unreleased commit)? Use the one-liner
+or manual paths below.
+
+---
+
 ## The one-liner (Termux, Linux, macOS)
 
 Open Termux (or any shell) and paste:

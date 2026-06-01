@@ -216,15 +216,47 @@ step "Fetching source ($HSE_REF) → $HSE_INSTALL_DIR"
 
 mkdir -p "$(dirname "$HSE_INSTALL_DIR")"
 
+# Fail fast instead of hanging on an interactive username/password prompt:
+# a *public* repo never asks for credentials, so a prompt means the repo is
+# private (or the URL is wrong). GIT_TERMINAL_PROMPT=0 turns that prompt into
+# an immediate error we can explain, rather than a stuck install.
+export GIT_TERMINAL_PROMPT=0
+
+# Shared, credential-aware diagnosis for any clone/fetch auth failure. The SSH
+# and token URLs are derived from $HSE_REPO_URL (not hardcoded), so the hints
+# stay correct for forks / mirrors / a custom HSE_REPO_URL.
+clone_help() {
+    local ssh_url="$HSE_REPO_URL" token_url="$HSE_REPO_URL"
+    if [[ "$HSE_REPO_URL" == https://github.com/* ]]; then
+        # https://github.com/owner/repo.git -> git@github.com:owner/repo.git
+        ssh_url="git@github.com:${HSE_REPO_URL#https://github.com/}"
+    fi
+    if [[ "$HSE_REPO_URL" == https://* ]]; then
+        token_url="https://<TOKEN>@${HSE_REPO_URL#https://}"
+    fi
+    log_warn "git could not access $HSE_REPO_URL without credentials."
+    hint "A *public* repo never asks for a username/password. This usually means:"
+    hint "  • the repository is PRIVATE — ask the owner to make it public, or"
+    hint "  • use SSH with a key already on your GitHub account:"
+    hint "      HSE_REPO_URL=$ssh_url ./install.sh"
+    hint "  • or pass a token in the URL (export it to keep it out of history):"
+    hint "      HSE_REPO_URL=$token_url ./install.sh"
+}
+
 if [[ -d "$HSE_INSTALL_DIR/.git" ]]; then
+    # Re-point origin at $HSE_REPO_URL first, so an SSH/token override
+    # (HSE_REPO_URL=git@... ./install.sh) actually takes effect on a re-install
+    # whose existing origin is the private HTTPS URL — otherwise the fetch
+    # below would keep using the old, credential-gated remote.
+    git -C "$HSE_INSTALL_DIR" remote set-url origin "$HSE_REPO_URL" 2>/dev/null || true
     git -C "$HSE_INSTALL_DIR" fetch --depth 1 origin "$HSE_REF" \
-        || die "git fetch failed"
+        || { clone_help; die "git fetch failed"; }
     git -C "$HSE_INSTALL_DIR" checkout -B "$HSE_REF" "origin/$HSE_REF" \
         || die "git checkout failed"
     ok "Updated existing clone"
 else
     git clone --depth 1 --branch "$HSE_REF" "$HSE_REPO_URL" "$HSE_INSTALL_DIR" \
-        || die "git clone failed"
+        || { clone_help; die "git clone failed"; }
     ok "Cloned fresh"
 fi
 

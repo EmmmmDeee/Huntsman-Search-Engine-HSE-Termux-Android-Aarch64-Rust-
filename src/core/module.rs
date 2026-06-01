@@ -162,6 +162,23 @@ pub trait Module: Send + Sync {
         crate::MODULE_TIMEOUT_MS
     }
 
+    /// Per-`process()` budget the engine allows **on Termux** (Android, no
+    /// root) when the user hasn't pinned a global timeout. Defaults to
+    /// [`max_timeout_ms`](Module::max_timeout_ms) — almost every module
+    /// behaves identically on a phone. Override DOWN for modules that are
+    /// reliably slow-and-low-yield over a mobile/captive network (heavy SERP
+    /// scrapers, deep crawlers): live device transcripts showed such modules
+    /// burning the full cap for zero results, wall-time the phone could spend
+    /// on modules that actually resolve.
+    ///
+    /// The engine still clamps the result to its Termux cap, and an explicit
+    /// `ScanOptions::module_timeout_ms` overrides this entirely. Modules that
+    /// genuinely need their time on a phone too — e.g. a GPS cold-fix — simply
+    /// keep the default and are bounded only by the cap.
+    fn termux_timeout_ms(&self) -> u64 {
+        self.max_timeout_ms()
+    }
+
     /// One-sentence summary of what this module does, in operator
     /// language. Shown as the wizard's hover tooltip on the module-
     /// picker grid (issue #28). Default empty for backward compat —

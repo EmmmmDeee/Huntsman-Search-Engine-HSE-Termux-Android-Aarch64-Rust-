@@ -10,6 +10,8 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-06-01
+
 ### Security
 
 - **Closed an IPv4-mapped IPv6 SSRF-filter bypass.** `util::preflight::is_private_addr`
