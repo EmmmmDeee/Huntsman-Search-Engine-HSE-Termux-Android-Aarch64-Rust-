@@ -59,6 +59,14 @@ trap on_exit EXIT
 # ─── Defaults ────────────────────────────────────────────────────────────────
 HSE_REPO_URL="${HSE_REPO_URL:-https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git}"
 HSE_REF="${HSE_REF:-main}"
+# If invoked from inside an existing HSE clone (`./install.sh` from `~/hse`),
+# upgrade THAT clone in place — so a manual `git clone` install and the
+# scripted / curl-pipe install converge on one source tree instead of leaving
+# two. Gated on the exact package name so it can't hijack an unrelated dir.
+if [[ -z "${HSE_INSTALL_DIR:-}" && -d .git && -f Cargo.toml ]] \
+    && grep -q '^name *= *"huntsman-search-engine"' Cargo.toml 2>/dev/null; then
+    HSE_INSTALL_DIR="$(pwd)"
+fi
 HSE_INSTALL_DIR="${HSE_INSTALL_DIR:-$HOME/.local/share/hse}"
 RUST_MIN_VERSION="1.88"
 
@@ -443,11 +451,16 @@ if [[ ! -f "$KEYS_PATH" ]]; then
 # Uncomment and paste a value to enable the corresponding key-gated module.
 # All HSE keys MUST be prefixed HUNTSMAN_. File mode is 0600 — never commit.
 #
-# v0.2 free modules need no keys at all. Keys below are for future modules:
+# v0.2 free modules need no keys at all. Keys below are for key-gated modules.
+# Several are embedded in the build (OathNet, HIBP, WiGLE, SeekNow) and are
+# auto-written/auto-rotated on first `hse scan`/`serve` — listed here only so
+# you can override them. The Settings page (hse serve → Settings) shows the
+# full key list and lets you paste/save any of them from the browser.
 #
 # Identity / breach
 #HUNTSMAN_HIBP_KEY=
 #HUNTSMAN_OATHNET_KEY=
+#HUNTSMAN_SEEKNOW_KEY=
 #HUNTSMAN_DEHASHED_USER=
 #HUNTSMAN_DEHASHED_KEY=
 #HUNTSMAN_HUNTER_KEY=
@@ -459,6 +472,8 @@ if [[ ! -f "$KEYS_PATH" ]]; then
 #HUNTSMAN_CRIMINALIP_KEY=
 #HUNTSMAN_IPQS_KEY=
 #HUNTSMAN_VIRUSTOTAL_KEY=
+# Search
+#HUNTSMAN_EXA_KEY=
 # Validation / enrichment
 #HUNTSMAN_NUMVERIFY_KEY=
 #HUNTSMAN_WIGLE_USER=

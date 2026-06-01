@@ -10,6 +10,52 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **Statistical yield-curve expansion depth.** `--auto` depth is now chosen by a
+  geometric marginal-yield model (`m(d) = m₁·q^(d−1)`, cut at the engine's own
+  `dE/dDispatch` floor) grounded in real scan telemetry, replacing hand-tuned
+  constants that the `MAX_DEPTH` clamp had silently flattened to a uniform 3.
+- **Corroboration-weighted pivot ranking.** Expansion weight gains an uncapped
+  `1 + 0.25·ln(source_count)` factor so cross-corroborated leads expand first
+  (recovering the signal `c_effective`'s 1.0 clamp had erased), plus a
+  `max_roi` relative-knee cut that drops the long tail below 5 % of the round's
+  leader.
+- **Iterative multi-hop identity pivots (SeekNow).** Discord/Steam ID resolution
+  now chases linked-account chains (discord → roblox → steam → …) across bounded
+  hops within budget, instead of a single pass — closing cross-platform identity
+  graphs inside one scan.
+- **Settings → API keys is editable by default.** The loopback-only key-write
+  endpoint is on out of the box (`--no-key-write` to disable); SeekNow and Exa
+  now appear in the Settings grid.
+- **Offline AU postcode gazetteer fallback** so validated locality geo (e.g. QLD
+  4552 — Maleny/Booroobin/Conondale) still resolves when the network lookup is
+  unreachable on a flaky mobile connection.
+- **All-in-one installer converges in-place:** `./install.sh` run from inside an
+  existing clone now upgrades that clone rather than maintaining a second one.
+
+### Changed
+
+- **SeekNow spends paid quota only where free can't reach.** The single-origin
+  presence endpoints (github/twitter/reddit/tiktok/roblox/xbox/minecraft) are
+  filtered out — `username_search` (600+ sites), `social_probe` and
+  `search_engines` already cover them for free — leaving SeekNow's lookups for
+  breach/stealer/history aggregation and ID resolution. Per-scan budget raised
+  to 160. Embedded SeekNow key refreshed and **auto-rotated** in existing
+  keystores.
+- **Termux timeouts trimmed.** Per-module Termux cap 60 s → 45 s and a new
+  `termux_timeout_ms()` (search_engines → 30 s, finalising partials instead of a
+  hard kill) reclaim ~tens of seconds/scan previously burned for zero results.
+- **`see_know` module refactored** — identity-pivot primitives extracted to
+  `pivots.rs`; the endpoint matrix (`get_path`) now retries a transient
+  transport error once (same budget slot).
+
+### Fixed
+
+- **hudsonrock** no longer fires a doomed `HTTP 400` on bare-username seeds
+  (accepts Email/Domain only — value-independent, satisfying both dispatch
+  invariants); **opencorporates** keyless `401/403` is a clean skip, not a WARN.
+
 ## [1.0.1] — 2026-06-01
 
 ### Security

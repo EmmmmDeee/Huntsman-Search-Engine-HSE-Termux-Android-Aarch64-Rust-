@@ -11,31 +11,65 @@ SpiderFoot-style Web UI, zero native dependencies.
 
 ---
 
-## One-Click Install (Termux Android)
+## Install (Termux Android aarch64, no root)
 
-### Fastest — prebuilt binary (no toolchain, no build)
+### ⭐ Recommended — one-line all-in-one installer
 
-Each release ships a prebuilt, stripped **aarch64 Termux** binary. Install it
-in two commands — no Rust, no compile, no extra `pkg` deps:
+A single command does **absolutely everything**, and is **safe to re-run** —
+re-running upgrades an existing install in place:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
+```
+
+It installs the toolchain (`rust`, `clang`, `binutils`, `git`, …), clones **or
+updates** the source, builds the release binary (retrying on flaky mobile
+networks), installs `hse` to `$PREFIX/bin`, sets up the `hse-bg` background
+wrapper + optional Termux:Boot autostart, writes the keys template, and runs
+`hse doctor` to verify. **Existing installs are fully handled**: it fetches +
+rebuilds, **preserves your `~/.huntsman.env` keys**, and auto-rotates the
+embedded keys on first run. Idempotent — re-run any time to upgrade.
+
+Also works on Debian/Ubuntu and macOS. Full log at `~/.cache/hse-install.log`.
+See [`docs/INSTALL.md`](docs/INSTALL.md) for every install path, knobs
+(`HSE_REF`, `HSE_INSTALL_DIR`, …) and Termux quirks.
+
+Then launch the Web UI:
+
+```bash
+hse serve   # binds 127.0.0.1:8080
+```
+
+Open **Chrome or Firefox** on your phone and go to `http://127.0.0.1:8080`.
+You'll see a SpiderFoot-identical dark-navbar UI with Dashboard, New Scan
+wizard, entity browser with D3 force graph, correlations, and a **Settings
+page where you can paste & save API keys** straight from the browser.
+
+### Alternative — prebuilt binary (no toolchain, no build)
+
+Each release ships a prebuilt, stripped **aarch64 Termux** binary:
 
 ```bash
 curl -fsSL https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest/download/hse-aarch64-linux-android -o "$PREFIX/bin/hse" && chmod +x "$PREFIX/bin/hse"
 ```
 
-`curl` is preinstalled on Termux; if missing, `pkg install -y curl` first.
-Optional integrity check — verify the installed binary against the release's
-published hash:
+Optional integrity check against the release's published hash:
 
 ```bash
 echo "$(curl -fsSL https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest/download/hse-aarch64-linux-android.sha256 | cut -d' ' -f1)  $PREFIX/bin/hse" | sha256sum -c -
 ```
 
-### Build from source
-
-If you'd rather build (or want an unreleased commit), paste:
+### Alternative — manual build from source
 
 ```bash
 pkg install -y git rust binutils clang && git clone --depth 1 https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
+```
+
+To upgrade a manual clone, either re-run the all-in-one installer above (it
+detects and updates an in-place clone), or:
+
+```bash
+cd ~/hse && git pull origin main && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
 ```
 
 > **Seeing a `Username for 'https://github.com':` prompt?** A public repo
@@ -45,31 +79,6 @@ pkg install -y git rust binutils clang && git clone --depth 1 https://github.com
 > ```bash
 > pkg install -y git rust binutils clang openssh && git clone --depth 1 git@github.com:EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
 > ```
-
-Then launch the Web UI:
-
-```bash
-hse serve
-```
-
-Open **Chrome or Firefox** on your phone and go to `http://127.0.0.1:8080`.
-You'll see a SpiderFoot-identical dark-navbar UI with Dashboard, New Scan
-wizard, entity browser with D3 force graph, correlations, and settings.
-
-### Update existing install
-
-```bash
-cd ~/hse && git pull origin main && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
-```
-
-### Full installer (handles all edge cases)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
-```
-
-Also works on Debian/Ubuntu and macOS. See [`docs/INSTALL.md`](docs/INSTALL.md)
-for all install paths and Termux quirks.
 
 ---
 
