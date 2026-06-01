@@ -57,20 +57,24 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
 
     // Effective-by-default: an OMITTED `--depth` auto-selects the optimal depth
     // for the seed kind + available keys (a deep, ROI-bounded recursive scan out
-    // of the box). `--recursive` forces MAX_DEPTH; an explicit `--depth N`
-    // (including `0` = seed-only) pins exactly N — unless `--auto` overrides it.
-    let (depth, min_expand_confidence, max_concurrent) = if cmd.recursive && cmd.depth.is_none() {
+    // of the box). Precedence (matches the `--depth`/`--recursive` help + docs):
+    // an explicit `--depth N` (including `0` = seed-only) ALWAYS pins exactly N;
+    // otherwise `--recursive` forces MAX_DEPTH; otherwise auto-select. `--auto`
+    // is the explicit form of the now-default auto-select and never overrides an
+    // explicit `--depth`.
+    let (depth, min_expand_confidence, max_concurrent) = if let Some(d) = cmd.depth {
+        (d, cmd.min_expand_confidence, cmd.max_concurrent)
+    } else if cmd.recursive {
         (
             crate::core::scan::MAX_DEPTH,
             cmd.min_expand_confidence.min(0.40),
             cmd.max_concurrent.max(4),
         )
-    } else if let Some(d) = cmd.depth.filter(|_| !cmd.auto) {
-        (d, cmd.min_expand_confidence, cmd.max_concurrent)
     } else {
         let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
         let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
-        eprintln!("auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={has_paid})");
+        let origin = if cmd.auto { "auto" } else { "auto (default)" };
+        eprintln!("{origin}: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={has_paid})");
         (auto_depth, auto_conf, cmd.max_concurrent.max(4))
     };
 

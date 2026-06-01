@@ -470,6 +470,13 @@ fn canonical_mailbox(email: &str) -> Option<(String, String)> {
 /// per (member, representative) pair, canonically directed, so re-scans upsert
 /// idempotently on the deterministic edge id.
 ///
+/// Direction is deliberately member → representative (union-find style: each
+/// surface form points at its canonical identity). This intentionally differs
+/// from the *symmetric* builders (`derive_colocation`/`derive_structural`, which
+/// emit smaller-UID → larger-UID purely for dedup): `SameAs` is a directed
+/// "resolves-to-canonical" assertion, not a symmetric proximity edge — do not
+/// "normalise" it to the smaller→larger convention.
+///
 /// Non-destructive and reversible: both surface-form nodes are retained with
 /// their own provenance; the resolved identity is the connected component over
 /// these edges, and dropping an edge "splits" the class back out.

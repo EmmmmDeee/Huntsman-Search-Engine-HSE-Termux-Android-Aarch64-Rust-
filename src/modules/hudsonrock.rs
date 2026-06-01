@@ -75,11 +75,19 @@ impl Credential {
     /// pseudo-hosts (`android://…`), and hostless junk are rejected.
     fn locator_host(&self) -> Option<String> {
         let raw = self.url.as_deref().or(self.domain.as_deref())?.trim();
-        if raw.is_empty() || raw.starts_with("android") {
+        if raw.is_empty() {
             return None;
         }
-        // Full URL → take its host; bare "domain/path" or "domain" → first seg.
-        let host = if raw.contains("://") {
+        // A scheme'd value is a pivotable web host only when the scheme is
+        // http(s). App deep-links (`android://`, `ios://`, `chrome-extension://`,
+        // …) have no DNS host. Match the SCHEME, not a substring of the value —
+        // `starts_with("android")` wrongly dropped bare domains like
+        // `android.com` / `androidpolice.com`, and was case-sensitive so an
+        // `Android://` pseudo-host slipped through.
+        let host = if let Some((scheme, _)) = raw.split_once("://") {
+            if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+                return None;
+            }
             url::Url::parse(raw).ok()?.host_str()?.to_string()
         } else {
             raw.split('/').next().unwrap_or(raw).to_string()
@@ -314,14 +322,18 @@ impl Module for HudsonRock {
             }
         }
 
-        // Emit the victim's compromised-service domains as Domain pivots. These
-        // are leads (the victim used the service): confidence 0.60 keeps them
-        // Probable but below the default expansion floor, so they enrich the
-        // graph and correlator without auto-spending budget on further fan-out
-        // (mirrors name_intel's candidate-pivot policy). Only the public host is
-        // ever surfaced — never the credential.
+        // Emit the victim's compromised-service domains as Domain *leads*. The
+        // victim merely had an account on these third-party services, so they
+        // are context, NOT targets to recurse into (expanding paypal.com pulls
+        // in PayPal's infrastructure — scope blow-out + false attribution).
+        // Confidence 0.35 sits below every expansion floor (default 0.50, the
+        // auto band's 0.40–0.55, and `--recursive`'s 0.40), so they enrich the
+        // graph + correlator without auto-spending expansion budget — matching
+        // name_intel's candidate-pivot policy (an operator who *wants* to pivot
+        // lowers `--min-expand-confidence`). Only the public host is ever
+        // surfaced — never the credential.
         for dom in &services {
-            let mut e = Entity::new(EntityKind::Domain, dom, 0.60, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Domain, dom, 0.35, &ctx.scan_id);
             e.tag(tags::BREACH);
             e.tag(tags::STEALER_LOG);
             e.tag("compromised-service");
@@ -517,6 +529,40 @@ mod tests {
         assert!(cred(Some("localhost"), None).locator_host().is_none());
         assert!(cred(Some(""), None).locator_host().is_none());
         assert!(cred(None, None).locator_host().is_none());
+    }
+
+    #[test]
+    fn locator_host_keeps_android_prefixed_domains_but_drops_app_scheme() {
+        // Regression: the guard must match the `android://` SCHEME, not the
+        // substring "android" — bare domains that merely start with "android"
+        // are legitimate pivots and must survive.
+        assert_eq!(
+            cred(None, Some("android.com")).locator_host().as_deref(),
+            Some("android.com")
+        );
+        assert_eq!(
+            cred(Some("https://androidpolice.com/news"), None)
+                .locator_host()
+                .as_deref(),
+            Some("androidpolice.com")
+        );
+        // The app pseudo-scheme is still dropped — case-insensitively now.
+        assert!(
+            cred(Some("android://h@com.app/"), None)
+                .locator_host()
+                .is_none()
+        );
+        assert!(
+            cred(Some("ANDROID://h@com.app/"), None)
+                .locator_host()
+                .is_none()
+        );
+        // Other non-web deep-link schemes are dropped too.
+        assert!(
+            cred(Some("ios://x@com.app/"), None)
+                .locator_host()
+                .is_none()
+        );
     }
 
     #[test]

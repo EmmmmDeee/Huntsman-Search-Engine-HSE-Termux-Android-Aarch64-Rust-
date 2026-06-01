@@ -62,13 +62,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   stealer log). `hudsonrock` now extracts the distinct service hosts from the
   stealer-log credential records and emits them as `Domain` pivot entities
   (tagged `breach` / `stealer-log` / `compromised-service`), plus an aggregate
-  *compromised-service footprint* on the subject entity — so a single
-  stealer-log hit recursively expands into IP-geo / DNS / WHOIS / cert
-  intelligence ("every node becomes a new origin"). Emitted at confidence 0.60
-  (Probable, but below the default expansion floor) and capped at 40 distinct
-  domains per hit, so they enrich the graph and correlator without auto-spending
-  expansion budget or flooding a low-power device — mirroring `name_intel`'s
-  candidate-pivot policy. **Security is preserved and tightened**: the
+  *compromised-service footprint* on the subject entity — surfacing the victim's
+  digital footprint as graph context. Emitted as **leads at confidence 0.35** —
+  below every expansion floor (default 0.50, the auto band's 0.40–0.55, and
+  `--recursive`'s 0.40) — and capped at 40 distinct domains per hit, so they
+  enrich the graph and correlator without auto-recursing into third-party
+  infrastructure (the victim merely had an account there — expanding it is scope
+  blow-out + false attribution) or flooding a low-power device. Mirrors
+  `name_intel`'s candidate-pivot policy; an operator who wants to pivot lowers
+  `--min-expand-confidence`. **Security is preserved and tightened**: the
   credential `username`/`password`/cookie fields are never deserialized (the
   `Credential` struct declares only the service locator), so only the *public*
   service host (e.g. `paypal.com`) is ever surfaced — the victim's footprint,
