@@ -10,6 +10,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Performance
+
+- **Fast on-device build profile.** The `release` profile's single-threaded LTO
+  link (`codegen-units=1`, `lto=true`) makes an on-phone build take ~15-20 min;
+  the new `[profile.fast]` (`lto=false`, `codegen-units=16`, `opt-level=2`) cuts
+  that to ~4-6 min for a ~35% larger binary and a negligible runtime cost (HSE
+  is network/IO-bound). `install.sh` now defaults to `fast` on Termux
+  (`HSE_BUILD_PROFILE=release` or `HSE_FULL_BUILD=1` for the smallest artifact),
+  and the build step prints the chosen profile + ETA.
+
 ### Added
 
 - **Real-time radar mode** — a continuous, toggleable sweep that is *not*

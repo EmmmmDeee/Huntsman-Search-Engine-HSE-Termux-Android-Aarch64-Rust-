@@ -19,6 +19,9 @@
 #   HSE_INSTALL_DEBUG Set to 1 to enable shell trace (set -x)
 #   HSE_SKIP_BUILD    Set to 1 to clone-only and stop before cargo build
 #   HSE_NO_PKG        Set to 1 to skip `pkg`/`apt` install (assume deps present)
+#   HSE_BUILD_PROFILE release | fast  (default: fast on Termux, release elsewhere)
+#                     `fast` ≈4-6 min build; `release` ≈15-20 min, smallest binary
+#   HSE_FULL_BUILD    Set to 1 to force the size-optimised `release` profile
 #
 # Log file:
 #   $HOME/.cache/hse-install.log  (everything captured for post-mortem)
@@ -277,7 +280,29 @@ if [[ "${HSE_SKIP_BUILD:-0}" == "1" ]]; then
 fi
 
 # ─── Build ───────────────────────────────────────────────────────────────────
-step "Building release binary (1–3 min on aarch64; first run downloads crates)"
+# Build profile. On Termux the `release` profile's single-threaded LTO link
+# (codegen-units=1, lto=true) takes ~15-20 min on aarch64; the `fast` profile
+# (lto off, codegen-units=16, opt-level=2) cuts that to ~4-6 min for a ~35%
+# larger binary and a negligible runtime cost (HSE is network/IO-bound). So
+# Termux defaults to `fast`; other hosts default to `release`. Override with
+# HSE_BUILD_PROFILE=<release|fast>, or the shortcut HSE_FULL_BUILD=1 for the
+# smallest/fastest `release` artifact.
+if [[ -n "${HSE_BUILD_PROFILE:-}" ]]; then
+    PROFILE="$HSE_BUILD_PROFILE"
+elif [[ "${HSE_FULL_BUILD:-0}" == "1" ]]; then
+    PROFILE="release"
+elif [[ $IS_TERMUX -eq 1 ]]; then
+    PROFILE="fast"
+else
+    PROFILE="release"
+fi
+case "$PROFILE" in
+    fast)    BUILD_ETA="~4-6 min on aarch64" ;;
+    release) BUILD_ETA="~15-20 min on aarch64 (size-optimised; LTO)" ;;
+    *)       BUILD_ETA="" ;;
+esac
+step "Building binary [profile: $PROFILE] ($BUILD_ETA; first run downloads crates)"
+hint "Slow? Re-run with HSE_BUILD_PROFILE=fast for a quicker build, or HSE_FULL_BUILD=1 for the smallest."
 
 # Termux: keep build artefacts in $HOME, not /data, to avoid app-data pressure.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/hse-build}"
@@ -291,14 +316,15 @@ fi
 
 # Retry the build twice — flaky mobile networks can interrupt crate downloads.
 attempts=0
-until cargo build --release --locked; do
+until cargo build --profile "$PROFILE" --locked; do
     attempts=$((attempts + 1))
     [[ $attempts -ge 3 ]] && die "cargo build failed after 3 attempts — check $LOG_FILE"
     log_warn "Build attempt $attempts failed; retrying (slow mobile network?)"
     sleep $((attempts * 3))
 done
 
-BUILT="$CARGO_TARGET_DIR/release/hse"
+# `--profile release` outputs to target/release; `--profile fast` to target/fast.
+BUILT="$CARGO_TARGET_DIR/$PROFILE/hse"
 [[ -x "$BUILT" ]] || die "Build claimed success but $BUILT is missing"
 ok "Built: $BUILT ($(du -h "$BUILT" | awk '{print $1}'))"
 
