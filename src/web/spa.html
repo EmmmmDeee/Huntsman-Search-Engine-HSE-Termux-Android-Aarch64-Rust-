@@ -1870,7 +1870,7 @@ function renderLiveSessions(sessions){
       + 'entities and correlations accrue as they appear.</p></div>';
   }
   const rows = sessions.map(s=>`<tr>
-    <td>${kindPill(s.target&&s.target.kind)} <code>${esc((s.target&&s.target.value)||s.id)}</code></td>
+    <td>${kindPill(s.target&&s.target.kind)} <code>${esc((s.target&&s.target.value)||s.id)}</code>${(s.live_options&&s.live_options.radar)?' <span class="label label-info" title="Radar: paid APIs not re-queried on covered seeds">radar</span>':''}</td>
     <td>${statusPill(s.status)}</td>
     <td class="text-right">${s.iteration||0}${(s.live_options&&s.live_options.iterations)?` / ${s.live_options.iterations}`:''}</td>
     <td class="text-right">${(s.live_options&&s.live_options.interval_secs)||'?'}s</td>
@@ -1905,9 +1905,12 @@ async function renderLive(v){
           <input id="live-interval" type="number" class="form-control input-sm" value="60" min="1" style="width:80px"> s
           <label class="text-muted" style="font-weight:normal;margin-left:8px">for</label>
           <input id="live-iters" type="number" class="form-control input-sm" placeholder="∞" min="1" style="width:80px"> iterations
+          <label class="text-muted" style="font-weight:normal;margin-left:8px" title="Persist the keyed-module ledger across sweeps so paid APIs are never re-queried on a seed already covered — each sweep spends quota only on NEW seeds.">
+            <input id="live-radar" type="checkbox" checked>&nbsp;Radar
+          </label>
           <button id="live-start" class="btn btn-danger btn-sm" style="margin-left:8px"><i class="glyphicon glyphicon-play"></i>&nbsp;Start</button>
         </form>
-        <p class="text-muted" style="margin:8px 0 0 0;font-size:12px">Each iteration runs a fresh depth-bounded scan against the same target; leave iterations blank to run until stopped. Tuned low (long interval) for Termux battery/data.</p>
+        <p class="text-muted" style="margin:8px 0 0 0;font-size:12px"><b>Radar</b> (recommended): each sweep spends API budget only on NEW seeds — a keyed module never re-queries a seed an earlier sweep already covered, so a long-running radar isn't aggressive with the APIs. Unchecked = classic live re-scan (re-queries everything each interval to catch fresh data). Leave iterations blank to run until toggled off; tuned low for Termux battery/data.</p>
       </div>
     </div>
     <div class="panel panel-default">
@@ -1920,7 +1923,7 @@ async function renderLive(v){
     if (!value){ if (typeof alertify !== 'undefined') alertify.warning('Enter a target value'); return; }
     const interval_secs = Math.max(1, parseInt(($('#live-interval')||{}).value || '60', 10) || 60);
     const itersRaw = (($('#live-iters')||{}).value || '').trim();
-    const live = { interval_secs };
+    const live = { interval_secs, radar: !!(($('#live-radar')||{}).checked) };
     if (itersRaw){ const n = parseInt(itersRaw, 10); if (n>=1) live.iterations = n; }
     try {
       await API.liveCreate({ kind, value, options: {}, live });

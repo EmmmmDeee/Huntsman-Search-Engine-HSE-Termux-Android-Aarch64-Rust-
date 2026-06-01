@@ -80,7 +80,12 @@ pub(crate) struct ModuleStats {
 ///
 /// Free modules are exempt: their cost is zero and re-running them on the
 /// same target across rounds can corroborate entities with fresh evidence.
-type DispatchLog = HashSet<(&'static str, TargetKind, String)>;
+///
+/// Public so a long-running continuous mode (radar) can own ONE ledger and
+/// thread it across iterations via [`ScanEngine::run_with_ledger`] — keeping a
+/// keyed/paid module from re-querying a seed it has already covered, the
+/// "don't be aggressive with the APIs" guarantee for real-time radar.
+pub type DispatchLog = HashSet<(&'static str, TargetKind, String)>;
 
 fn dispatch_key(module_name: &'static str, target: &Target) -> (&'static str, TargetKind, String) {
     let entity_kind = target.kind.to_entity_kind();
@@ -174,11 +179,28 @@ impl ScanEngine {
     }
 
     /// Run a scan to completion, including any expansion rounds.
-    pub async fn run(
+    /// Run one scan with a fresh dispatch ledger (the normal one-shot path).
+    pub async fn run(&self, scan: Scan, target: Target, ctx: ModuleContext) -> Result<Scan> {
+        let mut dispatched: DispatchLog = HashSet::new();
+        self.run_with_ledger(scan, target, ctx, &mut dispatched)
+            .await
+    }
+
+    /// Run one scan against a caller-owned dispatch ledger.
+    ///
+    /// Identical to [`run`](Self::run) except the keyed/paid-module
+    /// deduplication set is supplied by the caller, so a continuous mode
+    /// (radar) can persist ONE ledger across iterations: a keyed module that
+    /// already queried a given seed in an earlier sweep is skipped on every
+    /// later sweep, so the APIs are never re-hit on already-covered seeds.
+    /// Free modules still re-run each sweep (they corroborate with fresh
+    /// evidence and cost nothing), so the radar keeps surfacing new leads.
+    pub async fn run_with_ledger(
         &self,
         mut scan: Scan,
         target: Target,
         mut ctx: ModuleContext,
+        dispatched: &mut DispatchLog,
     ) -> Result<Scan> {
         scan.status = ScanStatus::Running;
         self.store.upsert_scan(&scan)?;
@@ -231,7 +253,6 @@ impl ScanEngine {
         let mut entity_map: HashMap<String, Entity> =
             HashMap::with_capacity(opts.max_entities.unwrap_or(256).min(4096));
         let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
-        let mut dispatched: DispatchLog = HashSet::new();
         let mut stats = ModuleStats::default();
         // Lineage `DerivedFrom` edges (child → the parent it was expanded
         // from), accumulated across expansion rounds and persisted in
@@ -253,7 +274,7 @@ impl ScanEngine {
             &mut entity_map,
             false,
             &mut stats,
-            &mut dispatched,
+            dispatched,
         )
         .await?;
 
@@ -275,7 +296,7 @@ impl ScanEngine {
                     &mut entity_map,
                     &mut visited,
                     &mut stats,
-                    &mut dispatched,
+                    dispatched,
                     &mut lineage,
                     &mut emitted_corr,
                 )

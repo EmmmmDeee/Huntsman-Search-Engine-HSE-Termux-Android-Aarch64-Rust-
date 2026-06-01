@@ -10,6 +10,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **Real-time radar mode** — a continuous, toggleable sweep that is *not*
+  aggressive with the APIs. Enabled via `live.radar` (Web UI Settings → Live
+  "Radar" toggle, `POST /api/v1/live`, or `hse live --radar`), it persists ONE
+  keyed-module dispatch ledger across every sweep through the new
+  `ScanEngine::run_with_ledger`, so a paid/keyed module never re-queries a seed
+  an earlier sweep already covered. Each sweep spends API budget only on
+  genuinely NEW seeds (the free modules still re-run and keep surfacing leads);
+  toggle on with start, off with stop. Classic live re-scan (re-query
+  everything each interval) remains the default when the flag is off. Also
+  upgraded the confidence model — `c_effective` now takes the stronger of the
+  legacy multiplicative boost and an independent-agreement (noisy-OR) floor, so
+  cross-source corroboration drives confidence toward certainty.
+
 ## [1.1.0] — 2026-06-01
 
 ### Added

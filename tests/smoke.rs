@@ -869,6 +869,98 @@ async fn dispatch_dedup_allows_free_module_to_rerun() {
     );
 }
 
+/// Paid module that counts every `process()` invocation — used to prove the
+/// radar persistent-ledger contract.
+struct CountingPaid {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl Module for CountingPaid {
+    fn name(&self) -> &'static str {
+        "counting_paid"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
+        huntsman_search_engine::core::module::ModuleCost::Paid
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(ModuleResult::new())
+    }
+}
+
+#[tokio::test]
+async fn radar_persistent_ledger_does_not_re_query_paid_apis_on_covered_seeds() {
+    use huntsman_search_engine::core::engine::DispatchLog;
+    use std::sync::atomic::Ordering;
+
+    let tmp = tempfile_path("radar-ledger");
+    let _ = std::fs::remove_file(&tmp);
+    let store = Arc::new(Store::open(&tmp).unwrap());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let engine = ScanEngine::new(
+        vec![Arc::new(CountingPaid {
+            calls: calls.clone(),
+        }) as Arc<dyn Module>],
+        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Email, "alice@example.com");
+    let opts = ScanOptions {
+        depth: 0,
+        ..Default::default()
+    };
+    let make_ctx = |sid: String| ModuleContext {
+        scan_id: sid,
+        bus: bus.clone(),
+        http: build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+        proxy_pool: Default::default(),
+    };
+
+    // Radar: ONE ledger threaded across three sweeps of the SAME seed → the
+    // paid API is queried exactly once; later sweeps skip the covered seed.
+    let mut ledger: DispatchLog = DispatchLog::new();
+    for i in 0..3 {
+        let sid = format!("radar-iter-{i}");
+        let scan = Scan::new(sid.clone(), target.clone()).with_options(opts.clone());
+        engine
+            .run_with_ledger(scan, target.clone(), make_ctx(sid), &mut ledger)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "radar must query a paid module only ONCE across sweeps of a covered seed"
+    );
+
+    // Control: classic live (run() = fresh ledger each time) re-queries every
+    // iteration — three more calls.
+    let before = calls.load(Ordering::SeqCst);
+    for i in 0..3 {
+        let sid = format!("live-iter-{i}");
+        let scan = Scan::new(sid.clone(), target.clone()).with_options(opts.clone());
+        engine
+            .run(scan, target.clone(), make_ctx(sid))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst) - before,
+        3,
+        "classic live (fresh ledger) re-queries the paid module every iteration"
+    );
+}
+
 /// Sleeps for `delay_ms`, then emits a tagged Email entity. Used to prove
 /// that v0.8 concurrent dispatch actually overlaps module wall-time.
 struct SlowEchoModule {
@@ -1216,6 +1308,7 @@ async fn live_session_runs_two_iterations_and_completes() {
         LiveOptions {
             interval_secs: 1,
             iterations: Some(2),
+            radar: false,
         },
     );
 
@@ -1260,6 +1353,7 @@ async fn live_session_stops_on_explicit_cancel() {
         LiveOptions {
             interval_secs: 30,
             iterations: None,
+            radar: false,
         },
     );
 

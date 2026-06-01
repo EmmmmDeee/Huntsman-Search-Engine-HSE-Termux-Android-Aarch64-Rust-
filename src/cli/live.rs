@@ -20,6 +20,9 @@ pub(super) struct LiveCmd {
     pub free_only: bool,
     pub passive_only: bool,
     pub modules: Option<String>,
+    /// Radar mode: persist the keyed-module dispatch ledger across iterations
+    /// so paid APIs are never re-hit on already-covered seeds.
+    pub radar: bool,
 }
 
 pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
@@ -40,6 +43,7 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     let live_options = LiveOptions {
         interval_secs: cmd.interval,
         iterations: cmd.iterations,
+        radar: cmd.radar,
     };
 
     let (_store, bus, engine) = build_runtime(1024)?;

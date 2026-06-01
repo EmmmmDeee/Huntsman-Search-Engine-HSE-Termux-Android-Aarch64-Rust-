@@ -271,6 +271,11 @@ pub enum Command {
         /// Comma-separated module allowlist.
         #[arg(short, long)]
         modules: Option<String>,
+        /// Radar mode: persist the keyed-module dispatch ledger across
+        /// iterations so paid APIs are never re-queried on a seed an earlier
+        /// sweep already covered — each sweep spends quota only on NEW seeds.
+        #[arg(long)]
+        radar: bool,
     },
     /// Radar mode: continuous Termux signal sweep → automatic pivoting.
     ///
@@ -453,6 +458,7 @@ pub async fn run() -> Result<()> {
             free_only,
             passive_only,
             modules,
+            radar,
         } => {
             live::cmd_live(live::LiveCmd {
                 kind,
@@ -463,6 +469,7 @@ pub async fn run() -> Result<()> {
                 free_only,
                 passive_only,
                 modules,
+                radar,
             })
             .await
         }

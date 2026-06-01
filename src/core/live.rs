@@ -31,7 +31,7 @@ use tracing::{info, warn};
 
 use crate::core::{
     cancel::CancelHandle,
-    engine::ScanEngine,
+    engine::{DispatchLog, ScanEngine},
     entity::unix_now,
     event::{Event, EventBus, EventKind},
     module::ModuleContext,
@@ -49,6 +49,16 @@ pub struct LiveOptions {
     /// explicit stop or process exit).
     #[serde(default)]
     pub iterations: Option<u32>,
+
+    /// Radar mode: persist ONE dispatch ledger across all iterations so a
+    /// keyed/paid module never re-queries a seed it has already covered in an
+    /// earlier sweep. Each sweep then spends API budget only on genuinely NEW
+    /// seeds (surfaced by the free modules, which still re-run), so a
+    /// long-running radar is not aggressive with the APIs. `false` (default)
+    /// keeps classic live behaviour: every iteration is an independent re-scan
+    /// that re-queries everything (catches fresh data on the same seed).
+    #[serde(default)]
+    pub radar: bool,
 }
 
 impl Default for LiveOptions {
@@ -56,6 +66,7 @@ impl Default for LiveOptions {
         Self {
             interval_secs: default_interval_secs(),
             iterations: None,
+            radar: false,
         }
     }
 }
@@ -257,6 +268,13 @@ async fn session_loop(
     let http = inner.http.clone();
     let loaded_keys = inner.keys.clone();
 
+    // Radar mode persists ONE keyed-module dispatch ledger across every
+    // iteration, so a paid API is never re-hit on a seed an earlier sweep
+    // already covered. Classic live mode leaves it `None` → each iteration
+    // gets a fresh ledger and re-queries everything (to catch fresh data on
+    // the same seed).
+    let mut radar_ledger: Option<DispatchLog> = live.radar.then(DispatchLog::new);
+
     let _ = inner.bus.send(Event::new(
         &live_id,
         EventKind::LiveStart {
@@ -322,7 +340,18 @@ async fn session_loop(
             proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         };
 
-        if let Err(e) = inner.engine.run(scan, target.clone(), ctx).await {
+        // Radar mode threads the persistent ledger so keyed modules skip
+        // already-covered seeds; classic live mode runs with a fresh ledger.
+        let iteration_result = match radar_ledger.as_mut() {
+            Some(ledger) => {
+                inner
+                    .engine
+                    .run_with_ledger(scan, target.clone(), ctx, ledger)
+                    .await
+            }
+            None => inner.engine.run(scan, target.clone(), ctx).await,
+        };
+        if let Err(e) = iteration_result {
             warn!(live_id = %live_id, scan_id = %sid, error = %e, "iteration failed");
         }
 
@@ -436,11 +465,16 @@ mod tests {
         let o = LiveOptions {
             interval_secs: 60,
             iterations: Some(3),
+            radar: true,
         };
         let s = serde_json::to_string(&o).unwrap();
         let back: LiveOptions = serde_json::from_str(&s).unwrap();
         assert_eq!(back.interval_secs, 60);
         assert_eq!(back.iterations, Some(3));
+        assert!(back.radar, "radar flag must round-trip");
+        // Omitted `radar` defaults to false (classic live re-scan).
+        let d: LiveOptions = serde_json::from_str(r#"{"interval_secs":10}"#).unwrap();
+        assert!(!d.radar);
     }
 
     #[test]
