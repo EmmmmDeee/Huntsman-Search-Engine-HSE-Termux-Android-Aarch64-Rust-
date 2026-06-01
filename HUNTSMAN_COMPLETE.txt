@@ -64,6 +64,20 @@ FORWARD PLAN — ranked, each bounded + halt-proven. Locked one cycle at a time.
 ================================================================================
 SYNERGY LEDGER (per-file ticker — appended per reconciled cycle)
 ================================================================================
+OBS2 [DONE] Correlator + storage observability — full pipeline now visible.
+   correlator/mod.rs: debug! run-start (entities, 30 entity_rules / 2 relation
+                   rules), correlator-done (fired + entity-vs-relation split +
+                   severity breakdown critical/high/medium/low); trace! per
+                   rule that fires (rule_id, name, count).
+   storage.rs    : debug! batch upsert (count, single WAL fsync); debug! entity
+                   search routing (query, hits, path=fts5|like); trace! FTS->LIKE
+                   fallback + WAL checkpoint(TRUNCATE) complete.
+   levels        : debug/trace only; default info unchanged.
+   gate          : full suite 1324 green (additive) · clippy --all-targets clean.
+   observed      : email scan -> "batch entity upsert ... count=2"; "correlator:
+                   evaluating entity rules entities=2 entity_rules=30";
+                   "correlator done fired=0 ... critical=0 high=0 medium=0 low=0".
+
 OBS [DONE] Expansion-path observability — instrument before optimising.
    core/engine.rs: debug! at scan-start (full options), per-round candidate
                    selection (eligible/dispatching/deferred + per-reason skip

@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::core::entity::Entity;
 use crate::core::error::Result;
@@ -98,15 +98,29 @@ impl Correlator {
     pub fn run(&self, scan_id: &str) -> Result<Vec<Correlation>> {
         let entities = self.store.entities_for_scan(scan_id)?;
         if entities.is_empty() {
+            debug!(scan_id, "correlator: no entities, skipping");
             return Ok(Vec::new());
         }
+        debug!(
+            scan_id,
+            entities = entities.len(),
+            entity_rules = RULES.len(),
+            "correlator: evaluating entity rules"
+        );
         let mut firings = evaluate_rules(&entities, scan_id);
+        let entity_firings = firings.len();
 
         // Graph-aware pass: rules that need the typed relation edges (the
         // attribution graph), not just the flat entity list. Relations are
         // persisted by `finalise_scan` before the correlator runs.
         let relations = self.store.relations_for_scan(scan_id)?;
         if !relations.is_empty() {
+            debug!(
+                scan_id,
+                relations = relations.len(),
+                relation_rules = RELATION_RULES.len(),
+                "correlator: evaluating graph-aware rules"
+            );
             let now = crate::core::entity::unix_now();
             firings.extend(evaluate_relation_rules(&entities, &relations, scan_id, now));
         }
@@ -114,7 +128,26 @@ impl Correlator {
         for c in &firings {
             self.store.upsert_correlation(c)?;
         }
-        debug!(scan_id, fired = firings.len(), "correlator done");
+        let (mut critical, mut high, mut medium, mut low) = (0usize, 0usize, 0usize, 0usize);
+        for c in &firings {
+            match c.severity {
+                Severity::Critical => critical += 1,
+                Severity::High => high += 1,
+                Severity::Medium => medium += 1,
+                Severity::Low => low += 1,
+            }
+        }
+        debug!(
+            scan_id,
+            fired = firings.len(),
+            from_entity_rules = entity_firings,
+            from_relation_rules = firings.len() - entity_firings,
+            critical,
+            high,
+            medium,
+            low,
+            "correlator done"
+        );
         Ok(firings)
     }
 }
@@ -163,7 +196,12 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     let now = crate::core::entity::unix_now();
     let mut out = Vec::new();
     for rule in RULES {
-        out.extend(rule(entities, scan_id, now));
+        let fired = rule(entities, scan_id, now);
+        if let Some(first) = fired.first() {
+            trace!(scan_id, rule_id = %first.rule_id, rule = %first.rule_name,
+                count = fired.len(), "correlation rule fired");
+        }
+        out.extend(fired);
     }
     out
 }
@@ -188,7 +226,12 @@ fn evaluate_relation_rules(
 ) -> Vec<Correlation> {
     let mut out = Vec::new();
     for rule in RELATION_RULES {
-        out.extend(rule(entities, relations, scan_id, now));
+        let fired = rule(entities, relations, scan_id, now);
+        if let Some(first) = fired.first() {
+            trace!(scan_id, rule_id = %first.rule_id, rule = %first.rule_name,
+                count = fired.len(), "graph correlation rule fired");
+        }
+        out.extend(fired);
     }
     out
 }

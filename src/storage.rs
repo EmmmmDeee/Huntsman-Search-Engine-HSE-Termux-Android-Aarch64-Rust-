@@ -170,6 +170,7 @@ impl Store {
     pub fn checkpoint_truncate(&self) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        tracing::trace!("WAL checkpoint(TRUNCATE) complete");
         Ok(())
     }
 
@@ -405,6 +406,7 @@ impl Store {
             Self::merge_and_persist_entity(&tx, entity)?;
         }
         tx.commit()?;
+        tracing::debug!(count = entities.len(), "batch entity upsert committed (single WAL fsync)");
         Ok(entities.len())
     }
 
@@ -637,12 +639,14 @@ impl Store {
                 hits = rows.filter_map(std::result::Result::ok).collect();
             }
             if !hits.is_empty() {
+                tracing::debug!(query = %trimmed, hits = hits.len(), path = "fts5", "entity search");
                 return Ok(hits
                     .into_iter()
                     .filter_map(|s| serde_json::from_str(&s).ok())
                     .collect());
             }
         }
+        tracing::trace!(query = %trimmed, "entity search: FTS produced no hits, falling back to LIKE");
 
         // Fallback: legacy substring scan (also covers infix matches FTS's
         // token/prefix model can't reach).
@@ -654,6 +658,7 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![pattern, limit as i64], |r| r.get::<_, String>(0))?;
         let raw: Vec<String> = rows.filter_map(std::result::Result::ok).collect();
+        tracing::debug!(query = %trimmed, hits = raw.len(), path = "like", "entity search");
         Ok(raw
             .into_iter()
             .filter_map(|s| serde_json::from_str(&s).ok())
