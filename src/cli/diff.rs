@@ -31,24 +31,64 @@ fn resolve(store: &Store, raw: &str) -> Result<String> {
     Ok(raw.to_string())
 }
 
+/// One loaded diff side: its entities, plus the resolved scan id when the side
+/// was a store scan (`None` when it was a JSON snapshot file). The id lets
+/// `cmd_diff` detect the "diff a scan against itself" footgun.
+struct Side {
+    entities: Vec<Entity>,
+    scan_id: Option<String>,
+}
+
 /// Load one side of the diff: a JSON entity snapshot if `arg` is a file on
 /// disk, otherwise the entities of a resolved scan id.
-fn load_side(store: &Store, arg: &str) -> Result<Vec<Entity>> {
+fn load_side(store: &Store, arg: &str) -> Result<Side> {
     if std::path::Path::new(arg).is_file() {
         let body =
             std::fs::read_to_string(arg).map_err(|e| Error::Other(format!("read {arg}: {e}")))?;
-        return serde_json::from_str(&body)
-            .map_err(|e| Error::Other(format!("{arg} is not a JSON entity snapshot: {e}")));
+        let entities = serde_json::from_str(&body)
+            .map_err(|e| Error::Other(format!("{arg} is not a JSON entity snapshot: {e}")))?;
+        return Ok(Side {
+            entities,
+            scan_id: None,
+        });
     }
     let sid = resolve(store, arg)?;
-    store.entities_for_scan(&sid)
+    let entities = store.entities_for_scan(&sid)?;
+    Ok(Side {
+        entities,
+        scan_id: Some(sid),
+    })
 }
 
 pub(super) fn cmd_diff(from: String, to: String, format: String) -> Result<()> {
     let store = Store::open(&default_db_path())?;
-    let baseline = load_side(&store, &from)?;
-    let later = load_side(&store, &to)?;
-    let d = diff_entities(&baseline, &later);
+    let a = load_side(&store, &from)?;
+    let b = load_side(&store, &to)?;
+
+    // Footgun guard: diffing a scan against itself (the same target resolved on
+    // both sides — common when an operator expects "what changed since I last
+    // scanned" but scan ids are the deterministic SHA-256(kind:value), so a
+    // re-scan overwrites rather than creating a second row). The diff is
+    // trivially empty; point them at the snapshot-file workflow that actually
+    // captures change over time. Only when neither side was a snapshot file.
+    if let (Some(ida), Some(idb)) = (a.scan_id.as_deref(), b.scan_id.as_deref())
+        && ida == idb
+    {
+        eprintln!(
+            "note: both sides resolve to the same scan ({}…) — diffing it against \
+             itself, so there are no changes.\n      Scan ids are deterministic \
+             (SHA-256 of kind+value), so re-scanning a target overwrites its row \
+             rather than making a second one.\n      For time-series monitoring, \
+             snapshot first then diff the file:\n        hse export --scan-id {} \
+             --format json --out before.json\n        # ... re-scan the target \
+             later ...\n        hse diff before.json {}",
+            &ida[..ida.len().min(12)],
+            ida,
+            ida,
+        );
+    }
+
+    let d = diff_entities(&a.entities, &b.entities);
 
     match format.to_lowercase().as_str() {
         "json" => {
@@ -139,6 +179,31 @@ mod tests {
     }
 
     #[test]
+    fn load_side_tags_store_scans_with_their_id_for_self_diff_guard() {
+        // A store-scan side carries its resolved id; two sides resolving to the
+        // same id is what `cmd_diff` detects as a self-diff. Seed a scan and
+        // confirm both the id is set and it round-trips equal for the same arg.
+        use crate::core::scan::{Scan, Target, TargetKind};
+        let store = Store::open(":memory:").unwrap();
+        let scan = Scan::new("scan-x", Target::new(TargetKind::Domain, "example.com"));
+        store.upsert_scan(&scan).unwrap();
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::Domain,
+                "example.com",
+                0.9,
+                "scan-x",
+            ))
+            .unwrap();
+
+        let a = load_side(&store, "scan-x").unwrap();
+        let b = load_side(&store, "scan-x").unwrap();
+        assert_eq!(a.scan_id.as_deref(), Some("scan-x"));
+        assert_eq!(a.scan_id, b.scan_id, "same arg → same id → self-diff");
+        assert_eq!(a.entities.len(), 1);
+    }
+
+    #[test]
     fn load_side_reads_json_entity_snapshot_file() {
         let store = Store::open(":memory:").unwrap();
         let ents = vec![Entity::new(EntityKind::Email, "a@b.com", 0.8, "s")];
@@ -150,8 +215,11 @@ mod tests {
         ));
         std::fs::write(&path, json).unwrap();
         let loaded = load_side(&store, path.to_str().unwrap()).unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].value, "a@b.com");
+        assert_eq!(loaded.entities.len(), 1);
+        assert_eq!(loaded.entities[0].value, "a@b.com");
+        // A snapshot-file side carries no scan id (so it's never flagged as a
+        // same-scan self-diff).
+        assert!(loaded.scan_id.is_none());
         let _ = std::fs::remove_file(&path);
     }
 }
