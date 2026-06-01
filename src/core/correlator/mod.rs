@@ -1061,6 +1061,125 @@ mod tests {
         }
     }
 
+    /// Ground-truth regression guard (real data as a fixture, operator-
+    /// confirmed): the `matthewdiegmann@gmail.com` identity and the
+    /// Maleny/Booroobin (QLD 4552) locality are the accurate results, and the
+    /// engine must cross-correlate them. This pins the full path so a future
+    /// refactor of the rule set can't silently sever it.
+    #[test]
+    fn ground_truth_matthew_diegmann_identity_and_booroobin_geo() {
+        let scan = "ground-truth";
+        let id = |kind, val: &str, sources: &[&str]| -> Entity {
+            let mut e = Entity::new(kind, val, 0.80, scan);
+            for s in sources {
+                e.add_evidence(Evidence::new(*s, "ground-truth fixture"));
+            }
+            e
+        };
+
+        // Identity anchor — the email cross-confirmed by two independent
+        // modules, plus the username and phone that complete the cluster.
+        let email = id(
+            EntityKind::Email,
+            "matthewdiegmann@gmail.com",
+            &["oathnet_pro", "name_intel"],
+        );
+        let username = id(
+            EntityKind::Username,
+            "mdieg123",
+            &["username_search", "oathnet_pro"],
+        );
+        let phone = id(EntityKind::Phone, "+61400000111", &["oathnet_pro"]);
+        let person = id(EntityKind::Person, "Matthew Diegmann", &["name_intel"]);
+
+        // qld_unclaimed surfaces Booroobin at *candidate* confidence (0.40,
+        // below the 0.50 expand floor) — a coarse postcode-centroid lead.
+        let booroobin_candidate = {
+            let mut a = Entity::new(
+                EntityKind::Address,
+                "Booroobin, QLD 4552, Australia",
+                0.40,
+                scan,
+            );
+            a.tag("qld_unclaimed");
+            a.tag("geoint");
+            a.tag("candidate-suburb");
+            a
+        };
+
+        // ── Phase 1: identity cross-correlation always holds; the unconfirmed
+        //    suburb must NOT yet claim an email↔location linkage. ──
+        let mut ents = vec![
+            email.clone(),
+            username.clone(),
+            phone.clone(),
+            person.clone(),
+            booroobin_candidate,
+        ];
+        let firings = evaluate_rules(&ents, scan);
+        let ids: HashSet<&str> = firings.iter().map(|c| c.rule_id.as_str()).collect();
+
+        // AU-002 ties the email and username into one identity cluster.
+        let au002 = firings
+            .iter()
+            .find(|c| c.rule_id == "AU-002")
+            .expect("identity cluster (AU-002) must fire");
+        assert!(
+            au002.entity_uids.contains(&email.uid),
+            "cluster must include the email"
+        );
+        assert!(
+            au002.entity_uids.contains(&username.uid),
+            "cluster must include mdieg123"
+        );
+
+        // AU-003 flags the two-source email as high cross-source corroboration.
+        assert!(
+            firings
+                .iter()
+                .any(|c| c.rule_id == "AU-003" && c.entity_uids.contains(&email.uid)),
+            "the cross-confirmed email must be flagged high-corroboration"
+        );
+
+        // Accurate hedging: a 0.40 candidate suburb is below AU-018's 0.50 gate,
+        // so the engine must not yet assert identity↔location linkage.
+        assert!(
+            !ids.contains("AU-018"),
+            "unconfirmed candidate suburb must not fire email-location colocation"
+        );
+
+        // ── Phase 2: once a second geo source corroborates Booroobin to >=0.50,
+        //    the email↔Booroobin linkage the operator validated must fire. ──
+        let booroobin_confirmed = {
+            let mut a = Entity::new(
+                EntityKind::Address,
+                "Booroobin, QLD 4552, Australia",
+                0.72,
+                scan,
+            );
+            a.tag("qld_unclaimed");
+            a.tag("geoint");
+            a.add_evidence(Evidence::new("qld_unclaimed", "unclaimed-money register"));
+            a.add_evidence(Evidence::new("geocode", "address confirmed"));
+            a
+        };
+        ents.pop(); // drop the candidate
+        ents.push(booroobin_confirmed.clone());
+        let firings2 = evaluate_rules(&ents, scan);
+        let au018 = firings2
+            .iter()
+            .find(|c| c.rule_id == "AU-018")
+            .expect("email-location linkage (AU-018) must fire once geo is corroborated");
+        assert!(
+            au018.entity_uids.contains(&email.uid),
+            "linkage must include matthewdiegmann@gmail.com"
+        );
+        assert!(
+            au018.entity_uids.contains(&booroobin_confirmed.uid),
+            "linkage must include the confirmed Booroobin address"
+        );
+    }
+
     #[test]
     fn rule_016_breach_ip_geo_chain_fires() {
         let mut ip = Entity::new(EntityKind::IpAddress, "101.169.42.148", 0.72, "s");
