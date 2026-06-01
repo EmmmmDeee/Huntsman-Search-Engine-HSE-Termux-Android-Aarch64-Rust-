@@ -5,7 +5,7 @@
 //! - GREATEST-semantics merge (confidence, corroboration only ever increase)
 //! - `C_eff` rises with the count of DISTINCT INDEPENDENT corroborating
 //!   sources — not the raw `corroboration` field, and not the engine's own
-//!   internal enrichment passes (see [`source_count`] / [`NON_CORROBORATING_SOURCES`])
+//!   internal enrichment passes (see [`Entity::source_count`] / [`Evidence::internal`])
 //! - `Classify()` is derived-only from `C_eff`
 //! - No unsafe, no std::sync::Mutex (use tokio::sync)
 //! - Zero CGO / native deps
@@ -31,25 +31,6 @@ pub const CORROBORATION_DOUBT_DECAY: f64 = 0.65;
 
 /// Confidence decay constant per hour (γ = 0.85).
 pub const GAMMA_PER_HOUR: f64 = 0.85;
-
-/// Evidence `source` names that are the engine's **own internal enrichment /
-/// derivation passes**, not an independent external observation of the entity.
-/// They annotate an entity *already discovered by some module* (e.g. adding a
-/// geohash, timezone, and parsed admin-hierarchy to a Coordinates/Address), so
-/// they must NOT count toward the distinct-source cross-correlation signal in
-/// [`Entity::source_count`] — otherwise a single-source finding the engine
-/// merely geocodes looks "doubly sourced" and is over-promoted to *Verified*.
-///
-/// Statistical motivation (live `full_name` scan, 447 entities): counting
-/// `geo_normalize` as a source inflated **50 of 56** *Verified* classifications
-/// — every one a single-source (oathnet_pro) breach address the engine had
-/// geocoded. Excluding internal passes restores honest tiers (Verified 56→6).
-///
-/// The evidence itself is always retained (it carries the geo attributes the
-/// timeline/UI/correlator read); only its weight as *independent corroboration*
-/// is removed. Aligns with the charter: external/derived data is context, not
-/// structural authority — only independent sources validate.
-pub(crate) const NON_CORROBORATING_SOURCES: &[&str] = &["geo_normalize"];
 
 // ─── EntityKind ──────────────────────────────────────────────────────────────
 
@@ -191,20 +172,49 @@ pub struct Evidence {
     pub attributes: HashMap<String, String>,
     /// Unix timestamp (seconds) when evidence was recorded.
     pub recorded_at: u64,
+    /// `true` when this evidence comes from one of the engine's OWN internal
+    /// enrichment/derivation passes (e.g. `geo_normalize` adding a geohash +
+    /// admin hierarchy to a Coordinates/Address) rather than an independent
+    /// external observation. Internal evidence annotates an entity *already*
+    /// discovered by some module, so it must NOT count toward the
+    /// distinct-source cross-correlation signal (see [`Entity::source_count`]) —
+    /// otherwise a single-source finding the engine merely geocodes looks
+    /// "doubly sourced" and is over-promoted to *Verified*.
+    ///
+    /// Provenance is declared **at construction** (`Evidence::new` → external;
+    /// `.as_internal()` → internal), so the corroboration filter is exact by
+    /// origin rather than a fragile source-name denylist that silently rots
+    /// when a new internal pass is added. Defaulted so older serialized
+    /// evidence (and the ~365 external `Evidence::new` call sites) read as
+    /// external automatically.
+    #[serde(default)]
+    pub internal: bool,
 }
 
 impl Evidence {
+    /// Evidence from an independent external observation (a module). The
+    /// overwhelmingly common case — counts toward cross-correlation.
     pub fn new(source: impl Into<String>, summary: impl Into<String>) -> Self {
         Self {
             source: source.into(),
             summary: summary.into(),
             attributes: HashMap::new(),
             recorded_at: unix_now(),
+            internal: false,
         }
     }
 
     pub fn with_attr(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.attributes.insert(key.into(), value.into());
+        self
+    }
+
+    /// Mark this evidence as the engine's own internal enrichment/derivation
+    /// (see [`Evidence::internal`]) so it is excluded from the corroboration
+    /// count. Chainable with [`with_attr`](Self::with_attr) in any order.
+    #[must_use]
+    pub fn as_internal(mut self) -> Self {
+        self.internal = true;
         self
     }
 }
@@ -302,7 +312,7 @@ impl Entity {
             // Independent sources is the authoritative cross-correlation count.
             // Neither the summed `corroboration` magnitude (the original
             // over-count bug) NOR the engine's own internal enrichment passes
-            // (the false-Verified bug — see [`NON_CORROBORATING_SOURCES`]) are
+            // (the false-Verified bug — see [`Evidence::internal`]) are
             // allowed to inflate it.
             distinct
         } else if self.evidence.is_empty() {
@@ -413,16 +423,18 @@ impl Entity {
         self.evidence.iter().map(|ev| ev.source.as_str()).collect()
     }
 
-    /// Distinct **independent** evidence sources: [`evidence_sources`] minus the
-    /// engine's own internal enrichment passes ([`NON_CORROBORATING_SOURCES`]).
-    /// This is the honest cross-correlation count that drives [`source_count`]
-    /// (and hence [`c_effective`] / [`classify`]); `evidence_sources` remains
-    /// the raw set for callers that want every source regardless of provenance.
+    /// Distinct **independent** evidence sources: the source names of every
+    /// non-internal evidence entry (see [`Evidence::internal`]). This is the
+    /// honest cross-correlation count that drives [`source_count`](Self::source_count)
+    /// (and hence [`c_effective`](Self::c_effective) /
+    /// [`classify`](Self::classify)); [`evidence_sources`](Self::evidence_sources)
+    /// remains the raw set for callers that want every source regardless of
+    /// provenance.
     pub fn corroborating_sources(&self) -> std::collections::HashSet<&str> {
         self.evidence
             .iter()
+            .filter(|ev| !ev.internal)
             .map(|ev| ev.source.as_str())
-            .filter(|s| !NON_CORROBORATING_SOURCES.contains(s))
             .collect()
     }
 
@@ -821,14 +833,13 @@ mod tests {
         // 0.65 finding stays Probable rather than being promoted to Verified.
         let mut e = Entity::new(EntityKind::Address, "PO Box 1, Townsville, QLD", 0.65, "s");
         e.add_evidence(Evidence::new("oathnet_pro", "breach record"));
-        e.add_evidence(Evidence::new(
-            "geo_normalize",
-            "Address parse + normalization",
-        ));
+        e.add_evidence(
+            Evidence::new("geo_normalize", "Address parse + normalization").as_internal(),
+        );
         assert_eq!(
             e.corroborating_sources().len(),
             1,
-            "geo_normalize is internal enrichment, not an independent source"
+            "internal-flagged enrichment is not an independent source"
         );
         assert_eq!(e.source_count(), 1);
         assert!(
@@ -844,12 +855,12 @@ mod tests {
         // 2nd source, so real cross-correlation is unaffected by the filter.
         let mut e = Entity::new(EntityKind::Address, "1 Main St, Brisbane, QLD", 0.65, "s");
         e.add_evidence(Evidence::new("oathnet_pro", "breach record"));
-        e.add_evidence(Evidence::new("geo_normalize", "enrichment"));
+        e.add_evidence(Evidence::new("geo_normalize", "enrichment").as_internal());
         e.add_evidence(Evidence::new("whois", "registrant address"));
         assert_eq!(
             e.source_count(),
             2,
-            "oathnet_pro + whois count; geo_normalize is excluded"
+            "oathnet_pro + whois count; the internal-flagged pass is excluded"
         );
         assert!(
             e.c_effective() > 0.65,
@@ -863,8 +874,33 @@ mod tests {
         // a single observation, never inflated by a stale corroboration field.
         let mut e = Entity::new(EntityKind::Coordinates, "-19.26,146.81", 0.6, "s");
         e.corroboration = 9;
-        e.add_evidence(Evidence::new("geo_normalize", "enrichment"));
+        e.add_evidence(Evidence::new("geo_normalize", "enrichment").as_internal());
         assert_eq!(e.source_count(), 1);
+    }
+
+    #[test]
+    fn corroboration_keys_on_internal_flag_not_source_name() {
+        // The abstraction is provenance-by-construction: it's the `internal`
+        // flag that excludes evidence, NOT a magic source name. An arbitrary
+        // source marked internal is excluded; an unmarked "geo_normalize"
+        // (should never happen in prod, but proves the name isn't special) counts.
+        let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.6, "s");
+        e.add_evidence(Evidence::new("hibp", "breach"));
+        e.add_evidence(Evidence::new("some_future_enrichment", "derived").as_internal());
+        assert_eq!(
+            e.source_count(),
+            1,
+            "internal-flagged source is excluded by flag"
+        );
+
+        let mut e2 = Entity::new(EntityKind::Email, "c@d.com", 0.6, "s");
+        e2.add_evidence(Evidence::new("hibp", "breach"));
+        e2.add_evidence(Evidence::new("geo_normalize", "NOT flagged internal"));
+        assert_eq!(
+            e2.source_count(),
+            2,
+            "the name 'geo_normalize' is no longer magic — only the flag excludes"
+        );
     }
 
     #[test]

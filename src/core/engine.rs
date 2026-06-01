@@ -1642,7 +1642,8 @@ fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
                 let h = geohash::geohash(lat, lon, 7);
                 let tz = geohash::timezone_for(lat, lon);
                 let iso = geohash::reverse_country_iso(lat, lon);
-                let mut ev = Evidence::new("geo_normalize", "Geospatial enrichment");
+                // Internal enrichment — excluded from the corroboration count.
+                let mut ev = Evidence::new("geo_normalize", "Geospatial enrichment").as_internal();
                 if !h.is_empty() {
                     ev = ev.with_attr("geohash", &h);
                     // Multiple precision-tagged hashes for proximity matching
@@ -1674,7 +1675,9 @@ fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
         }
         EntityKind::Address => {
             let parsed = geohash::parse_address(&entity.value);
-            let mut ev = Evidence::new("geo_normalize", "Address parse + normalization");
+            // Internal enrichment — excluded from the corroboration count.
+            let mut ev =
+                Evidence::new("geo_normalize", "Address parse + normalization").as_internal();
             let mut any = false;
             if let Some(s) = &parsed.street {
                 ev = ev.with_attr("addr_street", s);

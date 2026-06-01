@@ -12,6 +12,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Internal architecture: evidence provenance is now typed, not name-matched.**
+  The cross-correlation count excluded the engine's own enrichment passes via a
+  `NON_CORROBORATING_SOURCES = ["geo_normalize"]` **string denylist** — the wrong
+  abstraction level: it silently rots the moment a second internal pass is added
+  (and someone forgets the list), which is exactly the fragility class behind the
+  earlier false-`VERIFIED` bug. Replaced with a typed `Evidence::internal` flag
+  declared **at construction** (`Evidence::new` → external; `.as_internal()` →
+  internal; the engine's `enrich_geospatial` marks its `geo_normalize` evidence
+  internal). `Entity::corroborating_sources` now filters on the flag, so
+  provenance is exact by origin rather than by a magic source name. Behaviour is
+  unchanged (geo_normalize still excluded); the abstraction is now robust to new
+  internal passes. Serde-defaulted, so older serialized evidence + the ~365
+  external `Evidence::new` call sites read as external automatically.
+
+- **Internal: `hudsonrock` reuses the canonical `timeline::parse_date`** instead
+  of shipping its own approximate ISO-date parser (`parse_iso_epoch`) for the
+  stealer-log freshness check — one tested date→epoch implementation across the
+  engine, and the freshness window is now computed from an exact (not
+  ~365-day-approximate) epoch.
+
 - **`hse scan` now defaults to the full `dossier` output — every scan is
   maximally detailed and self-diagnosing.** The default output flips
   `table` → `dossier`, which already renders the complete intelligence view:

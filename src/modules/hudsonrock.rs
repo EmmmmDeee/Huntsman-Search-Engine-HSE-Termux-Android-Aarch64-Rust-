@@ -354,11 +354,13 @@ fn compute_confidence(stealers: &[Stealer]) -> f64 {
     let now_secs = crate::core::entity::unix_now();
     let cutoff = now_secs.saturating_sub(FRESHNESS_WINDOW_DAYS * 86400);
 
+    // Reuse the canonical, exact, well-tested date parser instead of a private
+    // approximate one — single source of truth for date→epoch across the engine.
     let has_recent = stealers.iter().any(|s| {
         s.date_compromised
             .as_deref()
-            .and_then(parse_iso_epoch)
-            .is_some_and(|ts| ts >= cutoff)
+            .and_then(crate::core::timeline::parse_date)
+            .is_some_and(|(ts, _)| ts >= cutoff)
     });
 
     if has_recent {
@@ -366,19 +368,6 @@ fn compute_confidence(stealers: &[Stealer]) -> f64 {
     } else {
         BASE_CONFIDENCE
     }
-}
-
-fn parse_iso_epoch(s: &str) -> Option<u64> {
-    let date_part = s.split('T').next()?;
-    let mut parts = date_part.split('-');
-    let year: u64 = parts.next()?.parse().ok()?;
-    let month: u64 = parts.next()?.parse().ok()?;
-    let day: u64 = parts.next()?.parse().ok()?;
-    if year < 2000 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let days_approx = (year - 1970) * 365 + (month - 1) * 30 + day;
-    Some(days_approx * 86400)
 }
 
 #[cfg(test)]
@@ -451,14 +440,6 @@ mod tests {
             credentials: vec![],
         };
         assert!((compute_confidence(&[old]) - BASE_CONFIDENCE).abs() < 1e-9);
-    }
-
-    #[test]
-    fn parse_iso_epoch_works() {
-        assert!(parse_iso_epoch("2025-06-15T12:00:00Z").is_some());
-        assert!(parse_iso_epoch("2025-06-15").is_some());
-        assert!(parse_iso_epoch("garbage").is_none());
-        assert!(parse_iso_epoch("").is_none());
     }
 
     // ── compromised-service footprint (credential → service-domain pivots) ──
