@@ -172,7 +172,7 @@ pub async fn scan_entities(
             if !wants_candidates(&params) {
                 entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
             }
-            ok_list("entities", entities)
+            ok_list("entities", crate::core::entity::EntityView::many(&entities))
         }
         Err(e) => internal_error(&e),
     }
@@ -226,7 +226,7 @@ pub async fn scan_entities_filter(
         .filter(|&c| (0.0..=1.0).contains(&c));
     let q = params.get("q").map(String::as_str);
     match s.store.entities_filtered(&id, kind, min_conf, q) {
-        Ok(entities) => ok_list("entities", entities),
+        Ok(entities) => ok_list("entities", crate::core::entity::EntityView::many(&entities)),
         Err(e) => internal_error(&e),
     }
 }
@@ -454,10 +454,14 @@ pub(crate) fn build_scan_report(
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
     let correlations = store.correlations_for_scan(scan_id)?;
+    let entity_count = entities.len();
+    // Serialize through EntityView so the dossier carries the derived c_eff +
+    // classification (the raw `Entity` Serialize omits them).
+    let entities = crate::core::entity::EntityView::many(&entities);
     Ok(Some(json!({
         "scan": scan,
         "entities": entities,
-        "entity_count": entities.len(),
+        "entity_count": entity_count,
         "correlations": correlations,
         "correlation_count": correlations.len(),
         "exported_at": crate::core::entity::unix_now(),
@@ -580,6 +584,41 @@ mod tests {
             Some(2),
             "include_candidates returns the full set"
         );
+    }
+
+    #[test]
+    fn report_entities_carry_derived_c_eff_and_classification() {
+        // The raw `Entity` Serialize omits c_eff + classification; the dossier
+        // (shared by report.json + `hse export --format report`) must surface
+        // them via EntityView so consumers don't re-implement the formula.
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        use crate::core::scan::{Scan, Target};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("report_ceff.db");
+        let store = crate::storage::Store::open(db.to_str().unwrap()).unwrap();
+        let sid = "rep-ceff";
+        store
+            .upsert_scan(&Scan::new(sid, Target::new(TargetKind::Email, "a@b.com")))
+            .unwrap();
+        let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.95, sid);
+        e.add_evidence(Evidence::new("hibp", "seen"));
+        store.upsert_entity(&e).unwrap();
+
+        let port = &store as &dyn crate::core::port::StoragePort;
+        let rep = build_scan_report(port, sid, true).unwrap().unwrap();
+        let ents = rep["entities"].as_array().unwrap();
+        assert_eq!(ents.len(), 1);
+        assert!(
+            ents[0].get("c_eff").and_then(|v| v.as_f64()).is_some(),
+            "report entity must carry the derived c_eff"
+        );
+        let cls = ents[0]["classification"].as_str().unwrap_or("");
+        assert!(
+            matches!(cls, "CANDIDATE" | "PROBABLE" | "VERIFIED"),
+            "report entity must carry a classification tier, got {cls:?}"
+        );
+        // Raw fields are preserved alongside the derived ones.
+        assert_eq!(ents[0]["value"], "a@b.com");
     }
 
     #[test]

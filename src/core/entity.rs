@@ -158,6 +158,89 @@ impl fmt::Display for Classification {
     }
 }
 
+// ─── EntityView (operator-facing serialization) ──────────────────────────────
+
+/// Operator-facing serialization of an entity.
+///
+/// `Entity`'s derived `Serialize` emits only its *stored* fields, so the two
+/// DERIVED intelligence values the engine computes — `c_eff`
+/// ([`Entity::c_effective`], the cross-source effective confidence) and
+/// `classification` ([`Entity::classify`], the Verified / Probable / Candidate
+/// tier) — never reach a JSON consumer. The CSV export
+/// (`scan_handlers::entities_to_csv`) and the Web UI already surface them; this
+/// wrapper is how every JSON export/report does too, so no downstream consumer
+/// has to re-implement the (two-model) `c_eff` formula and risk drifting from
+/// the engine. It borrows the entity, `#[serde(flatten)]`s its stored fields,
+/// and appends the two derived fields. Serialize-only by design.
+#[derive(Serialize)]
+pub struct EntityView<'a> {
+    #[serde(flatten)]
+    entity: &'a Entity,
+    /// Effective cross-source confidence — [`Entity::c_effective`].
+    c_eff: f64,
+    /// Verified / Probable / Candidate tier — [`Entity::classify`].
+    classification: String,
+}
+
+impl<'a> EntityView<'a> {
+    /// Wrap one entity, computing the derived fields once.
+    pub fn new(entity: &'a Entity) -> Self {
+        Self {
+            c_eff: entity.c_effective(),
+            classification: entity.classify().to_string(),
+            entity,
+        }
+    }
+
+    /// Wrap a slice of entities for JSON output.
+    pub fn many(entities: &'a [Entity]) -> Vec<EntityView<'a>> {
+        entities.iter().map(EntityView::new).collect()
+    }
+}
+
+#[cfg(test)]
+mod entity_view_tests {
+    use super::*;
+
+    #[test]
+    fn view_adds_c_eff_and_classification_across_all_tiers() {
+        // Exhaustive over the full (finite) domain of `classify()` — all three
+        // tiers. With a single source c_eff == confidence, so `conf` selects
+        // the tier directly. Each view must serialize c_eff == c_effective()
+        // and classification == classify().to_string(), and must NOT drop the
+        // flattened stored fields.
+        for (conf, expect_tier) in [(0.20, "CANDIDATE"), (0.50, "PROBABLE"), (0.90, "VERIFIED")] {
+            let e = Entity::new(EntityKind::Email, "a@b.com", conf, "scan");
+            assert_eq!(e.classify().to_string(), expect_tier, "fixture tier");
+            let v = serde_json::to_value(EntityView::new(&e)).unwrap();
+            assert_eq!(v["classification"], expect_tier);
+            assert!((v["c_eff"].as_f64().unwrap() - e.c_effective()).abs() < 1e-12);
+            // Flattened stored fields survive and are inlined (not nested).
+            assert_eq!(v["uid"], e.uid);
+            assert_eq!(v["value"], "a@b.com");
+            assert_eq!(v["kind"], "email");
+            assert!(v["confidence"].as_f64().is_some());
+            assert!(v.get("entity").is_none(), "flatten must inline, not nest");
+        }
+    }
+
+    #[test]
+    fn many_wraps_every_entity_with_derived_fields() {
+        let es = vec![
+            Entity::new(EntityKind::Email, "a@b.com", 0.9, "s"),
+            Entity::new(EntityKind::Domain, "b.com", 0.3, "s"),
+        ];
+        let arr = serde_json::to_value(EntityView::many(&es)).unwrap();
+        let arr = arr.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert!(
+            arr.iter()
+                .all(|v| v.get("c_eff").is_some() && v.get("classification").is_some()),
+            "every wrapped entity must carry both derived fields"
+        );
+    }
+}
+
 // ─── Evidence ────────────────────────────────────────────────────────────────
 
 /// A single piece of evidence attached to an entity.

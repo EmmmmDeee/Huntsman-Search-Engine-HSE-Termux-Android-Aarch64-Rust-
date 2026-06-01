@@ -61,6 +61,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **JSON exports and reports omitted the derived `c_eff` and `classification`.**
+  The CSV export already carried `c_effective` and the Verified/Probable/Candidate
+  tier, but every JSON path (`hse export --format json|report`, `GET
+  /scans/{id}/report.json`, `GET /scans/{id}/entities`) serialized the raw
+  `Entity`, whose `Serialize` derive emits only stored fields — so the two
+  headline derived intelligence values never reached a JSON consumer (confirmed
+  on a real exported dossier: keys were `confidence`/`corroboration`/… with no
+  `c_eff` or `classification`). Every consumer had to re-implement the two-model
+  `c_eff` formula, the exact engine/UI drift the project already fought. Added a
+  single shared `EntityView` (flattens the entity's stored fields, appends
+  `c_eff` = `c_effective()` and `classification` = `classify()`) and routed all
+  JSON entity output through it, reaching CSV/report parity. Raw `Entity`
+  serialization (storage round-trip, event bus, module I/O) is unchanged.
+
 A whole-codebase audit (a fresh sweep beyond the session's own changes) found and
 fixed eight pre-existing defects:
 

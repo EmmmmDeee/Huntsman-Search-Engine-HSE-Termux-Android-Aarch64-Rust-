@@ -71,7 +71,9 @@ pub(super) async fn cmd_export(scan_id: String, format: String, out: Option<Stri
 
 fn render_json(store: &Store, sid: &str) -> Result<String> {
     let entities = store.entities_for_scan(sid)?;
-    serde_json::to_string_pretty(&entities)
+    // EntityView so the flat JSON dump carries the derived c_eff +
+    // classification, matching the CSV/report outputs.
+    serde_json::to_string_pretty(&crate::core::entity::EntityView::many(&entities))
         .map_err(|e| Error::Other(format!("json serialise: {e}")))
 }
 
