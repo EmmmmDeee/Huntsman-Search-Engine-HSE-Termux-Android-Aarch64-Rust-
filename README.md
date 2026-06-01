@@ -23,8 +23,12 @@ curl -fsSL https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Androi
 ```
 
 `curl` is preinstalled on Termux; if missing, `pkg install -y curl` first.
-(Optional integrity check: download the matching `.sha256` from the release
-and run `sha256sum -c hse-aarch64-linux-android.sha256`.)
+Optional integrity check — verify the installed binary against the release's
+published hash:
+
+```bash
+echo "$(curl -fsSL https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest/download/hse-aarch64-linux-android.sha256 | cut -d' ' -f1)  $PREFIX/bin/hse" | sha256sum -c -
+```
 
 ### Build from source
 

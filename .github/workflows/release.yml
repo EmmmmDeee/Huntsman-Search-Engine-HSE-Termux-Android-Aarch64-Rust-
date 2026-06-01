@@ -29,6 +29,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # On a tag push, github.ref_name is the tag; on manual dispatch, use
+          # the input tag. Without this, a manual rebuild would check out the
+          # default branch and upload a binary that doesn't match the tag's
+          # commit.
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       - name: Install Rust + aarch64 Android target
         uses: dtolnay/rust-toolchain@stable

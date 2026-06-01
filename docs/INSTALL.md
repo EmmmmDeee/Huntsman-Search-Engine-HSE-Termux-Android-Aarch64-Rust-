@@ -19,8 +19,12 @@ chmod +x "$PREFIX/bin/hse"
 hse serve   # then open http://127.0.0.1:8080
 ```
 
-Optional integrity check: download the matching `hse-aarch64-linux-android.sha256`
-from the release and run `sha256sum -c hse-aarch64-linux-android.sha256`.
+Optional integrity check — verify the installed binary against the release's
+published hash:
+
+```bash
+echo "$(curl -fsSL https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest/download/hse-aarch64-linux-android.sha256 | cut -d' ' -f1)  $PREFIX/bin/hse" | sha256sum -c -
+```
 
 Prefer to build from source (or want an unreleased commit)? Use the one-liner
 or manual paths below.
