@@ -61,11 +61,30 @@ pub(super) fn rule_au_002_identity_cluster(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let emails = entities_of_kind(entities, EntityKind::Email);
-    let usernames = entities_of_kind(entities, EntityKind::Username);
-    let phones = entities_of_kind(entities, EntityKind::Phone);
+    // A confidence floor on top of the upstream candidate-exclusion: a genuine
+    // identity cluster is built from corroborated entities, not weak guesses.
+    const MIN_CONF: f64 = 0.50;
+    // One person does not own dozens of distinct emails or phones — that many
+    // is the signature of a breach dump spanning many people. Refuse to fuse it
+    // into a CRITICAL "one identity" correlation (the exact failure that fused
+    // 179 strangers from a name search). Candidate-exclusion makes this rare;
+    // this is the backstop for any non-candidate bulk source.
+    const MAX_PER_KIND: usize = 25;
+    let of_kind = |k| -> Vec<&Entity> {
+        entities_of_kind(entities, k)
+            .into_iter()
+            .filter(|e| e.confidence >= MIN_CONF)
+            .collect()
+    };
+    let emails = of_kind(EntityKind::Email);
+    let usernames = of_kind(EntityKind::Username);
+    let phones = of_kind(EntityKind::Phone);
 
     if emails.is_empty() || usernames.is_empty() || phones.is_empty() {
+        return Vec::new();
+    }
+    if emails.len() > MAX_PER_KIND || usernames.len() > MAX_PER_KIND || phones.len() > MAX_PER_KIND
+    {
         return Vec::new();
     }
 

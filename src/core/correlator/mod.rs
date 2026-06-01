@@ -227,11 +227,32 @@ const RULES: &[RuleFn] = &[
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     let now = crate::core::entity::unix_now();
+    // Quarantine: speculative `candidate` entities never enter correlation.
+    // These are the non-target breach-dump rows (other people returned by a
+    // broad name search), unconfirmed username permutations, and search-only
+    // guesses — each tagged `candidate` by its module. Excluding them here is
+    // what stops a single broad search from fusing hundreds of strangers into
+    // a "critical identity cluster" (AU-002) or manufacturing AU-003/AU-018
+    // corroboration out of noise. The entities remain in the store and the
+    // candidates view; they simply don't get to assert relationships.
+    let confirmed = confirmed_only(entities);
     let mut out = Vec::new();
     for rule in RULES {
-        out.extend(rule(entities, scan_id, now));
+        out.extend(rule(&confirmed, scan_id, now));
     }
     out
+}
+
+/// Entities minus the `candidate`-tagged quarantine set — the view every
+/// correlation rule sees. Allocates a filtered copy because the rule fns take
+/// `&[Entity]`; correlation runs are infrequent and entity counts bounded, so
+/// the clone is negligible.
+fn confirmed_only(entities: &[Entity]) -> Vec<Entity> {
+    entities
+        .iter()
+        .filter(|e| !e.has_tag(crate::core::tags::CANDIDATE))
+        .cloned()
+        .collect()
 }
 
 /// Evaluate the entity-only rules against an in-memory entity slice.
@@ -263,9 +284,11 @@ fn evaluate_relation_rules(
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    // Same quarantine as the entity-only pass: candidates don't assert edges.
+    let confirmed = confirmed_only(entities);
     let mut out = Vec::new();
     for rule in RELATION_RULES {
-        out.extend(rule(entities, relations, scan_id, now));
+        out.extend(rule(&confirmed, relations, scan_id, now));
     }
     out
 }
@@ -276,6 +299,121 @@ mod tests {
 
     use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    // ── Candidate quarantine ────────────────────────────────────────────
+
+    fn ent(kind: EntityKind, value: &str, conf: f64, src: &str, candidate: bool) -> Entity {
+        let mut e = Entity::new(kind, value, conf, "scan");
+        e.add_evidence(Evidence::new(src, "x".to_string()));
+        if candidate {
+            e.tag(crate::core::tags::CANDIDATE);
+        }
+        e
+    }
+
+    #[test]
+    fn candidates_are_excluded_from_correlation() {
+        // A breach-dump-style set: one confirmed identity plus many quarantined
+        // `candidate` strangers (the AU-002/AU-003 mega-fusion scenario). The
+        // correlator must ignore the candidates entirely — no critical identity
+        // cluster fused from strangers, no high-corroboration firings on them.
+        let mut ents = vec![
+            ent(EntityKind::Email, "me@real.com", 0.85, "oathnet_pro", false),
+            ent(EntityKind::Username, "me", 0.70, "oathnet_pro", false),
+            ent(EntityKind::Phone, "15551112222", 0.70, "oathnet_pro", false),
+        ];
+        for i in 0..40 {
+            ents.push(ent(
+                EntityKind::Email,
+                &format!("stranger{i}@bank.com"),
+                0.25,
+                "oathnet_pro",
+                true,
+            ));
+        }
+        let firings = evaluate_rules(&ents, "scan");
+        // No correlation may reference a candidate entity.
+        let candidate_uids: HashSet<&str> = ents
+            .iter()
+            .filter(|e| e.has_tag(crate::core::tags::CANDIDATE))
+            .map(|e| e.uid.as_str())
+            .collect();
+        for c in &firings {
+            for uid in &c.entity_uids {
+                assert!(
+                    !candidate_uids.contains(uid.as_str()),
+                    "rule {} leaked a candidate entity into a correlation",
+                    c.rule_id
+                );
+            }
+        }
+        // AU-002 may still fire on the 3 confirmed (1 email/1 user/1 phone) —
+        // but its email bucket must be the single confirmed one, never 41.
+        if let Some(au002) = firings.iter().find(|c| c.rule_id == "AU-002") {
+            assert!(
+                au002.description.contains("1 email(s)"),
+                "AU-002 must cluster only the confirmed identity: {}",
+                au002.description
+            );
+        }
+    }
+
+    #[test]
+    fn confirmed_only_drops_candidate_tagged() {
+        let ents = vec![
+            ent(EntityKind::Email, "a@b.com", 0.8, "s", false),
+            ent(EntityKind::Email, "c@d.com", 0.25, "s", true),
+        ];
+        let kept = confirmed_only(&ents);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].value, "a@b.com");
+    }
+
+    #[test]
+    fn au002_refuses_to_fuse_an_implausible_identity_dump() {
+        // Backstop: even if a bulk source emitted many NON-candidate emails,
+        // AU-002 must not declare 30 distinct emails one "critical identity".
+        let mut big = vec![
+            ent(EntityKind::Username, "u", 0.7, "s", false),
+            ent(EntityKind::Phone, "15551112222", 0.7, "s", false),
+        ];
+        for i in 0..30 {
+            big.push(ent(
+                EntityKind::Email,
+                &format!("e{i}@x.com"),
+                0.7,
+                "s",
+                false,
+            ));
+        }
+        assert!(
+            rule_au_002_identity_cluster(&big, "scan", 0).is_empty(),
+            "30 distinct emails is a dump, not an identity cluster"
+        );
+
+        // A plausible identity (a handful each) still fires.
+        let small = vec![
+            ent(EntityKind::Email, "me@x.com", 0.85, "s", false),
+            ent(EntityKind::Username, "me", 0.7, "s", false),
+            ent(EntityKind::Phone, "15551112222", 0.7, "s", false),
+        ];
+        assert_eq!(
+            rule_au_002_identity_cluster(&small, "scan", 0).len(),
+            1,
+            "a small corroborated identity must still cluster"
+        );
+
+        // Low-confidence entities are below the floor → no fire.
+        let weak = vec![
+            ent(EntityKind::Email, "me@x.com", 0.3, "s", false),
+            ent(EntityKind::Username, "me", 0.3, "s", false),
+            ent(EntityKind::Phone, "15551112222", 0.3, "s", false),
+        ];
+        assert!(
+            rule_au_002_identity_cluster(&weak, "scan", 0).is_empty(),
+            "sub-floor confidence must not fuse an identity"
+        );
+    }
 
     // ── Severity::as_canonical ──────────────────────────────────────────
 

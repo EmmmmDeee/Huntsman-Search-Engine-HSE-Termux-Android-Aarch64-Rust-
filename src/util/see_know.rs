@@ -146,11 +146,52 @@ pub fn is_quota_exhausted() -> bool {
 
 pub fn reset_budget() {
     BUDGET.reset_scan();
+    // Re-test the key each scan: if the operator fixed it (UI Settings /
+    // HUNTSMAN_SEEKNOW_KEY) since the last scan, SeekNow recovers immediately;
+    // if it's still bad, the first call this scan re-latches (one warning, then
+    // the remaining ~160 lookups fast-fail).
+    KEY_INVALID.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn mark_quota_exhausted() {
     BUDGET.mark_exhausted();
     tracing::warn!("SeekNow daily quota exhausted — skipping remaining queries");
+}
+
+/// Latched once per process when see-know.eu rejects the configured API key.
+///
+/// curl exits 0 on an HTTP 401 (it got a response), so the shared curl client
+/// reports success and the `{"error":"invalid_api_key"}` body parses to zero
+/// items — which previously made SeekNow look like it "found nothing" on every
+/// seed instead of "the key is bad". This latch makes the failure explicit and
+/// fast-fails the remaining ~160 doomed lookups for the rest of the scan. It is
+/// cleared by [`reset_budget`] at the start of each scan so a corrected key
+/// (UI Settings / `HUNTSMAN_SEEKNOW_KEY`) recovers without a process restart.
+static KEY_INVALID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True once see-know.eu has rejected the key. The diagnostic accessor for
+/// `hse doctor` / the selftest to report it as an actionable problem.
+pub fn is_key_invalid() -> bool {
+    KEY_INVALID.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Body signature of see-know.eu's auth rejection. Pure (no globals) so it is
+/// unit-testable; the server returns `{"error":"invalid_api_key","message":
+/// "Invalid API key"}` (key present but wrong) or "...Missing API key..." —
+/// both mean the key we hold cannot authenticate.
+fn is_auth_error(body: &str) -> bool {
+    body.contains("invalid_api_key") || body.contains("Invalid API key")
+}
+
+fn mark_key_invalid() {
+    // Emit the actionable guidance exactly once (the false→true transition).
+    if !KEY_INVALID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!(
+            "SeekNow (see-know.eu) rejected the API key (HTTP 401 invalid_api_key). \
+             Set a valid key in the UI Settings panel or via HUNTSMAN_SEEKNOW_KEY; \
+             SeekNow lookups are skipped until then."
+        );
+    }
 }
 
 fn base_url() -> String {
@@ -177,7 +218,7 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
-    if is_quota_exhausted() || !budget_remaining() {
+    if is_quota_exhausted() || is_key_invalid() || !budget_remaining() {
         return Ok(Vec::new());
     }
     budget_increment();
@@ -269,7 +310,7 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
-    if is_quota_exhausted() || !budget_remaining() {
+    if is_quota_exhausted() || is_key_invalid() || !budget_remaining() {
         return Ok(Vec::new());
     }
     budget_increment();
@@ -345,6 +386,12 @@ async fn post_json(url: &str, key: &str, body: &str) -> Result<Value> {
 }
 
 fn parse_response(body: &str) -> Result<Value> {
+    // Invalid/rejected API key — curl returns the 401 body as "success", so
+    // detect it here, latch it, and surface the actionable warning.
+    if is_auth_error(body) {
+        mark_key_invalid();
+        return Ok(Value::Null);
+    }
     // Detect quota exhaustion. Per docs the rate-limit error contains
     // "rate limit" or "credits" with a specific exhaustion message.
     if body.contains("\"credits_remaining\":0")
@@ -410,6 +457,22 @@ mod tests {
     #[test]
     fn resolve_key_falls_back_when_empty() {
         assert_eq!(resolve_key(Some("")), HARDCODED_KEY);
+    }
+
+    #[test]
+    fn auth_error_envelope_is_detected() {
+        // The literal body see-know.eu returns for a rejected key (curl exits 0
+        // on a 401, so this is what reaches us). Detecting it is what turns
+        // "SeekNow found nothing" into the actionable "the key is invalid".
+        assert!(is_auth_error(
+            r#"{"error":"invalid_api_key","message":"Invalid API key"}"#
+        ));
+        assert!(is_auth_error(
+            r#"{"error":"invalid_api_key","message":"Missing API key. Use X-API-Key"}"#
+        ));
+        // A normal (empty or populated) result is NOT an auth error.
+        assert!(!is_auth_error(r#"{"data":{"items":[]}}"#));
+        assert!(!is_auth_error(r#"{"results":[{"email":"a@b.com"}]}"#));
     }
 
     #[test]

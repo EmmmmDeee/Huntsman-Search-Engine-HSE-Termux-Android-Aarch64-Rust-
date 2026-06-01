@@ -29,6 +29,13 @@ use key_harvest::{extract_api_keys_from_item, store_api_credential};
 
 const SRC: &str = "oathnet_pro";
 
+/// Confidence ceiling for an entity sourced from a breach row that does NOT
+/// match the scan target's identity. A broad search (especially a `full_name`)
+/// returns rows for many different people; those rows are preserved as
+/// quarantined `candidate` leads at this strength rather than discarded, but
+/// must never reach the full-confidence, correlated, default-view tier.
+const CANDIDATE_CONF: f64 = 0.25;
+
 pub struct OathnetPro;
 
 #[async_trait]
@@ -358,11 +365,22 @@ fn push_oathnet_entity(
     mut e: Entity,
     ev: &Evidence,
     extra_tags: &[&str],
+    is_target_row: bool,
 ) {
     e.tag(tags::BREACH);
     e.tag("oathnet-pro");
     for t in extra_tags {
         e.tag(*t);
+    }
+    // Quarantine policy, enforced in ONE place: a row that doesn't match the
+    // target identity yields CANDIDATE-strength, `candidate`-tagged entities.
+    // Demotion happens here (not at each call site) so EVERY breach-derived
+    // kind — email, username, domain, social handle — is gated uniformly. The
+    // prior code gated only phone/person/ip, letting a name search emit
+    // hundreds of strangers' emails/domains at full 0.70 confidence.
+    if !is_target_row {
+        e.confidence = e.confidence.min(CANDIDATE_CONF);
+        e.tag(tags::CANDIDATE);
     }
     e.add_evidence(ev.clone());
     result.push(e);
@@ -377,20 +395,39 @@ fn extract_breach_entities(
 ) {
     let ev = breach_evidence(item);
 
-    // Only emit entities from records that match the target lookup.
-    // Breach databases contain millions of records — a phone/IP search
-    // returns rows for many different people. We only want entities
-    // from rows where the email/username/phone matches our target.
+    // Decide whether this breach row actually belongs to the target. Breach
+    // databases hold millions of records and a broad search (especially a
+    // `full_name`) returns rows for many different people. A non-matching row
+    // is NOT discarded — `push_oathnet_entity` demotes it to a quarantined
+    // `candidate` (out of the default view and the correlator) so genuine
+    // leads survive without flooding the result with strangers.
     let target_lower = target_value.to_lowercase();
     let target_terms: Vec<&str> = target_lower
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() >= 3)
         .collect();
+    // Multi-term targets (a full name like "Matthew Diegmann", or an email)
+    // must match EVERY significant term within a single field — not just one —
+    // so a row for "Matthew Parker" no longer counts as the target on the
+    // shared first name (the dominant junk source on name scans). Single-term
+    // targets keep substring-contains matching.
+    let require_all_terms = target_terms.len() >= 2;
     let row_matches_target = |item: &Value| -> bool {
         for field in ["email", "username", "phone_number", "full_name"] {
             if let Some(v) = val_str(item, field) {
                 let vl = v.to_lowercase();
-                if vl == target_lower || target_terms.iter().any(|t| vl.contains(t)) {
+                if vl == target_lower {
+                    return true;
+                }
+                if target_terms.is_empty() {
+                    continue;
+                }
+                let hit = if require_all_terms {
+                    target_terms.iter().all(|t| vl.contains(t))
+                } else {
+                    target_terms.iter().any(|t| vl.contains(t))
+                };
+                if hit {
                     return true;
                 }
             }
@@ -407,6 +444,7 @@ fn extract_breach_entities(
                 Entity::new(EntityKind::Email, &email, 0.70, scan_id),
                 &ev,
                 &[],
+                is_target_row,
             );
         }
     }
@@ -419,37 +457,33 @@ fn extract_breach_entities(
                 Entity::new(EntityKind::Username, &uname, 0.65, scan_id),
                 &ev,
                 &[],
+                is_target_row,
             );
         }
     }
-
-    // Phone/Person/IP: full confidence for target-matching rows,
-    // CANDIDATE confidence for non-matching rows (preserved for
-    // investigation — never silently discarded).
-    let conf = |base: f64| -> f64 { if is_target_row { base } else { 0.25 } };
 
     if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
         && ph.len() >= 7
         && seen.insert(ph.to_lowercase())
     {
-        let extra: &[&str] = if is_target_row { &[] } else { &["candidate"] };
         push_oathnet_entity(
             result,
-            Entity::new(EntityKind::Phone, &ph, conf(0.70), scan_id),
+            Entity::new(EntityKind::Phone, &ph, 0.70, scan_id),
             &ev,
-            extra,
+            &[],
+            is_target_row,
         );
     }
 
     if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
         let t = n.trim();
         if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
-            let extra: &[&str] = if is_target_row { &[] } else { &["candidate"] };
             push_oathnet_entity(
                 result,
-                Entity::new(EntityKind::Person, t, conf(0.70), scan_id),
+                Entity::new(EntityKind::Person, t, 0.70, scan_id),
                 &ev,
-                extra,
+                &[],
+                is_target_row,
             );
         }
     }
@@ -460,21 +494,22 @@ fn extract_breach_entities(
     {
         push_oathnet_entity(
             result,
-            Entity::new(EntityKind::IpAddress, &ip, conf(0.60), scan_id),
+            Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
             &ev,
             &["geolocation-lead"],
+            is_target_row,
         );
     }
 
     if let Some(country) = val_str(item, "country")
         && seen.insert(format!("@country:{country}"))
     {
-        let extra: &[&str] = if is_target_row { &[] } else { &["candidate"] };
         push_oathnet_entity(
             result,
-            Entity::new(EntityKind::Address, &country, conf(0.55), scan_id),
+            Entity::new(EntityKind::Address, &country, 0.55, scan_id),
             &ev,
-            extra,
+            &[],
+            is_target_row,
         );
     }
 
@@ -494,6 +529,7 @@ fn extract_breach_entities(
                 Entity::new(EntityKind::Address, &addr, 0.65, scan_id),
                 &ev,
                 &[],
+                is_target_row,
             );
         }
     }
@@ -511,6 +547,7 @@ fn extract_breach_entities(
             ),
             &ev,
             &["discord"],
+            is_target_row,
         );
     }
 
@@ -522,6 +559,7 @@ fn extract_breach_entities(
             Entity::new(EntityKind::Username, &ig, 0.55, scan_id),
             &ev,
             &["instagram"],
+            is_target_row,
         );
     }
 
@@ -542,6 +580,7 @@ fn extract_breach_entities(
                     Entity::new(EntityKind::Url, &url_val, 0.60, scan_id),
                     &ev,
                     &["linkedin"],
+                    is_target_row,
                 );
             }
         } else if seen.insert(format!("@li-handle:{lower}")) {
@@ -555,6 +594,7 @@ fn extract_breach_entities(
                 ),
                 &ev,
                 &["linkedin"],
+                is_target_row,
             );
         }
     }
@@ -571,6 +611,7 @@ fn extract_breach_entities(
                 Entity::new(EntityKind::Domain, &lower, 0.55, scan_id),
                 &ev,
                 &["email-domain"],
+                is_target_row,
             );
         }
     }
@@ -587,6 +628,7 @@ fn extract_breach_entities(
             Entity::new(EntityKind::Password, &ph, 0.50, scan_id),
             &ev,
             &["password-hash"],
+            is_target_row,
         );
     }
 }
@@ -648,6 +690,9 @@ fn extract_stealer_entities(
                         Entity::new(EntityKind::Email, email, 0.65, scan_id),
                         &ev,
                         &["stealer"],
+                        // Stealer hits come from a search on the target's own
+                        // identity — the row IS the target.
+                        true,
                     );
                 }
             }
@@ -843,6 +888,85 @@ mod tests {
         assert!(
             (phone.confidence - 0.25).abs() < 1e-9,
             "non-target conf is 0.25"
+        );
+    }
+
+    #[test]
+    fn non_target_email_and_domain_are_quarantined_as_candidates() {
+        use serde_json::json;
+        // The exact junk pattern from the "Matthew Diegmann" name scan: a breach
+        // row for a stranger (a bank employee) returned by the broad search. The
+        // email AND its domain must be demoted to candidate — previously they
+        // were emitted at full 0.70/0.55 confidence with no `candidate` tag,
+        // which is what flooded the result with 88% junk.
+        let item = json!({
+            "email": "hlaura@blackhawkbank.com",
+            "email_domain": "blackhawkbank.com",
+            "source": "AbrigoBreach"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "Matthew Diegmann", "scan", &mut seen, &mut result);
+
+        let email = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email entity");
+        assert!(
+            email.has_tag("candidate"),
+            "stranger email must be a candidate"
+        );
+        assert!(email.confidence <= 0.25 + 1e-9, "demoted to candidate conf");
+
+        let domain = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Domain)
+            .expect("domain entity");
+        assert!(
+            domain.has_tag("candidate"),
+            "stranger domain must be a candidate"
+        );
+    }
+
+    #[test]
+    fn full_name_matcher_requires_all_terms_not_just_one() {
+        use serde_json::json;
+        // "Matthew Parker" shares only the first name with the target — it must
+        // NOT count as the target row (the old any-term match treated every
+        // "Matthew …" as a hit, the dominant false-positive on name scans).
+        let parker = json!({ "full_name": "Matthew Parker", "source": "X" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&parker, "Matthew Diegmann", "scan", &mut seen, &mut result);
+        let p = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person)
+            .expect("person entity");
+        assert!(
+            p.has_tag("candidate"),
+            "partial-name match must be a candidate, got tags {:?}",
+            p.tags
+        );
+
+        // The real person — both terms present — is a confirmed target row.
+        let diegmann = json!({ "full_name": "Matthew Diegmann", "source": "X" });
+        let (mut seen2, mut r2) = (HashSet::new(), ModuleResult::new());
+        extract_breach_entities(&diegmann, "Matthew Diegmann", "scan", &mut seen2, &mut r2);
+        let d = r2
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person)
+            .expect("person entity");
+        assert!(
+            !d.has_tag("candidate"),
+            "exact name is the target, not a candidate"
+        );
+        assert!(
+            (d.confidence - 0.70).abs() < 1e-9,
+            "target person at full conf"
         );
     }
 

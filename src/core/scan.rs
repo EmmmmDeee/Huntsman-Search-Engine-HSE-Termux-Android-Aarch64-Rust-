@@ -109,10 +109,53 @@ pub struct Target {
     pub value: String,
 }
 
+/// Strip shell/CSV quoting and stray surrounding punctuation a user (or a pasted
+/// list) commonly leaves on a target value, e.g. `"Matthew Diegmann",` →
+/// `Matthew Diegmann`. Applied only at the user-input boundary ([`Target::new`])
+/// so module-discovered entity values are left untouched; kind-specific
+/// normalisation (`entity::normalise`) runs afterwards.
+///
+/// Real cause this fixes: a `full_name` scan came in as `"\"Matthew Diegmann\""`
+/// (literal quotes), which the `_` arm of `normalise` only whitespace-trimmed —
+/// the quotes then leaked into name permutations and every derived artifact.
+///
+/// The strip is iterative so layered artifacts unwrap fully: a trailing comma
+/// outside a quote pair (`"x",`) is removed first, exposing the quote pair.
+fn sanitise_target_input(raw: &str) -> String {
+    // ASCII + common Unicode quote pairs. A value bounded by a matching pair is
+    // never legitimate for any target kind (emails, domains, names, …).
+    const QUOTE_PAIRS: &[(char, char)] = &[
+        ('"', '"'),
+        ('\'', '\''),
+        ('`', '`'),
+        ('\u{201C}', '\u{201D}'), // “ ”
+        ('\u{2018}', '\u{2019}'), // ‘ ’
+    ];
+    // Separators a list/CSV paste leaves dangling on an end. Never bound a target.
+    let stray = |c: char| matches!(c, ',' | ';' | '|');
+
+    let mut s = raw.trim();
+    loop {
+        let before = s;
+        s = s.trim_matches(stray).trim();
+        if let (Some(first), Some(last)) = (s.chars().next(), s.chars().last())
+            && s.chars().count() >= 2
+            && QUOTE_PAIRS.contains(&(first, last))
+        {
+            s = &s[first.len_utf8()..s.len() - last.len_utf8()];
+        }
+        if s == before {
+            break;
+        }
+    }
+    s.to_string()
+}
+
 impl Target {
     pub fn new(kind: TargetKind, value: impl Into<String>) -> Self {
         let raw: String = value.into();
-        let normalised = crate::core::entity::normalise(&kind.to_entity_kind(), &raw);
+        let cleaned = sanitise_target_input(&raw);
+        let normalised = crate::core::entity::normalise(&kind.to_entity_kind(), &cleaned);
         Self {
             kind,
             value: normalised,
@@ -974,6 +1017,44 @@ const MEGA_DOMAINS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitise_strips_surrounding_quotes_and_stray_punctuation() {
+        // The exact real failure: a full_name target arrived quoted.
+        assert_eq!(
+            sanitise_target_input("\"Matthew Diegmann\""),
+            "Matthew Diegmann"
+        );
+        // Quote + trailing comma (CSV/list paste).
+        assert_eq!(
+            sanitise_target_input("\"Matthew Diegmann\","),
+            "Matthew Diegmann"
+        );
+        assert_eq!(sanitise_target_input("'jdoe'"), "jdoe");
+        assert_eq!(sanitise_target_input("  jdoe ;"), "jdoe");
+        // Unicode smart quotes.
+        assert_eq!(
+            sanitise_target_input("\u{201C}Jane Roe\u{201D}"),
+            "Jane Roe"
+        );
+        // Inner punctuation/quotes are preserved — only the bounding layer goes.
+        assert_eq!(sanitise_target_input("a\"b"), "a\"b");
+        assert_eq!(sanitise_target_input("o'brien"), "o'brien");
+        // Idempotent on already-clean input; doesn't mangle structured kinds.
+        assert_eq!(
+            sanitise_target_input("matthewdiegmann@gmail.com"),
+            "matthewdiegmann@gmail.com"
+        );
+        assert_eq!(sanitise_target_input(""), "");
+    }
+
+    #[test]
+    fn target_new_sanitises_quoted_full_name() {
+        // End-to-end through the user-input boundary: the quotes never reach
+        // the stored value (and thus never reach name permutations).
+        let t = Target::new(TargetKind::FullName, "\"Matthew Diegmann\"");
+        assert_eq!(t.value, "Matthew Diegmann");
+    }
 
     #[test]
     fn options_default_is_inert() {

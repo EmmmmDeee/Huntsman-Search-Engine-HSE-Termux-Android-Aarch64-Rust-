@@ -89,7 +89,10 @@ fn render_gexf(store: &Store, sid: &str) -> Result<String> {
 }
 
 fn render_report(store: &Store, sid: &str) -> Result<String> {
-    let report = crate::api::scan_handlers::build_scan_report(store as _, sid)?
+    // Default dossier hides quarantined `candidate` entities (non-target
+    // breach-dump rows) — the confirmed-footprint view. They remain available
+    // over HTTP via `report.json?include_candidates=1`.
+    let report = crate::api::scan_handlers::build_scan_report(store as _, sid, false)?
         .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
     serde_json::to_string_pretty(&report)
         .map_err(|e| Error::Other(format!("report serialise: {e}")))

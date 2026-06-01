@@ -25,6 +25,49 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Breach-dump junk flooding name/identity scans (~88% of results were
+  strangers).** A broad `oathnet_pro` search — especially on a `full_name` —
+  returns breach rows for many different people. The ingester only confidence-
+  gated phone/person/IP rows; **emails, usernames, domains, and social handles
+  from non-matching rows were emitted at full 0.70 confidence with no
+  `candidate` tag**, so a "Matthew Diegmann" scan surfaced 90+ unrelated
+  bank-employee emails and 78 unrelated bank/credit-union domains as if they
+  were the target's. The relevance gate is now centralised and applied to
+  **every** breach-derived kind, and `full_name` (and other multi-term) targets
+  must match **all** name terms in a single field — so `"Matthew Parker"` no
+  longer counts as `"Matthew Diegmann"` on the shared first name. Non-matching
+  rows are preserved as quarantined `candidate` leads (demoted to 0.25), never
+  discarded. On the reported scan this takes the default view from 445 → ~53
+  entities (~88% junk → ~0%).
+
+- **Correlation engine fusing unrelated entities into "critical" clusters.**
+  `candidate`-tagged entities (the non-target breach rows above, plus
+  unconfirmed permutations and search-only guesses) now never enter
+  correlation — they can't assert relationships. On top of that, `AU-002`
+  ("Identity cluster") gained a confidence floor and a dump-size backstop: it
+  no longer blindly fuses **every** email + username + phone in a scan into one
+  CRITICAL identity (179 unrelated entities on the reported scan), and won't
+  fire when any bucket exceeds a plausible single-identity size. Net: the 84
+  correlations (86% of them noise) collapse to the genuinely-corroborated few,
+  and the 78 unconnected domains stop being linked.
+
+- **`see_know` (SeekNow / "Seek EU") silently doing nothing.** The shared curl
+  client only checks curl's process exit code, and curl exits `0` on an HTTP
+  401 — so an `{"error":"invalid_api_key"}` response was treated as a
+  successful, empty result and SeekNow looked like it "found nothing" on every
+  seed. It now detects the auth-rejection envelope, logs an **actionable
+  warning once** ("set a valid key in UI Settings / `HUNTSMAN_SEEKNOW_KEY`"),
+  fast-fails the remaining ~160 doomed lookups for that scan, and re-tests the
+  key each new scan so a corrected key recovers without a restart.
+  *(Diagnosis: the bundled key is currently rejected by see-know.eu — a valid
+  key must be supplied for SeekNow to return data.)*
+
+- **Target values keeping shell/CSV quoting.** A `full_name` target submitted as
+  `"Matthew Diegmann"` (literal quotes) reached the pipeline with the quotes
+  intact, polluting every name-derived permutation. Targets are now sanitised at
+  the input boundary — surrounding quotes (incl. smart quotes) and stray list
+  punctuation are stripped before normalisation.
+
 - **Log flood on CLI scans.** Every event emission logged `broadcast dropped
   (no subscribers)` at TRACE when no SSE client was attached — the normal case
   for `hse scan`/`live` from the terminal — producing one line per entity
@@ -33,6 +76,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   live subscriber is now a silent no-op.
 
 ### Added
+
+- **`include_candidates` query toggle on the entity list and JSON report.**
+  `GET /scans/{id}/entities` and `GET /scans/{id}/report.json` now **hide
+  quarantined `candidate` entities by default** (the clean, confirmed-footprint
+  view); pass `?include_candidates=1` to get the full set including speculative
+  leads. The CLI `hse export --format report` likewise defaults to the
+  confirmed-only dossier.
 
 - **Prebuilt-binary fast path in `install.sh` (primary; build is the fallback).**
   The installer now scans Downloads / shared storage for a precompiled aarch64

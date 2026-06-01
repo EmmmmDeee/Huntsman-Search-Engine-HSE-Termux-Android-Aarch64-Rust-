@@ -150,15 +150,30 @@ fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
     }
 }
 
+/// True if the request opts into the quarantined `candidate` entities via
+/// `?include_candidates=1|true|yes|on`. Default (absent/anything else) is to
+/// hide them — the clean, confirmed-only default view.
+fn wants_candidates(params: &std::collections::HashMap<String, String>) -> bool {
+    params
+        .get("include_candidates")
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+}
+
 pub async fn scan_entities(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
     match s.store.entities_for_scan(&id) {
-        Ok(entities) => ok_list("entities", entities),
+        Ok(mut entities) => {
+            if !wants_candidates(&params) {
+                entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+            }
+            ok_list("entities", entities)
+        }
         Err(e) => internal_error(&e),
     }
 }
@@ -377,8 +392,9 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
 pub async fn scan_report_json(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    match build_scan_report(&*s.store, &id) {
+    match build_scan_report(&*s.store, &id, wants_candidates(&params)) {
         Ok(Some(report)) => {
             let body = serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
@@ -406,11 +422,19 @@ pub async fn scan_report_json(
 pub(crate) fn build_scan_report(
     store: &dyn crate::core::port::StoragePort,
     scan_id: &str,
+    include_candidates: bool,
 ) -> crate::core::error::Result<Option<serde_json::Value>> {
     let Some(scan) = store.get_scan(scan_id)? else {
         return Ok(None);
     };
-    let entities = store.entities_for_scan(scan_id)?;
+    let mut entities = store.entities_for_scan(scan_id)?;
+    // Quarantine in the dossier too: speculative `candidate` entities (the
+    // non-target breach-dump rows) are hidden by default so the report reads
+    // as the target's confirmed footprint. `include_candidates=true` returns
+    // the full set for investigation.
+    if !include_candidates {
+        entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    }
     let correlations = store.correlations_for_scan(scan_id)?;
     Ok(Some(json!({
         "scan": scan,
@@ -490,6 +514,55 @@ pub(crate) fn csv_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::core::scan::TargetKind;
+
+    #[test]
+    fn wants_candidates_parses_truthy_values_only() {
+        use std::collections::HashMap;
+        let mut p: HashMap<String, String> = HashMap::new();
+        assert!(!wants_candidates(&p), "absent ⇒ hide candidates");
+        for v in ["1", "true", "yes", "on"] {
+            p.insert("include_candidates".into(), v.into());
+            assert!(wants_candidates(&p), "{v} should opt in");
+        }
+        p.insert("include_candidates".into(), "0".into());
+        assert!(!wants_candidates(&p));
+    }
+
+    #[test]
+    fn report_hides_candidates_by_default_and_includes_on_request() {
+        use crate::core::entity::{Entity, EntityKind};
+        use crate::core::scan::{Scan, Target};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("report.db");
+        let store = crate::storage::Store::open(db.to_str().unwrap()).unwrap();
+        let sid = "rep-scan";
+        store
+            .upsert_scan(&Scan::new(
+                sid,
+                Target::new(TargetKind::FullName, "Matthew Diegmann"),
+            ))
+            .unwrap();
+        store
+            .upsert_entity(&Entity::new(EntityKind::Email, "me@real.com", 0.85, sid))
+            .unwrap();
+        let mut candidate = Entity::new(EntityKind::Email, "stranger@bank.com", 0.25, sid);
+        candidate.tag(crate::core::tags::CANDIDATE);
+        store.upsert_entity(&candidate).unwrap();
+
+        let port = &store as &dyn crate::core::port::StoragePort;
+        let default = build_scan_report(port, sid, false).unwrap().unwrap();
+        assert_eq!(
+            default["entity_count"].as_u64(),
+            Some(1),
+            "default report hides the candidate"
+        );
+        let full = build_scan_report(port, sid, true).unwrap().unwrap();
+        assert_eq!(
+            full["entity_count"].as_u64(),
+            Some(2),
+            "include_candidates returns the full set"
+        );
+    }
 
     #[test]
     fn build_scan_from_request_valid_is_deterministic() {
