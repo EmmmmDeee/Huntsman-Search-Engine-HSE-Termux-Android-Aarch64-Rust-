@@ -243,7 +243,7 @@
         <a href="https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-" target="_blank">GitHub</a>.</p>
         <p style="color:#888;font-size:11px">⚠️ API keys are sensitive. Set them via
         <code>$HOME/.huntsman.env</code> (chmod 0600) or on the Settings page
-        (when <code>hse serve --allow-key-write</code> is enabled, loopback only).
+        (editable by default, loopback only; lock down with <code>hse serve --no-key-write</code>).
         Never paste keys into chat, screenshots, or shared documents.</p>
       </div>
       <div class="modal-footer">
@@ -1676,8 +1676,8 @@ async function renderOpts(v){
       <div class="panel-body">
         <p class="text-muted" style="font-size:12px">
           ${data.write_enabled
-            ? `Edits write to <code>${esc(data.env_path)}</code> at <code>mode 0600</code>. Comments and non-<code>HUNTSMAN_*</code> lines are preserved.`
-            : `Write access is disabled. Restart with <code>hse serve --allow-key-write</code> to edit keys from this page. Even then, writes require the request to come from a loopback peer.`}
+            ? `Edits write to <code>${esc(data.env_path)}</code> at <code>mode 0600</code>. Comments and non-<code>HUNTSMAN_*</code> lines are preserved. Writes require a loopback peer.`
+            : `Write access is disabled (you launched with <code>hse serve --no-key-write</code>). Restart without that flag to edit keys here — editing is on by default, loopback-only.`}
         </p>
         <div id="keygrid">
           ${data.keys.map(k=>keyRow(k, data.write_enabled)).join('')}
