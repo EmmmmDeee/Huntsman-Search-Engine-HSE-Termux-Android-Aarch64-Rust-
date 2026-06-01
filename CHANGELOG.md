@@ -37,6 +37,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   is process-fatal under `panic=abort`. Replaced with a char-safe `title_case`
   helper and boundary-safe local-part handling. +regression test.
 
+- **Robustness: UTF-8 panic when truncating a breach date.** The breach-date
+  clustering correlator rule took `&d[..10]` of an external `breach_date`/`date`
+  evidence attribute; a non-ASCII value panics at byte 10. Now uses the
+  boundary-safe `d.get(..10)` (which also subsumes the length check). This
+  completes a full audit of hard-coded byte-offset string slices on external
+  data — every other one is guarded (length/ASCII) or derived from a `find`
+  index (already a char boundary).
+
 ### Fixed
 
 - **Robustness: two process-fatal panics on untrusted input removed.** The

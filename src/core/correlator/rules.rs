@@ -723,10 +723,14 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
         }
         for ev in &e.evidence {
             for field in ["breach_date", "not_before", "earliest_record", "date"] {
+                // `d.get(..10)` is char-boundary-safe: byte slicing `&d[..10]`
+                // panics if byte 10 lands mid-char (a non-ASCII date attribute
+                // from external evidence) — process-fatal under panic=abort.
+                // `get` also subsumes the length check (None if shorter than 10).
                 if let Some(d) = ev.attributes.get(field)
-                    && d.len() >= 10
+                    && let Some(d10) = d.get(..10)
                 {
-                    breach_dates.push((e, &d[..10]));
+                    breach_dates.push((e, d10));
                 }
             }
         }
