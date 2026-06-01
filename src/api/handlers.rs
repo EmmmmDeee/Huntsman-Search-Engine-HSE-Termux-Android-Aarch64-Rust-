@@ -288,6 +288,34 @@ pub async fn keys_status() -> Json<Value> {
     Json(json!({ "count": services.len(), "services": services }))
 }
 
+/// `GET /api/v1/selftest` — run the full module + feature self-validation suite
+/// on demand and return the structured report. Powers the Settings page's
+/// "Run self-test" button. Offline + side-effect-free (a throwaway temp DB).
+pub async fn selftest_run() -> impl IntoResponse {
+    Json(crate::selftest::run().await)
+}
+
+/// `GET /api/v1/logs` — download the in-memory verbose debug-log ring buffer as
+/// a text attachment. The buffer captures the project's default TRACE-level
+/// logs for the life of the process (bounded; see `util::log_capture`).
+pub async fn logs_download() -> impl IntoResponse {
+    let body = crate::util::log_capture::dump();
+    let filename = format!("hse-debug-{}.log", crate::core::entity::unix_now());
+    (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        body,
+    )
+}
+
 pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
     let mods: Vec<Value> = s
         .engine

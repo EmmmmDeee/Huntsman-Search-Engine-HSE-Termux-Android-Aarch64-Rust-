@@ -43,6 +43,23 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         )),
     });
 
+    // Self-validate every module + core feature at startup. Non-fatal: a
+    // failure is logged loudly (and visible at GET /api/v1/selftest) but the
+    // server still boots, so a single broken module never blocks the UI.
+    let report = crate::selftest::run().await;
+    if report.ok {
+        tracing::info!("{}", report.summary());
+    } else {
+        tracing::warn!("{}", report.summary());
+        for c in report
+            .checks
+            .iter()
+            .filter(|c| c.status == crate::selftest::Status::Fail)
+        {
+            tracing::warn!(check = %c.name, "self-test FAIL: {}", c.detail);
+        }
+    }
+
     let app = router(state, &bind);
     let listener = tokio::net::TcpListener::bind(&bind)
         .await

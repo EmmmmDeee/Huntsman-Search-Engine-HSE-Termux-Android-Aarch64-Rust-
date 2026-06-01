@@ -13,6 +13,7 @@ pub mod http;
 pub mod key_pool;
 pub mod key_roi;
 pub mod keys;
+pub mod log_capture;
 pub mod oathnet;
 pub mod oui;
 pub mod postcode_au;

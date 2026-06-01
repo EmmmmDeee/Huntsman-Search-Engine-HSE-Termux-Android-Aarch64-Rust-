@@ -13,6 +13,7 @@ mod live;
 mod provision;
 mod radar;
 mod scan;
+mod selftest;
 mod serve;
 
 use keys_cmd::KeysAction;
@@ -165,6 +166,14 @@ pub enum Command {
     },
     /// Verify environment: DB path, key file, Termux detection, module counts.
     Doctor,
+    /// Validate every module and core feature, then exit (non-zero on any
+    /// failure). Runs the full suite automatically; the same report is served
+    /// on demand at `GET /api/v1/selftest` and from the Web UI's Settings page.
+    Selftest {
+        /// Emit the machine-readable JSON report instead of the text table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Provision the local environment: write/merge `$HOME/.huntsman.env`
     /// from the canonical template and run a diagnostic smoke test.
     ///
@@ -346,13 +355,29 @@ pub async fn run() -> Result<()> {
     const DEFAULT_RAW_LOG: &str = "trace,\
         hyper=info,hyper_util=info,h2=info,rustls=info,reqwest=info,\
         tokio_util=info,tower=info,want=info,mio=info";
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_RAW_LOG)),
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_RAW_LOG));
+    // Two fmt layers behind one EnvFilter: the operator's stderr console
+    // (ANSI auto-detected) and a clean no-ANSI tee into the in-memory ring
+    // buffer, so the same raw-verbose stream is downloadable from the Web UI
+    // (`GET /api/v1/logs`) / `hse logs` without polluting the console output.
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(true)
+                .with_line_number(true)
+                .with_writer(std::io::stderr),
         )
-        .with_target(true)
-        .with_line_number(true)
-        .with_writer(std::io::stderr)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_target(true)
+                .with_line_number(true)
+                .with_writer(crate::util::log_capture::RingMakeWriter),
+        )
         .init();
 
     let cli = Cli::parse();
@@ -409,6 +434,7 @@ pub async fn run() -> Result<()> {
         }
         Command::Modules { category, json } => cmd_modules(category, json),
         Command::Doctor => doctor::cmd_doctor().await,
+        Command::Selftest { json } => selftest::cmd_selftest(json).await,
         Command::Provision {
             env_only,
             verify_only,

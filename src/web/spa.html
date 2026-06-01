@@ -431,7 +431,9 @@ const API = {
   search:    (q,limit)=>API._req('/api/v1/search?q='+encodeURIComponent(q)+'&limit='+(limit||50)),
   liveList:   ()=>API._req('/api/v1/live'),
   liveCreate: body=>API._req('/api/v1/live',{method:'POST',body}),
-  liveStop:   id=>API._req('/api/v1/live/'+encodeURIComponent(id),{method:'DELETE'})
+  liveStop:   id=>API._req('/api/v1/live/'+encodeURIComponent(id),{method:'DELETE'}),
+  selftest:   ()=>API._req('/api/v1/selftest'),
+  logsUrl:    ()=>'/api/v1/logs'
 };
 
 /* ─── Router (hash-based, mirrors SpiderFoot's path semantics) ─── */
@@ -1691,6 +1693,23 @@ async function renderOpts(v){
     </div>
 
     <div class="panel panel-default">
+      <div class="panel-heading"><b>Diagnostics</b></div>
+      <div class="panel-body">
+        <p class="text-muted" style="font-size:12px">
+          Validate every module and core feature, and download elaborate
+          verbose (TRACE-level) debug logs for the current server session.
+        </p>
+        <p>
+          <button id="st-run" class="btn btn-primary btn-sm">Run self-test</button>
+          &nbsp;
+          <a class="btn btn-default btn-sm" href="${API.logsUrl()}" download>Download debug log</a>
+          &nbsp;<span id="st-summary" class="text-muted" style="font-size:12px"></span>
+        </p>
+        <div id="st-results" style="margin-top:8px"></div>
+      </div>
+    </div>
+
+    <div class="panel panel-default">
       <div class="panel-heading"><b>Server</b></div>
       <table class="table table-striped table-condensed" style="margin-bottom:0">
         <tbody>
@@ -1704,6 +1723,41 @@ async function renderOpts(v){
   `;
 
   if (data.write_enabled) wireKeyEditor();
+  wireDiagnostics();
+}
+
+/* ─── Diagnostics: on-demand self-test + verbose-log download ─── */
+function wireDiagnostics(){
+  const btn = $('#st-run');
+  if (!btn) return;
+  btn.addEventListener('click', async ()=>{
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = 'Running…';
+    $('#st-summary').textContent = '';
+    $('#st-results').innerHTML = '';
+    try {
+      const r = await API.selftest();
+      const pill = s => s==='pass' ? '<span class="label label-success">pass</span>'
+                      : s==='warn' ? '<span class="label label-warning">warn</span>'
+                      : '<span class="label label-danger">fail</span>';
+      const rows = (r.checks||[]).map(c =>
+        `<tr><td>${pill(c.status)}</td><td><code>${esc(c.name)}</code></td><td style="color:#aaa">${esc(c.detail)}</td></tr>`
+      ).join('');
+      $('#st-results').innerHTML =
+        `<table class="table table-condensed" style="margin-bottom:0"><tbody>${rows}</tbody></table>`;
+      const cls = r.ok ? 'label-success' : 'label-danger';
+      $('#st-summary').innerHTML =
+        `<span class="label ${cls}">${r.ok?'OK':'FAILED'}</span> `+
+        `${r.passed}/${r.total} pass, ${r.warned} warn, ${r.failed} fail · ${r.elapsed_ms} ms`;
+      (r.ok?toast:alertify.error)(r.ok?'Self-test passed':'Self-test reported failures');
+    } catch(e){
+      alertify.error('Self-test failed: '+e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = orig;
+    }
+  });
 }
 function keyRow(k, writeEnabled){
   return `<div class="keyrow" data-key="${attr(k.name)}">

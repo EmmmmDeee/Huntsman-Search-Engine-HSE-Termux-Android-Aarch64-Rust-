@@ -1095,6 +1095,8 @@ async fn spa_references_only_registered_api_endpoints() {
             "scans" => "/api/v1/scans".to_string(),
             "search" => "/api/v1/search?q=x".to_string(),
             "settings" => "/api/v1/settings/keys".to_string(),
+            "selftest" => "/api/v1/selftest".to_string(),
+            "logs" => "/api/v1/logs".to_string(),
             "live" => "/api/v1/live".to_string(),
             other => panic!(
                 "SPA references /api/v1/{other} but this test has no probe for it — \
@@ -1278,4 +1280,65 @@ async fn keys_status_endpoint_returns_service_summary_shape() {
     let j = body_json(resp).await;
     let services = j["services"].as_array().expect("services array");
     assert_eq!(j["count"].as_u64().unwrap() as usize, services.len());
+}
+
+#[tokio::test]
+async fn selftest_endpoint_returns_structured_report() {
+    // GET /api/v1/selftest runs the full module + feature suite on demand and
+    // returns the structured report the Web UI renders.
+    let app = test_app("selftest-ep");
+    let resp = app.oneshot(get("/api/v1/selftest")).await.unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let j = body_json(resp).await;
+    assert!(j["ok"].is_boolean(), "report has a boolean `ok`");
+    assert!(j["elapsed_ms"].is_number(), "report has elapsed_ms");
+    let checks = j["checks"].as_array().expect("checks array");
+    assert!(
+        checks.len() >= 5,
+        "full suite runs (>=5 checks), got {}",
+        checks.len()
+    );
+    // Each check is a {name, status, detail} triple with a known status.
+    for c in checks {
+        assert!(c["name"].is_string());
+        let st = c["status"].as_str().unwrap_or("");
+        assert!(
+            matches!(st, "pass" | "warn" | "fail"),
+            "unexpected status {st}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn logs_endpoint_serves_downloadable_text_attachment() {
+    // GET /api/v1/logs streams the verbose debug-log ring buffer as a
+    // downloadable text file (the Settings "Download debug log" button).
+    let app = test_app("logs-ep");
+    let resp = app.oneshot(get("/api/v1/logs")).await.unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct.starts_with("text/plain"),
+        "logs are text/plain, got {ct}"
+    );
+    let cd = resp
+        .headers()
+        .get(http::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        cd.contains("attachment") && cd.contains(".log"),
+        "served as a .log attachment, got {cd:?}"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("Huntsman Search Engine"),
+        "dump carries its header"
+    );
 }

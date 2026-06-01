@@ -35,6 +35,7 @@ pub mod api;
 pub mod cli;
 pub mod core;
 pub mod modules;
+pub mod selftest;
 pub mod storage;
 pub mod util;
 
