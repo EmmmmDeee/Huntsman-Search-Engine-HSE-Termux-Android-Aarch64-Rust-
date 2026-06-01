@@ -10,6 +10,31 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **Streaming timeline reconstruction — the chronology now builds live during
+  ingestion, not only at report time.** The charter lists *streaming timeline
+  reconstruction (continuous, not batch-generated)* as a SpiderFoot-superiority
+  condition, and `timeline::reconstruct` was already a pure, reentrant function
+  documented as callable "incrementally during ingestion (streaming) or … on
+  demand (batch)" — **but no ingestion-time caller existed**: it ran only when
+  the CLI rendered the `--scan-report` timeline. The engine now re-derives the
+  timeline from the working entity set at **every productive round boundary**
+  (right beside the existing live cross-correlation pass) and streams each
+  newly-surfaced point as a new **`TimelineEventFound`** event, plus an
+  authoritative **`TimelineReconstructed { count }`** at finalise — exactly
+  mirroring the `CorrelationFound`/`CorrelationsDone` live/finalise pair. Points
+  are deduped across the seed round, every expansion round, and the finalise
+  pass via a stable `timeline::event_key` (`ts` + kind + entity-uid + source),
+  so each fires exactly once even though the timeline is reconstructed
+  continuously. A consumer (SSE/Web UI event log) now watches the chronology
+  fill in as evidence arrives instead of seeing it only at scan end. No new
+  storage schema and no change to the batch path: the streamed events are
+  captured durably in the scan's event log, and the full timeline stays
+  re-derivable on demand from the same `reconstruct`. The finalise pass also
+  covers a scan cancelled or budget-stopped mid-round (whose final partial round
+  never reached a boundary), so the streamed timeline is always complete.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed

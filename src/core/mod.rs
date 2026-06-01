@@ -257,6 +257,19 @@ pub mod event {
         CorrelationsDone {
             count: usize,
         },
+        /// A timeline event was reconstructed from the entity graph during
+        /// ingestion (v1.3+). The timeline is re-derived from the working set
+        /// at every round boundary and each newly-surfaced point is streamed
+        /// once (deduped via `timeline::event_key`), so a consumer watches the
+        /// chronology build up continuously rather than only at report time.
+        TimelineEventFound {
+            event: crate::core::timeline::TimelineEvent,
+        },
+        /// Streaming timeline reconstruction finished for the scan (v1.3+).
+        /// `count` is the authoritative total of distinct reconstructed events.
+        TimelineReconstructed {
+            count: usize,
+        },
         /// Live session started (v0.5+). `scan_id` field on the wrapping
         /// `Event` carries the live_id, not a scan_id.
         LiveStart {
@@ -297,6 +310,8 @@ pub mod event {
                 Self::ExpansionStop { .. } => "expansion_stop",
                 Self::CorrelationFound { .. } => "correlation_found",
                 Self::CorrelationsDone { .. } => "correlations_done",
+                Self::TimelineEventFound { .. } => "timeline_event_found",
+                Self::TimelineReconstructed { .. } => "timeline_reconstructed",
                 Self::LiveStart { .. } => "live_start",
                 Self::LiveTick { .. } => "live_tick",
                 Self::LiveStop { .. } => "live_stop",
@@ -402,6 +417,52 @@ pub mod event {
                     assert_eq!(entity_count, 42);
                 }
                 other => panic!("expected ScanComplete, got: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn timeline_event_found_json_round_trip() {
+            use crate::core::timeline::{TimelineEvent, TimelineEventKind};
+            let kind = EventKind::TimelineEventFound {
+                event: TimelineEvent {
+                    ts: 1_234_567_890,
+                    iso: "2009-02-13".into(),
+                    kind: TimelineEventKind::BreachExposure,
+                    label: "email a@b.com (breach_date = 2009-02-13)".into(),
+                    entity_uid: "uid-1".into(),
+                    entity_value: "a@b.com".into(),
+                    entity_kind: "email".into(),
+                    source: "hibp:breach_date".into(),
+                    confidence: 0.9,
+                },
+            };
+            assert_eq!(kind.event_type_str(), "timeline_event_found");
+            let json = serde_json::to_string(&kind).unwrap();
+            assert!(json.contains("\"type\":\"timeline_event_found\""));
+
+            let back: EventKind = serde_json::from_str(&json).unwrap();
+            match back {
+                EventKind::TimelineEventFound { event } => {
+                    assert_eq!(event.ts, 1_234_567_890);
+                    assert_eq!(event.kind, TimelineEventKind::BreachExposure);
+                    assert_eq!(event.entity_value, "a@b.com");
+                    assert_eq!(event.source, "hibp:breach_date");
+                }
+                other => panic!("expected TimelineEventFound, got: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn timeline_reconstructed_json_round_trip() {
+            let kind = EventKind::TimelineReconstructed { count: 7 };
+            assert_eq!(kind.event_type_str(), "timeline_reconstructed");
+            let json = serde_json::to_string(&kind).unwrap();
+            assert!(json.contains("\"type\":\"timeline_reconstructed\""));
+
+            let back: EventKind = serde_json::from_str(&json).unwrap();
+            match back {
+                EventKind::TimelineReconstructed { count } => assert_eq!(count, 7),
+                other => panic!("expected TimelineReconstructed, got: {other:?}"),
             }
         }
 

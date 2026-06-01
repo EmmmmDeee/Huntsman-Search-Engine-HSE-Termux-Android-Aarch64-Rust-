@@ -2121,6 +2121,120 @@ async fn correlations_stream_live_during_ingestion_not_at_finalise() {
     assert_eq!(stored.len(), 1, "AU-013 should persist exactly once");
 }
 
+// ── Streaming timeline reconstruction ────────────────────────────────────────
+//
+// Proves the charter's "streaming timeline reconstruction (continuous, not
+// batch-generated)" superiority condition: the chronology is re-derived from
+// the working set and streamed live during ingestion, not assembled only at
+// report time.
+
+/// Seed module: emits the seed email carrying a `breach_date` evidence
+/// attribute (→ a BreachExposure timeline point on the seed round) plus a
+/// high-confidence Username derived from the local part (→ an expansion
+/// candidate for round 1, so `ExpansionMarker` has a target to run against).
+struct BreachDatedEmailSynth;
+
+#[async_trait]
+impl Module for BreachDatedEmailSynth {
+    fn name(&self) -> &'static str {
+        "breach_dated_email"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        use huntsman_search_engine::core::entity::Evidence;
+        let mut r = ModuleResult::new();
+        let mut email = Entity::new(EntityKind::Email, &target.value, 0.95, &ctx.scan_id);
+        email.add_evidence(
+            Evidence::new("breach_db", "Exposed in breach").with_attr("breach_date", "2019-03-15"),
+        );
+        r.push(email);
+        let local = target.value.split('@').next().unwrap_or("anon");
+        r.push(Entity::new(EntityKind::Username, local, 0.95, &ctx.scan_id));
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn timeline_streams_live_during_ingestion_not_only_at_finalise() {
+    use huntsman_search_engine::core::event::EventKind;
+    use huntsman_search_engine::core::timeline::TimelineEventKind;
+
+    let (engine, _store, sid, target, ctx) = setup(
+        vec![Arc::new(BreachDatedEmailSynth), Arc::new(ExpansionMarker)],
+        "live-timeline",
+        TargetKind::Email,
+        "victim@contoso.com",
+    );
+    // depth=1 so expansion round 1 dispatches the Username-only marker module
+    // against the username the seed round produced.
+    let opts = ScanOptions {
+        depth: 1,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+
+    // Subscribe before running so we capture the full event stream in order.
+    let mut rx = engine.bus().subscribe();
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let mut first_tl: Option<usize> = None;
+    let mut marker_start: Option<usize> = None;
+    let mut tl_emits = 0usize;
+    let mut reconstructed_count: Option<usize> = None;
+    let mut idx = 0usize;
+    while let Ok(ev) = rx.try_recv() {
+        match &ev.kind {
+            EventKind::TimelineEventFound { event }
+                if event.kind == TimelineEventKind::BreachExposure =>
+            {
+                tl_emits += 1;
+                if first_tl.is_none() {
+                    first_tl = Some(idx);
+                }
+            }
+            EventKind::TimelineReconstructed { count } => reconstructed_count = Some(*count),
+            EventKind::ModuleStart { module }
+                if module == "expansion_marker" && marker_start.is_none() =>
+            {
+                marker_start = Some(idx);
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+
+    let tl_at = first_tl.expect("a TimelineEventFound should be emitted");
+    let marker_at = marker_start.expect("expansion_marker should run in expansion round 1");
+
+    // The discriminating assertion: the timeline point streamed out *before*
+    // the expansion-only module even started. A finalise-only reconstruction
+    // would emit it after every expansion-round event, so this ordering can
+    // only hold if the timeline is reconstructed live during ingestion.
+    assert!(
+        tl_at < marker_at,
+        "timeline point fired at event #{tl_at} but expansion module started at #{marker_at}; \
+         timeline is not being reconstructed live during ingestion"
+    );
+
+    // Dedup invariant: the seed pass, the round-boundary pass, and the
+    // authoritative finalise pass must not double-emit the same point.
+    assert_eq!(
+        tl_emits, 1,
+        "the breach timeline point should stream exactly once"
+    );
+
+    // The authoritative finalise count is emitted and accounts for the point.
+    assert!(
+        reconstructed_count.is_some_and(|c| c >= 1),
+        "TimelineReconstructed should report the authoritative total"
+    );
+}
+
 // ── Crash-durability: entities are checkpointed each round ───────────────────
 //
 // Proves the charter's "fault-tolerant, resumable execution state" invariant:

@@ -9,9 +9,14 @@
 //! [`reconstruct`] is a pure function over a slice of entities: it walks each
 //! entity's evidence attributes, maps known date-bearing keys to a typed
 //! [`TimelineEventKind`], parses the value into a Unix timestamp, and returns
-//! the events sorted oldest-first. No I/O, no allocation beyond the output —
-//! so the engine can call it incrementally during ingestion (streaming) or the
-//! CLI/API can render it on demand (batch) from the same code path.
+//! the events sorted oldest-first. No I/O, no allocation beyond the output.
+//!
+//! Because it is pure and reentrant, the *same* function serves both call
+//! modes: the engine re-runs it over the working set at every round boundary
+//! and streams each newly-surfaced point to the live event stream as a
+//! `TimelineEventFound` (deduped via [`event_key`]), so a consumer watches the
+//! chronology build up *during* ingestion rather than only at the end; and the
+//! CLI/API render the full timeline on demand (batch) from the same code path.
 //!
 //! Date parsing is dependency-free (no `chrono`): it accepts Unix seconds,
 //! Unix milliseconds, ISO-8601 dates/datetimes, `YYYY/MM/DD`, and bare years,
@@ -141,6 +146,24 @@ pub fn reconstruct(entities: &[Entity]) -> Vec<TimelineEvent> {
         a.ts == b.ts && a.kind == b.kind && a.entity_uid == b.entity_uid && a.source == b.source
     });
     events
+}
+
+/// Stable identity for a reconstructed event — the `(ts, kind, entity_uid,
+/// source)` tuple [`reconstruct`] already collapses duplicates on. The engine
+/// uses it to dedup the *streaming* reconstruction: the timeline is re-derived
+/// from the working set at every round boundary, but each distinct point is
+/// emitted to the live event stream exactly once across all rounds and the
+/// authoritative finalise pass.
+pub fn event_key(e: &TimelineEvent) -> String {
+    // \u{1f} (unit separator) can't occur in a ts, kind tag, UID, or
+    // "module:attr" source, so the join is unambiguous.
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        e.ts,
+        e.kind.as_str(),
+        e.entity_uid,
+        e.source
+    )
 }
 
 // ─── Dependency-free date parsing ────────────────────────────────────────────
@@ -422,5 +445,25 @@ mod tests {
         // Same entity twice → one event after dedup.
         let tl = reconstruct(&[e.clone(), e]);
         assert_eq!(tl.len(), 1);
+    }
+
+    #[test]
+    fn event_key_is_stable_and_discriminating() {
+        // Two distinct events from one entity (a breach + an expiry) key
+        // differently, while re-deriving the same event yields the same key —
+        // exactly the contract the streaming dedup relies on across rounds.
+        let domain = entity_with_attrs(
+            EntityKind::Domain,
+            "b.com",
+            "rdap_domain",
+            &[("registered", "2008-06-01"), ("expires", "2026-06-01")],
+        );
+        let tl = reconstruct(std::slice::from_ref(&domain));
+        assert_eq!(tl.len(), 2);
+        assert_ne!(event_key(&tl[0]), event_key(&tl[1]));
+        // Re-reconstruction (a later round seeing the same entity) is identical.
+        let again = reconstruct(&[domain]);
+        assert_eq!(event_key(&tl[0]), event_key(&again[0]));
+        assert_eq!(event_key(&tl[1]), event_key(&again[1]));
     }
 }

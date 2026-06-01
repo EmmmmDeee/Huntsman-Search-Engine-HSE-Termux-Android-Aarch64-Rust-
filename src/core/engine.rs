@@ -274,6 +274,11 @@ impl ScanEngine {
         // the authoritative finalise pass so each correlation is emitted at
         // most once even though the rules are re-evaluated continuously.
         let mut emitted_corr: HashSet<String> = HashSet::new();
+        // Streaming-timeline dedup set, threaded exactly like `emitted_corr`:
+        // the stable identity of every timeline point already streamed, so the
+        // continuously re-reconstructed chronology emits each point at most once
+        // across the seed round, every expansion round, and finalise.
+        let mut emitted_tl: HashSet<String> = HashSet::new();
 
         visited.insert(visit_key(&target));
         self.dispatch_target(
@@ -295,6 +300,7 @@ impl ScanEngine {
         let seed_snapshot: Vec<Entity> = entity_map.values().cloned().collect();
         self.checkpoint_entities(&scan.id, &seed_snapshot);
         self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
+        self.timeline_incremental(&scan.id, &seed_snapshot, &mut emitted_tl);
 
         if opts.depth > 0 {
             let _ = self
@@ -309,6 +315,7 @@ impl ScanEngine {
                     dispatched,
                     &mut lineage,
                     &mut emitted_corr,
+                    &mut emitted_tl,
                 )
                 .await;
         }
@@ -320,10 +327,19 @@ impl ScanEngine {
             handle.abort();
         }
 
-        self.finalise_scan(&mut scan, entity_map, &ctx, stats, lineage, emitted_corr)
+        self.finalise_scan(
+            &mut scan,
+            entity_map,
+            &ctx,
+            stats,
+            lineage,
+            emitted_corr,
+            emitted_tl,
+        )
     }
 
     /// Persist entities, run the correlator, and mark the scan terminal.
+    #[allow(clippy::too_many_arguments)]
     fn finalise_scan(
         &self,
         scan: &mut Scan,
@@ -332,6 +348,7 @@ impl ScanEngine {
         stats: ModuleStats,
         lineage_relations: Vec<Relation>,
         mut emitted_corr: HashSet<String>,
+        mut emitted_tl: HashSet<String>,
     ) -> Result<Scan> {
         // Persist the scan's entities in a single transaction. On the common
         // path (every entity is new or a clean GREATEST-merge) this collapses
@@ -413,6 +430,12 @@ impl ScanEngine {
         self.persist_relations(&scan.id, &entities, &lineage_relations);
 
         self.run_correlator(&scan.id, &mut emitted_corr);
+
+        // Authoritative streaming-timeline pass over the persisted entity set:
+        // streams any point the round-boundary passes missed (e.g. a scan
+        // cancelled or budget-stopped mid-round never reached that round's
+        // boundary) and emits the definitive `TimelineReconstructed` count.
+        self.run_timeline(&scan.id, &entities, &mut emitted_tl);
 
         // Persist the key pool to disk after every scan. Keys discovered
         // during this scan (from breach data, page bodies, entity values)
@@ -549,6 +572,52 @@ impl ScanEngine {
         }
     }
 
+    /// Streaming timeline reconstruction during ingestion. Re-derives the
+    /// chronology implied by the working entity set and streams any
+    /// newly-surfaced point immediately as a `TimelineEventFound`. Idempotent
+    /// across rounds: a timeline event's stable identity (`ts` + kind + entity
+    /// uid + source) is recorded in `emitted` so it streams exactly once even
+    /// though the timeline is re-reconstructed every round (and again at
+    /// finalise). This is the engine half of the charter's "streaming timeline
+    /// reconstruction (continuous, not batch-generated)" superiority condition.
+    ///
+    /// A pure projection over entity evidence — no store round-trip and no new
+    /// persistence: the emitted events are captured durably in the scan's event
+    /// log by [`EventEmitter::emit`], and the full timeline stays re-derivable
+    /// on demand by the CLI/API from the same `timeline::reconstruct`.
+    fn timeline_incremental(
+        &self,
+        scan_id: &str,
+        entities: &[Entity],
+        emitted: &mut HashSet<String>,
+    ) {
+        // `reconstruct` already returns events sorted oldest-first, so the live
+        // stream surfaces the chronology in order within each round.
+        for event in crate::core::timeline::reconstruct(entities) {
+            if emitted.insert(crate::core::timeline::event_key(&event)) {
+                self.emit(scan_id, EventKind::TimelineEventFound { event });
+            }
+        }
+    }
+
+    /// Authoritative finalise-time timeline pass. Re-reconstructs the chronology
+    /// over the persisted entity set, streams any point not already emitted live
+    /// (deduped via `emitted`), and emits `TimelineReconstructed` with the
+    /// authoritative total. Mirrors [`Self::run_correlator`] so a scan that was
+    /// cancelled or hit its wall/entity budget mid-round — and so never reached
+    /// that round's boundary `timeline_incremental` — still streams a complete,
+    /// ordered timeline and a definitive count.
+    fn run_timeline(&self, scan_id: &str, entities: &[Entity], emitted: &mut HashSet<String>) {
+        let events = crate::core::timeline::reconstruct(entities);
+        let count = events.len();
+        for event in events {
+            if emitted.insert(crate::core::timeline::event_key(&event)) {
+                self.emit(scan_id, EventKind::TimelineEventFound { event });
+            }
+        }
+        self.emit(scan_id, EventKind::TimelineReconstructed { count });
+    }
+
     /// Checkpoint the working entity set to durable storage mid-scan so a crash
     /// or kill preserves discovered intel instead of losing everything until
     /// `finalise_scan`. Runs at every productive round boundary. The upsert is
@@ -578,6 +647,7 @@ impl ScanEngine {
         dispatched: &mut DispatchLog,
         relations: &mut Vec<Relation>,
         emitted_corr: &mut HashSet<String>,
+        emitted_tl: &mut HashSet<String>,
     ) -> StopReason {
         // Reused across candidates to capture lineage: the set of entity UIDs
         // present *before* a candidate's dispatch, so new UIDs afterward are
@@ -762,6 +832,7 @@ impl ScanEngine {
                 let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
                 self.checkpoint_entities(scan_id, &snapshot);
                 self.correlate_incremental(scan_id, &snapshot, emitted_corr);
+                self.timeline_incremental(scan_id, &snapshot, emitted_tl);
             }
 
             let floor = opts
