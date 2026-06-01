@@ -76,6 +76,26 @@ pub(crate) struct ModuleStats {
     pub skipped: usize,
 }
 
+/// Per-scan dedup sets for the three live "projection" passes streamed during
+/// ingestion: cross-correlation, timeline reconstruction, and identity
+/// resolution. Each set holds the stable identities already emitted, so a
+/// projection — re-derived over the FULL working set at every productive round
+/// boundary AND again at finalise — streams each distinct finding exactly once.
+///
+/// Bundled into one value so the scan loop threads a single parameter through
+/// `run_with_ledger` → `run_expansion` → `finalise_scan` instead of three
+/// parallel `HashSet`s (the prior shape pushed those signatures over clippy's
+/// argument-count limit).
+#[derive(Default)]
+struct LiveDedup {
+    /// `rule_id` + sorted entity uids of every emitted correlation.
+    correlations: HashSet<String>,
+    /// `ts`+kind+entity-uid+source key of every emitted timeline point.
+    timeline: HashSet<String>,
+    /// deterministic edge id of every emitted `SameAs` resolution edge.
+    resolutions: HashSet<String>,
+}
+
 /// Per-scan log of (module_name, target_kind, normalised_value) triples
 /// already dispatched. Prevents the same keyed API from being invoked on
 /// the same normalised target across expansion rounds — the primary
@@ -268,22 +288,12 @@ impl ScanEngine {
         // from), accumulated across expansion rounds and persisted in
         // finalise_scan.
         let mut lineage: Vec<Relation> = Vec::new();
-        // Live cross-correlation dedup set: the stable identity (rule_id +
-        // sorted entity uids) of every correlation already streamed during
-        // ingestion. Shared across the seed round, every expansion round, and
-        // the authoritative finalise pass so each correlation is emitted at
-        // most once even though the rules are re-evaluated continuously.
-        let mut emitted_corr: HashSet<String> = HashSet::new();
-        // Streaming-timeline dedup set, threaded exactly like `emitted_corr`:
-        // the stable identity of every timeline point already streamed, so the
-        // continuously re-reconstructed chronology emits each point at most once
-        // across the seed round, every expansion round, and finalise.
-        let mut emitted_tl: HashSet<String> = HashSet::new();
-        // Entity-resolution dedup set, threaded the same way: the deterministic
-        // id of every `SameAs` identity-equivalence edge already streamed, so
-        // continuous resolution emits each edge at most once across all rounds
-        // and finalise.
-        let mut emitted_res: HashSet<String> = HashSet::new();
+        // Dedup sets for the three live projection passes (cross-correlation,
+        // timeline, identity resolution), shared across the seed round, every
+        // expansion round, and the authoritative finalise pass so each finding
+        // is emitted at most once even though the projections are re-derived
+        // continuously. One bundled value instead of three parallel HashSets.
+        let mut dedup = LiveDedup::default();
 
         visited.insert(visit_key(&target));
         self.dispatch_target(
@@ -304,9 +314,9 @@ impl ScanEngine {
         // waiting for finalise.
         let seed_snapshot: Vec<Entity> = entity_map.values().cloned().collect();
         self.checkpoint_entities(&scan.id, &seed_snapshot);
-        self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
-        self.timeline_incremental(&scan.id, &seed_snapshot, &mut emitted_tl);
-        self.resolve_incremental(&scan.id, &seed_snapshot, &mut emitted_res);
+        self.correlate_incremental(&scan.id, &seed_snapshot, &mut dedup.correlations);
+        self.timeline_incremental(&scan.id, &seed_snapshot, &mut dedup.timeline);
+        self.resolve_incremental(&scan.id, &seed_snapshot, &mut dedup.resolutions);
 
         if opts.depth > 0 {
             let _ = self
@@ -320,9 +330,7 @@ impl ScanEngine {
                     &mut stats,
                     dispatched,
                     &mut lineage,
-                    &mut emitted_corr,
-                    &mut emitted_tl,
-                    &mut emitted_res,
+                    &mut dedup,
                 )
                 .await;
         }
@@ -334,20 +342,10 @@ impl ScanEngine {
             handle.abort();
         }
 
-        self.finalise_scan(
-            &mut scan,
-            entity_map,
-            &ctx,
-            stats,
-            lineage,
-            emitted_corr,
-            emitted_tl,
-            emitted_res,
-        )
+        self.finalise_scan(&mut scan, entity_map, &ctx, stats, lineage, dedup)
     }
 
     /// Persist entities, run the correlator, and mark the scan terminal.
-    #[allow(clippy::too_many_arguments)]
     fn finalise_scan(
         &self,
         scan: &mut Scan,
@@ -355,9 +353,7 @@ impl ScanEngine {
         ctx: &ModuleContext,
         stats: ModuleStats,
         lineage_relations: Vec<Relation>,
-        mut emitted_corr: HashSet<String>,
-        mut emitted_tl: HashSet<String>,
-        mut emitted_res: HashSet<String>,
+        mut dedup: LiveDedup,
     ) -> Result<Scan> {
         // Persist the scan's entities in a single transaction. On the common
         // path (every entity is new or a clean GREATEST-merge) this collapses
@@ -438,19 +434,19 @@ impl ScanEngine {
         // structural edges derived from the persisted entity set.
         self.persist_relations(&scan.id, &entities, &lineage_relations);
 
-        self.run_correlator(&scan.id, &mut emitted_corr);
+        self.run_correlator(&scan.id, &mut dedup.correlations);
 
         // Authoritative streaming-timeline pass over the persisted entity set:
         // streams any point the round-boundary passes missed (e.g. a scan
         // cancelled or budget-stopped mid-round never reached that round's
         // boundary) and emits the definitive `TimelineReconstructed` count.
-        self.run_timeline(&scan.id, &entities, &mut emitted_tl);
+        self.run_timeline(&scan.id, &entities, &mut dedup.timeline);
 
         // Authoritative finalise-time entity resolution over the persisted set:
         // streams + persists any `SameAs` edge the round-boundary passes missed.
         // Idempotent on the deterministic edge id, so a live-streamed edge is
         // never re-emitted.
-        self.resolve_incremental(&scan.id, &entities, &mut emitted_res);
+        self.resolve_incremental(&scan.id, &entities, &mut dedup.resolutions);
 
         // Persist the key pool to disk after every scan. Keys discovered
         // during this scan (from breach data, page bodies, entity values)
@@ -691,9 +687,7 @@ impl ScanEngine {
         stats: &mut ModuleStats,
         dispatched: &mut DispatchLog,
         relations: &mut Vec<Relation>,
-        emitted_corr: &mut HashSet<String>,
-        emitted_tl: &mut HashSet<String>,
-        emitted_res: &mut HashSet<String>,
+        dedup: &mut LiveDedup,
     ) -> StopReason {
         // Reused across candidates to capture lineage: the set of entity UIDs
         // present *before* a candidate's dispatch, so new UIDs afterward are
@@ -877,9 +871,9 @@ impl ScanEngine {
             if dispatched_this_round > 0 {
                 let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
                 self.checkpoint_entities(scan_id, &snapshot);
-                self.correlate_incremental(scan_id, &snapshot, emitted_corr);
-                self.timeline_incremental(scan_id, &snapshot, emitted_tl);
-                self.resolve_incremental(scan_id, &snapshot, emitted_res);
+                self.correlate_incremental(scan_id, &snapshot, &mut dedup.correlations);
+                self.timeline_incremental(scan_id, &snapshot, &mut dedup.timeline);
+                self.resolve_incremental(scan_id, &snapshot, &mut dedup.resolutions);
             }
 
             let floor = opts

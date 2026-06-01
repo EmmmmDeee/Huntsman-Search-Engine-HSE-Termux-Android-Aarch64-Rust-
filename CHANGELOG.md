@@ -10,6 +10,33 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **Internal: consolidated host normalisation onto one function.** The engine
+  had three copies of "lowercase + strip trailing `.` + strip leading `www.`"
+  (`entity::normalise(Domain)`, a hand-rolled `relation::domain_key`, and the
+  normalise step of `hudsonrock::locator_host`). The latter two now delegate to
+  the single canonical `entity::normalise(&EntityKind::Domain, …)` — the same
+  function that produced the Domain entity values they match against, so they
+  can never drift.
+
+- **Internal: bundled the three live-projection dedup sets into one
+  `LiveDedup`.** The per-scan cross-correlation / timeline / resolution dedup
+  sets were three parallel `HashSet`s threaded through `run_with_ledger` →
+  `run_expansion` → `finalise_scan`, pushing those signatures over clippy's
+  argument-count limit. Bundling them into one value names the concept, threads
+  one parameter, and lets `finalise_scan` drop its `too_many_arguments` waiver.
+  Behaviour-identical.
+
+### Fixed
+
+- **Robustness: UTF-8 panic when title-casing an accented name.** `search_engines`
+  family-name extraction built display names with byte slicing
+  (`name[..1]`/`&name[1..]`) on the operator's target surname and email local
+  part — an accented value (e.g. "Évrard") panics at a non-char boundary, which
+  is process-fatal under `panic=abort`. Replaced with a char-safe `title_case`
+  helper and boundary-safe local-part handling. +regression test.
+
 ### Fixed
 
 - **Robustness: two process-fatal panics on untrusted input removed.** The

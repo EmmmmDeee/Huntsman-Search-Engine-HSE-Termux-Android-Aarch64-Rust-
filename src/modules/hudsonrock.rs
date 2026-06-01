@@ -92,10 +92,11 @@ impl Credential {
         } else {
             raw.split('/').next().unwrap_or(raw).to_string()
         };
-        let mut host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-        if let Some(stripped) = host.strip_prefix("www.") {
-            host = stripped.to_string();
-        }
+        // Canonicalise via the single shared host normaliser (the same
+        // `entity::normalise` that produced the Domain entity values these
+        // pivots will match against): lowercase, strip trailing `.` + leading
+        // `www.`.
+        let host = crate::core::entity::normalise(&EntityKind::Domain, &host);
         // Must look like a domain, and never an app pseudo-host or a bare IP
         // (those are not pivotable Domain entities).
         if host.is_empty()

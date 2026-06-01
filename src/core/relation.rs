@@ -136,18 +136,14 @@ impl Relation {
     }
 }
 
-/// Normalise a host/domain string the same way `EntityKind::Domain` does for
-/// entity values: lowercase, strip a leading `www.`, strip a trailing dot.
-/// Used so an Email/Url's domain matches the stored Domain entity value.
+/// Normalise a host/domain string so an Email/Url's host matches the stored
+/// Domain entity value. Delegates to the **single** canonical normaliser
+/// [`entity::normalise`] for `EntityKind::Domain` (lowercase, strip leading
+/// `www.`, strip trailing dot) — the same function that produced those Domain
+/// values — so the two can never drift (a previous hand-rolled copy here was
+/// a latent drift hazard).
 fn domain_key(raw: &str) -> String {
-    let mut s = raw.trim().to_ascii_lowercase();
-    if let Some(stripped) = s.strip_suffix('.') {
-        s = stripped.to_string();
-    }
-    if let Some(stripped) = s.strip_prefix("www.") {
-        s = stripped.to_string();
-    }
-    s
+    crate::core::entity::normalise(&EntityKind::Domain, raw)
 }
 
 /// Derive the structural relations for a scan's entity set.

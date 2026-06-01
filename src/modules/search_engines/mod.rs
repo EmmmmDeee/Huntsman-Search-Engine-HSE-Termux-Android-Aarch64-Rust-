@@ -861,6 +861,18 @@ fn generate_username_variants(base: &str) -> Vec<String> {
     variants
 }
 
+/// Upper-case the first character of `s` and keep the rest, on a UTF-8
+/// **char** boundary. `s[..1]`/`&s[1..]` byte-slicing panics when the first
+/// character is multi-byte (e.g. an accented surname like "Évrard") — fatal
+/// under `panic=abort`. `chars()` is boundary-safe and empty-safe.
+fn title_case(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
 /// Extract family members from search results: people who share the
 /// target's last name but have a different first name. These are high-
 /// value geolocation and identity leads (same household, same address).
@@ -874,7 +886,9 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
         TargetKind::Email => {
             let local = target.value.split('@').next().unwrap_or("");
             if local.len() >= 5 {
-                local[1..].to_lowercase()
+                // Drop the first char on a UTF-8 boundary (a multi-byte local
+                // part would panic on `local[1..]` under panic=abort).
+                local.chars().skip(1).collect::<String>().to_lowercase()
             } else {
                 return Vec::new();
             }
@@ -914,13 +928,10 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
             if !seen.insert(first.to_string()) {
                 continue;
             }
-            let name = format!(
-                "{}{} {}{}",
-                first[..1].to_uppercase(),
-                &first[1..],
-                lastname[..1].to_uppercase(),
-                &lastname[1..]
-            );
+            // Char-safe title-casing: `lastname` derives from the operator's
+            // target value and can start with a multi-byte char (accented
+            // surname) — byte slicing would panic under panic=abort.
+            let name = format!("{} {}", title_case(first), title_case(&lastname));
             found.push((name, r.url.clone()));
         }
     }
@@ -1347,6 +1358,19 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn title_case_is_utf8_boundary_safe() {
+        // ASCII: first char upper, rest preserved.
+        assert_eq!(title_case("smith"), "Smith");
+        // Multi-byte first char (would panic on `s[..1]`/`&s[1..]`): must not
+        // panic and must upper-case the whole grapheme.
+        assert_eq!(title_case("évrard"), "Évrard");
+        assert_eq!(title_case("île"), "Île");
+        // Degenerate inputs are safe.
+        assert_eq!(title_case(""), "");
+        assert_eq!(title_case("é"), "É");
+    }
 
     #[test]
     fn accepts_all_supported_kinds() {
