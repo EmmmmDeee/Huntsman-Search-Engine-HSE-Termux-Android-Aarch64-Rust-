@@ -1134,6 +1134,67 @@ async fn spa_references_only_served_static_assets() {
     }
 }
 
+#[tokio::test]
+async fn spa_api_client_calls_are_all_defined() {
+    // Internal JS wiring guard: every `API.<name>` the SPA *calls* must also be
+    // *defined* on the `const API = {…}` client object. A call to an undefined
+    // method is a TypeError at click time — a dead button no Rust *route* test
+    // catches (the route can exist while the JS helper is missing/misspelled).
+    // Pure static scan of the served document; no JS engine, no browser.
+    let app = test_app("spa-api-client");
+    let (status, html) = fetch_text(&app, "/").await;
+    assert_eq!(status, http::StatusCode::OK, "SPA `/` must serve 200");
+
+    // Identifiers written as `API.<name>` — this captures call sites
+    // (`API.foo(`, `API.csvUrl(`) but NOT the object-literal definitions
+    // (which are bare `foo:` / `async foo(`), so the two sets are independent.
+    let called: std::collections::BTreeSet<String> =
+        segments_after(&html, "API.", |c| c.is_ascii_alphanumeric() || c == '_')
+            .into_iter()
+            .collect();
+    assert!(
+        called.len() > 5,
+        "expected several API.* call sites in the SPA, found {called:?}"
+    );
+
+    // Members of the `const API = { … }` object literal: a member is either
+    // `name:` (arrow/value form) or `async name(` / `name(` (method form).
+    // Scan from the `const API` line and STOP at the literal's closing `};`,
+    // so members of any later object/function can't be mistaken for API
+    // methods (which would mask a genuinely-undefined call). Iterating lines
+    // (not a byte-sliced window) also avoids slicing through a multi-byte char
+    // — the SPA contains non-ASCII (`…`, `→`, `⚠️`) that a raw offset could
+    // split, panicking the test.
+    let start = html.find("const API").expect("SPA must define `const API`");
+    let mut defined: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for line in html[start..].lines().skip(1) {
+        let t = line.trim_start();
+        if t.starts_with("};") {
+            break; // end of the API object literal
+        }
+        let cand = t.strip_prefix("async ").unwrap_or(t);
+        if let Some(end) = cand.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            let name = &cand[..end];
+            let rest = cand[end..].trim_start();
+            if !name.is_empty() && (rest.starts_with(':') || rest.starts_with('(')) {
+                defined.insert(name.to_string());
+            }
+        }
+    }
+    assert!(
+        defined.len() > 5,
+        "expected to parse several API members, found {defined:?} — \
+         object-literal scan boundary may be wrong"
+    );
+
+    let missing: Vec<&String> = called.iter().filter(|c| !defined.contains(*c)).collect();
+    assert!(
+        missing.is_empty(),
+        "SPA calls API methods that are never defined on the API client \
+         (dead buttons): {missing:?}",
+    );
+}
+
 // ── Live event stream (SSE) contract ────────────────────────────────────────
 
 #[tokio::test]
