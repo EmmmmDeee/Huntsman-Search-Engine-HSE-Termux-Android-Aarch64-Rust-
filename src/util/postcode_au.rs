@@ -61,16 +61,54 @@ fn from_resp(resp: &ZippoResp) -> Vec<Locality> {
         .collect()
 }
 
-/// Resolve an AU postcode to its localities. Best-effort: returns an empty list
-/// on any HTTP/parse failure (so callers fall back to the bare postcode).
+/// Offline fallback gazetteer for a small set of pre-validated AU postcodes,
+/// consulted only when the Zippopotam network lookup returns nothing — the
+/// common case on a flaky Termux mobile connection (live device transcripts
+/// showed network geo modules timing out repeatedly, which would otherwise make
+/// an operator's *validated-accurate* locality geo silently vanish offline).
+///
+/// Coordinates here are the SAME postcode centroids Zippopotam serves, so an
+/// offline resolve matches an online one rather than diverging — this only adds
+/// resilience, never a second source of truth. Any postcode not in the table
+/// yields an empty list, so the caller degrades to the bare postcode exactly as
+/// before. Deliberately tiny and conservative: each entry is a locality whose
+/// coordinates have been ground-truth confirmed, not a guessed gazetteer.
+fn offline_fallback(postcode: &str) -> Vec<Locality> {
+    let mk = |suburb: &str, lat: f64, lon: f64| Locality {
+        suburb: suburb.to_string(),
+        lat,
+        lon,
+    };
+    match postcode {
+        // QLD 4552 — Sunshine Coast hinterland. Maleny/Booroobin share the
+        // postcode centroid (as Zippopotam serves them); Conondale is distinct.
+        "4552" => vec![
+            mk("Maleny", -26.729, 152.7554),
+            mk("Booroobin", -26.729, 152.7554),
+            mk("Conondale", -26.7333, 152.7167),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// Resolve an AU postcode to its localities. Best-effort: a network/parse
+/// failure falls back to the offline gazetteer ([`offline_fallback`]) and, for
+/// postcodes outside it, to an empty list (so callers degrade to the bare
+/// postcode). The online Zippopotam result is always preferred when present.
 pub async fn localities(http: &reqwest::Client, postcode: &str) -> Vec<Locality> {
     if postcode.len() != 4 || !postcode.bytes().all(|b| b.is_ascii_digit()) {
         return Vec::new();
     }
     let url = format!("https://api.zippopotam.us/au/{postcode}");
-    match crate::util::http::fetch_json::<ZippoResp>(http, "postcode_au", &url).await {
+    let online = match crate::util::http::fetch_json::<ZippoResp>(http, "postcode_au", &url).await {
         Ok(resp) => from_resp(&resp),
         Err(_) => Vec::new(),
+    };
+    if online.is_empty() {
+        // Network unreachable or empty body → keep the validated region geo.
+        offline_fallback(postcode)
+    } else {
+        online
     }
 }
 
@@ -98,6 +136,24 @@ mod tests {
         assert!(locs.iter().any(|l| l.suburb == "Booroobin"));
         // Conondale has its own distinct centroid.
         assert!((locs[2].lat - -26.7333).abs() < 1e-6);
+    }
+
+    #[test]
+    fn offline_fallback_keeps_validated_4552_geo() {
+        // When the network gazetteer is unreachable, the ground-truth-confirmed
+        // Sunshine Coast hinterland localities must still resolve (Maleny,
+        // Booroobin, Conondale) so an operator's accurate geo survives offline.
+        let locs = offline_fallback("4552");
+        assert_eq!(locs.len(), 3);
+        assert!(locs.iter().any(|l| l.suburb == "Maleny"));
+        assert!(locs.iter().any(|l| l.suburb == "Booroobin"));
+        assert!(locs.iter().any(|l| l.suburb == "Conondale"));
+        // Centroids match the online Zippopotam values (offline == online).
+        let maleny = locs.iter().find(|l| l.suburb == "Maleny").unwrap();
+        assert!((maleny.lat - -26.729).abs() < 1e-6 && (maleny.lon - 152.7554).abs() < 1e-6);
+        // Unknown postcodes stay empty → caller degrades to the bare postcode.
+        assert!(offline_fallback("2000").is_empty());
+        assert!(offline_fallback("9999").is_empty());
     }
 
     #[test]
