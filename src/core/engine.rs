@@ -123,9 +123,15 @@ impl EventEmitter {
         if let Err(e) = self.store.insert_event(&event) {
             warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
         }
-        if self.bus.send(event).is_err() {
-            tracing::trace!(scan_id, "broadcast dropped (no subscribers)");
-        }
+        // Best-effort live fan-out to SSE subscribers. `broadcast::send` errors
+        // ONLY when there are zero active receivers — the normal case for a CLI
+        // scan with no `/events` client attached. The event is already durably
+        // persisted above (and the CLI/report reads from the store, not the
+        // bus), so a missing subscriber is a no-op, NOT a condition worth
+        // logging: at the default TRACE verbosity a per-event log here floods
+        // the terminal with one line per entity — hundreds on a breach-heavy
+        // scan — burying the real output. Drop silently.
+        let _ = self.bus.send(event);
     }
 }
 

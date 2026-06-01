@@ -10,6 +10,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Log flood on CLI scans.** Every event emission logged `broadcast dropped
+  (no subscribers)` at TRACE when no SSE client was attached — the normal case
+  for `hse scan`/`live` from the terminal — producing one line per entity
+  (hundreds on a breach-heavy scan) that buried the real output. The event is
+  already durably persisted (the CLI reads the store, not the bus), so a missing
+  live subscriber is now a silent no-op.
+
 ### Added
 
 - **Prebuilt-binary fast path in `install.sh` (primary; build is the fallback).**
