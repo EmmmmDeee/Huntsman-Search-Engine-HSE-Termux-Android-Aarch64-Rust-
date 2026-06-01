@@ -10,6 +10,8 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-06-01
+
 ### Added
 
 - **Self-validation harness** (`hse selftest`, `GET /api/v1/selftest`, and a
