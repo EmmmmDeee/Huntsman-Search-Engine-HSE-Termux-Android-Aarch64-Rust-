@@ -173,6 +173,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
     port-in-use case is the common on-device cause). New unit tests for normalisation, loopback
     detection, and the error hints.
 
+- **Proxy pool hardened (fault-tree pass on `src/util/proxy.rs`).** Four faults
+  in the free-proxy harvester/validator:
+  - **SSRF (B1):** harvested candidates were only length/`:`-checked, so a poisoned
+    source could inject `127.0.0.1` / `169.254.169.254` / RFC1918 endpoints that
+    the fetcher would then `curl -x` through (proxying via a local/internal
+    service). New `is_public_proxy` filter drops private/reserved/non-numeric
+    hosts at harvest **and** inside `validate` (defence in depth).
+  - **Un-hardened path (B2):** a second, private `curl_get` lacked `--proto` /
+    `--max-filesize` / used strict UTF-8 — replaced with the hardened
+    `util::curl::fetch`, so source fetches inherit the SSRF pin, size cap and
+    lossy decode, and the duplicate is gone.
+  - **Resource exhaustion (B3):** `refresh_pool` spawned one validation task per
+    candidate → dozens of concurrent `curl` processes on a phone. Now
+    semaphore-bounded to 8 concurrent validations.
+  - **Coverage (B4):** added an offline test for the public-proxy filter.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed
