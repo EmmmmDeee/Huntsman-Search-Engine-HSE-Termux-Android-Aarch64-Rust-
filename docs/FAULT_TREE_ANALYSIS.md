@@ -128,7 +128,7 @@ T3
 
 | ID | Description | Likelihood | Impact | Detectability | Mitigation |
 |----|-------------|-----------|--------|---------------|------------|
-| **E3.1** | A module panic aborts the **entire server** because the release profile uses `panic="abort"` (Tokio cannot isolate an abort to one task) | Low | High | Low | ✅ Strong *preventive* panic-freedom: `forbid(unsafe)`, ~0 production `unwrap`, exhaustive `match`es (arch test), clippy `-D warnings`, fuzz-ish detect tests. ⚠ Documented trade-off (size); recommend a supervised restart for `serve` (`hse-bg`/Termux:Boot) and/or a dedicated `panic="unwind"` profile for the server artifact |
+| **E3.1** | A module panic aborts the **entire server** because the release profile uses `panic="abort"` (Tokio cannot isolate an abort to one task) | Low | High | Low | ✅ Strong *preventive* panic-freedom: `forbid(unsafe)`, ~0 production `unwrap`, exhaustive `match`es (arch test), clippy `-D warnings`, fuzz-ish detect tests. **Recovery path today:** the abort exits `serve`; the operator restarts with `hse-bg start`, and Termux:Boot relaunches it on device reboot (neither is restart-*on-crash*). ⚠ Two options remain the maintainer's call: (a) flip `panic="abort"`→`"unwind"` for the server artifact (costs binary size); (b) an auto-restart supervisor in `hse-bg` — **prototyped + lifecycle-tested this cycle but NOT shipped**: a correct, low-latency stop depends on `nohup`/`wait`/signal semantics that couldn't be verified on Termux's bash build, and a naïve loop has up-to-30 s stop latency during crash-backoff + an orphan-respawn risk. Not worth shipping unverified to battery-constrained devices |
 | B3.2.1 | Blocking on a 2-thread runtime | Low | Medium | Medium | ✅ Fully async I/O (reqwest/hickory); SQLite calls are short; per-module `tokio::timeout` |
 | B3.2.2 | SSE backpressure | Low | Medium | Medium | ✅ `broadcast` channel (bounded, lagging receivers drop frames, never block producers); history endpoint backfills |
 | E3.3 | Bind fails | Low | Low | High | ✅ Bind error surfaced as a clean `Error::Other("bind …")` and non-zero exit |
@@ -325,11 +325,20 @@ deterministic UIDs, graceful shutdown, prebuilt + fast build paths.
   remediation applies, and none is performed.
 
 **Open / recommended (⚠)**
-1. **E3.1 / SPOF #2** — bound a module panic's blast radius on `serve`. The fix
-   (flip `panic="abort"`→`"unwind"`, or a dedicated server profile) trades away
-   binary size — a deliberate maintainer choice — so it is **left for the
-   maintainer to decide**, not changed here. This is the sole remaining
-   actionable FTA item; every other finding is mitigated or an accepted risk.
+1. **E3.1 / SPOF #2** — bound a module panic's blast radius on `serve`. Two
+   options, both deliberately **left for the maintainer**:
+   - flip `panic="abort"`→`"unwind"` (or a dedicated server profile) — trades
+     away binary size, a deliberate choice;
+   - an `hse-bg` auto-restart supervisor — **prototyped and lifecycle-tested
+     this cycle, then reverted unshipped**: prompt/clean `stop` depends on
+     `nohup`/`wait`/signal semantics unverifiable on Termux's bash from CI, and
+     a naïve loop has up-to-30 s stop latency in crash-backoff + an
+     orphan-respawn risk on a battery-constrained device. The known-good
+     single-shot wrapper is retained; restart is manual (`hse-bg start`) or on
+     reboot (Termux:Boot).
+
+   This is the sole remaining actionable FTA item; every other finding is
+   mitigated or a recorded accepted risk.
 
 *Generated as part of the system audit; the trees reflect the codebase at the
 head of branch `claude/hopeful-einstein-3GECc`.*
