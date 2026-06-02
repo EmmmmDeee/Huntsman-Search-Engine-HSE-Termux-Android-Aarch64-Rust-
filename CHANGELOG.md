@@ -189,6 +189,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
     semaphore-bounded to 8 concurrent validations.
   - **Coverage (B4):** added an offline test for the public-proxy filter.
 
+- **SSRF foundation closed against IPv4-in-IPv6 bypasses (fault-tree pass on
+  `src/util/preflight.rs`).** `is_private_addr` — the predicate every SSRF guard
+  (HTTP DNS filter, curl pin, proxy filter, serve loopback check) now relies on —
+  classified v6 forms that *embed* a routable IPv4 as public:
+  - **NAT64 `64:ff9b::/96`** — Android cellular networks commonly run NAT64/464XLAT,
+    so a host resolving to `64:ff9b::<private-v4>` (e.g. `…::a9fe:a9fe` =
+    `169.254.169.254`) routed to the embedded internal address while being treated
+    as public. **Now decoded and judged by the IPv4 rules** (the highest-impact,
+    environment-specific gap).
+  - **6to4 `2002::/16`** and deprecated **IPv4-compatible `::a.b.c.d`** embedded-v4
+    likewise decoded (IPv4-mapped `::ffff:` was already handled via `to_canonical`).
+  - **`0.0.0.0/8`** ("this network") now fully covered, not just `0.0.0.0` — the
+    doc had claimed `/8` while the code only caught the single unspecified address.
+  New tests for NAT64 / 6to4 / IPv4-compatible (private embedded → rejected, public
+  embedded → allowed) and the `0.0.0.0/8` range.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed
