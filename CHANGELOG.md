@@ -94,6 +94,27 @@ versions can include breaking changes; patch versions are bug-fix-only.
   surfaced. Platform-scaffolding exclusion (S-E1) and inferred quarantine (S-D1)
   remain as follow-ups.)*
 
+- **A panicking module can no longer abort the whole process (error-tree
+  ECS-1).** Every module's `process()` now runs behind
+  `engine::run_module_guarded`, which wraps the timed future in
+  `std::panic::catch_unwind` and maps a panic to a normal, counted module error
+  — so a hostile or schema-drifted upstream that trips an `unwrap`/out-of-bounds
+  slice is contained exactly like a returned error instead of unwinding into the
+  dispatch loop / a `JoinSet` task. The `release` & `fast` profiles switch
+  `panic = "abort"` → `"unwind"` so the guard can catch (every other size win —
+  opt-level=s, LTO, codegen-units=1, strip — is retained); on a long-lived `hse
+  serve` this closes a remote-DoS vector. Verified live: the `kylo4kylo` scan
+  ran through `github_user`/`pwned_passwords` transport errors with no abort.
+
+- **`username_search` no longer reports a blocked sweep as a confirmed absence
+  (error-tree M6).** It now counts *inconclusive* (blocked / unreachable) vs
+  *definitive* not-found probes; with zero hits **and** ≥50% of the 334 site
+  probes blocked (WAF / rate-limit / no egress) it returns an
+  `inconclusive: N/M …` error instead of a silent `found=0`, and the
+  per-platform summary carries `sites_not_found` / `sites_inconclusive`
+  breakdowns. Verified live: from a blocked IP the `kylo4kylo` sweep now reports
+  `inconclusive: 334/334 …` rather than a misleading zero.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed
