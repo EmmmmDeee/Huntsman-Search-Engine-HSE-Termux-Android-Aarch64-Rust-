@@ -205,6 +205,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   New tests for NAT64 / 6to4 / IPv4-compatible (private embedded → rejected, public
   embedded → allowed) and the `0.0.0.0/8` range.
 
+- **Web-UI asset caching fixed (fault-tree pass on `src/api/routes.rs`).**
+  - **Stale UI after upgrade:** the SPA HTML was served with no `Cache-Control`, so
+    Chrome could heuristically cache it and show an old UI after an `hse` upgrade.
+    Now served `Cache-Control: no-cache` (revalidate each load; the document is
+    tiny and same-origin).
+  - **Wasted mobile bandwidth:** `vendor_handler` set an ETag + `must-revalidate`
+    but never handled `If-None-Match`, so it re-sent the full ~510 KB vendor
+    bundle on every post-`max-age` revalidation (the ETag was decorative). It now
+    answers a matching conditional request with **304 Not Modified** (new
+    `if_none_match_hit` helper, unit-tested).
+  - *Noted (not changed here):* `is_loopback_bind` is duplicated in `routes.rs`
+    and `serve.rs` and diverges on the (invalid) port-less `::1` — a candidate for
+    consolidation into a shared helper.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed
