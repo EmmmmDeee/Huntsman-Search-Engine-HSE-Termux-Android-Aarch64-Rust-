@@ -1625,6 +1625,44 @@ fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
 mod tests {
     use super::*;
 
+    /// FTA invariant (cuts MCS-A): the local/environmental sensor modules read
+    /// the OPERATOR's own device/network, so they must never engage on a
+    /// remote-subject seed — otherwise the operator's GPS/Wi-Fi/cell/LAN data is
+    /// attributed to the subject (e.g. a device GPS fix surfacing as the
+    /// subject's Verified location on a `name` scan). They run only on a
+    /// deliberately-local seed (coordinates / MAC). Pinning the whole gate set
+    /// here stops a future sensor module silently reopening the cut.
+    #[test]
+    fn local_passive_sensor_modules_reject_remote_subject_seeds() {
+        use crate::core::scan::{Target, TargetKind};
+        let reg = crate::modules::registry();
+        for name in LOCAL_PASSIVE_MODULES {
+            let m = reg
+                .iter()
+                .find(|m| m.name() == *name)
+                .unwrap_or_else(|| panic!("{name} not in registry"));
+            for k in [
+                TargetKind::FullName,
+                TargetKind::Email,
+                TargetKind::Username,
+                TargetKind::Phone,
+                TargetKind::Domain,
+                TargetKind::IpAddress,
+                TargetKind::Url,
+                TargetKind::Organisation,
+            ] {
+                assert!(
+                    !m.accepts(&Target::new(k, "x")),
+                    "{name} must reject remote-subject seed {k:?} (fault-tree MCS-A)"
+                );
+            }
+            assert!(
+                m.accepts(&Target::new(TargetKind::Coordinates, "-27.47,153.02")),
+                "{name} must still engage on a deliberately-local coordinates seed"
+            );
+        }
+    }
+
     #[test]
     fn termux_cap_bounds_long_modules_only_on_termux_without_override() {
         // Desktop (not Termux): full timeout preserved, even 120 s.

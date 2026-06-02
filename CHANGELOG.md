@@ -69,6 +69,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   Verified). The SPA now mirrors `c_effective` exactly, so the tier you see in
   Browse matches the engine, the Correlations view and the CSV.
 
+- **Operator's own device data no longer attributed to the subject (fault-tree
+  cut set MCS-A).** The local sensor modules — `device_sensors`, `wifi_intel`,
+  `cell_intel`, `local_net` — had `accepts(_) -> true`, so the **seed round** of
+  *every* scan ran them and injected the **operator's** GPS, Wi-Fi APs, cell
+  towers and ARP table into the **subject's** graph (e.g. a precise device GPS
+  fix surfacing as the subject's `Verified` location on a `name` scan). They now
+  engage only on a deliberately-local seed (`coordinates` / `mac`); expansion was
+  already gated for `LOCAL_PASSIVE_MODULES`, so this closes the seed-round path
+  without affecting explicit local/RF recon. Pinned by per-module scoping tests
+  and a registry-level invariant so a future sensor module can't reopen the cut.
+  *(Solution-tree node S-A1 — the dominant residual the fault-tree analysis
+  surfaced. Platform-scaffolding exclusion (S-E1) and inferred quarantine (S-D1)
+  remain as follow-ups.)*
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed
