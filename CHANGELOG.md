@@ -53,6 +53,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
     second source lifts it and AU-035 fires). Recurse on permutations with
     `--min-expand-confidence 0.35`.
 
+  - **Regression-guarded.** A ground-truth correlator test reconstructs the
+    operator's `name` scan and pins it at the four real correlations (person
+    corroboration, peekyou infra consensus + AU-003, local Wi-Fi) — never the
+    28 the `geo_normalize` phantom source used to fabricate — and asserts AU-003
+    never flags a coarse geo entity. A `name_intel` test pins every derived
+    handle in the Candidate tier.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed

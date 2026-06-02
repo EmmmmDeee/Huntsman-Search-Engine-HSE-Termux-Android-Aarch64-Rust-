@@ -695,6 +695,32 @@ mod tests {
     }
 
     #[test]
+    fn derived_usernames_stay_below_the_probable_floor() {
+        // Derived handles are unconfirmed guesses — every one must classify as
+        // Candidate (c_eff < 0.40) until a discovery module corroborates it, per
+        // name_intel's documented "low-confidence candidate" contract. Guards
+        // every handle weight (incl. W_PRIMARY) against drifting back over the
+        // 0.40 floor, where a pure guess would masquerade as a Probable finding.
+        use crate::core::entity::{Classification, Entity, EntityKind};
+        let handles = usernames(&p("Jordan Leigh Meyers 1987"));
+        let max_w = handles.iter().map(|u| u.weight).fold(0.0_f64, f64::max);
+        assert!(
+            max_w < 0.40,
+            "strongest derived handle weight {max_w} must stay below the 0.40 Probable floor"
+        );
+        for u in &handles {
+            let e = Entity::new(EntityKind::Username, &u.handle, u.weight, "s");
+            assert_eq!(
+                e.classify(),
+                Classification::Candidate,
+                "derived handle '{}' (w={}) must stay a Candidate",
+                u.handle,
+                u.weight
+            );
+        }
+    }
+
+    #[test]
     fn emails_cross_logins_and_domains() {
         let domains = vec!["gmail.com".to_string(), "proton.me".to_string()];
         let e = emails(&p("Jordan Meyers"), &domains);
