@@ -1,0 +1,51 @@
+name: Security audit
+
+# Advisory-only supply-chain check (FTA finding E2.5): reports RUSTSEC
+# vulnerabilities in the locked dependency graph. Deliberately a SEPARATE
+# workflow from ci.yml and NOT wired as a required check — a freshly published
+# advisory in a transitive dependency must not block an unrelated feature PR.
+# It surfaces here on the weekly schedule, on any dependency change, and on
+# manual dispatch instead.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Mondays 06:00 UTC
+  workflow_dispatch:
+  push:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/audit.yml'
+
+# Least privilege: the job only reads the checked-out tree + the public
+# advisory DB. No write scopes.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: cargo audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Install cargo-audit directly rather than via a third-party action —
+      # mirrors ci.yml's choice to call shellcheck directly after a
+      # master-pinned action drift broke an unrelated job (see ci.yml).
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # Exits non-zero on any RUSTSEC vulnerability in the locked graph.
+      # Unmaintained / yanked crates print as warnings without failing the run.
+      - name: Audit dependencies
+        run: cargo audit

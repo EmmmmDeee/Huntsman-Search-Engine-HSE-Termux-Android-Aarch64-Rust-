@@ -110,7 +110,7 @@ T2
 | B2.3.2 | SSRF (crawler follows attacker-controlled discovered links) | Low | Medium | Medium | ✅ **Comprehensive TOCTOU-safe defense already in place** (`util::http::build_client`): the `SsrfResolver` custom DNS resolver drops every private/reserved *resolved* address (loopback, RFC1918, 169.254 metadata, CGNAT, ULA, link-local) so reqwest can only connect to a public IP — this defeats internal hostnames **and** DNS-rebinding, not just IP literals; a redirect policy refuses 3xx hops onto private IPs; the `util::curl` fallback resolve-pins identically. Applied to every module's `ctx.http`, including the crawler's discovered-link fetches. Unit-tested (`ssrf_dns_filter_drops_private_and_metadata`) |
 | B2.3.3 | Path traversal | Very Low | Medium | High | ✅ Vendor handler matches an exact filename allowlist; `Path<String>` does not decode slashes |
 | E2.4 | Key leakage | Low | High | Medium | ✅ `.huntsman.env` git-ignored; keys live in `$HOME`; `/settings/keys` + `/keys/status` never return values; logs never print keys |
-| E2.5 | Supply-chain | Low | High | Low | ✅ `--locked` builds; rustls-only; minimal native surface. ⚠ Recommend a scheduled `cargo audit`/`cargo-deny` advisory job (non-blocking) |
+| E2.5 | Supply-chain | Low | High | Medium | ✅ `--locked` builds; rustls-only; minimal native surface. ⚒ `.github/workflows/audit.yml` runs `cargo audit` (RustSec advisories) weekly + on every dependency change + on dispatch; advisory-only (separate workflow, not a required check) so a new transitive advisory surfaces without blocking feature PRs |
 
 ---
 
@@ -302,6 +302,7 @@ T11
 2. Unified auto-detected scan: `TargetKind::detect`, optional `kind` across CLI/API/live/SPA, with exhaustive tests. *(commit `934cbc8`)*
 3. Web security headers: CSP (`default-src`/`connect-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`) + `X-Content-Type-Options: nosniff` + `X-Frame-Options: DENY` + `Referrer-Policy: no-referrer` on every response, via an outermost `map_response` layer; integration-tested on API + SPA. *(B2.2.1 / E11.1)*
 4. Storage integrity diagnostic: `hse doctor` now runs `PRAGMA integrity_check` and reports the WAL high-water size, so on-disk corruption is detected explicitly. *(E5.1)*
+5. Supply-chain advisory CI: `.github/workflows/audit.yml` runs `cargo audit` weekly + on dependency change + on dispatch; advisory-only (not a required check). *(E2.5)*
 
 **Strong pre-existing controls (✅)** — `forbid(unsafe)`, CI-enforced layering +
 no-silent-drift invariants, loopback bind + hardened CORS, **TOCTOU-safe SSRF
@@ -323,10 +324,12 @@ deterministic UIDs, graceful shutdown, prebuilt + fast build paths.
   Visibility) if the data should not be world-readable. No code-level
   remediation applies, and none is performed.
 
-**Open / recommended (⚠), priority order**
-1. **E3.1 / SPOF #2** — document the supervised-restart expectation for `serve`,
-   or add a `panic="unwind"` server profile, to bound a module panic's blast radius.
-2. **E2.5** — scheduled, non-blocking `cargo audit`/`cargo-deny` advisory CI job.
+**Open / recommended (⚠)**
+1. **E3.1 / SPOF #2** — bound a module panic's blast radius on `serve`. The fix
+   (flip `panic="abort"`→`"unwind"`, or a dedicated server profile) trades away
+   binary size — a deliberate maintainer choice — so it is **left for the
+   maintainer to decide**, not changed here. This is the sole remaining
+   actionable FTA item; every other finding is mitigated or an accepted risk.
 
 *Generated as part of the system audit; the trees reflect the codebase at the
 head of branch `claude/hopeful-einstein-3GECc`.*
