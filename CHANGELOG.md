@@ -159,6 +159,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
     is the redirect-vetted primary; fully closing it needs a Rust-side redirect
     loop rather than disabling the redirects the search engines rely on.
 
+- **`hse serve` hardened (fault-tree pass on `src/cli/serve.rs` — the localhost web-UI server).**
+  - The startup self-test now runs in a **background task** so the server binds and serves
+    immediately instead of blocking on it — the Chrome UI is reachable at once on a low-power device.
+  - A `localhost:<port>` bind is pinned to `127.0.0.1:<port>`: `TcpListener` binds a single resolved
+    address, so `localhost`→`::1` while Chrome connects to `127.0.0.1` (or vice-versa) was a silent
+    "can't connect".
+  - Binding a **non-loopback** address now logs a prominent LAN-exposure warning (the localhost-only
+    bind is the architecture invariant).
+  - Shutdown-signal handlers **degrade gracefully** (log + pend) instead of panicking when a handler
+    can't be installed — a failed install no longer crashes the server.
+  - `bind` failures carry **actionable hints** (port-in-use / permission / address-not-available — the
+    port-in-use case is the common on-device cause). New unit tests for normalisation, loopback
+    detection, and the error hints.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed
