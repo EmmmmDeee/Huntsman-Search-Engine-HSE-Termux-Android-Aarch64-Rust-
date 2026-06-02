@@ -115,6 +115,27 @@ versions can include breaking changes; patch versions are bug-fix-only.
   breakdowns. Verified live: from a blocked IP the `kylo4kylo` sweep now reports
   `inconclusive: 334/334 …` rather than a misleading zero.
 
+- **HTTP foundation hardened (fault-tree pass on `src/util/http.rs`, the client
+  every network module sits on).** Five faults:
+  - **OOM (F-A):** `fetch_json` / `fetch_keyed_json` / `json_scanned` buffered the
+    *entire* body via `resp.text()` — the exact multi-GB risk `read_body_capped`
+    / `error_snippet` already guard, but the JSON paths didn't. Now streamed
+    through a 32 MiB cap that errors past the ceiling.
+  - **Masked outage (F-B):** a reqwest transport failure that fell through to the
+    curl fallback and *also* failed returned `Ok(None)` — which
+    `fetch_json_or_404` callers (HudsonRock, Gravatar, OTX, XposedOrNot, BGPView)
+    read as a definitive "not found", silently turning a network outage into a
+    clean empty result. Now a proper error.
+  - **Latent panic (F-C):** the 429 log sliced the key by *byte* index
+    (`&key[len-4..]`), which panics when a non-ASCII (harvested) key splits a
+    UTF-8 char. Replaced with a char-safe `key_tail`.
+  - **Robustness (F-D):** `error_snippet` reported a readable body as
+    `<unreadable>` when the 8 KiB cap split a multibyte char — now lossy-decoded.
+  - **Doc (F-E):** corrected the `redact_credentials` `key=` comment to match its
+    actual (deliberately over-redacting, safe-direction) behaviour.
+  New unit tests for the char-safe tail and the redaction behaviour; full suite +
+  `clippy -D warnings` green.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed
