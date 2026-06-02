@@ -21,6 +21,7 @@ hse --version Print version
 ## `hse scan` — full reference
 
 ```
+hse scan [OPTIONS] --value <VALUE>          # unified scan: kind auto-detected
 hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 ```
 
@@ -28,8 +29,13 @@ hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 
 | Flag | Description |
 |------|-------------|
-| `-k, --kind <KIND>`   | Target type: `email`, `username`, `phone`, `name`, `ip`, `domain`, `asn`, `coords`, `address` |
 | `-v, --value <VALUE>` | Target value (e.g. `example.com`, `foo@bar.com`) |
+
+### Target kind
+
+| Flag | Description |
+|------|-------------|
+| `-k, --kind <KIND>`   | Target type: `email`, `username`, `phone`, `name`, `ip`, `domain`, `url`, `asn`, `coords`, `address`, `org`, `abn`, `mac`, `apikey`. **Optional** — omit it (or pass `auto`) and HSE infers the kind from the value's shape (the unified scan), printing the detected kind to stderr. An explicit `--kind` always wins; pass it to force a kind the detector wouldn't pick (e.g. `apikey`, or `username` for a dotted handle). |
 
 ### Module selection
 
@@ -72,7 +78,14 @@ hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 ### Example invocations
 
 ```bash
-# Plain single-shot scan against a domain
+# Unified scan — no --kind; HSE detects the type from the value
+hse scan -v example.com              # → domain
+hse scan -v alice@example.com        # → email
+hse scan -v 8.8.8.8                  # → ip_address
+hse scan -v "Matthew Diegmann"       # → full_name
+hse scan -v AS13335                  # → asn
+
+# Plain single-shot scan against a domain (explicit kind)
 hse scan --kind domain --value example.com
 
 # Only run two specific modules, throttle, JSON output
@@ -219,7 +232,7 @@ All endpoints are under `/api/v1/`.
 | GET    | `/keys/status`             | `{ count, services: [{ service, total, active, rate_limited, exhausted, invalid, untested, uses, errors }, ...] }` — key-pool quota health, **never key values**. |
 | GET    | `/settings/keys`           | `{ keys: [{ name, set }], count, write_enabled, env_path }` — which `HUNTSMAN_*` keys are configured, **never their values**. Drives the Settings page. |
 | PUT    | `/settings/keys`           | Body `{ updates: { "HUNTSMAN_X": "val", ... }, deletes: ["HUNTSMAN_Y", ...] }`. Atomically writes `~/.huntsman.env` (preserves comments). **Loopback-only**, enabled by default (`--no-key-write` to disable). Powers "paste & save a key" in the UI. |
-| POST   | `/scans`                   | Body: `ScanRequest` (`{ kind, value, options? }`). Returns `202 { scan_id, status }`. |
+| POST   | `/scans`                   | Body: `ScanRequest` (`{ kind?, value, options? }`). Returns `202 { scan_id, status }`. **`kind` is optional** — omit it and the server auto-detects the target type from `value` (the unified scan). |
 | GET    | `/scans`                   | 200 most recent scans. |
 | GET    | `/scans/{id}`              | Single scan record. 404 if unknown. |
 | GET    | `/scans/{id}/entities`     | `{ count, entities: [Entity, ...] }`. |
@@ -269,6 +282,12 @@ curl -X POST -H 'Content-Type: application/json' \
   http://127.0.0.1:8080/api/v1/scans
 # → {"scan_id":"abc...","status":"queued"}
 
+# Unified scan — omit "kind" and the server detects it from "value":
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"value":"alice@example.com"}' \
+  http://127.0.0.1:8080/api/v1/scans
+# → {"scan_id":"def...","status":"queued"}   (detected kind: email)
+
 curl -N http://127.0.0.1:8080/api/v1/scans/abc.../events
 # (stays open, streams SSE)
 ```
@@ -283,11 +302,15 @@ owns the spawned scans and demultiplexes their events through one SSE
 stream.
 
 ```
+hse live --value <VALUE>                    # kind auto-detected
 hse live --kind <KIND> --value <VALUE>
          [--interval <SECS>] [--iterations <N>]
          [--depth <N>] [--modules <CSV>]
          [--free-only] [--passive-only]
 ```
+
+`--kind` is optional here too — omit it (or pass `auto`) to infer the
+target type from the value, exactly like `hse scan`.
 
 | Flag | Default | Notes |
 |------|---------|-------|

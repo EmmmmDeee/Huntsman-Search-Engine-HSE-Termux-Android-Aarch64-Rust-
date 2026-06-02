@@ -101,6 +101,194 @@ impl TargetKind {
             Self::MacAddress => "mac_address",
         }
     }
+
+    /// Best-effort classification of a raw target value into a [`TargetKind`].
+    /// Powers the **unified scan** path: the operator supplies only a value and
+    /// the kind is inferred from its shape (`hse scan -v <value>`; a `ScanRequest`
+    /// or `LiveRequest` with no `kind`).
+    ///
+    /// Ordered most-specific → least, so a value matching several shapes
+    /// resolves to the most informative kind (e.g. `8.8.8.8` is a valid IP *and*
+    /// dotted like a domain → `IpAddress`). Structured kinds are recognised by
+    /// shape; free text falls back to `Organisation` (company suffix) →
+    /// `Address` (street shape) → `FullName` (multiple words) → `Username`
+    /// (single token). **Never fails** — the fallback is always a valid kind —
+    /// so the caller always gets a target to run; [`Target::validate`] still
+    /// gates obviously-bogus values downstream.
+    ///
+    /// `ApiKey` is intentionally NOT auto-detected: its shape overlaps with
+    /// opaque usernames/tokens, and a false positive would route a benign value
+    /// into the key-probe path — so an API-key scan must be requested explicitly
+    /// (`--kind apikey`).
+    pub fn detect(value: &str) -> Self {
+        let v = value.trim();
+        if v.is_empty() {
+            // Lax default; `Target::validate` rejects the empty value anyway.
+            return Self::Username;
+        }
+        let lower = v.to_ascii_lowercase();
+
+        // 1. URL — explicit scheme.
+        if lower.starts_with("http://") || lower.starts_with("https://") {
+            return Self::Url;
+        }
+        // 2. Email — one '@', non-empty local + dotted host, no whitespace.
+        if !v.contains(char::is_whitespace)
+            && let Some((local, host)) = v.split_once('@')
+            && !local.is_empty()
+            && !host.is_empty()
+            && !host.contains('@')
+            && host.contains('.')
+        {
+            return Self::Email;
+        }
+        // 3. IP address (v4/v6).
+        if v.parse::<std::net::IpAddr>().is_ok() {
+            return Self::IpAddress;
+        }
+        // 4. MAC / BSSID — six 2-hex octets separated by ':' or '-'.
+        if is_mac_shaped(v) {
+            return Self::MacAddress;
+        }
+        // 5. Coordinates — "lat,lon", both numeric and in range.
+        if let Some((a, b)) = v.split_once(',')
+            && let (Ok(lat), Ok(lon)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>())
+            && (-90.0..=90.0).contains(&lat)
+            && (-180.0..=180.0).contains(&lon)
+        {
+            return Self::Coordinates;
+        }
+        // 6. ASN — "AS" + digits.
+        if let Some(rest) = lower.strip_prefix("as")
+            && !rest.is_empty()
+            && rest.chars().all(|c| c.is_ascii_digit())
+        {
+            return Self::Asn;
+        }
+        // 7. ABN / ACN — 11- or 9-digit registry numbers, checksum-validated so
+        //    a same-length phone number can't masquerade as one.
+        if v.chars().all(|c| c.is_ascii_digit() || c == ' ') {
+            let digits = v.chars().filter(char::is_ascii_digit).count();
+            if (digits == 11 && crate::util::abn::is_valid_abn(v))
+                || (digits == 9 && crate::util::abn::is_valid_acn(v))
+            {
+                return Self::AbnAcn;
+            }
+        }
+        // 8. Phone — '+' country code or a punctuated digit run, no letters.
+        if is_phone_shaped(v) {
+            return Self::Phone;
+        }
+        // 9. Domain — no whitespace/'@', a dot, valid labels, alpha TLD.
+        if is_domain_shaped(v) {
+            return Self::Domain;
+        }
+        // 10. Free text → Organisation / Address / FullName / Username.
+        if has_company_suffix(&lower) {
+            return Self::Organisation;
+        }
+        if is_address_shaped(v) {
+            return Self::Address;
+        }
+        if v.split_whitespace().count() >= 2 {
+            return Self::FullName;
+        }
+        Self::Username
+    }
+}
+
+/// Six 2-hex-digit octets joined by ':' or '-' (`aa:bb:cc:dd:ee:ff`). A 6-group
+/// colon form is not a valid IPv6 address (which needs 8 groups or `::`), so the
+/// IP check ahead of this in [`TargetKind::detect`] never steals a real MAC.
+fn is_mac_shaped(v: &str) -> bool {
+    let sep = if v.contains(':') {
+        ':'
+    } else if v.contains('-') {
+        '-'
+    } else {
+        return false;
+    };
+    let octets: Vec<&str> = v.split(sep).collect();
+    octets.len() == 6
+        && octets
+            .iter()
+            .all(|o| o.len() == 2 && o.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// A dialable phone number: 7–15 digits with only phone punctuation
+/// (`+ - space ( ) .`), and any `+` only as the leading character.
+fn is_phone_shaped(v: &str) -> bool {
+    let digits = v.chars().filter(char::is_ascii_digit).count();
+    if !(7..=15).contains(&digits) {
+        return false;
+    }
+    if !v
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | ' ' | '(' | ')' | '.'))
+    {
+        return false;
+    }
+    // '+' is only valid as the leading character of an international number.
+    !v.contains('+') || v.trim_start().starts_with('+')
+}
+
+/// Domain-name shape: no whitespace/'@', at least one dot, only label chars
+/// (`alnum . - _`), non-empty labels, and a TLD of ≥2 ASCII letters.
+fn is_domain_shaped(v: &str) -> bool {
+    if v.contains(char::is_whitespace) || v.contains('@') || !v.contains('.') {
+        return false;
+    }
+    if !v
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        return false;
+    }
+    let labels: Vec<&str> = v.trim_end_matches('.').split('.').collect();
+    if labels.len() < 2 || labels.iter().any(|l| l.is_empty()) {
+        return false;
+    }
+    match labels.last() {
+        Some(tld) => tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()),
+        None => false,
+    }
+}
+
+/// `value` (already lowercased) ends with a recognised company-form suffix.
+fn has_company_suffix(lower: &str) -> bool {
+    const SUFFIXES: &[&str] = &[
+        " pty ltd",
+        " pty. ltd.",
+        " pty limited",
+        " inc",
+        " inc.",
+        " llc",
+        " l.l.c.",
+        " ltd",
+        " ltd.",
+        " limited",
+        " corp",
+        " corp.",
+        " corporation",
+        " gmbh",
+        " plc",
+        " ag",
+        " s.a.",
+        " b.v.",
+    ];
+    SUFFIXES.iter().any(|s| lower.ends_with(s))
+}
+
+/// Street-address shape: a leading house number, then a space and an alphabetic
+/// word (`123 Main St`, `42 Wallaby Way, Sydney`). Requires the leading number
+/// so it never swallows a bare name; coordinates/phones are matched earlier.
+fn is_address_shaped(v: &str) -> bool {
+    let house = v.bytes().take_while(u8::is_ascii_digit).count();
+    if house == 0 {
+        return false;
+    }
+    let rest = v[house..].trim_start();
+    rest.chars().next().is_some_and(char::is_alphabetic) && v.contains(' ')
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +348,17 @@ impl Target {
             kind,
             value: normalised,
         }
+    }
+
+    /// Build a target by auto-detecting its [`TargetKind`] from the value — the
+    /// **unified scan** entry point. Detection runs on the sanitised value (so
+    /// quotes/stray punctuation don't skew it); sanitisation + normalisation
+    /// then match [`Target::new`]. Returns the resolved kind alongside the
+    /// target so callers can surface it (CLI message, `scan_id`, API response).
+    pub fn detect(value: impl Into<String>) -> Self {
+        let raw: String = value.into();
+        let kind = TargetKind::detect(&sanitise_target_input(&raw));
+        Self::new(kind, raw)
     }
 
     /// Create an entity pre-filled with the target's kind and value.
@@ -356,10 +555,23 @@ impl Scan {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanRequest {
-    pub kind: TargetKind,
+    /// Target kind. `None` (omitted in the request) triggers shape-based
+    /// auto-detection via [`TargetKind::detect`] — the unified-scan path.
+    /// An explicit kind is always honoured as-is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TargetKind>,
     pub value: String,
     #[serde(default)]
     pub options: ScanOptions,
+}
+
+impl ScanRequest {
+    /// Resolve the request's [`TargetKind`]: the explicit kind if supplied,
+    /// otherwise auto-detected from `value`. Single source of truth shared by
+    /// the scan-create, batch and rerun paths so detection can't diverge.
+    pub fn resolved_kind(&self) -> TargetKind {
+        self.kind.unwrap_or_else(|| TargetKind::detect(&self.value))
+    }
 }
 
 /// Per-scan customisation. All fields optional; defaults preserve plain-scan
@@ -1388,12 +1600,125 @@ mod tests {
     #[test]
     fn scan_request_round_trip() {
         let req = ScanRequest {
-            kind: TargetKind::Email,
+            kind: Some(TargetKind::Email),
             value: "x@y.com".into(),
             options: ScanOptions::default(),
         };
         let s = serde_json::to_string(&req).unwrap();
         assert!(s.contains("\"kind\":\"email\""));
+
+        // Omitted kind → None → auto-detected; the field is skipped on the wire.
+        let auto: ScanRequest = serde_json::from_str(r#"{"value":"x@y.com"}"#).unwrap();
+        assert_eq!(auto.kind, None);
+        assert_eq!(auto.resolved_kind(), TargetKind::Email);
+        assert!(!serde_json::to_string(&auto).unwrap().contains("kind"));
+    }
+
+    // ── TargetKind::detect — unified-scan auto-detection ──────────────────────
+
+    #[test]
+    fn detect_classifies_structured_kinds() {
+        use TargetKind::*;
+        let cases = [
+            ("https://example.com/page", Url),
+            ("http://x.io", Url),
+            ("alice@example.com", Email),
+            ("8.8.8.8", IpAddress),
+            ("2001:4860:4860::8888", IpAddress),
+            ("aa:bb:cc:dd:ee:ff", MacAddress),
+            ("AA-BB-CC-DD-EE-FF", MacAddress),
+            ("-33.8688,151.2093", Coordinates),
+            ("AS13335", Asn),
+            ("as15169", Asn),
+            ("51824753556", AbnAcn),    // valid ABN (ATO worked example)
+            ("51 824 753 556", AbnAcn), // spaced ABN
+            ("+61 400 123 456", Phone),
+            ("(07) 3000 1234", Phone),
+            ("example.com", Domain),
+            ("sub.example.co.uk", Domain),
+        ];
+        for (value, want) in cases {
+            assert_eq!(TargetKind::detect(value), want, "detect({value:?})");
+        }
+    }
+
+    #[test]
+    fn detect_classifies_free_text() {
+        use TargetKind::*;
+        assert_eq!(TargetKind::detect("jsmith"), Username);
+        assert_eq!(TargetKind::detect("shinigami_jerome"), Username);
+        assert_eq!(TargetKind::detect("Matthew Diegmann"), FullName);
+        assert_eq!(TargetKind::detect("Acme Pty Ltd"), Organisation);
+        assert_eq!(TargetKind::detect("Globex Corporation"), Organisation);
+        assert_eq!(TargetKind::detect("123 Main St, Springfield"), Address);
+    }
+
+    #[test]
+    fn detect_disambiguates_overlapping_shapes() {
+        // Dotted-but-valid IP beats domain.
+        assert_eq!(TargetKind::detect("8.8.8.8"), TargetKind::IpAddress);
+        // 11 digits that are NOT a valid ABN fall through to phone.
+        assert_eq!(TargetKind::detect("12345678901"), TargetKind::Phone);
+        // A valid ABN of the same length is recognised as the registry id.
+        assert_eq!(TargetKind::detect("51824753556"), TargetKind::AbnAcn);
+    }
+
+    #[test]
+    fn detect_never_panics_on_junk() {
+        let big = "x".repeat(2000);
+        let junk = [
+            "",
+            "   ",
+            "@",
+            "a@b",
+            "...",
+            "::::::",
+            "+",
+            "AS",
+            "9999",
+            "🦀",
+            "a b c d e f",
+            "-",
+            big.as_str(),
+        ];
+        for v in junk {
+            let _ = TargetKind::detect(v); // must not panic
+        }
+    }
+
+    #[test]
+    fn detect_then_validate_round_trips_clean_values() {
+        // A value detected from a clean input must pass Target::validate, so the
+        // unified path never produces a target the engine would reject.
+        // Real (non-placeholder) values: `validate` rejects reserved
+        // documentation domains like example.com, so use live ones here.
+        for v in [
+            "alice@proton.me",
+            "cloudflare.com",
+            "8.8.8.8",
+            "AS13335",
+            "+61400123456",
+            "Matthew Diegmann",
+            "jsmith",
+            "https://cloudflare.com/p",
+        ] {
+            let t = Target::detect(v);
+            assert!(
+                t.validate().is_ok(),
+                "detect+validate failed for {v:?}: {t:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn target_detect_resolves_and_normalises() {
+        let t = Target::detect("Alice@Example.Com");
+        assert_eq!(t.kind, TargetKind::Email);
+        assert_eq!(t.value, "alice@example.com"); // email normalisation lowercases
+        // Quoted name: detection sees through the quotes; value is sanitised.
+        let t2 = Target::detect("\"Matthew Diegmann\"");
+        assert_eq!(t2.kind, TargetKind::FullName);
+        assert_eq!(t2.value, "Matthew Diegmann");
     }
 
     // ── Target::validate ────────────────────────────────────────────────────
