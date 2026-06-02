@@ -107,7 +107,7 @@ T2
 | B2.2.2 | Cross-origin read | Very Low | High | Medium | ✅ CORS bound to the exact `http(s)://<bind>` origin **even on loopback** (a website cannot XHR `127.0.0.1:8080`) |
 | B2.2.3 | Off-host key write | Very Low | High | High | ✅ Unconditional loopback peer check on key-mutation regardless of `--no-key-write` |
 | B2.3.1 | SQLi | Very Low | Critical | High | ✅ `rusqlite` parameterised statements throughout; no string-built SQL |
-| B2.3.2 | SSRF | Medium | Medium | Low | ✅ Target validation rejects placeholder/reserved domains; modules hit fixed third-party endpoints, not arbitrary user URLs (except the explicit `url`/crawler kinds, which is the intended function); loopback/RFC1918 not special-cased — ⚠ recommend an egress denylist for the crawler |
+| B2.3.2 | SSRF (crawler follows attacker-controlled discovered links) | Low | Medium | Medium | ✅ **Comprehensive TOCTOU-safe defense already in place** (`util::http::build_client`): the `SsrfResolver` custom DNS resolver drops every private/reserved *resolved* address (loopback, RFC1918, 169.254 metadata, CGNAT, ULA, link-local) so reqwest can only connect to a public IP — this defeats internal hostnames **and** DNS-rebinding, not just IP literals; a redirect policy refuses 3xx hops onto private IPs; the `util::curl` fallback resolve-pins identically. Applied to every module's `ctx.http`, including the crawler's discovered-link fetches. Unit-tested (`ssrf_dns_filter_drops_private_and_metadata`) |
 | B2.3.3 | Path traversal | Very Low | Medium | High | ✅ Vendor handler matches an exact filename allowlist; `Path<String>` does not decode slashes |
 | E2.4 | Key leakage | Low | High | Medium | ✅ `.huntsman.env` git-ignored; keys live in `$HOME`; `/settings/keys` + `/keys/status` never return values; logs never print keys |
 | E2.5 | Supply-chain | Low | High | Low | ✅ `--locked` builds; rustls-only; minimal native surface. ⚠ Recommend a scheduled `cargo audit`/`cargo-deny` advisory job (non-blocking) |
@@ -291,7 +291,7 @@ T11
 | 2 | `panic="abort"` couples any module panic to total `serve` availability | ⚠ Documented trade-off; preventive controls strong (see E3.1) |
 | 3 | In-repo OSINT output contains third-party PII | ✅ Accepted by design (E2.1); exposure governed by repo visibility, never by redaction |
 | 4 | Scraping detector / selectors track moving third-party targets | ⚒ Hardened + data-driven this cycle; inherently needs upkeep |
-| 5 | No SSRF egress denylist for the `url`/crawler kinds | ⚠ Recommended (B2.3.2) |
+| 5 | Crawler follows attacker-controlled discovered links (SSRF) | ✅ Mitigated — client-level `SsrfResolver` DNS filter + private-IP redirect guard (B2.3.2) |
 
 ---
 
@@ -303,9 +303,16 @@ T11
 3. Web security headers: CSP (`default-src`/`connect-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`) + `X-Content-Type-Options: nosniff` + `X-Frame-Options: DENY` + `Referrer-Policy: no-referrer` on every response, via an outermost `map_response` layer; integration-tested on API + SPA. *(B2.2.1 / E11.1)*
 
 **Strong pre-existing controls (✅)** — `forbid(unsafe)`, CI-enforced layering +
-no-silent-drift invariants, loopback bind + hardened CORS, RAII cancellation,
-concurrency semaphore, per-module timeout floor, deterministic UIDs, graceful
-shutdown, prebuilt + fast build paths.
+no-silent-drift invariants, loopback bind + hardened CORS, **TOCTOU-safe SSRF
+defense** (`SsrfResolver` DNS filter + private-IP redirect guard on every HTTP
+client), RAII cancellation, concurrency semaphore, per-module timeout floor,
+deterministic UIDs, graceful shutdown, prebuilt + fast build paths.
+
+> **Correction (this revision):** an earlier draft listed B2.3.2 as an open
+> "no SSRF egress denylist" gap. That was inaccurate — re-reading
+> `util/http.rs` + `util/preflight.rs` confirmed a comprehensive, unit-tested
+> SSRF defense already exists at the HTTP-client layer (above). The finding is
+> reclassified as a satisfied control; no code change was warranted.
 
 **Accepted risks (maintainer decision)**
 - **E2.1 / E5.3 — in-repo OSINT output contains third-party PII.** Retained
@@ -318,9 +325,8 @@ shutdown, prebuilt + fast build paths.
 **Open / recommended (⚠), priority order**
 1. **E3.1 / SPOF #2** — document the supervised-restart expectation for `serve`,
    or add a `panic="unwind"` server profile, to bound a module panic's blast radius.
-2. **B2.3.2** — egress denylist (loopback/RFC1918/link-local) for the `url`/crawler kinds.
-3. **E2.5** — scheduled, non-blocking `cargo audit`/`cargo-deny` advisory CI job.
-4. **E5.1** — `PRAGMA integrity_check` (+ WAL size report) in `hse doctor`.
+2. **E2.5** — scheduled, non-blocking `cargo audit`/`cargo-deny` advisory CI job.
+3. **E5.1** — `PRAGMA integrity_check` (+ WAL size report) in `hse doctor`.
 
 *Generated as part of the system audit; the trees reflect the codebase at the
 head of branch `claude/hopeful-einstein-3GECc`.*
