@@ -60,6 +60,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
     never flags a coarse geo entity. A `name_intel` test pins every derived
     handle in the Candidate tier.
 
+- **Web UI confidence/tier matched to the engine.** The Browse table computed
+  its effective confidence as the multiplicative boost only, but the backend's
+  authoritative `c_effective()` — which drives the real tier, expansion and CSV
+  export — is the *stronger* of that and an independent-agreement (noisy-OR)
+  term added to the core *after* the SPA, so Browse silently **under-reported**
+  genuinely multi-source entities (showing Probable where the engine classified
+  Verified). The SPA now mirrors `c_effective` exactly, so the tier you see in
+  Browse matches the engine, the Correlations view and the CSV.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed

@@ -381,7 +381,18 @@ function sourceCount(e){
   if(evs.length){const s=new Set();for(const ev of evs){if(ev&&ev.source&&!ENRICHMENT_SOURCES.has(ev.source))s.add(ev.source);}if(s.size)return Math.max(1,s.size);}
   return Math.max(1,e.corroboration??1);
 }
-function effC(e){const c=e.confidence??0;const n=sourceCount(e);return Math.min(1,Math.max(0,c*(1+0.15*Math.log(n))));}
+// Mirror the backend Entity::c_effective(): the STRONGER of the multiplicative
+// boost and the independent-agreement (noisy-OR) term over the distinct
+// corroborating source count n, so Browse tiers/confidence match the engine's
+// authoritative classification + the CSV export instead of under-reporting
+// genuinely multi-source entities. gamma = 0.65 (CORROBORATION_DOUBT_DECAY); at
+// n = 1 both terms equal the base confidence, so single-source rows are unchanged.
+function effC(e){
+  const c=e.confidence??0, n=sourceCount(e);
+  const mult=c*(1+0.15*Math.log(n));
+  const agreement=1-(1-c)*Math.pow(0.65,n-1);
+  return Math.min(1,Math.max(0,Math.max(mult,agreement)));
+}
 function trunc(s,n){s=String(s||'');return s.length>n?s.slice(0,n)+'…':s;}
 /* Linkify http(s) values only (javascript:/data: stay inert escaped text), so
    URL entities and pivot/avatar evidence are clickable — SpiderFoot/NAMINT UX. */
