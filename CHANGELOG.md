@@ -10,6 +10,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **Bounded tokio's blocking-thread pool for Termux (memory footprint).** `main`
+  now builds the runtime by hand and caps `max_blocking_threads` at **16**
+  (tokio's default is **512**), so a burst of synchronous sqlite / filesystem
+  work can't spawn hundreds of OS threads on a low-RAM aarch64 phone. HSE is
+  network/IO-bound on its 2-worker runtime, so the cap never serialises a
+  realistic workload. Together with the sensor-seed scoping below — which stops
+  waking the GPS/Wi-Fi/cell radios on identity scans — this is the session's
+  Termux footprint/battery win.
+
 ### Fixed
 
 - **Coarse geo & name-permutation guesses no longer masquerade as corroborated
