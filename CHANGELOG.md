@@ -136,6 +136,29 @@ versions can include breaking changes; patch versions are bug-fix-only.
   New unit tests for the char-safe tail and the redaction behaviour; full suite +
   `clippy -D warnings` green.
 
+- **curl fallback hardened (fault-tree pass on `src/util/curl.rs`, the subprocess
+  fetch the HTTP layer drops to).** Six faults:
+  - **OOM (B1):** an unbounded `cmd.output()` buffered the entire body — bounded
+    with `--max-filesize` 32 MiB (a no-Content-Length stream stays bounded by the
+    outer timeout + `kill_on_drop`).
+  - **Dropped responses (B2):** strict `from_utf8` discarded any non-UTF-8 body
+    (ISO-8859-1 HTML) as a failure — now lossy-decoded, matching `http.rs`.
+  - **Dead config tier (B5):** `fetch_pooled` read `HUNTSMAN_PROXY` — a typo of
+    the codebase-wide `HUNTSMAN_SEARCH_PROXY` (used nowhere else), so that tier
+    never fired; removed (the env-proxy intent is already covered by the direct
+    tier inside `curl_exec`).
+  - **Drift risk (B6):** the direct and proxied curl paths duplicated ~25 lines of
+    arg-building — unified into one `curl_exec(.., proxy_override)` so the SSRF
+    pin / proto limits / size cap / headers live in exactly one place.
+  - **Inconsistency (B7):** empty proxy-tier bodies leaked as `Some("")` — now a
+    miss like the direct tier.
+  - **Untested security path (B8):** added the first tests for the SSRF connect-
+    pin (refuses RFC1918 / loopback / link-local metadata, pins a public host).
+  - One residual documented in-file (**B3**): `curl -L` re-resolves a cross-host
+    redirect itself, so redirect-hop IPs aren't vetted in the fallback — reqwest
+    is the redirect-vetted primary; fully closing it needs a Rust-side redirect
+    loop rather than disabling the redirects the search engines rely on.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed
