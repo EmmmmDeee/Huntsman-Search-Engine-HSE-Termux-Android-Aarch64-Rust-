@@ -7,7 +7,7 @@ pub(super) struct EngineSpec {
     pub(super) ua_alt: &'static str,
 }
 
-// All 13 engines are always tried. Blocked engines are detected and
+// All 17 engines are always tried. Blocked engines are detected and
 // skipped in <1s via the interstitial detector in fetch_and_parse.
 // Yahoo/Bing are most reliable from datacenter IPs. DDG/Google/Brave
 // work best from residential IPs (Termux). AOL is Yahoo-powered (same
@@ -285,3 +285,23 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         ua_alt: crate::util::curl::UA_FIREFOX,
     },
 ];
+
+/// Engines used for the secondary pivot + entity-recycler passes — the most
+/// reliable from Termux residential IPs (Yahoo/Bing are stable; Brave works
+/// well off-CAPTCHA). Resolved by NAME via [`reliable_engines`] rather than by
+/// array index, so reordering or inserting into [`ENGINES`] can never silently
+/// repoint those passes at the wrong engines (the prior `ENGINES[0/1/5]`
+/// indexing was a latent drift bug). Order here is the order they're tried.
+pub(super) const RELIABLE_ENGINE_NAMES: [&str; 3] = ["yahoo", "bing", "brave"];
+
+/// Resolve [`RELIABLE_ENGINE_NAMES`] to their [`EngineSpec`]s, preserving that
+/// order. A name absent from [`ENGINES`] is skipped; the
+/// `reliable_engines_resolve_by_name` test asserts all three resolve, so a
+/// rename/removal in [`ENGINES`] fails CI instead of silently shrinking the
+/// reliable set at runtime.
+pub(super) fn reliable_engines() -> Vec<&'static EngineSpec> {
+    RELIABLE_ENGINE_NAMES
+        .iter()
+        .filter_map(|name| ENGINES.iter().find(|e| e.name == *name))
+        .collect()
+}

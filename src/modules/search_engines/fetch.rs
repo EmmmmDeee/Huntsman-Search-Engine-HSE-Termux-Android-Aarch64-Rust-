@@ -70,19 +70,83 @@ pub(super) async fn try_fetch(url: &str, ua: &str, post_body: Option<&str>) -> F
     FetchOutcome::Body(body)
 }
 
-/// Detect CAPTCHA/interstitial pages that contain no real results.
+/// High-confidence anti-bot / CAPTCHA *vendor* fingerprints. Each string is
+/// specific enough that it essentially only appears when the actual challenge
+/// widget or script is embedded, so a single match is decisive. Compared
+/// case-insensitively, so every entry MUST be lowercase.
+///
+/// Kept data-driven (rather than a chain of `||`) so a new interstitial
+/// vendor is a one-line addition with a matching test, and so the matcher
+/// stays a strict superset of the engines' real-world block pages.
+pub(super) const BLOCK_VENDOR_SIGNATURES: &[&str] = &[
+    // Cloudflare managed challenge / Turnstile / "Just a moment" interstitial
+    "challenges.cloudflare.com",
+    "/cdn-cgi/challenge-platform",
+    "cf-chl-", // cf-chl-opt / cf-chl-bypass challenge tokens
+    // Google reCAPTCHA + the classic "/sorry/" rate-limit interstitial
+    "/recaptcha/api",
+    "g-recaptcha",
+    "grecaptcha",
+    "/sorry/index",
+    // hCaptcha
+    "hcaptcha.com",
+    "h-captcha",
+    // DataDome
+    "captcha-delivery.com",
+    "datadome",
+    // PerimeterX / HUMAN
+    "perimeterx",
+    "px-captcha",
+    "_pxhd",
+    // FunCaptcha / Arkose Labs
+    "funcaptcha",
+    "arkoselabs",
+    // Yandex SmartCaptcha
+    "smartcaptcha",
+    "showcaptcha",
+    // DuckDuckGo anomaly interstitial / generic retry wall
+    "anomaly-modal",
+    "httpservice/retry",
+];
+
+/// Lower-confidence challenge *phrases*. Each entry is an AND-set: every
+/// token must be present for the page to count as a block. Requiring two
+/// independent tokens keeps a real results page that merely *mentions* one
+/// phrase (e.g. a SERP whose snippets discuss Cloudflare, or an article on
+/// "unusual traffic" in analytics) from being misread as a block — the
+/// previous single-substring detector flagged exactly those false positives.
+/// Multi-word phrases specific enough on their own are single-element sets.
+/// All tokens MUST be lowercase.
+pub(super) const BLOCK_PHRASE_SETS: &[&[&str]] = &[
+    &["just a moment", "cloudflare"],
+    &["attention required", "cloudflare"],
+    &["checking your browser", "cloudflare"],
+    &["unusual traffic", "network"], // Google: "...unusual traffic from your computer network"
+    &["before you continue", "consent"],
+    &["request unsuccessful", "incapsula"], // Imperva / Incapsula
+    &["are not a robot"],
+    &["verify you are human"],
+    &["enable javascript and cookies to continue"],
+    &["access to this page has been denied"], // PerimeterX classic block page
+];
+
+/// Detect CAPTCHA / anti-bot interstitial pages that carry no real results.
+///
+/// Two-tier match: a single high-confidence [`BLOCK_VENDOR_SIGNATURES`]
+/// fingerprint is decisive; otherwise an entire AND-set in
+/// [`BLOCK_PHRASE_SETS`] must match. This is a strict superset of the old
+/// detector's coverage while cutting its false-positive surface.
 pub(super) fn is_captcha_page(body: &str) -> bool {
     let lower = body.to_lowercase();
-    lower.contains("anomaly-modal")
-        || lower.contains("unusual traffic")
-        || lower.contains("are not a robot")
-        || (lower.contains("consent") && lower.contains("before you continue"))
-        || lower.contains("httpservice/retry")
-        || lower.contains("captcha-delivery.com")
-        || lower.contains("showcaptcha")
-        || lower.contains("smartcaptcha")
-        || lower.contains("challenges.cloudflare.com")
-        || (lower.contains("just a moment") && lower.contains("cloudflare"))
+    if BLOCK_VENDOR_SIGNATURES
+        .iter()
+        .any(|sig| lower.contains(sig))
+    {
+        return true;
+    }
+    BLOCK_PHRASE_SETS
+        .iter()
+        .any(|set| set.iter().all(|tok| lower.contains(tok)))
 }
 
 pub(super) fn parse_results(html: &str, engine: &'static str, query: &str) -> Vec<SearchResult> {

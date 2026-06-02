@@ -173,7 +173,7 @@ Binds to `127.0.0.1:8080` only — no LAN exposure (architecture invariant).
 Every seed type has a pathway to geographic coordinates:
 
 ```
-Name/Email/Username → search_engines (13 engines, free)
+Name/Email/Username → search_engines (17 engines, free)
                     → discovered emails/phones/addresses
                     → oathnet_pro (breach IPs)
                     → ip_geo + ip_whois_geo (free HTTPS)
