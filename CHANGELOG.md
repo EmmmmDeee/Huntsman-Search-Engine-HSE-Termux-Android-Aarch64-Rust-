@@ -10,6 +10,49 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Coarse geo & name-permutation guesses no longer masquerade as corroborated
+  findings (scan-quality pass).** A `name` scan surfaced a pile of postcode
+  suburbs, bare postcodes and derived handles in the **Probable** tier and lit
+  up ~20 spurious correlations — all rooted in one defect plus three module
+  fan-outs:
+
+  - **`geo_normalize` was counted as an independent corroborating source.** The
+    geospatial enrichment pass attaches a geohash/timezone/parsed-address
+    evidence record to *every* `Coordinates`/`Address`, which inflated their
+    `source_count` to 2 — silently lifting single-source coarse geo from its
+    base confidence into the **Probable** tier via the agreement model, and
+    firing the corroboration correlator rules once per such entity (**AU-003**
+    on every address/centroid, **AU-014** on every centroid, **AU-030** across
+    the set). It is now excluded from the corroboration count via a new
+    `Entity::corroborating_sources` (consumed by `source_count`, AU-014 and
+    AU-030) while remaining in the evidence chain and `evidence_sources` for
+    display. The Web UI `sourceCount` mirrors the exclusion so the Browse
+    tier/confidence match the backend.
+
+  - **`qld_unclaimed` suburb fan-out (#1).** A surname-broadened search
+    enumerated *every* suburb of *every* matched postcode — including relatives'
+    — as a Probable `Address`. Suburb enumeration is now restricted to the
+    seeded person's own **exact-name** postcode(s) (new `exact_postcodes`), and
+    the candidate suburbs + postcode centroids are emitted at Candidate
+    confidence (0.30) tagged `coarse`.
+
+  - **Bare postcodes ranked like precise addresses (#3).** A
+    `"QLD 4552, Australia"` postcode-only `Address` is a coarse region, not a
+    residence — it now stays a Candidate-tier, `coarse`-tagged `Address` (exact
+    0.38 still ranks above family 0.32); its evidentiary weight lives in the
+    unclaimed-money evidence chain, not in a false precise-address tier.
+
+  - **`name_intel` permutation flood (#2).** The speculative email fan-out is
+    capped tighter (`MAX_EMAILS` 16 → 8), bare single-token handles
+    (`first`/`last` alone) are dropped as non-distinguishing, and the primary
+    username weight is lowered (0.42 → 0.38) so *every* derived handle sits in
+    the **Candidate** tier — matching the module's documented "low-confidence
+    candidate" contract — until a discovery module observes it live (then the
+    second source lifts it and AU-035 fires). Recurse on permutations with
+    `--min-expand-confidence 0.35`.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed

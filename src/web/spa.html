@@ -365,14 +365,20 @@ function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${
 function statusPill(s){const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending',aborted:'s-aborted'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
 function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
 function kindPill(k){return `<span class="kind-pill k-${attr(k)}">${esc(k)}</span>`;}
+// Deterministic self-enrichment passes are NOT independent intelligence and
+// must not be counted as corroboration — mirror the backend's
+// ENRICHMENT_ONLY_SOURCES so a coarse geo guess the geospatial pass touched
+// isn't lifted out of the Candidate tier on the dashboard.
+const ENRICHMENT_SOURCES = new Set(['geo_normalize']);
 // Distinct corroborating sources drive the C_eff boost — must match the
-// backend's Entity::source_count(): count distinct evidence.source strings;
-// when no evidence is present, fall back to the corroboration field. (The old
-// version boosted on the raw corroboration field, which over-credited
-// single-source findings whose within-module counts were summed by merge.)
+// backend's Entity::source_count()/corroborating_sources(): count distinct
+// non-enrichment evidence.source strings; when none are present, fall back to
+// the corroboration field. (The old version boosted on the raw corroboration
+// field, which over-credited single-source findings whose within-module counts
+// were summed by merge.)
 function sourceCount(e){
   const evs=e.evidence||[];
-  if(evs.length){const s=new Set();for(const ev of evs){if(ev&&ev.source)s.add(ev.source);}if(s.size)return Math.max(1,s.size);}
+  if(evs.length){const s=new Set();for(const ev of evs){if(ev&&ev.source&&!ENRICHMENT_SOURCES.has(ev.source))s.add(ev.source);}if(s.size)return Math.max(1,s.size);}
   return Math.max(1,e.corroboration??1);
 }
 function effC(e){const c=e.confidence??0;const n=sourceCount(e);return Math.min(1,Math.max(0,c*(1+0.15*Math.log(n))));}

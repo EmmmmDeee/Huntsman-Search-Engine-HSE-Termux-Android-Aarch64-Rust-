@@ -1121,6 +1121,43 @@ mod tests {
         assert_eq!(r.len(), 1);
     }
 
+    #[test]
+    fn geo_normalize_alone_does_not_over_fire_corroboration_rules() {
+        // Regression: a coarse qld_unclaimed geo set, each entity touched only
+        // by the deterministic `geo_normalize` enrichment pass, must NOT light
+        // up the corroboration rules. Before the fix, geo_normalize counted as a
+        // phantom second source and fired AU-003 on every address/centroid plus
+        // AU-014 on every centroid and AU-030 across the set — ~20 spurious
+        // correlations from a single name search.
+        let coarse = |kind, val: &str| -> Entity {
+            let mut e = Entity::new(kind, val, 0.30, "s");
+            e.add_evidence(Evidence::new("qld_unclaimed", "register record"));
+            e.add_evidence(Evidence::new("geo_normalize", "enrichment"));
+            e.tag("geoint");
+            e
+        };
+        let ents = vec![
+            coarse(EntityKind::Address, "QLD 4552, Australia"),
+            coarse(EntityKind::Address, "Maleny, QLD 4552, Australia"),
+            coarse(EntityKind::Address, "Booroobin, QLD 4552, Australia"),
+            coarse(EntityKind::Coordinates, "-26.72900,152.75540"),
+        ];
+        let firings = evaluate_rules(&ents, "s");
+        let fired = |id: &str| firings.iter().any(|c| c.rule_id == id);
+        assert!(
+            !fired("AU-003"),
+            "geo_normalize must not fabricate high-corroboration (AU-003)"
+        );
+        assert!(
+            !fired("AU-014"),
+            "a single-source centroid must not look like a geo cluster (AU-014)"
+        );
+        assert!(
+            !fired("AU-030"),
+            "geo_normalize must not be the 3rd source for convergence (AU-030)"
+        );
+    }
+
     // ── AU-015 ──────────────────────────────────────────────────────────
 
     #[test]

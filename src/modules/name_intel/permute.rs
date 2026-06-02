@@ -23,12 +23,23 @@ use url::form_urlencoded::byte_serialize;
 
 // ── Output caps (keep a single name target constant-bounded) ────────────────
 pub(super) const MAX_USERNAMES: usize = 24;
-pub(super) const MAX_EMAILS: usize = 16;
+/// Emails are the widest fan-out (handle shapes × every provider) and the
+/// lowest-signal permutation — pure guesses across mailbox providers. Capped
+/// tighter than usernames so a name seed doesn't flood the Browse table with
+/// near-duplicate addresses.
+pub(super) const MAX_EMAILS: usize = 8;
 pub(super) const MAX_PIVOTS: usize = 18;
 
 // ── Confidence weights ──────────────────────────────────────────────────────
 /// Real-world-common handle shapes (`first.last`, `firstlast`, `flast`, …).
-const W_PRIMARY: f64 = 0.42;
+///
+/// Kept strictly below the 0.40 Probable floor: a name-derived handle is an
+/// *unconfirmed guess*, so it stays a Candidate (matching this module's
+/// "low-confidence candidate entities" contract) until a discovery module
+/// observes it live — at which point the second source lifts its `c_effective`
+/// and AU-035 fires. (Previously 0.42 put the top shapes in the Probable tier,
+/// ranking guesses as if they were findings.)
+const W_PRIMARY: f64 = 0.38;
 /// Plausible but less common shapes (reversed, hyphen/underscore joins).
 const W_SECONDARY: f64 = 0.30;
 /// Middle-name blends.
@@ -194,7 +205,10 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
         raw.push((h, W_PRIMARY));
     }
 
-    // Secondary — reversed and punctuation-joined variants, plus bare tokens.
+    // Secondary — reversed and punctuation-joined variants. Bare single-token
+    // handles (`first` or `last` alone) are deliberately excluded: a lone given
+    // or family name is not a distinguishing handle — it matches countless
+    // unrelated people and only padded the candidate list with noise.
     for h in [
         format!("{l}.{f}"),
         format!("{l}{f}"),
@@ -207,8 +221,6 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
         format!("{l}.{fi}"),
         format!("{fi}_{l}"),
         format!("{fi}-{l}"),
-        f.to_string(),
-        l.to_string(),
     ] {
         raw.push((h, W_SECONDARY));
     }
