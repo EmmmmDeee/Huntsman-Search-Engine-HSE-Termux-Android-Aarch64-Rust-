@@ -272,6 +272,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 | [`docs/USAGE.md`](docs/USAGE.md) | Full CLI reference + HTTP API |
 | [`docs/MODULES.md`](docs/MODULES.md) | Module catalogue + synergy map |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common errors + fixes |
+| [`docs/FAULT_TREE_ANALYSIS.md`](docs/FAULT_TREE_ANALYSIS.md) | System-wide FTA: failure modes, controls + open risks |
 | [`CHANGELOG.md`](CHANGELOG.md) | Version history |
 
 ---
