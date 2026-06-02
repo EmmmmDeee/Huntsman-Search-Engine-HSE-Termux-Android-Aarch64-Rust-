@@ -21,12 +21,3 @@
 .huntsman.env
 .claude/worktrees/
 .claude/settings.local.json
-
-# Generated investigation output — scan results and dossiers contain
-# third-party PII and must never be committed (they belong in $HOME, not
-# the repo). See docs/FAULT_TREE_ANALYSIS.md (finding E2.1). This blocks
-# RECURRENCE only; already-tracked files must be removed explicitly.
-scan_*.json
-*.scan.json
-DOSSIER_*.md
-*.dossier.md

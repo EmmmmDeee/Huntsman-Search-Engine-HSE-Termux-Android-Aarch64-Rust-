@@ -86,8 +86,8 @@ T1
 
 ```
 T2
-├─[OR] E2.1  Sensitive data exposed via the repository
-│        └─[PAND] committed PII artifact → public repo → indexed/cloned
+├─[OR] E2.1  In-repo OSINT output readable per repository visibility (accepted)
+│        └─[INHIBIT: repo is public] in-repo PII readable by anyone
 ├─[OR] E2.2  Web UI exploited
 │        ├─[OR] B2.2.1  DOM XSS from scanned content rendered unescaped
 │        │       B2.2.2  Cross-origin site reads scan data (CSRF/CORS)
@@ -102,7 +102,7 @@ T2
 
 | ID | Description | Likelihood | Impact | Detectability | Mitigation |
 |----|-------------|-----------|--------|---------------|------------|
-| **E2.1** | **Committed OSINT dossiers + scan JSON on a real (possibly minor) individual + breach data in a public repo** | **High (present)** | **Critical** | High | ⚠ **OPEN.** ⚒ `.gitignore` now blocks recurrence (`scan_*.json`, `DOSSIER_*.md`, …). Existing files remain in tree+history — see *Findings register* for the exact purge runbook (history rewrite is the maintainer's call). |
+| E2.1 | In-repo OSINT output (dossiers + scan JSON) contains third-party PII | — | Accepted | High | ✅ **Accepted by design.** Faithful retention of findings is the purpose of an OSINT tool; the maintainer keeps generated dossiers/scan output in-repo intentionally, and HSE never removes or redacts PII. The single control over *who can read* it is **repository visibility** (public vs private) — a maintainer setting, not a code change. |
 | B2.2.1 | DOM XSS | Low | High | Medium | ✅ Consistent `esc()` on every dynamic field; event renderer assembles trusted fragments from escaped parts; only integer counters are raw. ⚠ Recommend a `Content-Security-Policy` header as defence-in-depth |
 | B2.2.2 | Cross-origin read | Very Low | High | Medium | ✅ CORS bound to the exact `http(s)://<bind>` origin **even on loopback** (a website cannot XHR `127.0.0.1:8080`) |
 | B2.2.3 | Off-host key write | Very Low | High | High | ✅ Unconditional loopback peer check on key-mutation regardless of `--no-key-write` |
@@ -160,14 +160,14 @@ T4
 T5
 ├─[OR] E5.1  Store corruption (interrupted write / WAL growth)
 ├─[OR] E5.2  Entity merge loses or fabricates data
-└─[OR] E5.3  Privacy-grade data persisted where it shouldn't be
+└─[OR] E5.3  OSINT output (PII) persisted in-repo (intentional)
 ```
 
 | ID | Description | Likelihood | Impact | Detectability | Mitigation |
 |----|-------------|-----------|--------|---------------|------------|
 | E5.1 | SQLite corruption / WAL bloat | Low | High | Medium | ✅ WAL mode + `checkpoint_truncate()` at safe boundaries; bundled SQLite (version-pinned). ⚠ Recommend a `PRAGMA integrity_check` in `hse doctor` |
 | E5.2 | Merge anomaly | Low | Medium | High | ✅ GREATEST-semantics merge; batch upsert in one transaction with per-entity fallback; round-trip tests |
-| E5.3 | PII persisted to repo | High (present) | High | High | ⚠ See **E2.1** — generated scan/dossier output belongs in `$HOME`, not the tree; recurrence now git-ignored |
+| E5.3 | OSINT output (PII) persisted in-repo | — | Accepted | High | ✅ Intentional (see E2.1). Data fidelity is mandatory: the engine must never silently drop or redact a finding — that would be a functional defect, not a fix |
 
 ---
 
@@ -289,7 +289,7 @@ T11
 |---|----------------------|--------|
 | 1 | SQLite store (single file) — the one stateful SPOF | ✅ WAL + checkpoint; ⚠ add `integrity_check` to `doctor` |
 | 2 | `panic="abort"` couples any module panic to total `serve` availability | ⚠ Documented trade-off; preventive controls strong (see E3.1) |
-| 3 | Committed PII artifacts in a public repo | ⚠ **OPEN** — top remediation priority (E2.1) |
+| 3 | In-repo OSINT output contains third-party PII | ✅ Accepted by design (E2.1); exposure governed by repo visibility, never by redaction |
 | 4 | Scraping detector / selectors track moving third-party targets | ⚒ Hardened + data-driven this cycle; inherently needs upkeep |
 | 5 | No SSRF egress denylist for the `url`/crawler kinds | ⚠ Recommended (B2.3.2) |
 
@@ -300,35 +300,28 @@ T11
 **Mitigated this development cycle (⚒)**
 1. SERP scraping resilience: data-driven anti-bot detector (broader + fewer false positives), reliable-engine selection by name (killed the `ENGINES[0/1/5]` index SPOF), engine-count drift fixed + guarded, panic-free `unwrap`, parse robustness. *(commit `132f2ec`)*
 2. Unified auto-detected scan: `TargetKind::detect`, optional `kind` across CLI/API/live/SPA, with exhaustive tests. *(commit `934cbc8`)*
-3. PII recurrence guard: `.gitignore` now blocks generated scan/dossier output. *(this commit)*
 
 **Strong pre-existing controls (✅)** — `forbid(unsafe)`, CI-enforced layering +
 no-silent-drift invariants, loopback bind + hardened CORS, RAII cancellation,
 concurrency semaphore, per-module timeout floor, deterministic UIDs, graceful
 shutdown, prebuilt + fast build paths.
 
+**Accepted risks (maintainer decision)**
+- **E2.1 / E5.3 — in-repo OSINT output contains third-party PII.** Retained
+  intentionally: faithful preservation of findings is the tool's function, and
+  HSE never removes or redacts PII. *Who* can read it is governed solely by
+  **repository visibility** — set the repo private (GitHub → Settings →
+  Visibility) if the data should not be world-readable. No code-level
+  remediation applies, and none is performed.
+
 **Open / recommended (⚠), priority order**
-1. **E2.1 — committed third-party PII** (Critical). Remediation runbook
-   (history rewrite is destructive — maintainer-approved only):
-   ```bash
-   # 1. Remove from the working tree (recurrence already git-ignored):
-   git rm --cached DOSSIER_Jordan_Leigh_Meyer.md DOSSIER_OSINT_Service_Usernames.md \
-                   scan_jordan_leigh_meyer_depth2.json scan_jlm_50modules_depth2.json
-   git commit -m "chore(privacy): remove generated OSINT artifacts from the tree"
-   # 2. Purge from history (rewrites hashes; force-push; coordinate with collaborators):
-   #    pipx run git-filter-repo --invert-paths \
-   #      --path DOSSIER_Jordan_Leigh_Meyer.md --path DOSSIER_OSINT_Service_Usernames.md \
-   #      --path scan_jordan_leigh_meyer_depth2.json --path scan_jlm_50modules_depth2.json
-   #    git push --force-with-lease
-   #    Then rotate anything sensitive and request GitHub cache/fork invalidation.
-   ```
-2. **E3.1 / SPOF #2** — document the supervised-restart expectation for `serve`,
+1. **E3.1 / SPOF #2** — document the supervised-restart expectation for `serve`,
    or add a `panic="unwind"` server profile, to bound a module panic's blast radius.
-3. **B2.2.1 / E11.1** — add a `Content-Security-Policy` (+ `X-Content-Type-Options`,
+2. **B2.2.1 / E11.1** — add a `Content-Security-Policy` (+ `X-Content-Type-Options`,
    `Referrer-Policy`) header to SPA/API responses as XSS defence-in-depth.
-4. **B2.3.2** — egress denylist (loopback/RFC1918/link-local) for the `url`/crawler kinds.
-5. **E2.5** — scheduled, non-blocking `cargo audit`/`cargo-deny` advisory CI job.
-6. **E5.1** — `PRAGMA integrity_check` (+ WAL size report) in `hse doctor`.
+3. **B2.3.2** — egress denylist (loopback/RFC1918/link-local) for the `url`/crawler kinds.
+4. **E2.5** — scheduled, non-blocking `cargo audit`/`cargo-deny` advisory CI job.
+5. **E5.1** — `PRAGMA integrity_check` (+ WAL size report) in `hse doctor`.
 
 *Generated as part of the system audit; the trees reflect the codebase at the
 head of branch `claude/hopeful-einstein-3GECc`.*
