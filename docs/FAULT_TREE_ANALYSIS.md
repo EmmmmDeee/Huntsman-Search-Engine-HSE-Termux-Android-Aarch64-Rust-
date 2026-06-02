@@ -103,7 +103,7 @@ T2
 | ID | Description | Likelihood | Impact | Detectability | Mitigation |
 |----|-------------|-----------|--------|---------------|------------|
 | E2.1 | In-repo OSINT output (dossiers + scan JSON) contains third-party PII | — | Accepted | High | ✅ **Accepted by design.** Faithful retention of findings is the purpose of an OSINT tool; the maintainer keeps generated dossiers/scan output in-repo intentionally, and HSE never removes or redacts PII. The single control over *who can read* it is **repository visibility** (public vs private) — a maintainer setting, not a code change. |
-| B2.2.1 | DOM XSS | Low | High | Medium | ✅ Consistent `esc()` on every dynamic field; event renderer assembles trusted fragments from escaped parts; only integer counters are raw. ⚠ Recommend a `Content-Security-Policy` header as defence-in-depth |
+| B2.2.1 | DOM XSS | Low | High | Medium | ✅ Consistent `esc()` on every dynamic field; event renderer assembles trusted fragments from escaped parts; only integer counters are raw. ⚒ All responses now carry a CSP (`default-src`/`connect-src 'self'` blocks external exfiltration + script loads) + `nosniff` + `X-Frame-Options: DENY` + `Referrer-Policy: no-referrer` |
 | B2.2.2 | Cross-origin read | Very Low | High | Medium | ✅ CORS bound to the exact `http(s)://<bind>` origin **even on loopback** (a website cannot XHR `127.0.0.1:8080`) |
 | B2.2.3 | Off-host key write | Very Low | High | High | ✅ Unconditional loopback peer check on key-mutation regardless of `--no-key-write` |
 | B2.3.1 | SQLi | Very Low | Critical | High | ✅ `rusqlite` parameterised statements throughout; no string-built SQL |
@@ -276,7 +276,7 @@ T11
 
 | ID | Description | Likelihood | Impact | Detectability | Mitigation |
 |----|-------------|-----------|--------|---------------|------------|
-| E11.1 | DOM XSS | Low | High | Medium | ✅ `esc()` discipline (see B2.2.1). ⚠ Add CSP header |
+| E11.1 | DOM XSS | Low | High | Medium | ✅ `esc()` discipline (see B2.2.1) + ⚒ CSP & security headers on every response |
 | E11.2 | SPA load failure | Low | Medium | High | ✅ Single self-contained `include_str!`'d HTML + in-binary vendor bundle (no external CDN, no network to render) |
 | E11.3 | Contract mismatch | Low | Medium | Medium | ✅ `tests/api.rs` exercises the endpoints; the unified-scan change kept `kind` optional (backward-compatible) |
 | E11.4 | Stale assets | Low | Low | High | ✅ Vendor ETag = crate version + `must-revalidate` (no `immutable` on a stable URL) so an upgrade busts the cache |
@@ -300,6 +300,7 @@ T11
 **Mitigated this development cycle (⚒)**
 1. SERP scraping resilience: data-driven anti-bot detector (broader + fewer false positives), reliable-engine selection by name (killed the `ENGINES[0/1/5]` index SPOF), engine-count drift fixed + guarded, panic-free `unwrap`, parse robustness. *(commit `132f2ec`)*
 2. Unified auto-detected scan: `TargetKind::detect`, optional `kind` across CLI/API/live/SPA, with exhaustive tests. *(commit `934cbc8`)*
+3. Web security headers: CSP (`default-src`/`connect-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`) + `X-Content-Type-Options: nosniff` + `X-Frame-Options: DENY` + `Referrer-Policy: no-referrer` on every response, via an outermost `map_response` layer; integration-tested on API + SPA. *(B2.2.1 / E11.1)*
 
 **Strong pre-existing controls (✅)** — `forbid(unsafe)`, CI-enforced layering +
 no-silent-drift invariants, loopback bind + hardened CORS, RAII cancellation,
@@ -317,11 +318,9 @@ shutdown, prebuilt + fast build paths.
 **Open / recommended (⚠), priority order**
 1. **E3.1 / SPOF #2** — document the supervised-restart expectation for `serve`,
    or add a `panic="unwind"` server profile, to bound a module panic's blast radius.
-2. **B2.2.1 / E11.1** — add a `Content-Security-Policy` (+ `X-Content-Type-Options`,
-   `Referrer-Policy`) header to SPA/API responses as XSS defence-in-depth.
-3. **B2.3.2** — egress denylist (loopback/RFC1918/link-local) for the `url`/crawler kinds.
-4. **E2.5** — scheduled, non-blocking `cargo audit`/`cargo-deny` advisory CI job.
-5. **E5.1** — `PRAGMA integrity_check` (+ WAL size report) in `hse doctor`.
+2. **B2.3.2** — egress denylist (loopback/RFC1918/link-local) for the `url`/crawler kinds.
+3. **E2.5** — scheduled, non-blocking `cargo audit`/`cargo-deny` advisory CI job.
+4. **E5.1** — `PRAGMA integrity_check` (+ WAL size report) in `hse doctor`.
 
 *Generated as part of the system audit; the trees reflect the codebase at the
 head of branch `claude/hopeful-einstein-3GECc`.*

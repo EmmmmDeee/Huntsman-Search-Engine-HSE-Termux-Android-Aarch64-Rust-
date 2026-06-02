@@ -194,6 +194,37 @@ async fn health_returns_ok() {
     assert!(json.get("version").is_some(), "body must include 'version'");
 }
 
+#[tokio::test]
+async fn responses_carry_security_headers() {
+    // Defence-in-depth headers must ride on both API JSON and the SPA document.
+    let app = test_app("sec-headers");
+    for uri in ["/api/v1/health", "/"] {
+        let resp = app.clone().oneshot(get(uri)).await.unwrap();
+        let h = resp.headers();
+        let hv = |name: &str| h.get(name).and_then(|v| v.to_str().ok()).unwrap_or("");
+        let csp = hv("content-security-policy");
+        assert!(
+            csp.contains("default-src 'self'"),
+            "{uri}: CSP default-src missing: {csp:?}"
+        );
+        assert!(
+            csp.contains("connect-src 'self'"),
+            "{uri}: CSP connect-src 'self' missing (data-exfil guard): {csp:?}"
+        );
+        assert!(
+            csp.contains("frame-ancestors 'none'"),
+            "{uri}: CSP frame-ancestors missing: {csp:?}"
+        );
+        assert_eq!(hv("x-content-type-options"), "nosniff", "{uri}: nosniff");
+        assert_eq!(hv("x-frame-options"), "DENY", "{uri}: X-Frame-Options");
+        assert_eq!(
+            hv("referrer-policy"),
+            "no-referrer",
+            "{uri}: Referrer-Policy"
+        );
+    }
+}
+
 // ── 2. Version ────────────────────────────────────────────────────────────
 
 #[tokio::test]
