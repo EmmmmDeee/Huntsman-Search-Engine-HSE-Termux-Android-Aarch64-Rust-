@@ -183,6 +183,23 @@ impl Store {
         Ok(())
     }
 
+    /// Run SQLite's `PRAGMA integrity_check` and return whatever it reports.
+    ///
+    /// A healthy database returns exactly one row, `"ok"`; a corrupt one
+    /// returns a row per problem found. Surfaced by `hse doctor` so on-disk
+    /// corruption (interrupted write, bad sector, truncated WAL) is detected
+    /// explicitly rather than manifesting later as silently missing or wrong
+    /// scan results (FTA finding E5.1 / top event T5). Read-only — safe to run
+    /// against a live database.
+    pub fn integrity_check(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("PRAGMA integrity_check;")?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<String>, _>>()?;
+        Ok(rows)
+    }
+
     // ── Scans ──────────────────────────────────────────────────────────────
 
     pub fn upsert_scan(&self, scan: &Scan) -> Result<()> {
@@ -891,6 +908,19 @@ mod tests {
         let target = Target::new(TargetKind::Email, "x@y.com");
         let scan = Scan::new(id, target);
         store.upsert_scan(&scan).unwrap();
+    }
+
+    #[test]
+    fn integrity_check_reports_ok_on_healthy_db() {
+        // A fresh, written-to database must report exactly `["ok"]` — the
+        // signal `hse doctor` relies on to distinguish a clean store from a
+        // corrupt one (FTA E5.1 / T5).
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "scan-ic");
+        let e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "scan-ic");
+        store.upsert_entity(&e).unwrap();
+        assert_eq!(store.integrity_check().unwrap(), vec!["ok".to_string()]);
     }
 
     #[test]

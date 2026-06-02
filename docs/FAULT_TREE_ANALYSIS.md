@@ -165,7 +165,7 @@ T5
 
 | ID | Description | Likelihood | Impact | Detectability | Mitigation |
 |----|-------------|-----------|--------|---------------|------------|
-| E5.1 | SQLite corruption / WAL bloat | Low | High | Medium | ✅ WAL mode + `checkpoint_truncate()` at safe boundaries; bundled SQLite (version-pinned). ⚠ Recommend a `PRAGMA integrity_check` in `hse doctor` |
+| E5.1 | SQLite corruption / WAL bloat | Low | High | High | ✅ WAL mode + `checkpoint_truncate()` at safe boundaries; bundled SQLite (version-pinned). ⚒ `hse doctor` now runs `PRAGMA integrity_check` + reports the WAL high-water size, so corruption is detected explicitly instead of surfacing as silently-wrong results |
 | E5.2 | Merge anomaly | Low | Medium | High | ✅ GREATEST-semantics merge; batch upsert in one transaction with per-entity fallback; round-trip tests |
 | E5.3 | OSINT output (PII) persisted in-repo | — | Accepted | High | ✅ Intentional (see E2.1). Data fidelity is mandatory: the engine must never silently drop or redact a finding — that would be a functional defect, not a fix |
 
@@ -287,7 +287,7 @@ T11
 
 | # | SPOF / latent defect | Status |
 |---|----------------------|--------|
-| 1 | SQLite store (single file) — the one stateful SPOF | ✅ WAL + checkpoint; ⚠ add `integrity_check` to `doctor` |
+| 1 | SQLite store (single file) — the one stateful SPOF | ✅ WAL + checkpoint; ⚒ `integrity_check` + WAL-size now reported by `hse doctor` |
 | 2 | `panic="abort"` couples any module panic to total `serve` availability | ⚠ Documented trade-off; preventive controls strong (see E3.1) |
 | 3 | In-repo OSINT output contains third-party PII | ✅ Accepted by design (E2.1); exposure governed by repo visibility, never by redaction |
 | 4 | Scraping detector / selectors track moving third-party targets | ⚒ Hardened + data-driven this cycle; inherently needs upkeep |
@@ -301,6 +301,7 @@ T11
 1. SERP scraping resilience: data-driven anti-bot detector (broader + fewer false positives), reliable-engine selection by name (killed the `ENGINES[0/1/5]` index SPOF), engine-count drift fixed + guarded, panic-free `unwrap`, parse robustness. *(commit `132f2ec`)*
 2. Unified auto-detected scan: `TargetKind::detect`, optional `kind` across CLI/API/live/SPA, with exhaustive tests. *(commit `934cbc8`)*
 3. Web security headers: CSP (`default-src`/`connect-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`) + `X-Content-Type-Options: nosniff` + `X-Frame-Options: DENY` + `Referrer-Policy: no-referrer` on every response, via an outermost `map_response` layer; integration-tested on API + SPA. *(B2.2.1 / E11.1)*
+4. Storage integrity diagnostic: `hse doctor` now runs `PRAGMA integrity_check` and reports the WAL high-water size, so on-disk corruption is detected explicitly. *(E5.1)*
 
 **Strong pre-existing controls (✅)** — `forbid(unsafe)`, CI-enforced layering +
 no-silent-drift invariants, loopback bind + hardened CORS, **TOCTOU-safe SSRF
@@ -326,7 +327,6 @@ deterministic UIDs, graceful shutdown, prebuilt + fast build paths.
 1. **E3.1 / SPOF #2** — document the supervised-restart expectation for `serve`,
    or add a `panic="unwind"` server profile, to bound a module panic's blast radius.
 2. **E2.5** — scheduled, non-blocking `cargo audit`/`cargo-deny` advisory CI job.
-3. **E5.1** — `PRAGMA integrity_check` (+ WAL size report) in `hse doctor`.
 
 *Generated as part of the system audit; the trees reflect the codebase at the
 head of branch `claude/hopeful-einstein-3GECc`.*
