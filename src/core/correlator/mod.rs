@@ -224,6 +224,7 @@ const RULES: &[RuleFn] = &[
     rule_au_035_confirmed_derived_handle,
     rule_au_036_email_alias_convergence,
     rule_au_037_credential_exposure,
+    rule_au_038_verified_cross_platform_identity,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -1087,6 +1088,46 @@ mod tests {
 
         // No secret entities → no firing.
         assert!(rule_au_037_credential_exposure(&[email], "s", 0).is_empty());
+    }
+
+    // ── AU-038 ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn au038_fires_on_confirmed_profiles_across_platforms() {
+        let mk = |url: &str| {
+            let mut e = Entity::new(EntityKind::Url, url, 0.85, "s");
+            e.tag("confirmed-profile");
+            e
+        };
+        // Confirmed profiles on TWO distinct hosts → fires Medium, names both.
+        let r = rule_au_038_verified_cross_platform_identity(
+            &[
+                mk("https://x.com/kylo4kylo"),
+                mk("https://github.com/kylo4kylo"),
+            ],
+            "s",
+            0,
+        );
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].severity, Severity::Medium);
+        assert!(r[0].description.contains("2 platforms"));
+        assert!(r[0].description.contains("x.com") && r[0].description.contains("github.com"));
+
+        // Same host twice → only one distinct platform → no firing.
+        assert!(
+            rule_au_038_verified_cross_platform_identity(
+                &[
+                    mk("https://www.x.com/kylo4kylo"),
+                    mk("https://x.com/kylo4kylo")
+                ],
+                "s",
+                0
+            )
+            .is_empty()
+        );
+        // A non-confirmed URL is ignored.
+        let plain = Entity::new(EntityKind::Url, "https://x.com/kylo4kylo", 0.5, "s");
+        assert!(rule_au_038_verified_cross_platform_identity(&[plain], "s", 0).is_empty());
     }
 
     // ── AU-010 ──────────────────────────────────────────────────────────

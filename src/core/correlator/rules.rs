@@ -1686,3 +1686,51 @@ pub(super) fn rule_au_037_credential_exposure(
         ts,
     )]
 }
+
+/// AU-038 — Verified cross-platform identity.
+///
+/// `search_engines` tags a `Url` `confirmed-profile` when the searched handle is
+/// the exact path on a canonical social host — the target's OWN profile, verified
+/// (and corroborated by the returning engines), not merely a mention. When the
+/// same identity is confirmed on ≥2 DISTINCT platforms, that is a strong,
+/// engine-verified cross-platform identity worth synthesising. Complements
+/// AU-011, which needs `username_search`'s `platforms_count`: AU-038 fires from
+/// the search-engine signal alone, so a search-engines-only scan still surfaces
+/// the cross-platform identity.
+pub(super) fn rule_au_038_verified_cross_platform_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::BTreeSet;
+    let confirmed: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Url && e.has_tag("confirmed-profile"))
+        .collect();
+    // Distinct registrable-ish hosts among the confirmed profiles (www-stripped).
+    let hosts: BTreeSet<String> = confirmed
+        .iter()
+        .filter_map(|e| url::Url::parse(&e.value).ok())
+        .filter_map(|u| {
+            u.host_str()
+                .map(|h| h.trim_start_matches("www.").to_lowercase())
+        })
+        .collect();
+    if hosts.len() < 2 {
+        return Vec::new();
+    }
+    let uids: Vec<String> = confirmed.iter().map(|e| e.uid.clone()).collect();
+    vec![Correlation::new(
+        "AU-038",
+        "Verified cross-platform identity",
+        Severity::Medium,
+        format!(
+            "Searched identity confirmed on {} platforms: {}",
+            hosts.len(),
+            hosts.into_iter().collect::<Vec<_>>().join(", ")
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}

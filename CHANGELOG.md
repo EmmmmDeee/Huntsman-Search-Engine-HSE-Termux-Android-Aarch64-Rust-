@@ -12,6 +12,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Correlation rule AU-038 — verified cross-platform identity.** `search_engines`
+  tags a `Url` `confirmed-profile` when the searched handle is the exact path on a
+  canonical social host (the target's own, engine-verified profile). AU-038 fires
+  when ≥2 such confirmed profiles span distinct platforms — a strong, verified
+  cross-platform identity — naming the platforms. It complements AU-011 (which
+  needs `username_search`'s platform count): AU-038 synthesises the cross-platform
+  identity from the search-engine signal alone, so a search-engines-only scan
+  still surfaces it. Pure entity-scan logic, deterministic, unit-tested.
 - **Correlation rule AU-037 — plaintext credential exposure.** The breach/stealer
   modules surface the canonical leaked secret as a first-class `Password` /
   `Credential` entity, but no rule synthesised them into an alert (only `ApiKey`,
