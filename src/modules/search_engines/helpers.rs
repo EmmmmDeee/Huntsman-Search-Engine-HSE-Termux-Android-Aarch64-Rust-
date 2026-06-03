@@ -350,6 +350,8 @@ pub(super) fn is_navigation_path(s: &str) -> bool {
         "company",
         "contact",
         "create",
+        "creator",
+        "creators",
         "events",
         "explore",
         "features",

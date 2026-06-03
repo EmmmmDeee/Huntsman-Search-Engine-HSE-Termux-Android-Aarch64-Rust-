@@ -84,12 +84,20 @@ const SOCIAL_HOSTS: &[&str] = &[
 ];
 
 fn is_social_host(host: &str) -> bool {
-    SOCIAL_HOSTS.iter().any(|s| {
-        host == *s
-            || (host.len() > s.len()
-                && host.ends_with(s)
-                && host.as_bytes()[host.len() - s.len() - 1] == b'.')
-    })
+    // Accept only the canonical profile-serving hosts: a social root domain or
+    // its www/m/mobile alias. Arbitrary subdomains (pic., business., create.,
+    // api., help., developer., …) are CDN/marketing/API endpoints whose paths
+    // are NOT profile handles — accepting them via a blanket suffix match mined
+    // junk usernames out of e.g. `pic.twitter.com/<imageid>`,
+    // `business.pinterest.com/getting-started`, `create.pinterest.com/creators`.
+    // Strip a known alias prefix (longest first so `mobile.` isn't eaten by
+    // `m.`) then require an EXACT social-host match.
+    let canonical = host
+        .strip_prefix("www.")
+        .or_else(|| host.strip_prefix("mobile."))
+        .or_else(|| host.strip_prefix("m."))
+        .unwrap_or(host);
+    SOCIAL_HOSTS.contains(&canonical)
 }
 
 #[async_trait]
@@ -2141,6 +2149,35 @@ mod tests {
         );
         assert!(extract_path_username("https://example.com/").is_none());
         assert!(extract_path_username("https://example.com/ab").is_none());
+    }
+
+    #[test]
+    fn is_social_host_accepts_canonical_rejects_subdomains() {
+        // Canonical profile hosts: root + www/m/mobile alias.
+        for h in [
+            "twitter.com",
+            "www.twitter.com",
+            "m.twitter.com",
+            "mobile.twitter.com",
+            "www.pinterest.com",
+            "x.com",
+        ] {
+            assert!(is_social_host(h), "{h} should be a social host");
+        }
+        // Non-profile subdomains that previously mined junk usernames out of
+        // their paths (regression for the Kylo4kylo false positives).
+        for h in [
+            "pic.twitter.com",        // image links, not profiles
+            "business.pinterest.com", // marketing
+            "create.pinterest.com",   // marketing
+            "developer.twitter.com",
+            "api.twitter.com",
+            "help.instagram.com",
+            "music.youtube.com",
+            "notreallytwitter.com", // suffix look-alike must not match
+        ] {
+            assert!(!is_social_host(h), "{h} must NOT be a social host");
+        }
     }
 
     #[test]

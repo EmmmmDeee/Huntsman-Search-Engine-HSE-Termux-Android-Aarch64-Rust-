@@ -89,6 +89,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **False-positive usernames mined from non-profile social subdomains.** The
+  username extractor treated *any* subdomain of a social host as a profile host
+  (blanket suffix match), so it pulled junk handles out of CDN/marketing/API
+  paths — `pic.twitter.com/<imageid>` → `dhyaqlzo9k`,
+  `business.pinterest.com/getting-started`, `create.pinterest.com/creators`
+  (all seen in the standard `Kylo4kylo` run). `is_social_host` now accepts only
+  the canonical profile-serving hosts — the social root domain or its
+  `www`/`m`/`mobile` alias — and the navigation-path blocklist gained
+  `creator(s)`. Real profiles (`twitter.com/handle`, `www.pinterest.com/handle`,
+  `m.facebook.com/handle`) are unaffected; the noisy candidates are gone.
 - **Distinct search results were collapsed when they differed only by query
   string.** The dedup / cross-engine-corroboration key stripped the *entire* query
   (`canonicalize_url`), so `…/watch?v=A` and `…/watch?v=B` (or `…?id=1` vs `…?id=2`)
