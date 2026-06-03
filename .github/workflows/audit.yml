@@ -15,6 +15,7 @@ on:
     paths:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+      - 'deny.toml'
       - '.github/workflows/audit.yml'
 
 # Least privilege: the job only reads the checked-out tree + the public
@@ -49,3 +50,23 @@ jobs:
       # Unmaintained / yanked crates print as warnings without failing the run.
       - name: Audit dependencies
         run: cargo audit
+
+      # Supply-chain policy beyond advisories: license governance, banned /
+      # wildcard crates, duplicate versions (warn), and dependency sources.
+      # Config + rationale live in deny.toml. Installed directly for the same
+      # action-pinning-drift reason cargo-audit is (see comment above).
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Check supply-chain policy
+        run: cargo deny check
+
+      # Unused-dependency hygiene. `--with-metadata` resolves library names so
+      # crates whose lib name differs from the package name (e.g. kamadak-exif →
+      # `exif`, md-5 → `md5`) are not mis-flagged; the locked graph is clean
+      # under this flag, so a regression here means a genuinely unused crate.
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --locked
+
+      - name: Check for unused dependencies
+        run: cargo machete --with-metadata
