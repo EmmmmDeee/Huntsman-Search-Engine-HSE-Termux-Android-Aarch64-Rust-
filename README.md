@@ -86,7 +86,9 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 89 modules
+hse modules                                                 # list all 92 modules
+hse engines                                                 # search-engine liveness panel
+hse config                                                  # capability toggles (features/engines/modules)
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
 hse scan --kind domain --value example.com --depth 2        # domain recon
 hse scan --kind email --value user@example.com --free-only  # email pivot (free only)
@@ -95,6 +97,16 @@ hse scan --kind domain --value example.com --output json    # machine-readable o
 hse scan                                                    # bare scan: uses HUNTSMAN_DEFAULT_SEED (optional, see docs/INSTALL.md)
 hse serve                                                   # Web UI → http://127.0.0.1:8080
 hse live --kind domain --value example.com --interval 60    # continuous monitoring
+```
+
+**Standard acceptance run** — one command exercises the free, keyless pipeline
+end-to-end on a canonical seed and prints every result **in full with complete
+URLs** (liveness + toggles + a scan dossier), against a throwaway `HOME` so it
+never touches your keys/config:
+
+```bash
+scripts/standard-test.sh             # canonical seed (Kylo4kylo)
+scripts/standard-test.sh "<seed>"    # any handle/username
 ```
 
 ---
