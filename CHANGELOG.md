@@ -72,6 +72,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Expansion no longer deep-dives incidentally-discovered platform domains
+  (person-scan signal-to-noise).** When a recursive scan surfaced a mega-domain
+  (twitter.com, pinterest.com, github.com, …) as a *discovered* entity, depth-1+
+  expansion re-scanned it and mapped the **platform's** own DNS/mail
+  infrastructure (NS/MX/SOA → dozens of generic domains like `*.twtrdns.net`,
+  `aspmx.l.google.com`), burying the real leads and burning the round budget. A
+  discovered mega-domain is now skipped as an expansion target **unless it is the
+  seed itself** (so investigating `facebook.com` directly still expands it). The
+  existing 0.15× mega-domain weight dampening is unchanged; this is a hard gate
+  that also applies without `--max-roi`. Surfaced by the standard `Kylo4kylo`
+  run, which had pulled in 127 such infrastructure domains.
 - **Free multi-engine search now leads the scan waterfall.** The keyless
   `search_engines` module (17 engines, no API key) was promoted from priority 25
   to **113** so a scan opens with broad, free, geolocation-neutral discovery

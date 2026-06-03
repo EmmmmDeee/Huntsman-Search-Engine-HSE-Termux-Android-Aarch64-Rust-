@@ -377,6 +377,7 @@ impl ScanEngine {
             let _ = self
                 .run_expansion(
                     &scan.id,
+                    &target,
                     &mut ctx,
                     &opts,
                     started,
@@ -664,6 +665,7 @@ impl ScanEngine {
     async fn run_expansion(
         &self,
         scan_id: &str,
+        seed: &Target,
         ctx: &mut ModuleContext,
         opts: &ScanOptions,
         started: Instant,
@@ -732,6 +734,21 @@ impl ScanEngine {
                     && crate::core::validation::is_non_routable_ip(&entity.value)
                 {
                     continue;
+                }
+                // Don't expand an *incidentally-discovered* platform/mega-domain
+                // (twitter.com, pinterest.com, …): it's the haystack a profile
+                // sits in, not a lead — deep-expanding it maps the PLATFORM's own
+                // DNS/mail infrastructure (NS/MX/SOA → dozens of generic domains)
+                // instead of the target, and burns the round budget that should
+                // go to target-specific enrichment. Still expand a mega-domain
+                // when it IS the seed (you're investigating that property itself).
+                if tk == TargetKind::Domain && crate::core::scan::is_mega_domain(&entity.value) {
+                    let strip = |s: &str| s.trim().trim_start_matches("www.").to_ascii_lowercase();
+                    let candidate_is_seed = seed.kind == TargetKind::Domain
+                        && strip(&seed.value) == strip(&entity.value);
+                    if !candidate_is_seed {
+                        continue;
+                    }
                 }
                 let new_target = Target::new(tk, entity.value.clone());
                 let key = visit_key(&new_target);

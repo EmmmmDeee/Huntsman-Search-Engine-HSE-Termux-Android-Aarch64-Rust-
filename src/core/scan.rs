@@ -1217,17 +1217,22 @@ pub fn corroboration_prior(source_count: u32) -> f64 {
 /// whitepages.com (83) are noise. Target-specific domains like
 /// welcometothejungle.com (corr=262) are valuable but indistinguishable
 /// by corroboration alone, so we blocklist by known mega-domain.
-fn domain_expansion_factor(domain: &str) -> f64 {
+/// True if `domain` is — or is a subdomain of — a known mega-domain (a top
+/// internet property that shows up in nearly every SERP). Used both to dampen
+/// such a domain's expansion weight and (in the engine) to skip expanding one
+/// that was only *incidentally* discovered, so a person/profile scan doesn't
+/// burn rounds mapping a platform's own DNS/mail infrastructure.
+pub(crate) fn is_mega_domain(domain: &str) -> bool {
     let d = domain.trim().to_lowercase();
     let d = d.strip_prefix("www.").unwrap_or(&d);
-    if MEGA_DOMAINS.iter().any(|m| {
+    MEGA_DOMAINS.iter().any(|m| {
         d == *m
             || (d.len() > m.len() && d.as_bytes()[d.len() - m.len() - 1] == b'.' && d.ends_with(m))
-    }) {
-        0.15
-    } else {
-        1.0
-    }
+    })
+}
+
+fn domain_expansion_factor(domain: &str) -> f64 {
+    if is_mega_domain(domain) { 0.15 } else { 1.0 }
 }
 
 const MEGA_DOMAINS: &[&str] = &[
@@ -1568,6 +1573,28 @@ mod tests {
         }
         for d in 1..=MAX_DEPTH {
             assert!(auto_min_expand_confidence(d, true) <= auto_min_expand_confidence(d, false));
+        }
+    }
+
+    #[test]
+    fn is_mega_domain_matches_roots_subdomains_and_www() {
+        for d in [
+            "facebook.com",
+            "www.facebook.com",
+            "m.facebook.com",
+            "PINTEREST.COM",
+            "api.twitter.com",
+            "github.com",
+        ] {
+            assert!(is_mega_domain(d), "{d} should be a mega-domain");
+        }
+        for d in [
+            "target-company.com.au",
+            "johndoe.com",
+            "notfacebook.com", // suffix look-alike must not match
+            "facebookx.com",
+        ] {
+            assert!(!is_mega_domain(d), "{d} must NOT be a mega-domain");
         }
     }
 

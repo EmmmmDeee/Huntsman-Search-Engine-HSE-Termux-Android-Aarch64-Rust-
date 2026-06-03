@@ -249,6 +249,66 @@ impl Module for KeyConsumerModule {
     }
 }
 
+/// Emits a mega-domain (facebook.com) and a target-specific domain from a
+/// username — to exercise the expansion gate that skips incidentally-discovered
+/// mega-domains. Both are high-confidence + corroborated so they clear the gate.
+struct UsernameToDomainsSynth;
+#[async_trait]
+impl Module for UsernameToDomainsSynth {
+    fn name(&self) -> &'static str {
+        "u2domains"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn description(&self) -> &'static str {
+        "test: username → domains"
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        for d in ["facebook.com", "johndoe-personal.com"] {
+            let mut e = Entity::new(EntityKind::Domain, d, 0.95, &ctx.scan_id);
+            e.corroboration = 3;
+            r.push(e);
+        }
+        Ok(r)
+    }
+}
+
+/// Records each Domain target it is dispatched on by emitting a marker entity,
+/// so a test can assert which domains the engine chose to expand.
+struct DomainSensor;
+#[async_trait]
+impl Module for DomainSensor {
+    fn name(&self) -> &'static str {
+        "domain_sensor"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn description(&self) -> &'static str {
+        "test: marks domains it runs on"
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Domain)
+    }
+    async fn process(&self, t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let mut e = Entity::new(
+            EntityKind::Url,
+            format!("sensed://{}", t.value),
+            0.95,
+            &ctx.scan_id,
+        );
+        e.tag("domain-sensor");
+        r.push(e);
+        Ok(r)
+    }
+}
+
 /// Clear any pre-existing keys for the chain-test service from the process-
 /// global pool so the key-chaining tests are hermetic. The global pool is a
 /// `OnceLock` seeded from the persisted `~/.huntsman/key_pool.json`, which can
@@ -526,6 +586,40 @@ async fn expansion_depth_one_chains_two_modules() {
     let kinds: Vec<&EntityKind> = entities.iter().map(|e| &e.kind).collect();
     assert!(kinds.contains(&&EntityKind::Username));
     assert!(kinds.contains(&&EntityKind::Phone));
+}
+
+#[tokio::test]
+async fn expansion_skips_incidental_mega_domains() {
+    // A username scan that discovers a platform mega-domain (facebook.com) and a
+    // target-specific domain must expand ONLY the latter — deep-expanding the
+    // platform maps its infrastructure, not the target. The DomainSensor marks
+    // every domain it is dispatched on, so we can see which were expanded.
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(UsernameToDomainsSynth), Arc::new(DomainSensor)],
+        "mega_gate",
+        TargetKind::Username,
+        "kylotest",
+    );
+    let opts = ScanOptions {
+        depth: 1,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    engine.run(scan, target, ctx).await.unwrap();
+    let vals: Vec<String> = store
+        .entities_for_scan(&sid)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.value)
+        .collect();
+    assert!(
+        vals.iter().any(|v| v == "sensed://johndoe-personal.com"),
+        "target-specific domain must be expanded: {vals:?}"
+    );
+    assert!(
+        !vals.iter().any(|v| v == "sensed://facebook.com"),
+        "incidentally-discovered mega-domain must NOT be expanded: {vals:?}"
+    );
 }
 
 #[tokio::test]
