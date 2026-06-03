@@ -700,6 +700,94 @@ async fn settings_keys_put_forbidden_without_flag() {
     assert_eq!(resp.status(), 403);
 }
 
+// ── Settings toggles (universal toggleability) ────────────────────────────
+
+#[tokio::test]
+async fn settings_toggles_get_lists_engines_and_modules() {
+    let app = test_app("toggles_get");
+    let resp = app.oneshot(get("/api/v1/settings/toggles")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let groups = json["groups"].as_array().expect("groups array");
+    let group = |name: &str| {
+        groups
+            .iter()
+            .find(|g| g["group"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("must expose a {name} group"))["toggles"]
+            .as_array()
+            .expect("toggles array")
+    };
+    let engines = group("engines");
+    let modules = group("modules");
+    // Engine list is the real keyless-engine catalogue (independent of the test
+    // engine's module set); modules reflect the engine the server was built with
+    // (here the single synthetic stub) — proving the handler reads live state.
+    assert!(
+        engines.len() >= 10,
+        "engine catalogue should list every keyless engine, got {}",
+        engines.len()
+    );
+    assert!(
+        modules.iter().any(|t| t["key"] == "module.synthetic"),
+        "modules group must reflect the engine's registered modules"
+    );
+    // Every toggle carries a key/name/enabled triple with a recognised prefix.
+    for g in groups {
+        for t in g["toggles"].as_array().expect("toggles array") {
+            assert!(t["enabled"].is_boolean(), "enabled is a bool");
+            let key = t["key"].as_str().expect("key is a string");
+            assert!(
+                key.starts_with("engine.") || key.starts_with("module."),
+                "unexpected toggle key prefix: {key}"
+            );
+        }
+    }
+    assert_eq!(
+        json["count"].as_u64().unwrap_or(0),
+        (engines.len() + modules.len()) as u64,
+        "count is the sum of both groups"
+    );
+}
+
+#[tokio::test]
+async fn settings_toggles_put_rejects_non_loopback_peer() {
+    use std::net::SocketAddr;
+    let app = test_app("toggles_put_lan");
+    // A LAN peer must never be able to flip server-wide capability toggles.
+    let mut req = Request::builder()
+        .method("PUT")
+        .uri("/api/v1/settings/toggles")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"key":"engine.google","enabled":false}"#))
+        .unwrap();
+    let addr: SocketAddr = "192.168.1.50:5555".parse().unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(addr));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 403, "toggle writes are loopback-only");
+}
+
+#[tokio::test]
+async fn settings_toggles_put_rejects_unknown_key() {
+    use std::net::SocketAddr;
+    let app = test_app("toggles_put_unknown");
+    // Loopback peer, but the key names no real capability — must 400 and (since
+    // it never reaches `set_bool`) must not mutate the persisted settings.
+    let mut req = Request::builder()
+        .method("PUT")
+        .uri("/api/v1/settings/toggles")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"key":"module.not_a_real_module","enabled":false}"#,
+        ))
+        .unwrap();
+    let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(addr));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 400, "an unknown toggle key is rejected");
+}
+
 // ── Scan rerun ──────────────────────────────────────────────────────────
 
 #[tokio::test]

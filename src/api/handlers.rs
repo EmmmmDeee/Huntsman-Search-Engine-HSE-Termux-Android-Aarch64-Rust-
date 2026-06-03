@@ -582,6 +582,105 @@ pub async fn settings_keys_put(
     }
 }
 
+/// `GET /api/v1/settings/toggles` — the full capability-toggle catalogue
+/// (universal toggleability): every search engine and every registered module
+/// with its current on/off state, grouped for the web Settings panel. Stored
+/// overrides live in `~/.huntsman/settings.json`; an unset key reports its
+/// in-code default (on), so a brand-new capability appears enabled.
+pub async fn settings_toggles_get(State(s): State<Arc<AppState>>) -> Json<Value> {
+    let engines: Vec<Value> = crate::modules::search_engines::engine_toggles()
+        .into_iter()
+        .map(|(key, enabled)| {
+            let name = key.strip_prefix("engine.").unwrap_or(&key).to_string();
+            json!({ "key": key, "name": name, "enabled": enabled })
+        })
+        .collect();
+    // Modules sorted by name for a stable, browsable grid (registry order is by
+    // priority, which is the wrong axis for a settings list).
+    let mut mods: Vec<(&'static str, bool)> = s
+        .engine
+        .modules()
+        .iter()
+        .map(|m| {
+            let name = m.name();
+            (
+                name,
+                crate::util::settings::get_bool(&format!("module.{name}"), true),
+            )
+        })
+        .collect();
+    mods.sort_by_key(|(name, _)| *name);
+    let modules: Vec<Value> = mods
+        .into_iter()
+        .map(|(name, enabled)| {
+            json!({ "key": format!("module.{name}"), "name": name, "enabled": enabled })
+        })
+        .collect();
+    let count = engines.len() + modules.len();
+    Json(json!({
+        "groups": [
+            { "group": "engines", "label": "Search engines", "toggles": engines },
+            { "group": "modules", "label": "Modules", "toggles": modules },
+        ],
+        "count": count,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct TogglePutRequest {
+    pub key: String,
+    pub enabled: bool,
+}
+
+/// `PUT /api/v1/settings/toggles` — flip one capability toggle and persist it.
+/// Loopback-only (the dashboard is a local operator tool) and bounded to known
+/// engine/module keys so a typo can't persist junk. No secret is involved, so —
+/// unlike key writes — this does NOT require `--allow-key-write`.
+pub async fn settings_toggles_put(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<TogglePutRequest>,
+) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "toggle writes are loopback-only" })),
+        )
+            .into_response();
+    }
+    if !toggle_key_is_known(&s, &req.key) {
+        return bad_request(format!(
+            "unknown toggle key '{}' (expected engine.<name> or module.<name>)",
+            req.key
+        ));
+    }
+    match crate::util::settings::set_bool(&req.key, req.enabled) {
+        Ok(()) => {
+            tracing::info!(key = %req.key, enabled = req.enabled, "settings/toggle written");
+            (
+                StatusCode::OK,
+                Json(json!({ "status": "ok", "key": req.key, "enabled": req.enabled })),
+            )
+                .into_response()
+        }
+        Err(e) => bad_request(e.to_string()),
+    }
+}
+
+/// True if `key` names a real engine (`engine.<name>`) or registered module
+/// (`module.<name>`) — bounds web toggle writes to actual capabilities.
+fn toggle_key_is_known(s: &AppState, key: &str) -> bool {
+    if let Some(name) = key.strip_prefix("module.") {
+        return s.engine.modules().iter().any(|m| m.name() == name);
+    }
+    if key.starts_with("engine.") {
+        return crate::modules::search_engines::engine_toggles()
+            .iter()
+            .any(|(k, _)| k == key);
+    }
+    false
+}
+
 // ─── Live-mode handlers ────────────────────────────────────────────────────
 
 pub async fn live_create(

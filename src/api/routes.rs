@@ -27,6 +27,8 @@
 //! | GET    | `/api/v1/live/{id}/events`        | `live_events_sse` (SSE)  |
 //! | GET    | `/api/v1/settings/keys`           | `settings_keys_get` (v0.10+) |
 //! | PUT    | `/api/v1/settings/keys`           | `settings_keys_put`      |
+//! | GET    | `/api/v1/settings/toggles`        | `settings_toggles_get` (v1.4+) |
+//! | PUT    | `/api/v1/settings/toggles`        | `settings_toggles_put`   |
 //! | *      | `/api/*` (unmatched)              | `api_not_found` (JSON 404) |
 //! | GET    | `/static/{file}`                  | `vendor_handler`         |
 //! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
@@ -201,6 +203,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route(
             "/settings/keys",
             get(handlers::settings_keys_get).put(handlers::settings_keys_put),
+        )
+        .route(
+            "/settings/toggles",
+            get(handlers::settings_toggles_get).put(handlers::settings_toggles_put),
         )
         .fallback(api_not_found);
 

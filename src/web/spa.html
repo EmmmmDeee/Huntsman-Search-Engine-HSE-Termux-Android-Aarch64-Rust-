@@ -134,6 +134,9 @@
       .keyrow input[type=password] { min-width: 0 !important; }
     }
     .keyrow .kactions{display:flex;gap:6px;margin-left:auto}
+    /* Capability-toggle grid (Settings): chips wrap and flow; monospace name. */
+    .tg-grid{display:flex;flex-wrap:wrap;gap:5px}
+    .tg-chip{font-family:monospace}
     .mod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:4px;
               max-height:380px;overflow-y:auto;padding:2px;border:1px solid #e3e3e3;
               border-radius:3px;background:#fafafa}
@@ -448,6 +451,8 @@ const API = {
   gexfUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/graph.gexf',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
   keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
+  togglesGet: ()=>API._req('/api/v1/settings/toggles'),
+  togglesPut: body=>API._req('/api/v1/settings/toggles',{method:'PUT',body}),
   stats:     ()=>API._req('/api/v1/stats'),
   search:    (q,limit)=>API._req('/api/v1/search?q='+encodeURIComponent(q)+'&limit='+(limit||50)),
   liveList:   ()=>API._req('/api/v1/live'),
@@ -1688,7 +1693,7 @@ function renderInfo(host, scan){
 
 /* ═══════════ Page: OPTS / Settings (#/opts) ═══════════ */
 async function renderOpts(v){
-  const data = await API.keysGet();
+  const [data, toggles] = await Promise.all([API.keysGet(), API.togglesGet()]);
   S.settings = data;
 
   v.innerHTML = `
@@ -1718,6 +1723,27 @@ async function renderOpts(v){
             <button class="btn btn-primary" id="k-save" disabled>Save changes</button>
             <span class="text-muted" id="k-pending" style="margin-left:10px"></span>
           </div>` : ''}
+      </div>
+    </div>
+
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Capability toggles</b>
+        <span class="text-muted pull-right" style="font-size:12px">${toggles.count} switches · click to flip · persisted (loopback-only)</span>
+      </div>
+      <div class="panel-body">
+        <p class="text-muted" style="font-size:12px">
+          Universal toggleability (SpiderFoot-style): turn any search engine or
+          module on/off across <b>all</b> scans. Saved to
+          <code>~/.huntsman/settings.json</code> — no restart. A disabled module
+          is skipped at the scan gate (and shows in the summary's <code>skipped</code>
+          count); a disabled engine is never queried.
+        </p>
+        ${(toggles.groups||[]).map(g=>`
+          <div style="margin-top:8px">
+            <h5 style="margin:6px 0"><b>${esc(g.label)}</b>
+              <span class="text-muted" style="font-weight:normal">(${(g.toggles||[]).length})</span></h5>
+            <div class="tg-grid">${(g.toggles||[]).map(toggleChip).join('')}</div>
+          </div>`).join('')}
       </div>
     </div>
 
@@ -1752,7 +1778,33 @@ async function renderOpts(v){
   `;
 
   if (data.write_enabled) wireKeyEditor();
+  wireToggles();
   wireDiagnostics();
+}
+
+/* ─── Capability toggles (universal toggleability) ─── */
+function toggleChip(t){
+  const on = !!t.enabled;
+  return `<button type="button" class="btn btn-xs ${on?'btn-success':'btn-default'} tg-chip"
+    data-key="${attr(t.key)}" data-name="${attr(t.name)}" data-on="${on?1:0}" title="${attr(t.key)}">
+    <i class="glyphicon glyphicon-${on?'ok':'remove'}"></i> ${esc(t.name)}</button>`;
+}
+function wireToggles(){
+  $$('.tg-chip').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const key = btn.dataset.key;
+      const next = btn.dataset.on !== '1';   // flip current state
+      btn.disabled = true;
+      try {
+        await API.togglesPut({key, enabled: next});
+        btn.dataset.on = next ? '1' : '0';
+        btn.className = 'btn btn-xs '+(next?'btn-success':'btn-default')+' tg-chip';
+        btn.innerHTML = `<i class="glyphicon glyphicon-${next?'ok':'remove'}"></i> ${esc(btn.dataset.name)}`;
+        toast(`${key} ${next?'on':'off'}`);
+      } catch(e){ alertify.error(e.message); }
+      finally { btn.disabled = false; }
+    });
+  });
 }
 
 /* ─── Diagnostics: on-demand self-test + verbose-log download ─── */

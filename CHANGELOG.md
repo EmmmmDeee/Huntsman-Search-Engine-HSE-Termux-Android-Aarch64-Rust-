@@ -27,6 +27,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
     skipped at the scan gate (reason `disabled in config`) and never touches the
     network. `module.<name>` keys default on, so unset modules behave exactly as
     before.
+  - **Web Settings panel + toggle API.** The dashboard's Settings page now renders
+    the full capability catalogue (every engine + module) as a click-to-flip grid,
+    backed by `GET /api/v1/settings/toggles` (the catalogue with live state) and
+    `PUT /api/v1/settings/toggles` (`{key, enabled}`). Writes are loopback-only and
+    bounded to known engine/module keys; no `--allow-key-write` needed since a
+    toggle holds no secret. Toggling in the UI takes effect on the next scan with
+    no restart.
 - **Search-engine liveness panel + structured health log.** A new `hse engines`
   command (and `--json`) probes every keyless engine concurrently and reports
   `Up` / `Blocked` / `Down`, surfaced live in the web SPA at `#/engines` and over

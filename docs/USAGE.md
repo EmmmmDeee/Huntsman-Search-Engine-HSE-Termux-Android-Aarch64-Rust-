@@ -247,6 +247,9 @@ Toggle keys:
 All toggle keys default to **on**, so an unset key (or a brand-new toggle added
 in a later release) behaves exactly as before.
 
+The same toggles are manageable from the web dashboard's **Settings** page as a
+click-to-flip grid (backed by `GET`/`PUT /api/v1/settings/toggles`, loopback-only).
+
 ---
 
 ## `hse serve` (v0.3+)
@@ -278,6 +281,8 @@ All endpoints are under `/api/v1/`.
 | GET    | `/keys/status`             | `{ count, services: [{ service, total, active, rate_limited, exhausted, invalid, untested, uses, errors }, ...] }` — key-pool quota health, **never key values**. |
 | GET    | `/settings/keys`           | `{ keys: [{ name, set }], count, write_enabled, env_path }` — which `HUNTSMAN_*` keys are configured, **never their values**. Drives the Settings page. |
 | PUT    | `/settings/keys`           | Body `{ updates: { "HUNTSMAN_X": "val", ... }, deletes: ["HUNTSMAN_Y", ...] }`. Atomically writes `~/.huntsman.env` (preserves comments). **Loopback-only**, enabled by default (`--no-key-write` to disable). Powers "paste & save a key" in the UI. |
+| GET    | `/settings/toggles`        | `{ count, groups: [{ group, label, toggles: [{ key, name, enabled }] }] }` — the full capability catalogue (every engine + module) with live on/off state. Drives the Settings page's toggle grid. |
+| PUT    | `/settings/toggles`        | Body `{ key, enabled }` (e.g. `{ "key": "module.wikidata", "enabled": false }`). Persists one toggle to `~/.huntsman/settings.json`. **Loopback-only**, bounded to known `engine.*`/`module.*` keys (unknown → 400). No `--allow-key-write` needed (no secret). |
 | POST   | `/scans`                   | Body: `ScanRequest` (`{ kind?, value, options? }`). Returns `202 { scan_id, status }`. **`kind` is optional** — omit it and the server auto-detects the target type from `value` (the unified scan). |
 | GET    | `/scans`                   | 200 most recent scans. |
 | GET    | `/scans/{id}`              | Single scan record. 404 if unknown. |
