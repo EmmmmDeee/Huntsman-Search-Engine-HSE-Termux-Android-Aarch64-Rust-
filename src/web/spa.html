@@ -208,6 +208,7 @@
         <li id="nav-newscan"><a href="#/newscan"><i class="glyphicon glyphicon-screenshot"></i>&nbsp;New Scan</a></li>
         <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
         <li id="nav-live"   ><a href="#/live"   ><i class="glyphicon glyphicon-record"></i>&nbsp;Live</a></li>
+        <li id="nav-engines"><a href="#/engines"><i class="glyphicon glyphicon-search"></i>&nbsp;Engines</a></li>
         <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a></li>
       </ul>
       <form class="navbar-form navbar-left" style="margin-left:10px" onsubmit="globalSearch(event)">
@@ -432,6 +433,7 @@ const API = {
   },
   health:    ()=>API._req('/api/v1/health'),
   modules:   ()=>API._req('/api/v1/modules'),
+  engines:   ()=>API._req('/api/v1/engines/health'),
   scans:     ()=>API._req('/api/v1/scans'),
   scan:      id=>API._req('/api/v1/scans/'+encodeURIComponent(id)),
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
@@ -470,6 +472,7 @@ function parseHash(){
   if (segs[0]==='opts'||segs[0]==='settings') return {name:'opts', params:{}, query};
   if (segs[0]==='search')                   return {name:'search', params:{}, query};
   if (segs[0]==='live')                     return {name:'live', params:{}, query};
+  if (segs[0]==='engines')                  return {name:'engines', params:{}, query};
   if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
   return {name:'dash', params:{}, query};
 }
@@ -481,9 +484,10 @@ async function render(){
   closeSse();
   clearLiveTimer();
   clearScanTimer();
+  clearEnginesTimer();
   S.route = parseHash();
   $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
-  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans'};
+  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
   const v = $('#view');
@@ -496,6 +500,7 @@ async function render(){
     if (S.route.name==='opts')     return await renderOpts(v);
     if (S.route.name==='search')   return await renderSearch(v);
     if (S.route.name==='live')     return await renderLive(v);
+    if (S.route.name==='engines')  return await renderEngines(v);
   } catch(e){
     v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
                    <button class="btn btn-default btn-sm" style="margin-left:12px" onclick="render()">Retry</button></div>`;
@@ -1881,6 +1886,53 @@ async function renderSearch(v){
 /* ═══════════ Page: LIVE MONITOR (#/live) — continuous re-scan ═══════════ */
 function clearLiveTimer(){ if (S.liveTimer){ clearInterval(S.liveTimer); S.liveTimer = null; } }
 function clearScanTimer(){ if (S.scanTimer){ clearTimeout(S.scanTimer); S.scanTimer = null; } }
+function clearEnginesTimer(){ if (S.enginesTimer){ clearInterval(S.enginesTimer); S.enginesTimer = null; } }
+
+/* ═══════════ Page: SEARCH-ENGINE LIVENESS (#/engines) ═══════════ */
+/* Renders the cached liveness sweep from GET /api/v1/engines/health (populated
+   by the periodic + startup background sweep in `hse serve`). Auto-refreshes
+   every 30s while the view is open; clearEnginesTimer() (called from render())
+   stops it on navigation away. */
+async function renderEngines(v){
+  let d;
+  try { d = await API.engines(); }
+  catch(e){ v.innerHTML = `<div class="alert alert-danger"><strong>Could not load engine liveness.</strong> ${esc(e.message)}</div>`; return; }
+  const eng = d.engines || [];
+  const when = d.checked_at ? new Date(d.checked_at*1000).toLocaleString() : '—';
+  const dot = st => {
+    const c = st==='up' ? '#3c763d' : (st==='blocked' ? '#8a6d3b' : '#a94442');
+    return `<span style="color:${c};font-weight:600">&#9679;&nbsp;${esc(st)}</span>`;
+  };
+  const rows = eng.map(e=>`<tr>
+      <td><b>${esc(e.engine)}</b></td>
+      <td>${dot(e.status)}</td>
+      <td class="text-right">${esc(String(e.latency_ms))} ms</td>
+      <td class="text-right">${esc(String(e.results))}</td>
+    </tr>`).join('');
+  v.innerHTML = `
+    <div class="page-header" style="margin-top:0;border-bottom:1px solid #eee;padding-bottom:8px">
+      <h3 style="margin:0"><i class="glyphicon glyphicon-search"></i>&nbsp;Search-engine liveness
+        <button class="btn btn-default btn-sm pull-right" onclick="refreshEngines()"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Refresh</button>
+      </h3>
+    </div>
+    <div class="row">
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Up</div><div class="val" style="color:#3c763d">${d.up||0}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Blocked</div><div class="val" style="color:#8a6d3b">${d.blocked||0}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Down</div><div class="val" style="color:#a94442">${d.down||0}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Engines</div><div class="val">${d.total||0}</div></div></div>
+    </div>
+    <p class="text-muted" style="margin-top:8px">Free, keyless engines — probed at startup and on a periodic cycle. Last sweep: ${esc(when)}. Auto-refreshes every 30&nbsp;s.</p>
+    <div class="table-responsive"><table class="table table-striped table-condensed tablesorter">
+      <thead><tr><th>Engine</th><th>Status</th><th class="text-right">Latency</th><th class="text-right">Results</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" class="text-center text-muted">No sweep data yet</td></tr>'}</tbody>
+    </table></div>`;
+  clearEnginesTimer();
+  S.enginesTimer = setInterval(refreshEngines, 30000);
+}
+async function refreshEngines(){
+  if (S.route && S.route.name === 'engines') { await renderEngines($('#view')); }
+  else { clearEnginesTimer(); }
+}
 function wireLiveStops(){
   $$('button[data-livestop]').forEach(b=>b.addEventListener('click', async ()=>{
     try { await API.liveStop(b.dataset.livestop); toast('Stopping session'); render(); }

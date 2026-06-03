@@ -218,11 +218,11 @@ pub async fn version() -> Json<Value> {
 /// yet, runs one lazily. Each engine reports up/blocked/down + latency + result
 /// count. Backs the web liveness panel and `hse engines`.
 pub async fn engines_health() -> Json<Value> {
-    use crate::modules::search_engines::health::{EngineStatus, cached, refresh_cache};
-    let snap = match cached() {
-        Some(s) => s,
-        None => refresh_cache().await,
-    };
+    use crate::modules::search_engines::health::{EngineStatus, cached_or_empty};
+    // Serve the cached sweep (instant, hermetic); never probe on the request
+    // path. The startup/periodic sweep in `hse serve` populates it; a cold cache
+    // returns an empty snapshot and the panel auto-refreshes.
+    let snap = cached_or_empty();
     let count = |st: EngineStatus| snap.engines.iter().filter(|h| h.status == st).count();
     let engines: Vec<Value> = snap
         .engines

@@ -90,6 +90,17 @@ pub(crate) fn cached() -> Option<HealthSnapshot> {
     CACHE.read().ok().and_then(|r| r.clone())
 }
 
+/// The cached sweep, or an empty (never-probed) snapshot. Used by the HTTP
+/// handler so a panel fetch is instant and hermetic — it never triggers a live
+/// 17-engine probe on the request path; the periodic/startup sweep in
+/// `hse serve` (or `hse engines`) is what populates the cache.
+pub(crate) fn cached_or_empty() -> HealthSnapshot {
+    cached().unwrap_or(HealthSnapshot {
+        checked_at: 0,
+        engines: Vec::new(),
+    })
+}
+
 /// Pure classification of a probe outcome — split out so it's unit-testable
 /// without a live fetch.
 fn classify(outcome: &FetchOutcome, results: usize) -> EngineStatus {

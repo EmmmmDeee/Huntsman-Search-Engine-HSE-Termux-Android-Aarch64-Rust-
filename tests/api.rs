@@ -1122,6 +1122,7 @@ async fn spa_references_only_registered_api_endpoints() {
             "health" => "/api/v1/health".to_string(),
             "version" => "/api/v1/version".to_string(),
             "modules" => "/api/v1/modules".to_string(),
+            "engines" => "/api/v1/engines/health".to_string(),
             "stats" => "/api/v1/stats".to_string(),
             "scans" => "/api/v1/scans".to_string(),
             "search" => "/api/v1/search?q=x".to_string(),
