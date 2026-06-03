@@ -610,9 +610,15 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
     }
 
     // ── Victim section: IPs, emails, HWIDs, device users ──
-    let victim_start = body.find("=== INFECTED MACHINES");
-    let victim_end = body.find("=== OSINT ENRICHMENT").unwrap_or(body.len());
-    if let Some(vs) = victim_start {
+    // The section runs from the INFECTED marker to the next OSINT ENRICHMENT
+    // marker AFTER it (or end of file). Search for the end relative to `vs`: a
+    // stray OSINT marker positioned *before* the INFECTED one would otherwise
+    // make `victim_end < vs`, and `&body[vs..victim_end]` would panic
+    // (start > end) on a crafted import file — the CLI path has no catch_unwind.
+    if let Some(vs) = body.find("=== INFECTED MACHINES") {
+        let victim_end = body[vs..]
+            .find("=== OSINT ENRICHMENT")
+            .map_or(body.len(), |rel| vs + rel);
         let victim_section = &body[vs..victim_end];
         for line in victim_section.lines() {
             if let Some(rest) = line.strip_prefix("IPs: ") {
@@ -1011,5 +1017,26 @@ mod tests {
         );
         assert!(vals.contains(&"evil.com"), "real domain kept");
         assert!(vals.contains(&"sub.evil.com"), "real subdomain kept");
+    }
+
+    #[test]
+    fn import_txt_survives_misordered_section_markers() {
+        // Regression: a crafted TXT export with the OSINT ENRICHMENT marker
+        // BEFORE the INFECTED MACHINES marker used to panic
+        // (`&body[vs..victim_end]` with start > end), aborting `hse import` —
+        // the CLI path has no catch_unwind. The end marker is now sought after
+        // the start, so the slice is always well-formed.
+        let body = "=== OSINT ENRICHMENT ===\nstuff\n=== INFECTED MACHINES ===\nIPs: 8.8.8.8\n";
+        assert!(
+            super::cmd_import_txt(body, "table").is_ok(),
+            "misordered section markers must not panic the importer"
+        );
+    }
+
+    #[test]
+    fn import_txt_parses_victim_section_in_normal_order() {
+        // Happy path unaffected: INFECTED before OSINT still parses cleanly.
+        let body = "=== INFECTED MACHINES ===\nIPs: 8.8.8.8\n=== OSINT ENRICHMENT ===\nMore: x\n";
+        assert!(super::cmd_import_txt(body, "table").is_ok());
     }
 }

@@ -1749,7 +1749,14 @@ fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
 
     let pool = global_pool();
     let now = crate::core::entity::unix_now();
-    let entity_ref = format!("{}:{}", entity.kind, &entity.uid[..8]);
+    // Short uid prefix for the harvest note. uids are 64-hex SHA-256 in practice,
+    // but use the panic-free `.get(..8)` form (matching entity.rs) so a future
+    // short/non-ASCII uid can never panic this out-of-`catch_unwind` scan path.
+    let entity_ref = format!(
+        "{}:{}",
+        entity.kind,
+        entity.uid.get(..8).unwrap_or(&entity.uid)
+    );
 
     let harvest = |text: &str, source: &str, notes: Option<String>| {
         if let Some((service, key_val)) = identify_api_key(text) {

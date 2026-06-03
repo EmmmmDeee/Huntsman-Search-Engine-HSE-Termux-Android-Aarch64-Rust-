@@ -89,6 +89,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Panic in `hse import` on a crafted TXT export (slice index out of order).** The
+  stealer-log TXT importer sliced `&body[infected_marker .. osint_marker]` without
+  checking the markers' order; a file with `=== OSINT ENRICHMENT` positioned before
+  `=== INFECTED MACHINES` made `end < start` and panicked (`slice index starts at N
+  but ends at M`), aborting the whole `hse import` command (the CLI path has no
+  `catch_unwind`). The section-end marker is now sought *after* the start marker, so
+  the slice is always well-formed; regression-tested. (Found by an audit for panics
+  outside the per-module `catch_unwind` guard, which otherwise came back clean — the
+  scan/correlator/API paths uniformly use `.get()`/`unwrap_or`/`saturating_*`.)
 - **Concurrent-write races in the persisted JSON stores (toggle store + key pool).**
   Both used a *fixed* temp filename (`settings.json.tmp` / `key_pool.json.tmp`)
   before the atomic rename, so two near-simultaneous writers could truncate and
