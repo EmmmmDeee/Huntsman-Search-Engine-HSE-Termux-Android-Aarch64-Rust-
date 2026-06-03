@@ -66,15 +66,17 @@ static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::Bearer, 75, 
 /// on top of the universal `/search`; with depth expansion every discovered
 /// username/email/phone/domain consumes its own matrix, so a cap of 160 lets
 /// the full 18-endpoint pool fire across ~10 recursively-discovered pivots in
-/// one scan — corroborating far more of the graph — while still allowing ~31
-/// full scans before the daily 5,000 ceiling. The 200-query session ceiling
-/// (env-tunable via `HUNTSMAN_SEEKNOW_SESSION_CAP`, and hard-clamped to 200 by
-/// the engine) keeps long-running radar/live sessions bounded — the "bound
-/// everything" invariant for a 4 GB device — short of the daily 5,000 ceiling.
+/// one scan — corroborating far more of the graph — while still allowing many
+/// full scans before the daily 5,000 ceiling. The cap is refreshed at each
+/// expansion-round boundary ([`refresh_round_budget`]) so SeekNow participates
+/// in EVERY iteration; the 500-query session ceiling (env-tunable via
+/// `HUNTSMAN_SEEKNOW_SESSION_CAP`, hard-clamped to 500 by the engine) bounds the
+/// total across all rounds of a deep scan — the "bound everything" invariant for
+/// a 4 GB device — while leaving room for ~3 full rounds at the per-round cap.
 static BUDGET: QuotaBudget = QuotaBudget::new(
     "seeknow",
     160,
-    200,
+    500,
     "HUNTSMAN_SEEKNOW_SCAN_CAP",
     "HUNTSMAN_SEEKNOW_SESSION_CAP",
 );
@@ -152,6 +154,16 @@ pub fn reset_budget() {
     // if it's still bad, the first call this scan re-latches (one warning, then
     // the remaining ~160 lookups fast-fail).
     KEY_INVALID.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Refresh SeekNow's per-round budget at each expansion-round boundary so it is
+/// utilised in EVERY iteration of a scan, not just until a wide first round
+/// drains the budget. Resets only the per-round counter — the per-session
+/// ceiling still bounds total volume across all rounds, the operator's cap
+/// override survives, and a latched-invalid key stays latched (we do not
+/// re-attempt a dead key every round, unlike the per-scan [`reset_budget`]).
+pub fn refresh_round_budget() {
+    BUDGET.reset_round();
 }
 
 fn mark_quota_exhausted() {
@@ -599,9 +611,9 @@ mod tests {
         // Regression guard for the operator's "use see-know.eu extensively"
         // directive. The legacy cap was 8 lookups (99.84% of quota unused);
         // it was raised to 120 and then to 160 so the full endpoint matrix
-        // fires across ~10 recursively-discovered pivots per scan. Lock the
-        // floor at 120 so coverage can't silently regress below "extensive",
-        // and keep it within the 200 session ceiling.
+        // fires across ~10 recursively-discovered pivots per round. Lock the
+        // floor at 120 so coverage can't silently regress below "extensive"
+        // (the per-round cap; the per-session ceiling is separate, now 500).
         let _guard = BUDGET_TEST_LOCK.lock();
         reset_budget();
         let cap = budget_snapshot().scan_cap;

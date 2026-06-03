@@ -169,6 +169,17 @@ impl QuotaBudget {
         self.cap_override.store(0, Ordering::Release);
     }
 
+    /// Reset ONLY the per-round counter, at each expansion-round boundary, so a
+    /// module gets a fresh per-round allowance and participates in *every*
+    /// iteration instead of being starved once a wide first round drains the
+    /// budget. Deliberately preserves the installed cap override, the sticky
+    /// daily-`quota_exhausted` flag (a real upstream signal — don't un-exhaust
+    /// it mid-scan), and the per-session ceiling (which still bounds total
+    /// volume across all rounds).
+    pub fn reset_round(&self) {
+        self.scan_count.store(0, Ordering::Release);
+    }
+
     /// Trip the sticky exhausted flag. Subsequent `remaining()` calls
     /// return `false` until `reset_scan()` clears it.
     pub fn mark_exhausted(&self) {
@@ -220,6 +231,28 @@ mod tests {
     fn label_is_round_tripped() {
         let b = fresh();
         assert_eq!(b.label(), "test_budget");
+    }
+
+    #[test]
+    fn reset_round_clears_only_the_per_round_counter() {
+        let b = fresh();
+        b.set_scan_cap_override(50);
+        b.increment();
+        b.increment();
+        b.mark_exhausted();
+
+        b.reset_round();
+
+        let snap = b.snapshot();
+        // Per-round counter is cleared so the next round starts fresh...
+        assert_eq!(snap.scan_used, 0);
+        // ...but the session counter (the cross-round ceiling), the operator's
+        // cap override, and the sticky daily-exhausted flag all survive — a
+        // round refresh must not blow the session ceiling, drop the override,
+        // or un-exhaust a real daily-quota signal.
+        assert_eq!(snap.session_used, 2);
+        assert_eq!(b.scan_cap(), 50);
+        assert!(b.is_exhausted());
     }
 
     #[test]

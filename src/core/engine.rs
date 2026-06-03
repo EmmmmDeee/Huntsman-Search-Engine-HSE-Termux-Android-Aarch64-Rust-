@@ -222,11 +222,11 @@ impl ScanEngine {
         crate::modules::wigle::reset_budget();
 
         // Apply per-scan SeekNow budget override if the operator asked
-        // for one. Capped at 200 so a single scan cannot blow the
+        // for one. Capped at 500 so a single scan cannot blow the
         // per-session ceiling. `reset_budget` above cleared any prior
         // override; this re-installs it for the current scan only.
         if let Some(cap) = scan.options.seeknow_scan_cap {
-            let clamped = cap.min(200);
+            let clamped = cap.min(500);
             crate::util::see_know::set_scan_cap_override(clamped);
         }
 
@@ -597,6 +597,11 @@ impl ScanEngine {
             // api_key_probe validation, web_crawler scraping) become available
             // to this round's modules automatically.
             hot_inject_keys(&mut ctx.keys);
+
+            // Refresh SeekNow's per-round budget so it is utilised in EVERY
+            // iteration (not just until a wide first round drains it). The
+            // per-session ceiling still bounds total volume across all rounds.
+            crate::modules::see_know::refresh_round_budget();
 
             if ctx.cancel.is_cancelled() {
                 let stop = StopReason::Cancelled;

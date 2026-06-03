@@ -59,6 +59,12 @@ pub fn reset_budget() {
     crate::util::see_know::reset_budget();
 }
 
+/// Re-export the per-round budget refresh for the engine's expansion loop, so
+/// SeekNow is utilised in every iteration of a scan.
+pub fn refresh_round_budget() {
+    crate::util::see_know::refresh_round_budget();
+}
+
 pub struct SeekNow;
 
 #[async_trait]
