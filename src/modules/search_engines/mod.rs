@@ -2590,6 +2590,36 @@ mod tests {
     }
 
     #[test]
+    fn bigram_similarity_repeated_chars_stay_bounded() {
+        // Regression: the old membership-count Dice numerator double-counted
+        // repeated bigrams, so `aaaa`↔`aaa` returned 1.2 (above the documented
+        // ceiling) and `anna`↔`ana` over-scored. The multiset intersection
+        // keeps every result in [0,1] and gives the textbook Dice value.
+        for (a, b) in [
+            ("aaaa", "aaa"),
+            ("anna", "ana"),
+            ("mississippi", "misisipi"),
+            ("aaaaaa", "a"),
+        ] {
+            let sim = bigram_similarity(a, b);
+            assert!(
+                (0.0..=1.0).contains(&sim),
+                "{a}~{b} out of [0,1]: {sim}"
+            );
+        }
+        // anna -> [an, nn, na]; ana -> [an, na]; intersection {an, na} = 2.
+        // Dice = 2*2/(3+2) = 0.8 under membership-count; correct multiset
+        // intersection is still 2 here (no repeated shared bigram), so 0.8.
+        // The discriminating case is the repeated bigram:
+        // aaaa -> [aa, aa, aa]; aaa -> [aa, aa]; multiset ∩ = 2, not 3.
+        let sim = bigram_similarity("aaaa", "aaa");
+        assert!(
+            (sim - (2.0 * 2.0 / 5.0)).abs() < 1e-9,
+            "expected multiset Dice 0.8, got {sim}"
+        );
+    }
+
+    #[test]
     fn score_username_promotes_seed_variant_over_cooccurrence() {
         // Potentiated username scoring: a handle sharing the seed's stem (a likely
         // ALIAS of the same person) must outrank — and reach a higher tier than —

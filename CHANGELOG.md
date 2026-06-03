@@ -154,6 +154,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`bigram_similarity` (Sørensen–Dice handle metric) over-counted repeated
+  bigrams and could exceed 1.0.** The shared-bigram numerator was a membership
+  test (`bb.contains(bg)`), not a multiset intersection, so every occurrence of
+  a bigram in `a` matched a single occurrence in `b` more than once. The
+  coefficient then breached its documented `[0,1]` ceiling on
+  repeated-character inputs (`aaaa`↔`aaa` returned **1.2**) and inflated
+  similarity across the repeated letters that names/handles routinely carry.
+  Because this metric drives the `score_username` handle-similarity signal
+  (Signal 5, gated at `≥0.25`), the inflation over-credited co-occurrence noise
+  and could lift it into the PROBABLE tier. Replaced with the textbook multiset
+  intersection (Σ min(count_a, count_b)), which is `≤ min(|ba|, |bb|)` and so
+  bounded by 1.0 — a precision fix that makes alias detection strictly more
+  conservative. Pinned with a regression test covering the `[0,1]` bound and
+  the repeated-bigram case.
 - **`github_user`'s `top_event_types` finding was non-reproducible.** The recent-
   activity summary ranked event types from a `HashMap` by count with no tiebreak,
   so tied counts (and thus which types landed in the top 3, and their order) came

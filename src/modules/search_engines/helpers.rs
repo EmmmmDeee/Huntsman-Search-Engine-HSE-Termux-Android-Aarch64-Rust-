@@ -3,7 +3,7 @@ pub(super) use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-pub(super) use std::collections::HashSet;
+pub(super) use std::collections::{HashMap, HashSet};
 
 pub(super) const SRC: &str = "search_engines";
 
@@ -1461,8 +1461,22 @@ pub(super) fn extract_organisations_from_text(text: &str, terms: &[String]) -> V
     orgs
 }
 
-/// Semantic similarity between two strings using character bigram
-/// overlap (Dice coefficient). Returns 0.0–1.0.
+/// Semantic similarity between two strings using the character-bigram
+/// Sørensen–Dice coefficient. Returns a value in `[0.0, 1.0]`.
+///
+/// The shared-bigram count is a **multiset intersection** (Σ min(count_a,
+/// count_b) over distinct bigrams), not a membership test. The previous
+/// implementation counted every bigram of `a` that *appeared anywhere* in
+/// `b` (`bb.contains(bg)`), which double-counted repeated bigrams: a string
+/// with a repeated bigram could match a single occurrence in the other
+/// string more than once. That over-counted similarity for the
+/// repeated-character handles and names this metric is applied to
+/// (e.g. `aaaa`↔`aaa` returned 1.2 — above the documented ceiling — and
+/// `anna`↔`ana` scored 0.80 instead of the correct 0.67), inflating the
+/// `score_username` handle-similarity signal and over-promoting
+/// co-occurrence noise to the PROBABLE tier. The multiset intersection is
+/// the textbook Dice numerator and is guaranteed `≤ min(|ba|, |bb|)`, so
+/// the coefficient is bounded by 1.0.
 pub(super) fn bigram_similarity(a: &str, b: &str) -> f64 {
     fn bigrams(s: &str) -> Vec<(char, char)> {
         let chars: Vec<char> = s.to_lowercase().chars().collect();
@@ -1473,7 +1487,19 @@ pub(super) fn bigram_similarity(a: &str, b: &str) -> f64 {
     if ba.is_empty() || bb.is_empty() {
         return 0.0;
     }
-    let matches = ba.iter().filter(|bg| bb.contains(bg)).count();
+    // Bigram frequencies of `b`; each is consumed at most once per match so
+    // repeated bigrams in `a` can't all collapse onto a single `b` bigram.
+    let mut counts: HashMap<(char, char), u32> = HashMap::new();
+    for bg in &bb {
+        *counts.entry(*bg).or_insert(0) += 1;
+    }
+    let mut matches = 0usize;
+    for bg in &ba {
+        if let Some(c) = counts.get_mut(bg).filter(|c| **c > 0) {
+            *c -= 1;
+            matches += 1;
+        }
+    }
     (2 * matches) as f64 / (ba.len() + bb.len()) as f64
 }
 
