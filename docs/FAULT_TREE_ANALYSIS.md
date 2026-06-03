@@ -128,7 +128,7 @@ T3
 
 | ID | Description | Likelihood | Impact | Detectability | Mitigation |
 |----|-------------|-----------|--------|---------------|------------|
-| **E3.1** | A module panic aborts the **entire server** because the release profile uses `panic="abort"` (Tokio cannot isolate an abort to one task) | Low | High | Low | ✅ Strong *preventive* panic-freedom: `forbid(unsafe)`, ~0 production `unwrap`, exhaustive `match`es (arch test), clippy `-D warnings`, fuzz-ish detect tests. **Recovery path today:** the abort exits `serve`; the operator restarts with `hse-bg start`, and Termux:Boot relaunches it on device reboot (neither is restart-*on-crash*). ⚠ Two options remain the maintainer's call: (a) flip `panic="abort"`→`"unwind"` for the server artifact (costs binary size); (b) an auto-restart supervisor in `hse-bg` — **prototyped + lifecycle-tested this cycle but NOT shipped**: a correct, low-latency stop depends on `nohup`/`wait`/signal semantics that couldn't be verified on Termux's bash build, and a naïve loop has up-to-30 s stop latency during crash-backoff + an orphan-respawn risk. Not worth shipping unverified to battery-constrained devices |
+| **E3.1** | A module panic aborts the **entire server** because the release profile uses `panic="abort"` (Tokio cannot isolate an abort to one task) | Low | High | Low | ✅ Strong *preventive* panic-freedom: `forbid(unsafe)`, ~0 production `unwrap`, exhaustive `match`es (arch test), clippy `-D warnings`, fuzz-ish detect tests. **Recovery path today:** the abort exits `serve`; the operator restarts with `hse-bg start`, and Termux:Boot relaunches it on device reboot (neither is restart-*on-crash*). ⚠ Two options remain the maintainer's call: (a) flip `panic="abort"`→`"unwind"` for the server artifact (costs binary size); (b) an auto-restart supervisor in `hse-bg` — **prototyped + lifecycle-tested this cycle but NOT shipped**: a correct, low-latency stop depends on `nohup`/`wait`/signal semantics that couldn't be verified on Termux's bash build, and a naïve loop has up-to-30 s stop latency during crash-backoff + an orphan-respawn risk. Not worth shipping unverified to battery-constrained devices. ⚒ This cycle's exhaustive panic audit found + fixed a **live E3.1 instance**: `search_engines::extract_organisations_from_text` indexed the original SERP text with byte offsets taken from `text.to_lowercase()` — which is not length-preserving (`İ`→`i̇`, `ẞ`→`ß`) — so a hostile result snippet triggered a UTF-8 slice panic that would abort `serve`. Now searches the original text case-insensitively at ASCII boundaries (regression-tested). Confirms the preventive approach must be *re-run*, not assumed |
 | B3.2.1 | Blocking on a 2-thread runtime | Low | Medium | Medium | ✅ Fully async I/O (reqwest/hickory); SQLite calls are short; per-module `tokio::timeout` |
 | B3.2.2 | SSE backpressure | Low | Medium | Medium | ✅ `broadcast` channel (bounded, lagging receivers drop frames, never block producers); history endpoint backfills |
 | E3.3 | Bind fails | Low | Low | High | ✅ Bind error surfaced as a clean `Error::Other("bind …")` and non-zero exit |
@@ -165,7 +165,7 @@ T5
 
 | ID | Description | Likelihood | Impact | Detectability | Mitigation |
 |----|-------------|-----------|--------|---------------|------------|
-| E5.1 | SQLite corruption / WAL bloat | Low | High | High | ✅ WAL mode + `checkpoint_truncate()` at safe boundaries; bundled SQLite (version-pinned). ⚒ `hse doctor` now runs `PRAGMA integrity_check` + reports the WAL high-water size, so corruption is detected explicitly instead of surfacing as silently-wrong results |
+| E5.1 | SQLite corruption / WAL bloat | Low | High | High | ✅ WAL mode + `checkpoint_truncate()` at safe boundaries; bundled SQLite (version-pinned). ⚒ `hse doctor` now runs `PRAGMA integrity_check` + reports the WAL high-water size, so corruption is detected explicitly instead of surfacing as silently-wrong results. ⚒ Two interrupted-write holes closed this cycle: `upsert_correlation` now deletes-superseded-rows **and** inserts the replacement in ONE `unchecked_transaction` (a crash / `SQLITE_FULL`/`BUSY` between them no longer drops the finding); `util::key_pool::save_pool` now writes temp-file + `fsync` + atomic `rename` (a crash mid-write no longer truncates the pool → `load_pool` discarding every harvested key) |
 | E5.2 | Merge anomaly | Low | Medium | High | ✅ GREATEST-semantics merge; batch upsert in one transaction with per-entity fallback; round-trip tests |
 | E5.3 | OSINT output (PII) persisted in-repo | — | Accepted | High | ✅ Intentional (see E2.1). Data fidelity is mandatory: the engine must never silently drop or redact a finding — that would be a functional defect, not a fix |
 
@@ -177,7 +177,8 @@ T5
 T6
 ├─[OR] E6.1  Memory blow-up on a low-RAM Termux device
 │        ├─[OR] B6.1.1  Unbounded expansion frontier
-│        └─      B6.1.2  Unbounded result/entity accumulation
+│        ├─      B6.1.2  Unbounded result/entity accumulation
+│        └─      B6.1.3  Unbounded long-session bookkeeping (events / ledgers)
 ├─[OR] E6.2  API quota exhaustion (paid keys)
 └─[OR] E6.3  Concurrent-scan overload via the HTTP API
 ```
@@ -186,7 +187,8 @@ T6
 |----|-------------|-----------|--------|---------------|------------|
 | B6.1.1 | Frontier fan-out | Low | High | High | ✅ `MAX_DEPTH=3` clamp at every input boundary; visited-set; entity + wall-time caps; `tests/halting.rs` |
 | B6.1.2 | Result blow-up | Low | Medium | High | ✅ `MAX_RESULTS_PER_ENGINE`, `MAX_ACCUMULATED_RESULTS`, per-extractor caps |
-| E6.2 | Paid-quota burn | Medium | Medium | Medium | ✅ Per-scan/session budgets (SeekNow cap, OathNet budget); radar ledger never re-queries covered seeds; `free_only` |
+| B6.1.3 | Long-session bookkeeping growth | Low | Medium | Medium | ⚒ Closed this cycle for multi-day `serve`/`radar`: the `events` table is pruned at **every scan boundary** (not just at startup); the radar `DispatchLog` and `LiveSession.scan_ids` are now FIFO-bounded (100k / 10k keys) with eviction of only the oldest, so they can't grow without limit. A fixed-target `live` session never grew (deterministic scan_id) |
+| E6.2 | Paid-quota burn | Medium | Medium | Medium | ✅ Per-scan/session budgets (SeekNow cap, OathNet budget); radar ledger never re-queries covered seeds; `free_only`. ⚒ The budget gate is now an atomic `QuotaBudget::try_increment` (CAS reserve, per-scan rollback on session-cap), closing a check-then-act TOCTOU where the `see_know` `join_all` fan-out / wigle `tokio::join!` could each pass `remaining()` then all increment past the operator's cap |
 | E6.3 | Scan overload | Low | Medium | High | ✅ `MAX_CONCURRENT_SCANS=8` Tokio `Semaphore` on `POST /scans` |
 
 ---
