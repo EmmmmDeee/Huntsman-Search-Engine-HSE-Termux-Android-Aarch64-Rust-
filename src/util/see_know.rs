@@ -555,8 +555,18 @@ mod tests {
         );
     }
 
+    // Serialises the tests that touch the shared `BUDGET` global (scan-cap
+    // override + budget counters). `cargo test` runs tests in parallel, so
+    // without this they interleave `reset_budget()` / `set_scan_cap_override()`
+    // and clobber each other — a real CI flake: a concurrent `reset_budget`
+    // cleared an override mid-test, so `scan_cap` read the default (160)
+    // instead of the value just set (80). parking_lot::Mutex never poisons if
+    // a test panics while holding it.
+    static BUDGET_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
     #[test]
     fn scan_budget_remaining_decreases_with_increments() {
+        let _guard = BUDGET_TEST_LOCK.lock();
         reset_budget();
         let start = scan_budget_remaining();
         budget_increment();
@@ -571,6 +581,7 @@ mod tests {
 
     #[test]
     fn budget_snapshot_reports_active_caps() {
+        let _guard = BUDGET_TEST_LOCK.lock();
         reset_budget();
         let snap = budget_snapshot();
         assert_eq!(snap.scan_used, 0);
@@ -590,6 +601,7 @@ mod tests {
         // fires across ~10 recursively-discovered pivots per scan. Lock the
         // floor at 120 so coverage can't silently regress below "extensive",
         // and keep it within the 200 session ceiling.
+        let _guard = BUDGET_TEST_LOCK.lock();
         reset_budget();
         let cap = budget_snapshot().scan_cap;
         assert!(
@@ -600,6 +612,7 @@ mod tests {
 
     #[test]
     fn set_scan_cap_override_replaces_default_until_reset() {
+        let _guard = BUDGET_TEST_LOCK.lock();
         reset_budget();
         let base = budget_snapshot().scan_cap;
         set_scan_cap_override(80);
@@ -611,6 +624,7 @@ mod tests {
 
     #[test]
     fn scan_cap_override_zero_falls_back_to_default() {
+        let _guard = BUDGET_TEST_LOCK.lock();
         reset_budget();
         let base = budget_snapshot().scan_cap;
         set_scan_cap_override(0);
@@ -624,6 +638,7 @@ mod tests {
 
     #[test]
     fn snapshot_reflects_override_cap() {
+        let _guard = BUDGET_TEST_LOCK.lock();
         reset_budget();
         set_scan_cap_override(99);
         let snap = budget_snapshot();
@@ -633,6 +648,7 @@ mod tests {
 
     #[test]
     fn reset_clears_override_too() {
+        let _guard = BUDGET_TEST_LOCK.lock();
         // Regression guard: reset_scan must clear the cap override so
         // the next scan picks up the env / default cap unless the
         // engine installs a fresh override at scan start.
