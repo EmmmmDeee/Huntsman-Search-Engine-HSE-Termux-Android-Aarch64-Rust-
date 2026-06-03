@@ -38,6 +38,7 @@ pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
 pub mod github_user;
+pub mod gleif_lei;
 pub mod greynoise;
 pub mod hackertarget;
 pub mod hibp;
@@ -194,10 +195,11 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // People-centric enrichment
         Arc::new(name_intel::NameIntel),
         Arc::new(social_location::SocialLocation),
-        // Australian OSINT modules
+        // Australian + global public-records / corporate registries
         Arc::new(opencorporates::OpenCorporates),
         Arc::new(qld_unclaimed::QldUnclaimed),
         Arc::new(acnc_charities::AcncCharities),
+        Arc::new(gleif_lei::GleifLei),
     ]
 }
 
