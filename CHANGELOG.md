@@ -114,7 +114,10 @@ versions can include breaking changes; patch versions are bug-fix-only.
   secondary-key tiebreak. A new test asserts the (history-independent) diagnostics
   are byte-identical for identical inputs. (`adaptive_routing` is intentionally
   history-dependent — it reads + updates the persisted ledger — but its own
-  ranking order is now deterministic too.)
+  ranking order is now deterministic too.) The same fix is applied to the core
+  findings: `Evidence.attributes` (the verbatim per-record key/values surfaced
+  for every entity in `--output json` / the dossier) is now a `BTreeMap`, so an
+  entity's evidence serialises in a stable, sorted, hashable order.
 - **UTF-8 panic deriving a dork from an internationalised email (silently voided
   `search_engines`).** The email-to-lastname dork derivation dropped the local
   part's first *byte* (`local[1..]`), which panics on a non-ASCII local part
