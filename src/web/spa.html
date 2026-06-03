@@ -1732,17 +1732,21 @@ async function renderOpts(v){
       </div>
       <div class="panel-body">
         <p class="text-muted" style="font-size:12px">
-          Universal toggleability (SpiderFoot-style): turn any search engine or
-          module on/off across <b>all</b> scans. Saved to
+          Universal toggleability (SpiderFoot-style): turn any feature, search
+          engine or module on/off across <b>all</b> scans. Saved to
           <code>~/.huntsman/settings.json</code> — no restart. A disabled module
           is skipped at the scan gate (and shows in the summary's <code>skipped</code>
           count); a disabled engine is never queried.
         </p>
+        <input id="tg-filter" type="text" class="form-control input-sm"
+               placeholder="Filter by name… (e.g. yandex, wikidata, regional)"
+               autocomplete="off" style="max-width:340px;margin-bottom:12px">
         ${(toggles.groups||[]).map(g=>`
-          <div style="margin-top:8px">
+          <div class="tg-group" data-group="${attr(g.group)}" style="margin-top:8px">
             <h5 style="margin:6px 0"><b>${esc(g.label)}</b>
-              <span class="text-muted" style="font-weight:normal">(${(g.toggles||[]).length})</span></h5>
+              <span class="text-muted tg-count" style="font-weight:normal"></span></h5>
             <div class="tg-grid">${(g.toggles||[]).map(toggleChip).join('')}</div>
+            <div class="tg-empty text-muted" style="display:none;font-size:12px">no matches in this group</div>
           </div>`).join('')}
       </div>
     </div>
@@ -1779,6 +1783,8 @@ async function renderOpts(v){
 
   if (data.write_enabled) wireKeyEditor();
   wireToggles();
+  wireToggleFilter();
+  updateGroupCounts();
   wireDiagnostics();
 }
 
@@ -1801,9 +1807,42 @@ function wireToggles(){
         btn.className = 'btn btn-xs '+(next?'btn-success':'btn-default')+' tg-chip';
         btn.innerHTML = `<i class="glyphicon glyphicon-${next?'ok':'remove'}"></i> ${esc(btn.dataset.name)}`;
         toast(`${key} ${next?'on':'off'}`);
+        updateGroupCounts();   // keep the per-group "N on" tally live
       } catch(e){ alertify.error(e.message); }
       finally { btn.disabled = false; }
     });
+  });
+}
+/* Per-group tally: "(total · N on)", or "(shown/total · N on)" while filtering. */
+function updateGroupCounts(){
+  $$('.tg-group').forEach(grp=>{
+    const chips = [...grp.querySelectorAll('.tg-chip')];
+    const total = chips.length;
+    const on    = chips.filter(c=>c.dataset.on==='1').length;
+    const shown = chips.filter(c=>c.style.display!=='none').length;
+    const span  = grp.querySelector('.tg-count');
+    if (span) span.textContent = shown===total
+      ? ` (${total} · ${on} on)`
+      : ` (${shown}/${total} shown · ${on} on)`;
+  });
+}
+/* Instant client-side filter across all groups (matches name or full key). */
+function wireToggleFilter(){
+  const inp = $('#tg-filter');
+  if (!inp) return;
+  inp.addEventListener('input', ()=>{
+    const q = inp.value.trim().toLowerCase();
+    $$('.tg-chip').forEach(c=>{
+      const hay = (c.dataset.name + ' ' + c.dataset.key).toLowerCase();
+      c.style.display = (!q || hay.includes(q)) ? '' : 'none';
+    });
+    // Hide a whole group (and show its "no matches" note) when nothing matches.
+    $$('.tg-group').forEach(grp=>{
+      const anyShown = [...grp.querySelectorAll('.tg-chip')].some(c=>c.style.display!=='none');
+      const empty = grp.querySelector('.tg-empty');
+      if (empty) empty.style.display = (q && !anyShown) ? '' : 'none';
+    });
+    updateGroupCounts();
   });
 }
 

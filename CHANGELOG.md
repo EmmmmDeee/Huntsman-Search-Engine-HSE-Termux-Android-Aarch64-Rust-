@@ -36,7 +36,9 @@ versions can include breaking changes; patch versions are bug-fix-only.
     flag still forces it on for a one-off scan.
   - **Web Settings panel + toggle API.** The dashboard's Settings page now renders
     the full capability catalogue (features + every engine + module) as a
-    click-to-flip grid, backed by `GET /api/v1/settings/toggles` (the catalogue
+    click-to-flip grid with an **instant filter box** and a live per-group
+    "*N* on" tally (so the ~110-switch list — 1 feature + 17 engines + 92 modules
+    — stays navigable), backed by `GET /api/v1/settings/toggles` (the catalogue
     with live state) and `PUT /api/v1/settings/toggles` (`{key, enabled}`). Writes
     are loopback-only and bounded to known `feature.*`/`engine.*`/`module.*` keys;
     no `--allow-key-write` needed since a toggle holds no secret. Toggling in the
