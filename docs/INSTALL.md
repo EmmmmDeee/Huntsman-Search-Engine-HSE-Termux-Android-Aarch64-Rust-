@@ -244,7 +244,7 @@ In Termux, `$HOME` resolves to `/data/data/com.termux/files/home`.
 ## Verifying the install
 
 ```bash
-hse --version           # → hse 0.9.0
+hse --version           # → hse 1.3.0
 hse doctor              # environment report — should print "Termux: detected" on-device
 hse modules             # 92 modules listed (see docs/MODULES.md for full catalogue)
 hse scan --kind email --value test@example.com --modules email_to_username,gravatar

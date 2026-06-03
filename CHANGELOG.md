@@ -10,6 +10,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-06-03
+
+### Added
+
+- **Three keyless, free public-records modules** that deepen the ABN/ACN +
+  people graph and cross-correlate on-the-fly (registry 89 → 92), each
+  live-validated end-to-end:
+  - `acnc_charities` — the federal **ACNC** Register of Australian Charities
+    (~65k orgs, `data.gov.au` CKAN) → Organisation / **ABN** / Address / Domain.
+  - `gleif_lei` — the **GLEIF** Global LEI Index (~2.7M legal entities) →
+    Organisation / **ABN-ACN** (AU `registeredAs`) / Address; an *independent*
+    corroborator of the corporate graph (raises `c_effective` via noisy-OR).
+  - `wikidata` — the **Wikidata** knowledge graph → Person / Organisation +
+    official-website Domain + social-handle Usernames (feeds `username_search`).
+
 ### Changed
 
 - **Bounded tokio's blocking-thread pool for Termux (memory footprint).** `main`
@@ -22,6 +37,27 @@ versions can include breaking changes; patch versions are bug-fix-only.
   Termux footprint/battery win.
 
 ### Fixed
+
+- **Critical UTF-8 byte-slice panics on untrusted data + an API-key leak into the
+  persisted event log (security & robustness pass).** A three-front audit
+  (core/web, modules, storage/security) surfaced a recurring crash class —
+  byte-slicing untrusted strings at a fixed offset that can land mid-codepoint
+  (the release profile is `panic = "unwind"` with a per-module `catch_unwind`, so
+  a panic *inside* a module is contained but silently voids its results, while a
+  panic *outside* the guard kills the scan/live task or the CLI command):
+  - `correlator/rule_au_019` sliced an upstream `breach_date` at byte 10 — it runs
+    outside the module guard, so a non-ASCII date killed the whole scan/live task
+    (live sessions left stuck `Running` forever). Now char-boundary safe.
+  - `hse scan` finalisation (`diagnostics`) and `hse import` crashed on entity
+    values / import fields with a multi-byte char near the truncation offset.
+  - `oathnet_pro` (breach/stealer parsing) and `search_engines` query-building
+    sliced untrusted bytes; guard-caught, but each silently voided the module's
+    whole result for the scan. All converted to char-boundary-safe truncation.
+  - `http::redact_credentials` masked only `name=value` query params, so an API
+    key carried in a URL *path* (e.g. IPQS `/api/json/ip/<KEY>/…`) echoed in an
+    upstream error body was persisted to the `events` table and streamed over SSE
+    in cleartext. A second pass now masks any configured `HUNTSMAN_*` secret
+    verbatim, wherever it appears.
 
 - **Coarse geo & name-permutation guesses no longer masquerade as corroborated
   findings (scan-quality pass).** A `name` scan surfaced a pile of postcode
