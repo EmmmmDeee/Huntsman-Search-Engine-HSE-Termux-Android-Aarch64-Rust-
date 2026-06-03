@@ -1030,7 +1030,10 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
         TargetKind::Email => {
             let local = target.value.split('@').next().unwrap_or("");
             if local.len() >= 5 {
-                local[1..].to_lowercase()
+                // Drop the first CHARACTER (a likely first-initial), not the
+                // first byte: a raw `local[1..]` panics on an internationalised
+                // local part (e.g. `élise@…`) by splitting the leading codepoint.
+                local.chars().skip(1).collect::<String>().to_lowercase()
             } else {
                 return Vec::new();
             }
@@ -2392,6 +2395,21 @@ mod tests {
             "https://www.networksolutions.com/blog/enable-https",
             &terms
         ));
+    }
+
+    #[test]
+    fn extract_family_names_survives_non_ascii_email_local_part() {
+        // Regression: deriving the "lastname" dropped the first BYTE of the email
+        // local part (`local[1..]`), which panics on an internationalised local
+        // part by splitting the leading codepoint. Must drop the first char
+        // instead — no panic.
+        for v in [
+            "élise@example.com",
+            "θεόδωρος@example.com",
+            "münch@example.de",
+        ] {
+            let _ = extract_family_names(&[], &Target::new(TargetKind::Email, v));
+        }
     }
 
     #[test]

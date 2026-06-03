@@ -89,6 +89,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **UTF-8 panic deriving a dork from an internationalised email (silently voided
+  `search_engines`).** The email-to-lastname dork derivation dropped the local
+  part's first *byte* (`local[1..]`), which panics on a non-ASCII local part
+  (e.g. `élise@…`) by splitting the leading codepoint — contained by the module
+  guard, but it silently voided the whole `search_engines` result for that email
+  target. Now drops the first *character*. Regression-tested with several
+  multibyte local parts. (A module-wide sweep for the same fixed-offset
+  byte-slice / `String::truncate` class found no other reachable cases — the
+  remaining slices are on `&[u8]`, length-checked, ASCII-gated, or `Vec`.)
 - **UTF-8 panic when capping a crawled page body (silently voided `web_crawler`).**
   `web_crawler` byte-sliced each fetched page to a fixed 64 KiB cap with a raw
   `body[..BODY_CAP]`, which panics when that byte lands mid-codepoint — i.e. on
