@@ -163,9 +163,13 @@ impl fmt::Display for Classification {
 pub struct Evidence {
     /// Module that produced this evidence.
     pub source: String,
-    /// Human-readable summary. Passwords MUST NOT appear here.
+    /// Human-readable summary / label for the record (not the raw data itself).
     pub summary: String,
-    /// Raw key/value pairs from the module (no passwords).
+    /// Raw key/value pairs from the module — the FULL source record, preserved
+    /// verbatim for traceability (operator full-fidelity policy: nothing
+    /// redacted or omitted, credentials included). The canonical leaked
+    /// secret is additionally surfaced as a first-class `Password`/`Credential`
+    /// entity so it is searchable and expandable, not just an attribute.
     #[serde(default)]
     pub attributes: HashMap<String, String>,
     /// Unix timestamp (seconds) when evidence was recorded.

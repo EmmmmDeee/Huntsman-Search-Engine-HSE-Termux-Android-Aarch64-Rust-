@@ -239,7 +239,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             println!();
         }
         println!(
-            "{:<16} {:<42} {:>6} {:>6}  {:<10} SRCS",
+            "{:<16} {:<42} {:>6} {:>6}  {:<10} SOURCES",
             "KIND", "VALUE", "CONF", "C_EFF", "CLASS"
         );
         println!("{}", "-".repeat(90));
@@ -247,7 +247,9 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             let val = truncate(&e.value, 42);
             let c_eff = e.c_effective();
             let class = e.classify();
-            let sources = e.evidence.len();
+            // Raw source names (not just a count) for at-a-glance traceability;
+            // the full per-source records are in `--output dossier` / `json`.
+            let sources = entity_source_labels(e);
             let row = format!(
                 "{:<16} {:<42} {:>6.3} {:>6.3}  {:<10} {}",
                 e.kind, val, e.confidence, c_eff, class, sources
@@ -275,6 +277,27 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Distinct raw source labels behind an entity — the breach / DB / provider
+/// names (from each evidence record's `source` attribute, else the producing
+/// module name). Surfaced in the table view so results show their RAW sources,
+/// not just an evidence count. All distinct sources are listed (no truncation —
+/// the column is last on the row).
+fn entity_source_labels(e: &crate::core::entity::Entity) -> String {
+    let mut seen = std::collections::BTreeSet::new();
+    for ev in &e.evidence {
+        let label = ev
+            .attributes
+            .get("source")
+            .cloned()
+            .unwrap_or_else(|| ev.source.clone());
+        seen.insert(label);
+    }
+    if seen.is_empty() {
+        return "—".to_string();
+    }
+    seen.into_iter().collect::<Vec<_>>().join(", ")
 }
 
 fn print_dossier(
@@ -339,6 +362,8 @@ fn print_dossier(
             "phone" => "PHONE NUMBERS",
             "username" => "USERNAMES / HANDLES",
             "credential" => "CREDENTIALS (from breach/stealer data)",
+            "api_key" => "API KEYS (from breach/stealer data)",
+            "password" => "PASSWORDS (from breach/stealer data)",
             "address" => "PHYSICAL ADDRESSES / LOCATIONS",
             "coordinates" => "GPS COORDINATES",
             "organisation" => "ORGANISATIONS",

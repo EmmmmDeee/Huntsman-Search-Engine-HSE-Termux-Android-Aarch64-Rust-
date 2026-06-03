@@ -449,6 +449,36 @@ fn extract_geo_entities(
 // city, state, address, dbname, discord_id, plus URL+credential pairs from
 // stealer items.
 
+/// Build an [`Evidence`] record that preserves EVERY field of the raw source
+/// record `item` as an attribute — full fidelity, nothing redacted or omitted
+/// (operator data-fidelity policy). Scalars are stored as-is; nested
+/// objects/arrays as compact JSON. This is what makes a result traceable to its
+/// actual raw source record rather than just a module name + entity hash.
+fn record_evidence(item: &Value, dbname: &str) -> Evidence {
+    let mut ev =
+        Evidence::new(SRC, format!("SeekNow record from {dbname}")).with_attr("source", dbname);
+    if let Some(obj) = item.as_object() {
+        for (k, v) in obj {
+            let val = match v {
+                Value::Null => continue,
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            if val.is_empty() {
+                continue;
+            }
+            // Don't clobber the canonical "source" attribute set above.
+            let key = if k == "source" {
+                "source_db"
+            } else {
+                k.as_str()
+            };
+            ev = ev.with_attr(key, val);
+        }
+    }
+    ev
+}
+
 fn extract_entities(
     item: &Value,
     target_value: &str,
@@ -459,8 +489,9 @@ fn extract_entities(
     let dbname = val_str(item, "dbname")
         .or_else(|| val_str(item, "source"))
         .unwrap_or_else(|| "see-know".to_string());
-    let ev =
-        Evidence::new(SRC, format!("SeekNow record from {dbname}")).with_attr("source", &dbname);
+    // Full raw record on the evidence chain — every entity derived from this
+    // record carries the complete source data for traceability.
+    let ev = record_evidence(item, &dbname);
 
     let target_lower = target_value.to_lowercase();
 
@@ -566,6 +597,31 @@ fn extract_entities(
             &["steam"],
         );
     }
+    // Leaked credentials were previously dropped entirely — capture them as
+    // first-class Password entities (operator policy: never redacted). The full
+    // record (including any hash) is already on `ev`, so nothing is lost even
+    // when several credential fields coexist; one pivotable entity is enough.
+    for field in [
+        "password",
+        "passwordHash",
+        "password_hash",
+        "hashed_password",
+        "hash",
+    ] {
+        if let Some(pw) = val_str(item, field)
+            && !pw.is_empty()
+            && seen.insert(format!("@pw:{pw}"))
+        {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Password, &pw, 0.75, scan_id),
+                &ev,
+                &["credential"],
+            );
+            break;
+        }
+    }
+
     // Domain is infrastructure, not a leaked credential, so it is the one kind
     // NOT tagged `breach` — keep its inline tail (and consume the last `ev`).
     if let Some(domain) = val_str(item, "domain")
