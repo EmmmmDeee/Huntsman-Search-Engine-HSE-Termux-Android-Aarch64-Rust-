@@ -241,20 +241,22 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             println!();
         }
         println!(
-            "{:<16} {:<42} {:>6} {:>6}  {:<10} SOURCES",
-            "KIND", "VALUE", "CONF", "C_EFF", "CLASS"
+            "{:<16} {:>6} {:>6}  {:<10} {:<26} VALUE",
+            "KIND", "CONF", "C_EFF", "CLASS", "SOURCES"
         );
         println!("{}", "-".repeat(90));
         for e in &entities {
-            let val = truncate(&e.value, 42);
             let c_eff = e.c_effective();
             let class = e.classify();
             // Raw source names (not just a count) for at-a-glance traceability;
             // the full per-source records are in `--output dossier` / `json`.
             let sources = entity_source_labels(e);
+            // VALUE is the LAST column and printed IN FULL — complete URLs (and
+            // every other value) are never truncated in the standard results
+            // view (no omission). Long values run to the end of the line.
             let row = format!(
-                "{:<16} {:<42} {:>6.3} {:>6.3}  {:<10} {}",
-                e.kind, val, e.confidence, c_eff, class, sources
+                "{:<16} {:>6.3} {:>6.3}  {:<10} {:<26} {}",
+                e.kind, e.confidence, c_eff, class, sources, e.value
             );
             println!("{}", color_confidence(c_eff, &row, color));
         }
