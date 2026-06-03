@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -193,8 +193,12 @@ pub struct Evidence {
     /// redacted or omitted, credentials included). The canonical leaked
     /// secret is additionally surfaced as a first-class `Password`/`Credential`
     /// entity so it is searchable and expandable, not just an attribute.
+    /// `BTreeMap` (not `HashMap`) so the serialised evidence has a stable,
+    /// sorted key order — identical findings must produce byte-identical JSON
+    /// (reproducibility / hashable evidence chains), and HashMap iteration order
+    /// is randomised per instance.
     #[serde(default)]
-    pub attributes: HashMap<String, String>,
+    pub attributes: BTreeMap<String, String>,
     /// Unix timestamp (seconds) when evidence was recorded.
     pub recorded_at: u64,
 }
@@ -204,7 +208,7 @@ impl Evidence {
         Self {
             source: source.into(),
             summary: summary.into(),
-            attributes: HashMap::new(),
+            attributes: BTreeMap::new(),
             recorded_at: unix_now(),
         }
     }
@@ -1126,6 +1130,20 @@ mod tests {
         assert_eq!(ev.attributes.len(), 2);
         assert_eq!(ev.attributes.get("key1").unwrap(), "val1");
         assert_eq!(ev.attributes.get("key2").unwrap(), "val2");
+    }
+
+    #[test]
+    fn evidence_attributes_serialize_in_stable_sorted_order() {
+        // BTreeMap → byte-identical JSON regardless of insertion order, so
+        // identical findings serialise reproducibly (hashable evidence chains).
+        let ev = Evidence::new("src", "sum")
+            .with_attr("zulu", "1")
+            .with_attr("alpha", "2")
+            .with_attr("mike", "3");
+        assert_eq!(
+            serde_json::to_string(&ev.attributes).unwrap(),
+            r#"{"alpha":"2","mike":"3","zulu":"1"}"#
+        );
     }
 
     // ── Entity::new confidence clamping ─────────────────────────────────────
