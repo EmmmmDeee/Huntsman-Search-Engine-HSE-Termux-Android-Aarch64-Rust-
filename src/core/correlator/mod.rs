@@ -1110,7 +1110,7 @@ mod tests {
         );
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].severity, Severity::Medium);
-        assert!(r[0].description.contains("2 platforms"));
+        assert!(r[0].description.contains("2 distinct platforms"));
         assert!(r[0].description.contains("x.com") && r[0].description.contains("github.com"));
 
         // Same host twice → only one distinct platform → no firing.
@@ -1128,6 +1128,37 @@ mod tests {
         // A non-confirmed URL is ignored.
         let plain = Entity::new(EntityKind::Url, "https://x.com/kylo4kylo", 0.5, "s");
         assert!(rule_au_038_verified_cross_platform_identity(&[plain], "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au038_fires_on_social_probe_profiles() {
+        // `social_probe` tags direct-enumeration profiles `social-profile` (not
+        // `confirmed-profile`); AU-038 must treat that probe signal as verified.
+        let mk = |url: &str| {
+            let mut e = Entity::new(EntityKind::Url, url, 0.9, "s");
+            e.tag("social-profile");
+            e
+        };
+        let r = rule_au_038_verified_cross_platform_identity(
+            &[
+                mk("https://steamcommunity.com/id/kylo4kylo"),
+                mk("https://www.tiktok.com/@kylo4kylo"),
+                mk("https://bsky.app/profile/kylo4kylo.bsky.social"),
+            ],
+            "s",
+            0,
+        );
+        assert_eq!(r.len(), 1);
+        assert!(r[0].description.contains("3 distinct platforms"));
+
+        // Mixed provenance (one probe + one search-confirmed) still aggregates.
+        let mut probe = Entity::new(EntityKind::Url, "https://twitch.tv/kylo4kylo", 0.9, "s");
+        probe.tag("social-profile");
+        let mut searched = Entity::new(EntityKind::Url, "https://twitter.com/kylo4kylo", 0.85, "s");
+        searched.tag("confirmed-profile");
+        let r = rule_au_038_verified_cross_platform_identity(&[probe, searched], "s", 0);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].description.contains("2 distinct platforms"));
     }
 
     // ── AU-010 ──────────────────────────────────────────────────────────
