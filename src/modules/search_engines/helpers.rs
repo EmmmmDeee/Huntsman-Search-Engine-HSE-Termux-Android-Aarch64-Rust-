@@ -555,10 +555,48 @@ pub(super) fn dedup_results(mut results: Vec<SearchResult>) -> Vec<SearchResult>
     results
 }
 
+/// Dedup / cross-engine-corroboration KEY for a result URL (the stored URL is
+/// never altered). Drops the fragment, a trailing slash, and known
+/// tracking/analytics query params — but KEEPS content-bearing params, so
+/// distinct pages such as `…/watch?v=A` vs `…/watch?v=B` or `…?id=1` vs `…?id=2`
+/// are not collapsed into one (collapsing them would silently *omit* real
+/// results). Kept params are sorted so param order can't defeat dedup.
 pub(super) fn canonicalize_url(url: &str) -> String {
-    let base = url.split('?').next().unwrap_or(url);
-    let base = base.split('#').next().unwrap_or(base);
-    base.trim_end_matches('/').to_string()
+    let url = url.split('#').next().unwrap_or(url); // drop fragment first
+    let (base, query) = url.split_once('?').map_or((url, ""), |(b, q)| (b, q));
+    let base = base.trim_end_matches('/');
+    let mut kept: Vec<&str> = query
+        .split('&')
+        .filter(|kv| !kv.is_empty() && !is_tracking_param(kv.split('=').next().unwrap_or(kv)))
+        .collect();
+    if kept.is_empty() {
+        return base.to_string();
+    }
+    kept.sort_unstable();
+    format!("{base}?{}", kept.join("&"))
+}
+
+/// Known click-tracking / analytics query params that have no bearing on which
+/// page a URL addresses — stripped from [`canonicalize_url`]'s key so the same
+/// page tagged with different campaign params dedups, while content params
+/// (`v`, `id`, `q`, `page`, …) are preserved.
+fn is_tracking_param(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    k.starts_with("utm_")
+        || matches!(
+            k.as_str(),
+            "fbclid"
+                | "gclid"
+                | "gclsrc"
+                | "dclid"
+                | "msclkid"
+                | "yclid"
+                | "mc_cid"
+                | "mc_eid"
+                | "igshid"
+                | "_ga"
+                | "_gl"
+        )
 }
 
 /// Normalize an address for fuzzy dedup: lowercased, state abbreviations

@@ -1956,14 +1956,21 @@ mod tests {
     }
 
     #[test]
-    fn canonicalize_strips_query_fragment_slash() {
+    fn canonicalize_strips_fragment_slash_and_trackers() {
+        // Fragment + a pure tracking param + trailing slash are all normalised away.
         assert_eq!(
-            canonicalize_url("https://example.com/page?ref=1#top"),
+            canonicalize_url("https://example.com/page?utm_source=x#top"),
             "https://example.com/page"
         );
         assert_eq!(
             canonicalize_url("https://example.com/page/"),
             "https://example.com/page"
+        );
+        // An ambiguous/content param (`ref` — git ref vs referral) is KEPT so a
+        // distinct page is never merged away; only the fragment is dropped.
+        assert_eq!(
+            canonicalize_url("https://example.com/page?ref=1#top"),
+            "https://example.com/page?ref=1"
         );
     }
 
@@ -2464,10 +2471,26 @@ mod tests {
     }
 
     #[test]
-    fn canonicalize_url_strips_query_params() {
+    fn canonicalize_url_keeps_content_params_strips_trackers() {
+        // Content params are kept (collapsing them would omit real results)…
         assert_eq!(
             canonicalize_url("https://x.com/page?a=1"),
+            "https://x.com/page?a=1"
+        );
+        // …distinct content URLs therefore stay distinct…
+        assert_ne!(
+            canonicalize_url("https://yt.com/watch?v=A"),
+            canonicalize_url("https://yt.com/watch?v=B"),
+        );
+        // …pure tracking params are dropped…
+        assert_eq!(
+            canonicalize_url("https://x.com/page?utm_source=nl&utm_medium=email&fbclid=xyz"),
             "https://x.com/page"
+        );
+        // …mixed: trackers dropped, content kept and order-normalised.
+        assert_eq!(
+            canonicalize_url("https://x.com/p?v=B&utm_source=x&id=2"),
+            "https://x.com/p?id=2&v=B"
         );
     }
 

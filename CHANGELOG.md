@@ -89,6 +89,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Distinct search results were collapsed when they differed only by query
+  string.** The dedup / cross-engine-corroboration key stripped the *entire* query
+  (`canonicalize_url`), so `…/watch?v=A` and `…/watch?v=B` (or `…?id=1` vs `…?id=2`)
+  mapped to the same key — the second was dropped as a duplicate and the
+  corroboration count was inflated across genuinely different pages. Per the
+  "no result omitted" rule, the key now keeps content-bearing params (distinct
+  pages stay distinct) and strips only known tracking/analytics params
+  (`utm_*`, `fbclid`, `gclid`, …), with the kept params sorted so ordering can't
+  defeat dedup. The stored URL is unchanged; only the dedup key is affected.
 - **Search result URLs were silently truncated at the first query parameter.** The
   multi-engine search parser ran every extracted URL through `form_urlencoded`,
   which splits on `&`/`=` — so a clean result link like
