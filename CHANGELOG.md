@@ -66,9 +66,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
   network-inference available. AI is a development-time accelerator only. New
   guard `tests/architecture.rs::runtime_carries_no_ai_ml_inference_dependency`
   parses `Cargo.lock` and fails the build if such a crate enters the dependency
-  tree. Charter + reproducibility/enforcement notes:
-  `docs/RUNTIME_INDEPENDENCE.md`. (Audit confirmed the current tree is already
-  clean — 0 of 277 crates are AI/ML; the only numeric crate is `num-traits`.)
+  tree; its blocklist was broadened (TensorFlow, Torch FFI, `llm-chain`, ONNX
+  `rten`, text-embeddings, ChromaDB, mistral-rs) for defence in depth. Charter +
+  reproducibility/enforcement notes: `docs/RUNTIME_INDEPENDENCE.md`. (Re-verified
+  after this session's work — the tree is still clean: 0 of 277 crates are AI/ML,
+  no new dependency was added, and deterministic-output runs are byte-identical.)
 
 ### Changed
 

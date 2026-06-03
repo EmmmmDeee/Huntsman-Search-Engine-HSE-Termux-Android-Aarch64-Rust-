@@ -415,15 +415,20 @@ fn runtime_carries_no_ai_ml_inference_dependency() {
         "tokenizers",
         "tiktoken",
         "fastembed",
+        "text-embeddings",
         "qdrant",
         "pinecone",
         "weaviate",
         "milvus",
+        "chromadb",
         "ollama",
         "llama",
         "langchain",
+        "llm-chain",
         "rust-bert",
         "instant-distance",
+        "tensorflow",
+        "torch-sys",
     ];
     // Exact crate names too short/common to match safely as substrings.
     const DENY_EXACT: &[&str] = &[
@@ -431,6 +436,7 @@ fn runtime_carries_no_ai_ml_inference_dependency() {
         "burn",
         "tract",
         "ort",
+        "rten",
         "llm",
         "lance",
         "lancedb",
@@ -444,6 +450,7 @@ fn runtime_carries_no_ai_ml_inference_dependency() {
         "kalosm",
         "rig-core",
         "mistralai",
+        "mistral-rs",
     ];
 
     let offenders: Vec<&str> = lock
