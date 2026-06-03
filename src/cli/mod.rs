@@ -674,7 +674,10 @@ pub(super) fn build_runtime(
     Arc<ScanEngine>,
 )> {
     let db = Store::open(&default_db_path())?;
-    let _ = db.prune_events(7 * 86400, 100_000);
+    let _ = db.prune_events(
+        crate::core::port::EVENTS_RETENTION_SECS,
+        crate::core::port::EVENTS_MAX_ROWS,
+    );
     let store: Arc<dyn crate::core::port::StoragePort> = Arc::new(db);
     let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
     let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));

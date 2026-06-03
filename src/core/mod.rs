@@ -463,6 +463,11 @@ pub mod port {
         scan::Scan,
     };
 
+    /// Retention policy for the `events` table, shared by the startup prune
+    /// (`cli`) and the per-scan-boundary prune (engine) so the two can't drift.
+    pub const EVENTS_RETENTION_SECS: u64 = 7 * 86_400; // 7 days
+    pub const EVENTS_MAX_ROWS: usize = 100_000;
+
     pub trait StoragePort: Send + Sync {
         // ── Scans ──────────────────────────────────────────────────────────────
         fn upsert_scan(&self, scan: &Scan) -> Result<()>;
@@ -508,6 +513,16 @@ pub mod port {
         /// WAL; the SQLite store truncates its `-wal` file. Best-effort.
         fn checkpoint_truncate(&self) -> Result<()> {
             Ok(())
+        }
+
+        /// Bound the `events` table: delete rows older than `max_age_secs` and
+        /// any beyond the newest `max_rows`. Returns the number pruned. Default
+        /// no-op so non-`Store` ports (e.g. test doubles) need not implement it;
+        /// the real impl lives on `Store`. Called at each scan boundary so a
+        /// long-lived `serve`/`live`/`radar` process can't grow the table
+        /// unbounded (it was previously pruned only at startup).
+        fn prune_events(&self, _max_age_secs: u64, _max_rows: usize) -> Result<usize> {
+            Ok(0)
         }
     }
 
@@ -589,6 +604,23 @@ pub mod port {
 
             let events = store.events_for_scan("evt-port").unwrap();
             assert_eq!(events.len(), 1);
+
+            // prune_events via the trait object — the path the engine uses at
+            // each scan boundary. A fresh event under the caps survives...
+            let pruned = store
+                .prune_events(
+                    crate::core::port::EVENTS_RETENTION_SECS,
+                    crate::core::port::EVENTS_MAX_ROWS,
+                )
+                .unwrap();
+            assert_eq!(pruned, 0);
+            assert_eq!(store.events_for_scan("evt-port").unwrap().len(), 1);
+            // ...but a zero row-cap prunes it as excess.
+            let pruned = store
+                .prune_events(crate::core::port::EVENTS_RETENTION_SECS, 0)
+                .unwrap();
+            assert!(pruned >= 1);
+            assert!(store.events_for_scan("evt-port").unwrap().is_empty());
         }
 
         #[test]

@@ -438,6 +438,17 @@ impl ScanEngine {
             warn!(scan_id = %scan.id, error = %e, "WAL checkpoint deferred (busy)");
         }
 
+        // Bound the events table during long-lived serve/live/radar processes
+        // (otherwise pruned only at startup). Best-effort + same retention
+        // policy as the startup prune — a busy prune just defers to the next
+        // scan boundary.
+        if let Err(e) = self.store.prune_events(
+            crate::core::port::EVENTS_RETENTION_SECS,
+            crate::core::port::EVENTS_MAX_ROWS,
+        ) {
+            warn!(scan_id = %scan.id, error = %e, "events prune deferred");
+        }
+
         self.emit(
             &scan.id,
             EventKind::ScanComplete {

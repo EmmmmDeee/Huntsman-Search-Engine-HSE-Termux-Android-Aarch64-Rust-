@@ -804,6 +804,10 @@ impl crate::core::port::StoragePort for Store {
         Store::checkpoint_truncate(self)
     }
 
+    fn prune_events(&self, max_age_secs: u64, max_rows: usize) -> Result<usize> {
+        Store::prune_events(self, max_age_secs, max_rows)
+    }
+
     fn upsert_scan(&self, scan: &Scan) -> Result<()> {
         Store::upsert_scan(self, scan)
     }
