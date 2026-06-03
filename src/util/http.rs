@@ -60,13 +60,22 @@ fn filter_public(addrs: impl Iterator<Item = std::net::SocketAddr>) -> Vec<std::
 }
 
 /// reqwest DNS resolver that refuses private/reserved addresses. This is the
-/// TOCTOU-safe half of the SSRF defense: a discovered hostname that resolves
-/// (via DNS rebinding, or an internal name like `intranet`) to an RFC1918 /
-/// loopback / link-local / 169.254 metadata address yields **no connectable
-/// address**, so the request fails instead of reaching an internal service.
-/// reqwest connects only to the addresses returned here, so there is no
-/// resolve-then-connect race. Delegates the actual lookup to the system
-/// resolver (`getaddrinfo` via `tokio::net::lookup_host`) — no root, Termux-ok.
+/// TOCTOU-safe half of the SSRF defense for **hostname** targets: a discovered
+/// hostname that resolves (via DNS rebinding, or an internal name like
+/// `intranet`) to an RFC1918 / loopback / link-local / 169.254 metadata address
+/// yields **no connectable address**, so the request fails instead of reaching
+/// an internal service. reqwest connects only to the addresses returned here, so
+/// there is no resolve-then-connect race. Delegates the actual lookup to the
+/// system resolver (`getaddrinfo` via `tokio::net::lookup_host`) — no root,
+/// Termux-ok.
+///
+/// IMPORTANT — scope: this resolver is invoked **only for hostnames**. An
+/// IP-literal URL (`http://169.254.169.254/`, `http://127.0.0.1/`, `http://[::1]/`)
+/// is connected directly by hyper-util *without* a DNS lookup, so it never
+/// reaches this filter. IP-literal SSRF is therefore gated separately, before
+/// dispatch, by the engine's target check (`core::engine::url_host_is_private` /
+/// `util::preflight::should_skip_external_ip`) — not here. The redirect policy in
+/// [`build_client`] (`redirect_to_private_ip`) covers private-IP *redirect* hops.
 struct SsrfResolver;
 
 /// Build the rotating public-resolver set from `HUNTSMAN_DNS_RESOLVERS`
