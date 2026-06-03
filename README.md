@@ -119,7 +119,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 ---
 
-## Module Overview (91 modules — 68 free, 23 key-gated/paid)
+## Module Overview (92 modules — 69 free, 23 key-gated/paid)
 
 > Generated from `hse modules --json`. The full catalogue with target
 > kinds and output entities (kept honest by the
@@ -129,7 +129,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 **API-Free (no keys required):**
 - **Breach/identity**: `pwned_passwords`, `xposed_or_not`
 - **Social**: `github_user`, `keybase`, `social_probe`, `username_search`, `username_variants`
-- **People**: `contact_enrich`, `employer_pivot`, `name_intel`
+- **People**: `contact_enrich`, `employer_pivot`, `name_intel`, `wikidata`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `shodan`, `urlscan`
 - **Geolocation**: `breach_timezone`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_area_geo`, `phone_carrier_geo`, `photon`, `social_location`, `sunrise_sunset`

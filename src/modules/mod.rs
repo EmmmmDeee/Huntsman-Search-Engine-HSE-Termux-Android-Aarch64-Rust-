@@ -95,6 +95,7 @@ pub mod whois;
 pub mod whoisxml;
 pub mod wifi_intel;
 pub mod wigle;
+pub mod wikidata;
 pub mod xposed_or_not;
 
 use std::sync::Arc;
@@ -195,6 +196,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // People-centric enrichment
         Arc::new(name_intel::NameIntel),
         Arc::new(social_location::SocialLocation),
+        Arc::new(wikidata::Wikidata),
         // Australian + global public-records / corporate registries
         Arc::new(opencorporates::OpenCorporates),
         Arc::new(qld_unclaimed::QldUnclaimed),
