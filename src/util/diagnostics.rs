@@ -20,8 +20,12 @@ pub struct ScanDiagnostics {
     pub seed_value: String,
     pub wall_time_ms: u64,
     pub modules_by_yield: Vec<ModulePerformance>,
-    pub source_confidence: HashMap<String, ConfidenceStats>,
-    pub entity_kind_counts: HashMap<String, usize>,
+    // BTreeMap (not HashMap) so the serialised JSON has a stable, sorted key
+    // order: identical inputs must produce byte-identical diagnostics, or the
+    // "findings reproduce identically" guarantee (and any hash/diff/cache of a
+    // report) breaks. HashMap iteration order is randomised per instance.
+    pub source_confidence: std::collections::BTreeMap<String, ConfidenceStats>,
+    pub entity_kind_counts: std::collections::BTreeMap<String, usize>,
     pub geo_precision: GeoPrecisionReport,
     /// Pairwise Haversine distances (km) between every Coordinates entity
     /// pair — top 25 closest. Reveals geo-convergence clusters and lone
@@ -445,6 +449,9 @@ pub fn read_adaptive_routing() -> AdaptiveRouting {
         b.mean_entities_per_scan
             .partial_cmp(&a.mean_entities_per_scan)
             .unwrap_or(std::cmp::Ordering::Equal)
+            // Stable tiebreak by name: `per_module` is a HashMap, so equal-yield
+            // modules must order deterministically for a reproducible ranking.
+            .then_with(|| a.name.cmp(&b.name))
     });
 
     // Skip recommendations: ≥80% zero-yield over ≥5 scans.
@@ -639,7 +646,7 @@ pub fn analyse(
     }
 
     // Confidence stats per source
-    let source_confidence: HashMap<String, ConfidenceStats> = source_conf
+    let source_confidence: std::collections::BTreeMap<String, ConfidenceStats> = source_conf
         .into_iter()
         .map(|(src, mut vals)| {
             vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -683,7 +690,14 @@ pub fn analyse(
     }
 
     let mut modules_by_yield: Vec<ModulePerformance> = by_source.into_values().collect();
-    modules_by_yield.sort_by_key(|m| std::cmp::Reverse(m.entities_emitted));
+    // Yield desc, then name as a STABLE tiebreak: `by_source` is a HashMap, so
+    // equal-yield modules would otherwise serialise in a random order and break
+    // byte-reproducibility of the diagnostics report.
+    modules_by_yield.sort_by(|a, b| {
+        b.entities_emitted
+            .cmp(&a.entities_emitted)
+            .then_with(|| a.name.cmp(&b.name))
+    });
 
     // Cross-source overlaps with ≥2 distinct sources
     let mut cross_source_overlap: Vec<EntityOverlap> = entity_sources
@@ -702,7 +716,16 @@ pub fn analyse(
             }
         })
         .collect();
-    cross_source_overlap.sort_by_key(|o| std::cmp::Reverse(o.sources.len()));
+    // Overlap count desc, then (kind, value) as a stable tiebreak — built from
+    // the `entity_sources` HashMap, so ties need an explicit order to stay
+    // reproducible.
+    cross_source_overlap.sort_by(|a, b| {
+        b.sources
+            .len()
+            .cmp(&a.sources.len())
+            .then_with(|| a.kind.cmp(&b.kind))
+            .then_with(|| a.value.cmp(&b.value))
+    });
     cross_source_overlap.truncate(50);
 
     // Optimization hints based on what we observed
@@ -796,7 +819,7 @@ pub fn analyse(
         wall_time_ms,
         modules_by_yield,
         source_confidence,
-        entity_kind_counts: kind_counts,
+        entity_kind_counts: kind_counts.into_iter().collect(),
         geo_precision: geo,
         proximity_graph,
         coordinate_clusters,
@@ -902,6 +925,52 @@ mod tests {
         assert_eq!(d.modules_by_yield[0].name, "modA");
         assert_eq!(d.modules_by_yield[0].entities_emitted, 3);
         assert_eq!(d.modules_by_yield[1].name, "modB");
+    }
+
+    #[test]
+    fn analyse_output_is_byte_reproducible() {
+        // Charter (reproducibility): the analysis of a fixed entity set must be
+        // byte-identical across runs. Sources of HashMap-iteration randomness —
+        // the per-source/per-kind maps (now BTreeMaps) and every Vec sorted by a
+        // non-unique key (modules_by_yield, cross_source_overlap, …) with a
+        // stable name tiebreak — must produce a stable serialisation.
+        //
+        // `adaptive_routing` is EXCLUDED: it is intentionally history-dependent
+        // (it reads + updates the persisted module-stats ledger), so it legitimately
+        // changes between calls. Its own ranking order is made deterministic
+        // separately (stable tiebreak), but it isn't a pure function of `entities`.
+        let entities = vec![
+            ent(EntityKind::Email, "a@b.com", 0.8, "modA"),
+            ent(EntityKind::Domain, "b.com", 0.6, "modB"),
+            ent(EntityKind::Username, "alice", 0.7, "modC"),
+            ent(EntityKind::Email, "c@d.com", 0.9, "modA"),
+            ent(EntityKind::Phone, "+61412345678", 0.5, "modD"),
+        ];
+        let pure = |d: ScanDiagnostics| {
+            let mut v = serde_json::to_value(d).unwrap();
+            v.as_object_mut().unwrap().remove("adaptive_routing");
+            v
+        };
+        let a = pure(analyse("sid", "email", "seed", 100, &entities));
+        let b = pure(analyse("sid", "email", "seed", 100, &entities));
+        if a != b {
+            for (k, av) in a.as_object().unwrap() {
+                assert!(
+                    av == &b[k],
+                    "non-deterministic diagnostics field `{k}`:\n  A={}\n  B={}",
+                    serde_json::to_string(av).unwrap(),
+                    serde_json::to_string(&b[k]).unwrap()
+                );
+            }
+        }
+        assert_eq!(a, b, "pure diagnostics must be byte-identical");
+        // Guard the test's validity: the maps must carry several keys so order
+        // actually matters.
+        let d = analyse("sid", "email", "seed", 100, &entities);
+        assert!(
+            d.source_confidence.len() >= 3 && d.entity_kind_counts.len() >= 3,
+            "expected multi-key maps for a meaningful reproducibility check"
+        );
     }
 
     #[test]
