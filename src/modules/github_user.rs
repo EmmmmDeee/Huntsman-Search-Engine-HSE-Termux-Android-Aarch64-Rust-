@@ -427,15 +427,7 @@ impl GithubUser {
                 ev = ev.with_attr("most_recent_event", ts);
             }
 
-            let top_types: Vec<String> = {
-                let mut sorted: Vec<_> = event_types.into_iter().collect();
-                sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
-                sorted
-                    .into_iter()
-                    .take(3)
-                    .map(|(t, c)| format!("{t}={c}"))
-                    .collect()
-            };
+            let top_types = top_event_types(event_types, 3);
             if !top_types.is_empty() {
                 ev = ev.with_attr("top_event_types", top_types.join(", "));
             }
@@ -445,9 +437,55 @@ impl GithubUser {
     }
 }
 
+/// Top-`n` event types formatted as `type=count`, ranked by count descending
+/// then type-name ascending. The name tiebreak makes the ranking deterministic
+/// even though `event_types` comes from a `HashMap` (randomised iteration
+/// order) — so the `top_event_types` finding is byte-reproducible.
+fn top_event_types(event_types: std::collections::HashMap<String, u32>, n: usize) -> Vec<String> {
+    let mut sorted: Vec<(String, u32)> = event_types.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    sorted
+        .into_iter()
+        .take(n)
+        .map(|(t, c)| format!("{t}={c}"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn top_event_types_is_deterministic_on_ties() {
+        // Ties (PushEvent, IssuesEvent, ForkEvent all at 3) must resolve by name
+        // — not by the source HashMap's randomised order — so the finding is
+        // reproducible. Build the map in a few different insertion orders.
+        let mk = || {
+            let mut m = std::collections::HashMap::new();
+            for (k, v) in [
+                ("PushEvent", 3),
+                ("IssuesEvent", 3),
+                ("ForkEvent", 3),
+                ("WatchEvent", 1),
+            ] {
+                m.insert(k.to_string(), v);
+            }
+            m
+        };
+        let expected = vec![
+            "ForkEvent=3".to_string(),
+            "IssuesEvent=3".to_string(),
+            "PushEvent=3".to_string(),
+        ];
+        // Several independently-seeded HashMaps must all yield the same top-3.
+        for _ in 0..8 {
+            assert_eq!(top_event_types(mk(), 3), expected);
+        }
+        assert_eq!(
+            top_event_types(std::collections::HashMap::new(), 3),
+            Vec::<String>::new()
+        );
+    }
 
     #[test]
     fn accepts_only_username() {
