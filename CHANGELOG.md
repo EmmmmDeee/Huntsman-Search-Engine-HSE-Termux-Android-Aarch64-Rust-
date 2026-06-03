@@ -154,6 +154,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`breach_timezone` inferred a timezone from activity that was no more
+  clustered than random chance.** The inference picked the UTC offset whose
+  14-hour "awake" window caught the most breach/login timestamps, then accepted
+  it whenever the raw concentration hit `≥0.70` over as few as **5** timestamps.
+  Two compounding statistical errors: (1) a 14-hour window catches **14/24 ≈
+  58%** of *any* activity by chance, so the gate barely cleared the base rate
+  and the confidence measured excess over an arbitrary `0.70` rather than over
+  chance; and (2) the concentration is the **maximum over 25 candidate
+  offsets** — a winner's-curse max-statistic whose null sits well above 58% — so
+  a handful of random login times routinely manufactured a spurious timezone
+  (4 of 5 timestamps = 0.80 passed outright). It now requires the **Wilson 95%
+  lower bound** on the concentration to exceed the chance baseline
+  (`window/24`), and scales confidence by the lower bound's excess over chance.
+  A noisy `4/5` sample bounds to ≈0.38 (< 0.58) and is correctly rejected;
+  inference needs a genuinely concentrated, adequately-sampled signal. The
+  Wilson estimator is now a shared `util::stats` helper (also used by adaptive
+  routing), pure deterministic arithmetic, with regression tests.
 - **Adaptive routing recommended skips/priorities from raw point estimates,
   ignoring sample size.** `read_adaptive_routing` flagged a module for
   `--adaptive` skip the moment its raw zero-yield *proportion* hit `≥0.80`

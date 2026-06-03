@@ -1,9 +1,12 @@
 //! Breach timestamp timezone inference — cluster entity observation
 //! timestamps to infer the target's active timezone.
 //!
-//! Stealer logs and breach records carry timestamps. If 80%+ of a
-//! target's activity falls within a consistent 14-hour window, the
-//! midpoint of that window reveals the local timezone (±1 hour).
+//! Stealer logs and breach records carry timestamps. If a target's activity
+//! clusters in a consistent ~14-hour "awake" window — *significantly more than
+//! the ~58% any 14-hour window catches by chance* — the midpoint of that window
+//! reveals the local timezone (±1 hour). The significance test (a Wilson lower
+//! bound on the concentration vs. the chance baseline) is what keeps a few
+//! random login times from manufacturing a spurious timezone.
 //!
 //! No network calls. Operates on evidence attributes already attached
 //! to entities. Priority 7 — runs late so other modules have produced
@@ -17,10 +20,21 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::stats::{wilson_lower_bound, Z_95};
 
 const SRC: &str = "breach_timezone";
 const MIN_TIMESTAMPS: usize = 5;
-const MIN_CONCENTRATION: f64 = 0.70;
+/// Local "awake" window `[WAKE_START, WAKE_END)` (hours) where a real
+/// timezone's activity is expected to concentrate.
+const WAKE_START: i32 = 8;
+const WAKE_END: i32 = 22;
+/// Width of the awake window (hours). A window this wide captures
+/// `WINDOW_HOURS / 24` of *any* activity by pure chance.
+const WINDOW_HOURS: i32 = WAKE_END - WAKE_START;
+/// Chance baseline — the fraction of uniformly-random activity that falls in
+/// any fixed `WINDOW_HOURS`-wide window. The inferred concentration must clear
+/// this (with confidence) to be signal rather than noise.
+const CHANCE_BASELINE: f64 = WINDOW_HOURS as f64 / 24.0;
 
 pub struct BreachTimezone;
 
@@ -125,11 +139,11 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
     let mut best_offset: i32 = 0;
     let mut best_count: u32 = 0;
 
-    // Slide a 14-hour window and find the offset where most activity
-    // falls between 08:00-22:00 local time
+    // Slide the awake-hours window and find the offset where most activity
+    // falls between WAKE_START and WAKE_END local time.
     for offset in -12_i32..=12 {
         let mut count = 0u32;
-        for local_hour in 8_i32..22 {
+        for local_hour in WAKE_START..WAKE_END {
             let utc_hour = (local_hour - offset).rem_euclid(24) as usize;
             count += histogram[utc_hour];
         }
@@ -140,17 +154,29 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
     }
 
     let concentration = best_count as f64 / total;
-    if concentration < MIN_CONCENTRATION {
+    // The selected offset is the argmax over 25 candidate windows, so its raw
+    // concentration is a max-statistic that sits above CHANCE_BASELINE even for
+    // random activity (a WINDOW_HOURS-wide window holds that fraction of *any*
+    // activity). Require the 95% Wilson lower bound on the concentration to
+    // clear the baseline: only then are we confident the activity is genuinely
+    // more clustered than randomness — not just lucky over a handful of
+    // timestamps. This is what stops random login times manufacturing a
+    // timezone (a 4/5 = 0.80 sample bounds to ≈0.38, well under chance).
+    let lower_bound = wilson_lower_bound(u64::from(best_count), hours.len() as u64, Z_95);
+    if lower_bound <= CHANCE_BASELINE {
         return None;
     }
 
-    let confidence = 0.35 + (concentration - MIN_CONCENTRATION) * 0.5;
+    // Confidence scales with how far the sample-size-adjusted lower bound clears
+    // chance, mapped into this module's [0.35, 0.60] envelope.
+    let excess = (lower_bound - CHANCE_BASELINE) / (1.0 - CHANCE_BASELINE);
+    let confidence = (0.35 + excess * 0.25).min(0.60);
     let region = offset_to_region(best_offset);
 
     Some(TimezoneInference {
         utc_offset: best_offset,
         region,
-        confidence: confidence.min(0.60),
+        confidence,
         concentration,
     })
 }
@@ -199,6 +225,29 @@ mod tests {
         // Activity evenly spread = no timezone signal
         let hours: Vec<u32> = (0..24).collect();
         assert!(infer_timezone(&hours).is_none());
+    }
+
+    #[test]
+    fn small_noisy_sample_does_not_manufacture_a_timezone() {
+        // 5 timestamps with 4 in one offset's window is a raw concentration of
+        // 0.80 — which the old fixed-threshold gate (>=0.70) accepted. But 4/5
+        // is far too few to beat the ~58% any 14-hour window catches by chance:
+        // its Wilson lower bound (~0.38) is below the baseline, so no inference.
+        let hours = vec![14, 15, 16, 17, 3];
+        assert!(
+            infer_timezone(&hours).is_none(),
+            "a noisy 4/5 sample must not infer a timezone"
+        );
+    }
+
+    #[test]
+    fn strong_large_sample_clears_chance_baseline() {
+        // 20 timestamps tightly inside the US-Eastern awake window: a large,
+        // genuinely-concentrated sample whose lower bound clears chance.
+        let hours: Vec<u32> = (0..20).map(|i| 13 + (i % 10)).collect(); // UTC 13-22
+        let tz = infer_timezone(&hours).expect("strong concentration should infer");
+        assert!(tz.confidence >= 0.35 && tz.confidence <= 0.60);
+        assert!(tz.region.contains("Eastern") || tz.region.contains("Central"));
     }
 
     #[test]

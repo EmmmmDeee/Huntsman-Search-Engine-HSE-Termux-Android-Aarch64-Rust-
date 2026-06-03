@@ -441,8 +441,13 @@ fn cluster_coordinates(
     clusters
 }
 
+/// Sample-size-aware estimators (shared, dependency-free) backing the routing
+/// recommendations below. Re-exported so the existing call sites and tests in
+/// this module keep resolving them by their short names.
+pub(crate) use crate::util::stats::{shrunk_mean, wilson_lower_bound};
+
 /// z for a two-sided 95% confidence interval (standard normal quantile).
-const WILSON_Z_95: f64 = 1.96;
+const WILSON_Z_95: f64 = crate::util::stats::Z_95;
 /// Prior strength (pseudo-scans) for the empirical-Bayes shrinkage of a
 /// module's mean yield toward the global mean. ~5 scans of "evidence" must
 /// accrue before a module's own mean dominates the global prior — enough to
@@ -453,39 +458,6 @@ const SHRINKAGE_PSEUDO_SCANS: f64 = 5.0;
 const SKIP_ZERO_YIELD_LB: f64 = 0.80;
 /// Shrunk-mean floor for a module to be recommended for elevated priority.
 const PRIORITY_MEAN_FLOOR: f64 = 5.0;
-
-/// Wilson score interval lower bound for a binomial proportion.
-///
-/// Given `successes` out of `n` trials, returns the lower endpoint of the
-/// `z`-sigma Wilson score confidence interval for the true proportion
-/// (`z = `[`WILSON_Z_95`]` ≈ 95%`). Unlike the raw proportion `successes/n`,
-/// this bound collapses toward 0 when `n` is small, so a noisy `4/5 = 0.80`
-/// sample reports a lower bound of only ≈0.38 — the honest "not enough
-/// evidence yet" signal that a raw point estimate hides. Returns 0.0 for
-/// `n == 0`. The Wilson interval is the standard small-sample-safe estimator
-/// (no normal approximation breakdown at the 0/1 extremes).
-pub(crate) fn wilson_lower_bound(successes: u64, n: u64, z: f64) -> f64 {
-    if n == 0 {
-        return 0.0;
-    }
-    let n = n as f64;
-    let phat = successes as f64 / n;
-    let z2 = z * z;
-    let denom = 1.0 + z2 / n;
-    let centre = phat + z2 / (2.0 * n);
-    let margin = z * ((phat * (1.0 - phat) + z2 / (4.0 * n)) / n).sqrt();
-    ((centre - margin) / denom).clamp(0.0, 1.0)
-}
-
-/// Empirical-Bayes shrunk mean: the sample mean `total / scans` pulled toward
-/// `global_mean` with prior weight `pseudo` (in pseudo-scans). Low-sample
-/// modules are pulled hardest — a 3-scan module with a fluky high mean is
-/// regressed toward the global average — while a high-sample module's own mean
-/// dominates. Converges to the raw mean as `scans → ∞`. This is the
-/// IMDb/Bayesian-average ranking estimator, made explicit.
-pub(crate) fn shrunk_mean(total: u64, scans: u64, global_mean: f64, pseudo: f64) -> f64 {
-    (total as f64 + pseudo * global_mean) / (scans as f64 + pseudo)
-}
 
 /// Read the cross-scan ledger and produce per-module routing recommendations.
 ///
