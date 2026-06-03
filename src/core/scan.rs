@@ -596,7 +596,10 @@ pub struct ScanRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<TargetKind>,
     pub value: String,
-    #[serde(default)]
+    /// Per-scan options. Defaults to [`default_scan_options`] (product default
+    /// depth 2) when omitted, so a bare `{"value": "..."}` request recurses two
+    /// hops just like the CLI and web UI.
+    #[serde(default = "default_scan_options")]
     pub options: ScanOptions,
 }
 
@@ -648,8 +651,10 @@ pub struct ScanOptions {
     // ── Autonomous expansion (v0.2+) ────────────────────────────────────────
     /// Recursive expansion depth. 0 = no expansion (single round, v0.1 behaviour).
     /// Each round picks high-confidence entities from prior rounds, converts
-    /// them to scan targets, and runs all accepting modules on them.
-    #[serde(default)]
+    /// them to scan targets, and runs all accepting modules on them. Deserialises
+    /// to the product default ([`DEFAULT_SCAN_DEPTH`] = 2) when omitted, so an
+    /// API/web scan recurses two hops by default just like `hse scan`.
+    #[serde(default = "default_scan_depth")]
     pub depth: u32,
 
     /// Only expand entities whose `c_effective()` is at least this. Default 0.50
@@ -855,6 +860,22 @@ impl Default for ScanOptions {
 
 fn default_min_expand_confidence() -> f64 {
     0.50
+}
+
+/// Serde default for [`ScanOptions::depth`] — the product default applied to
+/// API/web requests that omit `depth` (mirrors the CLI's `hse scan` default).
+fn default_scan_depth() -> u32 {
+    DEFAULT_SCAN_DEPTH
+}
+
+/// Serde default for [`ScanRequest::options`] — used when a request omits the
+/// whole `options` object, so it still gets the product default depth (2)
+/// rather than the inert library `ScanOptions::default()` (depth 0).
+fn default_scan_options() -> ScanOptions {
+    ScanOptions {
+        depth: DEFAULT_SCAN_DEPTH,
+        ..Default::default()
+    }
 }
 
 /// Marginal-yield floor for the `--auto` depth curve, expressed as *new
