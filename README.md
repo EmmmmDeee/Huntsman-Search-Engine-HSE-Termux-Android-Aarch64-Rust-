@@ -28,8 +28,10 @@ updates** the source, builds the release binary (retrying on flaky mobile
 networks), installs `hse` to `$PREFIX/bin`, sets up the `hse-bg` background
 wrapper + optional Termux:Boot autostart, writes the keys template, and runs
 `hse doctor` to verify. **Existing installs are fully handled**: it fetches +
-rebuilds, **preserves your `~/.huntsman.env` keys**, and auto-rotates the
-embedded keys on first run. Idempotent — re-run any time to upgrade.
+rebuilds, **preserves your `~/.huntsman.env` keys**, auto-rotates the embedded
+keys on first run, swaps the binary **atomically** (safe even while a server is
+live), and **restarts a running `hse-bg` onto the new build** so the upgrade
+takes effect immediately. Idempotent — re-run any time to upgrade.
 
 **No-build fast path:** if a precompiled aarch64 `hse` (named `hse` or
 `hse-aarch64-linux-android`) is sitting in your **Downloads** folder, the
