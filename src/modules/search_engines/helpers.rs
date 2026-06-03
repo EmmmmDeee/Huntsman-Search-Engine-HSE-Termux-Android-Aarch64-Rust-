@@ -426,9 +426,37 @@ pub(super) fn is_navigation_path(s: &str) -> bool {
         || CONTAINS.iter().any(|n| s.contains(n))
 }
 
+/// Structural URL/web tokens that are never a meaningful target identifier.
+/// Dropping them keeps a `Url` target (whose value is split into path tokens)
+/// from turning `https`/`www`/`ssl`/a TLD into a "term" that then matches every
+/// unrelated page carrying that token — e.g. a target of `…/why-use-https` made
+/// `https` a term that matched every HTTPS-explainer page in the relevance gate.
+fn is_web_stopword(w: &str) -> bool {
+    matches!(
+        w,
+        "http"
+            | "https"
+            | "www"
+            | "com"
+            | "org"
+            | "net"
+            | "edu"
+            | "gov"
+            | "html"
+            | "htm"
+            | "php"
+            | "aspx"
+            | "asp"
+            | "jsp"
+            | "ssl"
+            | "tls"
+    )
+}
+
 /// Extract the meaningful search terms from a target value.
 /// For email: uses the local part (before @). For names: each word.
-/// Filters to ≥3 chars and lowercases. Used by every relevance gate.
+/// Filters to ≥3 chars (dropping structural web stopwords) and lowercases.
+/// Used by every relevance gate.
 pub(super) fn target_terms(target: &Target) -> Vec<String> {
     let seed = match target.kind {
         TargetKind::Email => target.value.split('@').next().unwrap_or(""),
@@ -436,7 +464,7 @@ pub(super) fn target_terms(target: &Target) -> Vec<String> {
     };
     seed.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() >= 3)
+        .filter(|w| w.len() >= 3 && !is_web_stopword(w))
         .map(String::from)
         .collect()
 }

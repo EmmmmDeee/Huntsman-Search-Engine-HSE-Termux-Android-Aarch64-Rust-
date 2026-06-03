@@ -89,6 +89,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Irrelevant "what is HTTPS" pages surfaced for unrelated searches.** Because the
+  search module accepts `Url` targets, a URL discovered during expansion (e.g.
+  `…/learning/ssl/why-use-https`) was split into search terms — including
+  structural tokens like `https`/`www`/`ssl`/a TLD — and `https` (≥4 chars) then
+  matched *every* HTTPS-explainer page's path in the relevance gate, admitting
+  generic Wikipedia/Cloudflare/etc. definition pages as results. `target_terms`
+  now drops a small set of structural web stopwords (`http(s)`, `www`, `ssl`/`tls`,
+  common TLDs and file extensions), so they neither pollute dork queries nor match
+  unrelated pages. Regression-tested via the gate. (Found in the standard
+  `Kylo4kylo` run.)
 - **False-positive usernames mined from non-profile social subdomains.** The
   username extractor treated *any* subdomain of a social host as a profile host
   (blanket suffix match), so it pulled junk handles out of CDN/marketing/API

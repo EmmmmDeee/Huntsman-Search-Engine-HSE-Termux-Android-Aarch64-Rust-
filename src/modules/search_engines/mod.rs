@@ -2352,6 +2352,49 @@ mod tests {
     }
 
     #[test]
+    fn target_terms_filters_web_stopwords() {
+        // A Url target (created during depth-1 expansion) is split into path
+        // tokens — structural ones (scheme/host-alias/tld/ext) must NOT become
+        // terms, or they match every unrelated page carrying that token.
+        let t = Target::new(
+            TargetKind::Url,
+            "https://www.cloudflare.com/learning/ssl/why-use-https",
+        );
+        let terms = target_terms(&t);
+        for stop in ["https", "www", "com", "ssl"] {
+            assert!(
+                !terms.iter().any(|w| w == stop),
+                "stopword {stop} must be filtered, got {terms:?}"
+            );
+        }
+        assert!(terms.iter().any(|w| w == "cloudflare"), "kept: {terms:?}");
+        // A domain's TLD is dropped too, leaving the registrable label.
+        assert_eq!(
+            target_terms(&Target::new(TargetKind::Domain, "pinterest.com")),
+            vec!["pinterest".to_string()]
+        );
+    }
+
+    #[test]
+    fn url_gate_rejects_unrelated_https_pages() {
+        // Regression for the standard Kylo4kylo run: with a `…/why-use-https`
+        // Url target, generic HTTPS-explainer pages on OTHER domains used to pass
+        // the relevance gate because `https` was a term. They must not now.
+        let terms = target_terms(&Target::new(
+            TargetKind::Url,
+            "https://www.cloudflare.com/learning/ssl/why-use-https",
+        ));
+        assert!(!url_matches_target(
+            "https://en.wikipedia.org/wiki/HTTPS",
+            &terms
+        ));
+        assert!(!url_matches_target(
+            "https://www.networksolutions.com/blog/enable-https",
+            &terms
+        ));
+    }
+
+    #[test]
     fn abn_extraction() {
         let text = "Registered ABN 53 004 085 616 for the company";
         let results = extract_abn_acn_from_text(text);
