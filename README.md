@@ -234,7 +234,7 @@ hse scan --kind name --value "Jordan Leigh Meyers 1987" --modules name_intel --o
 - **Usernames** (≤24, scored): `first.last`, `flast`, `firstl`, reversed,
   hyphen/underscore joins, middle-initial blends, year suffixes → feed
   `username_search`, `social_probe`, `github_user`, `keybase`.
-- **Emails** (≤16): top handle shapes × a provider set (Gmail/Outlook/iCloud/
+- **Emails** (≤8): top handle shapes × a provider set (Gmail/Outlook/iCloud/
   Yahoo/Hotmail/Proton, override with `HUNTSMAN_EMAIL_DOMAINS`) → feed the email
   pipeline (`hibp`, `hunter_io`, `epieos`, `emailrep`, …). Each email carries its
   **Gravatar** avatar URL (`MD5(email)`).
@@ -248,7 +248,7 @@ correlator without auto-spending API budget. To recurse on them, lower the
 expansion floor:
 
 ```bash
-hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confidence 0.40
+hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confidence 0.35
 ```
 
 ---

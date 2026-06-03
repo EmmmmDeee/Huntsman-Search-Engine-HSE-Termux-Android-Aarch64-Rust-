@@ -31,9 +31,11 @@ pub fn should_skip_external_ipv4(ip: &str) -> bool {
 /// Rejection cases:
 ///   - empty / whitespace
 ///   - private / reserved IPv4 (10/8, 172.16/12, 192.168/16, 127/8,
-///     169.254/16, CGNAT 100.64/10, multicast, broadcast)
+///     169.254/16, CGNAT 100.64/10, 0.0.0.0/8, multicast, broadcast)
 ///   - private / reserved IPv6 (loopback, unspecified, multicast,
-///     unique-local fc00::/7, link-local fe80::/10)
+///     unique-local fc00::/7, link-local fe80::/10), AND v6 forms that
+///     embed a routable IPv4 (IPv4-mapped, NAT64, 6to4, IPv4-compatible)
+///     whose embedded v4 is private/reserved.
 ///
 /// Returns FALSE for fully-public IPv6 like `2606:4700:4700::1111`.
 pub fn should_skip_external_ip(ip: &str) -> bool {
@@ -44,41 +46,31 @@ pub fn should_skip_external_ip(ip: &str) -> bool {
     is_private_ip(trimmed)
 }
 
-/// True if the IP string is one of the private / reserved ranges
-/// that won't yield meaningful intel from external lookup APIs.
+/// Core SSRF predicate over a resolved [`std::net::IpAddr`]. Returns true for
+/// any address that won't yield meaningful external intel AND that a client must
+/// not be tricked into connecting to internally.
 ///
-/// Covers IPv4 loopback (127/8), private (10/8, 172.16/12, 192.168/16),
-/// link-local (169.254/16), broadcast, unspecified (0/8), multicast,
-/// and the CGNAT range (100.64/10), plus IPv6 loopback (::1),
-/// unspecified (::), multicast (ff00::/8), unique-local (fc00::/7),
-/// and link-local (fe80::/10).
+/// IPv4: loopback (127/8) / RFC1918 (10/8, 172.16/12, 192.168/16) / link-local
+/// (169.254/16, incl. cloud metadata) / CGNAT (100.64/10) / "this network"
+/// (0.0.0.0/8) / broadcast / multicast.
 ///
-/// Returns false for any string that doesn't parse as an IP — callers
-/// that want stricter shape rejection should validate separately.
-/// Core SSRF predicate over a resolved [`std::net::IpAddr`]: loopback / RFC1918
-/// / link-local (incl. 169.254 metadata) / CGNAT / multicast / unspecified /
-/// broadcast (v4); loopback / ULA / link-local / multicast / unspecified (v6).
+/// IPv6: loopback (::1) / unspecified (::) / multicast (ff00::/8) / unique-local
+/// (fc00::/7) / link-local (fe80::/10).
+///
+/// **Embedded-IPv4 v6 forms.** Several v6 representations carry an IPv4 address
+/// the host may route to the underlying v4 — including internal ranges. These
+/// are decoded and judged by the IPv4 rules, closing an SSRF bypass:
+///   * IPv4-mapped `::ffff:a.b.c.d` — folded by [`to_canonical`] before the match
+///     (so `::ffff:169.254.169.254` hits the v4 arm);
+///   * **NAT64** `64:ff9b::a.b.c.d` — Android cellular networks commonly run
+///     NAT64/464XLAT, so `64:ff9b::<private-v4>` is a real on-device SSRF vector;
+///   * **6to4** `2002:<v4>::/48`;
+///   * deprecated **IPv4-compatible** `::a.b.c.d`.
+///
 /// Shared by the string host gate and the HTTP client's SSRF DNS filter.
-///
-/// IPv4-mapped IPv6 (`::ffff:a.b.c.d`) is normalised to its IPv4 form first:
-/// the OS connects such an address to the underlying IPv4 host, so e.g.
-/// `::ffff:169.254.169.254` must be judged by the v4 reserved-range arm.
-/// Without this it parses as `V6`, misses every v6 check, and is treated as
-/// public — an SSRF-filter bypass. `to_canonical()` rewrites only genuine
-/// IPv4-mapped addresses; `::1`, `::`, ULA/link-local and real public v6 are
-/// left untouched.
 pub fn is_private_addr(addr: std::net::IpAddr) -> bool {
     match addr.to_canonical() {
-        std::net::IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                // CGNAT (100.64.0.0/10)
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
-        }
+        std::net::IpAddr::V4(v4) => is_private_v4(v4),
         std::net::IpAddr::V6(v6) => {
             v6.is_loopback()
                 || v6.is_unspecified()
@@ -87,8 +79,63 @@ pub fn is_private_addr(addr: std::net::IpAddr) -> bool {
                 || (v6.octets()[0] == 0xfc || v6.octets()[0] == 0xfd)
                 // Link-local (fe80::/10)
                 || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xC0) == 0x80)
+                // v6 forms embedding a routable IPv4 (NAT64 / 6to4 /
+                // IPv4-compatible): judge the embedded v4 by the v4 rules.
+                || embedded_ipv4(v6).is_some_and(is_private_v4)
         }
     }
+}
+
+/// IPv4 reserved/private/unroutable predicate (the v4 half of
+/// [`is_private_addr`]; also used to judge IPv4 addresses embedded in v6).
+fn is_private_v4(v4: std::net::Ipv4Addr) -> bool {
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_broadcast()
+        || v4.is_unspecified()
+        || v4.is_multicast()
+        // "This network" 0.0.0.0/8 (RFC 1122) — `is_unspecified` only catches
+        // 0.0.0.0, but the whole /8 is reserved/unroutable.
+        || v4.octets()[0] == 0
+        // CGNAT (100.64.0.0/10)
+        || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
+}
+
+/// Extract the IPv4 address embedded in a v6 address that the host may route to
+/// the underlying v4 — NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16`), and the
+/// deprecated IPv4-compatible (`::a.b.c.d`). IPv4-MAPPED (`::ffff:/96`) is
+/// already folded by `to_canonical` before [`is_private_addr`]'s V6 arm.
+fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    let o = v6.octets();
+    let v4 = |a, b, c, d| std::net::Ipv4Addr::new(a, b, c, d);
+
+    // NAT64 well-known prefix 64:ff9b::/96 → low 32 bits are the v4.
+    if o[0] == 0x00
+        && o[1] == 0x64
+        && o[2] == 0xff
+        && o[3] == 0x9b
+        && o[4..12].iter().all(|&b| b == 0)
+    {
+        return Some(v4(o[12], o[13], o[14], o[15]));
+    }
+
+    // 6to4 2002::/16 → bits 16..48 hold the v4.
+    if o[0] == 0x20 && o[1] == 0x02 {
+        return Some(v4(o[2], o[3], o[4], o[5]));
+    }
+
+    // Deprecated IPv4-compatible ::a.b.c.d (top 96 bits zero). `::` and `::1`
+    // are already handled by the unspecified/loopback checks before this is
+    // reached; exclude `::` defensively so it isn't reported as 0.0.0.0.
+    if o[..12].iter().all(|&b| b == 0) {
+        let cand = v4(o[12], o[13], o[14], o[15]);
+        if !cand.is_unspecified() {
+            return Some(cand);
+        }
+    }
+
+    None
 }
 
 /// String form of [`is_private_addr`]. Non-IP strings (hostnames) return false
@@ -197,6 +244,15 @@ mod tests {
     }
 
     #[test]
+    fn zero_network_v4_rejected() {
+        // 0.0.0.0/8 ("this network", RFC 1122) is reserved/unroutable — not just
+        // the single 0.0.0.0 caught by `is_unspecified`.
+        for ip in ["0.0.0.0", "0.1.2.3", "0.255.255.255"] {
+            assert!(is_private_ip(ip), "expected {ip} private (0.0.0.0/8)");
+        }
+    }
+
+    #[test]
     fn private_v6_rejected() {
         for ip in ["::1", "::", "ff00::1", "fc00::1", "fd12::1", "fe80::1"] {
             assert!(is_private_ip(ip), "expected {ip} private");
@@ -234,6 +290,42 @@ mod tests {
         // reclassifies, it doesn't blanket-block the mapped range.
         assert!(!is_private_ip("::ffff:8.8.8.8"));
         assert!(!is_private_ip("::ffff:1.1.1.1"));
+    }
+
+    #[test]
+    fn nat64_embedded_private_v4_rejected() {
+        // Android cellular networks commonly run NAT64 (64:ff9b::/96); a host
+        // resolving to a NAT64 address that embeds an internal v4 must be
+        // refused (it routes to the embedded v4 on-device).
+        for ip in [
+            "64:ff9b::7f00:1",    // 127.0.0.1
+            "64:ff9b::a00:1",     // 10.0.0.1
+            "64:ff9b::c0a8:101",  // 192.168.1.1
+            "64:ff9b::a9fe:a9fe", // 169.254.169.254 (cloud metadata)
+            "64:ff9b::6440:1",    // 100.64.0.1 (CGNAT)
+        ] {
+            assert!(is_private_ip(ip), "expected NAT64 {ip} private");
+        }
+        // NAT64 wrapping a PUBLIC v4 resolves to that public host → allowed.
+        assert!(
+            !is_private_ip("64:ff9b::808:808"),
+            "NAT64 8.8.8.8 is public"
+        );
+        assert!(
+            !is_private_ip("64:ff9b::101:101"),
+            "NAT64 1.1.1.1 is public"
+        );
+    }
+
+    #[test]
+    fn sixtofour_and_compat_embedded_private_v4_rejected() {
+        // 6to4 (2002::/16) embeds the v4 in bits 16..48.
+        assert!(is_private_ip("2002:7f00:1::"), "6to4 127.0.0.1");
+        assert!(is_private_ip("2002:a9fe:a9fe::"), "6to4 169.254.169.254");
+        assert!(!is_private_ip("2002:808:808::"), "6to4 8.8.8.8 is public");
+        // Deprecated IPv4-compatible ::a.b.c.d.
+        assert!(is_private_ip("::127.0.0.1"), "compat loopback");
+        assert!(is_private_ip("::169.254.169.254"), "compat metadata");
     }
 
     #[test]
@@ -279,6 +371,8 @@ mod tests {
         assert!(should_skip_external_ip("::1"));
         assert!(should_skip_external_ip("fc00::1"));
         assert!(should_skip_external_ip("fe80::1"));
+        // NAT64 embedding metadata is refused by the universal gate too.
+        assert!(should_skip_external_ip("64:ff9b::a9fe:a9fe"));
     }
 
     #[test]

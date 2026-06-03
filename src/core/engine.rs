@@ -918,6 +918,40 @@ fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> O
 type TimeoutResult =
     std::result::Result<Result<crate::core::module::ModuleResult>, tokio::time::error::Elapsed>;
 
+/// Run one module's `process()` under both a timeout AND a panic guard.
+///
+/// A panicking module — an `unwrap`/`expect`/out-of-bounds slice on a hostile or
+/// drifted upstream response, or a panic deep in a dependency — would otherwise
+/// unwind into the sequential dispatch loop or a `JoinSet` task and (under
+/// `panic = "abort"`) take down the whole process: a remote-DoS on a long-lived
+/// `hse serve`. This wraps the timed module future in [`std::panic::catch_unwind`]
+/// (requires `panic = "unwind"`, set for every profile) and maps a caught panic
+/// to `Ok(Err(Error::module(name, "panicked: …")))`, so it flows through
+/// `finalise_module_result`'s existing `errored` arm exactly like a returned
+/// error — counted in `modules_errored`, named, and non-fatal to the scan.
+async fn run_module_guarded(
+    timeout_ms: u64,
+    name: &'static str,
+    fut: impl std::future::Future<Output = Result<crate::core::module::ModuleResult>>,
+) -> TimeoutResult {
+    use futures::FutureExt;
+    match std::panic::AssertUnwindSafe(timeout(Duration::from_millis(timeout_ms), fut))
+        .catch_unwind()
+        .await
+    {
+        Ok(timeout_result) => timeout_result,
+        Err(payload) => {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "module panicked".to_string());
+            warn!(module = name, %msg, "module panic contained");
+            Ok(Err(Error::module(name, format!("panicked: {msg}"))))
+        }
+    }
+}
+
 /// What a spawned per-module task returns to the consumer loop.
 struct DispatchOutcome {
     name: &'static str,
@@ -1142,8 +1176,9 @@ impl ScanEngine {
                 },
             );
 
-            let result = timeout(
-                Duration::from_millis(resolve_timeout(opts, &**module)),
+            let result = run_module_guarded(
+                resolve_timeout(opts, &**module),
+                name,
                 module.process(target, ctx),
             )
             .await;
@@ -1237,8 +1272,9 @@ impl ScanEngine {
                     module: name.into(),
                 },
             );
-            let result = timeout(
-                Duration::from_millis(resolve_timeout(opts, &**module)),
+            let result = run_module_guarded(
+                resolve_timeout(opts, &**module),
+                name,
                 module.process(target, ctx),
             )
             .await;
@@ -1327,11 +1363,9 @@ impl ScanEngine {
                     },
                 );
 
-                let result = timeout(
-                    Duration::from_millis(module_timeout_ms),
-                    module_arc.process(&target, &ctx),
-                )
-                .await;
+                let result =
+                    run_module_guarded(module_timeout_ms, name, module_arc.process(&target, &ctx))
+                        .await;
 
                 if throttle_ms > 0 {
                     sleep(Duration::from_millis(throttle_ms)).await;
@@ -1631,6 +1665,76 @@ fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FTA invariant (cuts MCS-A): the local/environmental sensor modules read
+    /// the OPERATOR's own device/network, so they must never engage on a
+    /// remote-subject seed — otherwise the operator's GPS/Wi-Fi/cell/LAN data is
+    /// attributed to the subject (e.g. a device GPS fix surfacing as the
+    /// subject's Verified location on a `name` scan). They run only on a
+    /// deliberately-local seed (coordinates / MAC). Pinning the whole gate set
+    /// here stops a future sensor module silently reopening the cut.
+    #[test]
+    fn local_passive_sensor_modules_reject_remote_subject_seeds() {
+        use crate::core::scan::{Target, TargetKind};
+        let reg = crate::modules::registry();
+        for name in LOCAL_PASSIVE_MODULES {
+            let m = reg
+                .iter()
+                .find(|m| m.name() == *name)
+                .unwrap_or_else(|| panic!("{name} not in registry"));
+            for k in [
+                TargetKind::FullName,
+                TargetKind::Email,
+                TargetKind::Username,
+                TargetKind::Phone,
+                TargetKind::Domain,
+                TargetKind::IpAddress,
+                TargetKind::Url,
+                TargetKind::Organisation,
+            ] {
+                assert!(
+                    !m.accepts(&Target::new(k, "x")),
+                    "{name} must reject remote-subject seed {k:?} (fault-tree MCS-A)"
+                );
+            }
+            assert!(
+                m.accepts(&Target::new(TargetKind::Coordinates, "-27.47,153.02")),
+                "{name} must still engage on a deliberately-local coordinates seed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn module_panic_is_contained_as_error_not_process_abort() {
+        // Error-tree ECS-1: a panicking module (bad/hostile upstream tripping an
+        // unwrap/slice) must be caught at the dispatch boundary and reported as a
+        // normal, counted module error — never unwind into the loop / JoinSet or
+        // abort the process. Requires panic = "unwind" (set for every profile).
+        let out =
+            run_module_guarded(5_000, "boom", async { panic!("kaboom on bad upstream") }).await;
+        match out {
+            Ok(Err(Error::Module { module, message })) => {
+                assert_eq!(module, "boom");
+                assert!(message.contains("panicked"), "msg: {message}");
+                assert!(message.contains("kaboom on bad upstream"), "msg: {message}");
+            }
+            other => panic!("expected a contained module error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_module_guarded_passes_success_and_error_through() {
+        use crate::core::module::ModuleResult;
+        // Success and a returned error flow through unchanged (the guard only
+        // intercepts panics, matching a returned error's shape exactly).
+        let ok = run_module_guarded(5_000, "ok", async { Ok(ModuleResult::new()) }).await;
+        assert!(matches!(ok, Ok(Ok(_))));
+        let err = run_module_guarded(5_000, "e", async {
+            Err(Error::module("e", "regular failure"))
+        })
+        .await;
+        assert!(matches!(err, Ok(Err(Error::Module { .. }))));
+    }
 
     #[test]
     fn termux_cap_bounds_long_modules_only_on_termux_without_override() {

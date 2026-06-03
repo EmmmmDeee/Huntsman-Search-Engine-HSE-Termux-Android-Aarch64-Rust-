@@ -170,8 +170,8 @@ pub fn build_client() -> reqwest::Client {
 /// Read up to 200 characters of a non-success response body, trim, and
 /// return a single-line string safe to embed in an error message.
 ///
-/// Returns `"<empty>"` when the body is empty, `"<unreadable>"` if the
-/// body couldn't be decoded. Consumes the response.
+/// Returns `"<empty>"` when the body is empty, `"<unreadable>"` on a transport
+/// error while streaming the body. Consumes the response.
 ///
 /// Common credential query-param values (`api_key=`, `apiKey=`,
 /// `key=`, `token=`, `secret=`, `access_token=`, `auth=`) are
@@ -204,22 +204,22 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
             Err(_) => return "<unreadable>".to_string(),
         }
     }
-    match std::str::from_utf8(&buf).ok() {
-        Some(body) => {
-            scan_for_api_keys(body);
-            let redacted = redact_credentials(body);
-            let trimmed = redacted.trim();
-            if trimmed.is_empty() {
-                "<empty>".to_string()
-            } else {
-                trimmed
-                    .replace(['\n', '\r'], " ")
-                    .chars()
-                    .take(200)
-                    .collect()
-            }
-        }
-        None => "<unreadable>".to_string(),
+    // Lossy decode: the 8 KiB cap can fall mid-multibyte-char, which strict
+    // `from_utf8` would reject and report as "<unreadable>" even for a perfectly
+    // readable body. We only need a human-facing snippet, so replace the (at most
+    // one) split char rather than discard the whole message.
+    let body = String::from_utf8_lossy(&buf);
+    scan_for_api_keys(&body);
+    let redacted = redact_credentials(&body);
+    let trimmed = redacted.trim();
+    if trimmed.is_empty() {
+        "<empty>".to_string()
+    } else {
+        trimmed
+            .replace(['\n', '\r'], " ")
+            .chars()
+            .take(200)
+            .collect()
     }
 }
 
@@ -246,6 +246,48 @@ pub async fn read_body_capped(resp: reqwest::Response, cap: usize) -> Option<Str
         }
     }
     Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Upper bound on a JSON response body we will buffer. `resp.text()` accumulates
+/// the whole body, so a hostile or misconfigured upstream returning a multi-GB
+/// payload would OOM a Termux device — the same threat `read_body_capped` /
+/// `error_snippet` already guard, but the JSON paths did not. 32 MiB is far above
+/// any legitimate OSINT JSON response (even a large `crt.sh` certificate list).
+const JSON_BODY_CAP: usize = 32 * 1024 * 1024;
+
+/// Stream a response body into a String, refusing to buffer more than
+/// [`JSON_BODY_CAP`] bytes — the JSON-path equivalent of [`read_body_capped`].
+/// Errors (rather than truncating) past the cap, since a half-read JSON body
+/// can't be parsed anyway. Lossy UTF-8 so an odd-charset body still yields a
+/// parseable string instead of failing outright.
+async fn read_json_text(resp: reqwest::Response, module: &str) -> Result<String> {
+    use futures::StreamExt as _;
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
+        if buf.len() + bytes.len() > JSON_BODY_CAP {
+            return Err(Error::module(
+                module,
+                format!(
+                    "response body exceeds the {JSON_BODY_CAP}-byte cap — refusing to buffer \
+                     (oversized or hostile upstream)"
+                ),
+            ));
+        }
+        buf.extend_from_slice(&bytes);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Last up-to-4 *characters* of a key for log lines — char-boundary-safe.
+/// Keys can be harvested from arbitrary upstream text (`scan_for_api_keys`), so
+/// a byte-index slice (`&key[key.len()-4..]`) would panic when those 4 trailing
+/// bytes land mid-UTF-8-sequence.
+fn key_tail(key: &str) -> String {
+    let mut tail: Vec<char> = key.chars().rev().take(4).collect();
+    tail.reverse();
+    tail.into_iter().collect()
 }
 
 /// GET `url` and deserialise the JSON body as `T`. Errors on any
@@ -309,16 +351,31 @@ async fn fetch_json_inner<T: DeserializeOwned>(
                     format!("HTTP {status}: {}", error_snippet(resp).await),
                 ));
             }
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
+            let text = read_json_text(resp, module).await?;
             scan_for_api_keys(&text);
             let data = serde_json::from_str::<T>(&text)
                 .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
             Ok(Some(data))
         }
-        Err(_) => Ok(super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await),
+        Err(transport) => {
+            // reqwest transport failure → one curl fallback attempt. curl
+            // collapses every outcome (404, non-zero exit, parse failure) to
+            // `None`, so a `None` here means the fallback ALSO failed — surface
+            // that as an error rather than `Ok(None)`, which `fetch_json_or_404`
+            // callers would read as a definitive "not found", silently masking a
+            // network outage as a clean, empty result.
+            match super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await {
+                Some(data) => Ok(Some(data)),
+                None => Err(Error::module(
+                    module,
+                    format!(
+                        "transport error ({}) and curl fallback failed for {}",
+                        redact_credentials(&transport.to_string()),
+                        redact_credentials(url)
+                    ),
+                )),
+            }
+        }
     }
 }
 
@@ -342,10 +399,11 @@ pub(crate) fn redact_credentials(text: &str) -> String {
         "secret",
         "token",
         "auth",
-        // `key` is too aggressive on its own (would mask any `key=value`),
-        // but `key=` immediately followed by 12+ alphanumerics is almost
-        // certainly a credential. We accept a brief surface-area mismatch
-        // for clarity.
+        // `key` deliberately masks ANY `key=<value>` that follows a query
+        // boundary (the `preceded_by_boundary` check below stops it tripping on
+        // mid-word matches like `monkey=`). We accept over-redacting a benign
+        // `?key=…` rather than risk leaking a credential that rides as `?key=…`
+        // — over-redaction in an error string is harmless; under-redaction leaks.
         "key",
     ];
     // Build on bytes, not chars: copying one byte at a time into a `String`
@@ -450,7 +508,7 @@ pub async fn handle_keyed_error(
             tracing::warn!(
                 module,
                 "429 rate-limited on key …{}, retrying in {secs}s ({} left)",
-                &key[key.len().saturating_sub(4)..],
+                key_tail(key),
                 retries_left
             );
             tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
@@ -501,10 +559,7 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
             format!("HTTP {status}: {}", error_snippet(resp).await),
         ));
     }
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
+    let text = read_json_text(resp, module).await?;
     scan_for_api_keys(&text);
     let data = serde_json::from_str::<T>(&text)
         .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
@@ -530,7 +585,9 @@ pub async fn json_scanned<T: DeserializeOwned>(
     resp: reqwest::Response,
     module: &str,
 ) -> std::result::Result<T, String> {
-    let text = resp.text().await.map_err(|e| format!("{module}: {e}"))?;
+    let text = read_json_text(resp, module)
+        .await
+        .map_err(|e| e.to_string())?;
     scan_for_api_keys(&text);
     serde_json::from_str(&text).map_err(|e| format!("{module}: {e}"))
 }
@@ -768,5 +825,28 @@ mod tests {
         // Result is well-formed UTF-8 (String guarantees this; assert no
         // replacement char leaked from a lossy fallback).
         assert!(!r.contains('\u{FFFD}'), "no replacement chars: {r}");
+    }
+
+    // ── key_tail (char-boundary safety, F-C) ───────────────────────────
+
+    #[test]
+    fn key_tail_is_char_boundary_safe() {
+        assert_eq!(key_tail("abcdef123456"), "3456");
+        assert_eq!(key_tail("ab"), "ab");
+        assert_eq!(key_tail(""), "");
+        // A byte slice of the last 4 BYTES would split these chars and panic;
+        // key_tail keeps whole chars and never panics.
+        assert_eq!(key_tail("clé"), "clé");
+        assert_eq!(key_tail("k😀😀😀😀").chars().count(), 4);
+    }
+
+    #[test]
+    fn redact_over_masks_bare_key_param_after_boundary() {
+        // Documented behaviour (F-E): any boundary-preceded `key=…` value is
+        // masked, even a benign short one — over-redaction is the safe direction
+        // in an error string; under-redaction would leak a `?key=…` credential.
+        let r = redact_credentials("?key=sortorder&page=2");
+        assert!(r.contains("key=***"), "got: {r}");
+        assert!(r.contains("page=2"), "got: {r}");
     }
 }

@@ -61,7 +61,13 @@ opt-level     = "s"
 lto           = true
 codegen-units = 1
 strip         = true
-panic         = "abort"
+# `unwind` (not `abort`) so a panicking module is caught at the dispatch boundary
+# (engine::run_module_guarded) and contained as a normal module error instead of
+# aborting the whole process. On a long-lived `hse serve`, a hostile or drifted
+# upstream that trips a module `unwrap`/slice panic would otherwise be a remote
+# DoS. Costs a little binary size (unwind tables); every other size win
+# (opt-level=s, LTO, codegen-units=1, strip) is retained.
+panic         = "unwind"
 
 # Fast on-device build profile — the installer's default on Termux. Drops the
 # single-threaded LTO link (codegen-units=1, lto=true) that makes the `release`

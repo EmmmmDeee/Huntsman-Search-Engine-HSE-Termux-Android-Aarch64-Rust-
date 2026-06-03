@@ -23,7 +23,7 @@ use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
-    scan::Target,
+    scan::{Target, TargetKind},
 };
 use crate::util::geo::is_valid_coords;
 use crate::util::http::urlencode;
@@ -149,8 +149,13 @@ impl Module for CellIntel {
         true
     }
 
-    fn accepts(&self, _t: &Target) -> bool {
-        true
+    fn accepts(&self, t: &Target) -> bool {
+        // Surveys the cell towers around the OPERATOR's device, not a remote
+        // subject — engage only on a deliberately-local seed (coordinates / MAC)
+        // so the operator's location isn't attributed to a name/email/domain/IP
+        // subject (fault-tree cut set MCS-A). Expansion is already gated for
+        // LOCAL_PASSIVE_MODULES, so this governs the seed round.
+        matches!(t.kind, TargetKind::Coordinates | TargetKind::MacAddress)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -459,8 +464,12 @@ mod tests {
     }
 
     #[test]
-    fn accepts_any_target() {
-        assert!(CellIntel.accepts(&Target::new(TargetKind::Email, "x@y")));
+    fn accepts_only_local_physical_seeds() {
+        assert!(CellIntel.accepts(&Target::new(TargetKind::Coordinates, "-27.47,153.02")));
+        assert!(CellIntel.accepts(&Target::new(TargetKind::MacAddress, "aa:bb:cc:dd:ee:ff")));
+        assert!(!CellIntel.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(!CellIntel.accepts(&Target::new(TargetKind::FullName, "Jane Doe")));
+        assert!(!CellIntel.accepts(&Target::new(TargetKind::Domain, "x.com")));
     }
 
     #[test]

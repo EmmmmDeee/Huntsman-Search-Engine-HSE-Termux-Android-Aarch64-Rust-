@@ -52,7 +52,7 @@ const BROWSER_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;\
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -200,23 +200,50 @@ impl Module for UsernameSearch {
         let mut found_names: Vec<&str> = Vec::new();
         let mut category_counts: std::collections::BTreeMap<&str, usize> =
             std::collections::BTreeMap::new();
+        // Track inconclusive (blocked/unreachable) vs definitive not-found so a
+        // mostly-blocked run isn't reported as a confirmed absence (error-tree
+        // finding M6 — `found=0` must not conflate "absent" with "couldn't tell").
+        let mut inconclusive_probes = 0usize;
+        let mut definitive_absent = 0usize;
         for (site_name, site_cat, outcome) in &results {
-            if let ProbeResult::Found(url) = outcome {
-                found_names.push(site_name);
-                *category_counts.entry(site_cat).or_insert(0) += 1;
-                let mut e = Entity::new(EntityKind::Url, url.as_str(), 0.92, &ctx.scan_id);
-                e.tag("social-profile");
-                e.tag(format!("platform:{site_name}"));
-                e.tag(format!("cat:{site_cat}"));
-                e.add_evidence(
-                    Evidence::new(SRC, format!("@{username} has a profile on {site_name}"))
-                        .with_attr("platform", *site_name)
-                        .with_attr("category", *site_cat)
-                        .with_attr("username", username)
-                        .with_attr("url", url),
-                );
-                module_result.push(e);
+            match outcome {
+                ProbeResult::Found(url) => {
+                    found_names.push(site_name);
+                    *category_counts.entry(site_cat).or_insert(0) += 1;
+                    let mut e = Entity::new(EntityKind::Url, url.as_str(), 0.92, &ctx.scan_id);
+                    e.tag("social-profile");
+                    e.tag(format!("platform:{site_name}"));
+                    e.tag(format!("cat:{site_cat}"));
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("@{username} has a profile on {site_name}"))
+                            .with_attr("platform", *site_name)
+                            .with_attr("category", *site_cat)
+                            .with_attr("username", username)
+                            .with_attr("url", url),
+                    );
+                    module_result.push(e);
+                }
+                ProbeResult::NotFound => definitive_absent += 1,
+                ProbeResult::Error => inconclusive_probes += 1,
             }
+        }
+
+        // Zero hits: distinguish a genuine "not on any site" from "couldn't tell"
+        // (WAF / rate-limit / no egress blocked the probes). If the probes were
+        // mostly inconclusive, surface an error instead of a silent zero so the
+        // operator never reads a blocked run as a confirmed absence.
+        if found_names.is_empty() {
+            if inconclusive(found_names.len(), inconclusive_probes, results.len()) {
+                return Err(Error::module(
+                    SRC,
+                    format!(
+                        "inconclusive: {inconclusive_probes}/{} site probes were blocked or \
+                         unreachable (WAF / rate-limit / no egress) — not a confirmed absence",
+                        results.len()
+                    ),
+                ));
+            }
+            return Ok(module_result);
         }
 
         // Re-emit the seed username with a corroboration-style summary so
@@ -272,7 +299,9 @@ impl Module for UsernameSearch {
                 .with_attr("social_count", social_count.to_string())
                 .with_attr("dating_count", dating_count.to_string())
                 .with_attr("messaging_count", messaging_count.to_string())
-                .with_attr("sites_probed", SITES.len().to_string()),
+                .with_attr("sites_probed", SITES.len().to_string())
+                .with_attr("sites_not_found", definitive_absent.to_string())
+                .with_attr("sites_inconclusive", inconclusive_probes.to_string()),
             );
             module_result.push(summary);
         }
@@ -284,6 +313,14 @@ enum ProbeResult {
     Found(String),
     NotFound,
     Error,
+}
+
+/// True when a zero-hit run is *inconclusive* rather than a confirmed absence:
+/// nothing was found AND at least half the probes were blocked/unreachable, so
+/// most sites never gave a definitive answer. Pure (unit-tested) so the M6
+/// disambiguation policy is verifiable without the network.
+fn inconclusive(found: usize, errored: usize, total: usize) -> bool {
+    found == 0 && total > 0 && errored * 2 >= total
 }
 
 /// Pair the future's outcome with the site name + category for the
@@ -328,6 +365,20 @@ fn scan_text_for_keys(body: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_hits_is_inconclusive_only_when_mostly_blocked() {
+        // M6 policy: a zero-hit run is "inconclusive" (→ surfaced as an error,
+        // not a confirmed absence) only when most probes were blocked.
+        assert!(inconclusive(0, 334, 334), "all blocked → inconclusive");
+        assert!(inconclusive(0, 167, 334), "half blocked → inconclusive");
+        assert!(
+            !inconclusive(0, 10, 334),
+            "mostly definitive not-found → genuine absence"
+        );
+        assert!(!inconclusive(3, 300, 334), "any hit → never inconclusive");
+        assert!(!inconclusive(0, 0, 0), "no probes → not inconclusive");
+    }
 
     #[test]
     fn accepts_only_username() {

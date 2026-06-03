@@ -30,6 +30,29 @@ pub const CORROBORATION_DOUBT_DECAY: f64 = 0.65;
 /// Confidence decay constant per hour (γ = 0.85).
 pub const GAMMA_PER_HOUR: f64 = 0.85;
 
+/// Evidence "sources" that are deterministic self-enrichment passes the engine
+/// runs over every entity of a given kind — NOT independent intelligence.
+///
+/// `geo_normalize` is the geospatial enrichment pass ([`crate::core::engine`])
+/// that attaches a geohash/timezone/parsed-address evidence record to *every*
+/// `Coordinates`/`Address` entity. Because it fires unconditionally it is not a
+/// cross-correlating observation: counting it as a distinct source silently
+/// lifted single-source coarse geo guesses (a postcode centroid, a candidate
+/// suburb) from their base confidence into the Probable tier via the
+/// agreement model, and fired the corroboration correlator rules
+/// (AU-003/AU-014/AU-030) once per such entity. These sources are still kept in
+/// the evidence chain (their attributes are real and useful) and still appear
+/// in [`Entity::evidence_sources`] for display; they are only excluded from the
+/// *corroboration* count — see [`Entity::corroborating_sources`].
+pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &["geo_normalize"];
+
+/// True if `source` is a deterministic self-enrichment pass rather than an
+/// independent intelligence source (see [`ENRICHMENT_ONLY_SOURCES`]).
+#[inline]
+pub fn is_enrichment_source(source: &str) -> bool {
+    ENRICHMENT_ONLY_SOURCES.contains(&source)
+}
+
 // ─── EntityKind ──────────────────────────────────────────────────────────────
 
 /// All value types an entity can represent.
@@ -261,12 +284,13 @@ impl Entity {
     /// Number of DISTINCT corroborating sources backing this entity — the
     /// true cross-correlation signal that drives the C_eff boost.
     ///
-    /// This is `evidence_sources().len()` (count of distinct `evidence.source`
-    /// strings, since every module emits one stable source name), floored at 1.
-    /// When no evidence is attached (synthetic/test entities, or an entity
-    /// constructed before its evidence) it falls back to the stored
-    /// `corroboration` field so an explicitly-set strength value is still
-    /// honoured.
+    /// This is `corroborating_sources().len()` (distinct `evidence.source`
+    /// strings, since every module emits one stable source name, minus the
+    /// deterministic self-enrichment passes in [`ENRICHMENT_ONLY_SOURCES`]),
+    /// floored at 1. When no corroborating evidence is attached (synthetic/test
+    /// entities, an entity constructed before its evidence, or one carrying only
+    /// enrichment evidence) it falls back to the stored `corroboration` field so
+    /// an explicitly-set strength value is still honoured.
     ///
     /// Why not the `corroboration` field directly: that field is the summed
     /// *observation magnitude* (e.g. hibp seeds it with verified-breach count,
@@ -280,11 +304,13 @@ impl Entity {
     /// signal for ranking/diagnostics; it no longer drives C_eff.
     #[inline]
     pub fn source_count(&self) -> u32 {
-        let distinct = self.evidence_sources().len() as u32;
+        let distinct = self.corroborating_sources().len() as u32;
         if distinct > 0 {
-            // Evidence is attached: distinct sources is the authoritative
-            // cross-correlation count. The summed `corroboration` magnitude is
-            // deliberately NOT allowed to inflate it — that was the bug.
+            // Evidence is attached: distinct *corroborating* sources is the
+            // authoritative cross-correlation count. The summed `corroboration`
+            // magnitude is deliberately NOT allowed to inflate it (that was the
+            // original bug), and deterministic self-enrichment passes
+            // (`geo_normalize`) are excluded so they can't fabricate agreement.
             distinct
         } else {
             // No evidence (synthetic/test entity, or constructed pre-evidence):
@@ -387,6 +413,20 @@ impl Entity {
 
     pub fn evidence_sources(&self) -> std::collections::HashSet<&str> {
         self.evidence.iter().map(|ev| ev.source.as_str()).collect()
+    }
+
+    /// Distinct evidence sources that represent *independent* intelligence —
+    /// [`evidence_sources`] minus the deterministic self-enrichment passes in
+    /// [`ENRICHMENT_ONLY_SOURCES`]. This is the honest cross-correlation set
+    /// that drives [`source_count`]/[`c_effective`] and the corroboration
+    /// correlator rules; the full [`evidence_sources`] set is retained for
+    /// display and attribute access.
+    pub fn corroborating_sources(&self) -> std::collections::HashSet<&str> {
+        self.evidence
+            .iter()
+            .map(|ev| ev.source.as_str())
+            .filter(|&s| !is_enrichment_source(s))
+            .collect()
     }
 
     pub fn has_evidence_from(&self, source: &str) -> bool {
@@ -715,6 +755,43 @@ mod tests {
         assert!(
             e.c_effective() < if_summed,
             "must not credit the inflated 8"
+        );
+    }
+
+    #[test]
+    fn geo_normalize_does_not_count_as_corroboration() {
+        // A coarse geo guess (one real module) that the engine's geospatial
+        // enrichment pass also touched must NOT be credited as two-source
+        // agreement: `geo_normalize` is deterministic self-enrichment, not an
+        // independent observation. Otherwise a 0.30 candidate suburb would be
+        // lifted into the Probable tier and fire the corroboration rules.
+        let mut suburb = Entity::new(
+            EntityKind::Address,
+            "Maleny, QLD 4552, Australia",
+            0.30,
+            "s",
+        );
+        suburb.add_evidence(Evidence::new("qld_unclaimed", "locality within postcode"));
+        suburb.add_evidence(Evidence::new(
+            "geo_normalize",
+            "Address parse + normalization",
+        ));
+        // Display still surfaces both sources…
+        assert_eq!(suburb.evidence_sources().len(), 2);
+        // …but corroboration sees only the one real intelligence source.
+        assert_eq!(suburb.corroborating_sources().len(), 1);
+        assert_eq!(suburb.source_count(), 1);
+        // So c_eff stays at the base confidence → Candidate, not lifted to
+        // Probable by a phantom second source.
+        assert!((suburb.c_effective() - 0.30).abs() < 1e-9);
+        assert_eq!(suburb.classify(), Classification::Candidate);
+
+        // A second *real* source still corroborates as before.
+        suburb.add_evidence(Evidence::new("geocode", "address confirmed"));
+        assert_eq!(suburb.source_count(), 2);
+        assert!(
+            suburb.c_effective() > 0.30,
+            "real second source still boosts"
         );
     }
 

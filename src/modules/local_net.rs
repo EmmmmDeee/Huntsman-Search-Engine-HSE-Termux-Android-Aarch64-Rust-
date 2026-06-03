@@ -5,8 +5,10 @@
 //! `tokio::fs` — no root, no termux-api, no network traffic. Passive sensor.
 //!
 //! Off-Linux hosts (macOS, Windows) lack these paths and no-op cleanly.
-//! Accepts any target — local-network data is environmental and does not
-//! depend on the scan target. Exclude with `--exclude local_net`.
+//! Local-network data is environmental — it describes the operator's own LAN,
+//! never a remote subject — so it engages only on a deliberately-local seed
+//! (coordinates / MAC), not a name/email/domain/IP scan. Exclude with
+//! `--exclude local_net`.
 
 use async_trait::async_trait;
 
@@ -14,7 +16,7 @@ use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
-    scan::Target,
+    scan::{Target, TargetKind},
 };
 
 const SRC: &str = "local_net";
@@ -39,8 +41,13 @@ impl Module for LocalNet {
     fn is_passive(&self) -> bool {
         true
     }
-    fn accepts(&self, _t: &Target) -> bool {
-        true
+    fn accepts(&self, t: &Target) -> bool {
+        // Local-network data describes the operator's own LAN, not a remote
+        // subject — engage only on a deliberately-local seed (coordinates / MAC)
+        // so the operator's ARP/interface entries aren't attributed to a
+        // name/email/domain/IP subject (fault-tree cut set MCS-A). Expansion is
+        // already gated for LOCAL_PASSIVE_MODULES, so this governs the seed round.
+        matches!(t.kind, TargetKind::Coordinates | TargetKind::MacAddress)
     }
 
     fn category(&self) -> ModuleCategory {
@@ -200,8 +207,13 @@ mod tests {
     }
 
     #[test]
-    fn accepts_any_target() {
-        assert!(LocalNet.accepts(&Target::new(TargetKind::Domain, "x.com")));
+    fn accepts_only_local_physical_seeds() {
+        assert!(LocalNet.accepts(&Target::new(TargetKind::Coordinates, "-27.47,153.02")));
+        assert!(LocalNet.accepts(&Target::new(TargetKind::MacAddress, "aa:bb:cc:dd:ee:ff")));
+        assert!(!LocalNet.accepts(&Target::new(TargetKind::Domain, "x.com")));
+        assert!(!LocalNet.accepts(&Target::new(TargetKind::Email, "a@b.com")));
+        assert!(!LocalNet.accepts(&Target::new(TargetKind::Username, "user1")));
+        assert!(!LocalNet.accepts(&Target::new(TargetKind::IpAddress, "10.0.0.1")));
     }
 
     #[test]
@@ -212,13 +224,6 @@ mod tests {
     #[test]
     fn module_priority() {
         assert_eq!(LocalNet.priority(), 58);
-    }
-
-    #[test]
-    fn accepts_all_target_kinds() {
-        assert!(LocalNet.accepts(&Target::new(TargetKind::Email, "a@b.com")));
-        assert!(LocalNet.accepts(&Target::new(TargetKind::IpAddress, "10.0.0.1")));
-        assert!(LocalNet.accepts(&Target::new(TargetKind::Username, "user1")));
     }
 
     #[test]

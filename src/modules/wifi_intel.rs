@@ -16,7 +16,7 @@ use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
-    scan::Target,
+    scan::{Target, TargetKind},
 };
 use crate::util::geo::is_valid_coords;
 use crate::util::http::error_snippet;
@@ -114,8 +114,12 @@ impl Module for WifiIntel {
         ModuleCost::KeyGated
     }
 
-    fn accepts(&self, _t: &Target) -> bool {
-        true
+    fn accepts(&self, t: &Target) -> bool {
+        // Surveys the operator's OWN Wi-Fi radios (local APs), so it must not run
+        // on a remote-subject scan — engage only on a deliberately-local seed
+        // (coordinates / MAC), never a name/email/domain/IP, so the operator's
+        // APs aren't attributed to the subject (fault-tree cut set MCS-A).
+        matches!(t.kind, TargetKind::Coordinates | TargetKind::MacAddress)
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -378,9 +382,12 @@ mod tests {
     }
 
     #[test]
-    fn accepts_any_target() {
-        assert!(WifiIntel.accepts(&Target::new(TargetKind::Email, "x@y")));
-        assert!(WifiIntel.accepts(&Target::new(TargetKind::Domain, "x")));
+    fn accepts_only_local_physical_seeds() {
+        assert!(WifiIntel.accepts(&Target::new(TargetKind::Coordinates, "-27.47,153.02")));
+        assert!(WifiIntel.accepts(&Target::new(TargetKind::MacAddress, "aa:bb:cc:dd:ee:ff")));
+        assert!(!WifiIntel.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(!WifiIntel.accepts(&Target::new(TargetKind::Domain, "x.com")));
+        assert!(!WifiIntel.accepts(&Target::new(TargetKind::FullName, "Jane Doe")));
     }
 
     #[test]

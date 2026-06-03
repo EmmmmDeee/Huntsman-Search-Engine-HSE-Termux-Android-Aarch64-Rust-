@@ -23,12 +23,23 @@ use url::form_urlencoded::byte_serialize;
 
 // ── Output caps (keep a single name target constant-bounded) ────────────────
 pub(super) const MAX_USERNAMES: usize = 24;
-pub(super) const MAX_EMAILS: usize = 16;
+/// Emails are the widest fan-out (handle shapes × every provider) and the
+/// lowest-signal permutation — pure guesses across mailbox providers. Capped
+/// tighter than usernames so a name seed doesn't flood the Browse table with
+/// near-duplicate addresses.
+pub(super) const MAX_EMAILS: usize = 8;
 pub(super) const MAX_PIVOTS: usize = 18;
 
 // ── Confidence weights ──────────────────────────────────────────────────────
 /// Real-world-common handle shapes (`first.last`, `firstlast`, `flast`, …).
-const W_PRIMARY: f64 = 0.42;
+///
+/// Kept strictly below the 0.40 Probable floor: a name-derived handle is an
+/// *unconfirmed guess*, so it stays a Candidate (matching this module's
+/// "low-confidence candidate entities" contract) until a discovery module
+/// observes it live — at which point the second source lifts its `c_effective`
+/// and AU-035 fires. (Previously 0.42 put the top shapes in the Probable tier,
+/// ranking guesses as if they were findings.)
+const W_PRIMARY: f64 = 0.38;
 /// Plausible but less common shapes (reversed, hyphen/underscore joins).
 const W_SECONDARY: f64 = 0.30;
 /// Middle-name blends.
@@ -198,7 +209,10 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
         raw.push((h, W_PRIMARY));
     }
 
-    // Secondary — reversed and punctuation-joined variants, plus bare tokens.
+    // Secondary — reversed and punctuation-joined variants. Bare single-token
+    // handles (`first` or `last` alone) are deliberately excluded: a lone given
+    // or family name is not a distinguishing handle — it matches countless
+    // unrelated people and only padded the candidate list with noise.
     for h in [
         format!("{l}.{f}"),
         format!("{l}{f}"),
@@ -211,8 +225,6 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
         format!("{l}.{fi}"),
         format!("{fi}_{l}"),
         format!("{fi}-{l}"),
-        f.to_string(),
-        l.to_string(),
     ] {
         raw.push((h, W_SECONDARY));
     }
@@ -707,6 +719,32 @@ mod tests {
         let u = usernames(&p("Jordan Meyers"));
         let by = |h: &str| u.iter().find(|s| s.handle == h).map(|s| s.weight);
         assert!(by("jordan.meyers").unwrap() > by("meyers.jordan").unwrap());
+    }
+
+    #[test]
+    fn derived_usernames_stay_below_the_probable_floor() {
+        // Derived handles are unconfirmed guesses — every one must classify as
+        // Candidate (c_eff < 0.40) until a discovery module corroborates it, per
+        // name_intel's documented "low-confidence candidate" contract. Guards
+        // every handle weight (incl. W_PRIMARY) against drifting back over the
+        // 0.40 floor, where a pure guess would masquerade as a Probable finding.
+        use crate::core::entity::{Classification, Entity, EntityKind};
+        let handles = usernames(&p("Jordan Leigh Meyers 1987"));
+        let max_w = handles.iter().map(|u| u.weight).fold(0.0_f64, f64::max);
+        assert!(
+            max_w < 0.40,
+            "strongest derived handle weight {max_w} must stay below the 0.40 Probable floor"
+        );
+        for u in &handles {
+            let e = Entity::new(EntityKind::Username, &u.handle, u.weight, "s");
+            assert_eq!(
+                e.classify(),
+                Classification::Candidate,
+                "derived handle '{}' (w={}) must stay a Candidate",
+                u.handle,
+                u.weight
+            );
+        }
     }
 
     #[test]
