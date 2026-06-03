@@ -573,8 +573,11 @@ pub struct Scan {
     pub modules_timed_out: usize,
     #[serde(default)]
     pub modules_deduped: usize,
-    /// Modules that cleanly opted out because a required (optional) API key is
-    /// not configured — distinct from `modules_errored`.
+    /// Modules that were skipped rather than run: gate-skips (excluded,
+    /// disabled in config, not in the allowlist, filtered by `--free-only` /
+    /// `--passive-only`, or a sensor that already ran on the seed round) plus
+    /// modules that dispatched but cleanly opted out because a required
+    /// (optional) API key is not configured. Distinct from `modules_errored`.
     #[serde(default)]
     pub modules_skipped: usize,
     #[serde(default)]

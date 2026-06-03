@@ -230,12 +230,17 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             cmd.value
         );
         if scan.modules_run > 0 {
+            // `skipped` is shown so toggle effects are observable in the
+            // standard view: excluding a module (`--exclude`) or disabling one
+            // (`hse config module.<name> off`) moves it out of `run` and into
+            // `skipped` here, without needing `--output json`.
             println!(
-                "  modules: {} run, {} errored, {} timed out, {} deduped\n",
+                "  modules: {} run, {} errored, {} timed out, {} deduped, {} skipped\n",
                 scan.modules_run,
                 scan.modules_errored,
                 scan.modules_timed_out,
-                scan.modules_deduped
+                scan.modules_deduped,
+                scan.modules_skipped
             );
         } else {
             println!();

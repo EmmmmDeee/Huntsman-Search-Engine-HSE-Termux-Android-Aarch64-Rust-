@@ -466,6 +466,18 @@ async fn scan_options_allowlist_excludes_module() {
 
     let result = engine.run(scan, target, ctx).await.unwrap();
     assert_eq!(result.entity_count, 0, "synthetic should be skipped");
+    // A gate-skip (here: not in the allowlist — the same path as `--exclude`
+    // and `hse config module.<name> off`) is counted in `modules_skipped` and
+    // never reaches `modules_run`, so a disabled/excluded module is observable
+    // in the scan summary, not just the event stream.
+    assert_eq!(
+        result.modules_skipped, 1,
+        "the gated-out module must be tallied as skipped"
+    );
+    assert_eq!(
+        result.modules_run, 0,
+        "a gate-skipped module must not be counted as run"
+    );
     drop(store);
 }
 

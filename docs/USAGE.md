@@ -205,6 +205,50 @@ See [`MODULES.md`](MODULES.md) for what each one does and its synergy notes.
 
 ---
 
+## `hse engines`
+
+Liveness panel — probes every keyless search engine concurrently and reports
+whether each is `Up`, `Blocked` (reachable but rate-limited/CAPTCHA), or `Down`.
+Add `--json` for machine output. The same data is served live at
+`GET /api/v1/engines/health` and in the web SPA (`#/engines`); `hse serve` runs a
+startup sweep plus a periodic background refresh, and every probe is written to
+the structured debug log (`huntsman::engine_health`).
+
+```
+hse engines            # table
+hse engines --json     # JSON snapshot
+```
+
+---
+
+## `hse config`
+
+View and set **persistent capability toggles** (SpiderFoot-style on/off
+switches). Changes are written to `~/.huntsman/settings.json` and take effect on
+the next command — no rebuild. Only overrides are stored, so any toggle you never
+touch keeps its built-in default.
+
+```
+hse config                          # list every known toggle and its state
+hse config engine.yandex off        # stop querying one search engine
+hse config module.wikidata off      # disable a module across ALL scans
+hse config module.wikidata on       # re-enable it
+hse config module.wikidata          # show one toggle's current state
+```
+
+Toggle keys:
+
+- `engine.<name>` — a single search engine (names from `hse engines`). Honoured
+  by the search dispatch, the priority waterfall, and the liveness probe.
+- `module.<name>` — any registered module (names from `hse modules`). A disabled
+  module is skipped at the scan gate (reason `disabled in config`) and never
+  reaches the network; it shows up in the scan summary's `skipped` count.
+
+All toggle keys default to **on**, so an unset key (or a brand-new toggle added
+in a later release) behaves exactly as before.
+
+---
+
 ## `hse serve` (v0.3+)
 
 Starts an axum HTTP server with an embedded single-file SPA. Browse to

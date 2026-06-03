@@ -12,6 +12,28 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Universal toggleability (SpiderFoot-style on/off switches), persisted.** A new
+  capability-toggle store (`~/.huntsman/settings.json`, atomic write, mode 0600,
+  in-process cache) lets any capability be switched on or off **without a
+  rebuild**, managed by the new `hse config` command (`hse config` lists every
+  toggle; `hse config <key> <on|off>` sets one). Only *overrides* are stored, so
+  an unset toggle resolves to its in-code default and a new toggle defaults
+  sanely on an old settings file.
+  - **Per-engine toggles** — disable a noisy/blocked search engine with
+    `hse config engine.<name> off`; the search dispatch, priority and liveness
+    probe all honour it.
+  - **Per-module toggles** — disable any of the 92 modules across *all* scans with
+    `hse config module.<name> off` (re-enable with `on`). A disabled module is
+    skipped at the scan gate (reason `disabled in config`) and never touches the
+    network. `module.<name>` keys default on, so unset modules behave exactly as
+    before.
+- **Search-engine liveness panel + structured health log.** A new `hse engines`
+  command (and `--json`) probes every keyless engine concurrently and reports
+  `Up` / `Blocked` / `Down`, surfaced live in the web SPA at `#/engines` and over
+  `GET /api/v1/engines/health`. `hse serve` runs a startup sweep and a periodic
+  background refresh (`HUNTSMAN_ENGINE_HEALTH_SECS`, default 900s); each probe
+  emits a structured `huntsman::engine_health` event into the shared debug-log
+  ring buffer alongside the other module logs.
 - **Runtime AI-independence charter + CI guard.** Documented and now mechanically
   enforced that the compiled `hse` binary carries **no** AI / ML / LLM /
   cloud-inference / agent / vector-DB / embedding dependency: every runtime
@@ -23,6 +45,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
   tree. Charter + reproducibility/enforcement notes:
   `docs/RUNTIME_INDEPENDENCE.md`. (Audit confirmed the current tree is already
   clean — 0 of 277 crates are AI/ML; the only numeric crate is `num-traits`.)
+
+### Changed
+
+- **Free multi-engine search now leads the scan waterfall.** The keyless
+  `search_engines` module (17 engines, no API key) was promoted from priority 25
+  to **113** so a scan opens with broad, free, geolocation-neutral discovery
+  before any keyed/paid module spends quota — high-quality leads from free
+  resources first, exactly as an analyst would start.
+- **Geolocation-neutral queries by default + opt-in regional searching.** Search
+  dorks no longer pin a region (DuckDuckGo `kl=wt-wt`, no Yandex `lr`); autonomous
+  region-specific dorks (e.g. AU ccTLD/directory queries) are added only when
+  `--regional` is passed (default **off**), keeping results location-neutral
+  unless the operator opts in. The username arm was rebuilt as a broad→narrow
+  dork ladder (bare → exact-phrase → intent → `intitle`/`inurl` → `site:`).
+- **`skipped` is now shown in the standard scan summary** (`modules: … run, …
+  errored, … skipped`), so excluding or disabling a module is observable without
+  `--output json`.
 
 ## [1.3.0] — 2026-06-03
 

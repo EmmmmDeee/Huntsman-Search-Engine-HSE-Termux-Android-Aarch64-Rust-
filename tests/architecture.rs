@@ -87,6 +87,9 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::keys::signup_hint")
                 && !line.contains("util::oathnet::reset_budget")
                 && !line.contains("util::see_know::set_scan_cap_override")
+                // Persistent capability toggles (universal toggleability): the
+                // engine's module gate reads `module.<name>` on/off.
+                && !line.contains("util::settings::get_bool")
                 // Pure, dependency-free ABN/ACN checksums — used by
                 // `TargetKind::detect` to tell a registry number from a phone
                 // number in the unified-scan auto-detector.

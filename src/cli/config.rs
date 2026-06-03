@@ -48,12 +48,15 @@ pub fn cmd_config(key: Option<String>, value: Option<String>) -> Result<()> {
                 .filter(|(k, _)| !shown.contains(k.as_str()))
                 .collect();
             if !others.is_empty() {
-                println!("\nOther toggles:");
+                println!("\nOverrides (modules / features):");
                 for (k, on) in others {
                     println!("  {k:<26} {}", mark(on));
                 }
             }
-            println!();
+            println!(
+                "\nAny module can be toggled too: `hse config module.<name> off` \
+                 (names from `hse modules`).\n"
+            );
             Ok(())
         }
     }

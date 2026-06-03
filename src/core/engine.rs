@@ -70,9 +70,11 @@ pub(crate) struct ModuleStats {
     pub errored: usize,
     pub timed_out: usize,
     pub deduped: usize,
-    /// Modules that dispatched but cleanly opted out because a required API key
-    /// is absent — counted separately from `errored` so an unconfigured optional
-    /// provider is never reported as a failure.
+    /// Modules skipped rather than run: gate-skips (excluded, disabled in
+    /// config, not in the allowlist, filtered by free-only/passive-only, or a
+    /// sensor that already ran) plus modules that dispatched then cleanly opted
+    /// out because a required API key is absent. Counted separately from
+    /// `errored` so an unconfigured optional provider is never a failure.
     pub skipped: usize,
 }
 
@@ -1242,6 +1244,12 @@ impl ScanEngine {
             if let Some(reason) =
                 module_skip_reason(&**module, target, opts, is_expansion, target_sources)
             {
+                // Count every gate-skip (excluded / disabled-in-config /
+                // not-in-allowlist / free-only / passive-only / sensor) so
+                // `modules_skipped` is a faithful, complete tally — toggling a
+                // module off is then observable in the scan summary, not just
+                // in the event stream.
+                stats.skipped += 1;
                 self.emit_skipped(scan_id, name, reason);
                 continue;
             }
@@ -1342,6 +1350,12 @@ impl ScanEngine {
             if let Some(reason) =
                 module_skip_reason(&**module, target, opts, is_expansion, target_sources)
             {
+                // Count every gate-skip (excluded / disabled-in-config /
+                // not-in-allowlist / free-only / passive-only / sensor) so
+                // `modules_skipped` is a faithful, complete tally — toggling a
+                // module off is then observable in the scan summary, not just
+                // in the event stream.
+                stats.skipped += 1;
                 self.emit_skipped(scan_id, name, reason);
                 continue;
             }
@@ -1414,6 +1428,12 @@ impl ScanEngine {
             if let Some(reason) =
                 module_skip_reason(&**module, target, opts, is_expansion, target_sources)
             {
+                // Count every gate-skip (excluded / disabled-in-config /
+                // not-in-allowlist / free-only / passive-only / sensor) so
+                // `modules_skipped` is a faithful, complete tally — toggling a
+                // module off is then observable in the scan summary, not just
+                // in the event stream.
+                stats.skipped += 1;
                 self.emit_skipped(scan_id, name, reason);
                 continue;
             }
@@ -1536,6 +1556,12 @@ fn module_skip_reason(
     }
     if opts.exclude_modules.iter().any(|n| n == name) {
         return Some("excluded");
+    }
+    // Persistent per-module toggle (universal toggleability): `hse config
+    // module.<name> off` disables a module across ALL scans until re-enabled.
+    // Default on, so an unset module behaves exactly as before.
+    if !crate::util::settings::get_bool(&format!("module.{name}"), true) {
+        return Some("disabled in config");
     }
     if opts.free_only && !matches!(module.cost(), ModuleCost::Free) {
         return Some("requires key/payment");
