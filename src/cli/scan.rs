@@ -14,7 +14,8 @@ use super::{
 };
 
 pub(super) struct ScanCmd {
-    pub kind: String,
+    /// `None` (or `"auto"`) auto-detects the kind from `value` — the unified scan.
+    pub kind: Option<String>,
     pub value: String,
     pub modules: Option<String>,
     pub exclude: Option<String>,
@@ -39,7 +40,21 @@ pub(super) struct ScanCmd {
 }
 
 pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
-    let target_kind = parse_target_kind(&cmd.kind)?;
+    // Unified scan: an omitted (or `auto`) --kind is inferred from the value's
+    // shape; an explicit kind is parsed as before. Detection is reported on
+    // stderr so the operator sees (and can override) what was chosen.
+    let kind_arg = cmd.kind.as_deref().map(str::trim).unwrap_or("");
+    let target_kind = if kind_arg.is_empty() || kind_arg.eq_ignore_ascii_case("auto") {
+        let detected = crate::core::scan::detect_kind(&cmd.value);
+        eprintln!(
+            "auto-detected target kind: {} (override with --kind)",
+            detected.canonical_str()
+        );
+        detected
+    } else {
+        parse_target_kind(kind_arg)?
+    };
+    let kind_str = target_kind.canonical_str();
     let target = Target::new(target_kind, cmd.value.clone());
 
     // Reject junk/placeholder seeds at the CLI boundary too (the HTTP API
@@ -173,7 +188,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             .unwrap_or(0)
             .saturating_mul(1000);
         let diag =
-            crate::util::diagnostics::analyse(&sid, &cmd.kind, &cmd.value, wall_ms, &entities);
+            crate::util::diagnostics::analyse(&sid, kind_str, &cmd.value, wall_ms, &entities);
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -190,7 +205,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             &entities,
             &correlations,
             &relations,
-            &cmd.kind,
+            kind_str,
             &cmd.value,
             &sid,
         );
@@ -200,7 +215,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             "\nScan {} — {} entities for {}={}",
             &sid[..8],
             entities.len(),
-            cmd.kind,
+            kind_str,
             cmd.value
         );
         if scan.modules_run > 0 {

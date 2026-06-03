@@ -555,7 +555,8 @@ pub async fn live_create(
     State(s): State<Arc<AppState>>,
     Json(req): Json<crate::core::live::LiveRequest>,
 ) -> impl IntoResponse {
-    let target = match validated_target(req.kind, req.value) {
+    let kind = req.resolved_kind();
+    let target = match validated_target(kind, req.value) {
         Ok(t) => t,
         Err(msg) => return bad_request(msg),
     };

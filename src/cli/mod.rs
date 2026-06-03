@@ -58,9 +58,11 @@ pub struct Cli {
 pub enum Command {
     /// Run a single scan and print the entities found.
     Scan {
-        /// Target kind: email, username, phone, name, ip, domain, asn, coords, address.
+        /// Target kind: email, username, phone, name, ip, domain, url, asn, coords,
+        /// address, org, abn, mac, apikey. Omit (or pass `auto`) to auto-detect the
+        /// kind from the value — the unified scan, e.g. `hse scan -v alice@example.com`.
         #[arg(short, long)]
-        kind: String,
+        kind: Option<String>,
         /// Target value (e.g. example.com, foo@bar.com).
         // allow_hyphen_values so a value that legitimately begins with `-`
         // (e.g. a southern-hemisphere coordinate `-33.86,151.20`) is taken as
@@ -244,9 +246,10 @@ pub enum Command {
     /// Run a target continuously, re-scanning on an interval. Streams events
     /// to stdout as compact JSON until Ctrl-C or `--iterations` is exhausted.
     Live {
-        /// Target kind (same vocabulary as `scan --kind`).
+        /// Target kind (same vocabulary as `scan --kind`). Omit (or pass `auto`)
+        /// to auto-detect the kind from the value — the unified live scan.
         #[arg(short, long)]
-        kind: String,
+        kind: Option<String>,
         /// Target value.
         // allow_hyphen_values so a value that legitimately begins with `-`
         // (e.g. a southern-hemisphere coordinate `-33.86,151.20`) is taken as

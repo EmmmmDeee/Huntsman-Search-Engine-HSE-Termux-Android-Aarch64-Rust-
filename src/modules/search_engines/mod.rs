@@ -1,9 +1,9 @@
-//! Multi-engine search scraping — 13 search engines, zero API keys.
+//! Multi-engine search scraping — 17 search engines, zero API keys.
 //!
 //! Queries Yahoo, Bing, AOL, DuckDuckGo, Google, Brave, Mojeek,
-//! Startpage, Yandex, Ecosia, Qwant, Dogpile, and Swisscows with
-//! OSINT dork queries and extracts entities from result URLs and
-//! snippets.
+//! Startpage, Yandex, Ecosia, Qwant, Dogpile, Swisscows, You,
+//! Presearch, MetaGer, and SearX with OSINT dork queries and
+//! extracts entities from result URLs and snippets.
 //!
 //! Engine selection rationale:
 //!   - Yahoo/AOL: Bing-powered, most reliable from datacenter IPs,
@@ -44,7 +44,7 @@ mod engines;
 mod fetch;
 mod helpers;
 
-use engines::{ENGINES, EngineSpec};
+use engines::{ENGINES, EngineSpec, reliable_engines};
 use fetch::*;
 pub(crate) use helpers::SearchResult;
 use helpers::*;
@@ -98,7 +98,7 @@ impl Module for SearchEngines {
     }
 
     fn description(&self) -> &'static str {
-        "Multi-engine OSINT dork search across 13 engines"
+        "Multi-engine OSINT dork search across 17 engines"
     }
 
     fn priority(&self) -> u8 {
@@ -128,7 +128,7 @@ impl Module for SearchEngines {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        // 13-engine SERP scraping discovers a wide range of entity
+        // 17-engine SERP scraping discovers a wide range of entity
         // types: identity fragments (emails, usernames), infrastructure
         // (domains, URLs, IPs), and geography (addresses).
         const KINDS: &[EntityKind] = &[
@@ -153,7 +153,7 @@ impl Module for SearchEngines {
     fn termux_timeout_ms(&self) -> u64 {
         // Live Termux scans showed this burning the full cap (60 s, now 45 s)
         // for ZERO results on a phone — mobile SERP scraping stalls behind
-        // captive-portal and rate-limit walls. The happy path across 13
+        // captive-portal and rate-limit walls. The happy path across 17
         // engines completes in ~20 s; 30 s preserves that recall while halving
         // the dead-wait. `process()` reads this same budget on Termux so it
         // returns whatever it gathered just under the deadline instead of
@@ -269,7 +269,7 @@ impl Module for SearchEngines {
             }
 
             if !pivots.is_empty() {
-                let reliable = [&ENGINES[0], &ENGINES[1], &ENGINES[5]]; // yahoo, bing, brave
+                let reliable = reliable_engines();
                 for pivot_query in pivots.iter().take(10) {
                     if ctx.cancel.is_cancelled() {
                         break;
@@ -324,7 +324,7 @@ async fn recycle_entities(
     dead_engines: &HashSet<&str>,
     _primary_results: &[SearchResult],
 ) {
-    let reliable = [&ENGINES[0], &ENGINES[1], &ENGINES[5]]; // yahoo, bing, brave
+    let reliable = reliable_engines();
 
     let mut recycle_queries: Vec<String> = Vec::new();
     let mut seen_queries: HashSet<String> = HashSet::new();
@@ -870,7 +870,13 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
     }
     let parts: Vec<&str> = target.value.split_whitespace().collect();
     let lastname = match target.kind {
-        TargetKind::FullName if parts.len() >= 2 => parts.last().unwrap().to_lowercase(),
+        // `parts.len() >= 2` guarantees `last()` is Some; match it anyway so
+        // the module carries no `unwrap()` that a future refactor could turn
+        // into a mid-scan panic.
+        TargetKind::FullName if parts.len() >= 2 => match parts.last() {
+            Some(last) => last.to_lowercase(),
+            None => return Vec::new(),
+        },
         TargetKind::Email => {
             let local = target.value.split('@').next().unwrap_or("");
             if local.len() >= 5 {
@@ -2265,5 +2271,98 @@ mod tests {
             canonicalize_url("https://x.com/page/"),
             "https://x.com/page"
         );
+    }
+
+    // ── Resilience hardening: scraping-fragility guards ───────────────────
+
+    #[test]
+    fn reliable_engines_resolve_by_name() {
+        // The secondary pivot + recycler passes select these engines by NAME,
+        // not by `ENGINES[..]` index, so reordering/inserting into `ENGINES`
+        // can't silently repoint them. Assert all three resolve, in order —
+        // a rename/removal fails CI instead of degrading silently at runtime.
+        let names: Vec<&str> = reliable_engines().iter().map(|e| e.name).collect();
+        assert_eq!(names, vec!["yahoo", "bing", "brave"]);
+    }
+
+    #[test]
+    fn reliable_engines_are_in_the_registry() {
+        let registry: Vec<&str> = ENGINES.iter().map(|e| e.name).collect();
+        for e in reliable_engines() {
+            assert!(
+                registry.contains(&e.name),
+                "reliable engine {:?} missing from ENGINES",
+                e.name
+            );
+        }
+    }
+
+    #[test]
+    fn description_engine_count_matches_registry() {
+        // The human-facing description cites an engine count; tie it to the
+        // real registry size so they can't drift (they sat at "13" while the
+        // registry grew to 17). Adding an engine now forces a description bump.
+        let n = ENGINES.len();
+        let desc = SearchEngines.description();
+        assert!(
+            desc.contains(&n.to_string()),
+            "module description must cite the real engine count ({n}): {desc:?}"
+        );
+    }
+
+    #[test]
+    fn captcha_detects_modern_vendor_interstitials() {
+        // Cloudflare managed challenge ("/cdn-cgi/challenge-platform").
+        assert!(is_captcha_page(
+            "<html><head><title>Just a moment...</title></head><body>\
+             Checking your browser before accessing. \
+             <script src=\"/cdn-cgi/challenge-platform/h/g/orchestrate/chl/v1\"></script>\
+             cloudflare</body></html>"
+        ));
+        // Google reCAPTCHA + "unusual traffic ... network" interstitial.
+        assert!(is_captcha_page(
+            "<html><body>Our systems have detected unusual traffic from your \
+             computer network. <div class=\"g-recaptcha\"></div></body></html>"
+        ));
+        // hCaptcha widget.
+        assert!(is_captcha_page(
+            "<div class=\"h-captcha\" data-sitekey=\"x\"></div>\
+             <script src=\"https://hcaptcha.com/1/api.js\"></script>"
+        ));
+        // PerimeterX / HUMAN classic block page.
+        assert!(is_captcha_page(
+            "Access to this page has been denied because we believe you are using automation."
+        ));
+        // Imperva / Incapsula.
+        assert!(is_captcha_page(
+            "Request unsuccessful. Incapsula incident ID: 1234-000567"
+        ));
+    }
+
+    #[test]
+    fn captcha_does_not_flag_results_that_merely_mention_block_terms() {
+        // A genuine SERP whose snippets discuss these topics must NOT be read
+        // as a block page. The AND-set design requires a co-token, so a single
+        // ambiguous phrase no longer trips the detector — exactly the false
+        // positives the old single-substring matcher produced.
+        assert!(!is_captcha_page(
+            "Search results: how Cloudflare works and what a reCAPTCHA is — \
+             articles about bot detection and network security."
+        ));
+        assert!(!is_captcha_page(
+            "Blog post: detecting unusual traffic spikes in your web analytics."
+        ));
+        assert!(!is_captcha_page(
+            "<html><body>10 results for your query about online privacy.</body></html>"
+        ));
+    }
+
+    #[test]
+    fn html_entity_decoding_apostrophes() {
+        // `&apos;` and the hex `&#x27;` both decode to an apostrophe, matching
+        // the `util::html` decoder used elsewhere in the tree.
+        assert_eq!(decode_html_entities("it&apos;s"), "it's");
+        assert_eq!(decode_html_entities("it&#x27;s"), "it's");
+        assert_eq!(decode_html_entities("a&#39;b&amp;c"), "a'b&c");
     }
 }

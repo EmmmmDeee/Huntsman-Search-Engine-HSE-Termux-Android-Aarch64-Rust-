@@ -87,6 +87,11 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::keys::signup_hint")
                 && !line.contains("util::oathnet::reset_budget")
                 && !line.contains("util::see_know::set_scan_cap_override")
+                // Pure, dependency-free ABN/ACN checksums — used by
+                // `TargetKind::detect` to tell a registry number from a phone
+                // number in the unified-scan auto-detector.
+                && !line.contains("util::abn::is_valid_abn")
+                && !line.contains("util::abn::is_valid_acn")
                 && !line.contains("modules::wigle::reset_budget")
                 && !line.contains("modules::see_know::reset_budget")
                 && !line.contains("modules::oathnet_pro::key_harvest::identify_api_key")

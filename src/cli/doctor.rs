@@ -25,8 +25,36 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     println!("Keys path: {}", keys::env_path());
 
     println!("\nStorage:");
-    match Store::open(&default_db_path()) {
-        Ok(_) => println!("  ok — database opens cleanly"),
+    let db_path = default_db_path();
+    match Store::open(&db_path) {
+        Ok(store) => {
+            println!("  ok — database opens cleanly");
+            // Explicit corruption check (T5): a healthy DB reports a single "ok".
+            match store.integrity_check() {
+                Ok(rows) if rows.iter().all(|r| r == "ok") => {
+                    println!("  integrity:  ok")
+                }
+                Ok(rows) => {
+                    println!("  integrity:  FAIL — {} issue(s) reported:", rows.len());
+                    for r in rows.iter().take(10) {
+                        println!("                {r}");
+                    }
+                }
+                Err(e) => println!("  integrity:  could not run check — {e}"),
+            }
+            // WAL high-water mark: a never-checkpointed `-wal` can grow without
+            // bound under a long-lived process. Report it so the operator can
+            // see (and a TRUNCATE checkpoint at the next scan boundary resets it).
+            if let Ok(meta) = std::fs::metadata(format!("{db_path}-wal")) {
+                let kib = meta.len() / 1024;
+                println!("  WAL size:   {kib} KiB");
+                if meta.len() > 64 * 1024 * 1024 {
+                    println!(
+                        "                (large — runs a TRUNCATE checkpoint at the next scan)"
+                    );
+                }
+            }
+        }
         Err(e) => println!("  FAIL — {e}"),
     }
 

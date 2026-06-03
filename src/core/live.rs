@@ -105,12 +105,23 @@ pub struct LiveSession {
 /// The request payload for starting a live session via API or CLI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveRequest {
-    pub kind: crate::core::scan::TargetKind,
+    /// Target kind. `None` (omitted) auto-detects from `value` via
+    /// [`crate::core::scan::TargetKind::detect`] — the unified-scan path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::core::scan::TargetKind>,
     pub value: String,
     #[serde(default)]
     pub options: ScanOptions,
     #[serde(default)]
     pub live: LiveOptions,
+}
+
+impl LiveRequest {
+    /// Resolve the kind: explicit if supplied, else auto-detected from `value`.
+    pub fn resolved_kind(&self) -> crate::core::scan::TargetKind {
+        self.kind
+            .unwrap_or_else(|| crate::core::scan::detect_kind(&self.value))
+    }
 }
 
 // ─── Scanner ─────────────────────────────────────────────────────────────────
@@ -481,9 +492,23 @@ mod tests {
     fn live_request_default_options_inert() {
         let json = r#"{"kind":"domain","value":"x.com"}"#;
         let req: LiveRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.kind, TargetKind::Domain);
+        assert_eq!(req.kind, Some(TargetKind::Domain));
+        assert_eq!(req.resolved_kind(), TargetKind::Domain);
         assert_eq!(req.live.interval_secs, crate::LIVE_DEFAULT_INTERVAL_SECS);
         assert!(req.live.iterations.is_none());
+    }
+
+    #[test]
+    fn live_request_omitted_kind_auto_detects() {
+        // Unified live scan: no kind → detected from the value.
+        let req: LiveRequest = serde_json::from_str(r#"{"value":"x@y.com"}"#).unwrap();
+        assert_eq!(req.kind, None);
+        assert_eq!(req.resolved_kind(), TargetKind::Email);
+        // PR #102 review: resolved_kind sanitises paste artifacts before
+        // detecting, so a quoted URL classes as Url (not Username).
+        let dirty: LiveRequest =
+            serde_json::from_str(r#"{"value":"\"https://cloudflare.com\","}"#).unwrap();
+        assert_eq!(dirty.resolved_kind(), TargetKind::Url);
     }
 
     #[test]

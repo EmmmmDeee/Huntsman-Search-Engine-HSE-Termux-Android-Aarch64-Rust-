@@ -12,7 +12,8 @@ use crate::core::scan::{ScanOptions, Target};
 use super::{build_runtime, parse_target_kind, split_csv};
 
 pub(super) struct LiveCmd {
-    pub kind: String,
+    /// `None` (or `"auto"`) auto-detects the kind from `value` — the unified scan.
+    pub kind: Option<String>,
     pub value: String,
     pub interval: u64,
     pub iterations: Option<u32>,
@@ -30,7 +31,18 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     use tokio_stream::StreamExt;
     use tokio_stream::wrappers::BroadcastStream;
 
-    let target_kind = parse_target_kind(&cmd.kind)?;
+    // Unified live scan: omitted/`auto` --kind is inferred from the value.
+    let kind_arg = cmd.kind.as_deref().map(str::trim).unwrap_or("");
+    let target_kind = if kind_arg.is_empty() || kind_arg.eq_ignore_ascii_case("auto") {
+        let detected = crate::core::scan::detect_kind(&cmd.value);
+        eprintln!(
+            "auto-detected target kind: {} (override with --kind)",
+            detected.canonical_str()
+        );
+        detected
+    } else {
+        parse_target_kind(kind_arg)?
+    };
     let target = Target::new(target_kind, cmd.value.clone());
     // Reject junk/placeholder seeds at the CLI boundary (mirrors `cmd_scan`
     // and the HTTP API's `validated_target`).

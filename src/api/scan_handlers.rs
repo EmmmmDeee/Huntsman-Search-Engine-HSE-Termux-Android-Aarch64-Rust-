@@ -21,8 +21,12 @@ use crate::core::scan::{Scan, ScanRequest, Target};
 /// and `profile`→options resolution can't drift between the two paths. Pure:
 /// no store or engine access, so it's unit-testable on its own.
 fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target), String> {
-    let target = validated_target(req.kind, req.value.clone())?;
-    let sid = scan_id(req.kind.canonical_str(), &req.value);
+    // Resolve the kind once: explicit if given, else auto-detected from the
+    // value (the unified-scan path). Both `validated_target` and the
+    // deterministic scan-id then key off the same resolved kind.
+    let kind = req.resolved_kind();
+    let target = validated_target(kind, req.value.clone())?;
+    let sid = scan_id(kind.canonical_str(), &req.value);
     let mut opts = req.options;
     if let Some(ref profile_name) = opts.profile
         && let Some(profile_opts) = crate::core::profiles::resolve_profile(profile_name)
@@ -567,29 +571,51 @@ mod tests {
     #[test]
     fn build_scan_from_request_valid_is_deterministic() {
         let req = ScanRequest {
-            kind: TargetKind::Domain,
+            kind: Some(TargetKind::Domain),
             value: "cloudflare.com".to_string(),
             options: Default::default(),
         };
         let (scan, target) = build_scan_from_request(req).expect("valid domain should build");
         assert_eq!(target.value, "cloudflare.com");
         assert_eq!(target.kind, TargetKind::Domain);
-        // The scan id is the deterministic content hash of (kind, value), so a
-        // second build of the same request yields the identical id.
+        // `scan_id` mixes `unix_now()` (so re-scans of one target get a fresh
+        // id), so assert the id's SHAPE — not equality to a recomputed
+        // `scan_id(...)`, which flakes across a one-second boundary.
+        assert_eq!(scan.id.len(), 64);
+        assert!(scan.id.chars().all(|c| c.is_ascii_hexdigit()));
+        // The deterministic part — the resolved target — is identical across
+        // two builds of the same request.
         let req2 = ScanRequest {
-            kind: TargetKind::Domain,
+            kind: Some(TargetKind::Domain),
             value: "cloudflare.com".to_string(),
             options: Default::default(),
         };
-        let (scan2, _) = build_scan_from_request(req2).unwrap();
-        assert_eq!(scan.id, scan2.id);
-        assert_eq!(scan.id, scan_id("domain", "cloudflare.com"));
+        let (_, target2) = build_scan_from_request(req2).unwrap();
+        assert_eq!(target.kind, target2.kind);
+        assert_eq!(target.value, target2.value);
+    }
+
+    #[test]
+    fn build_scan_from_request_auto_detects_omitted_kind() {
+        // Unified scan: no kind supplied → detected from the value, and the
+        // scan id keys off the *detected* kind (here, email).
+        let req = ScanRequest {
+            kind: None,
+            value: "alice@proton.me".to_string(),
+            options: Default::default(),
+        };
+        let (scan, target) = build_scan_from_request(req).expect("auto-detected email builds");
+        assert_eq!(target.kind, TargetKind::Email);
+        assert_eq!(target.value, "alice@proton.me");
+        // `scan_id` mixes a timestamp — assert id shape, not a recomputed value.
+        assert_eq!(scan.id.len(), 64);
+        assert!(scan.id.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
     fn build_scan_from_request_rejects_invalid_target() {
         let req = ScanRequest {
-            kind: TargetKind::Domain,
+            kind: Some(TargetKind::Domain),
             value: "no-dot-here".to_string(),
             options: Default::default(),
         };

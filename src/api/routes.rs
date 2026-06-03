@@ -221,6 +221,52 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .fallback(spa_handler)
         .with_state(state)
         .layer(cors)
+        // Security headers on every response (outermost, so it also covers
+        // CORS preflight + the SPA + static + API). See `set_security_headers`.
+        .layer(axum::middleware::map_response(set_security_headers))
+}
+
+/// Content-Security-Policy for the embedded SPA.
+///
+/// The SPA is a single self-contained document that legitimately needs inline
+/// `<script>`/`<style>` and inline event handlers, so `script-src`/`style-src`
+/// retain `'unsafe-inline'`; everything else is locked to the same origin. The
+/// high-value clause for an OSINT tool holding sensitive findings is
+/// `connect-src 'self'` (+ `default-src 'self'`): even if an injection slipped
+/// past the SPA's `esc()` discipline, it cannot exfiltrate data to an external
+/// origin or pull in an external script. `frame-ancestors 'none'` +
+/// `object-src 'none'` + `base-uri 'self'` close clickjacking, plugin, and
+/// `<base>`-hijack vectors. All vendor assets ship same-origin from `/static`,
+/// so no external host needs allow-listing.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
+     script-src 'self' 'unsafe-inline'; \
+     style-src 'self' 'unsafe-inline'; \
+     img-src 'self' data:; \
+     connect-src 'self'; \
+     object-src 'none'; \
+     base-uri 'self'; \
+     frame-ancestors 'none'; \
+     form-action 'self'";
+
+/// Attach defence-in-depth security headers to every response. Applied as an
+/// outermost `map_response` layer so the SPA, static bundle, API JSON and SSE
+/// streams all carry them. Values are static, so this never fails.
+async fn set_security_headers(mut response: Response) -> Response {
+    let h = response.headers_mut();
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    response
 }
 
 async fn spa_handler() -> Html<&'static str> {

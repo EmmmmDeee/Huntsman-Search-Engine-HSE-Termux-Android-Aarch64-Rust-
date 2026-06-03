@@ -320,14 +320,11 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
 
     // SOA
     if let Ok(lookup) = soa
-        && let Some(dns_record) = lookup
-            .answers()
-            .iter()
-            .find(|r| matches!(&r.data, RData::SOA(_)))
+        && let Some((dns_record, soa_data)) = lookup.answers().iter().find_map(|r| match &r.data {
+            RData::SOA(s) => Some((r, s)),
+            _ => None,
+        })
     {
-        let RData::SOA(ref soa_data) = dns_record.data else {
-            unreachable!();
-        };
         let mname = soa_data.mname.to_ascii();
         let mname = mname.trim_end_matches('.');
         let rname_raw = soa_data.rname.to_ascii();
@@ -509,11 +506,21 @@ async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Result<Vec<En
         });
     }
 
-    let mut entities: Vec<Entity> = Vec::new();
+    // Drain the JoinSet, then SORT hits by host before emitting entities.
+    // `join_next()` yields in network-completion order — nondeterministic
+    // run-to-run — so collecting first and sorting makes this module's output
+    // deterministic for a given DNS state, matching the fixed-order
+    // `tokio::join!` resolution path. Hosts are unique, so the order is total.
+    let mut hits: Vec<(String, String, usize)> = Vec::new();
     while let Some(join_result) = set.join_next().await {
-        let Ok(Some((host, ips_joined, count))) = join_result else {
-            continue;
-        };
+        if let Ok(Some(hit)) = join_result {
+            hits.push(hit);
+        }
+    }
+    hits.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+    let mut entities: Vec<Entity> = Vec::with_capacity(hits.len());
+    for (host, ips_joined, count) in hits {
         let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
         e.tag("subdomain");
         e.tag("dns-brute");

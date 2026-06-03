@@ -278,12 +278,14 @@
  * ═══════════════════════════════════════════════════════════════════════ */
 
 const TARGET_KINDS = [
+  {v:'auto',        label:'Auto-detect (recommended)'},
   {v:'email',       label:'E-mail Address'},
   {v:'username',    label:'Username'},
   {v:'phone',       label:'Phone Number'},
   {v:'full_name',   label:'Human Name'},
   {v:'ip_address',  label:'IP Address'},
   {v:'domain',      label:'Domain Name'},
+  {v:'url',         label:'URL'},
   {v:'asn',         label:'Network ASN'},
   {v:'coordinates', label:'GPS Coordinates'},
   {v:'address',     label:'Postal Address'},
@@ -331,7 +333,7 @@ const S = {
   events:   [],
   graph:    null,
   wizard: {
-    name:'', value:'', kind:'domain',
+    name:'', value:'', kind:'auto',
     usecase:'all', modules:null,
     activeTab:'usecase',
     showAdv:false,
@@ -852,7 +854,7 @@ async function renderNewScan(v){
   $('#w-free').addEventListener('change', e=>{ W.options.free_only = e.target.checked; });
   $('#btn-select-all').addEventListener('click', e=>{
     e.preventDefault();
-    const accepting = S.modules.filter(m=>!m.accepts || m.accepts.includes(W.kind));
+    const accepting = S.modules.filter(m=>W.kind==='auto' || !m.accepts || m.accepts.includes(W.kind));
     W.modules = accepting.map(m=>m.name); renderWizardModuleTable();
   });
   $('#btn-deselect-all').addEventListener('click', e=>{
@@ -869,7 +871,7 @@ function renderWizardModuleTable(){
   const host = $('#moduletable-host');
   if (!host) return;
   const uc = USE_CASES[W.usecase];
-  const accepting = S.modules.filter(m=>!m.accepts || m.accepts.includes(W.kind));
+  const accepting = S.modules.filter(m=>W.kind==='auto' || !m.accepts || m.accepts.includes(W.kind));
   const ucMatches = accepting.filter(m=>uc.pick(m));
   let active;
   if (W.modules!==null) active = new Set(W.modules);
@@ -881,6 +883,9 @@ function renderWizardModuleTable(){
       <b>${active.size}</b> of <b>${accepting.length}</b> module${accepting.length===1?'':'s'} selected
       ${W.usecase==='passive' ? ' · <span class="text-warning">passive_only flag will further restrict at runtime</span>':''}
     </div>
+    ${W.kind==='auto' ? `<div style="padding:0 0 6px;color:#888;font-size:12px">
+      <i class="glyphicon glyphicon-flash"></i> Target type is auto-detected from the value; at runtime only modules that accept the detected type run.
+    </div>`:''}
     <div class="mod-grid">
       ${accepting.map(m=>{
         const checked = active.has(m.name);
@@ -934,7 +939,9 @@ async function submitWizard(){
   const btn = $('#btn-run-scan');
   btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Queuing…';
   try {
-    const r = await API.create({kind: W.kind, value: target, options: opts});
+    // Unified scan: 'auto' omits `kind` so the server detects it from the value.
+    const payload = W.kind==='auto' ? {value: target, options: opts} : {kind: W.kind, value: target, options: opts};
+    const r = await API.create(payload);
     toast('Scan queued');
     W.value = ''; W.name = '';
     nav(`#/scaninfo?id=${r.scan_id}&tab=log`);
@@ -1898,7 +1905,7 @@ async function renderLive(v){
       <div class="panel-body">
         <form id="live-form" class="form-inline" onsubmit="return false">
           <select id="live-kind" class="form-control input-sm">
-            ${TARGET_KINDS.map(k=>`<option value="${attr(k.v)}"${k.v==='domain'?' selected':''}>${esc(k.label)}</option>`).join('')}
+            ${TARGET_KINDS.map(k=>`<option value="${attr(k.v)}"${k.v==='auto'?' selected':''}>${esc(k.label)}</option>`).join('')}
           </select>
           <input id="live-value" type="text" class="form-control input-sm" placeholder="target value…" style="min-width:200px" autocomplete="off" autocapitalize="off" spellcheck="false">
           <label class="text-muted" style="font-weight:normal;margin-left:8px">every</label>
@@ -1926,7 +1933,9 @@ async function renderLive(v){
     const live = { interval_secs, radar: !!(($('#live-radar')||{}).checked) };
     if (itersRaw){ const n = parseInt(itersRaw, 10); if (n>=1) live.iterations = n; }
     try {
-      await API.liveCreate({ kind, value, options: {}, live });
+      // Unified live scan: 'auto' omits `kind` so the server detects it.
+      const payload = kind==='auto' ? { value, options: {}, live } : { kind, value, options: {}, live };
+      await API.liveCreate(payload);
       if (typeof alertify !== 'undefined') alertify.success('Live session started');
       render();
     } catch(e){ if (typeof alertify !== 'undefined') alertify.error('Start failed: '+e.message); }

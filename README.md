@@ -173,7 +173,7 @@ Binds to `127.0.0.1:8080` only — no LAN exposure (architecture invariant).
 Every seed type has a pathway to geographic coordinates:
 
 ```
-Name/Email/Username → search_engines (13 engines, free)
+Name/Email/Username → search_engines (17 engines, free)
                     → discovered emails/phones/addresses
                     → oathnet_pro (breach IPs)
                     → ip_geo + ip_whois_geo (free HTTPS)
@@ -272,6 +272,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 | [`docs/USAGE.md`](docs/USAGE.md) | Full CLI reference + HTTP API |
 | [`docs/MODULES.md`](docs/MODULES.md) | Module catalogue + synergy map |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common errors + fixes |
+| [`docs/FAULT_TREE_ANALYSIS.md`](docs/FAULT_TREE_ANALYSIS.md) | System-wide FTA: failure modes, controls + open risks |
 | [`CHANGELOG.md`](CHANGELOG.md) | Version history |
 
 ---

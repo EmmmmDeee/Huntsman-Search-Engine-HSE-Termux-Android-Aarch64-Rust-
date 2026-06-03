@@ -41,15 +41,19 @@ pub(super) enum FetchOutcome {
     Unreachable,
 }
 
-/// Attempt to fetch search results, retrying once with an alternate
-/// User-Agent only when the engine responded but was blocked — never
-/// when the engine is completely unreachable (saves ~10s per dead engine).
+/// Decode the handful of HTML entities that show up in engine result markup
+/// and percent-encoded redirect hrefs. Mirrors `util::html`'s decoder (which
+/// already handled `&apos;`) so a title/snippet/URL decoded here matches one
+/// decoded there. Not a full entity decoder by design — just the entities
+/// observed in real SERP output.
 pub(super) fn decode_html_entities(s: &str) -> String {
     s.replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&apos;", "'")
 }
 
 /// Resolve an href into a clean URL, decoding engine-specific redirects.
