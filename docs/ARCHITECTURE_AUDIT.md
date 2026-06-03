@@ -66,18 +66,24 @@ docs/README counts, and runtime AI-independence. Dependency direction:
 | F4 | Med | ~770 `unwrap()` in non-test code (locks already use poison-tolerant pattern) | No `clippy::unwrap_used` lint; reliance on local reasoning | Latent panic risk on new/changed paths (this session found & fixed 3 reachable ones) |
 | F5 | Med | No metrics/tracing export from `serve`; observability is logs-only | Tool grew CLI-first | Hard to quantify per-module latency/error-rate in long-lived `serve` beyond the debug-log ring buffer |
 | F6 | Low | 42 `#[allow(dead_code)]`; no automated unused-dep check | No `cargo-machete`/`udeps` in CI | Minor maintenance bloat. *Unused-dep half **RESOLVED**: `cargo machete --with-metadata` proves **0** unused crates and now gates CI; the 42 dead-code allows remain to triage.* |
-| F7 | Low | SSRF-shaped surface (modules fetch arbitrary discovered URLs/IPs) | Inherent to OSINT enrichment | Mitigated: non-routable-IP expansion guard, reserved-domain rejection; residual by design |
+| F7 | ~~Low~~ **HARDENED** | SSRF-shaped surface (modules fetch discovered URLs/IPs) | IP-literal egress guard lived at the engine/caller layer; the crawl loop fetches discovered links *outside* target-validation, so its IP-literal safety was implicit in the same-host filter | **This pass:** added a canonical `preflight::url_host_is_private` (loopback/RFC1918/`169.254` metadata/ULA/local-domain, IPv6-aware) and enforced it explicitly at the web-crawler fetch choke point (loop + `extract_links`), DRY-ing the engine's private copy. The hostname path was already resolver-guarded; the IP-literal path is now guarded at the fetch site, not by a fragile filter invariant. |
 | F8 | ~~Low~~ **RESOLVED** | No `deny.toml` (license/duplicate policy); `cargo-audit` only | Advisory-only supply-chain gate | **Closed this pass:** `deny.toml` (100%-permissive allow-list, validated `cargo deny check` = ok) + `cargo-deny` + `cargo-machete` wired into `audit.yml`; licence/yank/source drift now caught. |
 
 **No Critical findings.** Auth writes are loopback-gated + bounded; secrets are `0600` atomic-written; the runtime carries no AI/ML/cloud-inference dependency (CI-enforced).
 
-> **Re-audit execution note (this pass).** Evidence re-gathered against the live
-> tree (do-not-assume applied to the prior doc itself). Two prior figures were
-> corrected on evidence: **TODO/FIXME 2 → 0** (the loose count caught only
-> substrings — `ma`**`stodo`**`n`, `belongs`**`todo`**`main`), and **F1 globals
-> 22 → ~7** (the rest were benign `OnceLock<Regex>`/round-robin counters). The
-> Immediate-phase supply-chain item (**F8**) was **executed and verified**, and
-> the unused-dependency half of **F6** was proven clean and gated.
+> **Re-audit execution log.** Evidence is re-gathered against the live tree each
+> pass (do-not-assume applied to the prior doc itself).
+> - **Pass A** corrected two figures on evidence — **TODO/FIXME 2 → 0** (loose
+>   count caught only substrings: `ma`**`stodo`**`n`, `belongs`**`todo`**`main`)
+>   and **F1 globals 22 → ~7** (rest were benign `OnceLock<Regex>`/counters) —
+>   then **executed F8** (supply-chain triple-gate) and proved **F6**'s
+>   unused-dep half clean.
+> - **Pass B (this pass)** executed **F7** in strict Security-first order: deep
+>   tracing showed the raw `reqwest::Client::new()` sites are all `#[cfg(test)]`
+>   (no prod gap) and the crawl path's IP-literal safety was only *implicit* in
+>   the same-host filter. Added `preflight::url_host_is_private` and enforced it
+>   explicitly at the web-crawler fetch choke point; DRY-ed the engine's private
+>   copy; +4 SSRF tests. Full suite 1561 green, clippy `-D warnings` clean.
 
 ---
 
@@ -127,8 +133,8 @@ docs/README counts, and runtime AI-independence. Dependency direction:
 | Priority | Area | Issue | Root cause | Impact | Effort | Recommendation |
 |---|---|---|---|---|---|---|
 | 1 | Security | ✅ **DONE** Supply-chain policy gap (F8) | advisory-only | dup/yank/licence drift | S | **Shipped:** `deny.toml` + `cargo-deny` + `cargo-machete` in `audit.yml` (validated ok) |
-| 2 | Security | SSRF-shaped fetch surface (F7) | OSINT by nature | residual | S | centralise an egress allow/deny + size/timeout guard in `util::http` (partly present) |
-| 3 | Reliability | Concurrent-scan global state (F1) | globals vs ctx | cross-scan contamination | M | per-scan `ScanContext`; isolation test |
+| 2 | Security | ✅ **DONE** SSRF-shaped fetch surface (F7) | IP-literal guard at caller/engine layer, crawl loop unguarded | residual | S | **Shipped:** explicit `preflight::url_host_is_private` enforced at the web-crawler fetch choke point (loop + `extract_links`), DRY with the engine gate; tests added |
+| **3 → next** | Reliability | Concurrent-scan global state (F1) | globals vs ctx | cross-scan contamination | M | per-scan `ScanContext`; isolation test — *highest remaining value* |
 | 4 | Reliability | unwrap density (F4) | no lint | latent panics | S | `clippy::unwrap_used` gate + burn-down |
 | 5 | Reliability | search-engine flakiness (F2) | external scraping | degraded yield | M | promote direct profile enumeration; engine-health-aware UX |
 | 6 | Scalability | SQLite single-writer | embedded store | write contention at high concurrency | M | batch writes (present) + per-scan write coalescing; document single-user envelope |
@@ -144,13 +150,13 @@ docs/README counts, and runtime AI-independence. Dependency direction:
 
 | Dimension | Score (0–100) | Rationale |
 |---|---|---|
-| Security | **90** ▲ | forbid-unsafe, loopback-gated writes, 0600 atomic secrets, CSP, 0 AI deps; **supply-chain now triple-gated** (cargo-audit + cargo-deny licence/ban/source + cargo-machete); −only the inherent SSRF surface remains |
+| Security | **91** ▲ | forbid-unsafe, loopback-gated writes, 0600 atomic secrets, CSP, 0 AI deps; **supply-chain triple-gated** (cargo-audit + cargo-deny + cargo-machete) **and IP-literal SSRF now guarded at the fetch choke point** (F7); −only the inherent discovered-URL fetch surface (resolver-mitigated) remains |
 | Reliability | 85 | per-module `catch_unwind`, atomic writes (races fixed), 1,683 tests; −for concurrent-scan global state (~7) + external-source flakiness |
 | Scalability | 78 | tokio pool capped for Termux, WAL+FTS, batch writes; −SQLite single-writer + global per-scan state cap shared concurrency |
 | Maintainability | **84** ▲ | enforced layering, **0** real TODOs, **0** unused deps, strong tests/CI; −six >1.8k-LOC hotspots + 769 unwraps + 42 dead-code allows |
 
-**Top 10 findings (root-cause):** F1 concurrent-scan globals (~7); F2 external-engine reliability; F3 hotspot files; F4 unwrap density (769); F5 serve observability; F6 dead-code allows (42); F7 SSRF surface; ~~F8 supply-chain policy~~ **(closed)**; single-writer SQLite envelope; live-path coverage via ignored drift tests only.
+**Top 10 findings (root-cause):** F1 concurrent-scan globals (~7); F2 external-engine reliability; F3 hotspot files; F4 unwrap density (769); F5 serve observability; F6 dead-code allows (42); ~~F7 SSRF surface~~ **(hardened)**; ~~F8 supply-chain policy~~ **(closed)**; single-writer SQLite envelope; live-path coverage via ignored drift tests only.
 
-**Top 10 highest-ROI improvements:** (1) ~~`deny.toml`+machete~~ ✅ **shipped**, (2) per-scan `ScanContext` (F1), (3) staged `clippy::unwrap_used` burn-down, (4) `/stats` module metrics, (5) promote direct profile enumeration *(validated by the live kylo4kylo run — `social_probe` carried the result at 0.90)*, (6) dead-code triage, (7) `storage.rs` repo split, (8) `search_engines` sub-module split, (9) cross-scan isolation test, (10) document/encode the single-user concurrency envelope.
+**Top 10 highest-ROI improvements:** (1) ~~`deny.toml`+machete~~ ✅ **shipped** + ~~IP-literal SSRF guard~~ ✅ **shipped**, (2) per-scan `ScanContext` (F1) — *next*, (3) staged `clippy::unwrap_used` burn-down, (4) `/stats` module metrics, (5) promote direct profile enumeration *(validated by the live kylo4kylo run — `social_probe` carried the result at 0.90)*, (6) dead-code triage, (7) `storage.rs` repo split, (8) `search_engines` sub-module split, (9) cross-scan isolation test, (10) document/encode the single-user concurrency envelope.
 
 **Recommended rebuild sequence:** harden supply-chain + lints (days) → isolate per-scan state + add observability (weeks) → modularise hotspots + strengthen engine-independent discovery (months) → pluggable module ABI + at-rest encryption (long-term). **No ground-up rewrite is warranted** — the foundations (typed domain model, enforced layering, deterministic offline-capable logic, strong CI, zero unsafe) are sound; the work is targeted extraction, concurrency isolation, and operational hardening.

@@ -179,6 +179,34 @@ pub fn is_local_domain(domain: &str) -> bool {
         || d_lc.ends_with(".localhost")
 }
 
+/// SSRF egress guard for a whole URL: `true` when `url`'s host is a
+/// private/reserved **IP literal** (loopback, RFC1918, link-local incl. the
+/// `169.254.169.254` cloud-metadata endpoint, ULA, …) or an IANA local domain.
+///
+/// This is the IP-literal counterpart to the HTTP client's DNS-resolver SSRF
+/// filter. The resolver vets *hostnames* at connect time, but an IP-literal URL
+/// (`http://169.254.169.254/`, `http://127.0.0.1:8080/`) is dialled directly by
+/// hyper without a lookup, so it never reaches the resolver. Any site that
+/// fetches a **discovered** URL outside engine target-validation (e.g. the web
+/// crawler following links extracted from a page) must apply this guard so the
+/// IP-literal path cannot reach an internal service. Hostnames return `false`
+/// here — they are the resolver's responsibility, not this function's.
+pub fn url_host_is_private(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    // `url` 2.5 returns IPv6 `host_str` WITH brackets (`[::1]`); strip them so
+    // the `IpAddr` parse inside `is_private_ip` fires.
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    is_private_ip(bare) || is_local_domain(bare)
+}
+
 /// True if the string is one of the placeholder usernames that breach
 /// corpora pad records with (e.g. `"admin"`, `"test"`, `"n/a"`).
 ///
@@ -464,6 +492,38 @@ mod tests {
             "BobSmith",
         ] {
             assert!(!is_placeholder_username(u), "expected {u} real");
+        }
+    }
+
+    // ── url_host_is_private ─────────────────────────────────────────────────
+
+    #[test]
+    fn url_host_is_private_rejects_internal_targets() {
+        for u in [
+            "http://127.0.0.1/admin",
+            "http://10.0.0.5:8080/",
+            "https://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data/", // cloud metadata
+            "http://[::1]/",                            // IPv6 loopback (bracketed)
+            "http://[::ffff:169.254.169.254]/",         // IPv4-mapped metadata
+            "http://localhost/",
+            "https://printer.local/status",
+            "http://db.internal:5432/",
+        ] {
+            assert!(url_host_is_private(u), "expected {u} guarded");
+        }
+    }
+
+    #[test]
+    fn url_host_is_private_allows_public_urls() {
+        for u in [
+            "https://example.com/path",
+            "http://8.8.8.8/",
+            "https://api.twitter.com/2/users",
+            "https://[2606:4700:4700::1111]/",
+            "not a url",
+        ] {
+            assert!(!url_host_is_private(u), "expected {u} allowed");
         }
     }
 }
