@@ -213,6 +213,39 @@ pub async fn version() -> Json<Value> {
     Json(json!({ "version": crate::VERSION }))
 }
 
+/// Search-engine liveness panel data. Serves the latest cached sweep (populated
+/// by the periodic + startup background task in `hse serve`); if no sweep has run
+/// yet, runs one lazily. Each engine reports up/blocked/down + latency + result
+/// count. Backs the web liveness panel and `hse engines`.
+pub async fn engines_health() -> Json<Value> {
+    use crate::modules::search_engines::health::{EngineStatus, cached, refresh_cache};
+    let snap = match cached() {
+        Some(s) => s,
+        None => refresh_cache().await,
+    };
+    let count = |st: EngineStatus| snap.engines.iter().filter(|h| h.status == st).count();
+    let engines: Vec<Value> = snap
+        .engines
+        .iter()
+        .map(|h| {
+            json!({
+                "engine": h.name,
+                "status": h.status.as_str(),
+                "latency_ms": h.latency_ms,
+                "results": h.results,
+            })
+        })
+        .collect();
+    Json(json!({
+        "checked_at": snap.checked_at,
+        "total": snap.engines.len(),
+        "up": count(EngineStatus::Up),
+        "blocked": count(EngineStatus::Blocked),
+        "down": count(EngineStatus::Down),
+        "engines": engines,
+    }))
+}
+
 /// Expose the API-key detector's prefix-match coverage. Returns the
 /// full ordered table from `key_harvest::patterns` so operators can
 /// see what shapes the scanner recognises — and so dashboards can

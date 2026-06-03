@@ -10,7 +10,8 @@
 //! web liveness panel + periodic in-`serve` sweeps). Probes run concurrently so
 //! the whole sweep finishes in roughly one engine's timeout.
 
-use std::time::Instant;
+use std::sync::{LazyLock, RwLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use futures::future::join_all;
 
@@ -44,11 +45,49 @@ impl EngineStatus {
 }
 
 /// One engine's liveness result.
+#[derive(Clone, Copy)]
 pub(crate) struct EngineHealth {
     pub(crate) name: &'static str,
     pub(crate) status: EngineStatus,
     pub(crate) latency_ms: u64,
     pub(crate) results: usize,
+}
+
+/// A timestamped result of one full liveness sweep.
+#[derive(Clone)]
+pub(crate) struct HealthSnapshot {
+    /// Unix seconds when the sweep completed.
+    pub(crate) checked_at: u64,
+    pub(crate) engines: Vec<EngineHealth>,
+}
+
+/// Process-global cache of the latest sweep, populated by the periodic +
+/// startup background task in `hse serve` (and lazily on first read). The web
+/// liveness panel / `GET /api/v1/engines/health` serve this snapshot so a panel
+/// refresh is instant and never triggers 17 live fetches per page view.
+static CACHE: LazyLock<RwLock<Option<HealthSnapshot>>> = LazyLock::new(|| RwLock::new(None));
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Run a full sweep, store it in the cache, and return the fresh snapshot.
+pub(crate) async fn refresh_cache() -> HealthSnapshot {
+    let snap = HealthSnapshot {
+        engines: probe_all().await,
+        checked_at: unix_now(),
+    };
+    if let Ok(mut w) = CACHE.write() {
+        *w = Some(snap.clone());
+    }
+    snap
+}
+
+/// The most recent cached sweep, if any has run yet.
+pub(crate) fn cached() -> Option<HealthSnapshot> {
+    CACHE.read().ok().and_then(|r| r.clone())
 }
 
 /// Pure classification of a probe outcome — split out so it's unit-testable

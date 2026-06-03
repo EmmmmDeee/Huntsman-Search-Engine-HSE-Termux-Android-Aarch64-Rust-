@@ -64,6 +64,25 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
 
     warn_if_exposed(&bind);
 
+    // Search-engine liveness: sweep at startup and on an interval, populating the
+    // cache that backs the web liveness panel + `GET /api/v1/engines/health` and
+    // emitting structured events into the unified debug log. Interval is
+    // configurable via `HUNTSMAN_ENGINE_HEALTH_SECS` (default 900s = 15 min; min
+    // 60s). Detached background task — best-effort, never blocks serving.
+    let health_secs = std::env::var("HUNTSMAN_ENGINE_HEALTH_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&n| n >= 60)
+        .unwrap_or(900);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(health_secs));
+        loop {
+            // First tick fires immediately → a sweep at startup, then every interval.
+            tick.tick().await;
+            let _ = crate::modules::search_engines::health::refresh_cache().await;
+        }
+    });
+
     tracing::info!("hse v{} — listening on http://{}", crate::VERSION, bind);
     tracing::info!("  open in Chrome / Firefox on this device");
     if allow_key_write {
