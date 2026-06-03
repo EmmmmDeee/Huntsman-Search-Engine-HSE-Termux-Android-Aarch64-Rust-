@@ -2266,20 +2266,22 @@ mod tests {
 
     #[test]
     fn username_scoring_no_overlap_with_site_query() {
+        // A genuinely-unrelated handle (no term overlap, no shared stem, no
+        // bigram similarity to the seed) found ONLY via a site: query is a weak
+        // CANDIDATE: the platform-targeted query contributes a single point.
+        // (Uses `marcusw`, not `jaydes` — the latter is ~0.36 bigram-similar to
+        // `jdespal`, which the potentiated Signal 5 correctly promotes.)
         let terms = vec!["jdespal".into()];
         let r = SearchResult {
-            url: "https://soundcloud.com/jaydes/tracks".into(),
+            url: "https://soundcloud.com/marcusw/tracks".into(),
             title: String::new(),
             snippet: String::new(),
             engine: "yahoo",
             query: "Jdespal site:soundcloud.com OR site:instagram.com".into(),
         };
-        let (score, conf) = score_username("jaydes", "soundcloud.com", &terms, &r);
-        assert!(
-            score >= 1,
-            "site: query should give score >= 1, got {score}"
-        );
-        assert!((conf - 0.30).abs() < 0.01);
+        let (score, conf) = score_username("marcusw", "soundcloud.com", &terms, &r);
+        assert_eq!(score, 1, "site:-only signal should give exactly 1");
+        assert!((conf - 0.30).abs() < 0.01, "weak signal stays CANDIDATE");
     }
 
     #[test]
@@ -2451,6 +2453,36 @@ mod tests {
     fn bigram_similarity_unrelated() {
         let sim = bigram_similarity("jdespal", "elephant");
         assert!(sim < 0.2, "unrelated strings, got {sim}");
+    }
+
+    #[test]
+    fn score_username_promotes_seed_variant_over_cooccurrence() {
+        // Potentiated username scoring: a handle sharing the seed's stem (a likely
+        // ALIAS of the same person) must outrank — and reach a higher tier than —
+        // an unrelated handle that merely co-occurred on the page. Seed
+        // "kylo4kylo" → stem "kylo"; both candidates co-occur with the seed.
+        let terms = vec!["kylo4kylo".to_string()];
+        let res = SearchResult {
+            url: "https://x.com/handle".to_string(),
+            title: "page".to_string(),
+            snippet: "a page mentioning kylo4kylo and others".to_string(),
+            engine: "duckduckgo",
+            query: "kylo4kylo".to_string(),
+        };
+        let (s_variant, c_variant) = score_username("kylocool630", "x.com", &terms, &res);
+        let (s_noise, c_noise) = score_username("khloekardashian", "x.com", &terms, &res);
+        assert!(
+            s_variant >= 3 && (c_variant - 0.55).abs() < 1e-9,
+            "seed-variant handle should reach PROBABLE (0.55), got score={s_variant} conf={c_variant}"
+        );
+        assert!(
+            s_noise < 3 && (c_noise - 0.30).abs() < 1e-9,
+            "pure co-occurrence should stay CANDIDATE (0.30), got score={s_noise} conf={c_noise}"
+        );
+        assert!(
+            s_variant > s_noise,
+            "the seed-resembling alias must outrank co-occurrence noise"
+        );
     }
 
     #[test]
