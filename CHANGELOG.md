@@ -82,6 +82,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Search URL findings now credit cross-engine agreement.** The domain branch of
+  the search-result builder already set `corroboration = <distinct engines>`, but
+  the URL branch did not — so a profile independently returned by, say, 7 engines
+  carried `corroboration = 1` and stayed at base confidence, no matter how
+  unanimous. URL entities (most importantly the elevated `confirmed-profile`
+  URLs) now take the same per-URL engine count, so a confirmed profile agreed on
+  by ≥2 engines crosses into the **Verified** tier via `c_effective`. The
+  highest-value findings finally reflect how strongly the engines agree.
 - **Suppress people-search / username-aggregator domains from search findings.** A
   statistical pass over a live `kylo4kylo` run found ~15 of 84 result domains were
   people-search aggregators (spokeo, peekyou, nuwber, whitepages, pipl, …) — the

@@ -1381,6 +1381,13 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
                 if confirmed { 0.85 } else { 0.50 },
                 scan_id,
             );
+            // Credit cross-ENGINE agreement, like the domain branch does: a URL
+            // (especially a confirmed profile) independently returned by N engines
+            // is far stronger than one from a single engine. Without this the
+            // highest-value findings were stuck at base confidence even under
+            // unanimous engine agreement; now N engines lift `c_effective` (a
+            // confirmed profile + ≥2 engines crosses into the Verified tier).
+            e.corroboration = n_engines;
             e.tag("search-discovered");
             if confirmed {
                 e.tag("confirmed-profile");
@@ -2609,6 +2616,35 @@ mod tests {
         assert!(
             s_variant > s_noise,
             "the seed-resembling alias must outrank co-occurrence noise"
+        );
+    }
+
+    #[test]
+    fn confirmed_profile_corroborated_by_engines_reaches_verified() {
+        // A confirmed profile independently returned by N engines must now credit
+        // all N (cross-engine corroboration) and so cross into the Verified tier —
+        // previously the URL branch ignored engine agreement, capping it at base.
+        let target = Target::new(TargetKind::Username, "kylo4kylo");
+        let mk = |engine: &'static str| SearchResult {
+            url: "https://x.com/kylo4kylo".to_string(),
+            title: "kylo4kylo".to_string(),
+            snippet: "kylo4kylo on X".to_string(),
+            engine,
+            query: "kylo4kylo".to_string(),
+        };
+        let results = vec![mk("duckduckgo"), mk("brave"), mk("mojeek")];
+        let res = build_entities(&target, "s", &results);
+        let prof = res
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Url && e.value == "https://x.com/kylo4kylo")
+            .expect("confirmed profile url entity");
+        assert!(prof.has_tag("confirmed-profile"));
+        assert_eq!(prof.corroboration, 3, "should credit all 3 engines");
+        assert!(
+            prof.c_effective() >= 0.75,
+            "3-engine confirmed profile must be Verified, got c_eff={}",
+            prof.c_effective()
         );
     }
 
