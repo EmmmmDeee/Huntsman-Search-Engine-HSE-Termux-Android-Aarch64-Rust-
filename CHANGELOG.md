@@ -102,6 +102,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Diagnostics JSON was not byte-reproducible across runs (charter:
+  reproducibility).** The self-optimization report (`--output json` / dossier)
+  serialised two `HashMap` fields (`source_confidence`, `entity_kind_counts`) —
+  whose iteration order std randomises per instance — and several rankings built
+  from HashMaps then sorted by a non-unique key (`modules_by_yield`,
+  `cross_source_overlap`, adaptive `historical_rank`), whose ties kept the random
+  order. So identical inputs produced different JSON bytes, defeating any
+  hash/diff/cache of a report and the "findings reproduce identically" guarantee.
+  The maps are now `BTreeMap` (sorted keys) and every such ranking has a stable
+  secondary-key tiebreak. A new test asserts the (history-independent) diagnostics
+  are byte-identical for identical inputs. (`adaptive_routing` is intentionally
+  history-dependent — it reads + updates the persisted ledger — but its own
+  ranking order is now deterministic too.)
 - **UTF-8 panic deriving a dork from an internationalised email (silently voided
   `search_engines`).** The email-to-lastname dork derivation dropped the local
   part's first *byte* (`local[1..]`), which panics on a non-ASCII local part
