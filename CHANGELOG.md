@@ -82,6 +82,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Potentiated username scoring — alias variants outrank co-occurrence noise.**
+  The search module's `score_username` now adds a handle-similarity signal that
+  BOOSTS (rather than only acting as a `score == 0` fallback): a candidate that
+  shares the seed's alphabetic STEM (seed `kylo4kylo` → stem `kylo` →
+  `kylocool630`) or has ≥0.25 bigram overlap (`jdespal` ↔ `jaydes`) is treated as
+  a likely alias of the SAME person. So a seed-resembling handle that also
+  co-occurs reaches PROBABLE (0.55) while an unrelated handle that merely
+  co-occurred on the page (e.g. `khloekardashian` next to `kylo4kylo`) stays
+  CANDIDATE (0.30). The stem check matters because the digits in a handle dilute
+  bigram overlap below threshold, hiding real variants from the old logic.
 - **Expansion no longer deep-dives incidentally-discovered platform domains
   (person-scan signal-to-noise).** When a recursive scan surfaced a mega-domain
   (twitter.com, pinterest.com, github.com, …) as a *discovered* entity, depth-1+

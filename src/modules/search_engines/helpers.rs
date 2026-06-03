@@ -562,18 +562,26 @@ pub(super) fn score_username(
         score += 1;
     }
 
-    // Signal 5: semantic similarity — the username is structurally
-    // similar to a target term even without exact substring match.
-    // "jaydes" ↔ "jdespal" have partial bigram overlap. Threshold
-    // 0.25 catches abbreviations and character-transposed aliases.
-    if score == 0 {
-        let seed = match terms.first() {
-            Some(s) => s.as_str(),
-            None => "",
-        };
-        if bigram_similarity(username, seed) >= 0.25 {
-            score += 1;
-        }
+    // Signal 5: handle similarity — the candidate is structurally a VARIANT of
+    // the seed handle, which separates a likely alias of the SAME person from an
+    // unrelated username that merely co-occurred on the result page. Two matches:
+    //  - shared alphabetic STEM: seed "kylo4kylo" → stem "kylo" → "kylocool630".
+    //    Bigram overlap alone misses this (~0.2 < 0.25 because the digits/suffix
+    //    dilute it), so also test substring-containment of any ≥4-char alpha run
+    //    of the seed; and
+    //  - bigram overlap ("jaydes" ↔ "jdespal") for transposed/abbreviated aliases.
+    // Unlike the old `score == 0` fallback this BOOSTS, so a seed-resembling
+    // handle that ALSO co-occurs reaches PROBABLE (0.55) while pure co-occurrence
+    // stays CANDIDATE (0.30) — the precision lift that keeps alias variants ahead
+    // of co-occurrence noise.
+    let cand = username.to_lowercase();
+    let stem_match = terms
+        .iter()
+        .flat_map(|t| t.split(|c: char| c.is_ascii_digit()))
+        .any(|s| s.len() >= 4 && cand.contains(s));
+    let seed = terms.first().map(String::as_str).unwrap_or("");
+    if stem_match || bigram_similarity(&cand, seed) >= 0.25 {
+        score += 2;
     }
 
     let confidence = if score >= 3 { 0.55 } else { 0.30 };
