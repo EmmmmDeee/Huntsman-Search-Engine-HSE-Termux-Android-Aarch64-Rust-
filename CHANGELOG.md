@@ -154,6 +154,28 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Adaptive routing recommended skips/priorities from raw point estimates,
+  ignoring sample size.** `read_adaptive_routing` flagged a module for
+  `--adaptive` skip the moment its raw zero-yield *proportion* hit `≥0.80`
+  over only 5 scans — so **4 of 5** unlucky scans could disable an otherwise
+  useful module (a 4/5 sample is far too noisy to condemn on; the true rate
+  could be ~0.4). Priorities had the dual flaw: ranking by the raw
+  `mean_entities_per_scan` let a 3-scan lucky streak leapfrog a proven
+  high-volume module. Both now use sample-size-aware statistics — the
+  textbook "don't sort by raw average" correction:
+  - **Skips** gate on the **Wilson score 95% lower bound** of the zero-yield
+    proportion (`≥0.80`), not the raw rate. A module is only skipped when we
+    are statistically confident its true zero-yield rate is high; a noisy
+    `4/5 = 0.80` sample bounds to ≈0.38 and is spared, while a genuinely dead
+    module clears the bar once enough scans accrue.
+  - **Priorities** rank on an **empirical-Bayes shrunk mean** (the raw mean
+    pulled toward the global mean with a fixed pseudo-scan prior), which
+    regresses low-sample flukes toward the average and converges to the raw
+    mean as evidence grows.
+  Both estimators are surfaced in the diagnostics JSON
+  (`adjusted_mean_entities_per_scan`, `zero_yield_rate_lower_bound`) alongside
+  the raw values, are pure deterministic arithmetic (runtime-independence
+  preserved), and are pinned with unit tests.
 - **`bigram_similarity` (Sørensen–Dice handle metric) over-counted repeated
   bigrams and could exceed 1.0.** The shared-bigram numerator was a membership
   test (`bb.contains(bg)`), not a multiset intersection, so every occurrence of

@@ -85,12 +85,16 @@ pub struct EntityCluster {
 pub struct AdaptiveRouting {
     /// Total scans in the ledger.
     pub ledger_scans: u64,
-    /// Modules ranked by historical mean_entities_per_scan, highest first.
+    /// Modules ranked by their shrunk (empirical-Bayes) mean yield, highest
+    /// first — the noise-robust ordering, not the raw sample mean.
     pub historical_rank: Vec<ModuleHistoricalScore>,
-    /// Modules with high zero-yield rate (≥80%) over enough scans (≥5)
-    /// to be statistically meaningful. Candidates for --adaptive skip.
+    /// Modules we are 95% confident are genuinely high zero-yield (Wilson
+    /// score lower bound on the zero-yield proportion ≥ 0.80, over ≥5 scans).
+    /// Candidates for --adaptive skip — a noisy small-sample high rate no
+    /// longer qualifies. Gating on the lower bound (not the raw rate) is what
+    /// keeps `--adaptive` from disabling a module on a few unlucky scans.
     pub recommended_skips: Vec<String>,
-    /// Modules with consistently high yield (top-5 by mean_entities_per_scan).
+    /// Modules with consistently high yield (top-5 by shrunk mean, ≥3 scans).
     /// Candidates for elevated priority.
     pub recommended_priorities: Vec<String>,
 }
@@ -99,8 +103,20 @@ pub struct AdaptiveRouting {
 pub struct ModuleHistoricalScore {
     pub name: String,
     pub scans_present: u64,
+    /// Raw sample mean entities per scan (point estimate; noisy at low n).
     pub mean_entities_per_scan: f64,
+    /// Empirical-Bayes shrunk mean — the raw mean pulled toward the global
+    /// mean with a fixed pseudo-scan prior. This is the value the ranking and
+    /// the `recommended_priorities` use, so a 3-scan lucky streak can't
+    /// outrank a proven high-volume module. Equals the raw mean as n → ∞.
+    pub adjusted_mean_entities_per_scan: f64,
+    /// Raw sample zero-yield proportion (point estimate; noisy at low n).
     pub zero_yield_rate: f64,
+    /// Wilson score 95% lower confidence bound on the zero-yield proportion.
+    /// `recommended_skips` gates on this, not the raw rate, so a module is only
+    /// skipped when we are statistically confident its true zero-yield rate is
+    /// genuinely high (a noisy 4/5 = 0.80 sample bounds to ≈0.38 and is spared).
+    pub zero_yield_rate_lower_bound: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -425,7 +441,60 @@ fn cluster_coordinates(
     clusters
 }
 
+/// z for a two-sided 95% confidence interval (standard normal quantile).
+const WILSON_Z_95: f64 = 1.96;
+/// Prior strength (pseudo-scans) for the empirical-Bayes shrinkage of a
+/// module's mean yield toward the global mean. ~5 scans of "evidence" must
+/// accrue before a module's own mean dominates the global prior — enough to
+/// damp a lucky 1–2 scan streak without burying a genuinely productive module.
+const SHRINKAGE_PSEUDO_SCANS: f64 = 5.0;
+/// Confidence floor on the zero-yield proportion's Wilson lower bound before a
+/// module is recommended for --adaptive skip.
+const SKIP_ZERO_YIELD_LB: f64 = 0.80;
+/// Shrunk-mean floor for a module to be recommended for elevated priority.
+const PRIORITY_MEAN_FLOOR: f64 = 5.0;
+
+/// Wilson score interval lower bound for a binomial proportion.
+///
+/// Given `successes` out of `n` trials, returns the lower endpoint of the
+/// `z`-sigma Wilson score confidence interval for the true proportion
+/// (`z = `[`WILSON_Z_95`]` ≈ 95%`). Unlike the raw proportion `successes/n`,
+/// this bound collapses toward 0 when `n` is small, so a noisy `4/5 = 0.80`
+/// sample reports a lower bound of only ≈0.38 — the honest "not enough
+/// evidence yet" signal that a raw point estimate hides. Returns 0.0 for
+/// `n == 0`. The Wilson interval is the standard small-sample-safe estimator
+/// (no normal approximation breakdown at the 0/1 extremes).
+pub(crate) fn wilson_lower_bound(successes: u64, n: u64, z: f64) -> f64 {
+    if n == 0 {
+        return 0.0;
+    }
+    let n = n as f64;
+    let phat = successes as f64 / n;
+    let z2 = z * z;
+    let denom = 1.0 + z2 / n;
+    let centre = phat + z2 / (2.0 * n);
+    let margin = z * ((phat * (1.0 - phat) + z2 / (4.0 * n)) / n).sqrt();
+    ((centre - margin) / denom).clamp(0.0, 1.0)
+}
+
+/// Empirical-Bayes shrunk mean: the sample mean `total / scans` pulled toward
+/// `global_mean` with prior weight `pseudo` (in pseudo-scans). Low-sample
+/// modules are pulled hardest — a 3-scan module with a fluky high mean is
+/// regressed toward the global average — while a high-sample module's own mean
+/// dominates. Converges to the raw mean as `scans → ∞`. This is the
+/// IMDb/Bayesian-average ranking estimator, made explicit.
+pub(crate) fn shrunk_mean(total: u64, scans: u64, global_mean: f64, pseudo: f64) -> f64 {
+    (total as f64 + pseudo * global_mean) / (scans as f64 + pseudo)
+}
+
 /// Read the cross-scan ledger and produce per-module routing recommendations.
+///
+/// Both recommendations are built from sample-size-aware statistics rather
+/// than raw point estimates: priorities rank on an empirical-Bayes
+/// [`shrunk_mean`] (so a lucky low-sample module can't leapfrog a proven one),
+/// and skips gate on the [`wilson_lower_bound`] of the zero-yield proportion
+/// (so a module is only disabled when we are confident its true zero-yield
+/// rate is high, not when a handful of unlucky scans made it look that way).
 pub fn read_adaptive_routing() -> AdaptiveRouting {
     let path = ledger_path();
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -435,6 +504,15 @@ pub fn read_adaptive_routing() -> AdaptiveRouting {
         return AdaptiveRouting::default();
     };
 
+    // Global pooled mean entities per module-scan — the shrinkage prior.
+    let total_entities: u64 = ledger.per_module.values().map(|e| e.total_entities).sum();
+    let total_scans: u64 = ledger.per_module.values().map(|e| e.scans_present).sum();
+    let global_mean = if total_scans == 0 {
+        0.0
+    } else {
+        total_entities as f64 / total_scans as f64
+    };
+
     let mut scores: Vec<ModuleHistoricalScore> = ledger
         .per_module
         .iter()
@@ -442,29 +520,42 @@ pub fn read_adaptive_routing() -> AdaptiveRouting {
             name: name.clone(),
             scans_present: e.scans_present,
             mean_entities_per_scan: e.mean_entities_per_scan,
+            adjusted_mean_entities_per_scan: shrunk_mean(
+                e.total_entities,
+                e.scans_present,
+                global_mean,
+                SHRINKAGE_PSEUDO_SCANS,
+            ),
             zero_yield_rate: e.zero_yield_rate,
+            zero_yield_rate_lower_bound: wilson_lower_bound(
+                e.zero_yield_scans,
+                e.scans_present,
+                WILSON_Z_95,
+            ),
         })
         .collect();
     scores.sort_by(|a, b| {
-        b.mean_entities_per_scan
-            .partial_cmp(&a.mean_entities_per_scan)
+        b.adjusted_mean_entities_per_scan
+            .partial_cmp(&a.adjusted_mean_entities_per_scan)
             .unwrap_or(std::cmp::Ordering::Equal)
             // Stable tiebreak by name: `per_module` is a HashMap, so equal-yield
             // modules must order deterministically for a reproducible ranking.
             .then_with(|| a.name.cmp(&b.name))
     });
 
-    // Skip recommendations: ≥80% zero-yield over ≥5 scans.
+    // Skip recommendations: 95% confident the true zero-yield rate is high.
+    // The ≥5-scan floor is a sanity gate; the Wilson bound is the real test
+    // and is what spares a module that merely had a few unlucky early scans.
     let recommended_skips: Vec<String> = scores
         .iter()
-        .filter(|s| s.scans_present >= 5 && s.zero_yield_rate >= 0.80)
+        .filter(|s| s.scans_present >= 5 && s.zero_yield_rate_lower_bound >= SKIP_ZERO_YIELD_LB)
         .map(|s| s.name.clone())
         .collect();
 
-    // Priority recommendations: top-5 by historical mean yield, scans ≥3.
+    // Priority recommendations: top-5 by shrunk mean yield, scans ≥3.
     let recommended_priorities: Vec<String> = scores
         .iter()
-        .filter(|s| s.scans_present >= 3 && s.mean_entities_per_scan >= 5.0)
+        .filter(|s| s.scans_present >= 3 && s.adjusted_mean_entities_per_scan >= PRIORITY_MEAN_FLOOR)
         .take(5)
         .map(|s| s.name.clone())
         .collect();
@@ -1182,5 +1273,54 @@ mod tests {
             .iter()
             .any(|c| c.canonical_value.to_lowercase().contains("haigen"));
         assert!(found);
+    }
+
+    #[test]
+    fn wilson_lower_bound_basics() {
+        // n == 0 → 0; bound never leaves [0,1].
+        assert_eq!(wilson_lower_bound(0, 0, WILSON_Z_95), 0.0);
+        for (s, n) in [(0, 7), (3, 7), (7, 7), (1, 1)] {
+            let lb = wilson_lower_bound(s, n, WILSON_Z_95);
+            assert!((0.0..=1.0).contains(&lb), "{s}/{n} out of range: {lb}");
+        }
+        // The point of the fix: a noisy 4/5 = 0.80 sample is NOT confidently
+        // high — its lower bound is well under the 0.80 skip threshold.
+        let small = wilson_lower_bound(4, 5, WILSON_Z_95);
+        assert!(
+            small < 0.5,
+            "4/5 should bound low (~0.38), got {small}"
+        );
+        // The lower bound is ≤ the point estimate, and never exceeds it.
+        assert!(small <= 4.0 / 5.0);
+    }
+
+    #[test]
+    fn wilson_lower_bound_tightens_with_evidence() {
+        // Same 100% sample proportion, more trials ⇒ a higher (tighter) lower
+        // bound: evidence accrues. A genuinely dead module eventually clears
+        // the 0.80 skip gate; a barely-sampled one cannot.
+        let n5 = wilson_lower_bound(5, 5, WILSON_Z_95);
+        let n20 = wilson_lower_bound(20, 20, WILSON_Z_95);
+        assert!(n20 > n5, "more evidence must tighten: {n5} !< {n20}");
+        assert!(n5 < SKIP_ZERO_YIELD_LB, "5/5 must not yet skip: {n5}");
+        assert!(n20 >= SKIP_ZERO_YIELD_LB, "20/20 should skip: {n20}");
+    }
+
+    #[test]
+    fn shrunk_mean_regresses_low_samples_toward_global() {
+        let global = 3.0;
+        // 3-scan module with a lucky raw mean of 9.0 is pulled well below a
+        // 50-scan module sitting at a steady 6.0 — the small sample can't win.
+        let lucky = shrunk_mean(27, 3, global, SHRINKAGE_PSEUDO_SCANS); // raw 9.0
+        let proven = shrunk_mean(300, 50, global, SHRINKAGE_PSEUDO_SCANS); // raw 6.0
+        assert!(
+            proven > lucky,
+            "proven workhorse must outrank a lucky 3-scan streak: {proven} !> {lucky}"
+        );
+        // Shrinkage only ever moves the raw mean toward the global prior.
+        assert!(lucky < 9.0 && lucky > global, "lucky pulled toward prior: {lucky}");
+        // Converges to the raw mean as evidence grows.
+        let big = shrunk_mean(6_000_000, 1_000_000, global, SHRINKAGE_PSEUDO_SCANS);
+        assert!((big - 6.0).abs() < 1e-3, "should converge to raw mean: {big}");
     }
 }
