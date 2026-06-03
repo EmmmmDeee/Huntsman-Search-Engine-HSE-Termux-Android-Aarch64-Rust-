@@ -482,12 +482,30 @@ impl Target {
                     return Err("API key too short (min 8 chars)");
                 }
             }
+            TargetKind::AbnAcn => {
+                // ACN = 9 digits, ABN = 11 (spaces/punctuation allowed and
+                // ignored — matches abn_lookup's digit-count dispatch). Fail
+                // fast on a non-registry value like a name, as the other
+                // structured kinds do, instead of dispatching a guaranteed no-op.
+                let digits = v.chars().filter(char::is_ascii_digit).count();
+                if digits != 9 && digits != 11 {
+                    return Err("ABN/ACN must be 9 digits (ACN) or 11 digits (ABN)");
+                }
+            }
+            TargetKind::MacAddress => {
+                // 6 hex octets, with or without `:` / `-` / `.` separators.
+                let hex: String = v
+                    .chars()
+                    .filter(|c| !matches!(c, ':' | '-' | '.'))
+                    .collect();
+                if hex.len() != 12 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err("MAC address must be 6 hex octets (e.g. AA:BB:CC:DD:EE:FF)");
+                }
+            }
             TargetKind::Username
             | TargetKind::FullName
             | TargetKind::Address
-            | TargetKind::Organisation
-            | TargetKind::AbnAcn
-            | TargetKind::MacAddress => {}
+            | TargetKind::Organisation => {}
         }
 
         // Never scan our own egress infrastructure: a host/IP configured as a
@@ -1851,6 +1869,67 @@ mod tests {
         );
         assert!(Target::new(TargetKind::Email, "@b.com").validate().is_err());
         assert!(Target::new(TargetKind::Email, "a@b").validate().is_err()); // no dot
+    }
+
+    #[test]
+    fn validate_abn_acn_requires_9_or_11_digits() {
+        // ABN (11) / ACN (9), spaces & punctuation ignored.
+        assert!(
+            Target::new(TargetKind::AbnAcn, "51824753556")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::AbnAcn, "51 824 753 556")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::AbnAcn, "004085616")
+                .validate()
+                .is_ok()
+        );
+        // Non-registry junk (e.g. a handle) must fail fast, not dispatch a no-op.
+        assert!(
+            Target::new(TargetKind::AbnAcn, "Kylo4kylo")
+                .validate()
+                .is_err()
+        );
+        assert!(Target::new(TargetKind::AbnAcn, "12345").validate().is_err());
+    }
+
+    #[test]
+    fn validate_mac_requires_six_hex_octets() {
+        assert!(
+            Target::new(TargetKind::MacAddress, "AA:BB:CC:DD:EE:FF")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::MacAddress, "aa-bb-cc-dd-ee-ff")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::MacAddress, "aabbccddeeff")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Target::new(TargetKind::MacAddress, "Kylo4kylo")
+                .validate()
+                .is_err()
+        );
+        assert!(
+            Target::new(TargetKind::MacAddress, "AA:BB:CC:DD:EE")
+                .validate()
+                .is_err()
+        ); // 5 octets
+        assert!(
+            Target::new(TargetKind::MacAddress, "ZZ:BB:CC:DD:EE:FF")
+                .validate()
+                .is_err()
+        ); // non-hex
     }
 
     #[test]
