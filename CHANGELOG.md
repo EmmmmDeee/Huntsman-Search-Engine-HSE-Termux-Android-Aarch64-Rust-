@@ -102,6 +102,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`github_user`'s `top_event_types` finding was non-reproducible.** The recent-
+  activity summary ranked event types from a `HashMap` by count with no tiebreak,
+  so tied counts (and thus which types landed in the top 3, and their order) came
+  out in the HashMap's randomised order — identical GitHub activity produced
+  different `top_event_types` evidence across runs. Extracted to a pure
+  `top_event_types` helper that breaks ties by name (deterministic) and pinned it
+  with a test. (Found auditing the highest-synergy modules; `see_know` — the
+  single most connective module — was already clean: it parses via safe
+  `serde_json` accessors with no slicing, `unwrap`, or HashMap output.)
 - **Diagnostics JSON was not byte-reproducible across runs (charter:
   reproducibility).** The self-optimization report (`--output json` / dossier)
   serialised two `HashMap` fields (`source_confidence`, `entity_kind_counts`) —
