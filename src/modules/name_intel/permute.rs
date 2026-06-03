@@ -73,10 +73,14 @@ impl ParsedName {
         self.display_words.join(" ")
     }
     pub fn display_first(&self) -> &str {
-        &self.display_words[0]
+        // `parse()` guarantees ≥2 words, but the fields are `pub` — a
+        // directly-constructed `ParsedName` must degrade to "" rather than
+        // panic (under `panic="abort"` a panic in `hse serve` aborts the
+        // whole process).
+        self.display_words.first().map_or("", String::as_str)
     }
     pub fn display_last(&self) -> &str {
-        self.display_words.last().expect("≥2 words guaranteed")
+        self.display_words.last().map_or("", String::as_str)
     }
     /// `"First-Last"` form used for path-style people URLs (e.g. Facebook).
     fn display_hyphen(&self) -> String {
@@ -126,10 +130,10 @@ pub fn parse(raw: &str) -> Option<ParsedName> {
     // ASCII-folded handle tokens. These may be empty for non-Latin names
     // (e.g. Cyrillic/CJK), in which case username/email permutation is skipped
     // by the caller but the display-name search pivots still generate.
-    let first = sanitize(&display_words[0]);
-    let last = sanitize(display_words.last().unwrap());
+    let first = sanitize(display_words.first().map_or("", String::as_str));
+    let last = sanitize(display_words.last().map_or("", String::as_str));
     let middle = if display_words.len() >= 3 {
-        let m = sanitize(&display_words[1]);
+        let m = sanitize(display_words.get(1).map_or("", String::as_str));
         (!m.is_empty()).then_some(m)
     } else {
         None
@@ -558,6 +562,29 @@ mod tests {
         assert!(parse("Jordan").is_none());
         assert!(parse("   1987   ").is_none());
         assert!(parse("").is_none());
+    }
+
+    #[test]
+    fn display_accessors_never_panic_on_degenerate_name() {
+        // `ParsedName` has public fields, so a value can be built bypassing
+        // `parse()`'s ≥2-word guarantee. The public accessors must degrade to
+        // "" instead of panicking (an index/`expect` would abort `hse serve`
+        // under panic="abort"). Regression guard for that latent panic.
+        let empty = ParsedName {
+            first: String::new(),
+            middle: None,
+            last: String::new(),
+            number: None,
+            display_words: Vec::new(),
+        };
+        assert_eq!(empty.display_first(), "");
+        assert_eq!(empty.display_last(), "");
+        assert_eq!(empty.display_full(), "");
+
+        // Normal parsed names still report the right first/last words.
+        let n = p("Jordan Lee Meyers");
+        assert_eq!(n.display_first(), "Jordan");
+        assert_eq!(n.display_last(), "Meyers");
     }
 
     #[test]
