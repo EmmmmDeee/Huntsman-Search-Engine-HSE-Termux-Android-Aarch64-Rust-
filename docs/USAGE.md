@@ -209,14 +209,18 @@ See [`MODULES.md`](MODULES.md) for what each one does and its synergy notes.
 
 Liveness panel — probes every keyless search engine concurrently and reports
 whether each is `Up`, `Blocked` (reachable but rate-limited/CAPTCHA), or `Down`.
-Add `--json` for machine output. The same data is served live at
-`GET /api/v1/engines/health` and in the web SPA (`#/engines`); `hse serve` runs a
-startup sweep plus a periodic background refresh, and every probe is written to
-the structured debug log (`huntsman::engine_health`).
+An engine turned off with `hse config engine.<name> off` is **not** probed and is
+listed as `disabled` (so the roster — and the summary tally `up + blocked + down
++ disabled = total` — stays complete and re-enablable). Add `--json` for machine
+output (disabled engines appear with `"enabled": false` and null latency/results).
+The same data is served live at `GET /api/v1/engines/health` and in the web SPA
+(`#/engines`, which also offers an inline Enable/Disable per engine); `hse serve`
+runs a startup sweep plus a periodic background refresh, and every probe is
+written to the structured debug log (`huntsman::engine_health`).
 
 ```
-hse engines            # table
-hse engines --json     # JSON snapshot
+hse engines            # table (incl. disabled engines)
+hse engines --json     # JSON roster
 ```
 
 ---

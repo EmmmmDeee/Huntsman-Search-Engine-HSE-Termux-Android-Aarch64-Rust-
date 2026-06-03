@@ -54,7 +54,10 @@ versions can include breaking changes; patch versions are bug-fix-only.
   toggle API): it merges the probe sweep with the full engine roster so disabled
   engines stay visible (and re-enablable), and its Up/Blocked/Down/Disabled
   tallies are computed from that merged roster so they stay consistent the
-  instant a toggle flips, even before the next background sweep.
+  instant a toggle flips, even before the next background sweep. The **CLI `hse
+  engines`** matches: disabled engines are listed as `disabled` (table and
+  `--json`, the latter with `"enabled": false`), with the same
+  `up + blocked + down + disabled = total` tally.
 - **Runtime AI-independence charter + CI guard.** Documented and now mechanically
   enforced that the compiled `hse` binary carries **no** AI / ML / LLM /
   cloud-inference / agent / vector-DB / embedding dependency: every runtime
