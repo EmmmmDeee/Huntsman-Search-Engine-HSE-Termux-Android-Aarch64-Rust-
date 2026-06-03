@@ -215,6 +215,9 @@ impl Module for SearchEngines {
             }
 
             for engine in ENGINES {
+                if !engine_enabled(engine.name) {
+                    continue;
+                }
                 if ctx.cancel.is_cancelled() {
                     break;
                 }
@@ -292,6 +295,9 @@ impl Module for SearchEngines {
                         break;
                     }
                     for engine in &reliable {
+                        if !engine_enabled(engine.name) {
+                            continue;
+                        }
                         if ctx.cancel.is_cancelled() {
                             break;
                         }
@@ -403,6 +409,9 @@ async fn recycle_entities(
             break;
         }
         for engine in &reliable {
+            if !engine_enabled(engine.name) {
+                continue;
+            }
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -629,6 +638,23 @@ pub(crate) fn set_regional(on: bool) {
 }
 fn regional_enabled() -> bool {
     REGIONAL_SEARCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether a search engine is enabled — the first per-capability toggle of the
+/// universal toggleability registry. Default on; turned off (persisted) via
+/// `hse config engine.<name> off`. Checked in every engine-dispatch loop and the
+/// liveness probe so a disabled engine is never queried.
+pub(crate) fn engine_enabled(name: &str) -> bool {
+    crate::util::settings::get_bool(&format!("engine.{name}"), true)
+}
+
+/// The per-engine on/off toggles `(key, enabled)` for all engines — backs the
+/// `hse config` listing and the settings UI.
+pub(crate) fn engine_toggles() -> Vec<(String, bool)> {
+    ENGINES
+        .iter()
+        .map(|e| (format!("engine.{}", e.name), engine_enabled(e.name)))
+        .collect()
 }
 
 /// A region autonomously inferred from a seed's own signals (HSE's focus is AU).

@@ -152,7 +152,15 @@ async fn probe_one(engine: &'static EngineSpec) -> EngineHealth {
 /// Probe every engine concurrently, sorted by name for stable display. Emits a
 /// structured summary line so a sweep is one greppable record in the debug log.
 pub(crate) async fn probe_all() -> Vec<EngineHealth> {
-    let mut out = join_all(ENGINES.iter().map(probe_one)).await;
+    // Only probe engines that are enabled (universal toggleability) — a disabled
+    // engine is never queried, so the panel reflects the active set.
+    let mut out = join_all(
+        ENGINES
+            .iter()
+            .filter(|e| super::engine_enabled(e.name))
+            .map(probe_one),
+    )
+    .await;
     out.sort_by_key(|h| h.name);
     tracing::info!(
         target: "huntsman::engine_health",

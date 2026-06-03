@@ -23,6 +23,7 @@ pub mod proxy;
 pub mod response_cache;
 pub mod see_know;
 pub mod service_defs;
+pub mod settings;
 
 pub mod json {
     //! Shared JSON-field extraction helpers used by the breach/OSINT modules

@@ -5,6 +5,7 @@
 //! `live` re-runs the same scan on a fixed interval (v0.5+). See
 //! `docs/USAGE.md` for the full reference.
 
+mod config;
 mod diff;
 mod doctor;
 mod engines;
@@ -185,6 +186,15 @@ pub enum Command {
         /// Output as JSON instead of the status table.
         #[arg(long)]
         json: bool,
+    },
+    /// View or set persistent capability toggles (universal toggleability,
+    /// SpiderFoot-style). No args lists all toggles; `hse config <key> <on|off>`
+    /// sets one — e.g. `hse config engine.google off`.
+    Config {
+        /// Toggle key (e.g. `engine.google`). Omit to list all toggles.
+        key: Option<String>,
+        /// `on` / `off` to set the toggle; omit to just show its value.
+        value: Option<String>,
     },
     /// Verify environment: DB path, key file, Termux detection, module counts.
     Doctor,
@@ -466,6 +476,7 @@ pub async fn run() -> Result<()> {
         }
         Command::Modules { category, json } => cmd_modules(category, json),
         Command::Engines { json } => engines::cmd_engines(json).await,
+        Command::Config { key, value } => config::cmd_config(key, value),
         Command::Doctor => doctor::cmd_doctor().await,
         Command::Selftest { json } => selftest::cmd_selftest(json).await,
         Command::Provision {
