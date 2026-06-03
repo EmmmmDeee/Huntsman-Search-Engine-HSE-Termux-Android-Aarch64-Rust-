@@ -287,9 +287,16 @@ impl ScanEngine {
         crate::modules::oathnet_pro::reset_budget();
         crate::modules::see_know::reset_budget();
         crate::modules::wigle::reset_budget();
-        // Apply the regional-search toggle for this scan (default off ⇒
-        // geolocation-neutral queries). Mirrors the see_know per-scan global.
-        crate::modules::search_engines::set_regional(scan.options.regional_search);
+        // Apply the regional-search toggle for this scan. Regional augmentation
+        // is on when EITHER the per-scan flag (`--regional`) is set OR the
+        // persistent default `feature.regional` is on (universal toggleability;
+        // default off ⇒ geolocation-neutral queries). The per-scan flag only
+        // adds regional — set the standing baseline via `hse config
+        // feature.regional <on|off>`. Mirrors the see_know per-scan global.
+        crate::modules::search_engines::set_regional(
+            scan.options.regional_search
+                || crate::util::settings::get_bool("feature.regional", false),
+        );
 
         // Apply per-scan SeekNow budget override if the operator asked
         // for one. Capped at 500 so a single scan cannot blow the

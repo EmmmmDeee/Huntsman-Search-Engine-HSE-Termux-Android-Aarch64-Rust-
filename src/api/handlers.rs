@@ -616,9 +616,19 @@ pub async fn settings_toggles_get(State(s): State<Arc<AppState>>) -> Json<Value>
             json!({ "key": format!("module.{name}"), "name": name, "enabled": enabled })
         })
         .collect();
-    let count = engines.len() + modules.len();
+    // Feature toggles: capability switches that aren't a single engine/module
+    // (e.g. `feature.regional`). Sourced from the one registry in `util::settings`.
+    let features: Vec<Value> = crate::util::settings::feature_toggles()
+        .into_iter()
+        .map(|(key, enabled)| {
+            let name = key.strip_prefix("feature.").unwrap_or(&key).to_string();
+            json!({ "key": key, "name": name, "enabled": enabled })
+        })
+        .collect();
+    let count = engines.len() + modules.len() + features.len();
     Json(json!({
         "groups": [
+            { "group": "features", "label": "Features", "toggles": features },
             { "group": "engines", "label": "Search engines", "toggles": engines },
             { "group": "modules", "label": "Modules", "toggles": modules },
         ],
@@ -678,7 +688,7 @@ fn toggle_key_is_known(s: &AppState, key: &str) -> bool {
             .iter()
             .any(|(k, _)| k == key);
     }
-    false
+    crate::util::settings::is_feature_key(key)
 }
 
 // ─── Live-mode handlers ────────────────────────────────────────────────────

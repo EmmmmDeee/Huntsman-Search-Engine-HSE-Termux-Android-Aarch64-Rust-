@@ -27,28 +27,42 @@ pub fn cmd_config(key: Option<String>, value: Option<String>) -> Result<()> {
             println!("{k} = {}", mark(on));
             Ok(())
         }
-        // Show one toggle (defaults to on if never set).
+        // Show one toggle. An unset key resolves to its in-code default — `on`
+        // for engines/modules, the registered default for a `feature.*` key
+        // (e.g. `feature.regional` is off) — so the display matches what a scan
+        // would actually apply.
         (Some(k), None) => {
-            println!("{k} = {}", mark(crate::util::settings::get_bool(&k, true)));
+            let default = crate::util::settings::default_for(&k);
+            println!(
+                "{k} = {}",
+                mark(crate::util::settings::get_bool(&k, default))
+            );
             Ok(())
         }
         // List all known toggles.
         (None, _) => {
             println!("\nCapability toggles — set with `hse config <key> <on|off>`\n");
+            // Features (capability switches that aren't a single engine/module).
+            let feature_toggles = crate::util::settings::feature_toggles();
+            println!("Features:");
+            for (k, on) in &feature_toggles {
+                println!("  {k:<26} {}", mark(*on));
+            }
             let engine_toggles = crate::modules::search_engines::engine_toggles();
-            println!("Search engines (default on):");
+            println!("\nSearch engines (default on):");
             for (k, on) in &engine_toggles {
                 println!("  {k:<26} {}", mark(*on));
             }
-            // Any stored override not already shown above.
-            let shown: std::collections::BTreeSet<&str> =
+            // Any stored override not already shown above (e.g. per-module toggles).
+            let mut shown: std::collections::BTreeSet<&str> =
                 engine_toggles.iter().map(|(k, _)| k.as_str()).collect();
+            shown.extend(feature_toggles.iter().map(|(k, _)| k.as_str()));
             let others: Vec<_> = crate::util::settings::overrides()
                 .into_iter()
                 .filter(|(k, _)| !shown.contains(k.as_str()))
                 .collect();
             if !others.is_empty() {
-                println!("\nOverrides (modules / features):");
+                println!("\nOverrides (modules):");
                 for (k, on) in others {
                     println!("  {k:<26} {}", mark(on));
                 }

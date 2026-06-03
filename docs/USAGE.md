@@ -238,14 +238,22 @@ hse config module.wikidata          # show one toggle's current state
 
 Toggle keys:
 
+- `feature.<name>` — a capability switch that isn't a single engine or module.
+  The first is `feature.regional` (default **off**): the standing default for
+  autonomous region-scoped search. Regional augmentation applies when **either**
+  `feature.regional` is on **or** the per-scan `--regional` flag is passed, so
+  `hse config feature.regional on` makes regional the baseline for every scan
+  while `--regional` still forces it on for a one-off run.
 - `engine.<name>` — a single search engine (names from `hse engines`). Honoured
   by the search dispatch, the priority waterfall, and the liveness probe.
 - `module.<name>` — any registered module (names from `hse modules`). A disabled
   module is skipped at the scan gate (reason `disabled in config`) and never
   reaches the network; it shows up in the scan summary's `skipped` count.
 
-All toggle keys default to **on**, so an unset key (or a brand-new toggle added
-in a later release) behaves exactly as before.
+`engine.*` and `module.*` keys default to **on**; a `feature.*` key uses its
+documented default (e.g. `feature.regional` is off). An unset key — or a
+brand-new toggle added in a later release — resolves to that default, so old
+settings files stay forward-compatible.
 
 The same toggles are manageable from the web dashboard's **Settings** page as a
 click-to-flip grid (backed by `GET`/`PUT /api/v1/settings/toggles`, loopback-only).

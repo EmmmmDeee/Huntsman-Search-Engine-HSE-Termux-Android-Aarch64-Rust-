@@ -98,6 +98,48 @@ pub fn overrides() -> BTreeMap<String, bool> {
         .unwrap_or_else(|e| e.into_inner().clone())
 }
 
+/// Built-in *feature* toggles — capability switches that aren't a single search
+/// engine or module: `(key, default)`. Kept here as the one registry of known
+/// features so the `hse config` listing, the web toggle catalogue, and the
+/// `PUT /settings/toggles` validator all agree on what `feature.*` keys exist.
+pub const FEATURE_TOGGLES: &[(&str, bool)] = &[
+    // Autonomous region-scoped search augmentation. Default OFF (queries stay
+    // geolocation-neutral). Turning it on makes regional the baseline for every
+    // scan; the per-scan `--regional` flag still forces it on for one scan.
+    ("feature.regional", false),
+];
+
+/// The feature toggles with their current effective state (override else
+/// default) — for the `hse config` listing and the settings UI.
+#[must_use]
+pub fn feature_toggles() -> Vec<(String, bool)> {
+    FEATURE_TOGGLES
+        .iter()
+        .map(|(k, d)| ((*k).to_string(), get_bool(k, *d)))
+        .collect()
+}
+
+/// True if `key` names a known built-in feature toggle — bounds web/API writes
+/// (and the `hse config` listing) to real `feature.*` switches.
+#[must_use]
+pub fn is_feature_key(key: &str) -> bool {
+    FEATURE_TOGGLES.iter().any(|(k, _)| *k == key)
+}
+
+/// The in-code default for a toggle key: a `feature.*` key uses its registered
+/// default (which may be off, e.g. `feature.regional`); every other key
+/// (engines, modules) defaults on. Used by `hse config <key>` so a never-set
+/// toggle is shown with the same default the runtime would actually apply.
+#[must_use]
+pub fn default_for(key: &str) -> bool {
+    // None (not a feature key) ⇒ default on, as engines/modules do; otherwise
+    // the feature's registered default.
+    FEATURE_TOGGLES
+        .iter()
+        .find(|(k, _)| *k == key)
+        .is_none_or(|(_, d)| *d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,5 +176,34 @@ mod tests {
         let path = dir.path().join("settings.json");
         std::fs::write(&path, "{ not valid json ").unwrap();
         assert!(read_map(&path).is_empty());
+    }
+
+    #[test]
+    fn feature_registry_is_well_formed() {
+        // Every built-in feature key uses the `feature.` namespace and is
+        // recognised by the membership check that bounds web/API writes.
+        for (key, _default) in FEATURE_TOGGLES {
+            assert!(
+                key.starts_with("feature."),
+                "feature toggle key must be namespaced: {key}"
+            );
+            assert!(is_feature_key(key), "{key} must be a known feature key");
+        }
+        // Regional search is the charter feature toggle, and defaults OFF so
+        // queries stay geolocation-neutral until an operator opts in.
+        assert!(is_feature_key("feature.regional"));
+        assert_eq!(
+            FEATURE_TOGGLES
+                .iter()
+                .find(|(k, _)| *k == "feature.regional")
+                .map(|(_, d)| *d),
+            Some(false),
+            "feature.regional must default off (geo-neutral)"
+        );
+        // An unknown key is not a feature.
+        assert!(!is_feature_key("feature.bogus"));
+        assert!(!is_feature_key("engine.google"));
+        // The listing resolves a (key, current-state) pair for every feature.
+        assert_eq!(feature_toggles().len(), FEATURE_TOGGLES.len());
     }
 }

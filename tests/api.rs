@@ -703,7 +703,7 @@ async fn settings_keys_put_forbidden_without_flag() {
 // ── Settings toggles (universal toggleability) ────────────────────────────
 
 #[tokio::test]
-async fn settings_toggles_get_lists_engines_and_modules() {
+async fn settings_toggles_get_lists_features_engines_and_modules() {
     let app = test_app("toggles_get");
     let resp = app.oneshot(get("/api/v1/settings/toggles")).await.unwrap();
     assert_eq!(resp.status(), 200);
@@ -717,6 +717,7 @@ async fn settings_toggles_get_lists_engines_and_modules() {
             .as_array()
             .expect("toggles array")
     };
+    let features = group("features");
     let engines = group("engines");
     let modules = group("modules");
     // Engine list is the real keyless-engine catalogue (independent of the test
@@ -731,21 +732,27 @@ async fn settings_toggles_get_lists_engines_and_modules() {
         modules.iter().any(|t| t["key"] == "module.synthetic"),
         "modules group must reflect the engine's registered modules"
     );
+    assert!(
+        features.iter().any(|t| t["key"] == "feature.regional"),
+        "features group must expose the regional-search toggle"
+    );
     // Every toggle carries a key/name/enabled triple with a recognised prefix.
     for g in groups {
         for t in g["toggles"].as_array().expect("toggles array") {
             assert!(t["enabled"].is_boolean(), "enabled is a bool");
             let key = t["key"].as_str().expect("key is a string");
             assert!(
-                key.starts_with("engine.") || key.starts_with("module."),
+                key.starts_with("engine.")
+                    || key.starts_with("module.")
+                    || key.starts_with("feature."),
                 "unexpected toggle key prefix: {key}"
             );
         }
     }
     assert_eq!(
         json["count"].as_u64().unwrap_or(0),
-        (engines.len() + modules.len()) as u64,
-        "count is the sum of both groups"
+        (features.len() + engines.len() + modules.len()) as u64,
+        "count is the sum of all groups"
     );
 }
 
