@@ -258,7 +258,7 @@ T10
 
 | ID | Description | Likelihood | Impact | Detectability | Mitigation |
 |----|-------------|-----------|--------|---------------|------------|
-| E10.1 | Count/catalogue drift | Medium | Low | High | ⚒ Engine-count drift fixed (13→17) + a test ties the module description to `ENGINES.len()`; ✅ `modules_md_lists_every_registered_module`. ⚠ README "Seed Types (12)" / "89 modules" strings are hand-maintained — recommend the same description↔registry guard pattern |
+| E10.1 | Count/catalogue drift | Low | Low | High | ⚒ Engine-count drift fixed (13→17) + a test ties the module description to `ENGINES.len()`; ✅ `modules_md_lists_every_registered_module`. ⚒ README/INSTALL module-count drift fixed (was 60+/63/89; now 89 everywhere) + seed-type count corrected (12→13); `readme_module_overview_count_matches_registry` ties the README headline count to `registry().len()` so it can't rot again |
 | E10.2 | Orphan key | Low | Low | High | ✅ `env_template_keys_are_all_consumed` fails CI on a documented-but-unread key |
 | E10.3 | Layer coupling | Low | Medium | High | ✅ Source-scanning architecture tests fail CI on a forbidden import; the `core`→`util` allowlist is explicit and reviewed |
 

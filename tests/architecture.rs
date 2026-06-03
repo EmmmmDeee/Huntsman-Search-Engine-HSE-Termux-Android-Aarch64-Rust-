@@ -316,3 +316,22 @@ fn every_declared_module_is_registered() {
          registry() (dead at runtime): {missing:?}"
     );
 }
+
+/// The README's headline module count is hand-maintained and had drifted
+/// (stated as "60+", "63" and "89" across files while the registry held 89).
+/// Tie the authoritative "## Module Overview (N modules" figure to the live
+/// registry so it can't silently rot again — the same no-silent-drift guard as
+/// `modules_md_lists_every_registered_module` and the engine-count test
+/// (FTA finding E10.1).
+#[test]
+fn readme_module_overview_count_matches_registry() {
+    let readme = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .expect("README.md must exist");
+    let n = huntsman_search_engine::modules::registry().len();
+    let needle = format!("## Module Overview ({n} modules");
+    assert!(
+        readme.contains(&needle),
+        "README '## Module Overview (N modules ...)' must cite the live registry \
+         size ({n}); update README.md after adding/removing a module"
+    );
+}
