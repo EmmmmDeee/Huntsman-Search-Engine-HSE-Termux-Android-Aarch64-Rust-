@@ -227,6 +227,17 @@ impl Module for WebCrawler {
             }
             state.visited.insert(url.clone());
 
+            // SSRF egress guard (defense in depth): never fetch a discovered
+            // link whose host is a private/reserved IP literal (loopback,
+            // RFC1918, 169.254 cloud-metadata, …). `extract_links` keeps the
+            // queue on the seed host and the HTTP client's DNS resolver vets
+            // hostnames, but an IP-literal link bypasses the resolver — so the
+            // guard is enforced explicitly here rather than left implicit in the
+            // same-host filter, which a future change could loosen.
+            if crate::util::preflight::url_host_is_private(&url) {
+                continue;
+            }
+
             if is_disallowed(&url, &state.disallow_rules) {
                 continue;
             }

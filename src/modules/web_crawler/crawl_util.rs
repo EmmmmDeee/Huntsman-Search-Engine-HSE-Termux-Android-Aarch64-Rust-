@@ -332,7 +332,15 @@ pub(super) fn extract_links(
             if host != base_host && host.ends_with(&format!(".{target_domain}")) {
                 state.subdomains.insert(host.clone());
             }
-            if !state.visited.contains(&clean) && state.visited.len() < MAX_PAGES * 2 {
+            // SSRF egress guard: never enqueue a link whose host is a
+            // private/reserved IP literal, even when it matches the seed host
+            // (which would require the seed itself to be internal). Mirrors the
+            // guard in the crawl loop so the queue never holds an unfetchable
+            // internal address.
+            if !state.visited.contains(&clean)
+                && state.visited.len() < MAX_PAGES * 2
+                && !crate::util::preflight::url_host_is_private(&clean)
+            {
                 let depth = current_url.matches('/').count().min(MAX_DEPTH as usize) as u32;
                 state.queue.push_back((clean, depth + 1));
             }
@@ -837,5 +845,27 @@ mod tests {
         );
         assert!(!state.queue.iter().any(|(u, _)| u.contains("logo.png")));
         assert!(!state.queue.iter().any(|(u, _)| u.starts_with("ftp")));
+    }
+
+    #[test]
+    fn extract_links_refuses_private_ip_literal_links() {
+        // Worst case for the SSRF guard: the seed host IS the cloud-metadata
+        // literal, so the same-host filter would otherwise enqueue its links.
+        // The explicit egress guard must keep the queue empty regardless.
+        let mut state = empty_state();
+        let body = r#"<a href="/latest/meta-data/iam/security-credentials/">creds</a>
+            <a href="http://127.0.0.1:8080/admin">loopback</a>"#;
+        extract_links(
+            body,
+            "http://169.254.169.254/",
+            "169.254.169.254",
+            "169.254.169.254",
+            &mut state,
+        );
+        assert!(
+            state.queue.is_empty(),
+            "private/reserved IP-literal links must never be enqueued, got {:?}",
+            state.queue
+        );
     }
 }

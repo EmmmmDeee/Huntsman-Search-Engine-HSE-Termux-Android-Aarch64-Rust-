@@ -1649,36 +1649,13 @@ fn module_skip_reason(
             // web_crawler). Without this, an autonomously-discovered
             // `http://192.168.1.1/admin` would coerce HSE into
             // hitting the operator's internal network.
-            TargetKind::Url if url_host_is_private(&target.value) => {
+            TargetKind::Url if crate::util::preflight::url_host_is_private(&target.value) => {
                 return Some("URL with private host — external API would reject (SSRF gate)");
             }
             _ => {}
         }
     }
     None
-}
-
-/// True if `url` parses cleanly AND its host is a reserved IP or
-/// a local-only domain. Mid-parse failures return false (let the
-/// module's own validation reject malformed URLs as usual).
-fn url_host_is_private(url: &str) -> bool {
-    use crate::util::preflight::{is_local_domain, is_private_ip};
-    let Ok(parsed) = url::Url::parse(url.trim()) else {
-        return false;
-    };
-    let Some(host) = parsed.host_str() else {
-        return false;
-    };
-    // url 2.5 returns IPv6 host_str WITH brackets (`[::1]`); strip
-    // them before passing to is_private_ip so the IpAddr parse fires.
-    let bare = host
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(host);
-    if is_private_ip(bare) {
-        return true;
-    }
-    is_local_domain(bare)
 }
 
 /// Augment Coordinates entities with geohash + timezone, and Address
