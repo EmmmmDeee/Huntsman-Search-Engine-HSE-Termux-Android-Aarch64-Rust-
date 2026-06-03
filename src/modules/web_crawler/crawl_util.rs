@@ -623,3 +623,213 @@ pub(super) fn audit_security_headers(
         results.push((label, headers.get(*header_name).is_some()));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests — pure parsers were previously uncovered; these lock in their
+// observed behaviour as a regression guard (the crawler and several other
+// modules rely on this extraction logic).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::module::ModuleResult;
+    use reqwest::header::HeaderMap;
+    use std::collections::VecDeque;
+
+    fn empty_state() -> CrawlState {
+        CrawlState {
+            visited: HashSet::new(),
+            queue: VecDeque::new(),
+            pages_fetched: 0,
+            disallow_rules: Vec::new(),
+            result: ModuleResult::new(),
+            external_domains: HashSet::new(),
+            subdomains: HashSet::new(),
+            emails: HashSet::new(),
+            phones: HashSet::new(),
+            frameworks: HashSet::new(),
+            page_types: HashSet::new(),
+            security_headers: Vec::new(),
+            internal_links: 0,
+            external_links: 0,
+            notable_pages: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn link_iter_extracts_only_real_hrefs() {
+        let html = r##"<a href="/a">x</a> <a href='https://b.com/c'>y</a>
+            <a href="#frag">z</a> <a href="mailto:e@x.com">m</a>
+            <a href="javascript:void(0)">j</a> <a href="">empty</a> <a>noattr</a>"##;
+        let links: Vec<&str> = LinkIter::new(html).collect();
+        assert_eq!(links, vec!["/a", "https://b.com/c"]);
+    }
+
+    #[test]
+    fn registrable_domain_takes_last_two_labels() {
+        assert_eq!(
+            extract_registrable_domain("www.example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            extract_registrable_domain("example.com").as_deref(),
+            Some("example.com")
+        );
+        // Documents the deliberate 2-label simplification (no PSL): a.b.co.uk → co.uk.
+        assert_eq!(
+            extract_registrable_domain("a.b.co.uk").as_deref(),
+            Some("co.uk")
+        );
+        assert_eq!(extract_registrable_domain("localhost"), None);
+    }
+
+    #[test]
+    fn binary_url_detection() {
+        assert!(is_binary_url("https://x.com/file.pdf"));
+        assert!(is_binary_url("https://x.com/IMG.PNG")); // case-insensitive
+        assert!(is_binary_url("https://x.com/a.zip?v=2")); // query stripped
+        assert!(!is_binary_url("https://x.com/page"));
+        assert!(!is_binary_url("https://x.com/article.html"));
+    }
+
+    #[test]
+    fn disallowed_matches_path_prefix() {
+        let rules = vec!["/admin".to_string(), "/private/".to_string()];
+        assert!(is_disallowed("https://x.com/admin/panel", &rules));
+        assert!(is_disallowed("https://x.com/private/x", &rules));
+        assert!(!is_disallowed("https://x.com/public", &rules));
+        // Unparseable input → empty path → no rule matches (never panics).
+        assert!(!is_disallowed("not a url", &rules));
+    }
+
+    #[test]
+    fn email_extraction_filters_assets_and_dedups() {
+        let mut emails = HashSet::new();
+        extract_emails(
+            "reach John.Doe@Example.com or sales@a.co — skip logo@2x.png and x@y.z",
+            &mut emails,
+        );
+        assert!(emails.contains("john.doe@example.com")); // lowercased
+        assert!(emails.contains("sales@a.co"));
+        assert!(!emails.iter().any(|e| e.ends_with(".png"))); // image excluded
+        assert!(!emails.contains("x@y.z")); // domain ≤3 chars rejected
+
+        let mut dup = HashSet::new();
+        extract_emails("a@b.com a@b.com", &mut dup);
+        assert_eq!(dup.len(), 1);
+    }
+
+    #[test]
+    fn phone_extraction_bounds_digit_count() {
+        let mut phones = HashSet::new();
+        extract_phones(
+            "call +1 415 555 2671 or +44 20 7946 0958, skip +123",
+            &mut phones,
+        );
+        assert!(phones.contains("+14155552671"));
+        assert!(phones.iter().any(|p| p.starts_with("+44")));
+        assert!(!phones.iter().any(|p| p.len() < 8)); // +123 is too short to qualify
+    }
+
+    #[test]
+    fn char_class_predicates() {
+        assert!(
+            is_email_char(b'a')
+                && is_email_char(b'.')
+                && is_email_char(b'+')
+                && is_email_char(b'_')
+        );
+        assert!(!is_email_char(b'@') && !is_email_char(b' '));
+        assert!(is_domain_char(b'z') && is_domain_char(b'.') && is_domain_char(b'-'));
+        assert!(!is_domain_char(b'_') && !is_domain_char(b'@'));
+    }
+
+    #[test]
+    fn framework_detection_and_dedup() {
+        let mut f = HashSet::new();
+        detect_frameworks(
+            "<link href='/wp-content/x.css'> jQuery here and /wp-includes/y",
+            &mut f,
+        );
+        assert!(f.contains("WordPress"));
+        assert!(f.contains("jQuery"));
+        // Two WordPress markers collapse to one entry.
+        assert_eq!(f.iter().filter(|&&n| n == "WordPress").count(), 1);
+
+        let mut r = HashSet::new();
+        detect_frameworks("import React from 'react'", &mut r);
+        assert!(r.contains("React"));
+    }
+
+    #[test]
+    fn page_type_detection() {
+        let mut t = HashSet::new();
+        detect_page_types(
+            r#"<form><input type="password"><input type="file"></form><script>x</script> /admin apikey"#,
+            &mut t,
+        );
+        for want in [
+            "has_forms",
+            "login_form",
+            "file_upload",
+            "javascript",
+            "admin_panel",
+            "api_reference",
+        ] {
+            assert!(t.contains(want), "missing page type: {want}");
+        }
+        let mut none = HashSet::new();
+        detect_page_types("<p>plain text</p>", &mut none);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn security_header_audit_reports_presence() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            "content-security-policy",
+            "default-src 'self'".parse().unwrap(),
+        );
+        h.insert("x-frame-options", "DENY".parse().unwrap());
+        let mut results = Vec::new();
+        audit_security_headers(&h, &mut results);
+        assert_eq!(results.len(), 6);
+        let map: std::collections::HashMap<_, _> = results.into_iter().collect();
+        assert!(map["Content-Security-Policy"]);
+        assert!(map["X-Frame-Options"]);
+        assert!(!map["Strict-Transport-Security"]);
+        assert!(!map["Referrer-Policy"]);
+    }
+
+    #[test]
+    fn extract_links_classifies_internal_external_and_subdomains() {
+        let mut state = empty_state();
+        let body = r#"<a href="/about">a</a><a href="https://sub.example.com/x">b</a>
+            <a href="https://other.org/page">c</a><a href="/logo.png">d</a>
+            <a href="ftp://example.com/f">e</a>"#;
+        extract_links(
+            body,
+            "https://example.com/",
+            "example.com",
+            "example.com",
+            &mut state,
+        );
+
+        // /about (apex) + sub.example.com (subdomain) are internal.
+        assert_eq!(state.internal_links, 2);
+        assert!(state.subdomains.contains("sub.example.com"));
+        // other.org is external.
+        assert_eq!(state.external_links, 1);
+        assert!(state.external_domains.contains("other.org"));
+        // /about is queued; binary asset and non-http scheme are not.
+        assert!(
+            state
+                .queue
+                .iter()
+                .any(|(u, _)| u.as_str() == "https://example.com/about")
+        );
+        assert!(!state.queue.iter().any(|(u, _)| u.contains("logo.png")));
+        assert!(!state.queue.iter().any(|(u, _)| u.starts_with("ftp")));
+    }
+}
