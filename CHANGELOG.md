@@ -91,19 +91,30 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ### Changed
 
 - **Codebase-wide dependency refresh.** Updated the full locked dependency graph
-  to current versions and bumped two direct majors, all verified green (fmt,
-  `clippy -D warnings`, the entire test suite, `cargo deny`, `cargo machete`):
+  to current versions and bumped the direct majors, all verified green (fmt,
+  `clippy -D warnings`, the entire test suite, `cargo deny`, `cargo machete`,
+  binary DB integrity):
   - **`rusqlite` 0.31 → 0.40** (libsqlite3-sys 0.38) — newer bundled SQLite, no
     source changes needed; the only effect is `PRAGMA optimize` now materialising
     the planner statistics tables (`sqlite_stat1`/`sqlite_stat4`) at open, which
     improves query plans. DB integrity-checks clean before and after writes.
   - **`thiserror` 1 → 2** — also removes the duplicate 1.x/2.x split from the
     tree (nothing else pulled 1.x).
+  - **RustCrypto hashes `sha1` / `sha2` / `md-5` 0.10 → 0.11** (digest 0.11),
+    bumped in lockstep. digest 0.11 dropped the `io::Write` impl for hashers; the
+    one `write!(hasher, …)` site (`derive_uid`) now feeds the identical bytes via
+    `update`, so **entity UIDs stay byte-identical** (verified — dedup/correlation
+    and the SHA-1 HIBP k-anonymity / MD5 gravatar paths all unchanged).
   - 26 semver-compatible updates via `cargo update` (hyper 1.9 → 1.10, http,
     socket2, icu_\*, zerocopy, uuid, log, …).
-  - `reqwest` was held at 0.12 (current 0.12.28): 0.13 restructured its TLS
-    feature flags, so that bump is a deliberate, separately-verified migration of
-    the SSRF-critical HTTP layer rather than a routine version update.
+  - **`reqwest` deliberately held at 0.12** (current & supported, 0.12.28).
+    Evaluated 0.13 in depth and pinned 0.12 on purpose: 0.13's `rustls` feature
+    moves trust to `rustls-platform-verifier`, which on Android reads the OS cert
+    store over JNI through an app `Context` a **Termux CLI process does not have**
+    — it would break TLS on the primary target. The self-contained ring +
+    webpki-roots stack works identically on Termux/Linux/CI; a 0.13 move must
+    re-create it (`rustls-no-provider` + a hand-built `ClientConfig`) and be
+    validated on a device first. Rationale recorded inline in `Cargo.toml`.
 - **Search URL findings now credit cross-engine agreement.** The domain branch of
   the search-result builder already set `corroboration = <distinct engines>`, but
   the URL branch did not — so a profile independently returned by, say, 7 engines

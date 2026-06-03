@@ -20,10 +20,17 @@ path = "src/lib.rs"
 tokio              = { version = "1",    features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util", "net", "fs", "signal"] }
 serde              = { version = "1",    features = ["derive"] }
 serde_json         = "1"
-sha1               = "0.10"
-sha2               = "0.10"
-md-5               = "0.10"
+sha1               = "0.11"
+sha2               = "0.11"
+md-5               = "0.11"
 hex                = "0.4"
+# Pinned to 0.12 (current & supported) ON PURPOSE — do not bump to 0.13 without a
+# TLS-stack migration. 0.13's `rustls` feature switches trust to
+# rustls-platform-verifier, which on Android reads the OS cert store over JNI via
+# an app Context a Termux CLI process does NOT have → it breaks TLS on the primary
+# target. The self-contained ring + webpki-roots stack here works identically on
+# Termux/Linux/CI. A 0.13 move must re-create that with `rustls-no-provider` + a
+# hand-built ClientConfig, and be validated on-device first.
 reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite           = { version = "0.40", features = ["bundled"] }
 clap               = { version = "4",    features = ["derive", "env"] }

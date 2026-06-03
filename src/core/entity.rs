@@ -519,9 +519,10 @@ impl From<&Entity> for EntityRef {
 ///
 /// Format: `hex(SHA-256("<kind_str>:<normalised_value>"))`
 pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
-    use std::io::Write;
+    // digest 0.11 dropped the `io::Write` impl for hashers; feed the same bytes
+    // (`"<kind>:"`) via `update` so existing UIDs stay byte-identical.
     let mut h = Sha256::new();
-    let _ = write!(h, "{kind}:");
+    h.update(format!("{kind}:").as_bytes());
     h.update(normalised_value.as_bytes());
     hex::encode(h.finalize())
 }
