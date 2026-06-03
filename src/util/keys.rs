@@ -275,12 +275,15 @@ pub const HIBP_DEFAULT_KEY: &str = "42587552dce6424a87312941c8a2c3c5";
 pub const WIGLE_DEFAULT_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
 /// WiGLE API token (HTTP Basic password).
 pub const WIGLE_DEFAULT_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
-/// SeekNow (see-know.eu) key — the current embedded default.
-pub const SEEKNOW_DEFAULT_KEY: &str = "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
+/// SeekNow (see-know.eu) key — the current embedded default. Live-verified
+/// (POST /api/v1/search → HTTP 200 `success:true`).
+pub const SEEKNOW_DEFAULT_KEY: &str = "seek-b4a9cd56f7e95bc6ea30b17925f482514a07a52e7ab0961a";
 /// SeekNow key that has been ROTATED OUT — kept only so a stale env file written
 /// by a previous build upgrades to [`SEEKNOW_DEFAULT_KEY`]. Never used as a live
-/// default.
-pub const SEEKNOW_SUPERSEDED_KEY: &str = "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
+/// default. Verified DEAD (HTTP 401 invalid_api_key).
+pub const SEEKNOW_SUPERSEDED_KEY: &str = "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
+/// Earlier retired SeekNow key — also upgraded in place to the current default.
+const SEEKNOW_SUPERSEDED_KEY_2: &str = "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
 
 /// API keys embedded in the build so a fresh install works zero-config.
 /// `ensure_hardcoded_keys` writes any that are absent from the env file.
@@ -299,7 +302,10 @@ const HARDCODED: &[(&str, &str)] = &[
 /// without the operator re-entering it. Scoped to EXACT prior embedded values —
 /// a user's own custom key never matches one of these, so an intentional
 /// override is never clobbered.
-const SUPERSEDED: &[(&str, &str)] = &[("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY)];
+const SUPERSEDED: &[(&str, &str)] = &[
+    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY),
+    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_2),
+];
 
 /// Compute the `{env_var: value}` writes needed to bring `existing` (the
 /// current env-file contents) up to date with the embedded defaults: fill any
