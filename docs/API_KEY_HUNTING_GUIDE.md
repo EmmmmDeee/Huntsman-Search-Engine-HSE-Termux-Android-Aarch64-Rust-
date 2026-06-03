@@ -239,7 +239,7 @@ The most likely path to discover an OathNet API key is:
 # Per-scan budget (lift the per-scan cap if you have a high quota)
 HUNTSMAN_OATHNET_SESSION_CAP=500 hse scan ...
 
-# Concurrent module dispatch (default 4 — raise on big servers)
+# Concurrent module dispatch (default 2 — raise on big servers)
 hse scan ... --max-concurrent 16
 
 # Confidence floor for expansion (lower = more aggressive expansion)

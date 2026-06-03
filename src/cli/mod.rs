@@ -77,8 +77,10 @@ pub enum Command {
         /// Comma-separated exclude list.
         #[arg(long)]
         exclude: Option<String>,
-        /// Delay between module dispatches, in milliseconds.
-        #[arg(short, long, default_value_t = 0)]
+        /// Delay between module dispatches, in milliseconds. Default 250 paces
+        /// dispatch so a deep/everything scan doesn't flood the link or trip
+        /// provider rate limits; set 0 for the fastest (burstier) behaviour.
+        #[arg(short, long, default_value_t = 250)]
         throttle: u64,
         /// Drop entities whose base confidence is below this.
         #[arg(long)]
@@ -93,12 +95,13 @@ pub enum Command {
         #[arg(long)]
         timeout: Option<u64>,
         /// Recursive expansion depth. 0 = single round; 1+ auto-feeds discovered
-        /// entities back as new scan targets, up to N rounds deep.
-        #[arg(short, long, default_value_t = 0)]
-        depth: u32,
-        /// Shorthand for deep recursive expansion: sets depth to MAX_DEPTH (3),
-        /// min_expand_confidence=0.50, max_concurrent=4. Overridden by
-        /// explicit --depth / --min-expand-confidence / --max-concurrent.
+        /// entities back as new scan targets, up to N rounds deep. Omit to use
+        /// the product default (2); `--auto`/`--recursive` override an omitted
+        /// value.
+        #[arg(short, long)]
+        depth: Option<u32>,
+        /// Shorthand for deep recursive expansion: sets depth to MAX_DEPTH (3)
+        /// and min_expand_confidence=0.40. Overridden by an explicit --depth.
         #[arg(short = 'R', long)]
         recursive: bool,
         /// Automatically select optimal expansion depth based on seed type
@@ -116,9 +119,10 @@ pub enum Command {
         /// Hard cap on total wall-time in seconds. Stops expansion when exceeded.
         #[arg(long)]
         max_wall_time: Option<u64>,
-        /// Modules to run in parallel per round. Default 4. Set 0 for
-        /// sequential dispatch (v0.1 behaviour, best on low-power devices).
-        #[arg(long, default_value_t = 4)]
+        /// Modules to run in parallel per round. Default 2 (gentle — avoids
+        /// flooding the link / tripping rate limits). Raise it when the network
+        /// can take it; set 0 for fully sequential dispatch (low-power devices).
+        #[arg(long, default_value_t = 2)]
         max_concurrent: usize,
         /// Read ~/.huntsman/module_stats.json and skip modules with
         /// historical zero-yield rate ≥80% over ≥5 scans. Closes the

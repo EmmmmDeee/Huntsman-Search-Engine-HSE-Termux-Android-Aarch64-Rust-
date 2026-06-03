@@ -50,9 +50,9 @@ hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 
 | Flag | Description |
 |------|-------------|
-| `-t, --throttle <MS>`  | Sleep this long between module dispatches (default 0) |
+| `-t, --throttle <MS>`  | Sleep this long between module dispatches (default 250 — paces dispatch to avoid flooding/rate limits; `0` = burst) |
 | `--timeout <MS>`       | Per-module timeout override (default 3000) |
-| `--max-concurrent <N>` | Modules to run in parallel; `0` (default) = sequential. Opt-in since v0.8 — useful with `--depth` for big expansion rounds. |
+| `--max-concurrent <N>` | Modules to run in parallel per round (default 2 — gentle; raise when the network can take it, `0` = fully sequential). |
 
 ### Filtering output
 
@@ -64,7 +64,7 @@ hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-d, --depth <N>`             | `0`    | Rounds of recursive expansion. `0` = single-round scan (v0.1 behaviour). |
+| `-d, --depth <N>`             | `2`    | Rounds of recursive expansion. Omit to use the product default (2); `0` = single-round scan (v0.1 behaviour). `--auto`/`--recursive` override an omitted value. |
 | `--min-expand-confidence <F>` | `0.75` | Only expand entities whose `c_effective()` is ≥ this. Default is the Verified tier — strong filter. |
 | `--max-entities <N>`          | none   | Stop expansion when entity count reaches this. |
 | `--max-wall-time <SECS>`      | none   | Stop expansion when wall-time exceeds this. |

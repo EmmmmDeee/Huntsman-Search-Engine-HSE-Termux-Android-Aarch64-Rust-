@@ -772,6 +772,19 @@ impl std::str::FromStr for ExpansionStrategy {
 /// or lower the ceiling.
 pub const MAX_DEPTH: u32 = 3;
 
+/// Default recursive-expansion depth for the `hse scan` product surface when
+/// the operator gives neither an explicit `--depth` nor `--auto`/`--recursive`.
+/// Two hops balances coverage (seed → directly-discovered entities → their
+/// first-order pivots) against runtime on a phone. The library [`ScanOptions`]
+/// default stays `0` (single round) so programmatic/API callers and the test
+/// suite remain deterministic; this product default is applied at the CLI
+/// boundary in `cli::scan`.
+pub const DEFAULT_SCAN_DEPTH: u32 = 2;
+
+// Compile-time guard: the product default must never exceed the clamp ceiling,
+// or a bare `hse scan` would emit the "clamped to MAX_DEPTH" warning on every run.
+const _: () = assert!(DEFAULT_SCAN_DEPTH <= MAX_DEPTH);
+
 impl ScanOptions {
     /// Clamp `depth` to [`MAX_DEPTH`], warning once if it actually clamps.
     /// Applied at the CLI/API/live input boundaries — deliberately NOT inside
@@ -796,7 +809,11 @@ impl Default for ScanOptions {
             modules: None,
             exclude_modules: Vec::new(),
             throttle_ms: 0,
-            max_concurrent: 4,
+            // Deliberately gentle (2, not the old 4): two concurrent network
+            // modules paces dispatch so a deep/everything scan does not flood
+            // the link or trip provider rate limits. Operators can raise it
+            // with `--max-concurrent` when they know the network can take it.
+            max_concurrent: 2,
             module_timeout_ms: None,
             min_confidence: None,
             free_only: false,
@@ -1304,7 +1321,9 @@ mod tests {
         assert!(!o.passive_only);
         assert_eq!(o.depth, 0);
         assert!((o.min_expand_confidence - 0.50).abs() < 1e-9);
-        assert_eq!(o.max_concurrent, 4);
+        // Gentle by default (2, not 4) so deep/everything scans don't flood the
+        // link or trip provider rate limits.
+        assert_eq!(o.max_concurrent, 2);
     }
 
     #[test]

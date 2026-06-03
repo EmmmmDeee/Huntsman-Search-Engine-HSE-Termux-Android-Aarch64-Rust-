@@ -204,7 +204,7 @@ T7
 |----|-------------|-----------|--------|---------------|------------|
 | E7.1 | 15–20 min aarch64 LTO build | Medium | Medium | High | ✅ `fast` profile (installer default) ~4–6 min; prebuilt-binary fast path from Downloads + self-cache |
 | E7.2 | Hot-path cost | Low | Low | Medium | ✅ Network/IO-bound by nature; `OnceLock` regex caches; bounded string scans |
-| E7.3 | Serial underuse | Low | Low | High | ✅ `max_concurrent` parallel dispatch (default 4) |
+| E7.3 | Serial underuse | Low | Low | High | ✅ `max_concurrent` parallel dispatch (default 2, opt-in higher) |
 
 ---
 
