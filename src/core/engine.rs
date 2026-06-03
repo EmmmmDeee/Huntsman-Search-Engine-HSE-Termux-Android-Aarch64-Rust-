@@ -22,7 +22,7 @@
 //!   * `N > 0` → up to N modules in flight concurrently via
 //!     `tokio::sync::Semaphore`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -89,7 +89,72 @@ pub(crate) struct ModuleStats {
 /// thread it across iterations via [`ScanEngine::run_with_ledger`] — keeping a
 /// keyed/paid module from re-querying a seed it has already covered, the
 /// "don't be aggressive with the APIs" guarantee for real-time radar.
-pub type DispatchLog = HashSet<(&'static str, TargetKind, String)>;
+/// A dispatch key: (module name, target kind, normalised target value).
+type DispatchKey = (&'static str, TargetKind, String);
+
+/// Upper bound on a [`DispatchLog`]'s size. A per-scan ledger never approaches
+/// it; the cap exists for the radar ledger, which persists across iterations of
+/// a potentially multi-day session. At ~100k (module, target) triples this is a
+/// few MB — well within the 4 GB device budget — and FIFO eviction means only
+/// seeds covered long ago can ever be re-queried; recent coverage is retained.
+const DISPATCH_LOG_CAP: usize = 100_000;
+
+/// Set of already-dispatched keyed-module/target pairs, bounded with FIFO
+/// eviction so a long-lived radar ledger can't grow without limit. The only
+/// operation callers need is [`DispatchLog::insert`] (dedup via its bool).
+#[derive(Debug, Clone)]
+pub struct DispatchLog {
+    seen: HashSet<DispatchKey>,
+    order: VecDeque<DispatchKey>,
+    cap: usize,
+}
+
+impl Default for DispatchLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DispatchLog {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            seen: HashSet::new(),
+            order: VecDeque::new(),
+            cap: DISPATCH_LOG_CAP,
+        }
+    }
+
+    /// Record a dispatch. Returns `true` if the key was newly inserted (the
+    /// caller should dispatch), `false` if it was already present (skip — the
+    /// dedup contract, identical to `HashSet::insert`). When the cap is
+    /// exceeded the oldest-inserted key is evicted, so a re-encounter of a
+    /// long-evicted seed legitimately dispatches again.
+    pub fn insert(&mut self, key: DispatchKey) -> bool {
+        if !self.seen.insert(key.clone()) {
+            return false;
+        }
+        self.order.push_back(key);
+        if self.order.len() > self.cap
+            && let Some(evicted) = self.order.pop_front()
+        {
+            self.seen.remove(&evicted);
+        }
+        true
+    }
+
+    /// Number of keys currently tracked.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.seen.len()
+    }
+
+    /// True if no keys are tracked.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.seen.is_empty()
+    }
+}
 
 fn dispatch_key(module_name: &'static str, target: &Target) -> (&'static str, TargetKind, String) {
     let entity_kind = target.kind.to_entity_kind();
@@ -191,7 +256,7 @@ impl ScanEngine {
     /// Run a scan to completion, including any expansion rounds.
     /// Run one scan with a fresh dispatch ledger (the normal one-shot path).
     pub async fn run(&self, scan: Scan, target: Target, ctx: ModuleContext) -> Result<Scan> {
-        let mut dispatched: DispatchLog = HashSet::new();
+        let mut dispatched: DispatchLog = DispatchLog::new();
         self.run_with_ledger(scan, target, ctx, &mut dispatched)
             .await
     }
@@ -2282,7 +2347,7 @@ mod tests {
 
     #[test]
     fn dispatch_log_prevents_duplicate_keyed_module() {
-        let mut log: DispatchLog = HashSet::new();
+        let mut log: DispatchLog = DispatchLog::new();
         let t = Target::new(TargetKind::Email, "alice@example.com");
         let key = dispatch_key("hibp", &t);
         assert!(log.insert(key.clone()), "first insert should succeed");
@@ -2291,7 +2356,7 @@ mod tests {
 
     #[test]
     fn dispatch_log_allows_same_module_on_different_targets() {
-        let mut log: DispatchLog = HashSet::new();
+        let mut log: DispatchLog = DispatchLog::new();
         let t1 = Target::new(TargetKind::Email, "alice@example.com");
         let t2 = Target::new(TargetKind::Domain, "example.com");
         assert!(log.insert(dispatch_key("hibp", &t1)));
@@ -2300,9 +2365,35 @@ mod tests {
 
     #[test]
     fn dispatch_log_allows_different_modules_on_same_target() {
-        let mut log: DispatchLog = HashSet::new();
+        let mut log: DispatchLog = DispatchLog::new();
         let t = Target::new(TargetKind::IpAddress, "1.2.3.4");
         assert!(log.insert(dispatch_key("shodan", &t)));
         assert!(log.insert(dispatch_key("greynoise", &t)));
+    }
+
+    #[test]
+    fn dispatch_log_evicts_oldest_when_capped() {
+        // Small cap to exercise FIFO eviction without inserting 100k keys
+        // (same-module test, so the private fields are reachable).
+        let mut log = DispatchLog {
+            seen: HashSet::new(),
+            order: VecDeque::new(),
+            cap: 3,
+        };
+        let k = |v: &str| ("hibp", TargetKind::Email, v.to_string());
+        assert!(log.insert(k("a")));
+        assert!(log.insert(k("b")));
+        assert!(log.insert(k("c")));
+        assert!(log.insert(k("d"))); // over cap → evicts the oldest ("a")
+        assert!(
+            log.len() <= 3,
+            "ledger ({}) must stay within the cap",
+            log.len()
+        );
+        // Recently-seen keys are still deduped (retained — never re-queried)...
+        assert!(!log.insert(k("d")));
+        assert!(!log.insert(k("c")));
+        // ...but the long-evicted oldest seed legitimately dispatches again.
+        assert!(log.insert(k("a")), "evicted key must be treated as new");
     }
 }
