@@ -90,6 +90,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Codebase-wide dependency refresh.** Updated the full locked dependency graph
+  to current versions and bumped two direct majors, all verified green (fmt,
+  `clippy -D warnings`, the entire test suite, `cargo deny`, `cargo machete`):
+  - **`rusqlite` 0.31 → 0.40** (libsqlite3-sys 0.38) — newer bundled SQLite, no
+    source changes needed; the only effect is `PRAGMA optimize` now materialising
+    the planner statistics tables (`sqlite_stat1`/`sqlite_stat4`) at open, which
+    improves query plans. DB integrity-checks clean before and after writes.
+  - **`thiserror` 1 → 2** — also removes the duplicate 1.x/2.x split from the
+    tree (nothing else pulled 1.x).
+  - 26 semver-compatible updates via `cargo update` (hyper 1.9 → 1.10, http,
+    socket2, icu_\*, zerocopy, uuid, log, …).
+  - `reqwest` was held at 0.12 (current 0.12.28): 0.13 restructured its TLS
+    feature flags, so that bump is a deliberate, separately-verified migration of
+    the SSRF-critical HTTP layer rather than a routine version update.
 - **Search URL findings now credit cross-engine agreement.** The domain branch of
   the search-result builder already set `corroboration = <distinct engines>`, but
   the URL branch did not — so a profile independently returned by, say, 7 engines
