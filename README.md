@@ -119,7 +119,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 
 ---
 
-## Module Overview (89 modules — 66 free, 23 key-gated/paid)
+## Module Overview (90 modules — 67 free, 23 key-gated/paid)
 
 > Generated from `hse modules --json`. The full catalogue with target
 > kinds and output entities (kept honest by the
@@ -136,7 +136,7 @@ hse live --kind domain --value example.com --interval 60    # continuous monitor
 - **Threat intel**: `urlhaus`
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_intl`
-- **Corporate**: `opencorporates`
+- **Corporate**: `acnc_charities`, `opencorporates`
 - **Search**: `search_engines`
 - **Web analysis**: `cloud_storage`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`

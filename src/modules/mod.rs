@@ -7,6 +7,7 @@
 
 pub mod abn_lookup;
 pub mod abuseipdb;
+pub mod acnc_charities;
 pub mod api_key_probe;
 pub mod bgpview;
 pub mod breach_timezone;
@@ -196,6 +197,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // Australian OSINT modules
         Arc::new(opencorporates::OpenCorporates),
         Arc::new(qld_unclaimed::QldUnclaimed),
+        Arc::new(acnc_charities::AcncCharities),
     ]
 }
 
