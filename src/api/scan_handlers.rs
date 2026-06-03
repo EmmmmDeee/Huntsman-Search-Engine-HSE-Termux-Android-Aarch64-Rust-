@@ -578,16 +578,21 @@ mod tests {
         let (scan, target) = build_scan_from_request(req).expect("valid domain should build");
         assert_eq!(target.value, "cloudflare.com");
         assert_eq!(target.kind, TargetKind::Domain);
-        // The scan id is the deterministic content hash of (kind, value), so a
-        // second build of the same request yields the identical id.
+        // `scan_id` mixes `unix_now()` (so re-scans of one target get a fresh
+        // id), so assert the id's SHAPE — not equality to a recomputed
+        // `scan_id(...)`, which flakes across a one-second boundary.
+        assert_eq!(scan.id.len(), 64);
+        assert!(scan.id.chars().all(|c| c.is_ascii_hexdigit()));
+        // The deterministic part — the resolved target — is identical across
+        // two builds of the same request.
         let req2 = ScanRequest {
             kind: Some(TargetKind::Domain),
             value: "cloudflare.com".to_string(),
             options: Default::default(),
         };
-        let (scan2, _) = build_scan_from_request(req2).unwrap();
-        assert_eq!(scan.id, scan2.id);
-        assert_eq!(scan.id, scan_id("domain", "cloudflare.com"));
+        let (_, target2) = build_scan_from_request(req2).unwrap();
+        assert_eq!(target.kind, target2.kind);
+        assert_eq!(target.value, target2.value);
     }
 
     #[test]
@@ -601,7 +606,10 @@ mod tests {
         };
         let (scan, target) = build_scan_from_request(req).expect("auto-detected email builds");
         assert_eq!(target.kind, TargetKind::Email);
-        assert_eq!(scan.id, scan_id("email", "alice@proton.me"));
+        assert_eq!(target.value, "alice@proton.me");
+        // `scan_id` mixes a timestamp — assert id shape, not a recomputed value.
+        assert_eq!(scan.id.len(), 64);
+        assert!(scan.id.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

@@ -45,7 +45,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // stderr so the operator sees (and can override) what was chosen.
     let kind_arg = cmd.kind.as_deref().map(str::trim).unwrap_or("");
     let target_kind = if kind_arg.is_empty() || kind_arg.eq_ignore_ascii_case("auto") {
-        let detected = crate::core::scan::TargetKind::detect(&cmd.value);
+        let detected = crate::core::scan::detect_kind(&cmd.value);
         eprintln!(
             "auto-detected target kind: {} (override with --kind)",
             detected.canonical_str()

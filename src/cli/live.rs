@@ -34,7 +34,7 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     // Unified live scan: omitted/`auto` --kind is inferred from the value.
     let kind_arg = cmd.kind.as_deref().map(str::trim).unwrap_or("");
     let target_kind = if kind_arg.is_empty() || kind_arg.eq_ignore_ascii_case("auto") {
-        let detected = crate::core::scan::TargetKind::detect(&cmd.value);
+        let detected = crate::core::scan::detect_kind(&cmd.value);
         eprintln!(
             "auto-detected target kind: {} (override with --kind)",
             detected.canonical_str()

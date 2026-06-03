@@ -120,7 +120,7 @@ impl LiveRequest {
     /// Resolve the kind: explicit if supplied, else auto-detected from `value`.
     pub fn resolved_kind(&self) -> crate::core::scan::TargetKind {
         self.kind
-            .unwrap_or_else(|| crate::core::scan::TargetKind::detect(&self.value))
+            .unwrap_or_else(|| crate::core::scan::detect_kind(&self.value))
     }
 }
 
@@ -504,6 +504,11 @@ mod tests {
         let req: LiveRequest = serde_json::from_str(r#"{"value":"x@y.com"}"#).unwrap();
         assert_eq!(req.kind, None);
         assert_eq!(req.resolved_kind(), TargetKind::Email);
+        // PR #102 review: resolved_kind sanitises paste artifacts before
+        // detecting, so a quoted URL classes as Url (not Username).
+        let dirty: LiveRequest =
+            serde_json::from_str(r#"{"value":"\"https://cloudflare.com\","}"#).unwrap();
+        assert_eq!(dirty.resolved_kind(), TargetKind::Url);
     }
 
     #[test]

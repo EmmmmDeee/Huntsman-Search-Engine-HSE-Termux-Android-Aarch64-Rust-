@@ -228,8 +228,10 @@ fn is_phone_shaped(v: &str) -> bool {
     {
         return false;
     }
-    // '+' is only valid as the leading character of an international number.
-    !v.contains('+') || v.trim_start().starts_with('+')
+    // A '+' is allowed only once, and only as the leading character (the
+    // international-dialling form); `+123+4567` is not a phone number.
+    let plus = v.chars().filter(|&c| c == '+').count();
+    plus == 0 || (plus == 1 && v.trim_start().starts_with('+'))
 }
 
 /// Domain-name shape: no whitespace/'@', at least one dot, only label chars
@@ -339,6 +341,20 @@ fn sanitise_target_input(raw: &str) -> String {
     s.to_string()
 }
 
+/// Detect a [`TargetKind`] from a **raw**, user-supplied value — sanitising
+/// surrounding quotes / stray separators first (exactly as [`Target::new`]
+/// does), so a pasted `"https://x.com",` is classified by its *cleaned* form.
+///
+/// Every auto-detect entry point (CLI `--kind auto`, and `ScanRequest` /
+/// `LiveRequest` with no `kind`) MUST go through this rather than calling
+/// `TargetKind::detect` on the raw string: otherwise the detected kind is
+/// computed from the dirty value while the scan runs on the sanitised value,
+/// so a pasted target could be classed `Username` but stored as a URL and
+/// routed through the wrong modules.
+pub fn detect_kind(raw: &str) -> TargetKind {
+    TargetKind::detect(&sanitise_target_input(raw))
+}
+
 impl Target {
     pub fn new(kind: TargetKind, value: impl Into<String>) -> Self {
         let raw: String = value.into();
@@ -357,7 +373,7 @@ impl Target {
     /// target so callers can surface it (CLI message, `scan_id`, API response).
     pub fn detect(value: impl Into<String>) -> Self {
         let raw: String = value.into();
-        let kind = TargetKind::detect(&sanitise_target_input(&raw));
+        let kind = detect_kind(&raw);
         Self::new(kind, raw)
     }
 
@@ -570,7 +586,7 @@ impl ScanRequest {
     /// otherwise auto-detected from `value`. Single source of truth shared by
     /// the scan-create, batch and rerun paths so detection can't diverge.
     pub fn resolved_kind(&self) -> TargetKind {
-        self.kind.unwrap_or_else(|| TargetKind::detect(&self.value))
+        self.kind.unwrap_or_else(|| detect_kind(&self.value))
     }
 }
 
@@ -1661,6 +1677,10 @@ mod tests {
         assert_eq!(TargetKind::detect("12345678901"), TargetKind::Phone);
         // A valid ABN of the same length is recognised as the registry id.
         assert_eq!(TargetKind::detect("51824753556"), TargetKind::AbnAcn);
+        // '+' is valid only once and only leading: a stray internal '+' is not
+        // a phone, but a normal international number still is.
+        assert_ne!(TargetKind::detect("+123+4567"), TargetKind::Phone);
+        assert_eq!(TargetKind::detect("+61400123456"), TargetKind::Phone);
     }
 
     #[test]
@@ -1719,6 +1739,27 @@ mod tests {
         let t2 = Target::detect("\"Matthew Diegmann\"");
         assert_eq!(t2.kind, TargetKind::FullName);
         assert_eq!(t2.value, "Matthew Diegmann");
+    }
+
+    #[test]
+    fn auto_detect_sanitises_before_classifying() {
+        // Regression (PR #102 review): the auto-detect paths must sanitise paste
+        // artifacts (surrounding quotes + trailing separators) BEFORE
+        // classifying, exactly as `Target::new` sanitises the stored value —
+        // otherwise a pasted `"https://x.com",` is classed `Username` while the
+        // stored value is a URL, routing the scan through the wrong modules.
+        let dirty = "\"https://cloudflare.com\",";
+        assert_eq!(detect_kind(dirty), TargetKind::Url);
+        assert_eq!(Target::detect(dirty).kind, TargetKind::Url);
+        // The shared helper is what every entry point uses:
+        let req = ScanRequest {
+            kind: None,
+            value: dirty.to_string(),
+            options: ScanOptions::default(),
+        };
+        assert_eq!(req.resolved_kind(), TargetKind::Url);
+        // And the detected kind agrees with the value the target will store.
+        assert_eq!(Target::detect(dirty).value, "https://cloudflare.com");
     }
 
     // ── Target::validate ────────────────────────────────────────────────────
