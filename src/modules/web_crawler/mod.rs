@@ -265,13 +265,12 @@ impl Module for WebCrawler {
             }
 
             let body = match resp.text().await {
-                Ok(b) => {
-                    if b.len() > BODY_CAP {
-                        b[..BODY_CAP].to_string()
-                    } else {
-                        b
-                    }
-                }
+                // Byte-cap the (untrusted) page body, but at a CHAR boundary:
+                // a raw `b[..BODY_CAP]` panics when byte BODY_CAP lands
+                // mid-codepoint (any UTF-8 page — emoji/CJK/accents near the cap).
+                // web_crawler runs under catch_unwind, so that panic would
+                // silently void ALL its findings for the scan rather than crash.
+                Ok(b) => crate::util::str_util::truncate_safe(&b, BODY_CAP).to_string(),
                 Err(_) => continue,
             };
 

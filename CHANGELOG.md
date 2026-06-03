@@ -89,6 +89,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **UTF-8 panic when capping a crawled page body (silently voided `web_crawler`).**
+  `web_crawler` byte-sliced each fetched page to a fixed 64 KiB cap with a raw
+  `body[..BODY_CAP]`, which panics when that byte lands mid-codepoint — i.e. on
+  any UTF-8 page (emoji / CJK / accents) larger than the cap. The module runs
+  under `catch_unwind`, so rather than crashing it **silently discarded every
+  `web_crawler` finding** for such a scan (a "nothing omitted" violation). Now
+  capped at the nearest char boundary via `str_util::truncate_safe`, which gained
+  a dedicated char-boundary test. (Audit of `web_crawler`'s other byte-slices
+  found them safe — they index on ASCII-gated scans / `find()` offsets.)
 - **Irrelevant "what is HTTPS" pages surfaced for unrelated searches.** Because the
   search module accepts `Url` targets, a URL discovered during expansion (e.g.
   `…/learning/ssl/why-use-https`) was split into search terms — including

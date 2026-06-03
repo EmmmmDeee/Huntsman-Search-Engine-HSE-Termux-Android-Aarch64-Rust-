@@ -129,7 +129,24 @@ pub mod str_util {
 
     #[cfg(test)]
     mod tests {
-        use super::fold_ascii_lower;
+        use super::{fold_ascii_lower, truncate_safe};
+
+        #[test]
+        fn truncate_safe_never_splits_a_codepoint() {
+            // Caps web_crawler's page body etc. A raw `s[..max]` panics when
+            // `max` lands mid-codepoint; truncate_safe must back off to the
+            // nearest char boundary instead (for every possible cut point).
+            let s = "aé😀b"; // 1 + 2 + 4 + 1 = 8 bytes, char boundaries at 0,1,3,7,8
+            for max in 0..=s.len() + 2 {
+                let out = truncate_safe(s, max);
+                assert!(s.starts_with(out), "must be a prefix (max={max})");
+                assert!(out.len() <= max, "must not exceed max (max={max})");
+                // Result is always valid UTF-8 by construction (it's a &str), and
+                // the call itself must not panic — which is the whole point.
+            }
+            assert_eq!(truncate_safe(s, 100), s, "<= len returns whole string");
+            assert_eq!(truncate_safe("hello", 3), "hel"); // pure-ASCII exact cut
+        }
 
         #[test]
         fn folds_latin_diacritics() {
