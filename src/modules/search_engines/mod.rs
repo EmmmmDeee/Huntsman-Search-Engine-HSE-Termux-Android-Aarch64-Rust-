@@ -1123,6 +1123,17 @@ fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<Str
     pivots
 }
 
+/// True when `url` is the searched USERNAME's own profile on a canonical social
+/// host — the handle path segment exactly equals the seed username (e.g. seed
+/// `kylo4kylo` → `https://x.com/kylo4kylo`). This is the strongest possible
+/// username-search finding (the target's actual profile, not a page that merely
+/// mentions the handle), so callers emit it at elevated confidence.
+fn is_confirmed_profile(target: &Target, url: &str, host: &str) -> bool {
+    matches!(target.kind, TargetKind::Username)
+        && is_social_host(host)
+        && extract_path_username(url).is_some_and(|u| u.eq_ignore_ascii_case(target.value.trim()))
+}
+
 fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> ModuleResult {
     let mut result = ModuleResult::new();
     if results.is_empty() {
@@ -1357,8 +1368,22 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
         if url_matches_target(&r.url, &terms)
             && seen_domains.insert(format!("@url:{}", canonicalize_url(&r.url)))
         {
-            let mut e = Entity::new(EntityKind::Url, &r.url, 0.50, scan_id);
+            // Elevate a CONFIRMED profile — the result URL is the searched
+            // username's own page on a canonical social host (handle path ==
+            // seed). That's the strongest username-search finding, so emit it at
+            // high confidence (Probable→Verified once corroborated) and tag it,
+            // distinct from a generic 0.50 page that merely contains the term.
+            let confirmed = is_confirmed_profile(target, &r.url, &host);
+            let mut e = Entity::new(
+                EntityKind::Url,
+                &r.url,
+                if confirmed { 0.85 } else { 0.50 },
+                scan_id,
+            );
             e.tag("search-discovered");
+            if confirmed {
+                e.tag("confirmed-profile");
+            }
             e.add_evidence(build_search_evidence(r));
             result.push(e);
         }
@@ -2181,6 +2206,43 @@ mod tests {
         ] {
             assert!(!is_social_host(h), "{h} must NOT be a social host");
         }
+    }
+
+    #[test]
+    fn confirmed_profile_elevates_exact_handle_on_social_host() {
+        // The searched username's own profile (handle == first path segment on a
+        // canonical social host) is the strongest finding → elevated.
+        let t = Target::new(TargetKind::Username, "kylo4kylo");
+        for url in [
+            "https://x.com/kylo4kylo",
+            "https://twitter.com/Kylo4Kylo", // case-insensitive
+            "https://www.instagram.com/kylo4kylo",
+            "https://github.com/kylo4kylo",
+            "https://m.facebook.com/kylo4kylo",
+        ] {
+            assert!(
+                is_confirmed_profile(&t, url, &extract_host(url)),
+                "should be a confirmed profile: {url}"
+            );
+        }
+        // NOT confirmed: a different handle, a non-social host, or a non-username
+        // target kind.
+        for url in [
+            "https://x.com/someoneelse",         // different handle
+            "https://example.com/kylo4kylo",     // not a social host
+            "https://pic.twitter.com/kylo4kylo", // non-profile subdomain
+        ] {
+            assert!(
+                !is_confirmed_profile(&t, url, &extract_host(url)),
+                "should NOT be confirmed: {url}"
+            );
+        }
+        let domain_seed = Target::new(TargetKind::Domain, "kylo4kylo.com");
+        assert!(!is_confirmed_profile(
+            &domain_seed,
+            "https://x.com/kylo4kylo",
+            "x.com"
+        ));
     }
 
     #[test]

@@ -82,6 +82,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Confirmed-profile detection — the target's own profile is elevated.** When a
+  username search returns the searched handle's *own* page on a canonical social
+  host (the handle is the URL's first path segment, e.g. seed `kylo4kylo` →
+  `https://x.com/kylo4kylo`, `https://github.com/kylo4kylo`), that `Url` entity is
+  now emitted at **0.85** and tagged `confirmed-profile` — the strongest
+  username-search finding — instead of the generic 0.50 used for a page that
+  merely contains the handle. With one corroborating source it crosses into the
+  Verified tier, so the actual answer (the profiles) rises above incidental
+  results. Covers the handle-first platforms (x/twitter, instagram, github,
+  tiktok, pinterest, facebook, …); deterministic, no extra requests.
 - **Potentiated username scoring — alias variants outrank co-occurrence noise.**
   The search module's `score_username` now adds a handle-similarity signal that
   BOOSTS (rather than only acting as a `score == 0` fallback): a candidate that
