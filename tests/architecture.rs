@@ -218,6 +218,57 @@ fn collect_env_literals(dir: &Path, out: &mut std::collections::HashSet<String>)
     }
 }
 
+/// Recursively collect `.rs` file paths under `dir`.
+fn collect_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Every embedded default key must have a SINGLE source of truth in
+/// `util::keys` — modules reference the `*_DEFAULT_KEY` constants rather than
+/// re-declaring the literal. A re-hardcoded copy elsewhere could silently drift
+/// from the canonical value (the "which key is actually current?" bug). This
+/// asserts each embedded literal appears only in `src/util/keys.rs`.
+#[test]
+fn embedded_default_keys_have_a_single_source_of_truth() {
+    use huntsman_search_engine::util::keys;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let values = [
+        keys::OATHNET_DEFAULT_KEY,
+        keys::HIBP_DEFAULT_KEY,
+        keys::WIGLE_DEFAULT_USER,
+        keys::WIGLE_DEFAULT_TOKEN,
+        keys::SEEKNOW_DEFAULT_KEY,
+        keys::SEEKNOW_SUPERSEDED_KEY,
+    ];
+
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src"), &mut files);
+
+    let mut offenders = Vec::new();
+    for path in files {
+        // The single source of truth — the literals legitimately live here.
+        if path.ends_with("util/keys.rs") {
+            continue;
+        }
+        let content = fs::read_to_string(&path).unwrap();
+        if values.iter().any(|v| content.contains(v)) {
+            offenders.push(path.display().to_string());
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "embedded key literals must live only in util::keys.rs (reference the \
+         *_DEFAULT_KEY constants, don't re-hardcode them): {offenders:?}"
+    );
+}
+
 /// Guards against the silent-key-mismatch bug class: a key documented in the
 /// provisioning template under a name no module actually reads, so the operator
 /// sets it and gets nothing. Every key in `env_template.txt` must be consumed in

@@ -27,7 +27,8 @@ use crate::util::http::{error_snippet, urlencode};
 
 const SRC: &str = "hibp";
 const KEY_ENV: &str = "HUNTSMAN_HIBP_KEY";
-const HARDCODED_KEY: &str = "42587552dce6424a87312941c8a2c3c5";
+// Embedded fallback: single source of truth lives in `util::keys`.
+const HARDCODED_KEY: &str = crate::util::keys::HIBP_DEFAULT_KEY;
 const BASE_URL: &str = "https://haveibeenpwned.com/api/v3";
 
 fn resolve_key(ctx_key: Option<&str>) -> &str {

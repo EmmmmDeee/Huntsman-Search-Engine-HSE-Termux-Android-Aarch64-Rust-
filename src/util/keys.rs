@@ -256,20 +256,41 @@ pub async fn populate_and_load() -> HashMap<String, String> {
     load()
 }
 
+// ─── Embedded default keys — SINGLE SOURCE OF TRUTH ──────────────────────────
+//
+// Every key baked into the build lives here as exactly one constant. Modules
+// that need a zero-config fallback (`hibp`, `wigle`/`wifi_intel`, `see_know`,
+// `oathnet_pro`) reference these instead of re-declaring the literal, so a key
+// can never drift between copies. To ROTATE a key: change the constant here and
+// move its previous value into `SEEKNOW_SUPERSEDED_KEY` (or the relevant
+// superseded slot) so old env files upgrade in place. "Only the latest" is thus
+// enforced structurally — there is one place to edit.
+
+/// OathNet Pro upstream key.
+pub const OATHNET_DEFAULT_KEY: &str =
+    "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551409e4b47116f2";
+/// Have I Been Pwned key.
+pub const HIBP_DEFAULT_KEY: &str = "42587552dce6424a87312941c8a2c3c5";
+/// WiGLE API name (HTTP Basic user).
+pub const WIGLE_DEFAULT_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
+/// WiGLE API token (HTTP Basic password).
+pub const WIGLE_DEFAULT_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
+/// SeekNow (see-know.eu) key — the current embedded default.
+pub const SEEKNOW_DEFAULT_KEY: &str = "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
+/// SeekNow key that has been ROTATED OUT — kept only so a stale env file written
+/// by a previous build upgrades to [`SEEKNOW_DEFAULT_KEY`]. Never used as a live
+/// default.
+pub const SEEKNOW_SUPERSEDED_KEY: &str = "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
+
 /// API keys embedded in the build so a fresh install works zero-config.
 /// `ensure_hardcoded_keys` writes any that are absent from the env file.
+/// Values come from the single-source-of-truth constants above.
 const HARDCODED: &[(&str, &str)] = &[
-    (
-        "HUNTSMAN_OATHNET_KEY",
-        "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551409e4b47116f2",
-    ),
-    ("HUNTSMAN_HIBP_KEY", "42587552dce6424a87312941c8a2c3c5"),
-    ("HUNTSMAN_WIGLE_USER", "AID4493a33e2df9d07ab9666a27c8aead17"),
-    ("HUNTSMAN_WIGLE_TOKEN", "1aedb7ad0171ff3d6be5a844cca5d977"),
-    (
-        "HUNTSMAN_SEEKNOW_KEY",
-        "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc",
-    ),
+    ("HUNTSMAN_OATHNET_KEY", OATHNET_DEFAULT_KEY),
+    ("HUNTSMAN_HIBP_KEY", HIBP_DEFAULT_KEY),
+    ("HUNTSMAN_WIGLE_USER", WIGLE_DEFAULT_USER),
+    ("HUNTSMAN_WIGLE_TOKEN", WIGLE_DEFAULT_TOKEN),
+    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_DEFAULT_KEY),
 ];
 
 /// Embedded defaults that have been ROTATED. If the env file still carries an
@@ -278,10 +299,7 @@ const HARDCODED: &[(&str, &str)] = &[
 /// without the operator re-entering it. Scoped to EXACT prior embedded values —
 /// a user's own custom key never matches one of these, so an intentional
 /// override is never clobbered.
-const SUPERSEDED: &[(&str, &str)] = &[(
-    "HUNTSMAN_SEEKNOW_KEY",
-    "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25",
-)];
+const SUPERSEDED: &[(&str, &str)] = &[("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY)];
 
 /// Compute the `{env_var: value}` writes needed to bring `existing` (the
 /// current env-file contents) up to date with the embedded defaults: fill any
@@ -770,8 +788,10 @@ mod tests {
 
     #[test]
     fn hardcoded_key_writes_fills_rotates_and_preserves() {
-        const NEW: &str = "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
-        const OLD: &str = "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
+        // Reference the single-source-of-truth constants so the test can't drift
+        // from the embedded defaults it's meant to characterise.
+        const NEW: &str = SEEKNOW_DEFAULT_KEY;
+        const OLD: &str = SEEKNOW_SUPERSEDED_KEY;
 
         // Empty file → embedded defaults filled (including the current SeekNow key).
         let w = hardcoded_key_writes(&HashMap::new());

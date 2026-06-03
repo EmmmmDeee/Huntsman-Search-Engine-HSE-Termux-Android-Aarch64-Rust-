@@ -12,7 +12,8 @@ use crate::util::budget::QuotaBudget;
 use crate::util::curl_client::{AuthScheme, CurlClient};
 use crate::util::response_cache::ResponseCache;
 
-const HARDCODED_KEY: &str = "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551409e4b47116f2";
+// Embedded fallback: single source of truth lives in `util::keys`.
+const HARDCODED_KEY: &str = crate::util::keys::OATHNET_DEFAULT_KEY;
 
 pub const KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
 

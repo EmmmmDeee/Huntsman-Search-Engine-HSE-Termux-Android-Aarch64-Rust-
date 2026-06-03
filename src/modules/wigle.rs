@@ -29,8 +29,9 @@ use crate::util::http::error_snippet;
 
 const USER_ENV: &str = "HUNTSMAN_WIGLE_USER";
 const TOKEN_ENV: &str = "HUNTSMAN_WIGLE_TOKEN";
-const HARDCODED_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
-const HARDCODED_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
+// Embedded fallback: single source of truth lives in `util::keys`.
+const HARDCODED_USER: &str = crate::util::keys::WIGLE_DEFAULT_USER;
+const HARDCODED_TOKEN: &str = crate::util::keys::WIGLE_DEFAULT_TOKEN;
 
 #[derive(Deserialize)]
 struct Resp {

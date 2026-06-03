@@ -127,11 +127,11 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     println!("\nWiGLE account:");
     let wigle_user = loaded
         .get("HUNTSMAN_WIGLE_USER")
-        .map_or("AID4493a33e2df9d07ab9666a27c8aead17", String::as_str)
+        .map_or(keys::WIGLE_DEFAULT_USER, String::as_str)
         .to_string();
     let wigle_token = loaded
         .get("HUNTSMAN_WIGLE_TOKEN")
-        .map_or("1aedb7ad0171ff3d6be5a844cca5d977", String::as_str)
+        .map_or(keys::WIGLE_DEFAULT_TOKEN, String::as_str)
         .to_string();
     let http = crate::util::http::build_client();
     let status =

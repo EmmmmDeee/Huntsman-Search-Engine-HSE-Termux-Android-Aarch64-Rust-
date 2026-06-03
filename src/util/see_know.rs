@@ -33,7 +33,8 @@ use crate::util::response_cache::ResponseCache;
 // (`api::handlers::stats`) keep working through the original path.
 pub use crate::util::budget::BudgetSnapshot;
 
-const HARDCODED_KEY: &str = "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
+// Embedded fallback: the single-source-of-truth default lives in `util::keys`.
+const HARDCODED_KEY: &str = crate::util::keys::SEEKNOW_DEFAULT_KEY;
 
 pub const KEY_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";
 
