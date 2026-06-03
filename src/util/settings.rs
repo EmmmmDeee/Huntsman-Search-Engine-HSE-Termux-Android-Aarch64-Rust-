@@ -12,7 +12,6 @@
 //! Settings panel / a `/api/v1/settings/toggles` endpoint).
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
 
@@ -38,51 +37,14 @@ fn read_map(path: &Path) -> BTreeMap<String, bool> {
         .unwrap_or_default()
 }
 
-/// Atomically write the override map to `path`: temp file + fsync + rename, mode
-/// 0600. Mirrors `key_pool::save_pool` / `keys::write_keys_at`, but uses a
-/// **unique** temp name per write (pid + a process-local counter) instead of a
-/// fixed `settings.json.tmp`: this surface is web-writable (`PUT
-/// /settings/toggles`), so two concurrent writers could otherwise truncate and
-/// interleave into the same temp and rename a corrupt file into place. A unique
-/// temp makes each write self-contained (the final rename is last-writer-wins
-/// over a complete, internally-consistent snapshot — never a torn one), and the
-/// temp is removed on any error so a failed write leaves no straggler.
+/// Atomically write the override map to `path` via [`crate::util::atomic_file`]
+/// (unique temp + fsync + rename, mode 0600). The unique temp is what makes this
+/// safe under the web-writable `PUT /settings/toggles`: a shared fixed temp could
+/// be truncated + interleaved by two concurrent writers and a corrupt file
+/// renamed into place, which then reads back empty (dropping every override).
 fn write_map_at(path: &Path, map: &BTreeMap<String, bool>) -> std::io::Result<()> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
     let json = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension(format!(
-        "json.tmp.{}.{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let result = write_tmp_then_rename(&tmp, path, json.as_bytes());
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
-}
-
-/// Write `bytes` to `tmp` (mode 0600 + fsync on unix) then atomically rename it
-/// onto `path`. Split out so [`write_map_at`] can clean up `tmp` on any failure.
-fn write_tmp_then_rename(tmp: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(tmp, bytes)?;
-    }
-    std::fs::rename(tmp, path)
+    crate::util::atomic_file::write(path, json.as_bytes())
 }
 
 /// Pure resolution: stored override else `default`. Split out for testing.

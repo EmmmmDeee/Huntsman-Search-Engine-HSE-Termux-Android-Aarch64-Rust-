@@ -339,32 +339,15 @@ pub fn save_pool(pool: &KeyPool) -> std::io::Result<()> {
     let path = pool_path();
     let data = pool.snapshot();
     let json = serde_json::to_string_pretty(&data).map_err(std::io::Error::other)?;
-    // Atomic write: temp file + fsync + rename. A plain truncate-then-write
-    // leaves a corrupt/truncated JSON if the process is killed mid-write (the
-    // OOM-killer is realistic on a 4 GB device), and `load_pool` then discards
-    // EVERY harvested key (value + provenance + success-rate state). The rename
-    // is atomic on the same filesystem, so a crash leaves the previous valid
-    // pool intact. Mirrors `keys::write_keys_at`.
-    let tmp = path.with_extension("json.tmp");
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        f.write_all(json.as_bytes())?;
-        f.sync_all()?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(&tmp, json.as_bytes())?;
-    }
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    // Atomic write via the shared helper: a UNIQUE temp + fsync + rename. A plain
+    // truncate-then-write leaves corrupt/truncated JSON if the process is killed
+    // mid-write (the OOM-killer is realistic on a 4 GB device), and `load_pool`
+    // then discards EVERY harvested key. The unique temp also makes concurrent
+    // saves safe: modules harvest keys during overlapping scans in `hse serve`,
+    // and a shared fixed temp could be interleaved by two writers into a corrupt
+    // file. The rename is atomic on the same filesystem, so a crash leaves the
+    // previous valid pool intact.
+    crate::util::atomic_file::write(&path, json.as_bytes())
 }
 
 // ── Validation ───────────────────────────────────────────────────────────────

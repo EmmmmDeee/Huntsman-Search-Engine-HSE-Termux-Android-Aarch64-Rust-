@@ -89,14 +89,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
-- **Concurrent-write race in the persisted settings store.** The capability-toggle
-  store is web-writable (`PUT /api/v1/settings/toggles`), so two near-simultaneous
-  writes could truncate and interleave into a single shared `settings.json.tmp`
-  and rename a torn (corrupt) file into place — which then reads back as empty,
-  silently dropping every override. Each write now uses a unique temp file (pid +
-  a process-local counter) and is removed on error, so the atomic rename is always
-  over a complete, internally-consistent snapshot and a failed write leaves no
-  straggler. Covered by a new 8-thread concurrency test.
+- **Concurrent-write races in the persisted JSON stores (toggle store + key pool).**
+  Both used a *fixed* temp filename (`settings.json.tmp` / `key_pool.json.tmp`)
+  before the atomic rename, so two near-simultaneous writers could truncate and
+  interleave into the same temp and rename a torn (corrupt) file into place — which
+  the loaders then treat as empty/corrupt, silently dropping every saved override
+  (and, for the key pool, every harvested API key). These stores genuinely race:
+  the toggle store is web-writable (`PUT /api/v1/settings/toggles`) and the key
+  pool is written by modules harvesting during overlapping scans in `hse serve`.
+  Both now go through a new shared `util::atomic_file::write` helper that uses a
+  **unique** temp per write (pid + a process-local counter), fsyncs, atomically
+  renames, and removes the temp on any error — so the rename is always over a
+  complete snapshot and a failed write leaves no straggler. Covered by new
+  concurrency tests (8 writers hammering one path stay valid + leave no temp).
 
 ## [1.3.0] — 2026-06-03
 
