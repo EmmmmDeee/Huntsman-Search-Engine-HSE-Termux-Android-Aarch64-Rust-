@@ -12,6 +12,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Correlation rule AU-037 — plaintext credential exposure.** The breach/stealer
+  modules surface the canonical leaked secret as a first-class `Password` /
+  `Credential` entity, but no rule synthesised them into an alert (only `ApiKey`,
+  via AU-021). AU-037 now fires **Critical** when any are present — the single
+  most actionable OSINT finding — linking the secret entities (capped) plus the
+  affected identity (emails/usernames) so the operator sees *whose* credentials
+  leaked. It reports only counts; the raw secret values stay in the entities
+  (full-fidelity, nothing redacted) and are never copied into correlation text.
 - **Universal toggleability (SpiderFoot-style on/off switches), persisted.** A new
   capability-toggle store (`~/.huntsman/settings.json`, atomic write, mode 0600,
   in-process cache) lets any capability be switched on or off **without a
