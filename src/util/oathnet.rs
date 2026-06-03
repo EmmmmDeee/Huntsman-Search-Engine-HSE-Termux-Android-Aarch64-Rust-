@@ -95,10 +95,7 @@ fn base_url() -> String {
 }
 
 pub fn resolve_key(ctx_key: Option<&str>) -> &str {
-    match ctx_key {
-        Some(k) if !k.is_empty() => k,
-        _ => HARDCODED_KEY,
-    }
+    crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
 
 #[derive(Deserialize)]
@@ -201,17 +198,9 @@ pub async fn search(
 }
 
 /// Extract a string field from a JSON Value.
-pub fn val_str(item: &Value, key: &str) -> Option<String> {
-    item.get(key)
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(std::string::ToString::to_string)
-}
-
-/// Extract the first non-empty string from multiple candidate fields.
-pub fn val_str_or(item: &Value, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|k| val_str(item, k))
-}
+// Shared JSON helpers — single definition in `util::json`, re-exported here so
+// existing `crate::util::oathnet::val_str{,_or}` call sites are unchanged.
+pub use crate::util::json::{val_str, val_str_or};
 
 /// Count top N database names by frequency.
 pub fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {

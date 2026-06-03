@@ -213,10 +213,7 @@ fn base_url() -> String {
 }
 
 pub fn resolve_key(ctx_key: Option<&str>) -> &str {
-    match ctx_key {
-        Some(k) if !k.is_empty() => k,
-        _ => HARDCODED_KEY,
-    }
+    crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
 
 /// Universal search via POST /api/v1/search.
@@ -423,12 +420,9 @@ fn parse_response(body: &str) -> Result<Value> {
 // declared at the top of this file.
 
 /// Extract a string field from a JSON Value.
-pub fn val_str(item: &Value, key: &str) -> Option<String> {
-    item.get(key)
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(std::string::ToString::to_string)
-}
+// Shared JSON helper — single definition in `util::json`, re-exported here so
+// existing `crate::util::see_know::val_str` call sites are unchanged.
+pub use crate::util::json::val_str;
 
 #[cfg(test)]
 mod tests {

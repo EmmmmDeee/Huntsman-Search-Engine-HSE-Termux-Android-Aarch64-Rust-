@@ -32,10 +32,7 @@ const HARDCODED_KEY: &str = crate::util::keys::HIBP_DEFAULT_KEY;
 const BASE_URL: &str = "https://haveibeenpwned.com/api/v3";
 
 fn resolve_key(ctx_key: Option<&str>) -> &str {
-    match ctx_key {
-        Some(k) if !k.is_empty() => k,
-        _ => HARDCODED_KEY,
-    }
+    crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
 
 // ── API response types ──────────────────────────────────────────────

@@ -285,6 +285,19 @@ pub const SEEKNOW_SUPERSEDED_KEY: &str = "seek-f419aa7ab831864149892e5145f6bc65d
 /// Earlier retired SeekNow key — also upgraded in place to the current default.
 const SEEKNOW_SUPERSEDED_KEY_2: &str = "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
 
+/// Resolve an API key: the context-supplied key when present and non-empty,
+/// otherwise the embedded `default`. The single definition of the "an explicit
+/// non-empty key wins, else fall back to the embedded default" policy shared by
+/// every zero-config keyed module (hibp, oathnet, see_know), so the rule can't
+/// drift between them.
+#[must_use]
+pub fn resolve_or_default<'a>(ctx_key: Option<&'a str>, default: &'a str) -> &'a str {
+    match ctx_key {
+        Some(k) if !k.is_empty() => k,
+        _ => default,
+    }
+}
+
 /// API keys embedded in the build so a fresh install works zero-config.
 /// `ensure_hardcoded_keys` writes any that are absent from the env file.
 /// Values come from the single-source-of-truth constants above.
