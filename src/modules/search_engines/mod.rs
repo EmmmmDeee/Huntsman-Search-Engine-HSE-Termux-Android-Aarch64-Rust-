@@ -102,7 +102,13 @@ impl Module for SearchEngines {
     }
 
     fn priority(&self) -> u8 {
-        25
+        // Lead the scan with free, broad discovery: this 17-engine keyless dork
+        // search runs early (right behind the mandated SeekNow/OathNet enumerators
+        // and the keyed registries) so its seed-specific, high-signal results —
+        // URLs, emails, usernames, profiles — are in the graph before the
+        // narrower free modules dispatch, giving them material to corroborate and
+        // pivot on. (Was 25, which buried this broad free net near the end.)
+        113
     }
 
     fn accepts(&self, t: &Target) -> bool {

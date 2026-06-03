@@ -15,7 +15,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `exa_search` | email, username, phone, full_name, domain, organisation | key_gated | no | 87 | url, domain, email, phone |
-| `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 25 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
+| `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 113 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
 
 ### social (5)
 
