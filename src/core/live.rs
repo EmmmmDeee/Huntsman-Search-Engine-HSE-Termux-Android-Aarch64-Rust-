@@ -20,7 +20,7 @@
 //! - Sessions are in-memory only. Restart → cleared. Persistence is a
 //!   v0.7+ concern.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,11 +95,41 @@ pub struct LiveSession {
     pub started_at: u64,
     pub last_iteration_at: Option<u64>,
     pub iteration: u32,
-    /// scan_ids spawned by this session so far. Stored as a `HashSet` so
-    /// the SSE handler's per-event `session_owns_scan` check is O(1)
-    /// rather than O(N) — important for long-running sessions where each
-    /// broadcast event would otherwise trigger a linear scan.
+    /// scan_ids spawned by this session, for the SSE handler's per-event
+    /// `session_owns_scan` check (O(1) via the `HashSet`). Bounded with FIFO
+    /// eviction (see [`LiveSession::record_scan`]) so a multi-day radar session
+    /// — which spawns a distinct scan per discovered target — can't grow it
+    /// without limit; only ids spawned long ago are evicted, so recent/active
+    /// scans always route their events.
     pub scan_ids: std::collections::HashSet<String>,
+    /// Insertion order for `scan_ids`, enabling FIFO eviction at
+    /// [`SCAN_ID_CAP`]. Internal bookkeeping — not serialised (the API exposes
+    /// only the `scan_ids` set), and defaults to empty on deserialize.
+    #[serde(default, skip_serializing)]
+    scan_id_order: VecDeque<String>,
+}
+
+/// Upper bound on a session's retained `scan_ids` (FIFO-evicted). A radar
+/// session can spawn one distinct scan per discovered target over days; 10k
+/// recent ids is far more than the SSE owner-check needs (active scans finish
+/// in seconds–minutes) while bounding memory to a few hundred KB.
+const SCAN_ID_CAP: usize = 10_000;
+
+impl LiveSession {
+    /// Register a spawned scan id for SSE ownership, FIFO-evicting the oldest
+    /// once [`SCAN_ID_CAP`] is exceeded so a long-lived radar session stays
+    /// bounded. A duplicate id is a no-op; recent (hence active) scans are
+    /// always retained.
+    fn record_scan(&mut self, scan_id: String) {
+        if self.scan_ids.insert(scan_id.clone()) {
+            self.scan_id_order.push_back(scan_id);
+            if self.scan_id_order.len() > SCAN_ID_CAP
+                && let Some(evicted) = self.scan_id_order.pop_front()
+            {
+                self.scan_ids.remove(&evicted);
+            }
+        }
+    }
 }
 
 /// The request payload for starting a live session via API or CLI.
@@ -197,6 +227,7 @@ impl LiveScanner {
             last_iteration_at: None,
             iteration: 0,
             scan_ids: std::collections::HashSet::new(),
+            scan_id_order: VecDeque::new(),
         };
 
         let cancel = CancelHandle::new();
@@ -321,7 +352,7 @@ async fn session_loop(
         // Register the scan_id with the session BEFORE running, so the SSE
         // handler can forward its events the moment they fire.
         if let Some(s) = inner.sessions.write().get_mut(&live_id) {
-            s.scan_ids.insert(sid.clone());
+            s.record_scan(sid.clone());
         }
 
         let _ = inner.bus.send(Event::new(
@@ -537,10 +568,53 @@ mod tests {
             last_iteration_at: None,
             iteration: 0,
             scan_ids: std::collections::HashSet::new(),
+            scan_id_order: VecDeque::new(),
         };
         let json = serde_json::to_string(&session).unwrap();
+        // The internal insertion-order field must not change the wire format.
+        assert!(
+            !json.contains("scan_id_order"),
+            "scan_id_order must not be serialized: {json}"
+        );
         let back: LiveSession = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id, "live-abc123");
         assert_eq!(back.status, LiveStatus::Running);
+    }
+
+    #[test]
+    fn record_scan_bounds_scan_ids_with_fifo_eviction() {
+        let mut s = LiveSession {
+            id: "live-fifo".into(),
+            target: Target::new(TargetKind::Email, "x@y.com"),
+            scan_options: ScanOptions::default(),
+            live_options: LiveOptions::default(),
+            status: LiveStatus::Running,
+            started_at: 1700000000,
+            last_iteration_at: None,
+            iteration: 0,
+            scan_ids: std::collections::HashSet::new(),
+            scan_id_order: VecDeque::new(),
+        };
+        // Oldest id, then exactly enough distinct ids to push it past the cap.
+        s.record_scan("first".to_string());
+        for i in 0..SCAN_ID_CAP {
+            s.record_scan(format!("scan-{i}"));
+        }
+        assert!(
+            s.scan_ids.len() <= SCAN_ID_CAP,
+            "ledger must stay within the cap"
+        );
+        assert!(
+            !s.scan_ids.contains("first"),
+            "the oldest id must be evicted first"
+        );
+        assert!(
+            s.scan_ids.contains(&format!("scan-{}", SCAN_ID_CAP - 1)),
+            "recent ids must be retained"
+        );
+        // A duplicate is a no-op (no double-tracking, no spurious eviction).
+        let before = s.scan_ids.len();
+        s.record_scan(format!("scan-{}", SCAN_ID_CAP - 1));
+        assert_eq!(s.scan_ids.len(), before);
     }
 }
