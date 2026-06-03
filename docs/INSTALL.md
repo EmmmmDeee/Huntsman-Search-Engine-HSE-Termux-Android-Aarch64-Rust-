@@ -133,6 +133,35 @@ hse doctor
 
 ---
 
+## Developer setup (build / test / contribute)
+
+To set up a **development** environment — toolchain + `rustfmt`/`clippy` + build
+deps + the keys file — without installing the binary, clone the repo and run:
+
+```bash
+git clone https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse
+cd ~/hse
+scripts/setup-dev.sh        # idempotent; detects Termux / Debian / macOS
+```
+
+It installs the system build deps, ensures a Rust toolchain (≥ MSRV 1.88) with
+`rustfmt` + `clippy`, creates `~/.huntsman.env` (chmod 0600) if absent, then
+verifies the environment with `cargo fmt --check`, `cargo clippy -D warnings`,
+and `cargo build`. Pass `--deps-only` to skip the verification step. After it
+completes:
+
+```bash
+cargo test --all --locked      # full suite
+cargo run -- doctor            # environment report
+```
+
+> `install.sh` is the **end-user** path (it builds + installs the `hse` binary);
+> `scripts/setup-dev.sh` is the **contributor** path (toolchain + checks, no
+> install). Claude Code on the web reuses `scripts/setup-dev.sh --deps-only` via
+> its `SessionStart` hook.
+
+---
+
 ## Updating
 
 Just re-run the same command you used to install. The installer detects an
