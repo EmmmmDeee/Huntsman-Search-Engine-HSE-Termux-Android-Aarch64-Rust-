@@ -892,6 +892,47 @@ mod tests {
     }
 
     #[test]
+    fn c_effective_contract_holds_across_grid() {
+        // The analytical core's documented invariants, swept rather than
+        // spot-checked — classification tiers AND the recursion/expansion gate
+        // (`c_effective() >= min_expand_confidence`) ride on them, so a future
+        // formula tweak that broke any of these would silently corrupt findings:
+        //   (1) the fused confidence stays in [0, 1],
+        //   (2) corroboration never *reduces* an entity's own confidence,
+        //   (3) it is non-decreasing in the corroborating-source count, and
+        //   (4) a single source is the identity (c_eff == confidence).
+        for ci in 0..=20 {
+            let c = f64::from(ci) / 20.0; // 0.00, 0.05, … 1.00
+            let mut prev = f64::NEG_INFINITY;
+            for n in 1..=25u32 {
+                let mut e = email("a@b.com");
+                e.confidence = c;
+                e.corroboration = n; // no evidence ⇒ source_count() == n
+                let ce = e.c_effective();
+                assert!(
+                    (0.0..=1.0).contains(&ce),
+                    "c_eff out of [0,1]: c={c} n={n} ce={ce}"
+                );
+                assert!(
+                    ce + 1e-12 >= c,
+                    "corroboration must never reduce confidence: c={c} n={n} ce={ce}"
+                );
+                assert!(
+                    ce + 1e-12 >= prev,
+                    "c_eff must be non-decreasing in n: c={c} n={n} ce={ce} prev={prev}"
+                );
+                if n == 1 {
+                    assert!(
+                        (ce - c).abs() < 1e-12,
+                        "a single source must be the identity: c={c} ce={ce}"
+                    );
+                }
+                prev = ce;
+            }
+        }
+    }
+
+    #[test]
     fn merge_clamps_confidence() {
         let mut a = email("x@y.com");
         a.confidence = 1.5; // corrupted
