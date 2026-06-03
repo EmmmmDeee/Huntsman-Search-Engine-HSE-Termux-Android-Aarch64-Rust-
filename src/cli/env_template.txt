@@ -1,0 +1,98 @@
+# ==============================================================================
+# HUNTSMAN SEARCH ENGINE ENVIRONMENT MANIFEST
+# ==============================================================================
+# Edit values in place. Lines starting with `#` are comments. Real key values
+# replace `insert_..._here` placeholders. Re-running `hse provision` BACKS UP
+# this file before changes and PRESERVES any non-template values already set.
+#
+# Every key below uses the EXACT variable name the engine reads at runtime —
+# this is enforced by the `env_template_keys_are_all_consumed` test, so a key
+# documented here cannot silently do nothing. Keys marked `[RESERVED]` are for
+# services not yet wired to a module; setting them has no effect until a
+# consuming module ships.
+
+# --- TIER 0: MASTER INTEGRATION EDGE ---
+# Primary Upstream Intelligence API Focus
+# Both pools run in parallel: 2x daily lookup capacity, overlapping but
+# distinct data corpora.
+HUNTSMAN_OATHNET_KEY="insert_oathnet_pro_key_here"
+HUNTSMAN_SEEKNOW_KEY="insert_see_know_eu_key_here"
+# Exa AI neural search — semantic OSINT discovery
+HUNTSMAN_EXA_KEY="insert_exa_ai_key_here"
+
+# --- TIER 1: THREAT INTEL, REPUTATION & AMBIENT NOISE FILTRATION ---
+HUNTSMAN_ABUSEIPDB_KEY="insert_abuseipdb_key_here"
+HUNTSMAN_VIRUSTOTAL_KEY="insert_virustotal_key_here"
+HUNTSMAN_GREYNOISE_KEY="insert_greynoise_key_here"
+HUNTSMAN_PULSEDIVE_KEY="insert_pulsedive_key_here"
+HUNTSMAN_URLSCAN_KEY="insert_urlscan_io_key_here"
+HUNTSMAN_IPQS_KEY="insert_ipqs_key_here"
+# [RESERVED] not yet wired to a module:
+HUNTSMAN_ALIENVAULT_KEY="insert_alienvault_otx_key_here"
+HUNTSMAN_MALSHARE_KEY="insert_malshare_key_here"
+HUNTSMAN_PHISHTANK_KEY="insert_phishtank_key_here"
+
+# --- TIER 2: CYBERSPACE MAPPING & RADAR INFRASTRUCTURE RECONNAISSANCE ---
+HUNTSMAN_SHODAN_KEY="insert_shodan_key_here"
+HUNTSMAN_CENSYS_ID="insert_censys_id_here"
+HUNTSMAN_CENSYS_SECRET="insert_censys_secret_here"
+HUNTSMAN_SECTRAILS_KEY="insert_securitytrails_key_here"
+HUNTSMAN_LEAKIX_KEY="insert_leakix_key_here"
+HUNTSMAN_ONYPHE_KEY="insert_onyphe_key_here"
+HUNTSMAN_NETLAS_KEY="insert_netlas_key_here"
+HUNTSMAN_CRIMINALIP_KEY="insert_criminalip_key_here"
+HUNTSMAN_ZOOMEYE_KEY="insert_zoomeye_key_here"
+HUNTSMAN_BINARYEDGE_KEY="insert_binaryedge_key_here"
+
+# --- TIER 3: IDENTITY RECONSTRUCTION, LEAK COMPILATIONS & PERSONA MAPPING ---
+HUNTSMAN_INTELX_KEY="insert_intelx_io_key_here"
+HUNTSMAN_HIBP_KEY="insert_haveibeenpwned_key_here"
+HUNTSMAN_EPIEOS_KEY="insert_epieos_key_here"
+HUNTSMAN_SEON_KEY="insert_seon_key_here"
+HUNTSMAN_EMAILREP_KEY="insert_emailrep_key_here"
+HUNTSMAN_PROXYCURL_KEY="insert_proxycurl_key_here"
+HUNTSMAN_OPENCORP_KEY="insert_opencorporates_key_here"
+HUNTSMAN_BREACHDIR_KEY="insert_breachdirectory_key_here"
+HUNTSMAN_HUNTER_KEY="insert_hunter_io_key_here"
+# [RESERVED] not yet wired to a module (xposed_or_not + hudsonrock modules run
+# key-free today; these keys are placeholders for future paid tiers):
+HUNTSMAN_XPOSEDORNOT_KEY="insert_xposedornot_key_here"
+HUNTSMAN_HUDSONROCK_KEY="insert_hudsonrock_key_here"
+HUNTSMAN_DEHASHED_USER="insert_dehashed_account_email_here"
+HUNTSMAN_DEHASHED_KEY="insert_dehashed_key_here"
+HUNTSMAN_NUMVERIFY_KEY="insert_numverify_key_here"
+
+# --- TIER 4: LOCAL WIRELESS, CELLULAR & GEOSPATIAL SIGINT ENRICHMENT ---
+HUNTSMAN_WIGLE_USER="insert_wigle_api_name_here"
+HUNTSMAN_WIGLE_TOKEN="insert_wigle_api_key_here"
+HUNTSMAN_OPENCELLID_KEY="insert_opencellid_key_here"
+HUNTSMAN_BUILTWITH_KEY="insert_builtwith_key_here"
+HUNTSMAN_ABR_GUID="insert_abr_guid_here"
+# [RESERVED] not yet wired to a module:
+HUNTSMAN_MACADDRESS_KEY="insert_macaddress_io_key_here"
+HUNTSMAN_IPINFO_KEY="insert_ipinfo_io_key_here"
+HUNTSMAN_MAXMIND_KEY="insert_maxmind_key_here"
+
+# --- OPERATOR DEFAULT SEED (optional, local-only — never shipped) ---
+# Set this to YOUR OWN default scan target so `hse scan` / `hse live` can run
+# without retyping `--value`. It is read ONLY from this local file (chmod 0600,
+# git-ignored) or your shell environment — it is never embedded in the binary,
+# the repo, or the installer, so installing HSE never points it at anyone. Leave
+# it commented to require an explicit --value each time; an explicit `--value`
+# always overrides it. This line stays commented (no `[RESERVED]` tag needed —
+# the consumed-keys test only checks uncommented entries). Example:
+#   HUNTSMAN_DEFAULT_SEED=your-handle-or-target
+#HUNTSMAN_DEFAULT_SEED=
+
+# --- NETWORK EGRESS ROTATION (optional) ---
+# Spread traffic over several egress paths to avoid per-source rate limits on a
+# deep/everything scan. Both are opt-in; the hosts you list here are routed
+# THROUGH and are automatically excluded from being scanned as targets.
+#
+# Proxies — a comma-separated list, rotated round-robin (single value also OK):
+#   HUNTSMAN_SEARCH_PROXY=socks5://127.0.0.1:9050,http://user:pass@host:3128
+#HUNTSMAN_SEARCH_PROXY=
+# DNS resolvers — any of cloudflare,google,quad9 ; lookups rotate across them
+# (falls back to the system resolver on error):
+#   HUNTSMAN_DNS_RESOLVERS=cloudflare,google,quad9
+#HUNTSMAN_DNS_RESOLVERS=

@@ -1,0 +1,2186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Huntsman Search Engine</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Colours Chrome-on-Android's address bar to match the dark navbar. -->
+  <meta name="theme-color" content="#222222">
+  <!-- Inline SVG favicon (hunting-crosshair, brand cyan on navbar dark). Being a
+       data URI, modern Chrome uses it directly and never requests /favicon.ico —
+       which would otherwise fall through to the SPA fallback and return the whole
+       HTML document as an image. Fully offline; no extra route or binary asset. -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23222222'/><circle cx='16' cy='16' r='8' fill='none' stroke='%2307aef1' stroke-width='2'/><circle cx='16' cy='16' r='2.4' fill='%2307aef1'/><path d='M16 2v6M16 24v6M2 16h6M24 16h6' stroke='%2307aef1' stroke-width='2'/></svg>">
+
+  <!-- Spiderfoot's exact vendor stack: Bootstrap 3.4.1, jQuery 3.7.1,
+       D3 v3, tablesorter 2.31, alertify 1.13. Served from the embedded
+       binary so the SPA still loads with zero outbound requests. -->
+  <link href="/static/bootstrap.min.css"           rel="stylesheet">
+  <link href="/static/jquery.tablesorter.theme.css" rel="stylesheet">
+  <link href="/static/alertify.min.css"            rel="stylesheet">
+  <link href="/static/alertify.bootstrap.min.css"  rel="stylesheet">
+  <link href="/static/spiderfoot-style.css"        rel="stylesheet">
+
+  <style>
+    /* Tiny HSE-specific layer on top of Bootstrap 3 + spiderfoot.css.
+       Anything that diverges visibly from Spiderfoot's chrome belongs
+       in spiderfoot-style.css upstream — these rules are deliberately
+       narrow. */
+    body { background-color: #fff; }
+    .navbar-inverse { background-color: #222; border-color: #080808; }
+    .navbar-inverse .navbar-brand { color: #ddd; }
+    .navbar-inverse .navbar-nav > li > a { color: #ccc; }
+    .navbar-inverse .navbar-nav > li > a:hover { color: #fff; }
+    .navbar-inverse .navbar-nav > .active > a,
+    .navbar-inverse .navbar-nav > .active > a:hover { background-color: #080808; color: #fff; }
+    .navbar-brand b { color: #07aef1; font-weight: 600; }
+    .navbar-brand small { color: #999; font-weight: 400; font-size: 11px; margin-left: 6px; }
+    .stat-card { background:#f7f7f7; border:1px solid #e3e3e3; border-radius:4px;
+                 padding:10px 14px; margin-bottom:10px; }
+    .stat-card .lab { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:.04em; }
+    .stat-card .val { font-size:22px; font-weight:600; color:#333; line-height:1.2; }
+    .stat-card .val.dim { font-size:14px; color:#666; font-weight:400; }
+    .kind-pill { display:inline-block; font-size:10px; padding:2px 7px; border-radius:10px;
+                 background:#ddd; color:#444; font-weight:500; white-space:nowrap; }
+    .k-email{background:#d9edf7;color:#31708f}
+    .k-domain{background:#dff0d8;color:#3c763d}
+    .k-username{background:#e6f4ea;color:#2c7c40}
+    .k-phone{background:#fcf8e3;color:#8a6d3b}
+    .k-ip_address{background:#d9edf7;color:#31708f}
+    .k-asn{background:#e6e6fa;color:#5a4d8a}
+    .k-person{background:#dff0d8;color:#3c763d}
+    .k-credential{background:#f2dede;color:#a94442}
+    .k-password{background:#f2dede;color:#a94442}
+    .k-address{background:#fce8e6;color:#a94442}
+    .k-coordinates{background:#fde2d4;color:#8a4b1f}
+    .k-organisation{background:#e6e6fa;color:#5a4d8a}
+    .k-url{background:#d9edf7;color:#31708f}
+    .k-other{background:#eee;color:#666}
+    .status-pill { font-size:10px; padding:2px 8px; border-radius:10px; font-weight:500; }
+    .s-complete{background:#dff0d8;color:#3c763d}
+    .s-aborted{background:#fcf8e3;color:#8a6d3b}
+    .s-running{background:#d9edf7;color:#31708f}
+    .s-failed{background:#f2dede;color:#a94442}
+    .s-pending{background:#eee;color:#666}
+    .cost-pill { font-size:10px; padding:1px 7px; border-radius:10px; }
+    .cost-free{background:#dff0d8;color:#3c763d;border:1px solid #c3e0ad}
+    .cost-key_gated{background:#fcf8e3;color:#8a6d3b;border:1px solid #f1e3a7}
+    .cost-paid{background:#f2dede;color:#a94442;border:1px solid #e6b4b4}
+    .cls{font-family:monospace;font-size:11px}
+    .c-VERIFIED{color:#3c763d;font-weight:600}
+    .c-PROBABLE{color:#8a6d3b}
+    .c-CANDIDATE{color:#a94442}
+    .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;
+         background:#eee;color:#666;margin-right:2px}
+    .src-pill{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;
+              background:#e7f3fb;color:#31708f;margin-right:2px;font-family:monospace}
+    .crumbs{color:#888;font-size:12px;margin-bottom:8px}
+    .crumbs a{color:#059CD7;text-decoration:none}
+    .crumbs a:hover{text-decoration:underline}
+    .corr-card{padding:8px 12px;margin-bottom:6px;border-left:4px solid #999;background:#f7f7f7}
+    .cv-critical{border-color:#9b1f9b;background:#fce8fc}
+    .cv-high{border-color:#a94442;background:#fdf2f2}
+    .cv-medium{border-color:#8a6d3b;background:#fcf8e3}
+    .cv-low{border-color:#31708f;background:#eaf4fb}
+    .corr-name{font-weight:600;color:#333}
+    .corr-d{color:#555;font-size:12px}
+    .corr-h{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px}
+    #log-box{font-family:monospace;font-size:11.5px;line-height:1.7;
+             max-height:560px;overflow-y:auto;background:#f7f7f7;border:1px solid #e3e3e3;
+             border-radius:3px;padding:8px 12px}
+    .log-row{display:flex;gap:10px}
+    .log-row .ts{color:#888;flex-shrink:0;width:80px}
+    .log-row .typ{flex-shrink:0;width:120px;font-weight:600}
+    .log-row .msg{color:#444;flex:1;word-break:break-word}
+    .lv-info .typ{color:#31708f} .lv-ok .typ{color:#3c763d} .lv-err .typ{color:#a94442}
+    .lv-warn .typ{color:#8a6d3b} .lv-skip .typ{color:#888}
+    .lv-found .typ{color:#2c7c40} .lv-corr .typ{color:#9b1f9b}
+    #graph-svg{display:block;width:100%;height:560px;
+               background:radial-gradient(circle at 50% 40%,#fbfbfb 0%,#f4f4f4 70%);
+               border:1px solid #e3e3e3;border-radius:3px;cursor:grab;
+               /* Own touch gestures inside the canvas so one-finger pan/drag
+                  works on Chrome-Android instead of scrolling the page. */
+               touch-action:none}
+    /* SpiderFoot-style by-type bar in the scan summary */
+    .kbar-cell{min-width:120px}
+    .kbar-track{position:relative;height:14px;background:#eee;border-radius:2px;overflow:hidden}
+    .kbar-fill{position:absolute;left:0;top:0;height:100%;background:#07aef1;border-radius:2px}
+    .kbar-pct{position:absolute;right:4px;top:0;line-height:14px;font-size:10px;color:#444}
+    body.dark-theme .kbar-track{background:#333}
+    body.dark-theme .kbar-pct{color:#ccc}
+    .graph-legend{position:absolute;top:8px;right:14px;background:rgba(255,255,255,.92);
+                  border:1px solid #ddd;border-radius:3px;padding:6px 10px;font-size:11px}
+    .graph-legend .lr{display:flex;align-items:center;gap:6px;margin-bottom:2px;color:#555}
+    .graph-legend .sw{width:10px;height:10px;border-radius:50%;display:inline-block}
+    .graph-ctl{position:absolute;bottom:10px;left:14px}
+    .graph-hint{position:absolute;bottom:14px;right:14px;font-size:11px;
+                background:rgba(255,255,255,.85);padding:2px 8px;border-radius:3px}
+    .help-panel{background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;
+                padding:10px;font-size:12px}
+    .help-panel b{color:#333}
+    .help-panel i{color:#666;font-style:normal;font-family:monospace}
+    .keyrow{padding:10px 14px;background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;
+            margin-bottom:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .keyrow .kn{font-family:monospace;font-weight:600;color:#333;min-width:220px}
+    .keyrow .kd{font-size:11px;color:#888}
+    .keyrow input[type=password]{flex:1;min-width:200px}
+    /* Phone (Chrome-Android): keep fixed-width controls from overflowing a
+       narrow viewport. Overrides the inline widths via !important. */
+    @media (max-width: 767px) {
+      .navbar-form { margin-left: 0 !important; }
+      .navbar-form .input-group { width: 100% !important; }
+      #scan-filter { width: 100% !important; float: none !important; margin-top: 6px !important; display: block; }
+      .keyrow .kn { min-width: 0 !important; }
+      .keyrow input[type=password] { min-width: 0 !important; }
+    }
+    .keyrow .kactions{display:flex;gap:6px;margin-left:auto}
+    /* Capability-toggle grid (Settings): chips wrap and flow; monospace name. */
+    .tg-grid{display:flex;flex-wrap:wrap;gap:5px}
+    .tg-chip{font-family:monospace}
+    .mod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:4px;
+              max-height:380px;overflow-y:auto;padding:2px;border:1px solid #e3e3e3;
+              border-radius:3px;background:#fafafa}
+    .mod-grid label{display:flex;align-items:center;gap:6px;padding:5px 8px;background:#fff;
+                    border:1px solid #e3e3e3;border-radius:3px;font-weight:400;margin:0;cursor:pointer}
+    .mod-grid label:hover{border-color:#aaa}
+    .mod-grid label.dimmed{opacity:.45}
+    .mod-grid .mn{font-family:monospace;font-size:11.5px;flex:1;overflow:hidden;
+                  text-overflow:ellipsis;white-space:nowrap}
+    .navbar-brand{padding-top:14px;padding-bottom:14px}
+    .navbar-brand .brand-logo-text{font-size:18px;letter-spacing:.02em;color:#333}
+    /* Tablesorter v2 theme tweak — make header arrows visible */
+    .tablesorter-default thead .tablesorter-header { background-image: none; padding-right:18px; }
+    .tablesorter-default thead .tablesorter-headerAsc::after  { content:" ▲"; color:#059CD7 }
+    .tablesorter-default thead .tablesorter-headerDesc::after { content:" ▼"; color:#059CD7 }
+    .progress.thin{height:6px;margin-bottom:0}
+    .scan-error{color:#a94442;font-family:monospace;font-size:11px}
+    .entity-detail{background:#f7f9fc;border-top:1px solid #e3e3e3;padding:10px 14px}
+    .entity-detail .ev-block{margin-bottom:8px;padding:6px 10px;background:#fff;border:1px solid #e3e3e3;border-radius:3px}
+    .entity-detail .ev-src{font-family:monospace;font-size:11px;color:#31708f;font-weight:600}
+    .entity-detail .ev-sum{font-size:12px;color:#444;margin:2px 0}
+    .entity-detail .ev-attrs{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
+    .entity-detail .ev-attr{font-size:10px;background:#eef3f8;padding:1px 6px;border-radius:3px;color:#333;font-family:monospace}
+    .entity-detail .ev-attr .ak{color:#666}
+    #browse-table tbody tr{cursor:pointer}
+    #browse-table tbody tr:hover{background:#f0f7ff !important}
+    body.dark-theme .entity-detail{background:#1e2228}
+    body.dark-theme .entity-detail .ev-block{background:#252830;border-color:#333}
+    body.dark-theme .entity-detail .ev-attr{background:#2a2f38;color:#ccc}
+    .search-results{padding:12px}
+    .search-results .sr-item{padding:8px 12px;border-bottom:1px solid #eee;cursor:pointer}
+    .search-results .sr-item:hover{background:#f0f7ff}
+    .empty-state{padding:32px 20px;text-align:center;color:#888}
+    .empty-state h3{color:#555;font-weight:500;font-size:16px;margin-bottom:6px}
+    .empty-state p{font-size:13px;max-width:480px;margin:0 auto 12px;line-height:1.5}
+    /* Dark mode (Spiderfoot-compatible — toggled via #theme-toggler) */
+    body.dark-theme{background:#1a1a1a;color:#ddd}
+    body.dark-theme .navbar-inverse{background:#111;border-color:#000}
+    body.dark-theme .navbar-inverse .navbar-nav>.active>a{background:#000}
+    body.dark-theme .panel{background:#222;border-color:#333}
+    body.dark-theme .panel-default>.panel-heading{background:#2a2a2a;border-color:#333;color:#ddd}
+    body.dark-theme .table-striped>tbody>tr:nth-of-type(odd){background:#252525}
+    body.dark-theme .table>tbody>tr>td,body.dark-theme .table>thead>tr>th{border-color:#333;color:#ddd}
+    body.dark-theme .stat-card{background:#222;border-color:#333}
+    body.dark-theme .stat-card .val{color:#ddd}
+    body.dark-theme .help-panel{background:#222;border-color:#333}
+    body.dark-theme .help-panel b{color:#eee}
+    body.dark-theme #graph-svg{background:radial-gradient(circle at 50% 40%,#222 0%,#1a1a1a 70%)}
+    body.dark-theme .graph-hint{background:rgba(20,20,20,.85);color:#999}
+    body.dark-theme #log-box{background:#222;border-color:#333;color:#ddd}
+    body.dark-theme .keyrow{background:#222;border-color:#333}
+    body.dark-theme .mod-grid{background:#1f1f1f;border-color:#333}
+    body.dark-theme .mod-grid label{background:#272727;border-color:#333;color:#ddd}
+  </style>
+</head>
+<body>
+
+<nav class="navbar navbar-inverse navbar-fixed-top">
+  <div class="container-fluid">
+    <div class="navbar-header">
+      <button type="button" class="navbar-toggle collapsed" data-toggle="collapse"
+              data-target="#main-navbar-collapse" aria-expanded="false">
+        <span class="icon-bar"></span><span class="icon-bar"></span><span class="icon-bar"></span>
+      </button>
+      <a class="navbar-brand brand-logo" href="#/dash">
+        <span class="brand-logo-text">Huntsman <b>·</b> Search Engine <small>v<span id="ver">?</span></small></span>
+      </a>
+    </div>
+    <div class="collapse navbar-collapse" id="main-navbar-collapse">
+      <ul class="nav navbar-nav">
+        <li id="nav-dash"   ><a href="#/dash"   ><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Dashboard</a></li>
+        <li id="nav-newscan"><a href="#/newscan"><i class="glyphicon glyphicon-screenshot"></i>&nbsp;New Scan</a></li>
+        <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
+        <li id="nav-live"   ><a href="#/live"   ><i class="glyphicon glyphicon-record"></i>&nbsp;Live</a></li>
+        <li id="nav-engines"><a href="#/engines"><i class="glyphicon glyphicon-search"></i>&nbsp;Engines</a></li>
+        <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a></li>
+      </ul>
+      <form class="navbar-form navbar-left" style="margin-left:10px" onsubmit="globalSearch(event)">
+        <div class="input-group input-group-sm" style="width:220px">
+          <input type="search" id="global-q" class="form-control" placeholder="Search all entities…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <span class="input-group-btn"><button class="btn btn-default" type="submit"><i class="glyphicon glyphicon-search"></i></button></span>
+        </div>
+      </form>
+      <ul class="nav navbar-nav navbar-right">
+        <li><a href="#" id="theme-toggle"><i class="glyphicon glyphicon-adjust"></i>&nbsp;<span id="theme-label">Dark Mode</span></a></li>
+        <li><a href="#aboutmodal" data-toggle="modal" data-target="#aboutmodal"><i class="glyphicon glyphicon-info-sign"></i>&nbsp;About</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<!-- About modal -->
+<div id="aboutmodal" class="modal fade" role="dialog" aria-hidden="true">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+        <h3 class="modal-title">Huntsman Search Engine</h3>
+      </div>
+      <div class="modal-body">
+        <p>Huntsman Search Engine (HSE) is a pure-Rust OSINT / GEOINT prototype designed
+        to run on Termux on Android aarch64 (no root). Single binary, rustls-only, no
+        native dependencies, bundled SQLite, embedded SPA.</p>
+        <p>You are running version <b>v<span id="ver2">?</span></b>.</p>
+        <p>UI patterns and visual identity intentionally mirror
+        <a href="https://www.spiderfoot.net/" target="_blank">SpiderFoot</a> for operator
+        familiarity. Source code on
+        <a href="https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-" target="_blank">GitHub</a>.</p>
+        <p style="color:#888;font-size:11px">⚠️ API keys are sensitive. Set them via
+        <code>$HOME/.huntsman.env</code> (chmod 0600) or on the Settings page
+        (editable by default, loopback only; lock down with <code>hse serve --no-key-write</code>).
+        Never paste keys into chat, screenshots, or shared documents.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" data-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="container-fluid" id="mainbody" style="padding-top:60px;padding-bottom:50px;max-width:1500px">
+  <div id="view"></div>
+</div>
+
+<!-- Vendor scripts loaded at bottom for faster first paint, matching
+     Spiderfoot's footer layout. -->
+<script src="/static/jquery.min.js"></script>
+<script src="/static/bootstrap.min.js"></script>
+<script src="/static/alertify.min.js"></script>
+<script src="/static/jquery.tablesorter.min.js"></script>
+<script src="/static/d3.min.js"></script>
+
+<script>
+"use strict";
+/* ════════════════════════════════════════════════════════════════════════
+ * Huntsman Search Engine — SPA logic.
+ *
+ * Layout patterns and component vocabulary (panels, nav-tabs, tables,
+ * btn-danger "Run Scan Now", "By Use Case / By Required Data / By Module"
+ * wizard tabs) mirror SpiderFoot's templates so operators get the same
+ * mental model. The state machine, router, and API client are
+ * HSE-specific and talk to /api/v1/* (see src/api/routes.rs).
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+const TARGET_KINDS = [
+  {v:'auto',        label:'Auto-detect (recommended)'},
+  {v:'email',       label:'E-mail Address'},
+  {v:'username',    label:'Username'},
+  {v:'phone',       label:'Phone Number'},
+  {v:'full_name',   label:'Human Name'},
+  {v:'ip_address',  label:'IP Address'},
+  {v:'domain',      label:'Domain Name'},
+  {v:'url',         label:'URL'},
+  {v:'asn',         label:'Network ASN'},
+  {v:'coordinates', label:'GPS Coordinates'},
+  {v:'address',     label:'Postal Address'},
+];
+
+const USE_CASES = {
+  all: {
+    label:'All',
+    desc:'<b>Get anything and everything about the target.</b><br><br>All Huntsman modules will be enabled (slow) but every possible piece of information about the target will be obtained and analysed.',
+    pick:_m=>true,
+    options:()=>({})
+  },
+  footprint: {
+    label:'Footprint',
+    desc:"<b>Understand what information this target exposes to the Internet.</b><br><br>Gain an understanding about the target's network perimeter, associated identities and other information that is obtained through web crawling and infrastructure lookups.",
+    pick:m=>['crtsh','dns_resolver','reverse_dns','dns_brute','wayback','bgpview','whois','ip_geo','ip_rdap','phone_intl','webserver_banner'].includes(m.name),
+    options:picked=>({modules:picked})
+  },
+  investigate: {
+    label:'Investigate',
+    desc:'<b>Best for when you suspect the target to be malicious but need more information.</b><br><br>Some basic footprinting will be performed in addition to querying of breach datasets, threat-intelligence feeds, identity sources, and credential exposure databases (paid sources used when keys are present).',
+    pick:m=>['hudsonrock','xposed_or_not','alienvault_otx','urlhaus','tor_exit_check','gravatar','github_user','username_search','email_to_username','oathnet_pro'].includes(m.name),
+    options:picked=>({modules:picked})
+  },
+  passive: {
+    label:'Passive',
+    desc:"<b>When you don't want the target to even suspect they are being investigated.</b><br><br>As much information will be gathered without touching the target or their affiliates, therefore only modules that do not touch the target will be enabled.",
+    pick:m=>!!m.passive,
+    options:()=>({passive_only:true})
+  }
+};
+
+const S = {
+  route:    {name:'scans', params:{}, query:{}},
+  version:  '',
+  health:   null,
+  modules:  null,
+  scans:    null,
+  scan:     null,
+  entities: null,
+  correlations: null,
+  relations: null,
+  settings: null,
+  sse:      null,
+  events:   [],
+  graph:    null,
+  wizard: {
+    name:'', value:'', kind:'auto',
+    usecase:'all', modules:null,
+    activeTab:'usecase',
+    showAdv:false,
+    options:{ exclude_modules:[], throttle_ms:250, module_timeout_ms:null, depth:2,
+              min_expand_confidence:0.50, max_entities:null, max_wall_time_secs:null,
+              max_concurrent:2, min_confidence:null, free_only:false }
+  }
+};
+
+/* ─── Helpers ─── */
+const $ = (s,r)=>(r||document).querySelector(s);
+const $$ = (s,r)=>Array.from((r||document).querySelectorAll(s));
+function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function attr(s){return esc(s);}
+function nowSec(){return Math.floor(Date.now()/1000);}
+function fmtDate(ts){
+  if(!ts) return '—';
+  const d=new Date(ts*1000);
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function fmtDuration(secs){
+  if(secs==null||secs<0) return '—';
+  if(secs<60) return `${secs}s`;
+  const m=Math.floor(secs/60),s=secs%60;
+  if(m<60) return `${m}m ${s}s`;
+  const h=Math.floor(m/60),mm=m%60;
+  return `${h}h ${mm}m`;
+}
+function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
+function statusPill(s){const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending',aborted:'s-aborted'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
+function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
+function kindPill(k){return `<span class="kind-pill k-${attr(k)}">${esc(k)}</span>`;}
+// Deterministic self-enrichment passes are NOT independent intelligence and
+// must not be counted as corroboration — mirror the backend's
+// ENRICHMENT_ONLY_SOURCES so a coarse geo guess the geospatial pass touched
+// isn't lifted out of the Candidate tier on the dashboard.
+const ENRICHMENT_SOURCES = new Set(['geo_normalize']);
+// Distinct corroborating sources drive the C_eff boost — must match the
+// backend's Entity::source_count()/corroborating_sources(): count distinct
+// non-enrichment evidence.source strings; when none are present, fall back to
+// the corroboration field. (The old version boosted on the raw corroboration
+// field, which over-credited single-source findings whose within-module counts
+// were summed by merge.)
+function sourceCount(e){
+  const evs=e.evidence||[];
+  if(evs.length){const s=new Set();for(const ev of evs){if(ev&&ev.source&&!ENRICHMENT_SOURCES.has(ev.source))s.add(ev.source);}if(s.size)return Math.max(1,s.size);}
+  return Math.max(1,e.corroboration??1);
+}
+// Mirror the backend Entity::c_effective(): the STRONGER of the multiplicative
+// boost and the independent-agreement (noisy-OR) term over the distinct
+// corroborating source count n, so Browse tiers/confidence match the engine's
+// authoritative classification + the CSV export instead of under-reporting
+// genuinely multi-source entities. gamma = 0.65 (CORROBORATION_DOUBT_DECAY); at
+// n = 1 both terms equal the base confidence, so single-source rows are unchanged.
+function effC(e){
+  const c=e.confidence??0, n=sourceCount(e);
+  const mult=c*(1+0.15*Math.log(n));
+  const agreement=1-(1-c)*Math.pow(0.65,n-1);
+  return Math.min(1,Math.max(0,Math.max(mult,agreement)));
+}
+function trunc(s,n){s=String(s||'');return s.length>n?s.slice(0,n)+'…':s;}
+/* Linkify http(s) values only (javascript:/data: stay inert escaped text), so
+   URL entities and pivot/avatar evidence are clickable — SpiderFoot/NAMINT UX. */
+/* Stringify any attribute value for display: null/undefined -> '', objects ->
+   JSON (not "[object Object]"), and numeric 0 preserved (not dropped by ||). */
+function attrText(v){return v==null?'':(typeof v==='object'?JSON.stringify(v):String(v));}
+function extLink(url,maxText){
+  url=url==null?'':String(url);
+  const text=esc(maxText?trunc(url,maxText):url);
+  if(!/^https?:\/\//i.test(url)) return text;
+  return `<a href="${attr(url)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+}
+function classify(eff){return eff>=0.75?'VERIFIED':eff>=0.4?'PROBABLE':'CANDIDATE';}
+function toast(msg,kind){
+  if (typeof alertify === 'undefined') return;
+  const fn = kind==='err'?'error':kind==='warn'?'warning':'success';
+  alertify.notify(msg, fn, 3);
+}
+
+/* ─── API client ─── */
+const API = {
+  async _req(path, opts){
+    opts = opts || {};
+    const init = {method: opts.method||'GET'};
+    if (opts.body){ init.headers = {'Content-Type':'application/json'}; init.body = JSON.stringify(opts.body); }
+    const r = await fetch(path, init);
+    if (opts.raw) return r;
+    if (!r.ok){
+      let err = `HTTP ${r.status}`;
+      try { const j = await r.json(); err = j.error || JSON.stringify(j); } catch {}
+      throw new Error(err);
+    }
+    const ct = r.headers.get('content-type')||'';
+    return ct.includes('application/json') ? r.json() : r.text();
+  },
+  health:    ()=>API._req('/api/v1/health'),
+  modules:   ()=>API._req('/api/v1/modules'),
+  engines:   ()=>API._req('/api/v1/engines/health'),
+  scans:     ()=>API._req('/api/v1/scans'),
+  scan:      id=>API._req('/api/v1/scans/'+encodeURIComponent(id)),
+  entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
+  correlations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/correlations'),
+  relations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/relations'),
+  create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
+  rerun:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/rerun',{method:'POST'}),
+  cancel:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/cancel',{method:'POST'}),
+  remove:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id),{method:'DELETE'}),
+  csvUrl:    id=>'/api/v1/scans/'+encodeURIComponent(id)+'/entities.csv',
+  reportUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json',
+  gexfUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/graph.gexf',
+  keysGet:   ()=>API._req('/api/v1/settings/keys'),
+  keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
+  togglesGet: ()=>API._req('/api/v1/settings/toggles'),
+  togglesPut: body=>API._req('/api/v1/settings/toggles',{method:'PUT',body}),
+  stats:     ()=>API._req('/api/v1/stats'),
+  search:    (q,limit)=>API._req('/api/v1/search?q='+encodeURIComponent(q)+'&limit='+(limit||50)),
+  liveList:   ()=>API._req('/api/v1/live'),
+  liveCreate: body=>API._req('/api/v1/live',{method:'POST',body}),
+  liveStop:   id=>API._req('/api/v1/live/'+encodeURIComponent(id),{method:'DELETE'}),
+  selftest:   ()=>API._req('/api/v1/selftest'),
+  logsUrl:    ()=>'/api/v1/logs'
+};
+
+/* ─── Router (hash-based, mirrors SpiderFoot's path semantics) ─── */
+function parseHash(){
+  const raw = (location.hash||'#/dash').replace(/^#/,'');
+  const [path, qs] = raw.split('?');
+  const segs = path.split('/').filter(Boolean);
+  const query = {};
+  (qs||'').split('&').filter(Boolean).forEach(p=>{
+    const [k,v] = p.split('='); query[decodeURIComponent(k)] = decodeURIComponent(v||'');
+  });
+  if (segs.length===0 || segs[0]==='dash' || segs[0]==='dashboard') return {name:'dash', params:{}, query};
+  if (segs[0]==='scans')                    return {name:'scans', params:{}, query};
+  if (segs[0]==='newscan')                  return {name:'newscan', params:{}, query};
+  if (segs[0]==='opts'||segs[0]==='settings') return {name:'opts', params:{}, query};
+  if (segs[0]==='search')                   return {name:'search', params:{}, query};
+  if (segs[0]==='live')                     return {name:'live', params:{}, query};
+  if (segs[0]==='engines')                  return {name:'engines', params:{}, query};
+  if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
+  return {name:'dash', params:{}, query};
+}
+function nav(href){ location.hash = href; }
+window.addEventListener('hashchange', ()=>render());
+
+/* ─── Top-level dispatcher ─── */
+async function render(){
+  closeSse();
+  clearLiveTimer();
+  clearScanTimer();
+  clearEnginesTimer();
+  S.route = parseHash();
+  $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
+  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines'};
+  const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
+
+  const v = $('#view');
+  v.innerHTML = '<div class="empty-state"><h3>Loading…</h3></div>';
+  try {
+    if (S.route.name==='dash')     return await renderDash(v);
+    if (S.route.name==='scans')    return await renderScans(v);
+    if (S.route.name==='newscan')  return await renderNewScan(v);
+    if (S.route.name==='scaninfo') return await renderScanInfo(v);
+    if (S.route.name==='opts')     return await renderOpts(v);
+    if (S.route.name==='search')   return await renderSearch(v);
+    if (S.route.name==='live')     return await renderLive(v);
+    if (S.route.name==='engines')  return await renderEngines(v);
+  } catch(e){
+    v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
+                   <button class="btn btn-default btn-sm" style="margin-left:12px" onclick="render()">Retry</button></div>`;
+  }
+}
+
+/* ═══════════ Page: DASHBOARD (#/dash) ═══════════ */
+async function renderDash(v){
+  const [stats, mods, scansData] = await Promise.all([API.stats(), API.modules(), API.scans()]);
+  const s = stats;
+  const recent = (scansData.scans || []).slice(0, 8);
+  const byStatus = s.scans_by_status || {};
+  v.innerHTML = `
+    <div class="page-header" style="margin-top:0;border-bottom:1px solid #eee;padding-bottom:8px">
+      <h3 style="margin:0"><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Dashboard</h3>
+    </div>
+    <div class="row">
+      <div class="col-md-3 col-sm-6 col-xs-6">
+        <div class="stat-card">
+          <div class="lab">Total Scans</div>
+          <div class="val">${s.scans_total||0}</div>
+        </div>
+      </div>
+      <div class="col-md-3 col-sm-6 col-xs-6">
+        <div class="stat-card">
+          <div class="lab">Total Entities</div>
+          <div class="val">${s.entities_total||0}</div>
+        </div>
+      </div>
+      <div class="col-md-3 col-sm-6 col-xs-6">
+        <div class="stat-card">
+          <div class="lab">Modules Loaded</div>
+          <div class="val">${s.modules||0}</div>
+        </div>
+      </div>
+      <div class="col-md-3 col-sm-6 col-xs-6">
+        <a href="#/live" class="stat-card" style="display:block;text-decoration:none;color:inherit" title="Open Live Monitor">
+          <div class="lab">Live Sessions</div>
+          <div class="val">${s.live_sessions||0}</div>
+        </a>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div class="col-md-4">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>Scan Status</b></div>
+          <div class="panel-body">
+            <table class="table table-condensed" style="margin-bottom:0">
+              ${Object.entries(byStatus).map(([k,n])=>`<tr><td>${statusPill(k)}</td><td class="text-right"><b>${n}</b></td></tr>`).join('')}
+              ${Object.keys(byStatus).length===0?'<tr><td colspan="2" class="text-center text-muted">No scans yet</td></tr>':''}
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>Quick Actions</b></div>
+          <div class="panel-body">
+            <a href="#/newscan" class="btn btn-danger btn-block"><i class="glyphicon glyphicon-plus"></i>&nbsp;New Scan</a>
+            <a href="#/scans" class="btn btn-default btn-block" style="margin-top:6px"><i class="glyphicon glyphicon-list"></i>&nbsp;View Scans</a>
+            <a href="#/opts" class="btn btn-default btn-block" style="margin-top:6px"><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>System</b></div>
+          <div class="panel-body">
+            <table class="table table-condensed" style="margin-bottom:0">
+              <tr><td>Version</td><td class="text-right"><code>v${esc(s.version||'?')}</code></td></tr>
+              <tr><td>Modules</td><td class="text-right"><b>${mods.count||0}</b></td></tr>
+              <tr><td>Free modules</td><td class="text-right">${(mods.modules||[]).filter(m=>m.cost==='free').length}</td></tr>
+              <tr><td>Key-gated</td><td class="text-right">${(mods.modules||[]).filter(m=>m.cost==='key_gated').length}</td></tr>
+              <tr><td>Paid</td><td class="text-right">${(mods.modules||[]).filter(m=>m.cost==='paid').length}</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel panel-default" style="margin-top:12px">
+      <div class="panel-heading"><b>Recent Scans</b>
+        <a href="#/scans" class="pull-right" style="font-size:12px">View all &rarr;</a>
+      </div>
+      ${recent.length ? renderScansTable(recent)
+        : '<div class="panel-body text-center text-muted">No scans yet — start one from <a href="#/newscan">New Scan</a>.</div>'}
+    </div>`;
+  if (recent.length) wireScansTable();
+}
+
+/* ═══════════ Page: SCANLIST (#/scans) ═══════════ */
+async function renderScans(v){
+  const data = await API.scans();
+  S.scans = data.scans || [];
+  const stats = scanStats(S.scans);
+
+  v.innerHTML = `
+    <h2>Scans &nbsp;<small class="text-muted">${stats.total} scan${stats.total===1?'':'s'} on record</small>
+        <div class="pull-right">
+          <button class="btn btn-default btn-sm" onclick="render()"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Refresh</button>
+          <a class="btn btn-danger btn-sm" href="#/newscan"><i class="glyphicon glyphicon-plus"></i>&nbsp;New Scan</a>
+        </div>
+    </h2>
+    <hr style="margin:8px 0 14px 0">
+
+    <div class="row">
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Total</div><div class="val">${stats.total}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Running</div><div class="val" style="color:${stats.running?'#31708f':'#888'}">${stats.running}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Complete</div><div class="val" style="color:${stats.complete?'#3c763d':'#888'}">${stats.complete}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Entities found</div><div class="val">${stats.entities}</div></div></div>
+    </div>
+
+    <div class="panel panel-default" id="scanlist">
+      <div class="panel-heading">
+        Recent scans
+        <input id="scan-filter" type="search" class="form-control input-sm pull-right"
+               style="width:240px;margin-top:-4px" placeholder="Filter scans…">
+      </div>
+      <div id="scans-table-host">${renderScansTable(S.scans)}</div>
+    </div>
+  `;
+  if (S.scans.length){ wireScansTable(); }
+  const f = $('#scan-filter');
+  if (f) f.addEventListener('input', ()=>{
+    const q = f.value.trim().toLowerCase();
+    const rows = q ? S.scans.filter(s =>
+      (s.target?.value||'').toLowerCase().includes(q)
+      || (s.target?.kind||'').includes(q)
+      || (s.status||'').includes(q)
+      || (s.id||'').includes(q)
+    ) : S.scans;
+    $('#scans-table-host').innerHTML = renderScansTable(rows);
+    wireScansTable();
+  });
+}
+function scanStats(scans){
+  let running=0,complete=0,failed=0,entities=0;
+  for(const s of scans){
+    if (s.status==='running'||s.status==='pending') running++;
+    else if (s.status==='complete') complete++;
+    else if (s.status==='failed') failed++;
+    entities += s.entity_count||0;
+  }
+  return {total:scans.length,running,complete,failed,entities};
+}
+function renderScansTable(scans){
+  if (!scans.length){
+    return `<div class="empty-state"><h3>No scans yet</h3>
+            <p>Submit a target to start the first scan. Results stream in real-time
+               and are persisted to the local database.</p>
+            <a class="btn btn-danger" href="#/newscan"><i class="glyphicon glyphicon-plus"></i>&nbsp;Run Scan Now</a></div>`;
+  }
+  const rows = scans.map(s=>{
+    const kind = s.target?.kind||'—';
+    const dur = s.finished_at && s.started_at ? s.finished_at - s.started_at
+              : s.status==='running' ? nowSec()-(s.started_at||nowSec()) : null;
+    return `<tr>
+      <td><a href="#/scaninfo?id=${attr(s.id)}" class="link">${esc(s.target?.value||s.id)}</a></td>
+      <td>${kindPill(kind)}</td>
+      <td>${esc(fmtDate(s.started_at))}</td>
+      <td>${esc(fmtDuration(dur))}</td>
+      <td>${statusPill(s.status)}</td>
+      <td class="text-right">${s.entity_count||0}</td>
+      <td>
+        <a href="#/scaninfo?id=${attr(s.id)}" class="btn btn-default btn-xs" title="Open"><i class="glyphicon glyphicon-eye-open"></i></a>
+        <button class="btn btn-default btn-xs" data-rerun="${attr(s.id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i></button>
+        <a class="btn btn-default btn-xs" href="${API.csvUrl(s.id)}" title="Export CSV"><i class="glyphicon glyphicon-download-alt"></i></a>
+        <button class="btn btn-danger btn-xs" data-delete="${attr(s.id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
+      </td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="scans-table">
+    <thead><tr>
+      <th>Target</th><th>Type</th><th>Created</th><th>Duration</th>
+      <th>Status</th><th class="text-right">Entities</th>
+      <th class="sorter-false">Actions</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function wireScansTable(){
+  if (window.jQuery && jQuery.fn.tablesorter) {
+    try { jQuery('#scans-table').tablesorter({sortList:[[2,1]]}); } catch {}
+  }
+  $$('button[data-rerun]').forEach(b=>b.addEventListener('click', e=>{
+    e.stopPropagation();
+    const id = b.dataset.rerun;
+    alertify.confirm('Re-run scan', 'Start a new scan with the same target and options?', async ()=>{
+      try { const r = await API.rerun(id); toast('Scan queued'); nav(`#/scaninfo?id=${r.scan_id}&tab=log`); }
+      catch(e){ toast(e.message,'err'); }
+    }, ()=>{});
+  }));
+  $$('button[data-delete]').forEach(b=>b.addEventListener('click', e=>{
+    e.stopPropagation();
+    const id = b.dataset.delete;
+    alertify.confirm('Delete scan', 'This deletes the scan, its correlations, and any entities not shared with another scan. Continue?', async ()=>{
+      try { await API.remove(id); toast('Scan deleted'); render(); }
+      catch(e){ toast(e.message,'err'); }
+    }, ()=>{});
+  }));
+}
+
+/* ═══════════ Page: NEWSCAN (#/newscan) ═══════════ */
+async function renderNewScan(v){
+  if (!S.modules){ const m = await API.modules(); S.modules = m.modules || []; }
+  const W = S.wizard;
+
+  v.innerHTML = `
+    <h2>New Scan</h2>
+    <hr style="margin:8px 0 14px 0">
+
+    <form id="scan-form" class="form" onsubmit="event.preventDefault();submitWizard();">
+      <div class="row">
+        <div class="col-sm-4" style="padding-bottom:10px">
+          <label for="scanname">Scan Name</label>
+          <div class="input-group" style="padding-bottom:10px">
+            <input class="form-control" type="text" id="scanname" value="${attr(W.name)}" placeholder="The name of this scan.">
+          </div>
+          <label for="scantarget">Scan Target</label>
+          <div class="input-group" style="padding-bottom:10px">
+            <input class="form-control" type="text" id="scantarget" value="${attr(W.value)}" placeholder="The target of your scan." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          </div>
+          <label for="scankind">Target Type</label>
+          <select id="scankind" class="form-control">
+            ${TARGET_KINDS.map(k=>`<option value="${attr(k.v)}"${W.kind===k.v?' selected':''}>${esc(k.label)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="col-sm-8" style="padding-bottom:10px">
+          <div class="help-panel">
+            <i class="glyphicon glyphicon-question-sign"></i>&nbsp;&nbsp;
+            Your scan target may be one of the following. Pick the matching Target Type on the left:
+            <div class="row" style="margin-top:8px">
+              <div class="col-sm-6">
+                <b>Domain Name</b>: e.g. <i>example.com</i><br>
+                <b>IPv4 Address</b>: e.g. <i>1.2.3.4</i><br>
+                <b>IPv6 Address</b>: e.g. <i>2606:4700:4700::1111</i><br>
+                <b>Hostname / Subdomain</b>: e.g. <i>abc.example.com</i><br>
+                <b>Network ASN</b>: e.g. <i>AS13335</i> or <i>13335</i>
+              </div>
+              <div class="col-sm-6">
+                <b>E-mail Address</b>: e.g. <i>bob@example.com</i><br>
+                <b>Phone Number</b>: e.g. <i>+12345678901</i> (E.164)<br>
+                <b>Human Name</b>: e.g. <i>"Jane Doe"</i><br>
+                <b>Username</b>: e.g. <i>jsmith2000</i><br>
+                <b>GPS Coordinates</b>: e.g. <i>-33.8688,151.2093</i>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <ul class="nav nav-tabs">
+          <li id="usetab" class="${W.activeTab==='usecase'?'active':''}"><a href="#" data-tab="usecase">By Use Case</a></li>
+          <li id="moduletab" class="${W.activeTab==='module'?'active':''}"><a href="#" data-tab="module">By Module</a></li>
+          <div class="btn-group-sm pull-right" id="selectors" style="display:${W.activeTab==='module'?'block':'none'};padding:6px">
+            <button id="btn-select-all" type="button" class="btn btn-info btn-sm">Select All</button>&nbsp;
+            <button id="btn-deselect-all" type="button" class="btn btn-info btn-sm">De-Select All</button>&nbsp;
+            <button id="btn-reset-preset" type="button" class="btn btn-default btn-sm">Use Preset</button>
+          </div>
+        </ul>
+
+        <table class="table table-striped table-condensed" id="usetable" style="display:${W.activeTab==='usecase'?'table':'none'}">
+          ${Object.entries(USE_CASES).map(([k,uc])=>`
+            <tr>
+              <td style="width:50px;vertical-align:middle">
+                <input type="radio" name="usecase" value="${attr(k)}" id="usecase_${attr(k)}" ${W.usecase===k?'checked':''}>
+              </td>
+              <td style="width:140px;vertical-align:middle"><label for="usecase_${attr(k)}" style="margin:0;font-weight:600">${esc(uc.label)}</label></td>
+              <td>${uc.desc}</td>
+            </tr>
+          `).join('')}
+        </table>
+
+        <div id="moduletable-host" style="display:${W.activeTab==='module'?'block':'none'}"></div>
+      </div>
+
+      <p style="margin-top:14px;margin-bottom:6px">
+        <a href="#" id="adv-toggle" style="font-size:12px;color:#059CD7">${W.showAdv?'▾':'▸'} Advanced options</a>
+      </p>
+      <div id="adv-box" style="display:${W.showAdv?'block':'none'};background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;padding:10px;margin-bottom:14px">
+        <div class="row">
+          <div class="col-sm-3">
+            <label>Expansion depth</label>
+            <input type="number" class="form-control input-sm" id="w-depth" min="0" max="5" value="${W.options.depth}">
+            <span class="help-block">0 = single round. ≥1 enables autonomous expansion.</span>
+          </div>
+          <div class="col-sm-3">
+            <label>Min expand C_eff</label>
+            <input type="number" class="form-control input-sm" id="w-mxc" min="0" max="1" step="0.05" value="${W.options.min_expand_confidence}">
+            <span class="help-block">Only expand entities ≥ this effective confidence.</span>
+          </div>
+          <div class="col-sm-3">
+            <label>Concurrent modules</label>
+            <input type="number" class="form-control input-sm" id="w-concurrent" min="0" value="${W.options.max_concurrent}">
+            <span class="help-block">0 = sequential. N&gt;0 = up to N in flight.</span>
+          </div>
+          <div class="col-sm-3">
+            <label>Module timeout (ms)</label>
+            <input type="number" class="form-control input-sm" id="w-timeout" min="100" placeholder="module default" value="${W.options.module_timeout_ms??''}">
+          </div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <div class="col-sm-3">
+            <label>Throttle (ms)</label>
+            <input type="number" class="form-control input-sm" id="w-throttle" min="0" value="${W.options.throttle_ms}">
+          </div>
+          <div class="col-sm-3">
+            <label>Max entities</label>
+            <input type="number" class="form-control input-sm" id="w-maxent" min="0" placeholder="unlimited" value="${W.options.max_entities??''}">
+          </div>
+          <div class="col-sm-3">
+            <label>Max wall time (sec)</label>
+            <input type="number" class="form-control input-sm" id="w-maxwt" min="0" placeholder="unlimited" value="${W.options.max_wall_time_secs??''}">
+          </div>
+          <div class="col-sm-3">
+            <label>Min confidence</label>
+            <input type="number" class="form-control input-sm" id="w-minc" min="0" max="1" step="0.05" placeholder="no filter" value="${W.options.min_confidence??''}">
+          </div>
+        </div>
+        <label style="margin-top:10px;font-weight:normal">
+          <input type="checkbox" id="w-free" ${W.options.free_only?'checked':''}> Free-only (skip key-gated and paid modules)
+        </label>
+      </div>
+
+      <div class="control-group" style="margin-top:14px">
+        <label class="text-muted" style="font-size:12px">Tags <span class="text-muted">(comma-separated labels for campaign tracking)</span></label>
+        <input type="text" class="form-control input-sm" id="w-tags" placeholder="e.g. investigation-001, apt-29">
+      </div>
+      <div class="control-group" style="margin-top:6px">
+        <label class="text-muted" style="font-size:12px">Notes</label>
+        <textarea class="form-control input-sm" id="w-notes" rows="2" placeholder="Investigation context…" style="resize:vertical"></textarea>
+      </div>
+
+      <div class="control-group" style="margin-top:14px">
+        <button id="btn-run-scan" type="submit" class="btn btn-danger"><i class="glyphicon glyphicon-play"></i>&nbsp;Run Scan Now</button>
+        <a href="#/scans" class="btn btn-default">Cancel</a>
+      </div>
+    </form>
+  `;
+
+  renderWizardModuleTable();
+
+  // Bind handlers.
+  $('#scanname').addEventListener('input', e=>{ W.name = e.target.value; });
+  $('#scantarget').addEventListener('input', e=>{ W.value = e.target.value; });
+  $('#scankind').addEventListener('change', e=>{ W.kind = e.target.value; renderWizardModuleTable(); });
+  $$('input[name=usecase]').forEach(r=>r.addEventListener('change', e=>{
+    W.usecase = e.target.value; W.modules = null; renderWizardModuleTable();
+  }));
+  $$('.nav-tabs a[data-tab]').forEach(a=>a.addEventListener('click', e=>{
+    e.preventDefault();
+    W.activeTab = a.dataset.tab;
+    $('#usetab').classList.toggle('active', W.activeTab==='usecase');
+    $('#moduletab').classList.toggle('active', W.activeTab==='module');
+    $('#usetable').style.display = W.activeTab==='usecase' ? 'table' : 'none';
+    $('#moduletable-host').style.display = W.activeTab==='module' ? 'block' : 'none';
+    $('#selectors').style.display = W.activeTab==='module' ? 'block' : 'none';
+  }));
+  $('#adv-toggle').addEventListener('click', e=>{
+    e.preventDefault();
+    W.showAdv = !W.showAdv;
+    $('#adv-box').style.display = W.showAdv?'block':'none';
+    $('#adv-toggle').innerHTML = (W.showAdv?'▾':'▸')+' Advanced options';
+  });
+  ['depth','mxc','throttle','timeout','concurrent','maxent','maxwt','minc'].forEach(id=>{
+    const el = $('#w-'+id); if (!el) return;
+    el.addEventListener('input', e=>{
+      const v = e.target.value===''?null:Number(e.target.value);
+      const map = {depth:'depth',mxc:'min_expand_confidence',throttle:'throttle_ms',timeout:'module_timeout_ms',
+                   concurrent:'max_concurrent',maxent:'max_entities',maxwt:'max_wall_time_secs',minc:'min_confidence'};
+      W.options[map[id]] = v;
+    });
+  });
+  $('#w-free').addEventListener('change', e=>{ W.options.free_only = e.target.checked; });
+  $('#btn-select-all').addEventListener('click', e=>{
+    e.preventDefault();
+    const accepting = S.modules.filter(m=>W.kind==='auto' || !m.accepts || m.accepts.includes(W.kind));
+    W.modules = accepting.map(m=>m.name); renderWizardModuleTable();
+  });
+  $('#btn-deselect-all').addEventListener('click', e=>{
+    e.preventDefault();
+    W.modules = []; renderWizardModuleTable();
+  });
+  $('#btn-reset-preset').addEventListener('click', e=>{
+    e.preventDefault();
+    W.modules = null; renderWizardModuleTable();
+  });
+}
+function renderWizardModuleTable(){
+  const W = S.wizard;
+  const host = $('#moduletable-host');
+  if (!host) return;
+  const uc = USE_CASES[W.usecase];
+  const accepting = S.modules.filter(m=>W.kind==='auto' || !m.accepts || m.accepts.includes(W.kind));
+  const ucMatches = accepting.filter(m=>uc.pick(m));
+  let active;
+  if (W.modules!==null) active = new Set(W.modules);
+  else if (W.usecase==='all'||W.usecase==='passive') active = new Set(accepting.map(m=>m.name));
+  else active = new Set(ucMatches.map(m=>m.name));
+
+  host.innerHTML = `
+    <div style="padding:6px 0;color:#666;font-size:12px">
+      <b>${active.size}</b> of <b>${accepting.length}</b> module${accepting.length===1?'':'s'} selected
+      ${W.usecase==='passive' ? ' · <span class="text-warning">passive_only flag will further restrict at runtime</span>':''}
+    </div>
+    ${W.kind==='auto' ? `<div style="padding:0 0 6px;color:#888;font-size:12px">
+      <i class="glyphicon glyphicon-flash"></i> Target type is auto-detected from the value; at runtime only modules that accept the detected type run.
+    </div>`:''}
+    <div class="mod-grid">
+      ${accepting.map(m=>{
+        const checked = active.has(m.name);
+        const cost = m.cost || 'free';
+        // Native browser tooltip on the row — server returns
+        // `description` for every module (issue #28). Empty descriptions
+        // render no tooltip (graceful degrade for any module added
+        // without overriding the default).
+        const desc = m.description || '';
+        return `<label${desc ? ` title="${attr(desc)}"` : ''}>
+          <input type="checkbox" data-mod="${attr(m.name)}" ${checked?'checked':''}>
+          <span class="mn">${esc(m.name)}</span>
+          ${m.passive ? '<span class="cost-pill" style="background:#eee;color:#666" title="passive (no outbound)">passive</span>':''}
+          ${costPill(cost)}
+        </label>`;
+      }).join('')}
+      ${accepting.length===0 ? `<div class="empty-state"><p>No modules accept the <code>${esc(W.kind)}</code> target kind.</p></div>` : ''}
+    </div>
+  `;
+  $$('.mod-grid input[type=checkbox]').forEach(cb=>cb.addEventListener('change', ()=>{
+    const set = new Set(W.modules || Array.from(active));
+    if (cb.checked) set.add(cb.dataset.mod); else set.delete(cb.dataset.mod);
+    W.modules = Array.from(set);
+    renderWizardModuleTable();
+  }));
+}
+async function submitWizard(){
+  const W = S.wizard;
+  const target = (W.value||'').trim();
+  if (!target){ alertify.error('Target value is required'); $('#scantarget').focus(); return; }
+  const base = USE_CASES[W.usecase].options(W.modules);
+  const opts = {
+    ...base,
+    exclude_modules: W.options.exclude_modules,
+    throttle_ms: Number(W.options.throttle_ms)||0,
+    max_concurrent: Number(W.options.max_concurrent)||0,
+    depth: Number(W.options.depth)||0,
+    min_expand_confidence: Number(W.options.min_expand_confidence)||0.75,
+    free_only: !!W.options.free_only
+  };
+  if (W.options.module_timeout_ms!=null && W.options.module_timeout_ms!=='') opts.module_timeout_ms = Number(W.options.module_timeout_ms);
+  if (W.options.max_entities!=null && W.options.max_entities!=='') opts.max_entities = Number(W.options.max_entities);
+  if (W.options.max_wall_time_secs!=null && W.options.max_wall_time_secs!=='') opts.max_wall_time_secs = Number(W.options.max_wall_time_secs);
+  if (W.options.min_confidence!=null && W.options.min_confidence!=='') opts.min_confidence = Number(W.options.min_confidence);
+  if (W.modules!==null) opts.modules = W.modules.length?W.modules:null;
+  const tagsStr = ($('#w-tags')||{}).value||'';
+  if (tagsStr.trim()) opts.scan_tags = tagsStr.split(',').map(t=>t.trim()).filter(Boolean);
+  const notesStr = ($('#w-notes')||{}).value||'';
+  if (notesStr.trim()) opts.notes = notesStr.trim();
+
+  const btn = $('#btn-run-scan');
+  btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Queuing…';
+  try {
+    // Unified scan: 'auto' omits `kind` so the server detects it from the value.
+    const payload = W.kind==='auto' ? {value: target, options: opts} : {kind: W.kind, value: target, options: opts};
+    const r = await API.create(payload);
+    toast('Scan queued');
+    W.value = ''; W.name = '';
+    nav(`#/scaninfo?id=${r.scan_id}&tab=log`);
+  } catch(e){
+    btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-play"></i>&nbsp;Run Scan Now';
+    alertify.error(e.message);
+  }
+}
+
+/* ═══════════ Page: SCANINFO (#/scaninfo?id=X[&tab=Y]) ═══════════ */
+async function renderScanInfo(v){
+  const {id, tab} = S.route.params;
+  // Only the scan itself is required; correlations/relations can 500 on a
+  // legacy scan, so one failing sub-resource must not blank the whole page.
+  const [scanR, entsR, corrsR, relsR] = await Promise.allSettled([
+    API.scan(id), API.entities(id), API.correlations(id), API.relations(id)
+  ]);
+  if (scanR.status !== 'fulfilled') throw scanR.reason;
+  const scan = scanR.value;
+  S.scan = scan;
+  S.entities     = entsR.status ==='fulfilled' ? (entsR.value.entities||[])      : [];
+  S.correlations = corrsR.status==='fulfilled' ? (corrsR.value.correlations||[]) : [];
+  S.relations    = relsR.status ==='fulfilled' ? (relsR.value.relations||[])     : [];
+
+  const dur = scan.finished_at && scan.started_at ? scan.finished_at - scan.started_at
+            : scan.status==='running' ? nowSec() - (scan.started_at||nowSec()) : null;
+
+  v.innerHTML = `
+    <div class="crumbs"><a href="#/scans">Scans</a> &raquo; ${esc(scan.target?.value||id)}</div>
+    <h2>${esc(scan.target?.value||id)}
+        <small class="text-muted" style="margin-left:6px">${kindPill(scan.target?.kind)} ${statusPill(scan.status)}</small>
+        <div class="pull-right">
+          <button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button>
+          ${(scan.status==='running'||scan.status==='pending')
+            ? `<button class="btn btn-warning btn-sm" data-cancel="${attr(id)}" title="Abort scan"><i class="glyphicon glyphicon-stop"></i>&nbsp;Abort</button>`
+            : ''}
+          <button class="btn btn-default btn-sm" data-rerun="${attr(id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i>&nbsp;Rescan</button>
+          <a class="btn btn-default btn-sm" href="${API.csvUrl(id)}" title="Export entities as CSV"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;CSV</a>
+          <a class="btn btn-default btn-sm" href="${API.reportUrl(id)}" title="Export full report as JSON"><i class="glyphicon glyphicon-save"></i>&nbsp;JSON</a>
+          <button class="btn btn-danger btn-sm" data-delete="${attr(id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
+        </div>
+    </h2>
+    <hr style="margin:8px 0 14px 0">
+
+    <div class="row">
+      <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Entities</div><div class="val">${scan.entity_count || S.entities.length}</div></div></div>
+      <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Correlations</div><div class="val" style="color:${S.correlations.length?'#9b1f9b':'#888'}">${S.correlations.length}</div></div></div>
+      <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Started</div><div class="val dim">${esc(fmtDate(scan.started_at))}</div></div></div>
+      <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Duration</div><div class="val dim">${esc(fmtDuration(dur))}</div></div></div>
+    </div>
+
+    <ul class="nav nav-tabs">
+      ${subTab('status',  'Status',       null,                tab)}
+      ${subTab('browse',  'Browse',       S.entities.length,   tab)}
+      ${subTab('graph',   'Graph',        null,                tab)}
+      ${subTab('rels',    'Relations',    S.relations.length,  tab)}
+      ${subTab('log',     'Scan Log',     null,                tab)}
+      ${subTab('corr',    'Correlations', S.correlations.length, tab)}
+      ${subTab('info',    'Scan Settings',null,                tab)}
+    </ul>
+    <div id="scan-body" style="padding-top:14px"></div>
+  `;
+  $$('button[data-rerun]').forEach(b=>b.addEventListener('click',()=>{
+    alertify.confirm('Re-run scan','Start a new scan with the same target and options?', async()=>{
+      try{ const r = await API.rerun(b.dataset.rerun); toast('Scan queued'); nav(`#/scaninfo?id=${r.scan_id}&tab=log`); }
+      catch(e){ alertify.error(e.message); }
+    }, ()=>{});
+  }));
+  $$('button[data-delete]').forEach(b=>b.addEventListener('click',()=>{
+    alertify.confirm('Delete scan','This deletes the scan, its correlations, and orphan entities. Continue?', async()=>{
+      try{ await API.remove(b.dataset.delete); toast('Scan deleted'); nav('#/scans'); }
+      catch(e){ alertify.error(e.message); }
+    }, ()=>{});
+  }));
+  // Abort flips the cancel flag for an in-flight scan (issue #23).
+  // The engine sees it at its next per-module / per-target gate, lets
+  // in-flight modules finish naturally, and marks the scan `aborted`
+  // instead of `complete`. Confirm because partial results are kept
+  // but no more modules will run.
+  $$('button[data-cancel]').forEach(b=>b.addEventListener('click',()=>{
+    alertify.confirm('Abort scan','Stop the scan now? Modules already in flight will complete, then no further work will run. Entities + correlations produced so far are kept.', async()=>{
+      try{
+        await API.cancel(b.dataset.cancel);
+        toast('Cancellation requested');
+        // Re-render in ~2 s so the status pill updates to "aborted".
+        setTimeout(render, 2000);
+      } catch(e){ alertify.error(e.message); }
+    }, ()=>{});
+  }));
+  $$('.nav-tabs a[data-sub]').forEach(a=>a.addEventListener('click', e=>{
+    e.preventDefault(); nav(`#/scaninfo?id=${id}&tab=${a.dataset.sub}`);
+  }));
+
+  const body = $('#scan-body');
+  if (tab==='status')      renderStatus(body, scan);
+  else if (tab==='browse') renderBrowse(body);
+  else if (tab==='graph')  renderGraph(body);
+  else if (tab==='rels')   renderRelations(body);
+  else if (tab==='log')    renderLog(body, scan);
+  else if (tab==='corr')   renderCorrelations(body);
+  else if (tab==='info')   renderInfo(body, scan);
+  else                     renderStatus(body, scan);
+
+  // SpiderFoot-style live refresh: while the scan is still running, re-pull and
+  // re-render every 8s so entity/correlation counts and duration climb on their
+  // own. The Log tab is excluded — it owns a live SSE stream a re-render would
+  // tear down. Re-render re-arms the timer; it stops once status != running.
+  clearScanTimer();
+  if ((scan.status === 'running' || scan.status === 'pending') && tab !== 'log'){
+    S.scanTimer = setTimeout(()=>{ if (S.route.name === 'scaninfo') render(); }, 8000);
+  }
+}
+function subTab(name, label, count, active){
+  return `<li class="${active===name?'active':''}"><a href="#" data-sub="${attr(name)}">
+    ${esc(label)}${count!=null?` <span class="badge">${count}</span>`:''}
+  </a></li>`;
+}
+
+/* ── Relations tab — typed edges from the recursive crawl (provenance) ── */
+function renderRelations(host){
+  const rels = S.relations||[];
+  if (!rels.length){
+    host.innerHTML = '<div class="empty-state"><h3>No relations yet</h3>'
+      + '<p>Typed edges (<code>derived_from</code>, <code>subdomain_of</code>, '
+      + '<code>hosted_on</code>, …) appear here as the recursive crawl links entities. '
+      + 'Run a deeper scan (<code>--depth ≥ 1</code>) to populate them.</p></div>';
+    return;
+  }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const cell = uid => {
+    const e = byUid[uid];
+    return e ? `${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code>`
+             : `<code class="text-muted" style="font-size:10px">${esc(String(uid).slice(0,16))}…</code>`;
+  };
+  const rows = rels.map(r=>`<tr>
+      <td>${cell(r.from_uid)}</td>
+      <td class="text-center"><span class="tag">${esc(r.kind)}</span></td>
+      <td>${cell(r.to_uid)}</td>
+      <td class="text-right"><code>${r.confidence!=null?Number(r.confidence).toFixed(2):''}</code></td>
+    </tr>`).join('');
+  host.innerHTML = `<p class="text-muted" style="margin-bottom:8px">`
+    + `${rels.length} typed edge${rels.length===1?'':'s'} — the provenance graph the recursive expansion built.</p>`
+    + `<div class="table-responsive"><table class="table table-condensed table-striped tablesorter" id="rel-table">`
+    + `<thead><tr><th>From</th><th class="text-center">Relation</th><th>To</th><th class="text-right">Conf</th></tr></thead>`
+    + `<tbody>${rows}</tbody></table></div>`;
+  if (window.jQuery && jQuery.fn.tablesorter){ try{ jQuery('#rel-table').tablesorter(); }catch(_){} }
+}
+
+/* ── Status tab ── */
+function renderStatus(host, scan){
+  const byKind = new Map();
+  for (const e of S.entities) byKind.set(e.kind, (byKind.get(e.kind)||0) + 1);
+  const kindSorted = Array.from(byKind.entries()).sort((a,b)=>b[1]-a[1]);
+  const kindMax = kindSorted.length ? kindSorted[0][1] : 1;  // scale bars to the largest type
+  const kindRows = kindSorted.map(([k,n])=>{
+    const share = ((n/Math.max(1,S.entities.length))*100).toFixed(0);
+    const barW = ((n/Math.max(1,kindMax))*100).toFixed(1);
+    return `<tr><td>${kindPill(k)}</td><td class="text-right">${n}</td>
+         <td class="kbar-cell"><div class="kbar-track"><div class="kbar-fill" style="width:${barW}%"></div><span class="kbar-pct">${share}%</span></div></td></tr>`;
+  }).join('');
+
+  const byMod = new Map();
+  for (const e of S.entities) for (const ev of (e.evidence||[])) byMod.set(ev.source, (byMod.get(ev.source)||0)+1);
+  const modRows = Array.from(byMod.entries()).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([m,n])=>
+    `<tr><td><code>${esc(m)}</code></td><td class="text-right">${n}</td></tr>`).join('');
+
+  let verified=0, probable=0, candidate=0;
+  for (const e of S.entities){
+    const eff = effC(e);
+    if (eff>=0.75) verified++; else if (eff>=0.40) probable++; else candidate++;
+  }
+
+  host.innerHTML = `
+    <div class="row">
+      <div class="col-sm-6">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>Entities by type</b></div>
+          ${kindRows
+            ? `<table class="table table-striped table-condensed" style="margin-bottom:0">
+                 <thead><tr><th>Type</th><th class="text-right">Count</th><th>Share</th></tr></thead>
+                 <tbody>${kindRows}</tbody></table>`
+            : '<div class="empty-state"><p>No entities yet.</p></div>'}
+        </div>
+      </div>
+      <div class="col-sm-6">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>Classification</b></div>
+          <div class="panel-body">
+            <div class="row text-center">
+              <div class="col-xs-4"><div class="stat-card"><div class="lab c-VERIFIED">Verified</div><div class="val" style="color:#3c763d">${verified}</div></div></div>
+              <div class="col-xs-4"><div class="stat-card"><div class="lab c-PROBABLE">Probable</div><div class="val" style="color:#8a6d3b">${probable}</div></div></div>
+              <div class="col-xs-4"><div class="stat-card"><div class="lab c-CANDIDATE">Candidate</div><div class="val" style="color:#a94442">${candidate}</div></div></div>
+            </div>
+            <p class="help-block">Tiers derived from <code>C_eff = clamp(C × (1 + 0.15·ln(distinct_sources)), 0, 1)</code>.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-sm-6">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>Top contributing modules</b></div>
+          ${modRows
+            ? `<table class="table table-striped table-condensed" style="margin-bottom:0">
+                 <thead><tr><th>Module</th><th class="text-right">Evidence rows</th></tr></thead>
+                 <tbody>${modRows}</tbody></table>`
+            : '<div class="empty-state"><p>No evidence yet.</p></div>'}
+        </div>
+      </div>
+      <div class="col-sm-6">
+        <div class="panel panel-default">
+          <div class="panel-heading"><b>Correlation summary</b></div>
+          <div class="panel-body">
+            ${S.correlations.length
+              ? `Click <a href="#/scaninfo?id=${attr(S.route.params.id)}&tab=corr">Correlations</a> for the full list. Severity breakdown:
+                 <div style="margin-top:8px">
+                   ${['critical','high','medium','low'].map(sev=>{
+                     const n = S.correlations.filter(c=>(c.severity||'').toLowerCase()===sev).length;
+                     return `<span class="status-pill cv-${sev}" style="background:#f7f7f7;border:1px solid #ddd;color:#444;margin-right:4px">${esc(sev)}: ${n}</span>`;
+                   }).join('')}
+                 </div>`
+              : '<div class="empty-state"><p>No correlation rules have fired for this scan.</p></div>'}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ── Browse tab ── */
+function renderBrowse(host){
+  const kinds = Array.from(new Set(S.entities.map(e=>e.kind))).sort();
+  const qKind = S.route.query.k || '';
+  // SpiderFoot 4.0-style data-element rollup: per-kind Unique + Total (sum of corroboration)
+  const roll = {};
+  S.entities.forEach(e=>{ const r = roll[e.kind] || (roll[e.kind] = {u:0, t:0}); r.u++; r.t += (e.corroboration||1); });
+  const rollRows = Object.keys(roll).sort((a,b)=>roll[b].u-roll[a].u);
+  const rollupHtml = rollRows.length ? `
+    <table class="table table-striped table-condensed" id="browse-rollup" style="margin-bottom:14px">
+      <thead><tr><th>Data Element</th><th class="text-right">Unique</th><th class="text-right">Total</th></tr></thead>
+      <tbody>${rollRows.map(k=>`<tr class="rollup-row" data-kind="${attr(k)}" style="cursor:pointer">
+        <td>${kindPill(k)}</td>
+        <td class="text-right"><code>${roll[k].u}</code></td>
+        <td class="text-right"><code>${roll[k].t}</code></td>
+      </tr>`).join('')}</tbody>
+    </table>` : '';
+  host.innerHTML = `
+    ${rollupHtml}
+    <div class="row" style="margin-bottom:12px">
+      <div class="col-sm-4">
+        <input type="search" id="b-q" class="form-control input-sm" placeholder="Filter value, evidence, tags…">
+      </div>
+      <div class="col-sm-3">
+        <select id="b-kind" class="form-control input-sm">
+          <option value="">All types (${S.entities.length})</option>
+          ${kinds.map(k=>`<option value="${attr(k)}"${k===qKind?' selected':''}>${esc(k)} (${S.entities.filter(e=>e.kind===k).length})</option>`).join('')}
+        </select>
+      </div>
+      <div class="col-sm-3">
+        <select id="b-cls" class="form-control input-sm">
+          <option value="">All tiers</option>
+          <option value="VERIFIED">Verified only</option>
+          <option value="PROBABLE">Probable+</option>
+          <option value="CANDIDATE">Candidate only</option>
+        </select>
+      </div>
+      <div class="col-sm-2 text-right text-muted" style="padding-top:6px;font-size:11px" id="b-ct"></div>
+    </div>
+    <div id="b-table-host"></div>
+  `;
+  function refresh(){
+    const q = $('#b-q').value.trim().toLowerCase();
+    const ks = $('#b-kind').value, cs = $('#b-cls').value;
+    let rows = S.entities.slice();
+    if (ks) rows = rows.filter(e=>e.kind===ks);
+    if (cs) rows = rows.filter(e=>{const t=classify(effC(e)); return t===cs || (cs==='PROBABLE' && effC(e)>=0.40);});
+    if (q)  rows = rows.filter(e =>
+      (e.value||'').toLowerCase().includes(q)
+      || (e.tags||[]).some(t=>t.toLowerCase().includes(q))
+      || (e.evidence||[]).some(ev=>(ev.summary||'').toLowerCase().includes(q) || (ev.source||'').toLowerCase().includes(q)));
+    $('#b-ct').textContent = `${rows.length} of ${S.entities.length}`;
+    $('#b-table-host').innerHTML = renderBrowseTable(rows);
+    if (window.jQuery && jQuery.fn.tablesorter && rows.length){
+      try { jQuery('#browse-table').tablesorter({sortList:[[2,1]]}); } catch {}
+    }
+  }
+  $('#b-q').addEventListener('input', refresh);
+  $('#b-kind').addEventListener('change', refresh);
+  $('#b-cls').addEventListener('change', refresh);
+  host.querySelectorAll('.rollup-row').forEach(tr=>tr.addEventListener('click', ()=>{
+    const k = tr.getAttribute('data-kind');
+    const sel = $('#b-kind');
+    sel.value = (sel.value === k) ? '' : k;  // toggle drill-down, SpiderFoot-style
+    refresh();
+  }));
+  refresh();
+}
+function renderBrowseTable(rows){
+  if (!rows.length){
+    return '<div class="empty-state"><h3>No entities match</h3><p>Adjust the filter, or check the Scan Log if the scan is still running.</p></div>';
+  }
+  const body = rows.map((e,idx)=>{
+    const eff = effC(e), tier = classify(eff);
+    const sources = Array.from(new Set((e.evidence||[]).map(ev=>ev.source))).sort();
+    const evDetail = (e.evidence||[]).map(ev=>{
+      const attrs = Object.entries(ev.attributes||{}).map(([k,v])=>`<span class="ev-attr"><span class="ak">${esc(k)}:</span> ${extLink(attrText(v),90)}</span>`).join('');
+      return `<div class="ev-block"><span class="ev-src">${esc(ev.source)}</span><div class="ev-sum">${esc(ev.summary)}</div>${attrs?`<div class="ev-attrs">${attrs}</div>`:''}</div>`;
+    }).join('');
+    return `<tr onclick="toggleDetail(this)" data-idx="${idx}">
+      <td>${kindPill(e.kind)}</td>
+      <td style="word-break:break-word"><code>${extLink(e.raw_value||e.value)}</code></td>
+      <td class="text-right"><code>${eff.toFixed(3)}</code></td>
+      <td class="text-right">${e.corroboration||1}</td>
+      <td><span class="cls c-${attr(tier)}">${tier}</span></td>
+      <td>${(e.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</td>
+      <td>${sources.map(s=>`<span class="src-pill">${esc(s)}</span>`).join('')}</td>
+      <td><span class="text-muted" style="font-family:monospace;font-size:11px">${esc(fmtDate(e.observed_at))}</span></td>
+    </tr>
+    <tr class="entity-detail-row" style="display:none"><td colspan="8"><div class="entity-detail">
+      <div style="margin-bottom:4px"><b>UID:</b> <code style="font-size:10px">${esc(e.uid||'')}</code></div>
+      <div style="margin-bottom:6px"><b>${(e.evidence||[]).length} evidence entries:</b></div>
+      ${evDetail || '<span class="text-muted">No evidence attached</span>'}
+    </div></td></tr>`;
+  }).join('');
+  return `<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="browse-table">
+    <thead><tr>
+      <th>Type</th><th>Value</th><th class="text-right">C_eff</th>
+      <th class="text-right">Corr</th><th>Tier</th>
+      <th class="sorter-false">Tags</th><th class="sorter-false">Sources</th><th>Observed</th>
+    </tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+/* ── Correlations tab ── */
+function renderCorrelations(host){
+  if (!S.correlations.length){
+    host.innerHTML = '<div class="empty-state"><h3>No correlations fired</h3><p>Correlation rules evaluate post-scan against the entities produced. They surface multi-source breach clusters, infrastructure consensus, and other high-signal aggregations.</p></div>';
+    return;
+  }
+  // Server returns correlations pre-ranked by severity × max child C_eff
+  // (highest-value first). Surface the rank score so the ordering is legible.
+  // Each card expands to the entities it links (resolved against this scan),
+  // so the cross-correlation is inspectable — SpiderFoot's correlation drill-in.
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  host.innerHTML = S.correlations.map(c=>{
+    const sev = (c.severity||'low').toLowerCase();
+    const rank = (typeof c.rank === 'number' && c.rank > 0)
+      ? `<span class="pull-right" title="rank = severity × max child C_eff">rank ${c.rank.toFixed(2)}</span>` : '';
+    const uids = c.entity_uids || [];
+    const members = uids.map(u=>{
+      const e = byUid[u];
+      return e ? `<div class="corr-member">${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code></div>`
+               : `<div class="corr-member"><code class="text-muted" style="font-size:10px">${esc(String(u).slice(0,16))}…</code></div>`;
+    }).join('');
+    return `<div class="corr-card cv-${attr(sev)}" onclick="toggleCorrMembers(this)" style="cursor:pointer" title="Click to show the ${uids.length} linked entit${uids.length===1?'y':'ies'}">
+      <div class="corr-h"><b>${esc(sev.toUpperCase())}</b> · ${esc(c.rule_id||'')} <span class="badge">${uids.length}</span>${rank}</div>
+      <div class="corr-name">${esc(c.rule_name||c.rule_id||'—')}</div>
+      <div class="corr-d">${esc(c.description||c.summary||'')}</div>
+      <div class="corr-members" style="display:none;margin-top:8px;border-top:1px dashed #d8d8d8;padding-top:6px">${members||'<span class="text-muted">No member entities in this scan view</span>'}</div>
+    </div>`;
+  }).join('');
+}
+function toggleCorrMembers(card){
+  const m = card.querySelector('.corr-members');
+  if (m) m.style.display = (m.style.display==='none') ? '' : 'none';
+}
+
+/* ── Graph tab (D3 v3 force layout — matches Spiderfoot's stack) ── */
+function renderGraph(host){
+  if (!S.entities.length){
+    host.innerHTML = '<div class="empty-state"><h3>No entities to graph</h3><p>The Graph view becomes available once the scan produces entities.</p></div>';
+    return;
+  }
+  host.innerHTML = `
+    <div style="position:relative">
+      <svg id="graph-svg" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="graph-legend">
+        <div class="lr"><span class="sw" style="background:#059CD7;border:2px solid #333"></span>seed target</div>
+        <div class="lr"><span class="sw" style="background:#31708f"></span>email / ip</div>
+        <div class="lr"><span class="sw" style="background:#3c763d"></span>domain</div>
+        <div class="lr"><span class="sw" style="background:#2c7c40"></span>username</div>
+        <div class="lr"><span class="sw" style="background:#8a6d3b"></span>phone</div>
+        <div class="lr"><span class="sw" style="background:#9b1f9b"></span>credential</div>
+        <div class="lr"><span class="sw" style="background:#d9822b"></span>relation edge (hover for kind)</div>
+      </div>
+      <div class="graph-ctl">
+        <button class="btn btn-default btn-xs" id="g-relayout"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Re-layout</button>
+        <button class="btn btn-default btn-xs" id="g-reset"><i class="glyphicon glyphicon-fullscreen"></i>&nbsp;Reset view</button>
+        <a class="btn btn-default btn-xs" href="${API.gexfUrl(S.scan.id)}" title="Export graph as GEXF (Gephi)"><i class="glyphicon glyphicon-export"></i>&nbsp;GEXF</a>
+      </div>
+      <div class="graph-hint text-muted">Drag nodes · pinch or scroll to zoom · drag canvas to pan</div>
+    </div>
+  `;
+  buildD3Graph();
+  $('#g-relayout').addEventListener('click', buildD3Graph);
+  $('#g-reset').addEventListener('click', ()=>{ if (window.__graphResetZoom) window.__graphResetZoom(); });
+}
+
+const NODE_COLOR = {
+  email:'#31708f', domain:'#3c763d', username:'#2c7c40', phone:'#8a6d3b',
+  ip_address:'#31708f', asn:'#5a4d8a', person:'#3c763d', credential:'#9b1f9b',
+  password:'#9b1f9b', address:'#a94442', coordinates:'#8a4b1f', organisation:'#5a4d8a',
+  abn_acn:'#8a6d3b', url:'#31708f', mac_address:'#666', device_id:'#666', other:'#888'
+};
+
+function buildD3Graph(){
+  if (typeof d3==='undefined') return;
+  const svg = d3.select('#graph-svg');
+  const rect = svg.node().getBoundingClientRect();
+  const W = rect.width, H = rect.height || 560;
+  svg.selectAll('*').remove();
+  svg.attr('viewBox', `0 0 ${W} ${H}`);
+
+  // Pan/zoom container — pinch-zoom + one-finger pan work natively on
+  // Chrome-on-Android via d3 v3's touch-aware zoom behavior. Without this a
+  // multi-node graph is unusable on a phone screen (SpiderFoot 4.0 parity).
+  const container = svg.append('g').attr('class','zoom-container');
+  const zoom = d3.behavior.zoom().scaleExtent([0.2, 5]).on('zoom', ()=>{
+    container.attr('transform', `translate(${d3.event.translate})scale(${d3.event.scale})`);
+  });
+  svg.call(zoom).on('dblclick.zoom', null);
+  // Expose a reset so the "Reset view" button can recentre/rescale.
+  window.__graphResetZoom = ()=>{
+    zoom.translate([0,0]).scale(1);
+    container.transition().duration(250).attr('transform', 'translate(0,0)scale(1)');
+  };
+
+  // Build nodes/edges.
+  const seedId = '__seed__';
+  const nodes = [{id:seedId, kind:S.scan.target.kind, label:S.scan.target.value, isSeed:true, r:12}];
+  for (const e of S.entities){
+    nodes.push({id:e.uid, kind:e.kind, label:e.value, r: 5 + Math.min(8, Math.log(1+(e.corroboration||1))*3)});
+  }
+  const links = [];
+  for (const e of S.entities) links.push({source:seedId, target:e.uid, corr:false});
+  for (const c of S.correlations){
+    const uids = c.entity_uids || c.evidence_uids || c.entities || [];
+    for (let i=0;i<uids.length;i++) for (let j=i+1;j<uids.length;j++)
+      links.push({source:uids[i], target:uids[j], corr:true});
+  }
+  // Typed attribution edges (subdomain_of / belongs_to_domain / hosted_on /
+  // derived_from / co_located_with) between entity nodes.
+  for (const r of (S.relations||[]))
+    links.push({source:r.from_uid, target:r.to_uid, rel:true, kind:r.kind});
+
+  // Drop links to unknown nodes.
+  const ids = new Set(nodes.map(n=>n.id));
+  const validLinks = links.filter(l=>ids.has(l.source) && ids.has(l.target));
+
+  const force = d3.layout.force()
+    .nodes(nodes)
+    .links(validLinks)
+    .charge(-260)
+    .linkDistance(90)
+    .size([W, H])
+    .start();
+  // Pin seed at centre.
+  const seedNode = nodes.find(n=>n.isSeed);
+  if (seedNode){ seedNode.fixed = true; seedNode.x = W/2; seedNode.y = H/2; }
+
+  const link = container.append('g').selectAll('line')
+    .data(validLinks).enter().append('line')
+    .style('stroke', d=>d.rel?'#d9822b':(d.corr?'#9b1f9b':'#bbb'))
+    .style('stroke-opacity', d=>d.rel?0.85:(d.corr?0.7:0.3))
+    .style('stroke-width', d=>d.rel?2:(d.corr?1.6:1))
+    .style('stroke-dasharray', d=>d.rel?'5,3':'none');
+  // Hover a typed edge to see its relation kind.
+  link.append('title').text(d=>d.rel?('relation: '+d.kind):(d.corr?'correlation':'discovered from seed'));
+
+  const drag = force.drag().on('dragstart', function(){ d3.select(this).style('cursor','grabbing'); });
+
+  const nodeG = container.append('g').selectAll('g').data(nodes).enter().append('g').call(drag);
+  // Stop a node-drag from also panning the canvas (d3 v3 zoom vs drag).
+  nodeG.on('mousedown', ()=>{ if (d3.event) d3.event.stopPropagation(); });
+  nodeG.append('circle')
+    .attr('r', d=>d.r)
+    .style('fill', d=>d.isSeed?'#059CD7':(NODE_COLOR[d.kind]||'#888'))
+    .style('stroke', d=>d.isSeed?'#222':'#fff')
+    .style('stroke-width', d=>d.isSeed?2:1.5)
+    .style('cursor','grab');
+  nodeG.append('title').text(d=>`${d.kind}: ${d.label}`);
+  nodeG.append('text')
+    .attr('dx', d=>d.r + 4)
+    .attr('dy', 4)
+    .style('font-size','11px')
+    .style('fill','#444')
+    .text(d=>{const l = d.label||''; return l.length>28?l.slice(0,26)+'…':l;});
+
+  force.on('tick', ()=>{
+    link.attr('x1', d=>d.source.x).attr('y1', d=>d.source.y)
+        .attr('x2', d=>d.target.x).attr('y2', d=>d.target.y);
+    nodeG.attr('transform', d=>`translate(${d.x},${d.y})`);
+  });
+  // Stop after a few seconds — saves CPU on Termux when the graph
+  // is rendered but idle.
+  setTimeout(()=>force.stop(), 6000);
+}
+
+/* ── Scan Log (history + live SSE) ──
+   v0.10+ — engine persists every event to SQLite, so completed scans
+   now show the full timeline. For live scans we must take care with
+   the SSE-vs-history ordering:
+
+   Engine semantics: persist FIRST, then broadcast. So every event on
+   the bus is already persisted; an event in history may not yet have
+   been broadcast.
+
+   Two ordering choices and their failure modes:
+   - Fetch history first, then subscribe SSE → events broadcast in
+     the gap between fetch-return and SSE-subscribe are MISSED. Bad.
+   - Subscribe SSE first, then fetch history → events broadcast in
+     the gap appear in BOTH (in SSE buffer, and in the history rows
+     persisted just before broadcast). Need dedup, but no loss.
+
+   We go with subscribe-first and a count-based content-fingerprint
+   dedup. Limitation: if a new event happens to have IDENTICAL kind
+   JSON to an already-rendered history row AND arrives via SSE after
+   the history fetch returned, it gets falsely deduped. Mitigating
+   factor: this is rare in practice (events for the same module emit
+   per-target, and targets vary across rounds) and a proper fix needs
+   a monotonic per-event id on the engine side. */
+async function renderLog(host, scan){
+  const running = scan.status==='running' || scan.status==='pending';
+  host.innerHTML = `
+    <div class="panel panel-default">
+      <div class="panel-heading">
+        <b>Event log</b>
+        <div class="pull-right">
+          <span id="log-status" class="label label-default">loading…</span>
+          &nbsp;<button class="btn btn-default btn-xs" id="log-clear">Clear</button>
+        </div>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <div id="log-box"><div class="empty-state"><p>Fetching event history…</p></div></div>
+      </div>
+    </div>
+  `;
+  $('#log-clear').addEventListener('click', ()=>{ $('#log-box').innerHTML=''; });
+
+  // 1) Subscribe to SSE FIRST so events broadcast during the
+  //    history fetch are captured in the `buffered` array rather
+  //    than lost. Switch to direct-render once history is rendered.
+  const buffered = [];
+  let bufferingMode = true;
+  const status = $('#log-status');
+  if (running){
+    status.className = 'label label-info';
+    status.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;live';
+    openSse(scan.id, ev=>{
+      if (bufferingMode) buffered.push(ev);
+      else appendLog(ev);
+    }, (state, es)=>{
+      const st = $('#log-status'); if (!st) return;
+      if (state === 'open'){
+        st.className = 'label label-info';
+        st.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;live';
+      } else if (es.readyState === 2){ // CLOSED — server idle-closed or unreachable
+        st.className = 'label label-default';
+        st.textContent = 'disconnected';
+      } else { // CONNECTING — auto-reconnecting
+        st.className = 'label label-warning';
+        st.textContent = 'reconnecting…';
+      }
+    });
+  }
+
+  // 2) Pull the persistent history. Surface fetch failures explicitly
+  //    so a completed scan with events on disk doesn't silently
+  //    render "No events recorded".
+  let history = [];
+  let historyError = null;
+  try {
+    const r = await fetch('/api/v1/scans/'+encodeURIComponent(scan.id)+'/events.history');
+    if (r.ok){
+      const j = await r.json();
+      history = j.events || [];
+    } else {
+      historyError = `HTTP ${r.status}`;
+    }
+  } catch (e) {
+    historyError = e && e.message ? e.message : String(e);
+  }
+
+  // 3) Render history and build a per-fingerprint count map. Each
+  //    history row contributes one "expected duplicate" credit so the
+  //    next SSE-buffered event with the same fingerprint is treated
+  //    as the broadcast copy of an already-rendered history row.
+  const box = $('#log-box');
+  const histCounts = new Map();
+  if (historyError){
+    // History fetch failed: we can't compute dedup credits, so we
+    // also can't sensibly drain the buffered SSE events without
+    // potentially double-painting (or missing) rows. Surface the
+    // error alone — the operator's next refresh has another shot
+    // at history, and `openSse` callback below will start adding
+    // fresh rows the moment we switch out of buffering mode.
+    box.innerHTML = `<div class="alert alert-danger" style="margin:8px">Failed to load event history: ${esc(historyError)}</div>`;
+    bufferingMode = false;
+    if (!running){
+      status.className = 'label label-warning';
+      status.textContent = 'history error';
+    }
+    return;
+  }
+  if (history.length === 0 && !running){
+    box.innerHTML = `<div class="empty-state"><p>No events recorded for this scan.</p></div>`;
+  } else {
+    box.innerHTML = '';
+    for (const ev of history){
+      const kind = ev.kind || ev;
+      const fp = JSON.stringify(kind);
+      histCounts.set(fp, (histCounts.get(fp) || 0) + 1);
+      // The persisted row has { scan_id, ts, kind }. mapEvent reads
+      // ev.type plus ev.* — the EventKind variant is flattened with
+      // `#[serde(tag="type")]`, so passing ev.kind through works.
+      appendLog(kind, ev.ts);
+    }
+  }
+
+  // 4) Drain buffered SSE events. Each one with a fingerprint that
+  //    still has unspent history credits is the broadcast twin of
+  //    an already-rendered row — skip it. Events with no credits
+  //    (either fingerprint never seen in history, or all history
+  //    twins already accounted for) get rendered.
+  const consumed = new Map();
+  for (const ev of buffered){
+    const fp = JSON.stringify(ev);
+    const histCount = histCounts.get(fp) || 0;
+    const consumedCount = consumed.get(fp) || 0;
+    if (consumedCount < histCount){
+      consumed.set(fp, consumedCount + 1);
+    } else {
+      appendLog(ev);
+    }
+  }
+  bufferingMode = false;
+
+  if (!running){
+    status.className = 'label label-default';
+    status.textContent = history.length ? `${history.length} events` : 'not streaming';
+  }
+}
+function appendLog(ev, ts){
+  const box = $('#log-box'); if (!box) return;
+  const m = mapEvent(ev);
+  const row = document.createElement('div');
+  row.className = `log-row lv-${m.lv}`;
+  // Use the event's recorded ts if we have it (history rows); fall
+  // back to wall-clock for live rows.
+  const t = ts ? (new Date(ts*1000)).toTimeString().slice(0,8) : fmtClock();
+  row.innerHTML = `<span class="ts">${esc(t)}</span><span class="typ">${esc(m.typ)}</span><span class="msg">${m.msg}</span>`;
+  box.appendChild(row);
+  box.scrollTop = box.scrollHeight;
+}
+function mapEvent(ev){
+  const t = ev.type;
+  if (t==='module_start')   return {typ:'module', lv:'info',  msg:`▶ ${esc(ev.module)}`};
+  if (t==='module_done')    return {typ:'module', lv:'ok',    msg:`✓ ${esc(ev.module)} <span class="text-muted">(${ev.found} found)</span>`};
+  if (t==='module_error')   return {typ:'module', lv:'err',   msg:`✗ ${esc(ev.module)} <span class="text-muted">${esc(ev.error)}</span>`};
+  if (t==='module_skipped') return {typ:'module', lv:'skip',  msg:`◌ ${esc(ev.module)} <span class="text-muted">${esc(ev.reason)}</span>`};
+  if (t==='entity_found')   return {typ:'entity', lv:'found', msg:`${kindPill(ev.entity?.kind)} ${esc(ev.entity?.value)}`};
+  if (t==='scan_start')     return {typ:'scan',   lv:'info',  msg:`scan started · ${esc(ev.target_kind)}=${esc(ev.target_value)}`};
+  if (t==='scan_complete')  return {typ:'scan',   lv:'ok',    msg:`scan complete · ${ev.entity_count} entities`};
+  if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`depth ${ev.depth} · queued ${ev.queued} · visited ${ev.visited}`};
+  if (t==='expansion_stop') return {typ:'expand', lv:'warn',  msg:`expansion stopped · ${esc(ev.reason)}`};
+  if (t==='correlation_found') return {typ:'corr', lv:'corr', msg:`${esc(ev.correlation?.rule_name||ev.correlation?.rule_id||'?')}`};
+  if (t==='correlations_done') return {typ:'corr', lv:'info', msg:`correlations done · ${ev.count}`};
+  return {typ: esc(t||'?'), lv:'info', msg: esc(JSON.stringify(ev).slice(0,220))};
+}
+function openSse(scanId, onEv, onState){
+  closeSse();
+  const es = new EventSource('/api/v1/scans/'+encodeURIComponent(scanId)+'/events');
+  es.onmessage = e => { try { onEv(JSON.parse(e.data)); } catch {} };
+  if (onState){
+    // EventSource auto-reconnects on its own; we only reflect the state so a
+    // dropped stream on a flaky mobile link doesn't look frozen-but-live.
+    es.onopen  = () => onState('open', es);
+    es.onerror = () => onState('error', es);
+  }
+  S.sse = es;
+}
+function closeSse(){ if (S.sse){ S.sse.close(); S.sse = null; } }
+
+/* ── Info / Scan Settings tab ── */
+function renderInfo(host, scan){
+  const opts = scan.options || {};
+  const fmtList = xs => !xs || !xs.length ? '<span class="text-muted">all (default)</span>' : xs.map(x=>`<code>${esc(x)}</code>`).join(' ');
+  const rows = [
+    ['Scan ID', `<code>${esc(scan.id)}</code>`],
+    ['Target type', kindPill(scan.target?.kind)],
+    ['Target value', `<code>${esc(scan.target?.value)}</code>`],
+    ['Status', statusPill(scan.status)],
+    ['Started', esc(fmtDate(scan.started_at))],
+    ['Finished', esc(fmtDate(scan.finished_at))],
+    ['Entities recorded', String(scan.entity_count||0)],
+    ['Error', scan.error ? `<span class="scan-error">${esc(scan.error)}</span>` : '<span class="text-muted">none</span>'],
+    ['Modules (allow)', fmtList(opts.modules)],
+    ['Modules (exclude)', fmtList(opts.exclude_modules)],
+    ['Free-only', String(opts.free_only??false)],
+    ['Passive-only', String(opts.passive_only??false)],
+    ['Throttle (ms)', String(opts.throttle_ms??0)],
+    ['Module timeout (ms)', opts.module_timeout_ms!=null?String(opts.module_timeout_ms):'<span class="text-muted">module default</span>'],
+    ['Max concurrent', String(opts.max_concurrent??0)],
+    ['Min confidence', opts.min_confidence!=null?opts.min_confidence.toFixed(2):'<span class="text-muted">no filter</span>'],
+    ['Depth', String(opts.depth??0)],
+    ['Min expand C_eff', String(opts.min_expand_confidence??0.75)],
+    ['Max entities', opts.max_entities!=null?String(opts.max_entities):'<span class="text-muted">unlimited</span>'],
+    ['Max wall time (s)', opts.max_wall_time_secs!=null?String(opts.max_wall_time_secs):'<span class="text-muted">unlimited</span>'],
+    ['Tags', (opts.scan_tags||[]).length ? opts.scan_tags.map(t=>`<span class="tag">${esc(t)}</span>`).join(' ') : '<span class="text-muted">none</span>'],
+    ['Notes', opts.notes ? `<span style="font-size:12px">${esc(opts.notes)}</span>` : '<span class="text-muted">none</span>'],
+  ];
+  host.innerHTML = `
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Scan settings</b></div>
+      <table class="table table-striped table-condensed" style="margin-bottom:0">
+        <tbody>${rows.map(([k,v])=>`<tr><td style="width:220px;color:#666">${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+/* ═══════════ Page: OPTS / Settings (#/opts) ═══════════ */
+async function renderOpts(v){
+  const [data, toggles] = await Promise.all([API.keysGet(), API.togglesGet()]);
+  S.settings = data;
+
+  v.innerHTML = `
+    <h2>Settings</h2>
+    <hr style="margin:8px 0 14px 0">
+
+    <div class="panel panel-default">
+      <div class="panel-heading">
+        <b>Module API keys</b>
+        <div class="pull-right">
+          ${data.write_enabled
+            ? '<span class="label label-warning">write enabled (loopback only)</span>'
+            : '<span class="label label-default">read-only</span>'}
+        </div>
+      </div>
+      <div class="panel-body">
+        <p class="text-muted" style="font-size:12px">
+          ${data.write_enabled
+            ? `Edits write to <code>${esc(data.env_path)}</code> at <code>mode 0600</code>. Comments and non-<code>HUNTSMAN_*</code> lines are preserved. Writes require a loopback peer.`
+            : `Write access is disabled (you launched with <code>hse serve --no-key-write</code>). Restart without that flag to edit keys here — editing is on by default, loopback-only.`}
+        </p>
+        <div id="keygrid">
+          ${data.keys.map(k=>keyRow(k, data.write_enabled)).join('')}
+        </div>
+        ${data.write_enabled ? `
+          <div style="margin-top:14px">
+            <button class="btn btn-primary" id="k-save" disabled>Save changes</button>
+            <span class="text-muted" id="k-pending" style="margin-left:10px"></span>
+          </div>` : ''}
+      </div>
+    </div>
+
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Capability toggles</b>
+        <span class="text-muted pull-right" style="font-size:12px">${toggles.count} switches · click to flip · persisted (loopback-only)</span>
+      </div>
+      <div class="panel-body">
+        <p class="text-muted" style="font-size:12px">
+          Universal toggleability (SpiderFoot-style): turn any feature, search
+          engine or module on/off across <b>all</b> scans. Saved to
+          <code>~/.huntsman/settings.json</code> — no restart. A disabled module
+          is skipped at the scan gate (and shows in the summary's <code>skipped</code>
+          count); a disabled engine is never queried.
+        </p>
+        <input id="tg-filter" type="text" class="form-control input-sm"
+               placeholder="Filter by name… (e.g. yandex, wikidata, regional)"
+               autocomplete="off" style="max-width:340px;margin-bottom:12px">
+        ${(toggles.groups||[]).map(g=>`
+          <div class="tg-group" data-group="${attr(g.group)}" style="margin-top:8px">
+            <h5 style="margin:6px 0"><b>${esc(g.label)}</b>
+              <span class="text-muted tg-count" style="font-weight:normal"></span></h5>
+            <div class="tg-grid">${(g.toggles||[]).map(toggleChip).join('')}</div>
+            <div class="tg-empty text-muted" style="display:none;font-size:12px">no matches in this group</div>
+          </div>`).join('')}
+      </div>
+    </div>
+
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Diagnostics</b></div>
+      <div class="panel-body">
+        <p class="text-muted" style="font-size:12px">
+          Validate every module and core feature, and download elaborate
+          verbose (TRACE-level) debug logs for the current server session.
+        </p>
+        <p>
+          <button id="st-run" class="btn btn-primary btn-sm">Run self-test</button>
+          &nbsp;
+          <a class="btn btn-default btn-sm" href="${API.logsUrl()}" download>Download debug log</a>
+          &nbsp;<span id="st-summary" class="text-muted" style="font-size:12px"></span>
+        </p>
+        <div id="st-results" style="margin-top:8px"></div>
+      </div>
+    </div>
+
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Server</b></div>
+      <table class="table table-striped table-condensed" style="margin-bottom:0">
+        <tbody>
+          <tr><td style="width:220px;color:#666">Version</td><td><code>${esc(S.version||'?')}</code></td></tr>
+          <tr><td style="color:#666">Health</td><td>${S.health ? '<span class="label label-success">ok</span>' : '<span class="label label-danger">unreachable</span>'}</td></tr>
+          <tr><td style="color:#666">Env file path</td><td><code>${esc(data.env_path)}</code></td></tr>
+          <tr><td style="color:#666">Known keys</td><td>${data.count}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  if (data.write_enabled) wireKeyEditor();
+  wireToggles();
+  wireToggleFilter();
+  updateGroupCounts();
+  wireDiagnostics();
+}
+
+/* ─── Capability toggles (universal toggleability) ─── */
+function toggleChip(t){
+  const on = !!t.enabled;
+  return `<button type="button" class="btn btn-xs ${on?'btn-success':'btn-default'} tg-chip"
+    data-key="${attr(t.key)}" data-name="${attr(t.name)}" data-on="${on?1:0}" title="${attr(t.key)}">
+    <i class="glyphicon glyphicon-${on?'ok':'remove'}"></i> ${esc(t.name)}</button>`;
+}
+function wireToggles(){
+  $$('.tg-chip').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const key = btn.dataset.key;
+      const next = btn.dataset.on !== '1';   // flip current state
+      btn.disabled = true;
+      try {
+        await API.togglesPut({key, enabled: next});
+        btn.dataset.on = next ? '1' : '0';
+        btn.className = 'btn btn-xs '+(next?'btn-success':'btn-default')+' tg-chip';
+        btn.innerHTML = `<i class="glyphicon glyphicon-${next?'ok':'remove'}"></i> ${esc(btn.dataset.name)}`;
+        toast(`${key} ${next?'on':'off'}`);
+        updateGroupCounts();   // keep the per-group "N on" tally live
+      } catch(e){ alertify.error(e.message); }
+      finally { btn.disabled = false; }
+    });
+  });
+}
+/* Per-group tally: "(total · N on)", or "(shown/total · N on)" while filtering. */
+function updateGroupCounts(){
+  $$('.tg-group').forEach(grp=>{
+    const chips = [...grp.querySelectorAll('.tg-chip')];
+    const total = chips.length;
+    const on    = chips.filter(c=>c.dataset.on==='1').length;
+    const shown = chips.filter(c=>c.style.display!=='none').length;
+    const span  = grp.querySelector('.tg-count');
+    if (span) span.textContent = shown===total
+      ? ` (${total} · ${on} on)`
+      : ` (${shown}/${total} shown · ${on} on)`;
+  });
+}
+/* Instant client-side filter across all groups (matches name or full key). */
+function wireToggleFilter(){
+  const inp = $('#tg-filter');
+  if (!inp) return;
+  inp.addEventListener('input', ()=>{
+    const q = inp.value.trim().toLowerCase();
+    $$('.tg-chip').forEach(c=>{
+      const hay = (c.dataset.name + ' ' + c.dataset.key).toLowerCase();
+      c.style.display = (!q || hay.includes(q)) ? '' : 'none';
+    });
+    // Hide a whole group (and show its "no matches" note) when nothing matches.
+    $$('.tg-group').forEach(grp=>{
+      const anyShown = [...grp.querySelectorAll('.tg-chip')].some(c=>c.style.display!=='none');
+      const empty = grp.querySelector('.tg-empty');
+      if (empty) empty.style.display = (q && !anyShown) ? '' : 'none';
+    });
+    updateGroupCounts();
+  });
+}
+
+/* ─── Diagnostics: on-demand self-test + verbose-log download ─── */
+function wireDiagnostics(){
+  const btn = $('#st-run');
+  if (!btn) return;
+  btn.addEventListener('click', async ()=>{
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = 'Running…';
+    $('#st-summary').textContent = '';
+    $('#st-results').innerHTML = '';
+    try {
+      const r = await API.selftest();
+      const pill = s => s==='pass' ? '<span class="label label-success">pass</span>'
+                      : s==='warn' ? '<span class="label label-warning">warn</span>'
+                      : '<span class="label label-danger">fail</span>';
+      const rows = (r.checks||[]).map(c =>
+        `<tr><td>${pill(c.status)}</td><td><code>${esc(c.name)}</code></td><td style="color:#aaa">${esc(c.detail)}</td></tr>`
+      ).join('');
+      $('#st-results').innerHTML =
+        `<table class="table table-condensed" style="margin-bottom:0"><tbody>${rows}</tbody></table>`;
+      const cls = r.ok ? 'label-success' : 'label-danger';
+      $('#st-summary').innerHTML =
+        `<span class="label ${cls}">${r.ok?'OK':'FAILED'}</span> `+
+        `${r.passed}/${r.total} pass, ${r.warned} warn, ${r.failed} fail · ${r.elapsed_ms} ms`;
+      (r.ok?toast:alertify.error)(r.ok?'Self-test passed':'Self-test reported failures');
+    } catch(e){
+      alertify.error('Self-test failed: '+e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = orig;
+    }
+  });
+}
+function keyRow(k, writeEnabled){
+  return `<div class="keyrow" data-key="${attr(k.name)}">
+    <div>
+      <div class="kn">${esc(k.name)}</div>
+      <div class="kd">${k.set ? '<span class="status-pill s-complete">set</span>' : '<span class="status-pill s-pending">unset</span>'}</div>
+    </div>
+    ${writeEnabled ? `
+      <input type="password" class="form-control input-sm" placeholder="${k.set?'enter new value':'paste key'}" autocomplete="off" data-input>
+      <div class="kactions">
+        <button class="btn btn-default btn-sm" data-action="update">${k.set?'Update':'Set'}</button>
+        ${k.set ? '<button class="btn btn-danger btn-sm" data-action="delete">Delete</button>' : ''}
+      </div>
+    ` : ''}
+  </div>`;
+}
+function wireKeyEditor(){
+  const pending = {updates:{}, deletes:new Set()};
+  const refresh = ()=>{
+    const n = Object.keys(pending.updates).length + pending.deletes.size;
+    $('#k-save').disabled = n===0;
+    $('#k-pending').textContent = n===0?'':`${n} pending change${n===1?'':'s'}`;
+  };
+  $$('.keyrow').forEach(row=>{
+    const name = row.dataset.key;
+    row.querySelectorAll('button').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        if (btn.dataset.action==='update'){
+          const inp = row.querySelector('input[data-input]');
+          const v = (inp.value||'').trim();
+          if (!v){ inp.focus(); alertify.warning('value required'); return; }
+          pending.updates[name] = v;
+          pending.deletes.delete(name);
+          inp.value = '';
+          toast(`${name} queued`);
+          refresh();
+        } else if (btn.dataset.action==='delete'){
+          alertify.confirm('Delete key', `Delete ${name} from ${S.settings.env_path}?`, ()=>{
+            pending.deletes.add(name);
+            delete pending.updates[name];
+            refresh();
+          }, ()=>{});
+        }
+      });
+    });
+  });
+  $('#k-save').addEventListener('click', async()=>{
+    try { await API.keysPut({updates:pending.updates, deletes:Array.from(pending.deletes)});
+          toast('Saved'); render(); }
+    catch(e){ alertify.error(e.message); }
+  });
+}
+
+/* ═══════════ Theme toggler (Spiderfoot-compatible localStorage key) ═══════════ */
+function toggleDetail(tr){
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains('entity-detail-row')){
+    next.style.display = next.style.display === 'none' ? '' : 'none';
+  }
+}
+
+function globalSearch(e){
+  e.preventDefault();
+  const q = (($('#global-q')||{}).value || '').trim();
+  if (q.length < 2){
+    if (typeof alertify !== 'undefined') alertify.warning('Enter at least 2 characters to search');
+    return;
+  }
+  // Navigate to a real route so the result survives render()'s hash re-parse
+  // (the old code hand-mutated S.route, which render() immediately overwrote).
+  nav('#/search?q='+encodeURIComponent(q));
+}
+
+/* ═══════════ Page: GLOBAL SEARCH (#/search?q=…) — FTS5-backed ═══════════ */
+async function renderSearch(v){
+  const q = (S.route.query.q||'').trim();
+  if (q.length < 2){
+    v.innerHTML = '<div class="empty-state"><h3>Search all entities</h3>'
+      + '<p>Type at least 2 characters in the search box above. Matching is tokenized, '
+      + 'word-order-independent and relevance-ranked (SQLite FTS5) across every scan.</p></div>';
+    return;
+  }
+  const data = await API.search(q, 200);
+  const rows = data.entities || [];
+  v.innerHTML = `
+    <div class="page-header" style="margin-top:0;border-bottom:1px solid #eee;padding-bottom:8px">
+      <h3 style="margin:0"><i class="glyphicon glyphicon-search"></i>&nbsp;Search results
+        <small>${rows.length} match${rows.length===1?'':'es'} for <code>${esc(q)}</code> across all scans</small>
+      </h3>
+    </div>
+    ${renderBrowseTable(rows)}`;
+  if (window.jQuery && jQuery.fn.tablesorter && rows.length){
+    try { jQuery('#browse-table').tablesorter(); } catch(_){}
+  }
+}
+
+/* ═══════════ Page: LIVE MONITOR (#/live) — continuous re-scan ═══════════ */
+function clearLiveTimer(){ if (S.liveTimer){ clearInterval(S.liveTimer); S.liveTimer = null; } }
+function clearScanTimer(){ if (S.scanTimer){ clearTimeout(S.scanTimer); S.scanTimer = null; } }
+function clearEnginesTimer(){ if (S.enginesTimer){ clearInterval(S.enginesTimer); S.enginesTimer = null; } }
+
+/* ═══════════ Page: SEARCH-ENGINE LIVENESS (#/engines) ═══════════ */
+/* Merges the cached liveness sweep (GET /api/v1/engines/health — only ENABLED
+   engines are probed) with the full engine roster + on/off state (GET
+   /api/v1/settings/toggles), so disabled engines stay visible and can be
+   re-enabled inline. Each row carries an Enable/Disable control wired to PUT
+   /settings/toggles, closing the loop: a Blocked engine can be switched off
+   right here (then skipped by both the probe and every scan). Auto-refreshes
+   every 30s while open; clearEnginesTimer() (from render()) stops it. */
+async function renderEngines(v){
+  let health, toggles;
+  try { [health, toggles] = await Promise.all([API.engines(), API.togglesGet()]); }
+  catch(e){ v.innerHTML = `<div class="alert alert-danger"><strong>Could not load engine liveness.</strong> ${esc(e.message)}</div>`; return; }
+  const when = health.checked_at ? new Date(health.checked_at*1000).toLocaleString() : '—';
+  // Probe results for currently-enabled engines, keyed by engine name.
+  const probed = {};
+  (health.engines||[]).forEach(e=>{ probed[e.engine] = e; });
+  // Full roster (enabled + disabled) from the toggle catalogue; fall back to the
+  // probed list if the catalogue is somehow unavailable.
+  const grp = (toggles.groups||[]).find(g=>g.group==='engines');
+  let engines = (grp ? grp.toggles.slice() : (health.engines||[]).map(e=>({key:'engine.'+e.engine, name:e.engine, enabled:true})));
+  engines.sort((a,b)=>a.name.localeCompare(b.name));
+  // Tally from the merged roster (not health.up/blocked/down) so the cards stay
+  // consistent with the rows the instant a toggle flips — the cached sweep can
+  // lag a just-disabled engine until the next background probe.
+  const cnt = {up:0, blocked:0, down:0, disabled:0, pending:0};
+  const dot = st => {
+    const c = st==='up' ? '#3c763d' : (st==='blocked' ? '#8a6d3b'
+            : (st==='disabled'||st==='pending') ? '#777' : '#a94442');
+    return `<span style="color:${c};font-weight:600">&#9679;&nbsp;${esc(st)}</span>`;
+  };
+  const rows = engines.map(en=>{
+    const p = probed[en.name];
+    let status, latency, results;
+    if (!en.enabled){ status='disabled'; latency='—'; results='—'; }
+    else if (p){ status=p.status; latency=esc(String(p.latency_ms))+' ms'; results=esc(String(p.results)); }
+    else { status='pending'; latency='—'; results='—'; }   // enabled, awaiting next sweep
+    cnt[status] = (cnt[status]||0) + 1;
+    const btn = en.enabled
+      ? `<button class="btn btn-default btn-xs" data-tg="${attr(en.key)}" data-on="1" title="Disable ${attr(en.name)} for the probe and all scans">Disable</button>`
+      : `<button class="btn btn-success btn-xs" data-tg="${attr(en.key)}" data-on="0" title="Re-enable ${attr(en.name)}">Enable</button>`;
+    return `<tr${en.enabled?'':' class="text-muted"'}>
+      <td><b>${esc(en.name)}</b></td>
+      <td>${dot(status)}</td>
+      <td class="text-right">${latency}</td>
+      <td class="text-right">${results}</td>
+      <td class="text-right">${btn}</td>
+    </tr>`;
+  }).join('');
+  v.innerHTML = `
+    <div class="page-header" style="margin-top:0;border-bottom:1px solid #eee;padding-bottom:8px">
+      <h3 style="margin:0"><i class="glyphicon glyphicon-search"></i>&nbsp;Search-engine liveness
+        <button class="btn btn-default btn-sm pull-right" onclick="refreshEngines()"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Refresh</button>
+      </h3>
+    </div>
+    <div class="row">
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Up</div><div class="val" style="color:#3c763d">${cnt.up}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Blocked</div><div class="val" style="color:#8a6d3b">${cnt.blocked}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Down</div><div class="val" style="color:#a94442">${cnt.down}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Disabled</div><div class="val" style="color:#777">${cnt.disabled}</div></div></div>
+    </div>
+    <p class="text-muted" style="margin-top:8px">Free, keyless engines — probed at startup and on a periodic cycle. Last sweep: ${esc(when)}. Auto-refreshes every 30&nbsp;s. Disable a noisy/blocked engine inline — it's then skipped by the probe and every scan (manage all toggles under <a href="#/opts">Settings</a>).</p>
+    <div class="table-responsive"><table class="table table-striped table-condensed">
+      <thead><tr><th>Engine</th><th>Status</th><th class="text-right">Latency</th><th class="text-right">Results</th><th class="text-right">Action</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" class="text-center text-muted">No engines</td></tr>'}</tbody>
+    </table></div>`;
+  wireEngineToggles();
+  clearEnginesTimer();
+  S.enginesTimer = setInterval(refreshEngines, 30000);
+}
+/* Inline Enable/Disable on each liveness row → PUT /settings/toggles, then
+   re-render so the row (and the Disabled tally) reflects the new state. */
+function wireEngineToggles(){
+  $$('button[data-tg]').forEach(b=>b.addEventListener('click', async ()=>{
+    const key = b.dataset.tg, next = b.dataset.on !== '1';
+    b.disabled = true;
+    try {
+      await API.togglesPut({key, enabled: next});
+      toast(`${key} ${next?'on':'off'}`);
+      await renderEngines($('#view'));
+    } catch(e){ alertify.error(e.message); b.disabled = false; }
+  }));
+}
+async function refreshEngines(){
+  if (S.route && S.route.name === 'engines') { await renderEngines($('#view')); }
+  else { clearEnginesTimer(); }
+}
+function wireLiveStops(){
+  $$('button[data-livestop]').forEach(b=>b.addEventListener('click', async ()=>{
+    try { await API.liveStop(b.dataset.livestop); toast('Stopping session'); render(); }
+    catch(e){ if (typeof alertify !== 'undefined') alertify.error(e.message); }
+  }));
+}
+function renderLiveSessions(sessions){
+  if (!sessions.length){
+    return '<div class="empty-state"><h3>No active sessions</h3>'
+      + '<p>Start one above to continuously re-scan a target on an interval — new '
+      + 'entities and correlations accrue as they appear.</p></div>';
+  }
+  const rows = sessions.map(s=>`<tr>
+    <td>${kindPill(s.target&&s.target.kind)} <code>${esc((s.target&&s.target.value)||s.id)}</code>${(s.live_options&&s.live_options.radar)?' <span class="label label-info" title="Radar: paid APIs not re-queried on covered seeds">radar</span>':''}</td>
+    <td>${statusPill(s.status)}</td>
+    <td class="text-right">${s.iteration||0}${(s.live_options&&s.live_options.iterations)?` / ${s.live_options.iterations}`:''}</td>
+    <td class="text-right">${(s.live_options&&s.live_options.interval_secs)||'?'}s</td>
+    <td>${esc(fmtDate(s.started_at))}</td>
+    <td>${s.last_iteration_at?esc(fmtDate(s.last_iteration_at)):'<span class="text-muted">—</span>'}</td>
+    <td class="text-right">${(s.scan_ids||[]).length}</td>
+    <td class="text-right"><button class="btn btn-danger btn-xs" data-livestop="${attr(s.id)}" title="Stop"><i class="glyphicon glyphicon-stop"></i></button></td>
+  </tr>`).join('');
+  return `<div class="table-responsive"><table class="table table-condensed table-striped">
+    <thead><tr><th>Target</th><th>Status</th><th class="text-right">Iter</th>
+      <th class="text-right">Interval</th><th>Started</th><th>Last run</th>
+      <th class="text-right">Scans</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+async function renderLive(v){
+  const data = await API.liveList();
+  const sessions = data.sessions || [];
+  v.innerHTML = `
+    <h2>Live Monitor <small class="text-muted">continuous re-scan of a target on an interval</small>
+      <div class="pull-right"><button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button></div>
+    </h2>
+    <hr style="margin:8px 0 14px 0">
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Start a live session</b></div>
+      <div class="panel-body">
+        <form id="live-form" class="form-inline" onsubmit="return false">
+          <select id="live-kind" class="form-control input-sm">
+            ${TARGET_KINDS.map(k=>`<option value="${attr(k.v)}"${k.v==='auto'?' selected':''}>${esc(k.label)}</option>`).join('')}
+          </select>
+          <input id="live-value" type="text" class="form-control input-sm" placeholder="target value…" style="min-width:200px" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <label class="text-muted" style="font-weight:normal;margin-left:8px">every</label>
+          <input id="live-interval" type="number" class="form-control input-sm" value="60" min="1" style="width:80px"> s
+          <label class="text-muted" style="font-weight:normal;margin-left:8px">for</label>
+          <input id="live-iters" type="number" class="form-control input-sm" placeholder="∞" min="1" style="width:80px"> iterations
+          <label class="text-muted" style="font-weight:normal;margin-left:8px" title="Persist the keyed-module ledger across sweeps so paid APIs are never re-queried on a seed already covered — each sweep spends quota only on NEW seeds.">
+            <input id="live-radar" type="checkbox" checked>&nbsp;Radar
+          </label>
+          <button id="live-start" class="btn btn-danger btn-sm" style="margin-left:8px"><i class="glyphicon glyphicon-play"></i>&nbsp;Start</button>
+        </form>
+        <p class="text-muted" style="margin:8px 0 0 0;font-size:12px"><b>Radar</b> (recommended): each sweep spends API budget only on NEW seeds — a keyed module never re-queries a seed an earlier sweep already covered, so a long-running radar isn't aggressive with the APIs. Unchecked = classic live re-scan (re-queries everything each interval to catch fresh data). Leave iterations blank to run until toggled off; tuned low for Termux battery/data.</p>
+      </div>
+    </div>
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Active sessions</b> <span class="badge">${sessions.length}</span></div>
+      <div id="live-sessions">${renderLiveSessions(sessions)}</div>
+    </div>`;
+  $('#live-start').addEventListener('click', async ()=>{
+    const kind = $('#live-kind').value;
+    const value = (($('#live-value')||{}).value || '').trim();
+    if (!value){ if (typeof alertify !== 'undefined') alertify.warning('Enter a target value'); return; }
+    const interval_secs = Math.max(1, parseInt(($('#live-interval')||{}).value || '60', 10) || 60);
+    const itersRaw = (($('#live-iters')||{}).value || '').trim();
+    const live = { interval_secs, radar: !!(($('#live-radar')||{}).checked) };
+    if (itersRaw){ const n = parseInt(itersRaw, 10); if (n>=1) live.iterations = n; }
+    try {
+      // Unified live scan: 'auto' omits `kind` so the server detects it.
+      const payload = kind==='auto' ? { value, options: {}, live } : { kind, value, options: {}, live };
+      await API.liveCreate(payload);
+      if (typeof alertify !== 'undefined') alertify.success('Live session started');
+      render();
+    } catch(e){ if (typeof alertify !== 'undefined') alertify.error('Start failed: '+e.message); }
+  });
+  wireLiveStops();
+  // Poll the session list while this page is open so iteration counts climb live.
+  clearLiveTimer();
+  S.liveTimer = setInterval(async ()=>{
+    try {
+      const d = await API.liveList();
+      const host = $('#live-sessions');
+      if (host){ host.innerHTML = renderLiveSessions(d.sessions || []); wireLiveStops(); }
+    } catch(_){}
+  }, 8000);
+}
+
+function applyTheme(){
+  const dark = localStorage.getItem('theme') === 'dark-theme';
+  document.body.classList.toggle('dark-theme', dark);
+  $('#theme-label').textContent = dark ? 'Light Mode' : 'Dark Mode';
+}
+document.addEventListener('DOMContentLoaded', ()=>{
+  $('#theme-toggle').addEventListener('click', e=>{
+    e.preventDefault();
+    const dark = !document.body.classList.contains('dark-theme');
+    localStorage.setItem('theme', dark ? 'dark-theme' : 'light-theme');
+    applyTheme();
+  });
+});
+
+/* ═══════════ Bootstrap ═══════════ */
+(async function init(){
+  applyTheme();
+  if (typeof alertify !== 'undefined') alertify.set('notifier','position','top-right');
+  try {
+    const h = await API.health();
+    S.health = h; S.version = h.version || '?';
+    $('#ver').textContent = S.version;
+    $('#ver2').textContent = S.version;
+  } catch {
+    $('#ver').textContent = 'offline';
+  }
+  await render();
+})();
+</script>
+</body>
+</html>

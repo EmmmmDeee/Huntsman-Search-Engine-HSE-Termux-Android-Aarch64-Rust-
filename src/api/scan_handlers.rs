@@ -1,0 +1,661 @@
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
+use serde_json::json;
+use std::sync::Arc;
+use tracing::info;
+
+use super::handlers::{
+    bad_request, internal_error, not_found, ok_list, spawn_scan, validated_target,
+};
+use crate::api::AppState;
+use crate::core::entity::scan_id;
+use crate::core::scan::{Scan, ScanRequest, Target};
+
+/// Build a validated, profile-resolved `Scan` (+ its `Target`) from a request,
+/// or a client-facing error message. Shared by `scan_create` (single) and
+/// `scan_batch` (per-item) so the validation, deterministic scan-id derivation,
+/// and `profile`→options resolution can't drift between the two paths. Pure:
+/// no store or engine access, so it's unit-testable on its own.
+fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target), String> {
+    // Resolve the kind once: explicit if given, else auto-detected from the
+    // value (the unified-scan path). Both `validated_target` and the
+    // deterministic scan-id then key off the same resolved kind.
+    let kind = req.resolved_kind();
+    let target = validated_target(kind, req.value.clone())?;
+    let sid = scan_id(kind.canonical_str(), &req.value);
+    let mut opts = req.options;
+    if let Some(ref profile_name) = opts.profile
+        && let Some(profile_opts) = crate::core::profiles::resolve_profile(profile_name)
+    {
+        opts = profile_opts;
+    }
+    let scan = Scan::new(sid, target.clone()).with_options(opts.clamp_depth());
+    Ok((scan, target))
+}
+
+pub async fn scan_create(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<ScanRequest>,
+) -> impl IntoResponse {
+    let (scan, target) = match build_scan_from_request(req) {
+        Ok(pair) => pair,
+        Err(msg) => return bad_request(msg),
+    };
+
+    if let Err(e) = s.store.upsert_scan(&scan) {
+        return internal_error(&e);
+    }
+
+    spawn_scan(&s, scan.clone(), target);
+
+    info!(scan_id = %scan.id, kind = ?scan.target.kind, "scan queued");
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "scan_id": scan.id, "status": "queued" })),
+    )
+        .into_response()
+}
+
+pub async fn scan_batch(
+    State(s): State<Arc<AppState>>,
+    Json(requests): Json<Vec<ScanRequest>>,
+) -> impl IntoResponse {
+    if requests.is_empty() {
+        return bad_request("empty batch");
+    }
+    if requests.len() > 50 {
+        return bad_request("batch too large (max 50)");
+    }
+
+    let mut scan_ids = Vec::with_capacity(requests.len());
+    for req in requests {
+        let (scan, target) = match build_scan_from_request(req) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                scan_ids.push(json!({ "error": msg }));
+                continue;
+            }
+        };
+        if let Err(e) = s.store.upsert_scan(&scan) {
+            scan_ids.push(json!({ "error": e.to_string() }));
+            continue;
+        }
+        let sid = scan.id.clone();
+        spawn_scan(&s, scan, target);
+        scan_ids.push(json!({ "scan_id": sid, "status": "queued" }));
+    }
+
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "scans": scan_ids, "count": scan_ids.len() })),
+    )
+        .into_response()
+}
+
+pub async fn scan_cancel(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let handle = s.cancellations.lock().get(&id).cloned();
+    match handle {
+        Some(h) => {
+            h.cancel();
+            info!(scan_id = %id, "scan cancellation requested");
+            (
+                StatusCode::OK,
+                Json(json!({ "scan_id": id, "status": "cancelling" })),
+            )
+                .into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no in-flight scan with that id" })),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    match s.store.list_scans(200) {
+        Ok(scans) => ok_list("scans", scans),
+        Err(e) => internal_error(&e),
+    }
+}
+
+pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
+    match s.store.get_scan(&id) {
+        Ok(Some(scan)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(&scan).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to serialize scan to JSON value");
+                json!({})
+            })),
+        )
+            .into_response(),
+        Ok(None) => not_found(),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `Some(404)` when no scan with `id` exists (or `Some(500)` on a store error),
+/// else `None`. Sub-resource handlers call this first so an unknown scan yields
+/// 404 — consistent with `GET /scans/{id}` and `report.json` — rather than a
+/// misleading empty `200` that a client cannot distinguish from a real scan
+/// that simply found nothing.
+fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
+    match s.store.get_scan(id) {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(not_found()),
+        Err(e) => Some(internal_error(&e)),
+    }
+}
+
+/// True if the request opts into the quarantined `candidate` entities via
+/// `?include_candidates=1|true|yes|on`. Default (absent/anything else) is to
+/// hide them — the clean, confirmed-only default view.
+fn wants_candidates(params: &std::collections::HashMap<String, String>) -> bool {
+    params
+        .get("include_candidates")
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+}
+
+pub async fn scan_entities(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match s.store.entities_for_scan(&id) {
+        Ok(mut entities) => {
+            if !wants_candidates(&params) {
+                entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+            }
+            ok_list("entities", entities)
+        }
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `GET /api/v1/scans/{a}/diff/{b}` — entity-level diff of scan `a` (baseline)
+/// vs scan `b`. The HTTP surface of `hse diff`: returns the `ScanDiff` JSON
+/// (`{ added, removed, common, confidence_shifts }`) computed by the shared
+/// `core::diff`. 404 if either scan is unknown, matching the other
+/// `/scans/{id}/...` sub-resources.
+pub async fn scan_diff(
+    State(s): State<Arc<AppState>>,
+    Path((a, b)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &a) {
+        return resp;
+    }
+    if let Some(resp) = scan_missing(&s, &b) {
+        return resp;
+    }
+    let baseline = match s.store.entities_for_scan(&a) {
+        Ok(e) => e,
+        Err(e) => return internal_error(&e),
+    };
+    let later = match s.store.entities_for_scan(&b) {
+        Ok(e) => e,
+        Err(e) => return internal_error(&e),
+    };
+    let diff = crate::core::diff::diff_entities(&baseline, &later);
+    (StatusCode::OK, Json(diff)).into_response()
+}
+
+pub async fn scan_entities_filter(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    if params.get("kind").is_some_and(|k| k.len() > 32) {
+        return bad_request("kind too long (max 32 chars)");
+    }
+    if params.get("q").is_some_and(|v| v.len() > 256) {
+        return bad_request("query too long (max 256 chars)");
+    }
+    let kind = params.get("kind").map(String::as_str);
+    let min_conf = params
+        .get("min_confidence")
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|&c| (0.0..=1.0).contains(&c));
+    let q = params.get("q").map(String::as_str);
+    match s.store.entities_filtered(&id, kind, min_conf, q) {
+        Ok(entities) => ok_list("entities", entities),
+        Err(e) => internal_error(&e),
+    }
+}
+
+pub async fn scan_entities_facets(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match s.store.entity_facets(&id) {
+        Ok(facets) => {
+            let items: Vec<serde_json::Value> = facets
+                .iter()
+                .map(|(kind, count)| json!({ "kind": kind, "count": count }))
+                .collect();
+            Json(json!({ "facets": items, "count": items.len() })).into_response()
+        }
+        Err(e) => internal_error(&e),
+    }
+}
+
+pub async fn scan_correlations(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match s.store.correlations_for_scan(&id) {
+        Ok(corr) => ok_list("correlations", corr),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// Typed entity-relation edges for a scan (the attribution graph). Powers the
+/// SPA force-graph's relation layer.
+pub async fn scan_relations(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match s.store.relations_for_scan(&id) {
+        Ok(rels) => ok_list("relations", rels),
+        Err(e) => internal_error(&e),
+    }
+}
+
+pub async fn scan_delete(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.delete_scan(&id) {
+        Ok(true) => {
+            info!(scan_id = %id, "scan deleted");
+            (StatusCode::OK, Json(json!({ "deleted": id }))).into_response()
+        }
+        Ok(false) => not_found(),
+        Err(e) => internal_error(&e),
+    }
+}
+
+pub async fn scan_rerun(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let original = match s.store.get_scan(&id) {
+        Ok(Some(scan)) => scan,
+        Ok(None) => return not_found(),
+        Err(e) => return internal_error(&e),
+    };
+
+    let sid = scan_id(original.target.kind.canonical_str(), &original.target.value);
+    let new_scan = Scan::new(sid, original.target.clone()).with_options(original.options.clone());
+
+    if let Err(e) = s.store.upsert_scan(&new_scan) {
+        return internal_error(&e);
+    }
+
+    spawn_scan(&s, new_scan.clone(), original.target);
+
+    info!(scan_id = %new_scan.id, source = %id, "scan rerun queued");
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "scan_id": new_scan.id,
+            "source_scan_id": id,
+            "status": "queued"
+        })),
+    )
+        .into_response()
+}
+
+pub async fn scan_events_history(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match s.store.events_for_scan(&id) {
+        Ok(events) => ok_list("events", events),
+        Err(e) => internal_error(&e),
+    }
+}
+
+pub async fn scan_entities_csv(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let entities = match s.store.entities_for_scan(&id) {
+        Ok(es) => es,
+        Err(e) => return internal_error(&e),
+    };
+    download_response(
+        entities_to_csv(&entities),
+        "text/csv; charset=utf-8",
+        &id,
+        "csv",
+    )
+}
+
+/// Canonical CSV rendering for a scan's entities. Shared by the HTTP
+/// endpoint `/api/v1/scans/{id}/entities.csv` and the `hse export
+/// --format csv` CLI subcommand so both produce byte-identical
+/// output — operators piping the two interchangeably can rely on
+/// the column shape staying in sync.
+pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> String {
+    use std::fmt::Write as _;
+    let mut body = String::with_capacity(192 + entities.len() * 128);
+    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,tags\n");
+    for e in entities {
+        let eff = e.c_effective();
+        let tier = e.classify().to_string();
+        let mut sources: Vec<&str> = e.evidence_sources().into_iter().collect();
+        sources.sort_unstable();
+        let sources = sources.join("|");
+        let tags = e.tags.join("|");
+        let _ = writeln!(
+            body,
+            "{},{},{},{:.3},{:.3},{},{},{},{},{}",
+            csv_escape(&e.kind.to_string()),
+            csv_escape(&e.value),
+            csv_escape(&e.raw_value),
+            e.confidence,
+            eff,
+            e.corroboration,
+            tier,
+            e.observed_at,
+            csv_escape(&sources),
+            csv_escape(&tags),
+        );
+    }
+    body
+}
+
+pub async fn scan_report_json(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    match build_scan_report(&*s.store, &id, wants_candidates(&params)) {
+        Ok(Some(report)) => {
+            let body = serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
+                "{}".into()
+            });
+            download_response(body, "application/json; charset=utf-8", &id, "json")
+        }
+        Ok(None) => not_found(),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// Canonical scan-report JSON envelope. Shared by the HTTP endpoint
+/// `/api/v1/scans/{id}/report.json` and the `hse export --format
+/// report` CLI subcommand so the on-device and over-the-wire
+/// dossiers stay byte-equivalent.
+///
+/// Generic over the storage handle: the HTTP layer hands in an
+/// `Arc<dyn StoragePort>` (via `&*s.store`), the CLI hands in a
+/// `&Store` directly. Both expose `get_scan / entities_for_scan /
+/// correlations_for_scan` with matching signatures.
+///
+/// Returns `Ok(None)` when no scan with that id exists, so callers
+/// can map straight to a 404. Bubbles storage errors otherwise.
+pub(crate) fn build_scan_report(
+    store: &dyn crate::core::port::StoragePort,
+    scan_id: &str,
+    include_candidates: bool,
+) -> crate::core::error::Result<Option<serde_json::Value>> {
+    let Some(scan) = store.get_scan(scan_id)? else {
+        return Ok(None);
+    };
+    let mut entities = store.entities_for_scan(scan_id)?;
+    // Quarantine in the dossier too: speculative `candidate` entities (the
+    // non-target breach-dump rows) are hidden by default so the report reads
+    // as the target's confirmed footprint. `include_candidates=true` returns
+    // the full set for investigation.
+    if !include_candidates {
+        entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    }
+    let correlations = store.correlations_for_scan(scan_id)?;
+    Ok(Some(json!({
+        "scan": scan,
+        "entities": entities,
+        "entity_count": entities.len(),
+        "correlations": correlations,
+        "correlation_count": correlations.len(),
+        "exported_at": crate::core::entity::unix_now(),
+    })))
+}
+
+pub async fn scan_export_gexf(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let entities = match s.store.entities_for_scan(&id) {
+        Ok(entities) => entities,
+        Err(e) => return internal_error(&e),
+    };
+    let relations = match s.store.relations_for_scan(&id) {
+        Ok(relations) => relations,
+        Err(e) => return internal_error(&e),
+    };
+    let body = crate::core::gexf::entities_to_gexf(&entities, &relations, &id);
+    download_response(body, "application/xml; charset=utf-8", &id, "gexf")
+}
+
+fn download_response(
+    body: String,
+    content_type: &'static str,
+    scan_id: &str,
+    ext: &str,
+) -> axum::response::Response {
+    let short_id: String = scan_id.chars().take(12).collect();
+    let filename = format!("hse-{ext}-{short_id}.{ext}");
+    let disposition = format!("attachment; filename=\"{filename}\"");
+    let mut resp = (StatusCode::OK, body).into_response();
+    let headers = resp.headers_mut();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static(content_type),
+    );
+    if let Ok(v) = axum::http::HeaderValue::from_str(&disposition) {
+        headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
+    }
+    resp
+}
+
+pub(crate) fn csv_escape(s: &str) -> String {
+    // Formula-injection neutralization: a leading =/+/-/@/CR/TAB causes
+    // Excel and LibreOffice to interpret the cell as a formula on file
+    // open — a hostile API response with `first_name = "=cmd|'/c calc'!A1"`
+    // could otherwise turn an exported scan CSV into RCE on the operator's
+    // workstation. Prepend a single quote to defang per OWASP guidance.
+    let needs_formula_guard = s
+        .as_bytes()
+        .first()
+        .is_some_and(|b| matches!(*b, b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r'));
+    let body = if needs_formula_guard {
+        format!("'{s}")
+    } else {
+        s.to_string()
+    };
+    if body.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", body.replace('"', "\"\""))
+    } else {
+        body
+    }
+}
+
+// ─── Health / Version / Stats / Modules ────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::scan::TargetKind;
+
+    #[test]
+    fn wants_candidates_parses_truthy_values_only() {
+        use std::collections::HashMap;
+        let mut p: HashMap<String, String> = HashMap::new();
+        assert!(!wants_candidates(&p), "absent ⇒ hide candidates");
+        for v in ["1", "true", "yes", "on"] {
+            p.insert("include_candidates".into(), v.into());
+            assert!(wants_candidates(&p), "{v} should opt in");
+        }
+        p.insert("include_candidates".into(), "0".into());
+        assert!(!wants_candidates(&p));
+    }
+
+    #[test]
+    fn report_hides_candidates_by_default_and_includes_on_request() {
+        use crate::core::entity::{Entity, EntityKind};
+        use crate::core::scan::{Scan, Target};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("report.db");
+        let store = crate::storage::Store::open(db.to_str().unwrap()).unwrap();
+        let sid = "rep-scan";
+        store
+            .upsert_scan(&Scan::new(
+                sid,
+                Target::new(TargetKind::FullName, "Matthew Diegmann"),
+            ))
+            .unwrap();
+        store
+            .upsert_entity(&Entity::new(EntityKind::Email, "me@real.com", 0.85, sid))
+            .unwrap();
+        let mut candidate = Entity::new(EntityKind::Email, "stranger@bank.com", 0.25, sid);
+        candidate.tag(crate::core::tags::CANDIDATE);
+        store.upsert_entity(&candidate).unwrap();
+
+        let port = &store as &dyn crate::core::port::StoragePort;
+        let default = build_scan_report(port, sid, false).unwrap().unwrap();
+        assert_eq!(
+            default["entity_count"].as_u64(),
+            Some(1),
+            "default report hides the candidate"
+        );
+        let full = build_scan_report(port, sid, true).unwrap().unwrap();
+        assert_eq!(
+            full["entity_count"].as_u64(),
+            Some(2),
+            "include_candidates returns the full set"
+        );
+    }
+
+    #[test]
+    fn build_scan_from_request_valid_is_deterministic() {
+        let req = ScanRequest {
+            kind: Some(TargetKind::Domain),
+            value: "cloudflare.com".to_string(),
+            options: Default::default(),
+        };
+        let (scan, target) = build_scan_from_request(req).expect("valid domain should build");
+        assert_eq!(target.value, "cloudflare.com");
+        assert_eq!(target.kind, TargetKind::Domain);
+        // `scan_id` mixes `unix_now()` (so re-scans of one target get a fresh
+        // id), so assert the id's SHAPE — not equality to a recomputed
+        // `scan_id(...)`, which flakes across a one-second boundary.
+        assert_eq!(scan.id.len(), 64);
+        assert!(scan.id.chars().all(|c| c.is_ascii_hexdigit()));
+        // The deterministic part — the resolved target — is identical across
+        // two builds of the same request.
+        let req2 = ScanRequest {
+            kind: Some(TargetKind::Domain),
+            value: "cloudflare.com".to_string(),
+            options: Default::default(),
+        };
+        let (_, target2) = build_scan_from_request(req2).unwrap();
+        assert_eq!(target.kind, target2.kind);
+        assert_eq!(target.value, target2.value);
+    }
+
+    #[test]
+    fn build_scan_from_request_auto_detects_omitted_kind() {
+        // Unified scan: no kind supplied → detected from the value, and the
+        // scan id keys off the *detected* kind (here, email).
+        let req = ScanRequest {
+            kind: None,
+            value: "alice@proton.me".to_string(),
+            options: Default::default(),
+        };
+        let (scan, target) = build_scan_from_request(req).expect("auto-detected email builds");
+        assert_eq!(target.kind, TargetKind::Email);
+        assert_eq!(target.value, "alice@proton.me");
+        // `scan_id` mixes a timestamp — assert id shape, not a recomputed value.
+        assert_eq!(scan.id.len(), 64);
+        assert!(scan.id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn build_scan_from_request_rejects_invalid_target() {
+        let req = ScanRequest {
+            kind: Some(TargetKind::Domain),
+            value: "no-dot-here".to_string(),
+            options: Default::default(),
+        };
+        let err = build_scan_from_request(req).unwrap_err();
+        assert!(
+            err.starts_with("invalid target: "),
+            "error must carry the client-facing prefix, got: {err}"
+        );
+    }
+
+    #[test]
+    fn entities_to_csv_assembles_header_and_escaped_rows() {
+        use crate::core::entity::{Entity, EntityKind};
+
+        // Empty input still emits exactly the column header — export consumers
+        // (the SPA download button, external tooling) parse this header row.
+        assert_eq!(
+            entities_to_csv(&[]).trim_end(),
+            "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,tags"
+        );
+
+        let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.60, "src");
+        e.tag("plain");
+        e.tag("has,comma"); // a comma inside an assembled field must be quoted
+        let csv = entities_to_csv(&[e]);
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 2, "header + exactly one row per entity");
+
+        let row = lines[1];
+        // Column order + 3-dp numeric formatting (kind,value,raw_value,conf,c_eff,…).
+        assert!(
+            row.starts_with("email,a@b.com,a@b.com,0.600,0.600,"),
+            "field order / numeric formatting drifted: {row}"
+        );
+        // `tags` is the final column; the comma-bearing tag is RFC-4180 quoted,
+        // proving entities_to_csv routes assembled fields through csv_escape.
+        // (The GEXF export has a byte-golden test; this is the CSV analogue.)
+        assert!(
+            row.ends_with(",\"plain|has,comma\""),
+            "tags column not escaped through csv_escape: {row}"
+        );
+    }
+}

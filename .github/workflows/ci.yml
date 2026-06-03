@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check & test (Linux x86_64, stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Check
+        run: cargo check --all-targets --locked
+
+      - name: Clippy (warnings = errors)
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --all --locked
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned MSRV toolchain
+        uses: dtolnay/rust-toolchain@1.88
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check (MSRV)
+        run: cargo check --all-targets --locked
+
+  aarch64-android:
+    name: Build (aarch64-linux-android, Termux target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain + aarch64 Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # A dependency in the TLS stack (ring) compiles C in its build script,
+      # so even `cargo check` for this target needs the Android NDK's
+      # aarch64 clang — a bare check job is impossible here. The NDK ships
+      # preinstalled on ubuntu-latest at $ANDROID_NDK_LATEST_HOME; point
+      # cc-rs and cargo's linker at its aarch64 wrappers (API 24 = Termux's
+      # minimum) and build the lib for real. This verifies the project's
+      # actual deployment target (Termux on Android aarch64) end to end,
+      # including the native crates the x86_64 jobs never cross-compile.
+      - name: Build (aarch64-linux-android)
+        env:
+          ANDROID_API: "24"
+        run: |
+          TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang" \
+            || { echo "NDK aarch64 clang not found under $TOOLCHAIN"; ls "$TOOLCHAIN" | head; exit 1; }
+          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+          cargo build --locked --lib --bin hse --target aarch64-linux-android
+
+  install-script:
+    name: install.sh syntax (bash + shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n install.sh
+      # shellcheck ships preinstalled on ubuntu-latest — call it directly
+      # rather than via a third-party action so a master-pinned drift
+      # can't break this job for reasons unrelated to install.sh
+      # (saw `git exit 128 / terminal prompts disabled` after a
+      # ludeeus/action-shellcheck@master revision in 2026-05).
+      - name: ShellCheck
+        run: shellcheck --severity=warning install.sh
