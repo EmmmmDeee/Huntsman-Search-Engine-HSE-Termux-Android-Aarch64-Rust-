@@ -137,6 +137,12 @@ pub enum Command {
         /// (default 0.75 new entities per dispatched target).
         #[arg(long)]
         max_roi: bool,
+        /// Regional searching: off by default (queries are geolocation-neutral);
+        /// when set, the search module autonomously adds minimal region-scoped
+        /// dorks for seeds that carry a clear region signal (`.au` host, `+61`
+        /// phone, ABN, …).
+        #[arg(long = "regional")]
+        regional_search: bool,
         /// When `--max-roi` is set, override the default marginal-yield
         /// floor (0.75). Lower = recurse further before giving up.
         #[arg(long)]
@@ -424,6 +430,7 @@ pub async fn run() -> Result<()> {
             max_concurrent,
             adaptive,
             max_roi,
+            regional_search,
             min_marginal_yield,
             expansion_strategy,
             seeknow_scan_cap,
@@ -449,6 +456,7 @@ pub async fn run() -> Result<()> {
                 max_concurrent,
                 adaptive,
                 max_roi,
+                regional_search,
                 min_marginal_yield,
                 expansion_strategy,
                 seeknow_scan_cap,

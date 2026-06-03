@@ -170,6 +170,16 @@ impl Module for SearchEngines {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let queries = build_queries(target);
+        // Structured trace (into the unified debug log) of the dork plan: how
+        // many queries, and whether regional augmentation was applied. No seed
+        // value logged (PII).
+        tracing::debug!(
+            target: "huntsman::search",
+            regional = regional_enabled(),
+            region = ?detect_region(target),
+            queries = queries.len(),
+            "built search dork set"
+        );
         if queries.is_empty() {
             return Ok(ModuleResult::new());
         }
@@ -607,7 +617,95 @@ fn build_queries_fullname(v: &str) -> Vec<String> {
     q
 }
 
+/// Regional searching toggle, set by the engine at scan start from
+/// `ScanOptions::regional_search`. Off ⇒ geolocation-neutral queries only. A
+/// process-global, like the see_know per-scan budget — concurrent scans in
+/// `serve` share it (last writer wins for the overlap window).
+static REGIONAL_SEARCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Enable/disable regional searching for subsequent scans.
+pub(crate) fn set_regional(on: bool) {
+    REGIONAL_SEARCH.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+fn regional_enabled() -> bool {
+    REGIONAL_SEARCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A region autonomously inferred from a seed's own signals (HSE's focus is AU).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Region {
+    Au,
+}
+
+/// Infer a region from the seed itself — only when it carries a clear signal, so
+/// region augmentation never fires on a region-less seed (stays geo-neutral).
+fn detect_region(target: &Target) -> Option<Region> {
+    let v = target.value.trim().to_lowercase();
+    let host_au = |h: &str| h.ends_with(".au");
+    match target.kind {
+        TargetKind::AbnAcn => Some(Region::Au),
+        TargetKind::Domain => host_au(&v).then_some(Region::Au),
+        TargetKind::Url => crate::util::url_util::host_from_url(&v)
+            .filter(|h| host_au(h))
+            .map(|_| Region::Au),
+        TargetKind::Email => v
+            .rsplit_once('@')
+            .is_some_and(|(_, d)| host_au(d))
+            .then_some(Region::Au),
+        TargetKind::Phone => {
+            let digits: String = v.chars().filter(char::is_ascii_digit).collect();
+            (v.contains("+61") || digits.starts_with("61")).then_some(Region::Au)
+        }
+        TargetKind::Address | TargetKind::Organisation => (v.contains("australia")
+            || [" nsw", " vic", " qld", " wa", " sa", " tas", " act", " nt"]
+                .iter()
+                .any(|s| v.contains(s)))
+        .then_some(Region::Au),
+        _ => None,
+    }
+}
+
+/// Minimal, autonomous region-scoped dorks appended only when regional searching
+/// is on AND a region is detected; empty otherwise (geo-neutral preserved).
+fn regional_dorks(target: &Target) -> Vec<String> {
+    let Some(region) = detect_region(target) else {
+        return Vec::new();
+    };
+    let v = target.value.trim();
+    match region {
+        Region::Au => {
+            let mut d = vec![format!(
+                "\"{v}\" site:com.au OR site:org.au OR site:gov.au OR site:net.au OR site:edu.au"
+            )];
+            if matches!(
+                target.kind,
+                TargetKind::FullName
+                    | TargetKind::Username
+                    | TargetKind::Email
+                    | TargetKind::Phone
+                    | TargetKind::Organisation
+            ) {
+                d.push(format!(
+                    "\"{v}\" site:whitepages.com.au OR site:yellowpages.com.au \
+                     OR site:truelocal.com.au"
+                ));
+            }
+            d
+        }
+    }
+}
+
+/// The dork set for a seed: the geolocation-neutral base, plus minimal
+/// autonomous region-scoped dorks when regional searching is toggled on.
 fn build_queries(target: &Target) -> Vec<String> {
+    let mut q = build_queries_base(target);
+    if regional_enabled() {
+        q.extend(regional_dorks(target));
+    }
+    q
+}
+
+fn build_queries_base(target: &Target) -> Vec<String> {
     let v = target.value.trim();
     if v.is_empty() {
         return Vec::new();
@@ -1478,6 +1576,46 @@ mod tests {
         assert!(q.len() >= 2);
         assert!(q[0].contains("-33.86"));
         assert!(q[0].contains("151.20"));
+    }
+
+    #[test]
+    fn detect_region_only_fires_on_clear_au_signals() {
+        let r = |k, v| detect_region(&Target::new(k, v));
+        // Clear AU signals → Au.
+        assert_eq!(r(TargetKind::AbnAcn, "51824753556"), Some(Region::Au));
+        assert_eq!(r(TargetKind::Domain, "abc.net.au"), Some(Region::Au));
+        assert_eq!(
+            r(TargetKind::Url, "https://www.abc.net.au/news"),
+            Some(Region::Au)
+        );
+        assert_eq!(
+            r(TargetKind::Email, "person@example.com.au"),
+            Some(Region::Au)
+        );
+        assert_eq!(r(TargetKind::Phone, "+61 2 9374 4000"), Some(Region::Au));
+        assert_eq!(
+            r(TargetKind::Organisation, "Acme Pty Ltd, Sydney NSW"),
+            Some(Region::Au)
+        );
+        // No region signal → None (stays geo-neutral even when regional is on).
+        assert_eq!(r(TargetKind::Username, "kylo4kylo"), None);
+        assert_eq!(r(TargetKind::Domain, "example.com"), None);
+        assert_eq!(r(TargetKind::FullName, "Jane Citizen"), None);
+        assert_eq!(r(TargetKind::Email, "a@gmail.com"), None);
+    }
+
+    #[test]
+    fn regional_dorks_are_minimal_and_region_scoped() {
+        // AU phone → a ccTLD-scoped dork + one regional directory dork.
+        let d = regional_dorks(&Target::new(TargetKind::Phone, "+61 2 9374 4000"));
+        assert!(d.len() <= 2, "regional augmentation must stay minimal");
+        assert!(
+            d.iter()
+                .any(|q| q.contains("site:com.au") && q.contains("site:gov.au"))
+        );
+        assert!(d.iter().any(|q| q.contains("whitepages.com.au")));
+        // Region-less seed → no augmentation.
+        assert!(regional_dorks(&Target::new(TargetKind::Username, "kylo4kylo")).is_empty());
     }
 
     #[test]

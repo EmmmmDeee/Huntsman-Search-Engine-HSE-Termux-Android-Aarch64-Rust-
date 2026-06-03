@@ -712,6 +712,14 @@ pub struct ScanOptions {
     #[serde(default)]
     pub max_roi: bool,
 
+    /// Opt-in regional searching. Off by default → search-engine queries are
+    /// geolocation-neutral (global). When on, the search module *autonomously*
+    /// adds a minimal set of region-scoped dorks for any seed that carries a
+    /// clear region signal (e.g. an `.au` host / `+61` phone / ABN). Toggled
+    /// before the scan (CLI `--regional`, or the API/Settings).
+    #[serde(default)]
+    pub regional_search: bool,
+
     /// When `max_roi` is on, terminate recursion as soon as a round's
     /// marginal yield (`new_entities / dispatched_targets`) drops below
     /// this floor. None = use [`crate::core::roi::DEFAULT_MIN_MARGINAL_YIELD`].
@@ -869,6 +877,7 @@ impl Default for ScanOptions {
             webhook_url: None,
             profile: None,
             max_roi: false,
+            regional_search: false,
             min_marginal_yield: None,
             expansion_strategy: ExpansionStrategy::default(),
             seeknow_scan_cap: None,
