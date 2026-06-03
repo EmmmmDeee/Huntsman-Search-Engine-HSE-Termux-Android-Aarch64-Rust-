@@ -341,3 +341,61 @@ fn scan_body_for_keys(body: &str) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests — the SERP HTML extraction iterators were previously uncovered. These
+// lock in their observed behaviour as a regression guard: engines change their
+// result markup over time, and a silent break here drops results.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cite_iter_extracts_bing_display_urls() {
+        // Bing puts the display URL in <cite>, often with " ›" breadcrumbs and
+        // attributes on the opening tag.
+        let html = r#"<cite>https://example.com › about › team</cite>
+            <cite class="b_attribution">www.foo.org</cite>"#;
+        let got: Vec<&str> = CiteIter::new(html).collect();
+        assert_eq!(got, vec!["https://example.com", "www.foo.org"]);
+    }
+
+    #[test]
+    fn cite_iter_skips_non_domains_and_malformed() {
+        assert!(CiteIter::new("<cite>ab</cite>").next().is_none()); // no dot, too short
+        assert!(CiteIter::new("<cite>no dot here</cite>").next().is_none()); // no '.'
+        assert!(CiteIter::new("<cite>x<b>.com</cite>").next().is_none()); // nested tag
+        assert!(CiteIter::new("<cite>https://unclosed.com").next().is_none()); // no </cite>
+        assert!(CiteIter::new("no cites at all").next().is_none());
+    }
+
+    #[test]
+    fn google_url_iter_extracts_redirect_targets() {
+        let html = r#"<a href="/url?q=https://example.com/page&amp;sa=U">x</a>
+            <a href="/url?q=https://news.example.org&sa=U">y</a>"#;
+        let got: Vec<&str> = GoogleUrlIter::new(html).collect();
+        assert_eq!(
+            got,
+            vec!["https://example.com/page", "https://news.example.org"]
+        );
+    }
+
+    #[test]
+    fn google_url_iter_filters_self_and_relative() {
+        // Google's own links and relative targets are dropped.
+        assert!(
+            GoogleUrlIter::new("/url?q=https://google.com/search&sa=U")
+                .next()
+                .is_none()
+        );
+        assert!(GoogleUrlIter::new("/url?q=/settings&sa=U").next().is_none());
+        // A quote terminator (no trailing '&') still yields the URL.
+        let got: Vec<&str> =
+            GoogleUrlIter::new(r#"<a href="/url?q=https://q.example.com">"#).collect();
+        assert_eq!(got, vec!["https://q.example.com"]);
+        // No redirect markers at all.
+        assert!(GoogleUrlIter::new("plain html").next().is_none());
+    }
+}
