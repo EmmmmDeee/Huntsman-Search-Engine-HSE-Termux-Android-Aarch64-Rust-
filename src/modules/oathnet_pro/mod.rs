@@ -621,7 +621,10 @@ fn extract_breach_entities(
     // low-confidence ApiKey entity tagged for that module.
     if let Some(ph) = val_str(item, "password_hash")
         && ph.len() >= 32
-        && seen.insert(format!("@pwhash:{}", &ph[..16.min(ph.len())]))
+        && seen.insert(format!(
+            "@pwhash:{}",
+            crate::util::str_util::truncate_safe(&ph, 16)
+        ))
     {
         push_oathnet_entity(
             result,
@@ -668,8 +671,10 @@ fn extract_stealer_entities(
     if let Some(pw) = val_str(item, "password") {
         ev = ev.with_attr("password", &pw);
         if pw.contains("UPGRADE_TO_SEE") && pw.len() >= 3 {
-            let first = &pw[..1];
-            let last = &pw[pw.len() - 1..];
+            // `pw` is untrusted: take the first/last CHAR (not byte) so a
+            // multi-byte boundary can't panic the slice.
+            let first = pw.chars().next().map(String::from).unwrap_or_default();
+            let last = pw.chars().next_back().map(String::from).unwrap_or_default();
             ev = ev
                 .with_attr("password_hint_first", first)
                 .with_attr("password_hint_last", last)

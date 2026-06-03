@@ -519,9 +519,16 @@ fn build_queries_fullname(v: &str) -> Vec<String> {
             let middle = parts[1..parts.len() - 1].join(" ");
             // Common username patterns from multi-part names
             let fl_concat = format!("{}{}", first.to_lowercase(), last.to_lowercase());
+            // First initial as a CHAR (not byte 0) so a multi-byte initial
+            // (e.g. a Greek/Cyrillic given name) can't panic the slice.
+            let first_initial: String = first
+                .chars()
+                .next()
+                .map(|c| c.to_lowercase().to_string())
+                .unwrap_or_default();
             let fml = format!(
                 "{}{}{}",
-                &first.to_lowercase()[..1.min(first.len())],
+                first_initial,
                 middle.to_lowercase(),
                 last.to_lowercase()
             );
@@ -920,13 +927,17 @@ fn extract_family_names(results: &[SearchResult], target: &Target) -> Vec<(Strin
             if !seen.insert(first.to_string()) {
                 continue;
             }
-            let name = format!(
-                "{}{} {}{}",
-                first[..1].to_uppercase(),
-                &first[1..],
-                lastname[..1].to_uppercase(),
-                &lastname[1..]
-            );
+            // Title-case by CHAR, not byte: `lastname` is not ASCII-validated
+            // (only `first` is, above), so byte slicing it would panic on a
+            // multi-byte surname like "Müller".
+            let titlecase = |w: &str| -> String {
+                let mut c = w.chars();
+                match c.next() {
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    None => String::new(),
+                }
+            };
+            let name = format!("{} {}", titlecase(first), titlecase(&lastname));
             found.push((name, r.url.clone()));
         }
     }
@@ -1397,6 +1408,16 @@ mod tests {
         let q = build_queries(&t);
         assert!(q.len() >= 2);
         assert!(q[0].contains("\"123 Main St, Springfield\""));
+    }
+
+    #[test]
+    fn build_queries_fullname_handles_multibyte_initial() {
+        // Regression: a 3+-token name whose first token lowercases to a
+        // multi-byte char must not panic the first-initial extraction (was
+        // `&first.to_lowercase()[..1]`, which split the codepoint).
+        let qs = build_queries_fullname("Ψ Alpha Β");
+        assert!(qs.len() > 2, "3-part name expands");
+        assert!(qs.iter().all(|s| !s.is_empty()));
     }
 
     #[test]

@@ -727,9 +727,9 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
         for ev in &e.evidence {
             for field in ["breach_date", "not_before", "earliest_record", "date"] {
                 if let Some(d) = ev.attributes.get(field)
-                    && d.len() >= 10
+                    && let Some(day) = d.get(..10)
                 {
-                    breach_dates.push((e, &d[..10]));
+                    breach_dates.push((e, day));
                 }
             }
         }

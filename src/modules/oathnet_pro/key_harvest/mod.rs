@@ -110,7 +110,11 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
             // above any real-world API-key length (longest known is
             // GitLab's ~256 chars).
             let end = end.min(EXTRACTED_VALUE_MAX);
-            let val = &rest[..end];
+            // Snap to a char boundary: `rest` is untrusted stealer data, so a
+            // multi-byte UTF-8 char straddling the 4 KiB cap would panic a raw
+            // byte slice (caught by the dispatch guard, but it silently voids the
+            // whole harvest for the scan).
+            let val = crate::util::str_util::truncate_safe(rest, end);
             if val.len() >= 16 {
                 if let Some(hit) = identify_api_key(val) {
                     return Some(hit);
@@ -130,8 +134,8 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
     if trimmed.contains(':') && !trimmed.starts_with("http") {
         let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
         if parts.len() == 2 && parts[1].len() >= 16 {
-            // Same DoS cap as above — recurse on at most 4 KiB.
-            let pw = &parts[1][..parts[1].len().min(EXTRACTED_VALUE_MAX)];
+            // Same DoS cap as above — recurse on at most 4 KiB (char-boundary safe).
+            let pw = crate::util::str_util::truncate_safe(parts[1], EXTRACTED_VALUE_MAX);
             if let Some(hit) = identify_api_key(pw) {
                 return Some(hit);
             }

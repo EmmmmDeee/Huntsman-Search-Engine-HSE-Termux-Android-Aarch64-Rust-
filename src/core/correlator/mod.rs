@@ -312,6 +312,29 @@ mod tests {
     }
 
     #[test]
+    fn temporal_breach_cluster_survives_non_ascii_breach_date() {
+        // Regression: a `breach_date` taken verbatim from an upstream API whose
+        // byte index 10 falls inside a multi-byte UTF-8 char must NOT panic the
+        // rule's date slice. rule_au_019 runs OUTSIDE the per-module
+        // catch_unwind, so a panic here previously killed the whole scan/live
+        // task (lost finalization; live session stuck Running forever).
+        let mk = |value: &str, date: &str| {
+            let mut e = Entity::new(EntityKind::Email, value, 0.8, "scan");
+            e.tag("breach");
+            e.add_evidence(Evidence::new("test", "breach").with_attr("breach_date", date));
+            e
+        };
+        let ents = vec![
+            // '€' (3 bytes) begins at byte 9, so byte 10 is mid-codepoint.
+            mk("a@x.com", "2024-01-0€9"),
+            mk("b@x.com", "2024-01-15"),
+            mk("c@x.com", "2024-02-10"),
+        ];
+        // Must not panic; the malformed-date row is simply skipped.
+        let _ = rule_au_019_temporal_breach_cluster(&ents, "scan", 0);
+    }
+
+    #[test]
     fn candidates_are_excluded_from_correlation() {
         // A breach-dump-style set: one confirmed identity plus many quarantined
         // `candidate` strangers (the AU-002/AU-003 mega-fusion scenario). The

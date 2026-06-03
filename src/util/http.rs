@@ -452,7 +452,38 @@ pub(crate) fn redact_credentials(text: &str) -> String {
     }
     // Valid UTF-8 by construction (see above); lossy is a defensive fallback
     // that can't be reached for valid-UTF-8 input.
-    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+    let query_masked = String::from_utf8(out)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+    // Second pass: mask any configured secret value appearing VERBATIM. This
+    // closes the gap where a key embedded in a URL *path* (e.g. IPQS
+    // `/api/json/ip/<KEY>/...`) is echoed back by an upstream error body — the
+    // query-param pass above only catches `name=value` shapes, so a path key
+    // would otherwise survive into the persisted `events` table and SSE stream.
+    redact_literal_secrets(&query_masked, env_secret_values())
+}
+
+/// `HUNTSMAN_*` values from the process environment — the operator's configured
+/// keys (loaded via dotenvy at startup). Cheap in-memory read, consulted only on
+/// the error path.
+fn env_secret_values() -> impl Iterator<Item = String> {
+    std::env::vars()
+        .filter(|(k, _)| k.starts_with("HUNTSMAN_"))
+        .map(|(_, v)| v)
+}
+
+/// Mask every `secret` wherever it appears in `text`, regardless of position
+/// (path, query, header echo, body). Length-gated (>= 8) so short non-secret
+/// values aren't touched. Split out from [`redact_credentials`] so it is
+/// unit-testable without mutating the process environment (which is `unsafe`
+/// under `#![forbid(unsafe_code)]`).
+fn redact_literal_secrets(text: &str, secrets: impl Iterator<Item = String>) -> String {
+    let mut out = text.to_string();
+    for v in secrets {
+        if v.len() >= 8 && out.contains(v.as_str()) {
+            out = out.replace(v.as_str(), "***");
+        }
+    }
+    out
 }
 
 /// Parse the `Retry-After` header from a response, returning the number
@@ -682,6 +713,27 @@ mod tests {
     #[test]
     fn build_client_succeeds() {
         let _c = build_client();
+    }
+
+    #[test]
+    fn redacts_path_embedded_secret_value() {
+        // Regression: a key carried in a URL *path* (IPQS-style) that an upstream
+        // echoes in its error body must be masked, even though it is not a
+        // `name=value` query param the first pass would catch. Otherwise it is
+        // persisted to the events table and streamed over SSE in cleartext.
+        let key = "abcd1234efgh5678ijkl"; // realistic key length (>= 8)
+        let body = format!("invalid request: /api/json/ip/{key}/1.2.3.4 rejected");
+        let masked = redact_literal_secrets(&body, std::iter::once(key.to_string()));
+        assert!(
+            !masked.contains(key),
+            "path-embedded key must be redacted: {masked}"
+        );
+        assert!(masked.contains("***"));
+        // Short values are NOT masked (avoid clobbering benign substrings).
+        assert_eq!(
+            redact_literal_secrets("xabcx", std::iter::once("abc".to_string())),
+            "xabcx"
+        );
     }
 
     #[test]

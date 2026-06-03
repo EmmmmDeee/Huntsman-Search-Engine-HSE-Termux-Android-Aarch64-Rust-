@@ -521,7 +521,7 @@ pub fn analyse(
 
         // Lineage
         let preview = if e.value.len() > 60 {
-            format!("{}…", &e.value[..57])
+            format!("{}…", crate::util::str_util::truncate_safe(&e.value, 57))
         } else {
             e.value.clone()
         };

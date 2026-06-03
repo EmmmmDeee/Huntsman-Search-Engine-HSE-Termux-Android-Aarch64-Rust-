@@ -303,7 +303,7 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
 
             // Infection timeline
             if let Some(dt) = doc_item.get("pwned_at").and_then(|v| v.as_str()) {
-                let date = &dt[..dt.len().min(10)];
+                let date = crate::util::str_util::truncate_safe(dt, 10);
                 if earliest_date.as_deref().is_none_or(|e| date < e) {
                     earliest_date = Some(date.to_string());
                 }
@@ -519,7 +519,7 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
                 "  [{:.2}] {:15} {}",
                 e.confidence,
                 e.kind.to_string(),
-                &e.value[..e.value.len().min(70)]
+                crate::util::str_util::truncate_safe(&e.value, 70)
             );
         }
     }
@@ -773,7 +773,7 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
                 "  [{:.2}] {:15} {}",
                 e.confidence,
                 e.kind.to_string(),
-                &e.value[..e.value.len().min(70)]
+                crate::util::str_util::truncate_safe(&e.value, 70)
             );
         }
         if entities.len() > 50 {
