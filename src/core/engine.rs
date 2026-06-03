@@ -381,7 +381,14 @@ impl ScanEngine {
             scan.entity_count = 0;
             scan.error = first_err;
             scan.finished_at = Some(crate::core::entity::unix_now());
-            let _ = self.store.upsert_scan(scan);
+            // Persist the failed-scan record. Best-effort like the WAL
+            // checkpoint below — we still return the failed scan to the
+            // caller — but log on error rather than discarding it silently,
+            // matching the success path's `upsert_scan(scan)?` and the
+            // "no silent failures" invariant.
+            if let Err(e) = self.store.upsert_scan(scan) {
+                warn!(scan_id = %scan.id, error = %e, "failed to persist failed-scan record");
+            }
             self.emit(
                 &scan.id,
                 EventKind::ScanComplete {
