@@ -464,7 +464,11 @@ pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
     let bytes = body.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'+' && i + 8 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+        // A leading `+` must be followed by a valid E.164 country-code digit
+        // (1-9). Rejecting `+0…` drops the false positives the old `is_ascii_digit`
+        // check let through (e.g. `+01020103` scraped from concatenated page
+        // numbers) without affecting any real international number.
+        if bytes[i] == b'+' && i + 8 < bytes.len() && matches!(bytes[i + 1], b'1'..=b'9') {
             let start = i;
             i += 1;
             let mut digits = 0u32;
@@ -724,12 +728,14 @@ mod tests {
     fn phone_extraction_bounds_digit_count() {
         let mut phones = HashSet::new();
         extract_phones(
-            "call +1 415 555 2671 or +44 20 7946 0958, skip +123",
+            "call +1 415 555 2671 or +44 20 7946 0958, skip +123, junk +01020103",
             &mut phones,
         );
         assert!(phones.contains("+14155552671"));
         assert!(phones.iter().any(|p| p.starts_with("+44")));
         assert!(!phones.iter().any(|p| p.len() < 8)); // +123 is too short to qualify
+        // E.164 country codes never start with 0 — `+0…` is a scrape artifact.
+        assert!(!phones.iter().any(|p| p.starts_with("+0")));
     }
 
     #[test]

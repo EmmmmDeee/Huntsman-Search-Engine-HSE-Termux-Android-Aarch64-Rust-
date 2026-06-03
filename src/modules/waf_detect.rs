@@ -77,7 +77,13 @@ impl Module for WafDetect {
         }
 
         let providers: Vec<&str> = detections.iter().map(|(p, _)| *p).collect();
-        let mut e = Entity::new(EntityKind::Domain, &target.value, 0.85, &ctx.scan_id);
+        // Emit the finding against the HOST, not the raw target value: for a
+        // `Url` target `target.value` is the full URL (`https://host/path`),
+        // which must never be stored as a `Domain` entity value (it would be a
+        // malformed domain — the bug that surfaced `domain https://…/path`).
+        let host = crate::util::url_util::host_from_url(&url)
+            .unwrap_or_else(|| target.value.trim().to_string());
+        let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
         for provider in &providers {
             e.tag(format!("waf:{provider}"));
         }
