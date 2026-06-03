@@ -72,3 +72,14 @@ HUNTSMAN_ABR_GUID="insert_abr_guid_here"
 HUNTSMAN_MACADDRESS_KEY="insert_macaddress_io_key_here"
 HUNTSMAN_IPINFO_KEY="insert_ipinfo_io_key_here"
 HUNTSMAN_MAXMIND_KEY="insert_maxmind_key_here"
+
+# --- OPERATOR DEFAULT SEED (optional, local-only — never shipped) ---
+# Set this to YOUR OWN default scan target so `hse scan` / `hse live` can run
+# without retyping `--value`. It is read ONLY from this local file (chmod 0600,
+# git-ignored) or your shell environment — it is never embedded in the binary,
+# the repo, or the installer, so installing HSE never points it at anyone. Leave
+# it commented to require an explicit --value each time; an explicit `--value`
+# always overrides it. This line stays commented (no `[RESERVED]` tag needed —
+# the consumed-keys test only checks uncommented entries). Example:
+#   HUNTSMAN_DEFAULT_SEED=your-handle-or-target
+#HUNTSMAN_DEFAULT_SEED=

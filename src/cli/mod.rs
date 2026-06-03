@@ -63,12 +63,14 @@ pub enum Command {
         /// kind from the value — the unified scan, e.g. `hse scan -v alice@example.com`.
         #[arg(short, long)]
         kind: Option<String>,
-        /// Target value (e.g. example.com, foo@bar.com).
+        /// Target value (e.g. example.com, foo@bar.com). Optional — omit to use
+        /// the operator-local default seed (`HUNTSMAN_DEFAULT_SEED` in
+        /// ~/.huntsman.env), so you can run a bare `hse scan` without retyping it.
         // allow_hyphen_values so a value that legitimately begins with `-`
         // (e.g. a southern-hemisphere coordinate `-33.86,151.20`) is taken as
         // the value, not parsed by clap as an unknown short flag.
         #[arg(short, long, allow_hyphen_values = true)]
-        value: String,
+        value: Option<String>,
         /// Comma-separated allowlist of module names.
         #[arg(short, long)]
         modules: Option<String>,
@@ -250,12 +252,13 @@ pub enum Command {
         /// to auto-detect the kind from the value — the unified live scan.
         #[arg(short, long)]
         kind: Option<String>,
-        /// Target value.
+        /// Target value. Optional — omit to use the operator-local default seed
+        /// (`HUNTSMAN_DEFAULT_SEED` in ~/.huntsman.env).
         // allow_hyphen_values so a value that legitimately begins with `-`
         // (e.g. a southern-hemisphere coordinate `-33.86,151.20`) is taken as
         // the value, not parsed by clap as an unknown short flag.
         #[arg(short, long, allow_hyphen_values = true)]
-        value: String,
+        value: Option<String>,
         /// Seconds between iterations.
         #[arg(short, long, default_value_t = crate::LIVE_DEFAULT_INTERVAL_SECS)]
         interval: u64,
@@ -414,6 +417,7 @@ pub async fn run() -> Result<()> {
             seeknow_scan_cap,
             output,
         } => {
+            let value = resolve_seed(value, keys::default_seed())?;
             scan::cmd_scan(scan::ScanCmd {
                 kind,
                 value,
@@ -463,6 +467,7 @@ pub async fn run() -> Result<()> {
             modules,
             radar,
         } => {
+            let value = resolve_seed(value, keys::default_seed())?;
             live::cmd_live(live::LiveCmd {
                 kind,
                 value,
@@ -489,6 +494,25 @@ pub async fn run() -> Result<()> {
         } => export::cmd_export(scan_id, format, out).await,
         Command::Diff { from, to, format } => diff::cmd_diff(from, to, format),
     }
+}
+
+/// Resolve the effective `scan`/`live` target: the explicit CLI `--value` when
+/// given (a blank value is treated as absent), otherwise the operator-local
+/// default seed (`HUNTSMAN_DEFAULT_SEED`). Errors with actionable guidance when
+/// neither is set. Pure over its inputs so the precedence is unit-testable and
+/// the default-seed lookup stays a thin caller concern.
+fn resolve_seed(cli_value: Option<String>, default_seed: Option<String>) -> Result<String> {
+    cli_value
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or(default_seed)
+        .ok_or_else(|| {
+            Error::Other(
+                "no target: pass --value <seed>, or set HUNTSMAN_DEFAULT_SEED in \
+                 ~/.huntsman.env to your own default seed (kept local — never shipped)"
+                    .to_string(),
+            )
+        })
 }
 
 // ─── Inline commands (small enough not to warrant their own file) ───────────
@@ -825,5 +849,39 @@ mod tests {
         let r = truncate("café latte", 5);
         assert_eq!(r.chars().count(), 5);
         assert!(r.ends_with('…'));
+    }
+
+    // ── resolve_seed ────────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_seed_prefers_explicit_cli_value() {
+        let got = resolve_seed(Some("alice".to_string()), Some("default".to_string())).unwrap();
+        assert_eq!(got, "alice");
+    }
+
+    #[test]
+    fn resolve_seed_falls_back_to_default_when_value_absent() {
+        let got = resolve_seed(None, Some("default".to_string())).unwrap();
+        assert_eq!(got, "default");
+    }
+
+    #[test]
+    fn resolve_seed_blank_cli_value_falls_back_to_default() {
+        // `-v "  "` is treated as absent, not as a blank target.
+        let got = resolve_seed(Some("   ".to_string()), Some("default".to_string())).unwrap();
+        assert_eq!(got, "default");
+    }
+
+    #[test]
+    fn resolve_seed_trims_explicit_value() {
+        let got = resolve_seed(Some("  bob  ".to_string()), None).unwrap();
+        assert_eq!(got, "bob");
+    }
+
+    #[test]
+    fn resolve_seed_errors_when_nothing_set() {
+        let err = resolve_seed(None, None).unwrap_err().to_string();
+        assert!(err.contains("--value"), "{err}");
+        assert!(err.contains("HUNTSMAN_DEFAULT_SEED"), "{err}");
     }
 }

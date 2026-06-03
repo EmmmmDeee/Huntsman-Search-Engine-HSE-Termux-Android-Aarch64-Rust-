@@ -92,6 +92,7 @@ hse scan --kind domain --value example.com --depth 2        # domain recon
 hse scan --kind email --value user@example.com --free-only  # email pivot (free only)
 hse scan --kind ip --value 1.1.1.1                          # IP geolocation
 hse scan --kind domain --value example.com --output json    # machine-readable output
+hse scan                                                    # bare scan: uses HUNTSMAN_DEFAULT_SEED (optional, see docs/INSTALL.md)
 hse serve                                                   # Web UI → http://127.0.0.1:8080
 hse live --kind domain --value example.com --interval 60    # continuous monitoring
 ```

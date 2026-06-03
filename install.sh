@@ -623,6 +623,12 @@ if [[ ! -f "$KEYS_PATH" ]]; then
 #HUNTSMAN_EPIEOS_KEY=
 #HUNTSMAN_PROXYCURL_KEY=
 #HUNTSMAN_OPENCORP_KEY=
+#
+# Optional operator-local default seed. Set this to YOUR OWN default scan
+# target so `hse scan` / `hse live` can run without retyping --value. Read only
+# from this file (or your shell) — never embedded in the binary or installer,
+# so it stays on this device. An explicit --value always overrides it.
+#HUNTSMAN_DEFAULT_SEED=
 TEMPLATE
     chmod 0600 "$KEYS_PATH"
     ok "Template created (chmod 0600)"

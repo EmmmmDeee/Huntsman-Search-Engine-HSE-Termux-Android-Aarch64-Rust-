@@ -64,6 +64,31 @@ HSE_REF=v0.2.0 HSE_NO_PKG=1 HSE_REPO_URL=https://github.com/you/hse.git \
 
 ---
 
+## Optional: a default scan target (skip retyping `--value`)
+
+If you scan the same target often — typically **your own** identity, to watch
+your exposure — set it once as an operator-local default instead of retyping it
+every run. Add a single line to `$HOME/.huntsman.env` (created by the installer,
+chmod `0600`, git-ignored):
+
+```bash
+echo 'HUNTSMAN_DEFAULT_SEED=your-handle-or-target' >> ~/.huntsman.env
+```
+
+Then a bare `hse scan` (or `hse live`) uses it, with kind auto-detected:
+
+```bash
+hse scan            # scans HUNTSMAN_DEFAULT_SEED
+hse scan -v someone-else   # an explicit --value always overrides the default
+```
+
+This value is read **only** from your local env file (or your shell) — it is
+never embedded in the binary, the repository, or the installer, so it stays on
+your device and installing HSE never points it at anyone. Leave the line unset
+to require an explicit `--value` each time.
+
+---
+
 ## Manual install
 
 If you'd rather not pipe a script:

@@ -140,6 +140,41 @@ pub fn env_path() -> String {
     )
 }
 
+/// Env var an operator may set — in their local `$HOME/.huntsman.env` (chmod
+/// 0600) or the shell — to a default scan seed, so `hse scan` / `hse live` can
+/// run without retyping `--value`.
+///
+/// This is deliberately **operator-local**: it is never shipped with a value.
+/// The public installer and repo only document the key (commented-out); the
+/// operator fills in *their own* target on *their own* device. That keeps a
+/// real target out of the public tool — installing HSE never silently points
+/// it at someone. An explicit `--value` always overrides it.
+pub const DEFAULT_SEED_ENV: &str = "HUNTSMAN_DEFAULT_SEED";
+
+/// Pure precedence resolver for [`default_seed`]: the process-environment value
+/// wins, else the env-file map. Trims surrounding whitespace and treats a blank
+/// result as unset. Split out so the precedence is unit-testable without
+/// mutating the global environment.
+fn pick_default_seed(env_value: Option<String>, file: &HashMap<String, String>) -> Option<String> {
+    env_value
+        .or_else(|| file.get(DEFAULT_SEED_ENV).cloned())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Resolve the operator-configured default scan seed, if any.
+///
+/// Reads [`DEFAULT_SEED_ENV`] from the same sources as [`load`] — the
+/// git-ignored `~/.huntsman.env` file and the process environment, with the
+/// process environment winning. Returns `None` when unset or blank so callers
+/// fall back to requiring an explicit `--value`. Never returns a value baked
+/// into the binary or the repo; there is none.
+pub fn default_seed() -> Option<String> {
+    let env_value = std::env::var(DEFAULT_SEED_ENV).ok();
+    let file = load_from_file_only(Path::new(&env_path()));
+    pick_default_seed(env_value, &file)
+}
+
 /// Load `HUNTSMAN_*` keys from the env file + process environment.
 /// File entries are loaded first; process env wins on conflict.
 ///
@@ -782,5 +817,45 @@ mod tests {
         // Pool key was either injected (env slot empty) or env had it —
         // either way, the merge didn't crash. Success if we get here.
         let _ = map;
+    }
+
+    #[test]
+    fn default_seed_precedence_env_wins_then_file_then_none() {
+        let file: HashMap<String, String> =
+            [(DEFAULT_SEED_ENV.to_string(), "from-file".to_string())].into();
+
+        // Process env value wins over the file.
+        assert_eq!(
+            pick_default_seed(Some("from-env".to_string()), &file).as_deref(),
+            Some("from-env")
+        );
+        // No env value → fall back to the file.
+        assert_eq!(pick_default_seed(None, &file).as_deref(), Some("from-file"));
+        // Neither set → None (callers then require an explicit --value).
+        assert_eq!(pick_default_seed(None, &HashMap::new()), None);
+    }
+
+    #[test]
+    fn default_seed_trims_and_treats_blank_as_unset() {
+        let empty = HashMap::new();
+        // Surrounding whitespace is stripped.
+        assert_eq!(
+            pick_default_seed(Some("  alice  ".to_string()), &empty).as_deref(),
+            Some("alice")
+        );
+        // A whitespace-only value is treated as unset, not as a blank target.
+        assert_eq!(pick_default_seed(Some("   ".to_string()), &empty), None);
+        // An explicit empty export disables the seed (does not fall through).
+        let file: HashMap<String, String> =
+            [(DEFAULT_SEED_ENV.to_string(), "from-file".to_string())].into();
+        assert_eq!(pick_default_seed(Some(String::new()), &file), None);
+    }
+
+    #[test]
+    fn default_seed_only_reads_the_seed_key() {
+        // An env file full of API keys but no seed yields no default target.
+        let file: HashMap<String, String> =
+            [("HUNTSMAN_SHODAN_KEY".to_string(), "abc".to_string())].into();
+        assert_eq!(pick_default_seed(None, &file), None);
     }
 }
