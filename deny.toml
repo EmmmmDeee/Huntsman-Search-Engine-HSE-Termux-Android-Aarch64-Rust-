@@ -1,0 +1,55 @@
+# Supply-chain policy for `cargo-deny`. Complements audit.yml's `cargo-audit`
+# (RUSTSEC advisories) with the dimensions audit does not cover: license
+# governance, banned/wildcard crates, duplicate versions, and dependency
+# sources. Like audit.yml this is an advisory-quality gate — deliberately NOT a
+# required check — so a freshly published advisory or a new transitive duplicate
+# never blocks an unrelated feature PR; it surfaces on the schedule / dep change.
+#
+# Evidence basis: every allowed license below is present in the locked graph
+# (`cargo deny list`, 277 crates). The set is permissive-only. The single
+# copyleft id seen (LGPL-2.1-or-later, via the UEFI-only `r-efi`) is one branch
+# of that crate's `MIT OR Apache-2.0 OR LGPL-2.1-or-later` expression, satisfied
+# here by MIT/Apache — no strong-copyleft code is linked on any target.
+
+[graph]
+# Evaluate the policy over the full feature set the binary can build with.
+all-features = true
+
+[licenses]
+version = 2
+# Permissive / OSI-approved licenses covering 100% of the locked graph.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+# Require a high SPDX-detection confidence before accepting a license file.
+confidence-threshold = 0.9
+
+[bans]
+# A 277-crate graph carries a few benign duplicate versions (e.g. thiserror
+# 1.x/2.x during the ecosystem migration); surface them without failing. An
+# outright wildcard ("*") version requirement is a real hygiene smell — warn.
+multiple-versions = "warn"
+wildcards = "warn"
+
+[advisories]
+version = 2
+# `cargo-audit` (audit.yml) is the primary, deny-level advisory gate; this is a
+# second, config-versioned view over the same RustSec DB. A yanked release in
+# the locked graph is a concrete, actionable supply-chain signal — fail on it.
+yanked = "deny"
+
+[sources]
+# Only the public crates.io registry may supply dependencies. Blocks an
+# unreviewed git or alternate-registry crate from silently entering the graph.
+unknown-registry = "deny"
+unknown-git = "deny"
