@@ -489,6 +489,25 @@ impl Target {
             | TargetKind::AbnAcn
             | TargetKind::MacAddress => {}
         }
+
+        // Never scan our own egress infrastructure: a host/IP configured as a
+        // rotation proxy or DNS resolver is routed *through*, never investigated.
+        // No-op unless HUNTSMAN_SEARCH_PROXY / HUNTSMAN_PROXY / HUNTSMAN_DNS_RESOLVERS
+        // is set, so default behaviour is unchanged.
+        let infra_host: Option<String> = match self.kind {
+            TargetKind::Domain | TargetKind::IpAddress => Some(v.to_string()),
+            TargetKind::Url => url::Url::parse(v)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string)),
+            _ => None,
+        };
+        if let Some(h) = infra_host
+            && crate::util::preflight::is_infrastructure_host(&h)
+        {
+            return Err(
+                "target is configured network infrastructure (proxy / DNS resolver) — not scanned",
+            );
+        }
         Ok(())
     }
 }

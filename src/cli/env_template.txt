@@ -83,3 +83,16 @@ HUNTSMAN_MAXMIND_KEY="insert_maxmind_key_here"
 # the consumed-keys test only checks uncommented entries). Example:
 #   HUNTSMAN_DEFAULT_SEED=your-handle-or-target
 #HUNTSMAN_DEFAULT_SEED=
+
+# --- NETWORK EGRESS ROTATION (optional) ---
+# Spread traffic over several egress paths to avoid per-source rate limits on a
+# deep/everything scan. Both are opt-in; the hosts you list here are routed
+# THROUGH and are automatically excluded from being scanned as targets.
+#
+# Proxies — a comma-separated list, rotated round-robin (single value also OK):
+#   HUNTSMAN_SEARCH_PROXY=socks5://127.0.0.1:9050,http://user:pass@host:3128
+#HUNTSMAN_SEARCH_PROXY=
+# DNS resolvers — any of cloudflare,google,quad9 ; lookups rotate across them
+# (falls back to the system resolver on error):
+#   HUNTSMAN_DNS_RESOLVERS=cloudflare,google,quad9
+#HUNTSMAN_DNS_RESOLVERS=

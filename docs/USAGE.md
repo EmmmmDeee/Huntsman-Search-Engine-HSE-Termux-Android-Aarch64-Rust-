@@ -407,6 +407,8 @@ HUNTSMAN_* keys loaded: 0
 | `RUST_LOG` | Standard `tracing_subscriber` filter, e.g. `RUST_LOG=debug` or `RUST_LOG=huntsman_search_engine::modules=trace` |
 | `TERMUX_VERSION` | Set by Termux; used for `is_termux()` detection |
 | `HUNTSMAN_*` | Per-module API keys (loaded from `$HOME/.huntsman.env`); never logged |
+| `HUNTSMAN_SEARCH_PROXY` | Proxy (or **comma-separated list**, rotated round-robin) for `curl`-based fetches, e.g. `socks5://127.0.0.1:9050,http://host:3128`. Listed hosts are auto-excluded from being scanned. |
+| `HUNTSMAN_DNS_RESOLVERS` | Rotate HTTP-client DNS across public resolvers — any of `cloudflare,google,quad9`. Falls back to the system resolver on error; listed resolvers are auto-excluded from being scanned. |
 
 ---
 

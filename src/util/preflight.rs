@@ -99,6 +99,19 @@ pub fn is_private_ip(ip: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// True if `host` is configured network infrastructure — a proxy
+/// (`HUNTSMAN_SEARCH_PROXY` / `HUNTSMAN_PROXY`) or a rotation DNS resolver
+/// (`HUNTSMAN_DNS_RESOLVERS`) — and therefore must never be scanned AS a target:
+/// we route *through* these hosts, we don't investigate them. Returns `false`
+/// when no rotation infrastructure is configured (default behaviour unchanged).
+/// Thin env-reading wrapper over the pure [`crate::util::netrotate`] matcher.
+pub fn is_infrastructure_host(host: &str) -> bool {
+    crate::util::netrotate::host_matches_infra(
+        host,
+        &crate::util::netrotate::configured_infra_hosts(),
+    )
+}
+
 /// True if the domain is one of the IANA-reserved special-use names
 /// (RFC 6761 / 6762) that should never reach external intel APIs.
 ///

@@ -17,6 +17,9 @@
 //! the engine's concurrency slot, instead of consuming the module's
 //! full budget waiting on the OS-level TCP connect.
 
+use std::net::SocketAddr;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -66,10 +69,72 @@ fn filter_public(addrs: impl Iterator<Item = std::net::SocketAddr>) -> Vec<std::
 /// resolver (`getaddrinfo` via `tokio::net::lookup_host`) — no root, Termux-ok.
 struct SsrfResolver;
 
+/// Build the rotating public-resolver set from `HUNTSMAN_DNS_RESOLVERS`
+/// (`cloudflare`/`google`/`quad9`). Returns `None` when unset/empty, so the
+/// resolver falls back to the system path and default behaviour is unchanged.
+/// A resolver that fails to build is simply skipped — never a hard error.
+fn build_rotating_resolvers() -> Option<Vec<hickory_resolver::TokioResolver>> {
+    use hickory_resolver::{
+        TokioResolver,
+        config::{CLOUDFLARE, GOOGLE, LookupIpStrategy, QUAD9, ResolverConfig},
+        net::runtime::TokioRuntimeProvider,
+    };
+    let raw = std::env::var("HUNTSMAN_DNS_RESOLVERS").ok()?;
+    let providers = crate::util::netrotate::parse_dns_providers(&raw);
+    if providers.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for p in providers {
+        let group = match p {
+            "cloudflare" => &CLOUDFLARE,
+            "google" => &GOOGLE,
+            "quad9" => &QUAD9,
+            _ => continue,
+        };
+        let mut builder = TokioResolver::builder_with_config(
+            ResolverConfig::udp_and_tcp(group),
+            TokioRuntimeProvider::default(),
+        );
+        {
+            // Same fail-fast budget as the shared dns_intel resolver.
+            let opts = builder.options_mut();
+            opts.timeout = std::time::Duration::from_secs(2);
+            opts.attempts = 1;
+            opts.ip_strategy = LookupIpStrategy::Ipv4thenIpv6;
+        }
+        if let Ok(r) = builder.build() {
+            out.push(r);
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Lazily-built rotating resolvers (or `None` for the system resolver).
+fn rotating_resolvers() -> Option<&'static Vec<hickory_resolver::TokioResolver>> {
+    static RESOLVERS: OnceLock<Option<Vec<hickory_resolver::TokioResolver>>> = OnceLock::new();
+    RESOLVERS.get_or_init(build_rotating_resolvers).as_ref()
+}
+
 impl reqwest::dns::Resolve for SsrfResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         Box::pin(async move {
             let host = name.as_str().to_owned();
+            // Opt-in rotating public resolvers (HUNTSMAN_DNS_RESOLVERS): spread
+            // lookups across providers, with the same private-IP SSRF filter.
+            // Any resolver error degrades gracefully to the system resolver.
+            if let Some(resolvers) = rotating_resolvers() {
+                static IDX: AtomicUsize = AtomicUsize::new(0);
+                let idx = IDX.fetch_add(1, Ordering::Relaxed) % resolvers.len();
+                if let Ok(lookup) = resolvers[idx].lookup_ip(host.as_str()).await {
+                    let public: Vec<SocketAddr> = lookup
+                        .iter()
+                        .filter(|ip| !crate::util::preflight::is_private_addr(*ip))
+                        .map(|ip| SocketAddr::new(ip, 0))
+                        .collect();
+                    return Ok(Box::new(public.into_iter()) as reqwest::dns::Addrs);
+                }
+            }
             let addrs = tokio::net::lookup_host((host.as_str(), 0)).await?;
             let public = filter_public(addrs);
             Ok(Box::new(public.into_iter()) as reqwest::dns::Addrs)

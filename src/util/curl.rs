@@ -62,6 +62,24 @@ async fn ssrf_resolve_pin(url: &str) -> Option<Vec<String>> {
     Some(vec!["--resolve".to_string(), format!("{host}:{port}:{ip}")])
 }
 
+/// Pick the next search proxy from `HUNTSMAN_SEARCH_PROXY`. The variable may be
+/// a comma-separated list (`socks5://h:1, http://h:2`) which is rotated
+/// round-robin across calls so traffic spreads over several egress paths; a
+/// single value behaves exactly as before. `None` ⇒ direct connection with
+/// SSRF IP-pinning.
+fn rotating_search_proxy() -> Option<String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static IDX: AtomicUsize = AtomicUsize::new(0);
+    let raw = std::env::var("HUNTSMAN_SEARCH_PROXY").ok()?;
+    let list = crate::util::netrotate::parse_proxy_list(&raw);
+    let i = match list.len() {
+        0 => return None,
+        1 => 0,
+        _ => IDX.fetch_add(1, Ordering::Relaxed),
+    };
+    crate::util::netrotate::select_proxy(&list, i)
+}
+
 async fn curl_exec(
     url: &str,
     timeout_ms: u64,
@@ -82,9 +100,7 @@ async fn curl_exec(
         cmd.args(["-d", data]);
     }
 
-    let proxy = std::env::var("HUNTSMAN_SEARCH_PROXY")
-        .ok()
-        .filter(|p| !p.is_empty());
+    let proxy = rotating_search_proxy();
 
     if let Some(ref p) = proxy {
         cmd.args(["-x", p]);

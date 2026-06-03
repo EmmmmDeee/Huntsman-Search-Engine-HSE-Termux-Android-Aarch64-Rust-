@@ -629,6 +629,13 @@ if [[ ! -f "$KEYS_PATH" ]]; then
 # from this file (or your shell) — never embedded in the binary or installer,
 # so it stays on this device. An explicit --value always overrides it.
 #HUNTSMAN_DEFAULT_SEED=
+#
+# Optional egress rotation (avoids per-source rate limits). Hosts listed here
+# are routed THROUGH and are auto-excluded from being scanned as targets.
+#   HUNTSMAN_SEARCH_PROXY=socks5://127.0.0.1:9050,http://host:3128   # comma list, rotated
+#   HUNTSMAN_DNS_RESOLVERS=cloudflare,google,quad9                   # rotate public resolvers
+#HUNTSMAN_SEARCH_PROXY=
+#HUNTSMAN_DNS_RESOLVERS=
 TEMPLATE
     chmod 0600 "$KEYS_PATH"
     ok "Template created (chmod 0600)"
