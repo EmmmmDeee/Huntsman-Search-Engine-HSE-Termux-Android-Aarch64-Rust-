@@ -1689,14 +1689,17 @@ pub(super) fn rule_au_037_credential_exposure(
 
 /// AU-038 — Verified cross-platform identity.
 ///
-/// `search_engines` tags a `Url` `confirmed-profile` when the searched handle is
-/// the exact path on a canonical social host — the target's OWN profile, verified
-/// (and corroborated by the returning engines), not merely a mention. When the
-/// same identity is confirmed on ≥2 DISTINCT platforms, that is a strong,
-/// engine-verified cross-platform identity worth synthesising. Complements
-/// AU-011, which needs `username_search`'s `platforms_count`: AU-038 fires from
-/// the search-engine signal alone, so a search-engines-only scan still surfaces
-/// the cross-platform identity.
+/// Two modules independently confirm the target's OWN profile (not a mention):
+/// `social_probe` tags a `Url` `social-profile` after a direct platform probe of
+/// the exact handle, and `search_engines` tags one `confirmed-profile` when the
+/// searched handle is the exact path on a canonical social host (corroborated by
+/// the returning engines). Either tag denotes a verified profile; the direct
+/// probe is the stronger signal. When the same identity is confirmed on ≥2
+/// DISTINCT platforms, that is a strong, engine-/probe-verified cross-platform
+/// identity worth synthesising. Complements AU-011, which needs
+/// `username_search`'s `platforms_count`: AU-038 fires from the search-engine or
+/// social-probe signal alone, so either source surfaces the cross-platform
+/// identity on its own.
 pub(super) fn rule_au_038_verified_cross_platform_identity(
     entities: &[Entity],
     scan_id: &str,
@@ -1705,7 +1708,10 @@ pub(super) fn rule_au_038_verified_cross_platform_identity(
     use std::collections::BTreeSet;
     let confirmed: Vec<&Entity> = entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Url && e.has_tag("confirmed-profile"))
+        .filter(|e| {
+            e.kind == EntityKind::Url
+                && (e.has_tag("confirmed-profile") || e.has_tag("social-profile"))
+        })
         .collect();
     // Distinct registrable-ish hosts among the confirmed profiles (www-stripped).
     let hosts: BTreeSet<String> = confirmed
@@ -1725,7 +1731,7 @@ pub(super) fn rule_au_038_verified_cross_platform_identity(
         "Verified cross-platform identity",
         Severity::Medium,
         format!(
-            "Searched identity confirmed on {} platforms: {}",
+            "Identity confirmed on {} distinct platforms: {}",
             hosts.len(),
             hosts.into_iter().collect::<Vec<_>>().join(", ")
         ),
