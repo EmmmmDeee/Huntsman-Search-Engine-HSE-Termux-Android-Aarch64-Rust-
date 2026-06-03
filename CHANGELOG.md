@@ -10,6 +10,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **Runtime AI-independence charter + CI guard.** Documented and now mechanically
+  enforced that the compiled `hse` binary carries **no** AI / ML / LLM /
+  cloud-inference / agent / vector-DB / embedding dependency: every runtime
+  capability is deterministic, documented Rust whose findings reproduce
+  identically on Termux aarch64 (non-root), Linux and CI with no AI or
+  network-inference available. AI is a development-time accelerator only. New
+  guard `tests/architecture.rs::runtime_carries_no_ai_ml_inference_dependency`
+  parses `Cargo.lock` and fails the build if such a crate enters the dependency
+  tree. Charter + reproducibility/enforcement notes:
+  `docs/RUNTIME_INDEPENDENCE.md`. (Audit confirmed the current tree is already
+  clean — 0 of 277 crates are AI/ML; the only numeric crate is `num-traits`.)
+
 ## [1.3.0] — 2026-06-03
 
 ### Added

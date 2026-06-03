@@ -256,6 +256,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 ## Architecture
 
 - `#![forbid(unsafe_code)]` — entire codebase
+- **Runtime AI-independence** — zero AI/ML/LLM/inference/vector/embedding deps; every result is deterministic Rust, identical on Termux aarch64 (no root), Linux and CI with no AI available (CI-enforced; charter: [`docs/RUNTIME_INDEPENDENCE.md`](docs/RUNTIME_INDEPENDENCE.md))
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 1400+ tests (unit + API integration + architecture boundary enforcement)
@@ -274,6 +275,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 | [`docs/MODULES.md`](docs/MODULES.md) | Module catalogue + synergy map |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common errors + fixes |
 | [`docs/FAULT_TREE_ANALYSIS.md`](docs/FAULT_TREE_ANALYSIS.md) | System-wide FTA: failure modes, controls + open risks |
+| [`docs/RUNTIME_INDEPENDENCE.md`](docs/RUNTIME_INDEPENDENCE.md) | Runtime AI-independence, parity & reproducibility charter |
 | [`CHANGELOG.md`](CHANGELOG.md) | Version history |
 
 ---

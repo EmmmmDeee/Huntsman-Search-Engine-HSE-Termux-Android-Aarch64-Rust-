@@ -11,6 +11,13 @@
 //!   - No native-TLS or C-linked deps (rustls + bundled-sqlite only)
 //!   - GREATEST-semantics entity merge
 //!   - SHA-256 deterministic entity UIDs
+//!   - Runtime AI-independence: NO AI / ML / LLM / cloud-inference / agent /
+//!     vector-DB / embedding dependency is compiled in. Every runtime capability
+//!     is deterministic, documented Rust, so findings reproduce identically on
+//!     Termux aarch64 (no root), Linux, and CI with no AI or network-inference
+//!     available. AI is a development-time accelerator only. Enforced by the
+//!     `runtime_carries_no_ai_ml_inference_dependency` guard in
+//!     `tests/architecture.rs`; full charter in `docs/RUNTIME_INDEPENDENCE.md`.
 
 #![forbid(unsafe_code)]
 

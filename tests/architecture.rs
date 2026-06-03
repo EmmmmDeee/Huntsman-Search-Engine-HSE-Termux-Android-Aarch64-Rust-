@@ -386,3 +386,77 @@ fn readme_module_overview_count_matches_registry() {
          size ({n}); update README.md after adding/removing a module"
     );
 }
+
+/// Runtime AI-independence guard (the `RUNTIME_INDEPENDENCE` charter): the
+/// compiled binary must carry NO AI / ML / LLM / cloud-inference / vector /
+/// embedding dependency, so every runtime capability is deterministic Rust that
+/// reproduces identically on Termux aarch64 (no root), Linux and CI with no AI
+/// available. AI is a development-time accelerator only. This turns the principle
+/// into a mechanical CI check — adding e.g. `candle`, `onnxruntime`, an LLM SDK,
+/// `tokenizers`, or `qdrant-client` fails here. External OSINT *data* APIs
+/// (registries, breach corpora, geocoders) are data sources, not AI services,
+/// and are deliberately unaffected. See `docs/RUNTIME_INDEPENDENCE.md`.
+#[test]
+fn runtime_carries_no_ai_ml_inference_dependency() {
+    let lock = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
+        .expect("Cargo.lock must exist");
+
+    // Substrings unambiguous enough that no non-AI crate name contains them.
+    const DENY_SUBSTR: &[&str] = &[
+        "candle-",
+        "onnx",
+        "openai",
+        "anthropic",
+        "huggingface",
+        "hf-hub",
+        "tokenizers",
+        "tiktoken",
+        "fastembed",
+        "qdrant",
+        "pinecone",
+        "weaviate",
+        "milvus",
+        "ollama",
+        "llama",
+        "langchain",
+        "rust-bert",
+        "instant-distance",
+    ];
+    // Exact crate names too short/common to match safely as substrings.
+    const DENY_EXACT: &[&str] = &[
+        "tch",
+        "burn",
+        "tract",
+        "ort",
+        "llm",
+        "lance",
+        "lancedb",
+        "hnsw",
+        "usearch",
+        "faiss",
+        "dfdx",
+        "smartcore",
+        "linfa",
+        "genai",
+        "kalosm",
+        "rig-core",
+        "mistralai",
+    ];
+
+    let offenders: Vec<&str> = lock
+        .lines()
+        .filter_map(|l| {
+            l.strip_prefix("name = \"")
+                .and_then(|s| s.strip_suffix('"'))
+        })
+        .filter(|name| DENY_SUBSTR.iter().any(|d| name.contains(d)) || DENY_EXACT.contains(name))
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "RUNTIME_INDEPENDENCE violation — AI/ML/inference crate(s) entered the \
+         dependency tree: {offenders:?}. HSE's runtime must stay deterministic \
+         Rust with no AI / LLM / vector / embedding dependency (AI is a \
+         development-time accelerator only). See docs/RUNTIME_INDEPENDENCE.md."
+    );
+}
