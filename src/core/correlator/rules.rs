@@ -1007,6 +1007,10 @@ pub(super) fn rule_au_026_validated_address(
         "epieos",
         "proxycurl",
         "contact_enrich",
+        // Authoritative registries that emit a registered address (parity with
+        // opencorporates): ACNC charities register + GLEIF LEI index.
+        "acnc_charities",
+        "gleif_lei",
     ];
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Address)
@@ -1190,7 +1194,8 @@ pub(super) fn rule_au_030_geo_convergence_score(
 
 /// AU-033 — Australian business identity. Links an ABN/ACN registration to the
 /// registered organisation(s) it belongs to when both are present from an
-/// Australian registry (`abn_lookup` → `abr`, `opencorporates`). Surfaces the
+/// Australian registry (`abn_lookup` → `abr`, `opencorporates`, `acnc_charities`
+/// → `acnc`, `gleif_lei` → `gleif`). Surfaces the
 /// ABN/ACN ↔ Organisation chain those modules produce but no prior rule joined
 /// (AU-025 covers Organisation ↔ Person). Organisations are gated on a registry
 /// tag so unrelated `Organisation` names (e.g. from search_engines) don't link.
@@ -1206,7 +1211,11 @@ pub(super) fn rule_au_033_abn_organisation_link(
     let orgs: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
-            e.kind == EntityKind::Organisation && (e.has_tag("abr") || e.has_tag("opencorporates"))
+            e.kind == EntityKind::Organisation
+                && (e.has_tag("abr")
+                    || e.has_tag("opencorporates")
+                    || e.has_tag("acnc")
+                    || e.has_tag("gleif"))
         })
         .collect();
     if abns.is_empty() || orgs.is_empty() {

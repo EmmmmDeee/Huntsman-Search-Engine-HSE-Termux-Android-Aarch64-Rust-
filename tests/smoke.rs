@@ -1516,7 +1516,13 @@ fn priority_waterfall_seeknow_then_gov_then_free_then_geo() {
     let generic_free = p("name_intel"); // representative generic free module
     let wigle = p("wigle");
 
-    for name in ["abn_lookup", "opencorporates", "qld_unclaimed"] {
+    for name in [
+        "abn_lookup",
+        "opencorporates",
+        "qld_unclaimed",
+        "acnc_charities",
+        "gleif_lei",
+    ] {
         let gov = p(name);
         assert!(
             seeknow >= gov,

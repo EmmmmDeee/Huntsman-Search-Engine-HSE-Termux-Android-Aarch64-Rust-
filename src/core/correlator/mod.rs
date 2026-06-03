@@ -662,8 +662,33 @@ mod tests {
         assert!(rule_au_033_abn_organisation_link(&only_org, "scan-test", 0).is_empty());
     }
 
-    // ── AU-034 ──────────────────────────────────────────────────────────
+    #[test]
+    fn au033_links_abn_to_acnc_and_gleif_registry_orgs() {
+        // Integration regression: the ACNC charities register and GLEIF LEI index
+        // both emit an ABN/ACN plus the registered Organisation, so AU-033 must
+        // link them exactly as it does for abr/opencorporates. Before the gate was
+        // widened, an acnc/gleif-tagged org silently failed to correlate.
+        for tag in ["acnc", "gleif"] {
+            let entities = vec![
+                tagged(EntityKind::AbnAcn, "51824753556", &[tag]),
+                tagged(
+                    EntityKind::Organisation,
+                    "Example Org",
+                    &[tag, "country:AU"],
+                ),
+            ];
+            let r = rule_au_033_abn_organisation_link(&entities, "scan-test", 0);
+            assert_eq!(
+                r.len(),
+                1,
+                "AU-033 must fire for a {tag}-tagged registry org"
+            );
+            assert_eq!(r[0].rule_id, "AU-033");
+            assert_eq!(r[0].entity_uids.len(), 2);
+        }
+    }
 
+    // ── AU-034 ──────────────────────────────────────────────────────────
     #[test]
     fn au034_links_username_to_email_by_shared_handle() {
         // Username from one source, matching email from another → ≥2 distinct
