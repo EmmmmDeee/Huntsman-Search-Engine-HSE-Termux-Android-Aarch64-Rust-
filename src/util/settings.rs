@@ -39,10 +39,33 @@ fn read_map(path: &Path) -> BTreeMap<String, bool> {
 }
 
 /// Atomically write the override map to `path`: temp file + fsync + rename, mode
-/// 0600. Mirrors `key_pool::save_pool` / `keys::write_keys_at`.
+/// 0600. Mirrors `key_pool::save_pool` / `keys::write_keys_at`, but uses a
+/// **unique** temp name per write (pid + a process-local counter) instead of a
+/// fixed `settings.json.tmp`: this surface is web-writable (`PUT
+/// /settings/toggles`), so two concurrent writers could otherwise truncate and
+/// interleave into the same temp and rename a corrupt file into place. A unique
+/// temp makes each write self-contained (the final rename is last-writer-wins
+/// over a complete, internally-consistent snapshot — never a torn one), and the
+/// temp is removed on any error so a failed write leaves no straggler.
 fn write_map_at(path: &Path, map: &BTreeMap<String, bool>) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let json = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("json.tmp");
+    let tmp = path.with_extension(format!(
+        "json.tmp.{}.{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = write_tmp_then_rename(&tmp, path, json.as_bytes());
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Write `bytes` to `tmp` (mode 0600 + fsync on unix) then atomically rename it
+/// onto `path`. Split out so [`write_map_at`] can clean up `tmp` on any failure.
+fn write_tmp_then_rename(tmp: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -51,15 +74,15 @@ fn write_map_at(path: &Path, map: &BTreeMap<String, bool>) -> std::io::Result<()
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(&tmp)?;
-        f.write_all(json.as_bytes())?;
+            .open(tmp)?;
+        f.write_all(bytes)?;
         f.sync_all()?;
     }
     #[cfg(not(unix))]
     {
-        std::fs::write(&tmp, json.as_bytes())?;
+        std::fs::write(tmp, bytes)?;
     }
-    std::fs::rename(&tmp, path)
+    std::fs::rename(tmp, path)
 }
 
 /// Pure resolution: stored override else `default`. Split out for testing.
@@ -176,6 +199,43 @@ mod tests {
         let path = dir.path().join("settings.json");
         std::fs::write(&path, "{ not valid json ").unwrap();
         assert!(read_map(&path).is_empty());
+    }
+
+    #[test]
+    fn concurrent_writes_never_corrupt_the_file() {
+        // The web `PUT /settings/toggles` makes concurrent writers realistic. A
+        // shared fixed temp could be truncated + interleaved by two writers and
+        // a torn file renamed into place; the unique-temp scheme must keep every
+        // persisted state a complete, valid snapshot and leave no straggler.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for j in 0..25u32 {
+                        let mut m = BTreeMap::new();
+                        m.insert(format!("engine.e{i}"), j % 2 == 0);
+                        let _ = write_map_at(&path, &m);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        // Always valid JSON of some complete state — never a torn temp.
+        let s = std::fs::read_to_string(&path).unwrap();
+        serde_json::from_str::<BTreeMap<String, bool>>(&s)
+            .expect("persisted settings must stay valid JSON under concurrent writes");
+        // No temp files left behind.
+        let strays: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .map(|e| e.file_name())
+            .collect();
+        assert!(strays.is_empty(), "temp stragglers left behind: {strays:?}");
     }
 
     #[test]

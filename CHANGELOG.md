@@ -87,6 +87,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   errored, … skipped`), so excluding or disabling a module is observable without
   `--output json`.
 
+### Fixed
+
+- **Concurrent-write race in the persisted settings store.** The capability-toggle
+  store is web-writable (`PUT /api/v1/settings/toggles`), so two near-simultaneous
+  writes could truncate and interleave into a single shared `settings.json.tmp`
+  and rename a torn (corrupt) file into place — which then reads back as empty,
+  silently dropping every override. Each write now uses a unique temp file (pid +
+  a process-local counter) and is removed on error, so the atomic rename is always
+  over a complete, internally-consistent snapshot and a failed write leaves no
+  straggler. Covered by a new 8-thread concurrency test.
+
 ## [1.3.0] — 2026-06-03
 
 ### Added
