@@ -223,6 +223,7 @@ const RULES: &[RuleFn] = &[
     rule_au_034_handle_reuse_identity,
     rule_au_035_confirmed_derived_handle,
     rule_au_036_email_alias_convergence,
+    rule_au_037_credential_exposure,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -1061,6 +1062,31 @@ mod tests {
         let r = rule_au_009_stealer_log(&[e], "s", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].severity, Severity::High);
+    }
+
+    // ── AU-037 ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn au037_fires_critical_on_plaintext_credentials() {
+        let pw1 = Entity::new(EntityKind::Password, "hunter2", 0.9, "s");
+        let pw2 = Entity::new(EntityKind::Password, "letmein", 0.9, "s");
+        let cred = Entity::new(EntityKind::Credential, "user:pass", 0.9, "s");
+        let email = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+        let r = rule_au_037_credential_exposure(&[pw1, pw2, cred, email.clone()], "s", 0);
+        assert_eq!(r.len(), 1, "one aggregate alert");
+        assert_eq!(r[0].severity, Severity::Critical);
+        assert!(r[0].description.contains("2 plaintext passwords"));
+        assert!(r[0].description.contains("1 credential record"));
+        // The raw secret value must NEVER appear in the alert text.
+        assert!(
+            !r[0].description.contains("hunter2") && !r[0].description.contains("letmein"),
+            "secret values must not leak into correlation text"
+        );
+        // Links the secret entities plus the affected identity (the email).
+        assert!(r[0].entity_uids.contains(&email.uid));
+
+        // No secret entities → no firing.
+        assert!(rule_au_037_credential_exposure(&[email], "s", 0).is_empty());
     }
 
     // ── AU-010 ──────────────────────────────────────────────────────────
