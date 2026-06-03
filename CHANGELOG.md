@@ -107,7 +107,9 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (all seen in the standard `Kylo4kylo` run). `is_social_host` now accepts only
   the canonical profile-serving hosts — the social root domain or its
   `www`/`m`/`mobile` alias — and the navigation-path blocklist gained
-  `creator(s)`. Real profiles (`twitter.com/handle`, `www.pinterest.com/handle`,
+  `creator(s)`, `download`, `followers`/`following`, `foryou` (more platform
+  navigation paths confirmed as false positives in a follow-up live run). Real
+  profiles (`twitter.com/handle`, `www.pinterest.com/handle`,
   `m.facebook.com/handle`) are unaffected; the noisy candidates are gone.
 - **Distinct search results were collapsed when they differed only by query
   string.** The dedup / cross-engine-corroboration key stripped the *entire* query
