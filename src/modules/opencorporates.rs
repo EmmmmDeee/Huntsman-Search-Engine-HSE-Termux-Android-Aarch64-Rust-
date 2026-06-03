@@ -73,7 +73,9 @@ impl Module for OpenCorporates {
         "OpenCorporates company/director search with Australian jurisdiction focus"
     }
     fn priority(&self) -> u8 {
-        80
+        // Government / public-records band (110-118): company registry, dispatched
+        // just below abn_lookup and above the generic free modules.
+        116
     }
     fn cost(&self) -> ModuleCost {
         ModuleCost::Free
@@ -251,7 +253,8 @@ mod tests {
     #[test]
     fn module_metadata() {
         assert_eq!(OpenCorporates.name(), "opencorporates");
-        assert_eq!(OpenCorporates.priority(), 80);
+        // Government / public-records band (see priority() doc).
+        assert_eq!(OpenCorporates.priority(), 116);
         assert_eq!(OpenCorporates.max_timeout_ms(), 10_000);
     }
 

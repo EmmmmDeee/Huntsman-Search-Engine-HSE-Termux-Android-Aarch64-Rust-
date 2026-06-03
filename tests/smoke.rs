@@ -1497,6 +1497,49 @@ fn oathnet_priority_above_free_geo_modules() {
     );
 }
 
+/// Encodes the operator-requested dispatch waterfall so a future priority edit
+/// can't silently break it:
+///   top enumerator (see_know) ≥ government / public-records sources
+///     > generic free modules > geolocation finaliser (wigle — the floor).
+#[test]
+fn priority_waterfall_seeknow_then_gov_then_free_then_geo() {
+    let modules = huntsman_search_engine::modules::registry();
+    let p = |name: &str| {
+        modules
+            .iter()
+            .find(|m| m.name() == name)
+            .unwrap_or_else(|| panic!("module {name} not in registry"))
+            .priority()
+    };
+
+    let seeknow = p("see_know");
+    let generic_free = p("name_intel"); // representative generic free module
+    let wigle = p("wigle");
+
+    for name in ["abn_lookup", "opencorporates", "qld_unclaimed"] {
+        let gov = p(name);
+        assert!(
+            seeknow >= gov,
+            "see_know ({seeknow}) must be ≥ government source {name} ({gov})"
+        );
+        assert!(
+            gov > generic_free,
+            "government source {name} ({gov}) must outrank generic free name_intel ({generic_free})"
+        );
+        assert!(
+            gov > wigle,
+            "government source {name} ({gov}) must run before the wigle geolocation finaliser ({wigle})"
+        );
+    }
+
+    // WiGLE is the geolocation floor — it resolves the location fix last, after
+    // every other geo module (incl. overpass / mylnikov) has contributed.
+    assert!(
+        wigle < p("overpass") && wigle < p("mylnikov"),
+        "wigle ({wigle}) must be the lowest-priority geolocation module"
+    );
+}
+
 /// Synergy invariant: every entity kind a module *declares* it produces, and
 /// which maps to a scannable `TargetKind`, must be accepted by at least one
 /// module — otherwise it's a dead-end pivot the engine can never expand. Guards

@@ -158,7 +158,11 @@ impl Module for Wigle {
         "WiGLE wireless intel — WiFi + cell tower + Bluetooth beacon observations by coords / BSSID"
     }
     fn priority(&self) -> u8 {
-        18
+        // Geolocation FINALISER — dispatched last so it resolves the coordinates,
+        // BSSIDs and addresses surfaced by every other module into a final
+        // location fix. Kept the floor of the geolocation band (below ip_geo,
+        // geocode, overpass, mylnikov) on purpose.
+        10
     }
 
     fn cost(&self) -> ModuleCost {

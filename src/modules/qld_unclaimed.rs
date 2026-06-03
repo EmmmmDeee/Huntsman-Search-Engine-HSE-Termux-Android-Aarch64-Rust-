@@ -340,7 +340,9 @@ impl Module for QldUnclaimed {
     }
 
     fn priority(&self) -> u8 {
-        58
+        // Government / public-records band (110-118): unclaimed-money registry,
+        // dispatched with the other AU gov sources, above the generic free band.
+        114
     }
 
     fn cost(&self) -> ModuleCost {
