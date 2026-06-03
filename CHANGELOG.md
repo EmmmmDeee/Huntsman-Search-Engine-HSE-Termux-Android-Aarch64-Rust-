@@ -89,6 +89,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Search result URLs were silently truncated at the first query parameter.** The
+  multi-engine search parser ran every extracted URL through `form_urlencoded`,
+  which splits on `&`/`=` — so a clean result link like
+  `https://youtube.com/watch?v=abc123&t=5s` was stored as
+  `https://youtube.com/watch?v` (video id and the rest of the query string lost).
+  This corrupted any result pointing at a query-parameterised page (videos,
+  `?id=`/`?u=` profile and article URLs) and broke the "results in full, complete
+  URLs" guarantee. The decode is now applied **only** to percent-encoded redirect
+  targets (e.g. Google `/url?q=https%3A%2F%2F…`); an already-clean `http(s)://` URL
+  is stored byte-for-byte. Percent-encoded targets still decode losslessly.
+  Regression-tested both paths. (Found via the standard `Kylo4kylo` live run.)
 - **Panic in `hse import` on a crafted TXT export (slice index out of order).** The
   stealer-log TXT importer sliced `&body[infected_marker .. osint_marker]` without
   checking the markers' order; a file with `=== OSINT ENRICHMENT` positioned before

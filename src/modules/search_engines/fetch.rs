@@ -222,14 +222,26 @@ pub(super) fn add_result(
     seen: &mut HashSet<String>,
     results: &mut Vec<SearchResult>,
 ) {
-    // URL-decode percent-encoded URLs (from Google /url?q=, Yahoo /RU=, etc.)
-    let decoded = url::form_urlencoded::parse(url.as_bytes())
-        .next()
-        .map_or_else(|| url.to_string(), |(k, _)| k.into_owned());
-    let url = if decoded.starts_with("http") {
-        &decoded
+    // Decode percent-encoded redirect targets (e.g. Google `/url?q=https%3A%2F%2F…`)
+    // but leave an already-clean absolute URL untouched. Running a literal
+    // `https://host/path?a=b&c=d` through `form_urlencoded` splits it on '&'/'='
+    // and keeps only the first key — truncating the query string to `…/path?a`,
+    // losing data and breaking "complete URLs". An encoded target has its scheme
+    // percent-encoded (no literal `http(s)://`), so the prefix check distinguishes
+    // the two cleanly; the encoded form has no literal '&'/'=' so the decode is
+    // lossless there.
+    let decoded;
+    let url = if url.starts_with("http://") || url.starts_with("https://") {
+        url
     } else {
-        return;
+        decoded = url::form_urlencoded::parse(url.as_bytes())
+            .next()
+            .map_or_else(|| url.to_string(), |(k, _)| k.into_owned());
+        if decoded.starts_with("http") {
+            &decoded
+        } else {
+            return;
+        }
     };
 
     let host = extract_host(url);
@@ -360,6 +372,38 @@ mod tests {
             <cite class="b_attribution">www.foo.org</cite>"#;
         let got: Vec<&str> = CiteIter::new(html).collect();
         assert_eq!(got, vec!["https://example.com", "www.foo.org"]);
+    }
+
+    #[test]
+    fn add_result_preserves_complete_query_string_url() {
+        // Regression: a clean result URL with a query string must be stored in
+        // FULL. The old blanket `form_urlencoded` decode split on '&'/'=' and
+        // truncated e.g. `…/watch?v=abc&t=5s` down to `…/watch?v`.
+        let html = r#"<a href="https://www.youtube.com/watch?v=abc123&t=5s">video</a>"#;
+        let urls: Vec<String> = parse_results(html, "test", "q")
+            .into_iter()
+            .map(|r| r.url)
+            .collect();
+        assert!(
+            urls.contains(&"https://www.youtube.com/watch?v=abc123&t=5s".to_string()),
+            "complete query-string URL must be preserved, got {urls:?}"
+        );
+    }
+
+    #[test]
+    fn add_result_decodes_percent_encoded_redirect_target() {
+        // The Google /url?q= path yields a percent-encoded target; it must still
+        // decode to a COMPLETE URL with its query string intact.
+        let html =
+            r#"<a href="/url?q=https%3A%2F%2Fexample.org%2Fa%3Fid%3D42%26page%3D2&sa=U">x</a>"#;
+        let urls: Vec<String> = parse_results(html, "test", "q")
+            .into_iter()
+            .map(|r| r.url)
+            .collect();
+        assert!(
+            urls.contains(&"https://example.org/a?id=42&page=2".to_string()),
+            "percent-encoded redirect target must decode to a complete URL, got {urls:?}"
+        );
     }
 
     #[test]
