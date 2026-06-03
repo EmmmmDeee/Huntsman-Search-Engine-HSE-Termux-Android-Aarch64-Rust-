@@ -42,6 +42,7 @@ use std::collections::HashSet;
 
 mod engines;
 mod fetch;
+pub(crate) mod health;
 mod helpers;
 
 use engines::{ENGINES, EngineSpec, reliable_engines};

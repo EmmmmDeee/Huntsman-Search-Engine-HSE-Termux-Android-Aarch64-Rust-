@@ -7,6 +7,7 @@
 
 mod diff;
 mod doctor;
+mod engines;
 mod export;
 mod keys_cmd;
 mod live;
@@ -169,6 +170,13 @@ pub enum Command {
         #[arg(short, long)]
         category: Option<String>,
         /// Output as JSON (same shape as `/api/v1/modules`).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Liveness panel: probe every free search engine and report up/blocked/down
+    /// + latency. Results also go to the unified debug log (structured events).
+    Engines {
+        /// Output as JSON instead of the status table.
         #[arg(long)]
         json: bool,
     },
@@ -449,6 +457,7 @@ pub async fn run() -> Result<()> {
             .await
         }
         Command::Modules { category, json } => cmd_modules(category, json),
+        Command::Engines { json } => engines::cmd_engines(json).await,
         Command::Doctor => doctor::cmd_doctor().await,
         Command::Selftest { json } => selftest::cmd_selftest(json).await,
         Command::Provision {

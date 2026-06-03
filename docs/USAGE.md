@@ -10,6 +10,7 @@ hse scan      Run a single scan, print results
 hse live      Re-run a scan periodically (v0.5+)
 hse diff      Compare two scans: entities added / removed / re-scored
 hse modules   List registered modules with cost / target / passive flags
+hse engines   Liveness panel: probe each free search engine (up/blocked/down)
 hse doctor    Verify environment (DB, keys, Termux, modules)
 hse serve     Start the HTTP server + SPA (browse to http://127.0.0.1:8080)
 hse --help    Top-level help

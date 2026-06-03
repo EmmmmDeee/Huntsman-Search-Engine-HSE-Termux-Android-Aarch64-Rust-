@@ -80,7 +80,10 @@ pub(super) const ENGINES: &[EngineSpec] = &[
     EngineSpec {
         name: "duckduckgo",
         build_url: |_q| "https://html.duckduckgo.com/html/".to_string(),
-        build_post: Some(|q| format!("q={}&b=&kl=us-en&df=", crate::util::http::urlencode(q))),
+        // `kl=wt-wt` is DDG's "No region" (worldwide) — geolocation-neutral by
+        // default so results aren't biased to a single country. Regional bias is
+        // opt-in (see the regional-search toggle), not baked in here.
+        build_post: Some(|q| format!("q={}&b=&kl=wt-wt&df=", crate::util::http::urlencode(q))),
         paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
@@ -159,8 +162,10 @@ pub(super) const ENGINES: &[EngineSpec] = &[
     EngineSpec {
         name: "yandex",
         build_url: |q| {
+            // No `lr=` region id — geolocation-neutral (global results), not
+            // pinned to a single country.
             format!(
-                "https://yandex.com/search/?text={}&lr=84",
+                "https://yandex.com/search/?text={}",
                 crate::util::http::urlencode(q)
             )
         },
@@ -304,4 +309,36 @@ pub(super) fn reliable_engines() -> Vec<&'static EngineSpec> {
         .iter()
         .filter_map(|name| ENGINES.iter().find(|e| e.name == *name))
         .collect()
+}
+
+#[cfg(test)]
+mod geo_tests {
+    use super::*;
+
+    #[test]
+    fn engine_queries_are_geolocation_neutral_by_default() {
+        // No engine may hard-pin a country/region in its default query — results
+        // stay global unless regional searching is explicitly toggled on.
+        const REGION_LOCKS: &[&str] = &["kl=us", "&lr=", "?lr=", "&gl=", "&cc=", "country="];
+        for e in ENGINES {
+            let url = (e.build_url)("probe");
+            let post = e.build_post.map(|f| f("probe")).unwrap_or_default();
+            for lock in REGION_LOCKS {
+                assert!(
+                    !url.contains(lock),
+                    "engine {} has region lock '{lock}' in its URL: {url}",
+                    e.name
+                );
+                assert!(
+                    !post.contains(lock),
+                    "engine {} has region lock '{lock}' in its POST body: {post}",
+                    e.name
+                );
+            }
+        }
+        // DuckDuckGo is explicitly worldwide (kl=wt-wt), not US-pinned.
+        let ddg = ENGINES.iter().find(|e| e.name == "duckduckgo").unwrap();
+        let post = (ddg.build_post.unwrap())("probe");
+        assert!(post.contains("kl=wt-wt"), "ddg must be worldwide: {post}");
+    }
 }
