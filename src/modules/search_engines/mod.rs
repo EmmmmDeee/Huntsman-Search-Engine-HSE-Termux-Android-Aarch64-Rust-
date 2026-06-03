@@ -1211,6 +1211,7 @@ fn build_entities(target: &Target, scan_id: &str, results: &[SearchResult]) -> M
             result.push(e);
         } else if target_domain.as_ref().is_none_or(|td| domain != *td)
             && !is_generic_domain(&domain)
+            && !is_search_tooling_domain(&domain)
             && seen_domains.insert(domain.clone())
         {
             let mut e = Entity::new(EntityKind::Domain, &domain, 0.45, scan_id);
@@ -2243,6 +2244,70 @@ mod tests {
             "https://x.com/kylo4kylo",
             "x.com"
         ));
+    }
+
+    #[test]
+    fn search_tooling_domains_are_recognised() {
+        for d in [
+            "peekyou.com",
+            "spokeo.com",
+            "www.nuwber.com",
+            "whitepages.com",
+            "pipl.com",
+            "usernamegenerator.com",
+            "whatsmyname.app",
+        ] {
+            assert!(is_search_tooling_domain(d), "{d} should be search tooling");
+        }
+        for d in ["kylosrealsite.com", "github.com", "example.org"] {
+            assert!(!is_search_tooling_domain(d), "{d} must NOT be suppressed");
+        }
+    }
+
+    #[test]
+    fn build_entities_suppresses_aggregator_domains_but_keeps_profiles() {
+        // Statistical-analysis upgrade: a person search dorks site:peekyou.com
+        // etc., so those aggregators flood the results as bare-domain noise. The
+        // bare domain is now suppressed, while the genuine external domain and the
+        // specific profile URL on the aggregator are still emitted.
+        let target = Target::new(TargetKind::Username, "kylo4kylo");
+        let mk = |url: &str| SearchResult {
+            url: url.to_string(),
+            title: "kylo4kylo".to_string(),
+            snippet: "kylo4kylo profile page".to_string(),
+            engine: "duckduckgo",
+            query: "kylo4kylo".to_string(),
+        };
+        let results = vec![
+            mk("https://www.peekyou.com/kylo4kylo"),
+            mk("https://spokeo.com/kylo4kylo"),
+            mk("https://kylosrealsite.com/about"),
+        ];
+        let res = build_entities(&target, "s", &results);
+        let domains: Vec<&str> = res
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Domain)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(
+            !domains.contains(&"peekyou.com") && !domains.contains(&"spokeo.com"),
+            "aggregator domains must be suppressed, got {domains:?}"
+        );
+        assert!(
+            domains.iter().any(|d| d.contains("kylosrealsite")),
+            "a genuine external domain must survive, got {domains:?}"
+        );
+        let urls: Vec<&str> = res
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Url)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(
+            urls.iter().any(|u| u.contains("peekyou.com/kylo4kylo")),
+            "the specific profile URL on the aggregator must be kept, got {urls:?}"
+        );
     }
 
     #[test]

@@ -82,6 +82,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Suppress people-search / username-aggregator domains from search findings.** A
+  statistical pass over a live `kylo4kylo` run found ~15 of 84 result domains were
+  people-search aggregators (spokeo, peekyou, nuwber, whitepages, pipl, …) — the
+  search's OWN dork targets (`site:peekyou.com`), never the subject's asset, yet
+  emitted as bare `Domain` findings (noise). A new `is_search_tooling_domain` set
+  now drops those bare domains; the *specific* profile URL on an aggregator
+  (`peekyou.com/<handle>`) and genuine external domains are still kept. Cuts the
+  per-person-search domain noise materially with no loss of signal.
 - **Confirmed-profile detection — the target's own profile is elevated.** When a
   username search returns the searched handle's *own* page on a canonical social
   host (the handle is the URL's first path segment, e.g. seed `kylo4kylo` →
