@@ -49,7 +49,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `GET /api/v1/engines/health`. `hse serve` runs a startup sweep and a periodic
   background refresh (`HUNTSMAN_ENGINE_HEALTH_SECS`, default 900s); each probe
   emits a structured `huntsman::engine_health` event into the shared debug-log
-  ring buffer alongside the other module logs.
+  ring buffer alongside the other module logs. The web `#/engines` panel now
+  also carries an **inline Enable/Disable control per engine** (wired to the
+  toggle API): it merges the probe sweep with the full engine roster so disabled
+  engines stay visible (and re-enablable), and its Up/Blocked/Down/Disabled
+  tallies are computed from that merged roster so they stay consistent the
+  instant a toggle flips, even before the next background sweep.
 - **Runtime AI-independence charter + CI guard.** Documented and now mechanically
   enforced that the compiled `hse` binary carries **no** AI / ML / LLM /
   cloud-inference / agent / vector-DB / embedding dependency: every runtime
