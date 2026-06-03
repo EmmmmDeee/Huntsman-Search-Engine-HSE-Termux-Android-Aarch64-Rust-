@@ -493,7 +493,10 @@ pub(super) fn rule_au_014_geo_cluster(
         .into_iter()
         .filter_map(|e| {
             let hits: Vec<&str> = GEO_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
-            let sources = e.evidence_sources();
+            // Corroborating sources only: the deterministic `geo_normalize`
+            // enrichment pass is not an independent geo observation, so a lone
+            // postcode-centroid it touched must not look like a "cluster".
+            let sources = e.corroborating_sources();
             if hits.len() >= 2 || sources.len() >= 2 {
                 Some(Correlation {
                     rule_id: "AU-014".into(),
@@ -1143,9 +1146,12 @@ pub(super) fn rule_au_030_geo_convergence_score(
         return Vec::new();
     }
 
+    // Corroborating sources only — exclude the `geo_normalize` enrichment pass,
+    // which touches every geo entity and would otherwise manufacture the third
+    // "independent source" this convergence score requires out of nothing.
     let mut all_sources: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for e in &geo_entities {
-        for src in e.evidence_sources() {
+        for src in e.corroborating_sources() {
             all_sources.insert(src);
         }
     }

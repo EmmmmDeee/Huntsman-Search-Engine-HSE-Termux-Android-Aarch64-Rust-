@@ -1121,6 +1121,43 @@ mod tests {
         assert_eq!(r.len(), 1);
     }
 
+    #[test]
+    fn geo_normalize_alone_does_not_over_fire_corroboration_rules() {
+        // Regression: a coarse qld_unclaimed geo set, each entity touched only
+        // by the deterministic `geo_normalize` enrichment pass, must NOT light
+        // up the corroboration rules. Before the fix, geo_normalize counted as a
+        // phantom second source and fired AU-003 on every address/centroid plus
+        // AU-014 on every centroid and AU-030 across the set — ~20 spurious
+        // correlations from a single name search.
+        let coarse = |kind, val: &str| -> Entity {
+            let mut e = Entity::new(kind, val, 0.30, "s");
+            e.add_evidence(Evidence::new("qld_unclaimed", "register record"));
+            e.add_evidence(Evidence::new("geo_normalize", "enrichment"));
+            e.tag("geoint");
+            e
+        };
+        let ents = vec![
+            coarse(EntityKind::Address, "QLD 4552, Australia"),
+            coarse(EntityKind::Address, "Maleny, QLD 4552, Australia"),
+            coarse(EntityKind::Address, "Booroobin, QLD 4552, Australia"),
+            coarse(EntityKind::Coordinates, "-26.72900,152.75540"),
+        ];
+        let firings = evaluate_rules(&ents, "s");
+        let fired = |id: &str| firings.iter().any(|c| c.rule_id == id);
+        assert!(
+            !fired("AU-003"),
+            "geo_normalize must not fabricate high-corroboration (AU-003)"
+        );
+        assert!(
+            !fired("AU-014"),
+            "a single-source centroid must not look like a geo cluster (AU-014)"
+        );
+        assert!(
+            !fired("AU-030"),
+            "geo_normalize must not be the 3rd source for convergence (AU-030)"
+        );
+    }
+
     // ── AU-015 ──────────────────────────────────────────────────────────
 
     #[test]
@@ -1316,6 +1353,215 @@ mod tests {
             au018.entity_uids.contains(&booroobin_confirmed.uid),
             "linkage must include the confirmed Booroobin address"
         );
+    }
+
+    /// Ground-truth regression guard (the operator's own `name` scan, after the
+    /// geo_normalize / qld_unclaimed / name_intel quality fixes). BEFORE the fix
+    /// this entity set produced **28** correlations — ~19 spurious AU-003 + 4
+    /// AU-014 + 1 AU-030 fabricated by the `geo_normalize` phantom source over
+    /// coarse `qld_unclaimed` geo. It must now yield exactly the **four** real
+    /// cross-source findings (person corroboration, peekyou infra consensus +
+    /// AU-003, local Wi-Fi) and never resurrect the geo over-fire or fuse the
+    /// single-source candidate guesses (suburbs / permuted handles+emails) into a
+    /// false identity (AU-002) or identity↔location (AU-018) cluster.
+    #[test]
+    fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
+        use std::collections::HashMap;
+
+        let mk = |kind, value: &str, conf: f64, sources: &[&str], tags: &[&str]| -> Entity {
+            let mut e = Entity::new(kind, value, conf, "erik");
+            for s in sources {
+                e.add_evidence(Evidence::new(*s, "ground-truth fixture"));
+            }
+            for t in tags {
+                e.tag(*t);
+            }
+            e
+        };
+
+        let mut ents: Vec<Entity> = Vec::new();
+        // ── Genuine cross-source signal ──
+        ents.push(mk(
+            EntityKind::Person,
+            "Erik Diegmann",
+            0.90,
+            &["oathnet_pro", "social_probe"],
+            &["breach", "social-probed"],
+        ));
+        // The people-search PLATFORM the scan profiled (its own infra) — well-
+        // corroborated infrastructure, but about the platform, not the person.
+        ents.push(mk(
+            EntityKind::Domain,
+            "www.peekyou.com",
+            0.95,
+            &[
+                "cert_intel",
+                "crtsh",
+                "dns_intel",
+                "hackertarget",
+                "rdap_domain",
+                "shodan",
+                "social_probe",
+                "urlscan",
+                "waf_detect",
+                "web_crawler",
+                "webserver_banner",
+            ],
+            &["social-platform", "cloudflare"],
+        ));
+        ents.push(mk(
+            EntityKind::Url,
+            "https://www.peekyou.com/erik-diegmann",
+            0.80,
+            &["social_probe"],
+            &["social-profile"],
+        ));
+        // Operator's own device / local network (single-source, local-only).
+        for m in [
+            "94:a6:7e:7d:49:76",
+            "94:a6:7e:7d:49:77",
+            "ec:d9:09:2c:66:40",
+            "96:2a:6f:fc:98:dd",
+            "94:a6:7e:7d:49:74",
+            "9a:49:14:d1:f3:14",
+        ] {
+            ents.push(mk(
+                EntityKind::MacAddress,
+                m,
+                0.95,
+                &["wifi_intel"],
+                &["wifi-ap"],
+            ));
+        }
+        ents.push(mk(
+            EntityKind::Coordinates,
+            "-27.2690125,153.0179605",
+            0.97,
+            &["device_sensors", "geo_normalize"],
+            &["geoint", "device-sensor"],
+        ));
+        // ── Coarse qld_unclaimed geo — every entity ALSO touched by the
+        //    deterministic geo_normalize pass (the phantom-source trap). ──
+        ents.push(mk(
+            EntityKind::Address,
+            "QLD 4552, Australia",
+            0.38,
+            &["qld_unclaimed", "geo_normalize"],
+            &["postcode-only", "geoint", "coarse", "exact-name-match"],
+        ));
+        for pc in ["QLD 4555, Australia", "QLD 4557, Australia"] {
+            ents.push(mk(
+                EntityKind::Address,
+                pc,
+                0.32,
+                &["qld_unclaimed", "geo_normalize"],
+                &["postcode-only", "geoint", "coarse", "family-candidate"],
+            ));
+        }
+        for s in [
+            "Conondale, QLD 4552, Australia",
+            "Curramore, QLD 4552, Australia",
+            "Booroobin, QLD 4552, Australia",
+            "Maleny, QLD 4552, Australia",
+            "Mooloolaba, QLD 4557, Australia",
+            "Palmwoods, QLD 4555, Australia",
+        ] {
+            ents.push(mk(
+                EntityKind::Address,
+                s,
+                0.30,
+                &["qld_unclaimed", "geo_normalize"],
+                &["candidate-suburb", "geoint", "coarse"],
+            ));
+        }
+        for c in [
+            "-26.68330,152.96670",
+            "-26.72900,152.75540",
+            "-26.68330,153.11670",
+        ] {
+            ents.push(mk(
+                EntityKind::Coordinates,
+                c,
+                0.30,
+                &["qld_unclaimed", "geo_normalize"],
+                &["geoint", "postcode-centroid", "coarse"],
+            ));
+        }
+        // ── name_intel permutations (single-source Candidate guesses) ──
+        for u in [
+            "erikdiegmann",
+            "ediegmann",
+            "erik_diegmann",
+            "erik.diegmann",
+            "erikd",
+        ] {
+            ents.push(mk(
+                EntityKind::Username,
+                u,
+                0.38,
+                &["name_intel"],
+                &["derived", "name-derived"],
+            ));
+        }
+        for em in [
+            "erikdiegmann@gmail.com",
+            "erik.diegmann@gmail.com",
+            "ediegmann@gmail.com",
+        ] {
+            ents.push(mk(
+                EntityKind::Email,
+                em,
+                0.30,
+                &["name_intel"],
+                &["derived", "permuted"],
+            ));
+        }
+
+        let firings = evaluate_rules(&ents, "erik");
+        let summary: Vec<(&str, &str)> = firings
+            .iter()
+            .map(|c| (c.rule_id.as_str(), c.description.as_str()))
+            .collect();
+
+        // Exactly four correlations — the real ones, nothing fabricated.
+        assert_eq!(
+            firings.len(),
+            4,
+            "expected 4 real correlations, got: {summary:#?}"
+        );
+
+        let fired: HashSet<&str> = firings.iter().map(|c| c.rule_id.as_str()).collect();
+        assert!(
+            fired.contains("AU-003"),
+            "person + peekyou cross-source corroboration"
+        );
+        assert!(fired.contains("AU-010"), "peekyou infrastructure consensus");
+        assert!(fired.contains("AU-013"), "local Wi-Fi AP discovery");
+
+        // The fix holds: no geo over-fire, no fused identity/location from guesses.
+        for absent in ["AU-002", "AU-014", "AU-018", "AU-030"] {
+            assert!(
+                !fired.contains(absent),
+                "{absent} must not fire on coarse/candidate noise: {summary:#?}"
+            );
+        }
+
+        // AU-003 may only flag the corroborated person + domain — NEVER a coarse
+        // geo entity (the exact phantom-`geo_normalize`-source regression). Two
+        // firings, both non-geo.
+        let kind_by_uid: HashMap<&str, &EntityKind> =
+            ents.iter().map(|e| (e.uid.as_str(), &e.kind)).collect();
+        let au003: Vec<&Correlation> = firings.iter().filter(|c| c.rule_id == "AU-003").collect();
+        assert_eq!(au003.len(), 2, "AU-003 only on the person + peekyou domain");
+        for c in au003 {
+            for uid in &c.entity_uids {
+                let kind = kind_by_uid.get(uid.as_str()).expect("uid in fixture");
+                assert!(
+                    matches!(kind, EntityKind::Person | EntityKind::Domain),
+                    "AU-003 must not flag a coarse {kind:?} as corroborated"
+                );
+            }
+        }
     }
 
     #[test]

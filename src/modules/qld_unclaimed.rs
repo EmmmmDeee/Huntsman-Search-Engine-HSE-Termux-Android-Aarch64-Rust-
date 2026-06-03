@@ -214,9 +214,15 @@ fn records_to_entities(
             .with_attr("register", "QLD Public Trustee unclaimed monies")
             .with_attr("total_matches", total.to_string());
 
-        // Exact-name hits are worth more than surname-only family candidates;
-        // weight confidence and tag accordingly so the engine ranks them.
-        let (addr_conf, find_conf) = if exact { (0.50, 0.60) } else { (0.40, 0.50) };
+        // A bare postcode is a COARSE locator, not a residence, so even an
+        // exact-name register hit stays a Candidate-tier `Address` (it must not
+        // masquerade as a precise, Probable address) — its evidentiary weight
+        // lives in the unclaimed-money evidence chain and in ranking above the
+        // family/suburb guesses, where exact (0.38) still outranks family
+        // (0.32). The `find_conf` for the non-geo `unclaimed_money` finding /
+        // company Organisation keeps its full weight: those are real records,
+        // not coarse geo.
+        let (addr_conf, find_conf) = if exact { (0.38, 0.60) } else { (0.32, 0.50) };
 
         // Geo pivot when we have a usable postcode; otherwise a plain finding.
         let mut entity = match pc {
@@ -231,6 +237,9 @@ fn records_to_entities(
                 // `geoint` only belongs on actual geo entities (Address/Coords);
                 // the no-postcode finding below is not geographic.
                 e.tag("geoint");
+                // A postcode spans many localities — flag the coarseness so the
+                // UI and geo rules treat it as a region, not a pinned address.
+                e.tag("coarse");
                 e
             }
             None => {
@@ -289,11 +298,12 @@ fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], scan_id: &str)
     for (pc, locs) in pc_localities {
         if let Some(first) = locs.first() {
             let coords = format!("{:.5},{:.5}", first.lat, first.lon);
-            let mut c = Entity::new(EntityKind::Coordinates, coords, 0.40, scan_id);
+            let mut c = Entity::new(EntityKind::Coordinates, coords, 0.30, scan_id);
             c.tag(SRC);
             c.tag("country:AU");
             c.tag("geoint");
             c.tag("postcode-centroid");
+            c.tag("coarse");
             c.add_evidence(
                 Evidence::new(SRC, format!("Centroid of postcode {pc}"))
                     .with_attr("postcode", pc)
@@ -305,13 +315,14 @@ fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], scan_id: &str)
             let mut a = Entity::new(
                 EntityKind::Address,
                 format!("{}, QLD {pc}, Australia", loc.suburb),
-                0.40,
+                0.30,
                 scan_id,
             );
             a.tag(SRC);
             a.tag("country:AU");
             a.tag("geoint");
             a.tag("candidate-suburb");
+            a.tag("coarse");
             a.add_evidence(
                 Evidence::new(
                     SRC,
@@ -324,6 +335,35 @@ fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], scan_id: &str)
                 .with_attr("source", "zippopotam"),
             );
             out.push(a);
+        }
+    }
+    out
+}
+
+/// Postcodes of records that match the seed *exactly* — the seeded person's own
+/// lodged postcode(s) — deduplicated in first-seen order and capped at
+/// [`POSTCODE_CAP`]. Suburb enumeration is restricted to these so a surname-
+/// broadened search doesn't fan every relative's postcode out into a pile of
+/// candidate suburbs (the explosion this collapses). A verbatim
+/// (non-broadened) search has no family/exact split, so every row qualifies.
+fn exact_postcodes(records: &[Map<String, Value>], seed: &str, broadened: bool) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for rec in records {
+        let exact = !broadened
+            || field_str(rec, "Owner")
+                .map(|o| owner_matches_full_name(&o, seed))
+                .unwrap_or(false);
+        if !exact {
+            continue;
+        }
+        if let Some(pc) = postcode(rec)
+            && seen.insert(pc.clone())
+        {
+            out.push(pc);
+            if out.len() >= POSTCODE_CAP {
+                break;
+            }
         }
     }
     out
@@ -402,25 +442,18 @@ impl Module for QldUnclaimed {
             records = merge_records(exact_res.records, records);
         }
 
-        // Depth-of-enumeration: resolve each distinct postcode in the results to
-        // its constituent suburbs (Zippopotam, keyless). A bare postcode is a
+        // `surname != full` ⇔ derive_query broadened a multi-token FullName to
+        // its surname, which is exactly when the exact-vs-family split applies.
+        let broadened = surname != full;
+
+        // Depth-of-enumeration: resolve the seeded person's *own* postcode(s) to
+        // their constituent suburbs (Zippopotam, keyless). A bare postcode is a
         // coarse signal — a QLD postcode spans many localities — so we expand it
-        // into suburb-precise, geocodable Address candidates. Best-effort and
-        // capped; each lookup is non-fatal.
-        let mut seen_pc: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut unique_pcs: Vec<String> = Vec::new();
-        for rec in &records {
-            if let Some(pc) = postcode(rec)
-                && seen_pc.insert(pc.clone())
-            {
-                unique_pcs.push(pc);
-                if unique_pcs.len() >= POSTCODE_CAP {
-                    break;
-                }
-            }
-        }
+        // into suburb-precise, geocodable Address candidates. Restricted to
+        // exact-name records so relatives' surname-only postcodes don't fan out;
+        // best-effort and capped, each lookup non-fatal.
         let mut pc_localities: Vec<(String, Vec<Locality>)> = Vec::new();
-        for pc in unique_pcs {
+        for pc in exact_postcodes(&records, full, broadened) {
             let locs = crate::util::postcode_au::localities(&ctx.http, &pc).await;
             if !locs.is_empty() {
                 pc_localities.push((pc, locs));
@@ -428,9 +461,6 @@ impl Module for QldUnclaimed {
         }
 
         let mut out = ModuleResult::new();
-        // `surname != full` ⇔ derive_query broadened a multi-token FullName to
-        // its surname, which is exactly when the exact-vs-family split applies.
-        let broadened = surname != full;
         out.extend(records_to_entities(
             &records,
             total,
@@ -654,6 +684,50 @@ mod tests {
         };
         assert_eq!(attr("suburb"), Some("Maleny"));
         assert_eq!(attr("postcode"), Some("4552"));
+    }
+
+    #[test]
+    fn suburbs_enumerated_only_for_exact_match_postcodes() {
+        // The fan-out collapse: a surname-broadened search enumerates suburbs
+        // ONLY for the seeded person's own (exact-name) postcode — never every
+        // relative's. With the sample register (ERIK@4552, CURT@4555,
+        // HAYLEY&CURT@4557), seeding "Erik Diegmann" yields just 4552.
+        let recs = sample().result.unwrap().records;
+        assert_eq!(exact_postcodes(&recs, "Erik Diegmann", true), vec!["4552"]);
+        // Seeding a surname whose full name matches no row → no suburb fan-out
+        // at all (relatives' postcodes are not the seed's residence).
+        assert!(exact_postcodes(&recs, "Matthew Diegmann", true).is_empty());
+        // A verbatim (non-broadened) search treats every row as a direct hit,
+        // so all distinct postcodes qualify (first-seen order).
+        assert_eq!(
+            exact_postcodes(&recs, "Diegmann", false),
+            vec!["4557", "4555", "4552"]
+        );
+    }
+
+    #[test]
+    fn postcode_only_address_is_coarse_candidate_not_probable() {
+        // #3: a bare postcode must not rank as a precise (Probable) address.
+        // Even an exact-name hit is a Candidate-tier, `coarse`-tagged Address;
+        // its register evidence carries the actual weight.
+        let recs = sample().result.unwrap().records;
+        let erik = records_to_entities(&recs, 3, "Erik Diegmann", true, "s");
+        let addr = erik
+            .iter()
+            .find(|e| e.kind == EntityKind::Address && e.value.contains("4552"))
+            .expect("Erik's exact postcode Address");
+        assert!(addr.tags.iter().any(|t| t == "exact-name-match"));
+        assert!(addr.tags.iter().any(|t| t == "postcode-only"));
+        assert!(addr.tags.iter().any(|t| t == "coarse"));
+        // No geo_normalize in a unit context → c_eff == base (0.38) → Candidate.
+        assert!(
+            addr.confidence < 0.40,
+            "coarse postcode must be sub-Probable"
+        );
+        assert_eq!(
+            addr.classify(),
+            crate::core::entity::Classification::Candidate
+        );
     }
 
     #[test]

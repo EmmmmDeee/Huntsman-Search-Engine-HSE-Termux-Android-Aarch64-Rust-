@@ -25,6 +25,14 @@ pub const MODULE_TIMEOUT_MS: u64 = 3000;
 /// Tokio worker thread count (architecture invariant — tuned for Termux).
 pub const WORKER_THREADS: usize = 2;
 
+/// Upper bound on tokio's blocking-thread pool (`spawn_blocking` + `tokio::fs`).
+/// Tokio defaults to **512**, which on a low-RAM Termux/aarch64 phone lets a
+/// burst of synchronous sqlite / filesystem work spawn hundreds of OS threads —
+/// each with its own stack. HSE is network/IO-bound on a 2-worker runtime, so a
+/// small pool is ample; this bounds peak memory without serialising any
+/// realistic workload. Applied in `main` via a hand-built runtime.
+pub const MAX_BLOCKING_THREADS: usize = 16;
+
 // Live-mode tuning constants (used from v0.5+):
 pub const LIVE_DEFAULT_INTERVAL_SECS: u64 = 30;
 pub const LIVE_MAX_DEPTH: u32 = 5;
@@ -74,6 +82,7 @@ mod tests {
         assert_eq!(DEFAULT_BIND, "127.0.0.1:8080");
         assert_eq!(MODULE_TIMEOUT_MS, 3000);
         assert_eq!(WORKER_THREADS, 2);
+        assert_eq!(MAX_BLOCKING_THREADS, 16);
         assert_eq!(LIVE_DEFAULT_INTERVAL_SECS, 30);
         assert_eq!(LIVE_MAX_DEPTH, 5);
         assert_eq!(LIVE_DEFAULT_THROTTLE_MS, 100);

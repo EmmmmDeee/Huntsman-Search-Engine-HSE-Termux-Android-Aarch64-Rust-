@@ -10,6 +10,215 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **Bounded tokio's blocking-thread pool for Termux (memory footprint).** `main`
+  now builds the runtime by hand and caps `max_blocking_threads` at **16**
+  (tokio's default is **512**), so a burst of synchronous sqlite / filesystem
+  work can't spawn hundreds of OS threads on a low-RAM aarch64 phone. HSE is
+  network/IO-bound on its 2-worker runtime, so the cap never serialises a
+  realistic workload. Together with the sensor-seed scoping below — which stops
+  waking the GPS/Wi-Fi/cell radios on identity scans — this is the session's
+  Termux footprint/battery win.
+
+### Fixed
+
+- **Coarse geo & name-permutation guesses no longer masquerade as corroborated
+  findings (scan-quality pass).** A `name` scan surfaced a pile of postcode
+  suburbs, bare postcodes and derived handles in the **Probable** tier and lit
+  up ~20 spurious correlations — all rooted in one defect plus three module
+  fan-outs:
+
+  - **`geo_normalize` was counted as an independent corroborating source.** The
+    geospatial enrichment pass attaches a geohash/timezone/parsed-address
+    evidence record to *every* `Coordinates`/`Address`, which inflated their
+    `source_count` to 2 — silently lifting single-source coarse geo from its
+    base confidence into the **Probable** tier via the agreement model, and
+    firing the corroboration correlator rules once per such entity (**AU-003**
+    on every address/centroid, **AU-014** on every centroid, **AU-030** across
+    the set). It is now excluded from the corroboration count via a new
+    `Entity::corroborating_sources` (consumed by `source_count`, AU-014 and
+    AU-030) while remaining in the evidence chain and `evidence_sources` for
+    display. The Web UI `sourceCount` mirrors the exclusion so the Browse
+    tier/confidence match the backend.
+
+  - **`qld_unclaimed` suburb fan-out (#1).** A surname-broadened search
+    enumerated *every* suburb of *every* matched postcode — including relatives'
+    — as a Probable `Address`. Suburb enumeration is now restricted to the
+    seeded person's own **exact-name** postcode(s) (new `exact_postcodes`), and
+    the candidate suburbs + postcode centroids are emitted at Candidate
+    confidence (0.30) tagged `coarse`.
+
+  - **Bare postcodes ranked like precise addresses (#3).** A
+    `"QLD 4552, Australia"` postcode-only `Address` is a coarse region, not a
+    residence — it now stays a Candidate-tier, `coarse`-tagged `Address` (exact
+    0.38 still ranks above family 0.32); its evidentiary weight lives in the
+    unclaimed-money evidence chain, not in a false precise-address tier.
+
+  - **`name_intel` permutation flood (#2).** The speculative email fan-out is
+    capped tighter (`MAX_EMAILS` 16 → 8), bare single-token handles
+    (`first`/`last` alone) are dropped as non-distinguishing, and the primary
+    username weight is lowered (0.42 → 0.38) so *every* derived handle sits in
+    the **Candidate** tier — matching the module's documented "low-confidence
+    candidate" contract — until a discovery module observes it live (then the
+    second source lifts it and AU-035 fires). Recurse on permutations with
+    `--min-expand-confidence 0.35`.
+
+  - **Regression-guarded.** A ground-truth correlator test reconstructs the
+    operator's `name` scan and pins it at the four real correlations (person
+    corroboration, peekyou infra consensus + AU-003, local Wi-Fi) — never the
+    28 the `geo_normalize` phantom source used to fabricate — and asserts AU-003
+    never flags a coarse geo entity. A `name_intel` test pins every derived
+    handle in the Candidate tier.
+
+- **Web UI confidence/tier matched to the engine.** The Browse table computed
+  its effective confidence as the multiplicative boost only, but the backend's
+  authoritative `c_effective()` — which drives the real tier, expansion and CSV
+  export — is the *stronger* of that and an independent-agreement (noisy-OR)
+  term added to the core *after* the SPA, so Browse silently **under-reported**
+  genuinely multi-source entities (showing Probable where the engine classified
+  Verified). The SPA now mirrors `c_effective` exactly, so the tier you see in
+  Browse matches the engine, the Correlations view and the CSV.
+
+- **Operator's own device data no longer attributed to the subject (fault-tree
+  cut set MCS-A).** The local sensor modules — `device_sensors`, `wifi_intel`,
+  `cell_intel`, `local_net` — had `accepts(_) -> true`, so the **seed round** of
+  *every* scan ran them and injected the **operator's** GPS, Wi-Fi APs, cell
+  towers and ARP table into the **subject's** graph (e.g. a precise device GPS
+  fix surfacing as the subject's `Verified` location on a `name` scan). They now
+  engage only on a deliberately-local seed (`coordinates` / `mac`); expansion was
+  already gated for `LOCAL_PASSIVE_MODULES`, so this closes the seed-round path
+  without affecting explicit local/RF recon. Pinned by per-module scoping tests
+  and a registry-level invariant so a future sensor module can't reopen the cut.
+  *(Solution-tree node S-A1 — the dominant residual the fault-tree analysis
+  surfaced. Platform-scaffolding exclusion (S-E1) and inferred quarantine (S-D1)
+  remain as follow-ups.)*
+
+- **A panicking module can no longer abort the whole process (error-tree
+  ECS-1).** Every module's `process()` now runs behind
+  `engine::run_module_guarded`, which wraps the timed future in
+  `std::panic::catch_unwind` and maps a panic to a normal, counted module error
+  — so a hostile or schema-drifted upstream that trips an `unwrap`/out-of-bounds
+  slice is contained exactly like a returned error instead of unwinding into the
+  dispatch loop / a `JoinSet` task. The `release` & `fast` profiles switch
+  `panic = "abort"` → `"unwind"` so the guard can catch (every other size win —
+  opt-level=s, LTO, codegen-units=1, strip — is retained); on a long-lived `hse
+  serve` this closes a remote-DoS vector. Verified live: the `kylo4kylo` scan
+  ran through `github_user`/`pwned_passwords` transport errors with no abort.
+
+- **`username_search` no longer reports a blocked sweep as a confirmed absence
+  (error-tree M6).** It now counts *inconclusive* (blocked / unreachable) vs
+  *definitive* not-found probes; with zero hits **and** ≥50% of the 334 site
+  probes blocked (WAF / rate-limit / no egress) it returns an
+  `inconclusive: N/M …` error instead of a silent `found=0`, and the
+  per-platform summary carries `sites_not_found` / `sites_inconclusive`
+  breakdowns. Verified live: from a blocked IP the `kylo4kylo` sweep now reports
+  `inconclusive: 334/334 …` rather than a misleading zero.
+
+- **HTTP foundation hardened (fault-tree pass on `src/util/http.rs`, the client
+  every network module sits on).** Five faults:
+  - **OOM (F-A):** `fetch_json` / `fetch_keyed_json` / `json_scanned` buffered the
+    *entire* body via `resp.text()` — the exact multi-GB risk `read_body_capped`
+    / `error_snippet` already guard, but the JSON paths didn't. Now streamed
+    through a 32 MiB cap that errors past the ceiling.
+  - **Masked outage (F-B):** a reqwest transport failure that fell through to the
+    curl fallback and *also* failed returned `Ok(None)` — which
+    `fetch_json_or_404` callers (HudsonRock, Gravatar, OTX, XposedOrNot, BGPView)
+    read as a definitive "not found", silently turning a network outage into a
+    clean empty result. Now a proper error.
+  - **Latent panic (F-C):** the 429 log sliced the key by *byte* index
+    (`&key[len-4..]`), which panics when a non-ASCII (harvested) key splits a
+    UTF-8 char. Replaced with a char-safe `key_tail`.
+  - **Robustness (F-D):** `error_snippet` reported a readable body as
+    `<unreadable>` when the 8 KiB cap split a multibyte char — now lossy-decoded.
+  - **Doc (F-E):** corrected the `redact_credentials` `key=` comment to match its
+    actual (deliberately over-redacting, safe-direction) behaviour.
+  New unit tests for the char-safe tail and the redaction behaviour; full suite +
+  `clippy -D warnings` green.
+
+- **curl fallback hardened (fault-tree pass on `src/util/curl.rs`, the subprocess
+  fetch the HTTP layer drops to).** Six faults:
+  - **OOM (B1):** an unbounded `cmd.output()` buffered the entire body — bounded
+    with `--max-filesize` 32 MiB (a no-Content-Length stream stays bounded by the
+    outer timeout + `kill_on_drop`).
+  - **Dropped responses (B2):** strict `from_utf8` discarded any non-UTF-8 body
+    (ISO-8859-1 HTML) as a failure — now lossy-decoded, matching `http.rs`.
+  - **Dead config tier (B5):** `fetch_pooled` read `HUNTSMAN_PROXY` — a typo of
+    the codebase-wide `HUNTSMAN_SEARCH_PROXY` (used nowhere else), so that tier
+    never fired; removed (the env-proxy intent is already covered by the direct
+    tier inside `curl_exec`).
+  - **Drift risk (B6):** the direct and proxied curl paths duplicated ~25 lines of
+    arg-building — unified into one `curl_exec(.., proxy_override)` so the SSRF
+    pin / proto limits / size cap / headers live in exactly one place.
+  - **Inconsistency (B7):** empty proxy-tier bodies leaked as `Some("")` — now a
+    miss like the direct tier.
+  - **Untested security path (B8):** added the first tests for the SSRF connect-
+    pin (refuses RFC1918 / loopback / link-local metadata, pins a public host).
+  - One residual documented in-file (**B3**): `curl -L` re-resolves a cross-host
+    redirect itself, so redirect-hop IPs aren't vetted in the fallback — reqwest
+    is the redirect-vetted primary; fully closing it needs a Rust-side redirect
+    loop rather than disabling the redirects the search engines rely on.
+
+- **`hse serve` hardened (fault-tree pass on `src/cli/serve.rs` — the localhost web-UI server).**
+  - The startup self-test now runs in a **background task** so the server binds and serves
+    immediately instead of blocking on it — the Chrome UI is reachable at once on a low-power device.
+  - A `localhost:<port>` bind is pinned to `127.0.0.1:<port>`: `TcpListener` binds a single resolved
+    address, so `localhost`→`::1` while Chrome connects to `127.0.0.1` (or vice-versa) was a silent
+    "can't connect".
+  - Binding a **non-loopback** address now logs a prominent LAN-exposure warning (the localhost-only
+    bind is the architecture invariant).
+  - Shutdown-signal handlers **degrade gracefully** (log + pend) instead of panicking when a handler
+    can't be installed — a failed install no longer crashes the server.
+  - `bind` failures carry **actionable hints** (port-in-use / permission / address-not-available — the
+    port-in-use case is the common on-device cause). New unit tests for normalisation, loopback
+    detection, and the error hints.
+
+- **Proxy pool hardened (fault-tree pass on `src/util/proxy.rs`).** Four faults
+  in the free-proxy harvester/validator:
+  - **SSRF (B1):** harvested candidates were only length/`:`-checked, so a poisoned
+    source could inject `127.0.0.1` / `169.254.169.254` / RFC1918 endpoints that
+    the fetcher would then `curl -x` through (proxying via a local/internal
+    service). New `is_public_proxy` filter drops private/reserved/non-numeric
+    hosts at harvest **and** inside `validate` (defence in depth).
+  - **Un-hardened path (B2):** a second, private `curl_get` lacked `--proto` /
+    `--max-filesize` / used strict UTF-8 — replaced with the hardened
+    `util::curl::fetch`, so source fetches inherit the SSRF pin, size cap and
+    lossy decode, and the duplicate is gone.
+  - **Resource exhaustion (B3):** `refresh_pool` spawned one validation task per
+    candidate → dozens of concurrent `curl` processes on a phone. Now
+    semaphore-bounded to 8 concurrent validations.
+  - **Coverage (B4):** added an offline test for the public-proxy filter.
+
+- **SSRF foundation closed against IPv4-in-IPv6 bypasses (fault-tree pass on
+  `src/util/preflight.rs`).** `is_private_addr` — the predicate every SSRF guard
+  (HTTP DNS filter, curl pin, proxy filter, serve loopback check) now relies on —
+  classified v6 forms that *embed* a routable IPv4 as public:
+  - **NAT64 `64:ff9b::/96`** — Android cellular networks commonly run NAT64/464XLAT,
+    so a host resolving to `64:ff9b::<private-v4>` (e.g. `…::a9fe:a9fe` =
+    `169.254.169.254`) routed to the embedded internal address while being treated
+    as public. **Now decoded and judged by the IPv4 rules** (the highest-impact,
+    environment-specific gap).
+  - **6to4 `2002::/16`** and deprecated **IPv4-compatible `::a.b.c.d`** embedded-v4
+    likewise decoded (IPv4-mapped `::ffff:` was already handled via `to_canonical`).
+  - **`0.0.0.0/8`** ("this network") now fully covered, not just `0.0.0.0` — the
+    doc had claimed `/8` while the code only caught the single unspecified address.
+  New tests for NAT64 / 6to4 / IPv4-compatible (private embedded → rejected, public
+  embedded → allowed) and the `0.0.0.0/8` range.
+
+- **Web-UI asset caching fixed (fault-tree pass on `src/api/routes.rs`).**
+  - **Stale UI after upgrade:** the SPA HTML was served with no `Cache-Control`, so
+    Chrome could heuristically cache it and show an old UI after an `hse` upgrade.
+    Now served `Cache-Control: no-cache` (revalidate each load; the document is
+    tiny and same-origin).
+  - **Wasted mobile bandwidth:** `vendor_handler` set an ETag + `must-revalidate`
+    but never handled `If-None-Match`, so it re-sent the full ~510 KB vendor
+    bundle on every post-`max-age` revalidation (the ETag was decorative). It now
+    answers a matching conditional request with **304 Not Modified** (new
+    `if_none_match_hit` helper, unit-tested).
+  - *Noted (not changed here):* `is_loopback_bind` is duplicated in `routes.rs`
+    and `serve.rs` and diverges on the (invalid) port-less `::1` — a candidate for
+    consolidation into a shared helper.
+
 ## [1.2.0] — 2026-06-01
 
 ### Changed

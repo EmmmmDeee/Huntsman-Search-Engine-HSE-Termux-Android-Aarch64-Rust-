@@ -14,7 +14,7 @@ use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
-    scan::Target,
+    scan::{Target, TargetKind},
 };
 use crate::util::termux::termux_cmd;
 
@@ -65,8 +65,13 @@ impl Module for DeviceSensors {
     fn is_passive(&self) -> bool {
         true
     }
-    fn accepts(&self, _t: &Target) -> bool {
-        true
+    fn accepts(&self, t: &Target) -> bool {
+        // Local sensors describe the OPERATOR's own device, not a remote
+        // subject — engage only on a deliberately-local seed (coordinates / MAC)
+        // so the device's GPS/Wi-Fi is never attributed to a name/email/domain/IP
+        // subject (fault-tree cut set MCS-A). Expansion is already gated for
+        // LOCAL_PASSIVE_MODULES, so this governs the seed round.
+        matches!(t.kind, TargetKind::Coordinates | TargetKind::MacAddress)
     }
 
     fn category(&self) -> ModuleCategory {
@@ -336,9 +341,16 @@ mod tests {
     }
 
     #[test]
-    fn accepts_any_target() {
-        assert!(DeviceSensors.accepts(&Target::new(TargetKind::Domain, "x.com")));
-        assert!(DeviceSensors.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+    fn accepts_only_local_physical_seeds() {
+        // Engages on deliberately-local seeds…
+        assert!(DeviceSensors.accepts(&Target::new(TargetKind::Coordinates, "-27.47,153.02")));
+        assert!(DeviceSensors.accepts(&Target::new(TargetKind::MacAddress, "aa:bb:cc:dd:ee:ff")));
+        // …never attaches the operator's device data to a remote subject (MCS-A).
+        assert!(!DeviceSensors.accepts(&Target::new(TargetKind::FullName, "Jane Doe")));
+        assert!(!DeviceSensors.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(!DeviceSensors.accepts(&Target::new(TargetKind::Domain, "x.com")));
+        assert!(!DeviceSensors.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+        assert!(!DeviceSensors.accepts(&Target::new(TargetKind::Username, "user")));
     }
 
     #[test]

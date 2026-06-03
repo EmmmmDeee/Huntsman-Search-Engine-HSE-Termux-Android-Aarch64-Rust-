@@ -35,7 +35,7 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     extract::{OriginalUri, Path},
-    http::{HeaderValue, Method, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
@@ -269,8 +269,16 @@ async fn set_security_headers(mut response: Response) -> Response {
     response
 }
 
-async fn spa_handler() -> Html<&'static str> {
-    Html(SPA_HTML)
+async fn spa_handler() -> Response {
+    // `no-cache` (the browser must revalidate each load) so a binary upgrade's
+    // new SPA shows immediately instead of Chrome serving a heuristically-cached
+    // old copy. The document is small and same-origin, so revalidation is cheap.
+    (
+        StatusCode::OK,
+        [(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))],
+        Html(SPA_HTML),
+    )
+        .into_response()
 }
 
 /// SVG favicon — a hunting-crosshair in the brand cyan on the navbar's dark.
@@ -319,7 +327,7 @@ async fn api_not_found(method: Method, OriginalUri(uri): OriginalUri) -> impl In
 /// Returns 404 for any name not in [`VENDOR_FILES`] — there's no
 /// path traversal to worry about because the match is on the exact
 /// filename and `Path<String>` doesn't decode slashes by default.
-async fn vendor_handler(Path(file): Path<String>) -> Response {
+async fn vendor_handler(Path(file): Path<String>, headers: HeaderMap) -> Response {
     for (name, ct, bytes) in VENDOR_FILES {
         if *name == file {
             // ETag is the crate version (which uniquely identifies the
@@ -327,19 +335,39 @@ async fn vendor_handler(Path(file): Path<String>) -> Response {
             // do NOT use `Cache-Control: immutable` because the URL
             // (`/static/bootstrap.min.css`) is stable across upgrades;
             // pairing immutable with a stable URL leaves the browser stuck
-            // on old bytes after a binary upgrade. Without `immutable`,
-            // browsers will revalidate via the ETag and pick up the new
-            // bytes the moment the binary changes.
-            let etag = HeaderValue::from_static(concat!("\"", env!("CARGO_PKG_VERSION"), "\""));
+            // on old bytes after a binary upgrade. Instead `must-revalidate`
+            // plus the conditional-request handling below lets the browser
+            // revalidate cheaply via the ETag and pick up new bytes the moment
+            // the binary changes.
+            const ETAG: &str = concat!("\"", env!("CARGO_PKG_VERSION"), "\"");
+            let cache = HeaderValue::from_static("public, max-age=3600, must-revalidate");
+
+            // Conditional GET: if the client already holds these exact bytes
+            // (`If-None-Match` == our ETag) reply 304 and skip re-sending the
+            // ~510 KB bundle — a real saving on a metered mobile link, and the
+            // half that made the ETag worth setting (the handler previously
+            // always re-sent 200, so the ETag never did anything).
+            if headers
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|inm| if_none_match_hit(inm, ETAG))
+            {
+                return (
+                    StatusCode::NOT_MODIFIED,
+                    [
+                        (header::ETAG, HeaderValue::from_static(ETAG)),
+                        (header::CACHE_CONTROL, cache),
+                    ],
+                )
+                    .into_response();
+            }
+
             return (
                 StatusCode::OK,
                 [
                     (header::CONTENT_TYPE, HeaderValue::from_static(ct)),
-                    (
-                        header::CACHE_CONTROL,
-                        HeaderValue::from_static("public, max-age=3600, must-revalidate"),
-                    ),
-                    (header::ETAG, etag),
+                    (header::CACHE_CONTROL, cache),
+                    (header::ETAG, HeaderValue::from_static(ETAG)),
                 ],
                 *bytes,
             )
@@ -347,6 +375,16 @@ async fn vendor_handler(Path(file): Path<String>) -> Response {
         }
     }
     (StatusCode::NOT_FOUND, "not found").into_response()
+}
+
+/// RFC 7232 `If-None-Match` test: true if the header is `*` or lists an
+/// entity-tag equal to `etag`. Browsers echo the ETag verbatim; our tag is
+/// strong and the payload is fixed per build, so weak-validator nuance is moot.
+fn if_none_match_hit(if_none_match: &str, etag: &str) -> bool {
+    if_none_match
+        .split(',')
+        .map(str::trim)
+        .any(|t| t == "*" || t == etag)
 }
 
 /// Loopback check. Robust to all reasonable bind syntaxes:
@@ -455,5 +493,18 @@ mod tests {
     fn cors_ipv6_loopback() {
         let layer = build_cors_layer("[::1]:8080");
         let _ = layer;
+    }
+
+    #[test]
+    fn if_none_match_hits_star_exact_and_list() {
+        let etag = concat!("\"", env!("CARGO_PKG_VERSION"), "\"");
+        assert!(if_none_match_hit("*", etag), "wildcard matches");
+        assert!(if_none_match_hit(etag, etag), "exact match");
+        assert!(
+            if_none_match_hit(&format!("\"old\", {etag}"), etag),
+            "match within a comma list"
+        );
+        assert!(!if_none_match_hit("\"old\"", etag), "different tag misses");
+        assert!(!if_none_match_hit("", etag), "empty header misses");
     }
 }

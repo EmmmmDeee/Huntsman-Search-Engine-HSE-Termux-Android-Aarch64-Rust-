@@ -264,8 +264,10 @@ year/number (`"Jordan Leigh Meyers 1987"`).
 1. **Usernames** (≤24, scored best-first): `first.last`, `firstlast`, `flast`,
    `firstl`, reversed (`last.first`), hyphen/underscore joins, middle-initial
    blends (`fmiddlel`, `fmil`), and year-suffixed variants. Weights:
-   primary 0.42, secondary/year 0.30, middle 0.28.
-2. **Emails** (≤16): the highest-signal handle shapes crossed with a provider
+   primary 0.38, secondary/year 0.30, middle 0.28 — all below the 0.40 Probable
+   floor, so derived handles stay Candidates until a discovery module confirms
+   them.
+2. **Emails** (≤8): the highest-signal handle shapes crossed with a provider
    set — Gmail/Outlook/iCloud/Yahoo/Hotmail/Proton by default, overridable via
    the `HUNTSMAN_EMAIL_DOMAINS` env var (comma-separated). Confidence 0.30. Each
    email's evidence carries a **Gravatar** URL (`MD5(lowercased email)`).
