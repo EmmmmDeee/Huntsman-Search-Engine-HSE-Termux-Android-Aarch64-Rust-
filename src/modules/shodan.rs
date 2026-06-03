@@ -148,17 +148,29 @@ impl Shodan {
             .await
         {
             Ok(r) => r,
-            Err(_) => return,
+            Err(e) => {
+                tracing::debug!(target: "huntsman::shodan", ip, error = %e, "internetdb fetch failed");
+                return;
+            }
         };
 
         let status = resp.status();
         if status.as_u16() == 404 || !status.is_success() {
+            tracing::debug!(
+                target: "huntsman::shodan",
+                ip,
+                status = status.as_u16(),
+                "internetdb returned no usable data (404 / non-success)"
+            );
             return;
         }
 
         let body: InternetDbResp = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(b) => b,
-            Err(_) => return,
+            Err(e) => {
+                tracing::debug!(target: "huntsman::shodan", ip, error = %e, "internetdb parse failed");
+                return;
+            }
         };
 
         if body.ports.is_empty()

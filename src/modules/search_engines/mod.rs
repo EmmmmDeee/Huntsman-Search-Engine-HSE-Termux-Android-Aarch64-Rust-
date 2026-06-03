@@ -670,36 +670,40 @@ fn build_queries(target: &Target) -> Vec<String> {
             q.push(format!("\"{v}\" password OR login OR credentials"));
             q
         }
+        // Broad → narrow ladder: start universal (widest net), then narrow into
+        // intent, engine syntax, and seed-specific platform dorks.
         TargetKind::Username => vec![
-            format!("\"{v}\" site:github.com OR site:linkedin.com OR site:facebook.com"),
-            format!("\"{v}\" site:twitter.com OR site:reddit.com OR site:instagram.com"),
-            format!("\"{v}\" profile OR account OR about"),
+            // ── Tier 1: universal — broadest possible reach ──
+            v.to_string(),      // bare handle: every mention, any engine
+            format!("\"{v}\""), // exact-match phrase
+            // ── Tier 2: intent narrowing via boolean OR ──
+            format!("\"{v}\" profile OR account OR username OR bio OR about"),
             format!("\"{v}\" email OR contact OR address"),
+            // ── Tier 3: engine syntax — handle in a page title or URL (the
+            //    signature of a profile page), via intitle:/inurl: operators ──
+            format!("intitle:\"{v}\" OR inurl:{v}"),
+            // ── Tier 4: seed-specific platform site: dorks (narrowest) ──
+            format!("\"{v}\" site:github.com OR site:gitlab.com OR site:keybase.io"),
+            format!(
+                "\"{v}\" site:twitter.com OR site:x.com \
+                 OR site:reddit.com OR site:instagram.com"
+            ),
+            format!("\"{v}\" site:linkedin.com OR site:facebook.com OR site:tiktok.com"),
             format!(
                 "\"{v}\" site:peekyou.com OR site:nuwber.com \
                  OR site:spokeo.com OR site:pipl.com"
             ),
-            // VK + OK (Odnoklassniki) — Russian-language social platforms
-            // with ~600M and ~70M users respectively. Significant diaspora
-            // presence in AU / EU / US makes this worth dorking even for
-            // English-language investigations.
+            // VK + OK (Odnoklassniki) — Russian-language social platforms with
+            // large diaspora presence; worth dorking even in English investigations.
             format!("\"{v}\" site:vk.com OR site:ok.ru"),
-            // Telegram public-channel + username probe via Google. Direct
-            // URL probing (`t.me/<username>`) is handled by a future
-            // `social_probe`-style module; here we go through Google so
-            // we surface public mentions across channels and groups too.
+            // Telegram public channels + mentions (t.me / telegra.ph).
             format!("\"{v}\" site:t.me OR site:telegra.ph"),
-            // Gaming platforms — usernames here are often unique across
-            // a user's online identity. Steam community + Twitch + Discord
-            // public servers (via disboard / top.gg) caught via dork.
+            // Gaming platforms — handles here are often unique across an identity.
             format!(
                 "\"{v}\" site:steamcommunity.com OR site:twitch.tv \
                  OR site:disboard.org OR site:top.gg"
             ),
-            // WhatsMyName + Namecheckr — community-maintained username
-            // aggregators that probe hundreds of sites in one search.
-            // Linking to them directly is cheaper than reimplementing
-            // their probe set inline.
+            // Community username aggregators — probe hundreds of sites at once.
             format!(
                 "\"{v}\" site:whatsmyname.app OR site:namecheckr.com \
                  OR site:check-username.com"
@@ -1552,27 +1556,45 @@ mod tests {
     fn build_queries_username_covers_social_platforms() {
         let t = Target::new(TargetKind::Username, "johndoe");
         let q = build_queries(&t);
-        // Now 9 queries: 5 legacy + VK/OK + Telegram + Steam/Twitch/
-        // gaming + WhatsMyName/Namecheckr aggregators.
-        assert_eq!(q.len(), 9, "expected 9 dorks, got {}", q.len());
-        assert!(q[0].contains("github.com") && q[0].contains("linkedin.com"));
-        assert!(q[1].contains("twitter.com") && q[1].contains("reddit.com"));
+        // Broad → narrow: 13 dorks, universal first, platform site: dorks last.
+        assert_eq!(q.len(), 13, "expected 13 dorks, got {}", q.len());
+        // Tier 1 — universal lead: the broadest two queries carry no `site:`.
+        assert_eq!(
+            q[0], "johndoe",
+            "first query must be the bare handle (broadest)"
+        );
+        assert_eq!(q[1], "\"johndoe\"", "second must be the exact-match phrase");
+        assert!(
+            !q[0].contains("site:") && !q[1].contains("site:"),
+            "universal searches must come before seed-specific site: dorks"
+        );
+        // Tier 2 — intent narrowing.
         assert!(q[2].contains("profile"));
-        assert!(q[3].contains("email") || q[3].contains("contact"));
-        assert!(q[4].contains("peekyou.com") || q[4].contains("nuwber.com"));
-        // New: VK + OK
+        // Tier 3 — engine-syntax operators (title/URL presence of the handle).
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("intitle:") && qr.contains("inurl:")),
+            "must include intitle:/inurl: engine-syntax dorks"
+        );
+        // Tier 4 — platform coverage retained (now after the universal lead).
+        assert!(q.iter().any(|qr| qr.contains("github.com")));
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("twitter.com") && qr.contains("reddit.com"))
+        );
+        assert!(
+            q.iter()
+                .any(|qr| qr.contains("peekyou.com") || qr.contains("nuwber.com"))
+        );
         assert!(
             q.iter()
                 .any(|qr| qr.contains("vk.com") && qr.contains("ok.ru"))
         );
-        // New: Telegram / telegra.ph
         assert!(q.iter().any(|qr| qr.contains("t.me")));
-        // New: gaming
         assert!(
             q.iter()
                 .any(|qr| qr.contains("steamcommunity.com") || qr.contains("twitch.tv"))
         );
-        // New: aggregators
         assert!(
             q.iter()
                 .any(|qr| qr.contains("whatsmyname.app") || qr.contains("namecheckr.com"))
