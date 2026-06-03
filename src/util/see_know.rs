@@ -139,8 +139,18 @@ pub fn budget_snapshot() -> BudgetSnapshot {
     BUDGET.snapshot()
 }
 
+// Test-only now: production reserves atomically via `budget_try_increment`.
+#[cfg(test)]
 fn budget_increment() {
     BUDGET.increment();
+}
+
+/// Atomically reserve one query against the SeekNow budget (see
+/// [`crate::util::budget::QuotaBudget::try_increment`]). Replaces the racy
+/// `budget_remaining()`-then-`budget_increment()` gate so the concurrent
+/// endpoint fan-out can't overspend the per-scan/per-round cap.
+fn budget_try_increment() -> bool {
+    BUDGET.try_increment()
 }
 
 pub fn is_quota_exhausted() -> bool {
@@ -228,10 +238,12 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
-    if is_quota_exhausted() || is_key_invalid() || !budget_remaining() {
+    // Atomically reserve a budget slot (replaces the racy
+    // remaining()-then-increment() that the concurrent endpoint fan-out could
+    // overspend); the key-invalid latch short-circuits before reserving.
+    if is_key_invalid() || !budget_try_increment() {
         return Ok(Vec::new());
     }
-    budget_increment();
     let url = format!("{}/search", base_url());
     let body = if query_type.is_empty() {
         format!(r#"{{"query":"{}"}}"#, escape_json(query))
@@ -320,10 +332,12 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
-    if is_quota_exhausted() || is_key_invalid() || !budget_remaining() {
+    // Atomically reserve a budget slot (replaces the racy
+    // remaining()-then-increment() that the concurrent endpoint fan-out could
+    // overspend); the key-invalid latch short-circuits before reserving.
+    if is_key_invalid() || !budget_try_increment() {
         return Ok(Vec::new());
     }
-    budget_increment();
     let url = format!("{}/{path}?{qs}", base_url());
     // One retry on a transient transport error — flaky mobile/Termux networks
     // drop GETs, and a single-shot call silently loses that endpoint's data

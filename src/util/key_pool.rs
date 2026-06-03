@@ -339,12 +339,31 @@ pub fn save_pool(pool: &KeyPool) -> std::io::Result<()> {
     let path = pool_path();
     let data = pool.snapshot();
     let json = serde_json::to_string_pretty(&data).map_err(std::io::Error::other)?;
-    std::fs::write(&path, json)?;
+    // Atomic write: temp file + fsync + rename. A plain truncate-then-write
+    // leaves a corrupt/truncated JSON if the process is killed mid-write (the
+    // OOM-killer is realistic on a 4 GB device), and `load_pool` then discards
+    // EVERY harvested key (value + provenance + success-rate state). The rename
+    // is atomic on the same filesystem, so a crash leaves the previous valid
+    // pool intact. Mirrors `keys::write_keys_at`.
+    let tmp = path.with_extension("json.tmp");
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(json.as_bytes())?;
+        f.sync_all()?;
     }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&tmp, json.as_bytes())?;
+    }
+    std::fs::rename(&tmp, &path)?;
     Ok(())
 }
 

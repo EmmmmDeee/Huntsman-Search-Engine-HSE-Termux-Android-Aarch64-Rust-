@@ -203,17 +203,15 @@ impl Module for Wigle {
         let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);
 
         if target.kind == TargetKind::MacAddress {
-            if !BSSID_BUDGET.remaining() {
+            if !BSSID_BUDGET.try_increment() {
                 return Ok(ModuleResult::new());
             }
-            BSSID_BUDGET.increment();
             return self.bssid_lookup(user, token, &target.value, ctx).await;
         }
 
-        if !GEO_BUDGET.remaining() {
+        if !GEO_BUDGET.try_increment() {
             return Ok(ModuleResult::new());
         }
-        GEO_BUDGET.increment();
 
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
@@ -458,8 +456,7 @@ impl Module for Wigle {
         // per-scan budgets so a cell-tower failure doesn't starve
         // the Bluetooth dispatch (or vice versa).
         let cell_fut = async {
-            if CELL_BUDGET.remaining() {
-                CELL_BUDGET.increment();
+            if CELL_BUDGET.try_increment() {
                 fetch_wigle_typed(&ctx.http, user, token, lat, lon, 0.01, NetworkKind::Cell)
                     .await
                     .ok()
@@ -468,8 +465,7 @@ impl Module for Wigle {
             }
         };
         let bt_fut = async {
-            if BLUETOOTH_BUDGET.remaining() {
-                BLUETOOTH_BUDGET.increment();
+            if BLUETOOTH_BUDGET.try_increment() {
                 fetch_wigle_typed(
                     &ctx.http,
                     user,

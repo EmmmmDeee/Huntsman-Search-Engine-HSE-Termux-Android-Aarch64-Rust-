@@ -320,10 +320,17 @@ impl Store {
                 superseded.push(*rowid);
             }
         }
+        // Atomic supersede: delete the superseded rows AND insert the
+        // replacement in one transaction, so a crash or mid-statement error
+        // (SQLITE_FULL/BUSY, OOM-kill) can't leave the cluster's predecessors
+        // deleted with no replacement — that would silently drop a finding.
+        // Mirrors delete_scan / upsert_entities_batch. Rolls back on drop if a
+        // statement errors (the `?` returns before commit).
+        let tx = conn.unchecked_transaction()?;
         for rowid in superseded {
-            conn.execute("DELETE FROM correlations WHERE rowid = ?1", params![rowid])?;
+            tx.execute("DELETE FROM correlations WHERE rowid = ?1", params![rowid])?;
         }
-        conn.execute(
+        tx.execute(
             "INSERT INTO correlations(scan_id, rule_id, severity, description, entity_uids, ts, data_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(scan_id, rule_id, description) DO NOTHING",
@@ -337,6 +344,7 @@ impl Store {
                 json,
             ],
         )?;
+        tx.commit()?;
         Ok(())
     }
 

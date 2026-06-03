@@ -155,9 +155,59 @@ impl QuotaBudget {
 
     /// Charge one query against both per-scan and per-session counters.
     /// Callers MUST gate on `remaining()` before incrementing.
+    ///
+    /// Prefer [`try_increment`] for new code: `remaining()`-then-`increment()`
+    /// is a non-atomic check-then-act, so concurrent callers can all observe
+    /// room and then all increment past the cap.
     pub fn increment(&self) {
         self.scan_count.fetch_add(1, Ordering::Relaxed);
         self.session_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Atomically reserve one query against BOTH the per-scan and per-session
+    /// caps. Returns `true` if a slot was reserved (the caller may proceed) or
+    /// `false` if a cap is reached or the quota is exhausted.
+    ///
+    /// This replaces the racy `remaining()`-then-`increment()` pattern: the
+    /// see_know endpoint fan-out (`join_all`) and wigle's `tokio::join!` poll
+    /// several budget gates before any increment lands, so all could pass the
+    /// check and then all charge — overspending the operator's configured cap.
+    /// A CAS reservation makes check-and-charge a single atomic step per
+    /// counter, so the cap is never exceeded. If the per-session ceiling is hit
+    /// after a per-scan slot was taken, the per-scan reservation is rolled back
+    /// (saturating) so the two counters stay consistent.
+    pub fn try_increment(&self) -> bool {
+        if self.is_exhausted() {
+            return false;
+        }
+        let scan_cap = self.scan_cap();
+        if self
+            .scan_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < scan_cap).then_some(n + 1)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        let session_cap = self.session_cap();
+        if self
+            .session_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < session_cap).then_some(n + 1)
+            })
+            .is_err()
+        {
+            // Session ceiling hit — undo the per-scan reservation. Saturating so
+            // a (race-free, but defensive) double-rollback can't underflow.
+            let _ = self
+                .scan_count
+                .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |n| {
+                    Some(n.saturating_sub(1))
+                });
+            return false;
+        }
+        true
     }
 
     /// Reset scan-level state at scan start: counter, exhausted flag,
@@ -253,6 +303,48 @@ mod tests {
         assert_eq!(snap.session_used, 2);
         assert_eq!(b.scan_cap(), 50);
         assert!(b.is_exhausted());
+    }
+
+    #[test]
+    fn try_increment_never_exceeds_the_scan_cap() {
+        let b = QuotaBudget::new("t", 3, 100, "HSE_TRYINC_NONE_A", "HSE_TRYINC_NONE_AS");
+        assert!(b.try_increment());
+        assert!(b.try_increment());
+        assert!(b.try_increment());
+        assert!(
+            !b.try_increment(),
+            "must refuse once the per-scan cap is reached"
+        );
+        assert!(!b.try_increment());
+        assert_eq!(
+            b.snapshot().scan_used,
+            3,
+            "count is never charged past the cap"
+        );
+    }
+
+    #[test]
+    fn try_increment_rolls_back_scan_when_session_cap_hit() {
+        // session_cap (2) < scan_cap (10): the 3rd reserve fails on the session
+        // ceiling and must NOT leave the per-scan counter incremented.
+        let b = QuotaBudget::new("t", 10, 2, "HSE_TRYINC_NONE_B", "HSE_TRYINC_NONE_BS");
+        assert!(b.try_increment());
+        assert!(b.try_increment());
+        assert!(!b.try_increment(), "session ceiling reached");
+        let s = b.snapshot();
+        assert_eq!(s.session_used, 2);
+        assert_eq!(
+            s.scan_used, 2,
+            "per-scan reservation rolled back on session-cap failure"
+        );
+    }
+
+    #[test]
+    fn try_increment_refuses_when_exhausted() {
+        let b = QuotaBudget::new("t", 10, 10, "HSE_TRYINC_NONE_C", "HSE_TRYINC_NONE_CS");
+        b.mark_exhausted();
+        assert!(!b.try_increment());
+        assert_eq!(b.snapshot().scan_used, 0);
     }
 
     #[test]

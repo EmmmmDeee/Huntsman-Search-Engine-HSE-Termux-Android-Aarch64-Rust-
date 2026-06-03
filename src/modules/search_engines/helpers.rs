@@ -1291,19 +1291,35 @@ pub(super) fn extract_organisations_from_text(text: &str, terms: &[String]) -> V
         " Co.",
     ];
     let mut orgs = Vec::new();
-    let lower = text.to_lowercase();
+    let bytes = text.as_bytes();
     for suffix in &suffixes {
-        let sl = suffix.to_lowercase();
-        let mut from = 0;
-        while let Some(pos) = lower[from..].find(&sl) {
-            let abs = from + pos;
-            from = abs + sl.len();
-            // Walk backwards to find the start of the org name
-            let before = &text[..abs];
-            let name_start = before
+        // Case-insensitive search over the ORIGINAL `text`. We deliberately do
+        // NOT index `text` with byte offsets taken from `text.to_lowercase()`:
+        // to_lowercase() is not length-preserving (İ→i̇ 2→3 bytes, ẞ→ß), so such
+        // offsets can overshoot the end of `text` or split a code point — a
+        // `str` index panic, which under `panic="abort"` takes down the whole
+        // `serve` process on a hostile SERP snippet. The suffix is ASCII and
+        // begins with a space, so a match position `i` and its end are always
+        // valid char boundaries in `text`.
+        let sfx = suffix.as_bytes();
+        let mut i = 0;
+        while i + sfx.len() <= bytes.len() {
+            if !bytes[i..i + sfx.len()].eq_ignore_ascii_case(sfx) {
+                i += 1;
+                continue;
+            }
+            let end = i + sfx.len();
+            // Walk backwards to the start of the org name.
+            let before = &text[..i];
+            let mut name_start = before
                 .rfind([',', '.', ';', '(', '\n'])
-                .map_or(abs.saturating_sub(60), |i| i + 1);
-            let org = text[name_start..abs + suffix.len()].trim();
+                .map_or(i.saturating_sub(60), |d| d + 1);
+            // The `i-60` fallback may land mid-code-point; snap forward to a
+            // boundary so the slice below is always valid.
+            while name_start < i && !text.is_char_boundary(name_start) {
+                name_start += 1;
+            }
+            let org = text[name_start..end].trim();
             if org.len() >= 5
                 && org.starts_with(|c: char| c.is_ascii_uppercase())
                 && terms
@@ -1312,6 +1328,7 @@ pub(super) fn extract_organisations_from_text(text: &str, terms: &[String]) -> V
             {
                 orgs.push(org.to_string());
             }
+            i = end;
         }
     }
     orgs
@@ -1434,6 +1451,25 @@ pub(super) fn is_domain_char(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_orgs_does_not_panic_on_non_ascii_lowercase_divergence() {
+        // Regression: offsets were taken from text.to_lowercase() (not
+        // length-preserving: İ U+0130 is 2 bytes, lowercases to 3) and used to
+        // slice the original text → out-of-bounds / mid-codepoint str index
+        // panic, fatal under panic="abort". A hostile SERP snippet must not
+        // crash the scan; a normal org must still extract.
+        let terms = vec!["acme".to_string(), "pty".to_string()];
+        // Must not panic (İ before a company suffix is the original repro).
+        let _ = extract_organisations_from_text("İ Pty Ltd", &terms);
+        let _ = extract_organisations_from_text("ẞomething Inc and İ Pty Ltd", &terms);
+        // Normal ASCII extraction still works.
+        let got = extract_organisations_from_text("Contact ACME Pty Ltd today", &terms);
+        assert!(
+            got.iter().any(|o| o.contains("ACME Pty Ltd")),
+            "expected ACME Pty Ltd, got {got:?}"
+        );
+    }
 
     #[test]
     fn abn_validator_does_not_panic_on_leading_zero() {
