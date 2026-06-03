@@ -260,6 +260,53 @@ pub(super) fn is_generic_domain(domain: &str) -> bool {
     GENERIC.contains(&domain)
 }
 
+/// People-search / username-aggregator / lookup-tooling domains. These are the
+/// search's OWN instruments — the username dork ladder explicitly queries
+/// `site:peekyou.com`, `site:spokeo.com`, … — so a *bare* aggregator domain in
+/// the results is noise, never the target's own asset, and must not become a
+/// `Domain` finding. A *specific* profile page on one of them
+/// (`peekyou.com/<handle>`) is still emitted as a `Url` entity by the
+/// path-match gate; this only drops the bare-domain noise. Surfaced by a
+/// statistical pass over a live `kylo4kylo` run, where ~15 of 84 domains were
+/// such aggregators.
+pub(super) fn is_search_tooling_domain(domain: &str) -> bool {
+    const TOOLING: &[&str] = &[
+        // people-search aggregators
+        "411.com",
+        "anywho.com",
+        "beenverified.com",
+        "fastpeoplesearch.com",
+        "idcrawl.com",
+        "intelius.com",
+        "locatefamily.com",
+        "melissa.com",
+        "nuwber.com",
+        "peekyou.com",
+        "peoplefinder.com",
+        "peoplefinders.com",
+        "pipl.com",
+        "radaris.com",
+        "searchpeoplefree.com",
+        "spokeo.com",
+        "thatsthem.com",
+        "truepeoplesearch.com",
+        "usphonebook.com",
+        "whitepages.com",
+        // username-availability / cross-platform lookup tools
+        "check-username.com",
+        "checkusernames.com",
+        "instantusername.com",
+        "knowem.com",
+        "namecheckr.com",
+        "namechk.com",
+        "usernamegenerator.com",
+        "whatsmyname.app",
+    ];
+    let d = domain.trim().to_lowercase();
+    let d = d.strip_prefix("www.").unwrap_or(&d);
+    TOOLING.contains(&d)
+}
+
 pub(super) fn is_tracking_url(url: &str) -> bool {
     let lower = url.to_lowercase();
     lower.contains("r.search.yahoo.com")
