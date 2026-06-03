@@ -425,7 +425,31 @@ fi  # end PREBUILT guard — toolchain + clone + source build skipped when a pre
 step "Installing binary to $HSE_BIN_DIR/hse"
 
 [[ -n "$BUILT" && -x "$BUILT" ]] || die "internal: no binary to install (BUILT='$BUILT')"
-install -m 0755 "$BUILT" "$HSE_BIN_DIR/hse"
+
+# Existing-installation awareness: note whether a background server is already
+# running the OLD binary, so we can restart it onto the new one after verifying
+# (otherwise an upgrade silently keeps serving the previous version). hse-bg
+# (Termux) records a PID file; a hand-started `hse serve` is found via pgrep.
+RESTART_BG=0
+RESTART_BARE=0
+BG_PID_FILE="$HOME/.cache/hse-bg.pid"
+if [[ -f "$BG_PID_FILE" ]] && kill -0 "$(cat "$BG_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+    RESTART_BG=1
+    ok "Detected a running hse-bg server — will restart it onto the new build"
+elif command -v pgrep >/dev/null 2>&1 && pgrep -f '[h]se serve' >/dev/null 2>&1; then
+    RESTART_BARE=1
+    ok "Detected a running 'hse serve' — will flag it for restart"
+fi
+
+# Atomic swap: stage the new binary under a temp name on the SAME filesystem,
+# then rename(2) over the target. Rename is atomic and succeeds even while the
+# old `hse` is mid-execution (a live `hse serve` upgrade) — overwriting it in
+# place with `install` can fail with ETXTBSY or expose a half-written binary.
+TMP_BIN="$HSE_BIN_DIR/.hse.new.$$"
+install -m 0755 "$BUILT" "$TMP_BIN" \
+    || die "could not stage the new binary in $HSE_BIN_DIR (writable?)"
+mv -f "$TMP_BIN" "$HSE_BIN_DIR/hse" \
+    || { rm -f "$TMP_BIN"; die "could not move the new binary onto $HSE_BIN_DIR/hse"; }
 ok "Installed ($([[ "$PREBUILT" == "1" ]] && echo 'from prebuilt' || echo "built [$PROFILE]"))"
 
 # Self-bootstrapping prebuilt cache: copy a freshly-BUILT binary back to
@@ -648,6 +672,25 @@ step "Verifying installation"
 "$HSE_BIN_DIR/hse" --version
 echo
 "$HSE_BIN_DIR/hse" doctor
+
+# ─── Restart an already-running server onto the new binary ───────────────────
+# Completes the "all-in-one upgrade" contract: a re-install over a live server
+# leaves the new binary on disk but the old code in memory until something
+# restarts it. The hse-bg wrapper (rewritten above) is safe to bounce; a bare
+# foreground `hse serve` is left alone (the operator is watching it) with a hint.
+if [[ "${RESTART_BG:-0}" -eq 1 && -x "$HSE_BIN_DIR/hse-bg" ]]; then
+    step "Restarting background server onto the new build"
+    "$HSE_BIN_DIR/hse-bg" stop  >/dev/null 2>&1 || true
+    if "$HSE_BIN_DIR/hse-bg" start; then
+        ok "hse-bg restarted on hse $("$HSE_BIN_DIR/hse" --version 2>/dev/null | awk '{print $NF}')"
+    else
+        log_warn "Could not auto-restart hse-bg — run it yourself: hse-bg start"
+    fi
+elif [[ "${RESTART_BG:-0}" -eq 1 || "${RESTART_BARE:-0}" -eq 1 ]]; then
+    log_warn "A foreground 'hse serve' is still running the PREVIOUS binary."
+    hint "Restart it to pick up this upgrade:"
+    hint "  press Ctrl-C in its terminal, then re-run:  hse serve"
+fi
 
 # ─── Done ────────────────────────────────────────────────────────────────────
 echo
