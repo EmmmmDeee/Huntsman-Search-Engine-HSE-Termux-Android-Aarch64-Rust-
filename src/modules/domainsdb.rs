@@ -1,9 +1,16 @@
 //! domainsdb.info — free domain registration search (no key, unlimited).
 //!
-//! Endpoint: GET https://api.domainsdb.info/v1/domains/search?domain={query}&zone={tld}&limit=50
+//! Endpoint: GET https://api.domainsdb.info/v1/domains/search?domain={query}&zone={tld}&limit=20
 //!
-//! Searches registered domains matching a keyword. Useful for finding
+//! Searches registered domains matching a keyword — useful for finding
 //! related/typosquatting domains from an Organisation or FullName target.
+//!
+//! Both response fields are used: `update_date` is surfaced (a recently-updated
+//! look-alike domain is a live-threat signal), and the per-zone `total` gates a
+//! `broad-match` dampening — a keyword that matches hundreds of domains in one
+//! TLD is generic, so those hits are weakly related to the target and their
+//! confidence is reduced. The per-entry mapping lives in the pure
+//! [`build_domain_entity`] so it is unit-tested without a live API.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -18,17 +25,20 @@ use crate::core::{
 
 const SRC: &str = "domainsdb";
 
+/// A keyword matching more than this many domains in a single TLD is generic;
+/// its hits are keyword coincidences, not target-specific, so they are tagged
+/// `broad-match` and down-weighted.
+const BROAD_MATCH_THRESHOLD: u64 = 200;
+
 #[derive(Deserialize)]
 struct DbResp {
     #[serde(default)]
     domains: Vec<DomainEntry>,
     #[serde(default)]
-    #[allow(dead_code)]
     total: Option<u64>,
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct DomainEntry {
     #[serde(default)]
     domain: String,
@@ -40,6 +50,50 @@ struct DomainEntry {
     country: Option<String>,
     #[serde(default, rename = "isDead")]
     is_dead: Option<String>,
+}
+
+/// Trimmed, non-empty view of an optional string field.
+fn nonempty(o: &Option<String>) -> Option<&str> {
+    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Map one registered-domain record to a `Domain` entity. **Pure** (no
+/// network/IO). `broad_match` (from the zone's `total` exceeding
+/// [`BROAD_MATCH_THRESHOLD`]) flags + dampens generic keyword coincidences.
+/// Returns `None` for a blank domain.
+fn build_domain_entity(entry: &DomainEntry, broad_match: bool, scan_id: &str) -> Option<Entity> {
+    let domain = entry.domain.trim();
+    if domain.is_empty() {
+        return None;
+    }
+    let is_dead = entry.is_dead.as_deref() == Some("True");
+    // Live domain 0.55, dead 0.35; a broad keyword match is weakly related to
+    // the target, so dampen it (0.7×).
+    let mut conf = if is_dead { 0.35 } else { 0.55 };
+    if broad_match {
+        conf *= 0.7;
+    }
+
+    let mut e = Entity::new(EntityKind::Domain, domain, conf, scan_id);
+    e.tag("domainsdb");
+    if is_dead {
+        e.tag("dead-domain");
+    }
+    if broad_match {
+        e.tag("broad-match");
+    }
+    let mut ev = Evidence::new(SRC, format!("Registered domain: {domain}"));
+    if let Some(d) = nonempty(&entry.create_date) {
+        ev = ev.with_attr("created", d);
+    }
+    if let Some(d) = nonempty(&entry.update_date) {
+        ev = ev.with_attr("updated", d);
+    }
+    if let Some(c) = nonempty(&entry.country) {
+        ev = ev.with_attr("country", c);
+    }
+    e.add_evidence(ev);
+    Some(e)
 }
 
 pub struct DomainsDb;
@@ -130,26 +184,14 @@ impl Module for DomainsDb {
                 continue;
             };
 
+            let broad_match = data.total.is_some_and(|t| t > BROAD_MATCH_THRESHOLD);
             for entry in &data.domains {
-                if entry.domain.is_empty() || !seen.insert(entry.domain.clone()) {
+                if !seen.insert(entry.domain.trim().to_lowercase()) {
                     continue;
                 }
-                let is_dead = entry.is_dead.as_deref() == Some("True");
-                let conf = if is_dead { 0.35 } else { 0.55 };
-                let mut e = Entity::new(EntityKind::Domain, &entry.domain, conf, &ctx.scan_id);
-                e.tag("domainsdb");
-                if is_dead {
-                    e.tag("dead-domain");
+                if let Some(e) = build_domain_entity(entry, broad_match, &ctx.scan_id) {
+                    result.push(e);
                 }
-                let mut ev = Evidence::new(SRC, format!("Registered domain: {}", entry.domain));
-                if let Some(d) = entry.create_date.as_deref() {
-                    ev = ev.with_attr("created", d);
-                }
-                if let Some(c) = entry.country.as_deref() {
-                    ev = ev.with_attr("country", c);
-                }
-                e.add_evidence(ev);
-                result.push(e);
             }
         }
         Ok(result)
@@ -159,6 +201,11 @@ impl Module for DomainsDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(json: &str) -> DomainEntry {
+        serde_json::from_str(json).unwrap()
+    }
+
     #[test]
     fn accepts_domain_org_name() {
         let m = DomainsDb;
@@ -167,6 +214,7 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::FullName, "John Doe")));
         assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.2.3.4")));
     }
+
     #[test]
     fn cost_is_free() {
         assert!(matches!(
@@ -174,10 +222,68 @@ mod tests {
             crate::core::module::ModuleCost::Free
         ));
     }
+
     #[test]
     fn deser() {
         let j = r#"{"domains":[{"domain":"example.com","create_date":"2020-01-01","isDead":"False"}],"total":1}"#;
         let r: DbResp = serde_json::from_str(j).unwrap();
         assert_eq!(r.domains.len(), 1);
+        assert_eq!(r.total, Some(1));
+    }
+
+    #[test]
+    fn live_domain_surfaces_created_and_updated() {
+        let e = build_domain_entity(
+            &entry(
+                r#"{"domain":"acme-corp.com","create_date":"2019-03-01",
+                    "update_date":"2024-06-15","country":"US","isDead":"False"}"#,
+            ),
+            false,
+            "s",
+        )
+        .unwrap();
+        assert_eq!(e.kind, EntityKind::Domain);
+        assert!(e.has_tag("domainsdb") && !e.has_tag("dead-domain") && !e.has_tag("broad-match"));
+        assert!((e.confidence - 0.55).abs() < 1e-9);
+        let ev = &e.evidence[0];
+        assert_eq!(
+            ev.attributes.get("created").map(String::as_str),
+            Some("2019-03-01")
+        );
+        // `updated` — the field the struct-level allow used to bury.
+        assert_eq!(
+            ev.attributes.get("updated").map(String::as_str),
+            Some("2024-06-15")
+        );
+        assert_eq!(ev.attributes.get("country").map(String::as_str), Some("US"));
+    }
+
+    #[test]
+    fn dead_domain_is_tagged_and_lower_confidence() {
+        let e = build_domain_entity(
+            &entry(r#"{"domain":"gone.com","isDead":"True"}"#),
+            false,
+            "s",
+        )
+        .unwrap();
+        assert!(e.has_tag("dead-domain"));
+        assert!((e.confidence - 0.35).abs() < 1e-9);
+    }
+
+    #[test]
+    fn broad_match_dampens_and_tags() {
+        // A generic keyword (high `total`) → broad-match: tagged + 0.7× damped.
+        let e = build_domain_entity(&entry(r#"{"domain":"john-smith.com"}"#), true, "s").unwrap();
+        assert!(e.has_tag("broad-match"));
+        assert!((e.confidence - 0.55 * 0.7).abs() < 1e-9);
+        // Dead + broad stacks both penalties.
+        let dead = build_domain_entity(&entry(r#"{"domain":"x.com","isDead":"True"}"#), true, "s")
+            .unwrap();
+        assert!((dead.confidence - 0.35 * 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn blank_domain_is_skipped() {
+        assert!(build_domain_entity(&entry(r#"{"domain":"  "}"#), false, "s").is_none());
     }
 }
