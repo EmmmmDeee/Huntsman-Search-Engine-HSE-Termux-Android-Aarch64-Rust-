@@ -1,10 +1,29 @@
 //! Proxycurl LinkedIn profile extraction. Paid (Bearer Token).
 //!
-//! Endpoint: `GET https://nubela.co/proxycurl/api/v2/linkedin?url=https://linkedin.com/in/{target}`
-//! Auth:     Bearer Token (`HUNTSMAN_PROXYCURL_KEY`).
+//! Endpoints:
+//! - username / URL → `GET …/api/v2/linkedin?url=https://linkedin.com/in/{id}`
+//! - email          → `GET …/api/linkedin/profile/resolve/email?work_email=…`
 //!
-//! Extracts full employment history, education, certifications,
-//! and summary from LinkedIn profiles.
+//! Auth: Bearer Token (`HUNTSMAN_PROXYCURL_KEY`).
+//!
+//! Every field the paid API returns is mapped to an entity or evidence
+//! attribute — nothing harvested is discarded. The field → output mapping:
+//!
+//! | LinkedIn field                         | Output                              |
+//! |----------------------------------------|-------------------------------------|
+//! | `full_name` / `first`+`last`           | `Person` (name)                     |
+//! | `headline`,`occupation`,`summary`,…    | evidence attrs on the `Person`      |
+//! | `city`/`state`/`country_full_name`     | `Address` (+`country:` tag)         |
+//! | `experiences[].company`/`title`/dates/`location` | `Organisation` (+attrs)   |
+//! | `education[].school`/`degree`/`field`  | `education` attr on the `Person`    |
+//! | `personal_emails[]`                    | `Email` + derived non-freemail `Domain` |
+//! | `personal_numbers[]`                   | `Phone`                             |
+//!
+//! The whole field→entity mapping lives in the pure [`build_entities`] so it is
+//! unit-tested without a live API; `process` only owns URL construction, auth,
+//! transport, and error mapping.
+
+use std::collections::HashSet;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -15,10 +34,20 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::domains::is_freemail;
 use crate::util::http::{error_snippet, urlencode};
+use crate::util::str_util::truncate_safe;
 
 const KEY_ENV: &str = "HUNTSMAN_PROXYCURL_KEY";
 const SRC: &str = "proxycurl";
+
+/// Caps on per-profile output, keeping a single dump bounded.
+const MAX_EMAILS: usize = 3;
+const MAX_PHONES: usize = 3;
+const MAX_EXPERIENCES: usize = 5;
+const MAX_LISTED: usize = 3; // companies/schools surfaced inline on the Person
+/// Professional `summary` is a free-text bio; cap it before persisting.
+const SUMMARY_CAP: usize = 280;
 
 pub struct Proxycurl;
 
@@ -26,15 +55,12 @@ pub struct Proxycurl;
 struct LinkedInProfile {
     #[serde(default)]
     full_name: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     first_name: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     last_name: Option<String>,
     #[serde(default)]
     headline: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     summary: Option<String>,
     #[serde(default)]
@@ -71,7 +97,6 @@ struct Experience {
     starts_at: Option<DateField>,
     #[serde(default)]
     ends_at: Option<DateField>,
-    #[allow(dead_code)]
     #[serde(default)]
     location: Option<String>,
 }
@@ -80,10 +105,8 @@ struct Experience {
 struct Education {
     #[serde(default)]
     school: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     degree_name: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     field_of_study: Option<String>,
 }
@@ -104,6 +127,212 @@ impl DateField {
             _ => String::new(),
         }
     }
+}
+
+/// Trimmed, non-empty view of an optional string field.
+fn nonempty(o: &Option<String>) -> Option<&str> {
+    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+impl LinkedInProfile {
+    /// Best display name: prefer `full_name`, else compose `first`+`last`, else
+    /// whichever single part exists. The email-resolve endpoint frequently
+    /// returns only `first_name`/`last_name`, so the fallback is what makes that
+    /// path yield a `Person` at all. `None` when no usable name is present.
+    fn display_name(&self) -> Option<String> {
+        if let Some(n) = nonempty(&self.full_name).filter(|s| s.chars().count() >= 2) {
+            return Some(n.to_string());
+        }
+        match (nonempty(&self.first_name), nonempty(&self.last_name)) {
+            (Some(f), Some(l)) => Some(format!("{f} {l}")),
+            (Some(s), None) | (None, Some(s)) => Some(s.to_string()),
+            (None, None) => None,
+        }
+    }
+}
+
+impl Education {
+    /// `"School — Degree, Field"` (whichever parts are present), or `None` when
+    /// there is no school to anchor the entry.
+    fn describe(&self) -> Option<String> {
+        let school = nonempty(&self.school)?;
+        let detail: Vec<&str> = [nonempty(&self.degree_name), nonempty(&self.field_of_study)]
+            .into_iter()
+            .flatten()
+            .collect();
+        Some(if detail.is_empty() {
+            school.to_string()
+        } else {
+            format!("{school} — {}", detail.join(", "))
+        })
+    }
+}
+
+/// The registrable-ish domain of an email's local@domain, lowercased.
+fn email_domain(email: &str) -> Option<String> {
+    let domain = email.rsplit_once('@')?.1.trim().to_lowercase();
+    (domain.contains('.') && domain.len() >= 4).then_some(domain)
+}
+
+/// Build all entities from a parsed profile. **Pure** (no network / IO / clock)
+/// so every field→entity mapping and confidence is unit-tested directly.
+///
+/// Confidences encode source authority: a named LinkedIn profile is strong
+/// (0.85); a personal email is strong (0.80); a domain *derived* from that email
+/// is weaker (0.68); a self-reported location is soft (0.60).
+fn build_entities(profile: &LinkedInProfile, target: &Target, scan_id: &str) -> ModuleResult {
+    let mut result = ModuleResult::new();
+
+    // ── Person (the anchor) ───────────────────────────────────────────────
+    if let Some(name) = profile.display_name() {
+        let mut pe = Entity::new(EntityKind::Person, &name, 0.85, scan_id);
+        pe.tag("proxycurl");
+        pe.tag("linkedin");
+        let mut ev = Evidence::new(SRC, format!("LinkedIn profile: {name}"))
+            .with_attr("target", &target.value);
+        if let Some(h) = nonempty(&profile.headline) {
+            ev = ev.with_attr("headline", h);
+        }
+        if let Some(occ) = nonempty(&profile.occupation) {
+            ev = ev.with_attr("occupation", occ);
+        }
+        if let Some(pid) = nonempty(&profile.public_identifier) {
+            ev = ev.with_attr("linkedin_id", pid);
+        }
+        if let Some(c) = profile.connections {
+            ev = ev.with_attr("connections", c.to_string());
+        }
+        if let Some(summary) = nonempty(&profile.summary) {
+            ev = ev.with_attr("summary", truncate_safe(summary, SUMMARY_CAP));
+        }
+        let current: Vec<&str> = profile
+            .experiences
+            .iter()
+            .filter(|e| e.ends_at.is_none())
+            .filter_map(|e| nonempty(&e.company))
+            .take(MAX_LISTED)
+            .collect();
+        if !current.is_empty() {
+            ev = ev.with_attr("current_companies", current.join(", "));
+        }
+        if !profile.experiences.is_empty() {
+            ev = ev.with_attr("experience_count", profile.experiences.len().to_string());
+        }
+        let schools: Vec<String> = profile
+            .education
+            .iter()
+            .filter_map(Education::describe)
+            .take(MAX_LISTED)
+            .collect();
+        if !schools.is_empty() {
+            ev = ev.with_attr("education", schools.join("; "));
+        }
+        pe.add_evidence(ev);
+        result.push(pe);
+    }
+
+    // ── Address (needs ≥2 of city/state/country to be meaningful) ─────────
+    let loc_parts: Vec<&str> = [
+        nonempty(&profile.city),
+        nonempty(&profile.state),
+        nonempty(&profile.country_full_name),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if loc_parts.len() >= 2 {
+        let location = loc_parts.join(", ");
+        let mut ae = Entity::new(EntityKind::Address, &location, 0.60, scan_id);
+        ae.tag("proxycurl");
+        ae.tag("linkedin");
+        ae.tag("geoint");
+        if let Some(cc) = nonempty(&profile.country) {
+            ae.tag(format!("country:{}", cc.to_uppercase()));
+        }
+        ae.add_evidence(Evidence::new(SRC, format!("LinkedIn location: {location}")));
+        result.push(ae);
+    }
+
+    // ── Emails + their (non-freemail) domains — single deduped pass ────────
+    let mut seen_emails = HashSet::new();
+    let mut seen_domains = HashSet::new();
+    for email in profile
+        .personal_emails
+        .iter()
+        .map(|e| e.trim())
+        .filter(|e| e.contains('@'))
+    {
+        // Dedup case-insensitively, then cap the DISTINCT addresses.
+        if !seen_emails.insert(email.to_lowercase()) {
+            continue;
+        }
+        let mut ee = Entity::new(EntityKind::Email, email, 0.80, scan_id);
+        ee.tag("proxycurl");
+        ee.tag("linkedin");
+        ee.add_evidence(Evidence::new(SRC, "Personal email from LinkedIn"));
+        result.push(ee);
+
+        if let Some(domain) = email_domain(email)
+            && !is_freemail(&domain)
+            && seen_domains.insert(domain.clone())
+        {
+            let mut de = Entity::new(EntityKind::Domain, &domain, 0.68, scan_id);
+            de.tag("proxycurl");
+            de.tag("linkedin");
+            de.tag("derived");
+            de.add_evidence(Evidence::new(SRC, "Email domain from LinkedIn profile"));
+            result.push(de);
+        }
+
+        if seen_emails.len() >= MAX_EMAILS {
+            break;
+        }
+    }
+
+    // ── Phones ────────────────────────────────────────────────────────────
+    for phone in profile
+        .personal_numbers
+        .iter()
+        .map(|p| p.trim())
+        .filter(|p| p.len() >= 7)
+        .take(MAX_PHONES)
+    {
+        let mut phe = Entity::new(EntityKind::Phone, phone, 0.75, scan_id);
+        phe.tag("proxycurl");
+        phe.tag("linkedin");
+        phe.add_evidence(Evidence::new(SRC, "Phone from LinkedIn"));
+        result.push(phe);
+    }
+
+    // ── Organisations (employers) — title, dates, and job location ────────
+    for exp in profile.experiences.iter().take(MAX_EXPERIENCES) {
+        let Some(company) = nonempty(&exp.company).filter(|c| c.chars().count() >= 2) else {
+            continue;
+        };
+        let mut oe = Entity::new(EntityKind::Organisation, company, 0.65, scan_id);
+        oe.tag("proxycurl");
+        oe.tag("linkedin");
+        let mut ev = Evidence::new(SRC, format!("Employer: {company}"));
+        if let Some(title) = nonempty(&exp.title) {
+            ev = ev.with_attr("title", title);
+        }
+        if let Some(loc) = nonempty(&exp.location) {
+            ev = ev.with_attr("location", loc);
+        }
+        if let Some(start) = exp.starts_at.as_ref().map(DateField::to_string_approx)
+            && !start.is_empty()
+        {
+            ev = ev.with_attr("start_date", start);
+        }
+        match exp.ends_at.as_ref().map(DateField::to_string_approx) {
+            Some(end) if !end.is_empty() => ev = ev.with_attr("end_date", end),
+            _ => oe.tag("current-employer"),
+        }
+        oe.add_evidence(ev);
+        result.push(oe);
+    }
+
+    result
 }
 
 #[async_trait]
@@ -152,33 +381,8 @@ impl Module for Proxycurl {
             None => return Ok(ModuleResult::new()),
         };
 
-        let api_url = if target.kind == TargetKind::Email {
-            let email = target.value.trim();
-            if !email.contains('@') {
-                return Ok(ModuleResult::new());
-            }
-            format!(
-                "https://nubela.co/proxycurl/api/linkedin/profile/resolve/email?work_email={}",
-                urlencode(email),
-            )
-        } else {
-            let linkedin_url = if target.kind == TargetKind::Url {
-                let v = target.value.trim().to_lowercase();
-                if !v.contains("linkedin.com/in/") {
-                    return Ok(ModuleResult::new());
-                }
-                target.value.trim().to_string()
-            } else {
-                let username = target.value.trim();
-                if username.is_empty() || username.len() > 100 {
-                    return Ok(ModuleResult::new());
-                }
-                format!("https://linkedin.com/in/{username}")
-            };
-            format!(
-                "https://nubela.co/proxycurl/api/v2/linkedin?url={}",
-                urlencode(&linkedin_url),
-            )
+        let Some(api_url) = profile_url(target) else {
+            return Ok(ModuleResult::new());
         };
 
         let resp = ctx
@@ -210,157 +414,83 @@ impl Module for Proxycurl {
             .await
             .map_err(|e| Error::module(SRC, e.to_string()))?;
 
-        let mut result = ModuleResult::new();
-
-        if let Some(name) = profile.full_name.as_deref()
-            && name.len() >= 3
-        {
-            let mut pe = Entity::new(EntityKind::Person, name, 0.85, &ctx.scan_id);
-            pe.tag("proxycurl");
-            pe.tag("linkedin");
-            let mut ev = Evidence::new(SRC, format!("LinkedIn profile: {name}"))
-                .with_attr("target", &target.value);
-            if let Some(h) = profile.headline.as_deref() {
-                ev = ev.with_attr("headline", h);
-            }
-            if let Some(occ) = profile.occupation.as_deref() {
-                ev = ev.with_attr("occupation", occ);
-            }
-            if let Some(pid) = profile.public_identifier.as_deref() {
-                ev = ev.with_attr("linkedin_id", pid);
-            }
-            if let Some(c) = profile.connections {
-                ev = ev.with_attr("connections", c.to_string());
-            }
-            if !profile.experiences.is_empty() {
-                let current: Vec<&str> = profile
-                    .experiences
-                    .iter()
-                    .filter(|e| e.ends_at.is_none())
-                    .filter_map(|e| e.company.as_deref())
-                    .take(3)
-                    .collect();
-                if !current.is_empty() {
-                    ev = ev.with_attr("current_companies", current.join(", "));
-                }
-                ev = ev.with_attr("experience_count", profile.experiences.len().to_string());
-            }
-            if !profile.education.is_empty() {
-                let schools: Vec<&str> = profile
-                    .education
-                    .iter()
-                    .filter_map(|e| e.school.as_deref())
-                    .take(3)
-                    .collect();
-                if !schools.is_empty() {
-                    ev = ev.with_attr("education", schools.join(", "));
-                }
-            }
-            pe.add_evidence(ev);
-            result.push(pe);
-        }
-
-        let loc_parts: Vec<&str> = [
-            profile.city.as_deref(),
-            profile.state.as_deref(),
-            profile.country_full_name.as_deref(),
-        ]
-        .iter()
-        .filter_map(|p| *p)
-        .filter(|p| !p.is_empty())
-        .collect();
-
-        if loc_parts.len() >= 2 {
-            let location = loc_parts.join(", ");
-            let mut ae = Entity::new(EntityKind::Address, &location, 0.60, &ctx.scan_id);
-            ae.tag("proxycurl");
-            ae.tag("linkedin");
-            ae.tag("geoint");
-            ae.add_evidence(Evidence::new(SRC, format!("LinkedIn location: {location}")));
-            if let Some(cc) = profile.country.as_deref() {
-                ae.tag(format!("country:{}", cc.to_uppercase()));
-            }
-            result.push(ae);
-        }
-
-        for email in profile.personal_emails.iter().take(3) {
-            if email.contains('@') {
-                let mut ee = Entity::new(EntityKind::Email, email, 0.80, &ctx.scan_id);
-                ee.tag("proxycurl");
-                ee.tag("linkedin");
-                ee.add_evidence(Evidence::new(
-                    SRC,
-                    "Personal email from LinkedIn".to_string(),
-                ));
-                result.push(ee);
-            }
-        }
-
-        for email in &profile.personal_emails {
-            if let Some(domain) = email.split('@').nth(1) {
-                let domain = domain.trim().to_lowercase();
-                if domain.contains('.')
-                    && domain.len() >= 4
-                    && !crate::modules::email_parse::is_freemail(&domain)
-                {
-                    let mut de = Entity::new(EntityKind::Domain, &domain, 0.68, &ctx.scan_id);
-                    de.tag("proxycurl");
-                    de.tag("linkedin");
-                    de.tag("derived");
-                    de.add_evidence(Evidence::new(SRC, "Email domain from LinkedIn profile"));
-                    result.push(de);
-                }
-            }
-        }
-
-        for phone in profile.personal_numbers.iter().take(3) {
-            if phone.len() >= 7 {
-                let mut phe = Entity::new(EntityKind::Phone, phone, 0.75, &ctx.scan_id);
-                phe.tag("proxycurl");
-                phe.tag("linkedin");
-                phe.add_evidence(Evidence::new(SRC, "Phone from LinkedIn".to_string()));
-                result.push(phe);
-            }
-        }
-
-        for exp in profile.experiences.iter().take(5) {
-            if let Some(company) = exp.company.as_deref()
-                && company.len() >= 2
-            {
-                let mut oe = Entity::new(EntityKind::Organisation, company, 0.65, &ctx.scan_id);
-                oe.tag("proxycurl");
-                oe.tag("linkedin");
-                let mut ev = Evidence::new(SRC, format!("Employer: {company}"));
-                if let Some(title) = exp.title.as_deref() {
-                    ev = ev.with_attr("title", title);
-                }
-                if let Some(start) = &exp.starts_at {
-                    let s = start.to_string_approx();
-                    if !s.is_empty() {
-                        ev = ev.with_attr("start_date", s);
-                    }
-                }
-                if let Some(end) = &exp.ends_at {
-                    let e = end.to_string_approx();
-                    if !e.is_empty() {
-                        ev = ev.with_attr("end_date", e);
-                    }
-                } else {
-                    oe.tag("current-employer");
-                }
-                oe.add_evidence(ev);
-                result.push(oe);
-            }
-        }
-
-        Ok(result)
+        Ok(build_entities(&profile, target, &ctx.scan_id))
     }
+}
+
+/// The Proxycurl endpoint for a target, or `None` when the target can't address
+/// a LinkedIn profile (so the module no-ops rather than spending a paid call).
+fn profile_url(target: &Target) -> Option<String> {
+    match target.kind {
+        TargetKind::Email => {
+            let email = target.value.trim();
+            email.contains('@').then(|| {
+                format!(
+                    "https://nubela.co/proxycurl/api/linkedin/profile/resolve/email?work_email={}",
+                    urlencode(email),
+                )
+            })
+        }
+        TargetKind::Url => {
+            let v = target.value.trim();
+            v.to_lowercase()
+                .contains("linkedin.com/in/")
+                .then(|| linkedin_lookup_url(v))
+        }
+        TargetKind::Username => {
+            let username = target.value.trim();
+            (!username.is_empty() && username.len() <= 100)
+                .then(|| linkedin_lookup_url(&format!("https://linkedin.com/in/{username}")))
+        }
+        _ => None,
+    }
+}
+
+fn linkedin_lookup_url(linkedin_url: &str) -> String {
+    format!(
+        "https://nubela.co/proxycurl/api/v2/linkedin?url={}",
+        urlencode(linkedin_url),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn target() -> Target {
+        Target::new(TargetKind::Username, "janedoe")
+    }
+
+    fn full_profile() -> LinkedInProfile {
+        let raw = r#"{
+            "full_name": "Jane Doe",
+            "first_name": "Jane",
+            "last_name": "Doe",
+            "headline": "Software Engineer",
+            "summary": "Builds reliable systems.",
+            "city": "Melbourne",
+            "state": "Victoria",
+            "country_full_name": "Australia",
+            "country": "au",
+            "occupation": "Senior Software Engineer at Atlassian",
+            "public_identifier": "jane-doe",
+            "connections": 500,
+            "experiences": [
+                {"company": "Atlassian", "title": "Senior Engineer",
+                 "starts_at": {"year": 2020, "month": 1}, "location": "Sydney, Australia"},
+                {"company": "Canva", "title": "Engineer",
+                 "starts_at": {"year": 2017}, "ends_at": {"year": 2019, "month": 12}}
+            ],
+            "education": [
+                {"school": "University of Melbourne", "degree_name": "BSc", "field_of_study": "Computer Science"}
+            ],
+            "personal_emails": ["jane@acme-corp.com", "jane@gmail.com", "jane@acme-corp.com"],
+            "personal_numbers": ["+61412345678", "123"]
+        }"#;
+        serde_json::from_str(raw).unwrap()
+    }
+
+    // ── Module surface ──────────────────────────────────────────────────
     #[test]
     fn accepts_username_url_and_email() {
         let m = Proxycurl;
@@ -385,51 +515,219 @@ mod tests {
         assert_eq!(Proxycurl.max_timeout_ms(), 15_000);
     }
 
+    // ── URL construction (process's only non-pure decision) ─────────────
     #[test]
-    fn parse_response() {
-        let raw = r#"{
-            "full_name": "Jane Doe",
-            "first_name": "Jane",
-            "last_name": "Doe",
-            "headline": "Software Engineer",
-            "city": "Melbourne",
-            "state": "Victoria",
-            "country_full_name": "Australia",
-            "country": "AU",
-            "occupation": "Senior Software Engineer at Atlassian",
-            "connections": 500,
-            "experiences": [
-                {"company": "Atlassian", "title": "Senior Engineer", "starts_at": {"year": 2020, "month": 1}}
-            ],
-            "education": [
-                {"school": "University of Melbourne", "degree_name": "BSc", "field_of_study": "CS"}
-            ],
-            "personal_emails": ["jane@example.com"],
-            "personal_numbers": ["+61412345678"]
-        }"#;
-        let r: LinkedInProfile = serde_json::from_str(raw).unwrap();
-        assert_eq!(r.full_name.as_deref(), Some("Jane Doe"));
-        assert_eq!(r.country.as_deref(), Some("AU"));
-        assert_eq!(r.experiences.len(), 1);
-        assert_eq!(r.personal_emails.len(), 1);
+    fn profile_url_per_kind() {
+        let email = profile_url(&Target::new(TargetKind::Email, "a@b.com")).unwrap();
+        assert!(email.contains("resolve/email?work_email="));
+        let url = profile_url(&Target::new(TargetKind::Url, "https://linkedin.com/in/x")).unwrap();
+        assert!(url.contains("api/v2/linkedin?url="));
+        let user = profile_url(&Target::new(TargetKind::Username, "x")).unwrap();
+        assert!(user.contains("linkedin.com%2Fin%2Fx"));
+        // No-op targets spend no paid call.
+        assert!(profile_url(&Target::new(TargetKind::Email, "not-an-email")).is_none());
+        assert!(profile_url(&Target::new(TargetKind::Url, "https://twitter.com/x")).is_none());
+        assert!(profile_url(&Target::new(TargetKind::Username, "")).is_none());
+        assert!(profile_url(&Target::new(TargetKind::Domain, "x.com")).is_none());
+    }
+
+    // ── Pure parsing helpers ────────────────────────────────────────────
+    #[test]
+    fn date_field_to_string() {
+        let mk = |y, m| DateField { year: y, month: m };
+        assert_eq!(mk(Some(2020), Some(3)).to_string_approx(), "2020-03");
+        assert_eq!(mk(Some(2020), None).to_string_approx(), "2020");
+        assert_eq!(mk(None, None).to_string_approx(), "");
     }
 
     #[test]
-    fn date_field_to_string() {
-        let d = DateField {
-            year: Some(2020),
-            month: Some(3),
+    fn display_name_prefers_full_then_falls_back() {
+        let mk = |full: Option<&str>, f: Option<&str>, l: Option<&str>| {
+            let mut p: LinkedInProfile = serde_json::from_str("{}").unwrap();
+            p.full_name = full.map(String::from);
+            p.first_name = f.map(String::from);
+            p.last_name = l.map(String::from);
+            p.display_name()
         };
-        assert_eq!(d.to_string_approx(), "2020-03");
-        let d2 = DateField {
-            year: Some(2020),
-            month: None,
+        assert_eq!(
+            mk(Some("Jane Q. Doe"), None, None).as_deref(),
+            Some("Jane Q. Doe")
+        );
+        // full_name absent → compose first+last (the email-resolve case).
+        assert_eq!(
+            mk(None, Some("Jane"), Some("Doe")).as_deref(),
+            Some("Jane Doe")
+        );
+        assert_eq!(mk(None, Some("Jane"), None).as_deref(), Some("Jane"));
+        assert_eq!(mk(None, None, Some("Doe")).as_deref(), Some("Doe"));
+        assert_eq!(mk(None, None, None), None);
+        // blanks/whitespace are not a name.
+        assert_eq!(mk(Some("   "), None, None), None);
+        // short multibyte names are accepted (byte-length would have rejected).
+        assert_eq!(mk(Some("李明"), None, None).as_deref(), Some("李明"));
+    }
+
+    #[test]
+    fn education_describe_combines_available_parts() {
+        let mk = |s: Option<&str>, d: Option<&str>, f: Option<&str>| {
+            Education {
+                school: s.map(String::from),
+                degree_name: d.map(String::from),
+                field_of_study: f.map(String::from),
+            }
+            .describe()
         };
-        assert_eq!(d2.to_string_approx(), "2020");
-        let d3 = DateField {
-            year: None,
-            month: None,
-        };
-        assert_eq!(d3.to_string_approx(), "");
+        assert_eq!(
+            mk(Some("MIT"), Some("PhD"), Some("CS")).as_deref(),
+            Some("MIT — PhD, CS")
+        );
+        assert_eq!(
+            mk(Some("MIT"), Some("PhD"), None).as_deref(),
+            Some("MIT — PhD")
+        );
+        assert_eq!(mk(Some("MIT"), None, None).as_deref(), Some("MIT"));
+        assert_eq!(mk(None, Some("PhD"), Some("CS")), None); // no school → no entry
+    }
+
+    #[test]
+    fn email_domain_extracts_registrable() {
+        assert_eq!(
+            email_domain("a@acme-corp.com").as_deref(),
+            Some("acme-corp.com")
+        );
+        assert_eq!(
+            email_domain("a@SUB.Example.COM").as_deref(),
+            Some("sub.example.com")
+        );
+        assert_eq!(email_domain("no-at-sign"), None);
+        assert_eq!(email_domain("a@x"), None); // no dot / too short
+    }
+
+    // ── The core: build_entities maps every field, with no waste ─────────
+    #[test]
+    fn build_entities_extracts_full_profile() {
+        let r = build_entities(&full_profile(), &target(), "scan");
+        let by =
+            |k: EntityKind| -> Vec<&Entity> { r.entities.iter().filter(|e| e.kind == k).collect() };
+
+        // Person, with EVERY harvested attribute (incl. summary + education
+        // degree/field — the fields the old code discarded).
+        let person = by(EntityKind::Person);
+        assert_eq!(person.len(), 1);
+        let pe = person[0];
+        assert_eq!(pe.value, "Jane Doe");
+        let ev = &pe.evidence[0];
+        assert_eq!(
+            ev.attributes.get("headline").map(String::as_str),
+            Some("Software Engineer")
+        );
+        assert_eq!(
+            ev.attributes.get("summary").map(String::as_str),
+            Some("Builds reliable systems.")
+        );
+        assert_eq!(
+            ev.attributes.get("linkedin_id").map(String::as_str),
+            Some("jane-doe")
+        );
+        assert_eq!(
+            ev.attributes.get("connections").map(String::as_str),
+            Some("500")
+        );
+        assert_eq!(
+            ev.attributes.get("current_companies").map(String::as_str),
+            Some("Atlassian")
+        );
+        assert_eq!(
+            ev.attributes.get("experience_count").map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            ev.attributes.get("education").map(String::as_str),
+            Some("University of Melbourne — BSc, Computer Science")
+        );
+
+        // Address from ≥2 location parts, with an uppercased country tag.
+        let addr = by(EntityKind::Address);
+        assert_eq!(addr.len(), 1);
+        assert_eq!(addr[0].value, "Melbourne, Victoria, Australia");
+        assert!(addr[0].has_tag("country:AU"));
+
+        // Emails capped + their domains deduped; freemail domain dropped.
+        let emails = by(EntityKind::Email);
+        assert_eq!(
+            emails.len(),
+            2,
+            "two distinct addresses (3rd is a dup of #1)"
+        );
+        let domains = by(EntityKind::Domain);
+        assert_eq!(
+            domains.len(),
+            1,
+            "acme-corp.com once; gmail.com is freemail"
+        );
+        assert_eq!(domains[0].value, "acme-corp.com");
+
+        // Phones: the 7+ digit number only.
+        let phones = by(EntityKind::Phone);
+        assert_eq!(phones.len(), 1);
+        assert_eq!(phones[0].value, "+61412345678");
+
+        // Organisations: both employers; current one tagged; job LOCATION kept.
+        let orgs = by(EntityKind::Organisation);
+        assert_eq!(orgs.len(), 2);
+        let atlassian = orgs.iter().find(|e| e.value == "Atlassian").unwrap();
+        assert!(atlassian.has_tag("current-employer"));
+        assert_eq!(
+            atlassian.evidence[0]
+                .attributes
+                .get("location")
+                .map(String::as_str),
+            Some("Sydney, Australia")
+        );
+        assert_eq!(
+            atlassian.evidence[0]
+                .attributes
+                .get("start_date")
+                .map(String::as_str),
+            Some("2020-01")
+        );
+        let canva = orgs.iter().find(|e| e.value == "Canva").unwrap();
+        assert!(!canva.has_tag("current-employer"));
+        assert_eq!(
+            canva.evidence[0]
+                .attributes
+                .get("end_date")
+                .map(String::as_str),
+            Some("2019-12")
+        );
+    }
+
+    #[test]
+    fn build_entities_empty_profile_yields_nothing() {
+        let p: LinkedInProfile = serde_json::from_str("{}").unwrap();
+        assert!(build_entities(&p, &target(), "scan").entities.is_empty());
+    }
+
+    #[test]
+    fn build_entities_resolves_name_from_first_last_only() {
+        // The email-resolve endpoint shape: no full_name, just first/last.
+        let p: LinkedInProfile =
+            serde_json::from_str(r#"{"first_name":"Sam","last_name":"Vimes"}"#).unwrap();
+        let r = build_entities(&p, &target(), "scan");
+        let person: Vec<_> = r
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Person)
+            .collect();
+        assert_eq!(person.len(), 1);
+        assert_eq!(person[0].value, "Sam Vimes");
+    }
+
+    #[test]
+    fn build_entities_single_location_part_is_not_an_address() {
+        let p: LinkedInProfile =
+            serde_json::from_str(r#"{"full_name":"A B","country_full_name":"Australia"}"#).unwrap();
+        let r = build_entities(&p, &target(), "scan");
+        assert!(!r.entities.iter().any(|e| e.kind == EntityKind::Address));
     }
 }
