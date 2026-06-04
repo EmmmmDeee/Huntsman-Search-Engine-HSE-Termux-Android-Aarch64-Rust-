@@ -735,18 +735,33 @@ impl ScanEngine {
                 {
                     continue;
                 }
-                // Don't expand an *incidentally-discovered* platform/mega-domain
-                // (twitter.com, pinterest.com, …): it's the haystack a profile
-                // sits in, not a lead — deep-expanding it maps the PLATFORM's own
-                // DNS/mail infrastructure (NS/MX/SOA → dozens of generic domains)
-                // instead of the target, and burns the round budget that should
-                // go to target-specific enrichment. Still expand a mega-domain
-                // when it IS the seed (you're investigating that property itself).
-                if tk == TargetKind::Domain && crate::core::scan::is_mega_domain(&entity.value) {
+                // Don't deep-expand *incidentally-discovered* haystack
+                // infrastructure — it maps a platform/CDN/provider's own estate,
+                // not the subject, and burns the round budget that should go to
+                // target-specific enrichment:
+                //   • a non-central DOMAIN — a mega/social platform
+                //     (twitter.com, …) or shared mail/DNS/registrar infra
+                //     (sendgrid.net, secureserver.net, ns*.dnsmadeeasy.com), whose
+                //     NS/MX/SOA fan out into dozens of generic provider domains;
+                //   • a CDN-edge IP — a Cloudflare/Fastly anycast address whose
+                //     reverse-IP lookup returns thousands of co-tenant strangers
+                //     (a real scan pulled 480+ co-hosted domains through two).
+                // Still expand when the candidate IS the seed (you're
+                // investigating that property itself).
+                {
                     let strip = |s: &str| s.trim().trim_start_matches("www.").to_ascii_lowercase();
-                    let candidate_is_seed = seed.kind == TargetKind::Domain
-                        && strip(&seed.value) == strip(&entity.value);
-                    if !candidate_is_seed {
+                    let candidate_is_seed =
+                        seed.kind == tk && strip(&seed.value) == strip(&entity.value);
+                    let is_incidental_infra = match tk {
+                        TargetKind::Domain => {
+                            crate::core::scan::is_noncentral_domain(&entity.value)
+                        }
+                        TargetKind::IpAddress => {
+                            crate::core::validation::is_cdn_edge_ip(&entity.value)
+                        }
+                        _ => false,
+                    };
+                    if is_incidental_infra && !candidate_is_seed {
                         continue;
                     }
                 }

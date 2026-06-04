@@ -1222,18 +1222,85 @@ pub fn corroboration_prior(source_count: u32) -> f64 {
 /// such a domain's expansion weight and (in the engine) to skip expanding one
 /// that was only *incidentally* discovered, so a person/profile scan doesn't
 /// burn rounds mapping a platform's own DNS/mail infrastructure.
-pub(crate) fn is_mega_domain(domain: &str) -> bool {
+/// Registrable-suffix match: `d == m` or `d` ends with `.m` (www-stripped).
+fn matches_domain_suffix(domain: &str, list: &[&str]) -> bool {
     let d = domain.trim().to_lowercase();
     let d = d.strip_prefix("www.").unwrap_or(&d);
-    MEGA_DOMAINS.iter().any(|m| {
+    list.iter().any(|m| {
         d == *m
             || (d.len() > m.len() && d.as_bytes()[d.len() - m.len() - 1] == b'.' && d.ends_with(m))
     })
 }
 
-fn domain_expansion_factor(domain: &str) -> f64 {
-    if is_mega_domain(domain) { 0.15 } else { 1.0 }
+pub(crate) fn is_mega_domain(domain: &str) -> bool {
+    matches_domain_suffix(domain, MEGA_DOMAINS)
 }
+
+/// Shared third-party infrastructure (managed DNS, registrar control-plane, CDN
+/// apexes, ESP/transactional mail) that surfaces via NS/MX/SOA/reverse lookups
+/// but is incidental to any subject — `ns10.dnsmadeeasy.com`,
+/// `cns1.secureserver.net`, `u123.sendgrid.net`, `ns-664.awsdns-19.net`, … map
+/// the provider's estate, not the target, so they are never worth deep-expanding.
+pub(crate) fn is_infra_domain(domain: &str) -> bool {
+    let d = domain.trim().to_lowercase();
+    let d = d.strip_prefix("www.").unwrap_or(&d);
+    // AWS Route 53 nameservers — ns-N.awsdns-NN.{com,net,org,co.uk} — whose root
+    // varies with the shard number, so a plain suffix list can't catch them.
+    if d.contains(".awsdns-") || d.starts_with("awsdns-") {
+        return true;
+    }
+    matches_domain_suffix(d, INFRA_DOMAINS)
+}
+
+/// Either a mega/social platform or shared infrastructure — the haystack a lead
+/// sits in, not a lead itself. The engine skips these as incidental (non-seed)
+/// expansion targets so a scan doesn't map a provider's whole estate.
+pub(crate) fn is_noncentral_domain(domain: &str) -> bool {
+    is_mega_domain(domain) || is_infra_domain(domain)
+}
+
+fn domain_expansion_factor(domain: &str) -> f64 {
+    if is_noncentral_domain(domain) {
+        0.15
+    } else {
+        1.0
+    }
+}
+
+/// Shared infrastructure providers (see [`is_infra_domain`]). Suffix-matched.
+const INFRA_DOMAINS: &[&str] = &[
+    // Managed DNS & nameserver infrastructure
+    "dnsmadeeasy.com",
+    "nsone.net",
+    "ultradns.net",
+    "akam.net",
+    "akamaiedge.net",
+    "akamai.net",
+    "edgekey.net",
+    "edgesuite.net",
+    // Registrar / hosting control-plane
+    "secureserver.net",
+    "domaincontrol.com",
+    "registrar-servers.com",
+    // CDN apex roots (edge IPs are gated by validation::is_cdn_edge_ip)
+    "cloudfront.net",
+    "fastly.net",
+    "fastlylb.net",
+    // ESP / transactional mail
+    "sendgrid.net",
+    "sendgrid.com",
+    "mailgun.org",
+    "mandrillapp.com",
+    "sparkpostmail.com",
+    "amazonses.com",
+    "mcsv.net",
+    "mcdlv.net",
+    "rsgsv.net",
+    // Hosted-mail security gateways
+    "mimecast.com",
+    "pphosted.com",
+    "messagelabs.com",
+];
 
 const MEGA_DOMAINS: &[&str] = &[
     // Major platforms & social media
@@ -1595,6 +1662,28 @@ mod tests {
             "facebookx.com",
         ] {
             assert!(!is_mega_domain(d), "{d} must NOT be a mega-domain");
+        }
+    }
+
+    #[test]
+    fn is_infra_domain_matches_shared_providers() {
+        // The shared mail/DNS/registrar infra that flooded the real scan.
+        for d in [
+            "secureserver.net",
+            "cns1.secureserver.net",
+            "u10020310.ct.sendgrid.net",
+            "ns10.dnsmadeeasy.com",
+            "a1-245.akam.net",
+            "ns-664.awsdns-19.net",    // AWS Route 53 (varying shard root)
+            "ns-1778.awsdns-30.co.uk", // …including the co.uk shard
+            "MIMECAST.COM",
+        ] {
+            assert!(is_infra_domain(d), "{d} should be shared infra");
+            assert!(is_noncentral_domain(d), "{d} should be non-central");
+        }
+        // A subject's own domain (even on a normal registrar) is NOT infra.
+        for d in ["target-company.com.au", "johndoe.org", "acme-widgets.com"] {
+            assert!(!is_infra_domain(d), "{d} must NOT be shared infra");
         }
     }
 
