@@ -229,11 +229,17 @@ impl Module for EmployerPivot {
 }
 
 fn domain_for_target(t: &Target) -> Option<String> {
-    match t.kind {
-        TargetKind::Email => t.value.rsplit_once('@').map(|(_, d)| d.to_lowercase()),
-        TargetKind::Domain => Some(t.value.trim().to_lowercase()),
+    // Email and Domain are normalised identically — trimmed + lowercased — and a
+    // blank result is rejected. The old Email arm skipped the trim and could
+    // return an empty string for a value like `user@`, which then built
+    // malformed fetch URLs (`https://example.com /contact`, `https:///contact`).
+    let raw = match t.kind {
+        TargetKind::Email => t.value.rsplit_once('@').map(|(_, d)| d),
+        TargetKind::Domain => Some(t.value.as_str()),
         _ => None,
-    }
+    }?;
+    let domain = raw.trim().to_lowercase();
+    (!domain.is_empty()).then_some(domain)
 }
 
 fn extract_emails(text: &str, employer_domain: &str) -> Vec<String> {
@@ -297,5 +303,88 @@ mod tests {
         assert!(v.contains(&"info@acme.com".to_string()));
         assert!(v.contains(&"sales@acme.com".to_string()));
         assert!(!v.iter().any(|e| e.ends_with("@example.com")));
+    }
+
+    #[test]
+    fn domain_for_email_is_trimmed_and_lowercased() {
+        let t = Target::new(TargetKind::Email, "Person@Example.COM");
+        assert_eq!(domain_for_target(&t).as_deref(), Some("example.com"));
+        // Leading/trailing whitespace around the domain part is stripped — the
+        // bug the old Email arm left in (it lacked the Domain arm's trim()).
+        let spaced = Target::new(TargetKind::Email, "p@ Example.com ");
+        assert_eq!(domain_for_target(&spaced).as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn domain_for_email_rejects_empty_or_missing_domain() {
+        // `user@` has no domain part → None (previously Some("") → malformed URLs).
+        assert_eq!(
+            domain_for_target(&Target::new(TargetKind::Email, "user@")),
+            None
+        );
+        // No `@` at all → None.
+        assert_eq!(
+            domain_for_target(&Target::new(TargetKind::Email, "notanemail")),
+            None
+        );
+    }
+
+    #[test]
+    fn domain_for_domain_target_trims_and_lowercases() {
+        let t = Target::new(TargetKind::Domain, "  ACME.com  ");
+        assert_eq!(domain_for_target(&t).as_deref(), Some("acme.com"));
+    }
+
+    #[test]
+    fn domain_for_unsupported_kind_is_none() {
+        assert_eq!(
+            domain_for_target(&Target::new(TargetKind::IpAddress, "1.2.3.4")),
+            None
+        );
+    }
+
+    #[test]
+    fn profile_urls_match_known_platforms_and_trim_trailing_punctuation() {
+        let text = "see https://www.linkedin.com/in/jane-doe/ and \
+                    https://twitter.com/acme, plus https://example.com/x ignored";
+        let urls = extract_profile_urls(text);
+        // Trailing '/' is trimmed; the comma is never part of the path class.
+        assert!(urls.contains(&"https://www.linkedin.com/in/jane-doe".to_string()));
+        assert!(urls.contains(&"https://twitter.com/acme".to_string()));
+        // A non-listed domain is not a profile link.
+        assert!(!urls.iter().any(|u| u.contains("example.com")));
+    }
+
+    #[test]
+    fn canonical_address_includes_level_and_unit_when_present() {
+        let a = address_au::AuAddress {
+            full: "ignored".into(),
+            level: Some("Level 5".into()),
+            unit: Some("12".into()),
+            street_number: "100".into(),
+            street: "King St".into(),
+            suburb: "Sydney".into(),
+            state: "NSW".into(),
+            postcode: "2000".into(),
+        };
+        assert_eq!(
+            canonical_address(&a),
+            "Level 5, 12/100 King St, Sydney NSW 2000"
+        );
+    }
+
+    #[test]
+    fn canonical_address_omits_absent_optional_parts() {
+        let a = address_au::AuAddress {
+            full: "ignored".into(),
+            level: None,
+            unit: None,
+            street_number: "1".into(),
+            street: "Main Rd".into(),
+            suburb: "Perth".into(),
+            state: "WA".into(),
+            postcode: "6000".into(),
+        };
+        assert_eq!(canonical_address(&a), "1 Main Rd, Perth WA 6000");
     }
 }
