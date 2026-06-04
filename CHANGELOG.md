@@ -179,6 +179,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **AU-031 "malicious adjacency" no longer explodes on shared infrastructure.** A
+  real name-scan produced **883 correlations of which 792 (90%) were AU-031** —
+  driven by just **four** flagged shared-infra parents: two Cloudflare CDN IPs
+  (271 + 249 co-hosted domains) and two ESP/mail domains (`secureserver.net` 146,
+  `sendgrid.net` 122). Because the rule fired once per benign↔bad edge, every
+  unrelated site sharing a flagged Cloudflare IP became its own "adjacent to
+  known-bad" row, burying the genuine findings (breach hits, geo-convergence,
+  confirmed profiles). AU-031 is now **fan-out aware**: a flagged node with more
+  than 8 distinct benign neighbours is treated as shared hosting/CDN/ESP and
+  collapses to ONE aggregated Medium finding (with a sampled uid set + the full
+  count); dedicated infra (≤ 8 neighbours) still fires per-neighbour at High. On
+  that scan this takes AU-031 from **792 → ~8** correlations and the dossier from
+  **883 → ~99**, with every genuine correlation preserved. Deterministic
+  (BTreeMap-ordered); +1 regression test.
 - **`github_user`'s `top_event_types` finding was non-reproducible.** The recent-
   activity summary ranked event types from a `HashMap` by count with no tiebreak,
   so tied counts (and thus which types landed in the top 3, and their order) came
