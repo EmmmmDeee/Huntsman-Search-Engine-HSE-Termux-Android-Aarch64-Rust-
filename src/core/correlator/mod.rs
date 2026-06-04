@@ -1055,6 +1055,19 @@ mod tests {
         assert_eq!(r[0].rule_id, "AU-008");
     }
 
+    #[test]
+    fn au008_benign_infra_verdict_vetoes_exposed_service() {
+        // The user's real false positive: a Cloudflare edge IP tagged
+        // `vulnerable` by a shared-edge CVE scan but catalogued benign by
+        // GreyNoise must not be reported as an exposed service.
+        let e = tagged(
+            EntityKind::IpAddress,
+            "104.20.37.187",
+            &["vulnerable", "greynoise-benign"],
+        );
+        assert!(rule_au_008_exposed_service(&[e], "s", 0).is_empty());
+    }
+
     // ── AU-009 ──────────────────────────────────────────────────────────
 
     #[test]
@@ -1858,6 +1871,61 @@ mod tests {
         let r3 = rule_au_031_malicious_adjacency(&entities[..4], &rels[..3], "s", 0);
         assert_eq!(r3.len(), 3);
         assert!(r3.iter().all(|c| c.severity == Severity::High));
+    }
+
+    #[test]
+    fn au031_benign_infra_verdict_vetoes_adjacency() {
+        use crate::core::relation::{Relation, RelationKind};
+        // The real case: a Cloudflare edge IP tagged BOTH `vulnerable` (CVE scan
+        // of the shared edge) AND `greynoise-riot` (catalogued benign). The
+        // GreyNoise verdict wins — no adjacency fires at all (not exploded, not
+        // aggregated), and the explosion is killed at its root, not its symptom.
+        let bad = tagged(
+            EntityKind::IpAddress,
+            "104.20.37.187",
+            &["vulnerable", "greynoise-riot"],
+        );
+        let mut entities = vec![bad.clone()];
+        let mut rels = Vec::new();
+        for i in 0..30 {
+            let d = tagged(EntityKind::Domain, &format!("site{i}.example"), &[]);
+            rels.push(Relation::new(
+                d.uid.clone(),
+                bad.uid.clone(),
+                RelationKind::DerivedFrom,
+                0.8,
+                "s",
+            ));
+            entities.push(d);
+        }
+        assert!(
+            rule_au_031_malicious_adjacency(&entities, &rels, "s", 0).is_empty(),
+            "a GreyNoise-benign shared edge must not anchor adjacency"
+        );
+
+        // A genuine high-fan-out MALICIOUS cluster (no benign verdict) stays
+        // loud: aggregated, but High — not silently downgraded.
+        let evil = tagged(EntityKind::Domain, "evil.apex", &["malicious"]);
+        let mut ents = vec![evil.clone()];
+        let mut er = Vec::new();
+        for i in 0..20 {
+            let s = tagged(EntityKind::Domain, &format!("n{i}.evil.apex"), &[]);
+            er.push(Relation::new(
+                s.uid.clone(),
+                evil.uid.clone(),
+                RelationKind::SubdomainOf,
+                0.8,
+                "s",
+            ));
+            ents.push(s);
+        }
+        let rm = rule_au_031_malicious_adjacency(&ents, &er, "s", 0);
+        assert_eq!(rm.len(), 1);
+        assert_eq!(
+            rm[0].severity,
+            Severity::High,
+            "malicious cluster stays High"
+        );
     }
 
     // ── AU-032 (graph-aware: co-location cluster) ───────────────────────

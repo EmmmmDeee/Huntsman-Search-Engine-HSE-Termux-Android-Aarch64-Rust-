@@ -16,6 +16,28 @@ fn tagged_matching_sources<'a>(entity: &'a Entity, allowed: &[&str]) -> HashSet<
         .collect()
 }
 
+/// Authoritative "known-benign infrastructure" verdicts — GreyNoise RIOT (a
+/// catalogued benign service: a CDN/cloud/SaaS edge) and GreyNoise's `benign`
+/// classification. Both are IP-level.
+///
+/// When a node carries one of these, the blocklist/scanner tags it ALSO carries
+/// (`vulnerable`, `threat-intel`, `malicious`, `blocklisted`, …) are shared-edge
+/// or scan artefacts, not a real threat: a Cloudflare anycast IP picks up
+/// `vulnerable` from a CVE scan of the *shared* edge while GreyNoise correctly
+/// catalogues it RIOT, and an emitted-on-every-co-hosted-domain explosion
+/// follows. A benign verdict therefore VETOES those tags for the threat
+/// correlations (AU-004/008/015/031) — the data's own ground truth, rather than
+/// inferring "shared infra" from edge fan-out. Because the veto tags are IP-only,
+/// a malicious *domain* behind a CDN is unaffected (it carries no benign
+/// verdict); only the shared-edge IP is exonerated.
+const BENIGN_INFRA_TAGS: &[&str] = &["greynoise-riot", "greynoise-benign"];
+
+/// True if `e` carries an authoritative known-benign-infrastructure verdict that
+/// vetoes bad-infra tags for threat classification (see [`BENIGN_INFRA_TAGS`]).
+fn is_benign_infra(e: &Entity) -> bool {
+    BENIGN_INFRA_TAGS.iter().any(|t| e.has_tag(t))
+}
+
 pub(super) fn rule_au_001_multi_breach(
     entities: &[Entity],
     scan_id: &str,
@@ -162,7 +184,9 @@ pub(super) fn rule_au_004_malicious_infrastructure(
                 EntityKind::Domain | EntityKind::IpAddress | EntityKind::Url
             )
         })
-        .filter(|e| e.has_tag("malicious"))
+        // A GreyNoise RIOT/benign verdict vetoes a `malicious` tag picked up on
+        // the same (shared-edge) IP from a weaker source.
+        .filter(|e| e.has_tag("malicious") && !is_benign_infra(e))
         .map(|e| Correlation {
             rule_id: "AU-004".into(),
             rule_name: "Malicious infrastructure".into(),
@@ -288,7 +312,9 @@ pub(super) fn rule_au_008_exposed_service(
     entities
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::Domain | EntityKind::IpAddress))
-        .filter(|e| EXPOSURE_TAGS.iter().any(|t| e.has_tag(t)))
+        // GreyNoise RIOT/benign exonerates a shared CDN/cloud edge that a CVE
+        // scanner tagged `vulnerable` — don't report it as an exposed service.
+        .filter(|e| EXPOSURE_TAGS.iter().any(|t| e.has_tag(t)) && !is_benign_infra(e))
         .map(|e| {
             let hits: Vec<&str> = EXPOSURE_TAGS
                 .iter()
@@ -528,7 +554,9 @@ pub(super) fn rule_au_015_threat_intel_hit(
 
     entities
         .iter()
-        .filter(|e| e.has_tag("threat-intel"))
+        // A GreyNoise RIOT/benign IP that a reputation feed also flagged is a
+        // shared-edge false positive — exonerate it.
+        .filter(|e| e.has_tag("threat-intel") && !is_benign_infra(e))
         .map(|e| {
             let sources: std::collections::BTreeSet<&str> = e
                 .evidence
@@ -1499,16 +1527,18 @@ const ADJACENCY_BAD_TAGS: &[&str] = &["malicious", "threat-intel", "vulnerable"]
 /// derived from a flagged node during expansion, or coordinates co-located with
 /// bad infra.
 ///
-/// **Fan-out aware.** A flagged node with many neighbours is *shared
-/// infrastructure* — a CDN/cloud IP or an ESP/mail domain hosting hundreds of
-/// unrelated names — where per-neighbour adjacency carries no attribution
-/// signal (flagging one Cloudflare-co-hosted site "adjacent to bad" because a
-/// *different* site on the same shared IP was flagged is pure noise; a real scan
-/// produced 792 such rows from four shared parents). So a bad node with more
-/// than `FANOUT_CAP` distinct benign neighbours collapses to ONE aggregated
-/// Medium finding instead of N High rows; dedicated infra (≤ cap) still fires
-/// per-neighbour at High. Edges between two already-flagged nodes are left to
-/// AU-004/AU-008/AU-015. Deterministic (BTreeMap-ordered).
+/// **Ground-truth veto, then fan-out backstop.** Most "shared infrastructure"
+/// is identified explicitly in the data — a CDN/cloud edge IP carries a GreyNoise
+/// RIOT/benign verdict ([`is_benign_infra`]) — so such a node is never treated as
+/// bad here, and an adjacency explosion (a real scan produced 792 rows from four
+/// shared parents) cannot start. For shared infra that LACKS such a verdict
+/// (e.g. a flagged ESP/mail *domain*), a fan-out backstop applies: a bad node
+/// with more than `FANOUT_CAP` distinct benign neighbours collapses to ONE
+/// aggregated finding (Medium, or High when the reason is `malicious` — a
+/// genuine large malicious cluster stays loud) instead of N rows; dedicated
+/// infra (≤ cap) still fires per-neighbour at High. Edges between two
+/// already-flagged nodes are left to AU-004/AU-008/AU-015. Deterministic
+/// (BTreeMap-ordered).
 pub(super) fn rule_au_031_malicious_adjacency(
     entities: &[Entity],
     relations: &[Relation],
@@ -1526,6 +1556,13 @@ pub(super) fn rule_au_031_malicious_adjacency(
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let bad_reason = |e: &Entity| -> Option<&'static str> {
+        // Ground-truth veto: a GreyNoise RIOT/benign node is not bad
+        // infrastructure even if a scanner also tagged it, so it never anchors an
+        // adjacency explosion. The fan-out cap below is only the backstop for
+        // shared infra that carries no such verdict.
+        if is_benign_infra(e) {
+            return None;
+        }
         ADJACENCY_BAD_TAGS.iter().copied().find(|t| e.has_tag(t))
     };
 
@@ -1582,7 +1619,15 @@ pub(super) fn rule_au_031_malicious_adjacency(
                 ));
             }
         } else {
-            // Shared hosting/CDN/ESP — one aggregate, not N noise rows.
+            // High fan-out without a benign verdict — shared hosting/ESP. One
+            // aggregate, not N noise rows. A large *malicious* cluster is a real
+            // threat and stays High; weaker reasons (vulnerable/threat-intel on
+            // shared infra) are Medium.
+            let agg_sev = if reason == "malicious" {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
             let mut uids: Vec<String> = neighbours
                 .keys()
                 .take(AGG_SAMPLE)
@@ -1592,7 +1637,7 @@ pub(super) fn rule_au_031_malicious_adjacency(
             out.push(Correlation::new(
                 "AU-031",
                 "Adjacency to known-bad infrastructure",
-                Severity::Medium,
+                agg_sev,
                 format!(
                     "{} entities are adjacent to flagged-{} shared infrastructure {} ({}) — likely shared hosting/CDN, not a dedicated link",
                     neighbours.len(),
