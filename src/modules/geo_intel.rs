@@ -34,7 +34,6 @@ pub struct GeoIntel;
 #[derive(Deserialize)]
 struct IpApiCoResp {
     #[serde(default)]
-    #[allow(dead_code)]
     ip: Option<String>,
     #[serde(default)]
     city: Option<String>,
@@ -65,7 +64,6 @@ struct IpApiCoResp {
 #[derive(Deserialize)]
 struct FreeIpApiResp {
     #[serde(default, rename = "ipAddress")]
-    #[allow(dead_code)]
     ip_address: Option<String>,
     #[serde(default)]
     latitude: Option<f64>,
@@ -133,6 +131,104 @@ impl Module for GeoIntel {
 
 // ─── IP geolocation: additional free sources ────────────────────────────────
 
+/// Provider-agnostic view of one IP-geo hit, so the entity assembly (tags,
+/// confidence, evidence provenance) lives in a single tested place instead of
+/// being copy-pasted per provider.
+struct GeoRecord<'a> {
+    /// The IP the provider says it resolved (echoed back in the response).
+    /// Surfaced as provenance and compared against the queried IP: a provider
+    /// that ignores a malformed query and returns the *caller's* egress geo
+    /// would otherwise poison the graph with a confident wrong-host coordinate.
+    resolved_ip: Option<&'a str>,
+    queried_ip: &'a str,
+    lat: f64,
+    lon: f64,
+    city: Option<&'a str>,
+    region: Option<&'a str>,
+    country: Option<&'a str>,
+    country_code: Option<&'a str>,
+    postal: Option<&'a str>,
+    timezone: Option<&'a str>,
+    org: Option<&'a str>,
+    asn: Option<&'a str>,
+    is_proxy: Option<bool>,
+    source: &'static str,
+    confidence: f64,
+}
+
+/// Assemble the `Coordinates` entity for one provider hit. **Pure** (no IO) so
+/// the tag / confidence / provenance logic is unit-tested directly. Returns
+/// `None` when the coordinates fail [`is_valid_coords`]. When the provider's
+/// echoed IP disagrees with the queried IP the coordinate describes a different
+/// host, so it is tagged `ip-mismatch` and halved in confidence rather than
+/// dropped — no data is lost, but the poisoned point can't masquerade as a
+/// high-confidence location for the real target.
+fn build_geo_entity(rec: &GeoRecord<'_>, scan_id: &str) -> Option<Entity> {
+    if !is_valid_coords(rec.lat, rec.lon) {
+        return None;
+    }
+    let coords = format!("{:.6},{:.6}", rec.lat, rec.lon);
+    let mismatch = rec
+        .resolved_ip
+        .is_some_and(|ip| ip.trim() != rec.queried_ip.trim());
+    let confidence = if mismatch {
+        rec.confidence * 0.5
+    } else {
+        rec.confidence
+    };
+
+    let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, scan_id);
+    e.tag("geoint");
+    if let Some(cc) = rec.country_code {
+        e.tag(format!("country:{}", cc.to_uppercase()));
+    }
+    if rec.is_proxy == Some(true) {
+        e.tag("proxy");
+    }
+    if mismatch {
+        e.tag("ip-mismatch");
+    }
+
+    let mut ev = Evidence::new(
+        SRC,
+        format!("IP geo for {} via {}", rec.queried_ip, rec.source),
+    )
+    .with_attr("latitude", rec.lat.to_string())
+    .with_attr("longitude", rec.lon.to_string())
+    .with_attr("source", rec.source);
+    if let Some(ip) = rec.resolved_ip {
+        // Provenance recovered from the formerly-dead echo field: exactly which
+        // IP this coordinate describes.
+        ev = ev.with_attr("resolved_ip", ip);
+    }
+    if let Some(c) = rec.city {
+        ev = ev.with_attr("city", c);
+    }
+    if let Some(r) = rec.region {
+        ev = ev.with_attr("region", r);
+    }
+    if let Some(c) = rec.country {
+        ev = ev.with_attr("country", c);
+    }
+    if let Some(p) = rec.postal {
+        ev = ev.with_attr("postal", p);
+    }
+    if let Some(tz) = rec.timezone {
+        ev = ev.with_attr("timezone", tz);
+    }
+    if let Some(org) = rec.org {
+        ev = ev.with_attr("org", org);
+    }
+    if let Some(asn) = rec.asn {
+        ev = ev.with_attr("asn", asn);
+    }
+    if let Some(v) = rec.is_proxy {
+        ev = ev.with_attr("is_proxy", v.to_string());
+    }
+    e.add_evidence(ev);
+    Some(e)
+}
+
 async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let mut result = ModuleResult::new();
     let mut seen_coords = HashSet::new();
@@ -147,44 +243,27 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
         .await
         && data.error != Some(true)
         && let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
-        && is_valid_coords(lat, lon)
     {
-        let coords = format!("{lat:.6},{lon:.6}");
-        if seen_coords.insert(coords.clone()) {
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.68, &ctx.scan_id);
-            e.tag("geoint");
-            if let Some(cc) = data.country_code.as_deref() {
-                e.tag(format!("country:{}", cc.to_uppercase()));
-            }
-
-            let mut ev = Evidence::new(SRC, format!("IP geo for {} via ipapi.co", target.value))
-                .with_attr("latitude", lat.to_string())
-                .with_attr("longitude", lon.to_string())
-                .with_attr("source", "ipapi.co");
-
-            if let Some(c) = data.city.as_deref() {
-                ev = ev.with_attr("city", c);
-            }
-            if let Some(r) = data.region.as_deref() {
-                ev = ev.with_attr("region", r);
-            }
-            if let Some(c) = data.country_name.as_deref() {
-                ev = ev.with_attr("country", c);
-            }
-            if let Some(p) = data.postal.as_deref() {
-                ev = ev.with_attr("postal", p);
-            }
-            if let Some(tz) = data.timezone.as_deref() {
-                ev = ev.with_attr("timezone", tz);
-            }
-            if let Some(org) = data.org.as_deref() {
-                ev = ev.with_attr("org", org);
-            }
-            if let Some(asn) = data.asn.as_deref() {
-                ev = ev.with_attr("asn", asn);
-            }
-
-            e.add_evidence(ev);
+        let rec = GeoRecord {
+            resolved_ip: data.ip.as_deref(),
+            queried_ip: &target.value,
+            lat,
+            lon,
+            city: data.city.as_deref(),
+            region: data.region.as_deref(),
+            country: data.country_name.as_deref(),
+            country_code: data.country_code.as_deref(),
+            postal: data.postal.as_deref(),
+            timezone: data.timezone.as_deref(),
+            org: data.org.as_deref(),
+            asn: data.asn.as_deref(),
+            is_proxy: None,
+            source: "ipapi.co",
+            confidence: 0.68,
+        };
+        if let Some(e) = build_geo_entity(&rec, &ctx.scan_id)
+            && seen_coords.insert(format!("{lat:.6},{lon:.6}"))
+        {
             result.push(e);
         }
     }
@@ -198,47 +277,27 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
         )
         .await
         && let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
-        && is_valid_coords(lat, lon)
     {
-        let coords = format!("{lat:.6},{lon:.6}");
-        if seen_coords.insert(coords.clone()) {
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.62, &ctx.scan_id);
-            e.tag("geoint");
-            if let Some(cc) = data.country_code.as_deref() {
-                e.tag(format!("country:{}", cc.to_uppercase()));
-            }
-            if data.is_proxy == Some(true) {
-                e.tag("proxy");
-            }
-
-            let mut ev = Evidence::new(
-                SRC,
-                format!("IP geo for {} via freeipapi.com", target.value),
-            )
-            .with_attr("latitude", lat.to_string())
-            .with_attr("longitude", lon.to_string())
-            .with_attr("source", "freeipapi.com");
-
-            if let Some(c) = data.city_name.as_deref() {
-                ev = ev.with_attr("city", c);
-            }
-            if let Some(r) = data.region_name.as_deref() {
-                ev = ev.with_attr("region", r);
-            }
-            if let Some(c) = data.country_name.as_deref() {
-                ev = ev.with_attr("country", c);
-            }
-            if let Some(z) = data.zip_code.as_deref() {
-                ev = ev.with_attr("postal", z);
-            }
-            if let Some(tz) = data.timezone.as_deref() {
-                ev = ev.with_attr("timezone", tz);
-            }
-            if let Some(v) = data.is_proxy {
-                ev = ev.with_attr("is_proxy", v.to_string());
-            }
-
-            e.add_evidence(ev);
+        let rec = GeoRecord {
+            resolved_ip: data.ip_address.as_deref(),
+            queried_ip: &target.value,
+            lat,
+            lon,
+            city: data.city_name.as_deref(),
+            region: data.region_name.as_deref(),
+            country: data.country_name.as_deref(),
+            country_code: data.country_code.as_deref(),
+            postal: data.zip_code.as_deref(),
+            timezone: data.timezone.as_deref(),
+            org: None,
+            asn: None,
+            is_proxy: data.is_proxy,
+            source: "freeipapi.com",
+            confidence: 0.62,
+        };
+        if let Some(e) = build_geo_entity(&rec, &ctx.scan_id)
+            && seen_coords.insert(format!("{lat:.6},{lon:.6}"))
+        {
             result.push(e);
         }
     }
@@ -473,6 +532,92 @@ mod tests {
         assert!((r.latitude.unwrap() - (-27.4766)).abs() < 0.001);
         assert_eq!(r.country_code.as_deref(), Some("AU"));
         assert_eq!(r.error, None);
+    }
+
+    fn rec_for(resolved_ip: Option<&'static str>, queried_ip: &'static str) -> GeoRecord<'static> {
+        GeoRecord {
+            resolved_ip,
+            queried_ip,
+            lat: -27.4766,
+            lon: 153.0166,
+            city: Some("South Brisbane"),
+            region: Some("Queensland"),
+            country: Some("Australia"),
+            country_code: Some("au"),
+            postal: Some("4101"),
+            timezone: Some("Australia/Brisbane"),
+            org: Some("APNIC"),
+            asn: Some("AS13335"),
+            is_proxy: None,
+            source: "ipapi.co",
+            confidence: 0.68,
+        }
+    }
+
+    #[test]
+    fn build_geo_surfaces_resolved_ip_and_uppercases_country_tag() {
+        let e = build_geo_entity(&rec_for(Some("1.1.1.1"), "1.1.1.1"), "scan").unwrap();
+        assert_eq!(e.kind, EntityKind::Coordinates);
+        assert!(e.has_tag("geoint"));
+        assert!(e.has_tag("country:AU")); // lowercased input, uppercased tag
+        assert!(!e.has_tag("ip-mismatch"));
+        assert!((e.confidence - 0.68).abs() < 1e-9);
+        let ev = &e.evidence[0];
+        // The formerly-dead echoed IP is now surfaced as structured provenance.
+        assert_eq!(
+            ev.attributes.get("resolved_ip").map(String::as_str),
+            Some("1.1.1.1")
+        );
+        assert_eq!(ev.attributes.get("org").map(String::as_str), Some("APNIC"));
+        assert_eq!(
+            ev.attributes.get("asn").map(String::as_str),
+            Some("AS13335")
+        );
+    }
+
+    #[test]
+    fn build_geo_flags_and_downweights_ip_mismatch() {
+        // Provider echoed a DIFFERENT IP than queried → wrong-host geo: tagged
+        // and halved so it can't pose as a confident location for the target.
+        let e = build_geo_entity(&rec_for(Some("8.8.8.8"), "1.1.1.1"), "scan").unwrap();
+        assert!(e.has_tag("ip-mismatch"));
+        assert!((e.confidence - 0.68 * 0.5).abs() < 1e-9);
+        assert_eq!(
+            e.evidence[0]
+                .attributes
+                .get("resolved_ip")
+                .map(String::as_str),
+            Some("8.8.8.8")
+        );
+    }
+
+    #[test]
+    fn build_geo_no_mismatch_when_echo_absent_and_proxy_tagged() {
+        // No echoed IP → cannot be a mismatch; full confidence, no provenance.
+        let mut r = rec_for(None, "1.1.1.1");
+        let e = build_geo_entity(&r, "scan").unwrap();
+        assert!(!e.has_tag("ip-mismatch"));
+        assert!((e.confidence - 0.68).abs() < 1e-9);
+        assert!(!e.evidence[0].attributes.contains_key("resolved_ip"));
+        // proxy tag + attr only when is_proxy == Some(true).
+        r.is_proxy = Some(true);
+        let p = build_geo_entity(&r, "scan").unwrap();
+        assert!(p.has_tag("proxy"));
+        assert_eq!(
+            p.evidence[0].attributes.get("is_proxy").map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn build_geo_rejects_invalid_coords() {
+        let mut r = rec_for(Some("1.1.1.1"), "1.1.1.1");
+        r.lat = 0.0; // Null Island
+        r.lon = 0.0;
+        assert!(build_geo_entity(&r, "scan").is_none());
+        r.lat = 999.0; // out of range
+        r.lon = 10.0;
+        assert!(build_geo_entity(&r, "scan").is_none());
     }
 
     #[test]
