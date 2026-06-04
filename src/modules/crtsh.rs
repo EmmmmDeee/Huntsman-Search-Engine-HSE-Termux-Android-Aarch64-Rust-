@@ -23,7 +23,6 @@ use crate::util::http::urlencode;
 const SRC: &str = "crtsh";
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct CrtEntry {
     #[serde(default)]
     common_name: Option<String>,
@@ -111,70 +110,96 @@ impl Module for CrtSh {
             .await
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
 
+        if ctx.cancel.is_cancelled() {
+            return Ok(ModuleResult::new());
+        }
+
         let mut result = ModuleResult::new();
-        let mut seen_domains: HashSet<String> = HashSet::new();
-        let mut seen_emails: HashSet<String> = HashSet::new();
-        let domain_base = target.value.clone();
-
-        for entry in &entries {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-
-            let names = entry
-                .name_value
-                .as_deref()
-                .unwrap_or("")
-                .split('\n')
-                .chain(entry.common_name.as_deref());
-
-            for raw_name in names {
-                let name = raw_name.trim().to_lowercase();
-                if name.is_empty() || name.starts_with('*') {
-                    continue;
-                }
-
-                if name.contains('@') {
-                    if seen_emails.insert(name.clone()) && name.len() >= 5 {
-                        let mut e = Entity::new(EntityKind::Email, &name, 0.70, &ctx.scan_id);
-                        e.tag(tags::CT_LOG);
-                        e.add_evidence(
-                            Evidence::new(SRC, "Email in certificate SAN".to_string())
-                                .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or(""))
-                                .with_attr("not_before", entry.not_before.as_deref().unwrap_or("")),
-                        );
-                        result.push(e);
-                    }
-                } else if name.contains('.') && seen_domains.insert(name.clone()) {
-                    let is_sub = name.ends_with(&format!(".{domain_base}")) || name == domain_base;
-                    let conf = if is_sub { 0.75 } else { 0.45 };
-                    let mut e = Entity::new(EntityKind::Domain, &name, conf, &ctx.scan_id);
-                    e.tag(tags::CT_LOG);
-                    if is_sub {
-                        e.tag(tags::SUBDOMAIN);
-                    }
-                    e.add_evidence(
-                        Evidence::new(SRC, "Certificate Transparency log".to_string())
-                            .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or(""))
-                            .with_attr("not_before", entry.not_before.as_deref().unwrap_or(""))
-                            .with_attr("not_after", entry.not_after.as_deref().unwrap_or("")),
-                    );
-                    result.push(e);
-                }
-            }
+        for e in build_entities(&entries, &target.value, &ctx.scan_id) {
+            result.push(e);
         }
-
-        result.entities.sort_by(|a, b| {
-            b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        if result.entities.len() > 200 {
-            result.entities.truncate(200);
-        }
-
         Ok(result)
     }
+}
+
+/// Trimmed, non-empty view of an optional string field.
+fn nonempty(o: &Option<String>) -> Option<&str> {
+    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// One evidence record for a certificate, carrying its issuer + validity window
+/// and — recovered from the previously-discarded field — the `cert_serial`. A
+/// serial shared across two domains means they are literally on the *same*
+/// certificate, a strong same-operator link the old code dropped. **Pure**.
+fn cert_evidence(summary: &str, entry: &CrtEntry) -> Evidence {
+    let mut ev = Evidence::new(SRC, summary.to_string());
+    if let Some(v) = nonempty(&entry.issuer_name) {
+        ev = ev.with_attr("issuer", v);
+    }
+    if let Some(v) = nonempty(&entry.not_before) {
+        ev = ev.with_attr("not_before", v);
+    }
+    if let Some(v) = nonempty(&entry.not_after) {
+        ev = ev.with_attr("not_after", v);
+    }
+    if let Some(v) = nonempty(&entry.serial_number) {
+        ev = ev.with_attr("cert_serial", v);
+    }
+    ev
+}
+
+/// Extract `Domain` (subdomain-classified) and SAN `Email` entities from a set
+/// of Certificate Transparency entries. **Pure** (no IO) so the classification,
+/// dedup, confidence-sort, and 200-cap are unit-tested. A name ending in
+/// `.{domain_base}` (or equal to it) is a subdomain (0.75 + `subdomain` tag);
+/// any other dotted name is a weaker related domain (0.45). Wildcards are skipped.
+fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec<Entity> {
+    let mut result: Vec<Entity> = Vec::new();
+    let mut seen_domains: HashSet<String> = HashSet::new();
+    let mut seen_emails: HashSet<String> = HashSet::new();
+
+    for entry in entries {
+        let names = entry
+            .name_value
+            .as_deref()
+            .unwrap_or("")
+            .split('\n')
+            .chain(entry.common_name.as_deref());
+
+        for raw_name in names {
+            let name = raw_name.trim().to_lowercase();
+            if name.is_empty() || name.starts_with('*') {
+                continue;
+            }
+
+            if name.contains('@') {
+                if seen_emails.insert(name.clone()) && name.len() >= 5 {
+                    let mut e = Entity::new(EntityKind::Email, &name, 0.70, scan_id);
+                    e.tag(tags::CT_LOG);
+                    e.add_evidence(cert_evidence("Email in certificate SAN", entry));
+                    result.push(e);
+                }
+            } else if name.contains('.') && seen_domains.insert(name.clone()) {
+                let is_sub = name.ends_with(&format!(".{domain_base}")) || name == domain_base;
+                let conf = if is_sub { 0.75 } else { 0.45 };
+                let mut e = Entity::new(EntityKind::Domain, &name, conf, scan_id);
+                e.tag(tags::CT_LOG);
+                if is_sub {
+                    e.tag(tags::SUBDOMAIN);
+                }
+                e.add_evidence(cert_evidence("Certificate Transparency log", entry));
+                result.push(e);
+            }
+        }
+    }
+
+    result.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    result.truncate(200);
+    result
 }
 
 #[cfg(test)]
@@ -215,5 +240,71 @@ mod tests {
                 .unwrap()
                 .contains("example.com")
         );
+    }
+
+    fn parse(json: &str) -> Vec<CrtEntry> {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn build_classifies_subdomains_recovers_serial_and_issuer() {
+        let entries = parse(
+            r#"[{"common_name":"shop.acme.com",
+                 "name_value":"shop.acme.com\nmail.acme.com\nother.net",
+                 "issuer_name":"Let's Encrypt","not_before":"2024-01-01",
+                 "not_after":"2024-04-01","serial_number":"DEADBEEF"}]"#,
+        );
+        let v = build_entities(&entries, "acme.com", "s");
+        let sub = v.iter().find(|e| e.value == "mail.acme.com").unwrap();
+        assert!(sub.has_tag(tags::SUBDOMAIN) && sub.has_tag(tags::CT_LOG));
+        assert!((sub.confidence - 0.75).abs() < 1e-9);
+        // A name outside the base domain is a weaker related domain, not a subdomain.
+        let unrelated = v.iter().find(|e| e.value == "other.net").unwrap();
+        assert!(!unrelated.has_tag(tags::SUBDOMAIN));
+        assert!((unrelated.confidence - 0.45).abs() < 1e-9);
+        // Recovered cert serial + issuer/validity surfaced on the evidence.
+        let a = &sub.evidence[0].attributes;
+        assert_eq!(a.get("cert_serial").map(String::as_str), Some("DEADBEEF"));
+        assert_eq!(a.get("issuer").map(String::as_str), Some("Let's Encrypt"));
+        assert_eq!(a.get("not_after").map(String::as_str), Some("2024-04-01"));
+    }
+
+    #[test]
+    fn build_extracts_san_email() {
+        let entries = parse(r#"[{"name_value":"admin@acme.com","serial_number":"AA11"}]"#);
+        let v = build_entities(&entries, "acme.com", "s");
+        let email = v.iter().find(|e| e.kind == EntityKind::Email).unwrap();
+        assert_eq!(email.value, "admin@acme.com");
+        assert!(email.has_tag(tags::CT_LOG));
+        assert!((email.confidence - 0.70).abs() < 1e-9);
+        assert_eq!(
+            email.evidence[0]
+                .attributes
+                .get("cert_serial")
+                .map(String::as_str),
+            Some("AA11")
+        );
+    }
+
+    #[test]
+    fn build_skips_wildcards_dedups_and_sorts_by_confidence() {
+        let entries = parse(
+            r#"[{"name_value":"*.acme.com\nunrelated.net\nsub.acme.com"},
+                {"name_value":"sub.acme.com"}]"#,
+        );
+        let v = build_entities(&entries, "acme.com", "s");
+        let doms: Vec<&str> = v
+            .iter()
+            .filter(|e| e.kind == EntityKind::Domain)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(!doms.iter().any(|d| d.starts_with('*')), "wildcard skipped");
+        assert_eq!(
+            doms.iter().filter(|d| **d == "sub.acme.com").count(),
+            1,
+            "name deduped across entries"
+        );
+        // Subdomain (0.75) sorts ahead of the unrelated domain (0.45).
+        assert_eq!(v.first().unwrap().value, "sub.acme.com");
     }
 }
