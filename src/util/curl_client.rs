@@ -39,9 +39,9 @@ const DEFAULT_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) \
 /// How a provider's API key is presented on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthScheme {
-    /// `Authorization: Bearer <key>` — used by SeekNow.
+    /// `Authorization: Bearer <key>`.
     Bearer,
-    /// `x-api-key: <key>` — used by OathNet.
+    /// `x-api-key: <key>` — used by OathNet and SeekNow (see-know.eu).
     XApiKey,
     /// No auth header. Useful for endpoints that don't require a key
     /// (rare for paid APIs but present for some public sub-paths).
@@ -109,6 +109,13 @@ impl CurlClient {
     #[cfg(test)]
     pub(crate) const fn curl_timeout_secs(&self) -> u64 {
         self.curl_timeout_secs
+    }
+
+    /// The configured auth scheme. Exposed so per-module tests can assert the
+    /// header matches the provider's spec (e.g. SeekNow requires `X-API-Key`).
+    #[cfg(test)]
+    pub(crate) const fn auth_scheme(&self) -> AuthScheme {
+        self.auth
     }
 
     /// Outer tokio timeout in milliseconds.
