@@ -1,4 +1,5 @@
 use crate::core::error::{Error, Result};
+use std::sync::LazyLock;
 
 pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     use crate::core::entity::{Entity, EntityKind, Evidence};
@@ -435,28 +436,53 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_import_html(body: &str, output: &str) -> Result<()> {
+/// IPv4 dotted-quad matcher for the loose HTML/text scrape. The pattern is a
+/// compile-time constant, so `Regex::new` is infallible **by construction**;
+/// `LazyLock` compiles it once per process instead of recompiling on every
+/// `hse import` of an HTML file. The pattern is deliberately permissive (it also
+/// matches `999.1.2.3`); [`extract_html_entities`] re-validates each hit with a
+/// strict `Ipv4Addr` parse before admitting it.
+static HTML_IP_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").expect("constant IP regex"));
+
+/// Email matcher for the HTML/text scrape (compile-time constant → infallible).
+static HTML_EMAIL_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"[\w.+-]+@[\w.-]+\.\w{2,}").expect("constant email regex"));
+
+/// Domain matcher — optionally scheme-prefixed, host captured in group 1
+/// (compile-time constant → infallible).
+static HTML_DOMAIN_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?:https?://)?([a-z0-9][-a-z0-9]*(?:\.[a-z0-9][-a-z0-9]*)+)")
+        .expect("constant domain regex")
+});
+
+/// Scrape `Domain` / `IpAddress` / `Email` entities out of a raw OathNet HTML
+/// export body. **Pure** (no IO, no printing, no globals beyond the compiled
+/// regexes) so the extraction is unit-tested directly; the caller owns the
+/// dedup + output steps.
+///
+/// IP admission is **not** filtered here by ad-hoc string prefixes. Every
+/// candidate is strictly parsed as an `Ipv4Addr` — which rejects the loose
+/// regex's invalid octets (`999.1.2.3`) that previously slipped through as fake
+/// `IpAddress` entities — and bogus-but-parseable ranges (`0/8`, `240/4`,
+/// TEST-NET) are dropped canonically by [`deduplicate_by_uid`]. Deferring to
+/// that single source of truth also *keeps* loopback / RFC1918 hosts, which the
+/// old `!ip.starts_with("127.")` filter discarded even though the scan path
+/// retains them.
+fn extract_html_entities(body: &str, sid: &str) -> Vec<crate::core::entity::Entity> {
     use crate::core::entity::{Entity, EntityKind};
     use std::collections::HashSet;
 
-    println!("Importing OathNet HTML export...");
-    let sid = format!("import-html-{}", crate::core::entity::unix_now());
     let mut entities: Vec<Entity> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-
-    let ip_re = regex::Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
-    let email_re = regex::Regex::new(r"[\w.+-]+@[\w.-]+\.\w{2,}").unwrap();
-    let domain_re =
-        regex::Regex::new(r"(?:https?://)?([a-z0-9][-a-z0-9]*(?:\.[a-z0-9][-a-z0-9]*)+)").unwrap();
-
     let lower = body.to_lowercase();
 
-    for cap in domain_re.captures_iter(&lower) {
+    for cap in HTML_DOMAIN_RE.captures_iter(&lower) {
         let dom = &cap[1];
         if dom.len() > 4 && seen.insert(format!("d:{dom}")) {
             let is_sub = dom.split('.').count() >= 3;
             let conf = if is_sub { 0.45 } else { 0.50 };
-            let mut e = Entity::new(EntityKind::Domain, dom, conf, &sid);
+            let mut e = Entity::new(EntityKind::Domain, dom, conf, sid);
             e.tag("import");
             if is_sub {
                 e.tag("subdomain");
@@ -465,27 +491,36 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
         }
     }
 
-    for cap in ip_re.captures_iter(body) {
-        let ip = cap[0].to_string();
-        if seen.insert(format!("ip:{ip}"))
-            && !ip.starts_with("0.")
-            && !ip.starts_with("127.")
-            && !ip.starts_with("255.")
-        {
-            let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.55, &sid);
+    for cap in HTML_IP_RE.captures_iter(body) {
+        let ip = &cap[0];
+        // Strict parse rejects the invalid octets the loose regex admits;
+        // canonical bogus-range filtering + loopback retention happen later in
+        // `deduplicate_by_uid` (the same admission guard the scan path uses).
+        if ip.parse::<std::net::Ipv4Addr>().is_ok() && seen.insert(format!("ip:{ip}")) {
+            let mut e = Entity::new(EntityKind::IpAddress, ip, 0.55, sid);
             e.tag("import");
             entities.push(e);
         }
     }
 
-    for cap in email_re.captures_iter(body) {
+    for cap in HTML_EMAIL_RE.captures_iter(body) {
         let em = cap[0].to_lowercase();
         if em.len() >= 5 && seen.insert(format!("em:{em}")) {
-            let mut e = Entity::new(EntityKind::Email, &em, 0.50, &sid);
+            let mut e = Entity::new(EntityKind::Email, &em, 0.50, sid);
             e.tag("import");
             entities.push(e);
         }
     }
+
+    entities
+}
+
+fn cmd_import_html(body: &str, output: &str) -> Result<()> {
+    use crate::core::entity::EntityKind;
+
+    println!("Importing OathNet HTML export...");
+    let sid = format!("import-html-{}", crate::core::entity::unix_now());
+    let mut entities = extract_html_entities(body, &sid);
 
     deduplicate_by_uid(&mut entities);
 
@@ -1038,5 +1073,112 @@ mod tests {
         // Happy path unaffected: INFECTED before OSINT still parses cleanly.
         let body = "=== INFECTED MACHINES ===\nIPs: 8.8.8.8\n=== OSINT ENRICHMENT ===\nMore: x\n";
         assert!(super::cmd_import_txt(body, "table").is_ok());
+    }
+
+    // ── HTML scrape extraction (previously untested) ──────────────────────────
+
+    #[test]
+    fn html_extracts_domains_ips_emails_each_tagged_import() {
+        let body = "<html>Contact admin@acme.com from host mail.acme.com at 8.8.8.8</html>";
+        let ents = super::extract_html_entities(body, "s");
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "admin@acme.com"),
+            "email scraped (lowercased)"
+        );
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::IpAddress && e.value == "8.8.8.8"),
+            "IP scraped"
+        );
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "mail.acme.com"),
+            "domain scraped"
+        );
+        // Provenance tag on every emitted entity.
+        assert!(ents.iter().all(|e| e.has_tag("import")));
+    }
+
+    #[test]
+    fn html_subdomain_is_tagged_and_lower_confidence_than_apex() {
+        let sub = super::extract_html_entities("see sub.mail.acme.com here", "s");
+        let d = sub.iter().find(|e| e.value == "sub.mail.acme.com").unwrap();
+        assert_eq!(d.kind, EntityKind::Domain);
+        assert!(d.has_tag("subdomain"));
+        assert!((d.confidence - 0.45).abs() < 1e-9);
+
+        let apex = super::extract_html_entities("just acme.com alone", "s");
+        let a = apex.iter().find(|e| e.value == "acme.com").unwrap();
+        assert!(!a.has_tag("subdomain"));
+        assert!((a.confidence - 0.50).abs() < 1e-9);
+    }
+
+    #[test]
+    fn html_rejects_invalid_ipv4_octets() {
+        // The loose regex matches `999.1.2.3`; the strict parse must reject it so
+        // it never becomes a phantom IpAddress entity (the old code admitted it).
+        let ents = super::extract_html_entities("bad 999.1.2.3 and good 9.9.9.9", "s");
+        let ips: Vec<&str> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(ips.contains(&"9.9.9.9"), "valid IP kept: {ips:?}");
+        assert!(
+            !ips.iter().any(|v| v.starts_with("999")),
+            "invalid-octet IP rejected before admission: {ips:?}"
+        );
+    }
+
+    #[test]
+    fn html_ip_admission_defers_to_canonical_bogus_filter() {
+        // End-to-end with dedup: loopback (127.x) is RECOVERED — the old prefix
+        // filter wrongly dropped it though the scan path keeps it — while a bogus
+        // 0/8 host is dropped canonically by `is_bogus_ip`.
+        let mut ents = super::extract_html_entities("lo 127.0.0.1 zero 0.1.2.3 real 9.9.9.9", "s");
+        super::deduplicate_by_uid(&mut ents);
+        let ips: Vec<&str> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(ips.contains(&"127.0.0.1"), "loopback recovered: {ips:?}");
+        assert!(ips.contains(&"9.9.9.9"), "real IP kept: {ips:?}");
+        assert!(
+            !ips.contains(&"0.1.2.3"),
+            "0/8 dropped canonically: {ips:?}"
+        );
+    }
+
+    #[test]
+    fn html_dedups_repeated_values() {
+        let ents = super::extract_html_entities("mail a@acme.com and again A@ACME.COM", "s");
+        assert_eq!(
+            ents.iter().filter(|e| e.kind == EntityKind::Email).count(),
+            1,
+            "case-folded duplicate email scraped exactly once"
+        );
+    }
+
+    #[test]
+    fn html_skips_domains_of_four_chars_or_fewer() {
+        // The `> 4` guard drops noise like `a.bc` (4 chars) but keeps `ab.cd` (5).
+        let ents = super::extract_html_entities("x a.bc y ab.cd z", "s");
+        let doms: Vec<&str> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Domain)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(!doms.contains(&"a.bc"), "4-char domain skipped: {doms:?}");
+        assert!(doms.contains(&"ab.cd"), "5-char domain kept: {doms:?}");
+    }
+
+    #[test]
+    fn cmd_import_html_runs_without_panicking() {
+        // The wrapper still wires extraction → dedup → output cleanly.
+        let body = "<html>9.9.9.9 acme.com a@acme.com</html>";
+        assert!(super::cmd_import_html(body, "table").is_ok());
+        assert!(super::cmd_import_html(body, "json").is_ok());
     }
 }
