@@ -233,23 +233,11 @@ impl Module for SocialProbe {
         let mut checked_count = 0u32;
         let mut found_platforms: Vec<&str> = Vec::new();
 
-        let platforms = match target.kind {
-            TargetKind::Username => USERNAME_PLATFORMS,
-            TargetKind::FullName => NAME_PLATFORMS,
-            _ => return Ok(result),
-        };
-
-        let slug = match target.kind {
-            TargetKind::FullName => value.to_lowercase().replace(' ', "-"),
-            _ => value.to_string(),
-        };
-
-        for platform in platforms {
+        for (platform, url) in probe_plan(target.kind, value) {
             if ctx.cancel.is_cancelled() {
                 break;
             }
 
-            let url = platform.url_pattern.replace("{}", &slug);
             checked_count += 1;
 
             let code = probe_url(&url).await;
@@ -270,11 +258,7 @@ impl Module for SocialProbe {
                 result.push(entity);
 
                 // Also extract the domain for infrastructure expansion
-                if let Some(host) = url::Url::parse(&url)
-                    .ok()
-                    .and_then(|u| u.host_str().map(str::to_lowercase))
-                    && host.contains('.')
-                {
+                if let Some(host) = platform_domain(&url) {
                     let mut dom = Entity::new(EntityKind::Domain, &host, 0.40, &ctx.scan_id);
                     dom.tag("social-platform");
                     dom.add_evidence(
@@ -313,6 +297,45 @@ impl Module for SocialProbe {
 
         Ok(result)
     }
+}
+
+/// Turn a target into a probe slug. **Pure**: a `FullName` is lowercased and
+/// space-hyphenated (people-directory URL shape, e.g. `Jane Roe` → `jane-roe`);
+/// every other kind — in practice `Username` — is passed through verbatim so
+/// the handle's exact case and punctuation reach the platform unchanged.
+fn build_slug(kind: TargetKind, value: &str) -> String {
+    match kind {
+        TargetKind::FullName => value.to_lowercase().replace(' ', "-"),
+        _ => value.to_string(),
+    }
+}
+
+/// The `(platform, probe-URL)` pairs to check for a target. **Pure** — captures
+/// the platform-table selection (`Username` vs `FullName`), the slug transform,
+/// and the `{}` URL-pattern substitution, none of which were previously tested.
+/// Returns empty for kinds the module does not probe.
+fn probe_plan(kind: TargetKind, value: &str) -> Vec<(&'static Platform, String)> {
+    let platforms = match kind {
+        TargetKind::Username => USERNAME_PLATFORMS,
+        TargetKind::FullName => NAME_PLATFORMS,
+        _ => return Vec::new(),
+    };
+    let slug = build_slug(kind, value);
+    platforms
+        .iter()
+        .map(|p| (p, p.url_pattern.replace("{}", &slug)))
+        .collect()
+}
+
+/// The lowercased registrable host of a confirmed profile URL, used to seed an
+/// infrastructure-expansion `Domain`. **Pure**: `None` when the URL does not
+/// parse or its host carries no dot (e.g. `localhost`), so junk never becomes a
+/// domain entity.
+fn platform_domain(profile_url: &str) -> Option<String> {
+    url::Url::parse(profile_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_lowercase))
+        .filter(|h| h.contains('.'))
 }
 
 async fn probe_url(url: &str) -> u16 {
@@ -356,5 +379,76 @@ mod tests {
     fn platform_count() {
         assert!(USERNAME_PLATFORMS.len() >= 28);
         assert!(NAME_PLATFORMS.len() >= 2);
+    }
+
+    #[test]
+    fn fullname_slug_is_lowercased_and_hyphenated() {
+        assert_eq!(build_slug(TargetKind::FullName, "Jane Roe"), "jane-roe");
+        // Internal punctuation is preserved; only spaces become hyphens.
+        assert_eq!(
+            build_slug(TargetKind::FullName, "John A. Doe"),
+            "john-a.-doe"
+        );
+    }
+
+    #[test]
+    fn username_slug_is_passed_through_verbatim() {
+        // Case and underscores survive — a handle is matched exactly.
+        assert_eq!(build_slug(TargetKind::Username, "John_Doe99"), "John_Doe99");
+    }
+
+    #[test]
+    fn username_plan_covers_every_platform_and_substitutes_slug() {
+        let plan = probe_plan(TargetKind::Username, "John_Doe99");
+        assert_eq!(plan.len(), USERNAME_PLATFORMS.len());
+        let url = |name: &str| {
+            plan.iter()
+                .find(|(p, _)| p.name == name)
+                .map(|(_, u)| u.as_str())
+                .unwrap()
+        };
+        assert_eq!(url("github"), "https://github.com/John_Doe99");
+        // The slug lands before the pattern's trailing suffix.
+        assert_eq!(
+            url("bluesky"),
+            "https://bsky.app/profile/John_Doe99.bsky.social"
+        );
+        assert_eq!(url("mastodon"), "https://mastodon.social/@John_Doe99");
+    }
+
+    #[test]
+    fn fullname_plan_uses_hyphenated_slug() {
+        let plan = probe_plan(TargetKind::FullName, "Jane Roe");
+        assert_eq!(plan.len(), NAME_PLATFORMS.len());
+        let peekyou = plan
+            .iter()
+            .find(|(p, _)| p.name == "peekyou")
+            .map(|(_, u)| u.as_str())
+            .unwrap();
+        assert_eq!(peekyou, "https://www.peekyou.com/jane-roe");
+    }
+
+    #[test]
+    fn probe_plan_empty_for_unprobed_kinds() {
+        assert!(probe_plan(TargetKind::Email, "x@y.com").is_empty());
+        assert!(probe_plan(TargetKind::Domain, "x.com").is_empty());
+    }
+
+    #[test]
+    fn platform_domain_extracts_lowercased_host() {
+        assert_eq!(
+            platform_domain("https://github.com/foo"),
+            Some("github.com".to_string())
+        );
+        assert_eq!(
+            platform_domain("https://www.TikTok.com/@bar"),
+            Some("www.tiktok.com".to_string())
+        );
+    }
+
+    #[test]
+    fn platform_domain_rejects_unparseable_or_dotless_hosts() {
+        assert_eq!(platform_domain("not a url"), None);
+        assert_eq!(platform_domain("http://localhost/x"), None);
     }
 }
