@@ -179,20 +179,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
-- **AU-031 "malicious adjacency" no longer explodes on shared infrastructure.** A
-  real name-scan produced **883 correlations of which 792 (90%) were AU-031** —
-  driven by just **four** flagged shared-infra parents: two Cloudflare CDN IPs
-  (271 + 249 co-hosted domains) and two ESP/mail domains (`secureserver.net` 146,
-  `sendgrid.net` 122). Because the rule fired once per benign↔bad edge, every
-  unrelated site sharing a flagged Cloudflare IP became its own "adjacent to
-  known-bad" row, burying the genuine findings (breach hits, geo-convergence,
-  confirmed profiles). AU-031 is now **fan-out aware**: a flagged node with more
-  than 8 distinct benign neighbours is treated as shared hosting/CDN/ESP and
-  collapses to ONE aggregated Medium finding (with a sampled uid set + the full
-  count); dedicated infra (≤ 8 neighbours) still fires per-neighbour at High. On
-  that scan this takes AU-031 from **792 → ~8** correlations and the dossier from
-  **883 → ~99**, with every genuine correlation preserved. Deterministic
-  (BTreeMap-ordered); +1 regression test.
+- **Threat correlations now respect explicit benign-infrastructure verdicts
+  (kills the shared-edge false-positive explosion).** A real name-scan produced
+  **883 correlations, 792 (90%) of them AU-031 "malicious adjacency"** — driven
+  by four flagged shared-infra parents: two Cloudflare CDN IPs (271 + 249
+  co-hosted domains) and two ESP/mail domains (`secureserver.net` 146,
+  `sendgrid.net` 122). The Cloudflare IPs were tagged `vulnerable` by a CVE scan
+  of the *shared* edge **while simultaneously catalogued `greynoise-riot` /
+  `greynoise-benign`** — the data already knew they were benign infrastructure.
+  A shared `is_benign_infra` veto now makes a GreyNoise RIOT/benign verdict
+  override the blocklist/scanner tags on the same node across **AU-004 / AU-008 /
+  AU-015 / AU-031** (the veto tags are IP-only, so a malicious *domain* behind a
+  CDN is untouched). For shared infra that carries *no* such verdict (the ESP
+  domains), AU-031 keeps a fan-out backstop: >8 distinct neighbours collapse to
+  one aggregate (Medium, or **High when the reason is `malicious`** so a genuine
+  large malicious cluster stays loud) instead of N rows. On that scan: the two
+  Cloudflare IPs are exonerated everywhere (their 520 AU-031 rows **and** two
+  false AU-008 "exposed service" rows vanish), the two ESP domains aggregate
+  (268 → 2), so **AU-031 792 → 6** and the dossier **883 → ~95** — ground truth,
+  not a fan-out guess. Deterministic; +3 regression tests.
 - **`github_user`'s `top_event_types` finding was non-reproducible.** The recent-
   activity summary ranked event types from a `HashMap` by count with no tiebreak,
   so tied counts (and thus which types landed in the top 3, and their order) came
