@@ -1819,6 +1819,47 @@ mod tests {
         assert!(rule_au_031_malicious_adjacency(&[bad], &[rel], "s", 0).is_empty());
     }
 
+    #[test]
+    fn au031_aggregates_high_fanout_shared_infra() {
+        use crate::core::relation::{Relation, RelationKind};
+        // One flagged shared IP (CDN) with 30 distinct co-hosted domains: the
+        // real-world noise case. Must collapse to ONE Medium aggregate, not 30
+        // High rows — while a dedicated node (≤ cap) still fires per-neighbour.
+        let bad = tagged(EntityKind::IpAddress, "104.20.37.187", &["vulnerable"]);
+        let mut entities = vec![bad.clone()];
+        let mut rels = Vec::new();
+        for i in 0..30 {
+            let d = tagged(EntityKind::Domain, &format!("site{i}-merch.example"), &[]);
+            rels.push(Relation::new(
+                d.uid.clone(),
+                bad.uid.clone(),
+                RelationKind::DerivedFrom,
+                0.8,
+                "s",
+            ));
+            entities.push(d);
+        }
+        let r = rule_au_031_malicious_adjacency(&entities, &rels, "s", 0);
+        assert_eq!(r.len(), 1, "30-way fan-out must aggregate to one finding");
+        assert_eq!(r[0].rule_id, "AU-031");
+        assert_eq!(r[0].severity, Severity::Medium);
+        assert!(r[0].description.contains("30 entities"));
+        assert!(r[0].description.contains("shared infrastructure"));
+        assert!(r[0].entity_uids.contains(&bad.uid));
+
+        // Deterministic across input orderings (BTreeMap-keyed).
+        let mut shuffled = rels.clone();
+        shuffled.reverse();
+        let r2 = rule_au_031_malicious_adjacency(&entities, &shuffled, "s", 0);
+        assert_eq!(r[0].description, r2[0].description);
+        assert_eq!(r[0].entity_uids, r2[0].entity_uids);
+
+        // Control: a flagged node with few neighbours stays per-neighbour/High.
+        let r3 = rule_au_031_malicious_adjacency(&entities[..4], &rels[..3], "s", 0);
+        assert_eq!(r3.len(), 3);
+        assert!(r3.iter().all(|c| c.severity == Severity::High));
+    }
+
     // ── AU-032 (graph-aware: co-location cluster) ───────────────────────
 
     #[test]

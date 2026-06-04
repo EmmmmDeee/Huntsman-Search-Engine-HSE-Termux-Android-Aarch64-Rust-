@@ -1495,26 +1495,52 @@ const ADJACENCY_BAD_TAGS: &[&str] = &["malicious", "threat-intel", "vulnerable"]
 
 /// AU-031 — Malicious adjacency (graph-aware). Surfaces a *benign* entity that
 /// is one relation-edge away from a known-bad entity (tagged malicious /
-/// threat-intel / vulnerable). This is the attribution pathway the flat entity
-/// list can't show: a subdomain of a malicious apex, an entity derived from a
-/// flagged node during expansion, or coordinates co-located with bad infra.
+/// threat-intel / vulnerable): a subdomain of a malicious apex, an entity
+/// derived from a flagged node during expansion, or coordinates co-located with
+/// bad infra.
 ///
-/// Fires once per benign↔bad edge (exactly one endpoint bad — edges between two
-/// already-flagged nodes are left to AU-004/AU-008/AU-015). Deterministic.
+/// **Fan-out aware.** A flagged node with many neighbours is *shared
+/// infrastructure* — a CDN/cloud IP or an ESP/mail domain hosting hundreds of
+/// unrelated names — where per-neighbour adjacency carries no attribution
+/// signal (flagging one Cloudflare-co-hosted site "adjacent to bad" because a
+/// *different* site on the same shared IP was flagged is pure noise; a real scan
+/// produced 792 such rows from four shared parents). So a bad node with more
+/// than `FANOUT_CAP` distinct benign neighbours collapses to ONE aggregated
+/// Medium finding instead of N High rows; dedicated infra (≤ cap) still fires
+/// per-neighbour at High. Edges between two already-flagged nodes are left to
+/// AU-004/AU-008/AU-015. Deterministic (BTreeMap-ordered).
 pub(super) fn rule_au_031_malicious_adjacency(
     entities: &[Entity],
     relations: &[Relation],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    use std::collections::HashMap;
+    use crate::core::relation::RelationKind;
+    use std::collections::{BTreeMap, HashMap};
+
+    /// A flagged node with more than this many distinct benign neighbours is
+    /// shared hosting/CDN/ESP: emit one aggregate, not one row per neighbour.
+    const FANOUT_CAP: usize = 8;
+    /// Benign uids to carry on an aggregate finding (the full count is in text).
+    const AGG_SAMPLE: usize = 12;
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let bad_reason = |e: &Entity| -> Option<&'static str> {
         ADJACENCY_BAD_TAGS.iter().copied().find(|t| e.has_tag(t))
     };
 
-    let mut out = Vec::new();
+    // Group benign neighbours under each flagged node, deduped by benign uid (a
+    // node can reach the same bad node by more than one edge). BTreeMaps keep
+    // the whole pass deterministic regardless of relation order.
+    #[allow(clippy::type_complexity)]
+    let mut groups: BTreeMap<
+        &str,
+        (
+            &Entity,
+            &'static str,
+            BTreeMap<&str, (&Entity, RelationKind)>,
+        ),
+    > = BTreeMap::new();
     for r in relations {
         let (Some(&from), Some(&to)) = (
             by_uid.get(r.from_uid.as_str()),
@@ -1523,24 +1549,62 @@ pub(super) fn rule_au_031_malicious_adjacency(
             continue;
         };
         // Exactly one endpoint flagged → the other is "adjacent to bad".
-        // Edges between two already-flagged nodes are left to AU-004/008/015.
         let (benign, bad, reason) = match (bad_reason(from), bad_reason(to)) {
             (None, Some(reason)) => (from, to, reason),
             (Some(reason), None) => (to, from, reason),
             _ => continue,
         };
-        out.push(Correlation::new(
-            "AU-031",
-            "Adjacency to known-bad infrastructure",
-            Severity::High,
-            format!(
-                "{} ({}) is {} flagged-{} {} ({})",
-                benign.value, benign.kind, r.kind, reason, bad.value, bad.kind
-            ),
-            vec![benign.uid.clone(), bad.uid.clone()],
-            scan_id,
-            ts,
-        ));
+        let entry = groups
+            .entry(bad.uid.as_str())
+            .or_insert_with(|| (bad, reason, BTreeMap::new()));
+        entry
+            .2
+            .entry(benign.uid.as_str())
+            .or_insert((benign, r.kind));
+    }
+
+    let mut out = Vec::new();
+    for (_bad_uid, (bad, reason, neighbours)) in groups {
+        if neighbours.len() <= FANOUT_CAP {
+            // Dedicated infra — meaningful per-neighbour attribution.
+            for (benign, rkind) in neighbours.values() {
+                out.push(Correlation::new(
+                    "AU-031",
+                    "Adjacency to known-bad infrastructure",
+                    Severity::High,
+                    format!(
+                        "{} ({}) is {} flagged-{} {} ({})",
+                        benign.value, benign.kind, rkind, reason, bad.value, bad.kind
+                    ),
+                    vec![benign.uid.clone(), bad.uid.clone()],
+                    scan_id,
+                    ts,
+                ));
+            }
+        } else {
+            // Shared hosting/CDN/ESP — one aggregate, not N noise rows.
+            let mut uids: Vec<String> = neighbours
+                .keys()
+                .take(AGG_SAMPLE)
+                .map(|u| u.to_string())
+                .collect();
+            uids.push(bad.uid.clone());
+            out.push(Correlation::new(
+                "AU-031",
+                "Adjacency to known-bad infrastructure",
+                Severity::Medium,
+                format!(
+                    "{} entities are adjacent to flagged-{} shared infrastructure {} ({}) — likely shared hosting/CDN, not a dedicated link",
+                    neighbours.len(),
+                    reason,
+                    bad.value,
+                    bad.kind
+                ),
+                uids,
+                scan_id,
+                ts,
+            ));
+        }
     }
     out
 }
