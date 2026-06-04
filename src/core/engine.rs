@@ -353,16 +353,16 @@ impl ScanEngine {
         let mut emitted_corr: HashSet<String> = HashSet::new();
 
         visited.insert(visit_key(&target));
-        self.dispatch_target(
-            &scan.id,
-            &target,
-            &mut ctx,
-            &opts,
-            &mut entity_map,
-            false,
-            &mut stats,
-            dispatched,
-        )
+        self.dispatch_target(DispatchArgs {
+            scan_id: &scan.id,
+            target: &target,
+            ctx: &mut ctx,
+            opts: &opts,
+            entity_map: &mut entity_map,
+            is_expansion: false,
+            stats: &mut stats,
+            dispatched: &mut *dispatched,
+        })
         .await?;
 
         // Checkpoint + correlate the seed round from a single snapshot: the
@@ -853,7 +853,16 @@ impl ScanEngine {
                 before.clear();
                 before.extend(entity_map.keys().cloned());
                 if let Err(e) = self
-                    .dispatch_target(scan_id, nt, ctx, opts, entity_map, true, stats, dispatched)
+                    .dispatch_target(DispatchArgs {
+                        scan_id,
+                        target: nt,
+                        ctx: &mut *ctx,
+                        opts,
+                        entity_map: &mut *entity_map,
+                        is_expansion: true,
+                        stats: &mut *stats,
+                        dispatched: &mut *dispatched,
+                    })
                     .await
                 {
                     // Per-target dispatch errors are already surfaced as
@@ -1083,6 +1092,24 @@ struct DispatchOutcome {
     result: TimeoutResult,
 }
 
+/// The eight values threaded through the `dispatch_target` chain
+/// (`dispatch_target` → `dispatch_target_sequential` / `dispatch_target_concurrent`).
+/// Bundling them into one parameter object replaces three identical
+/// eight-argument signatures — and the `clippy::too_many_arguments` suppressions
+/// they carried — with a single move, and removes the positional-argument hazard
+/// of threading several same-typed `&mut` accumulators (`entity_map`, `stats`,
+/// `dispatched`) by hand, where a transposed pair would still compile.
+struct DispatchArgs<'a> {
+    scan_id: &'a str,
+    target: &'a Target,
+    ctx: &'a mut ModuleContext,
+    opts: &'a ScanOptions,
+    entity_map: &'a mut HashMap<String, Entity>,
+    is_expansion: bool,
+    stats: &'a mut ModuleStats,
+    dispatched: &'a mut DispatchLog,
+}
+
 impl ScanEngine {
     /// Translate one module's `process()` result into engine events
     /// (`ModuleError` / `EntityFound` / `ModuleDone`) and merge any
@@ -1200,58 +1227,26 @@ impl ScanEngine {
 
     /// Dispatch every accepting module against `target`. Picks the
     /// sequential or concurrent codepath based on `opts.max_concurrent`.
-    #[allow(clippy::too_many_arguments)]
-    async fn dispatch_target(
-        &self,
-        scan_id: &str,
-        target: &Target,
-        ctx: &mut ModuleContext,
-        opts: &ScanOptions,
-        entity_map: &mut HashMap<String, Entity>,
-        is_expansion: bool,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
-    ) -> Result<()> {
-        if opts.max_concurrent == 0 {
-            self.dispatch_target_sequential(
-                scan_id,
-                target,
-                ctx,
-                opts,
-                entity_map,
-                is_expansion,
-                stats,
-                dispatched,
-            )
-            .await
+    async fn dispatch_target(&self, args: DispatchArgs<'_>) -> Result<()> {
+        if args.opts.max_concurrent == 0 {
+            self.dispatch_target_sequential(args).await
         } else {
-            self.dispatch_target_concurrent(
-                scan_id,
-                target,
-                ctx,
-                opts,
-                entity_map,
-                is_expansion,
-                stats,
-                dispatched,
-            )
-            .await
+            self.dispatch_target_concurrent(args).await
         }
     }
 
     /// Sequential dispatcher (max_concurrent == 0).
-    #[allow(clippy::too_many_arguments)]
-    async fn dispatch_target_sequential(
-        &self,
-        scan_id: &str,
-        target: &Target,
-        ctx: &mut ModuleContext,
-        opts: &ScanOptions,
-        entity_map: &mut HashMap<String, Entity>,
-        is_expansion: bool,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
-    ) -> Result<()> {
+    async fn dispatch_target_sequential(&self, args: DispatchArgs<'_>) -> Result<()> {
+        let DispatchArgs {
+            scan_id,
+            target,
+            ctx,
+            opts,
+            entity_map,
+            is_expansion,
+            stats,
+            dispatched,
+        } = args;
         // O(1) dispatch-index lookup replaces the O(M) accepts() scan.
         // Modules are already priority-sorted within each bucket so we
         // walk them in the same order the legacy `for module in &self.modules`
@@ -1348,18 +1343,17 @@ impl ScanEngine {
     /// oathnet_pro, dehashed, intelx discover API keys that hot-inject into
     /// ctx before the remaining modules are spawned concurrently. Without this,
     /// all modules launch with a cloned ctx that lacks discovered keys.
-    #[allow(clippy::too_many_arguments)]
-    async fn dispatch_target_concurrent(
-        &self,
-        scan_id: &str,
-        target: &Target,
-        ctx: &mut ModuleContext,
-        opts: &ScanOptions,
-        entity_map: &mut HashMap<String, Entity>,
-        is_expansion: bool,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
-    ) -> Result<()> {
+    async fn dispatch_target_concurrent(&self, args: DispatchArgs<'_>) -> Result<()> {
+        let DispatchArgs {
+            scan_id,
+            target,
+            ctx,
+            opts,
+            entity_map,
+            is_expansion,
+            stats,
+            dispatched,
+        } = args;
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
 
