@@ -17,7 +17,7 @@
 //!   GET  /username/{github,reddit,social,tiktok,twitter,history}
 //!   GET  /credits               — remaining daily quota
 //!
-//! Auth: `Authorization: Bearer <key>`
+//! Auth: `X-API-Key: <key>` header (per the see-know.eu spec).
 //!
 //! Quota model: 5000 daily lookups on premiumhq plan, resets at midnight UTC.
 //! Per-process budget mirrors the OathNet client's pattern.
@@ -43,15 +43,16 @@ pub const KEY_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";
 /// every distinct endpoint × query a single scan generates).
 static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
 
-/// Shared curl-subprocess client. Bearer auth, 12s curl timeout
-/// (matches the legacy `--max-time 12`), 15s outer tokio timeout.
+/// Shared curl-subprocess client. `X-API-Key` auth (per the see-know.eu spec —
+/// the server rejects `Authorization: Bearer` with "Missing API key. Use
+/// X-API-Key"), 75s curl timeout, 78s outer tokio timeout.
 // The name/auto `/search` path has a server-side cap of ~55s and routinely
 // responds in 50–60s with real data. The previous 12s curl / 15s outer budget
 // guaranteed a timeout-exit (curl 28) on every name search, surfacing as an
 // opaque "curl failed" with zero entities. Budget above the cap: 75s curl,
 // 78s outer (curl < outer so curl's own exit code is observed), paired with an
 // 80s module max_timeout in `modules::see_know`.
-static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::Bearer, 75, 78_000);
+static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::XApiKey, 75, 78_000);
 
 /// Per-scan + per-session quota budget for SeekNow API calls.
 ///
@@ -198,21 +199,36 @@ pub fn is_key_invalid() -> bool {
     KEY_INVALID.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Body signature of see-know.eu's auth rejection. Pure (no globals) so it is
-/// unit-testable; the server returns `{"error":"invalid_api_key","message":
-/// "Invalid API key"}` (key present but wrong) or "...Missing API key..." —
-/// both mean the key we hold cannot authenticate.
+/// Body signature of a key that cannot retrieve data — so the whole scan should
+/// latch and stop spending budget on calls that will all come back empty. Two
+/// distinct causes, both terminal for the held key:
+///   * an outright auth rejection — `{"error":"invalid_api_key",…}` (wrong key)
+///     or "…Missing API key. Use X-API-Key…" (header absent);
+///   * a recognised key whose account lacks a paid plan —
+///     `{"error":"plan_required",…}` (the live see-know.eu response for a
+///     free-tier key). The fix to the auth header alone can't unblock this — the
+///     account needs a plan — so we treat it the same: skip and warn once.
+///
+/// Pure (no globals) so it is unit-testable.
 fn is_auth_error(body: &str) -> bool {
-    body.contains("invalid_api_key") || body.contains("Invalid API key")
+    body.contains("invalid_api_key")
+        || body.contains("Invalid API key")
+        || body.contains("plan_required")
 }
 
-fn mark_key_invalid() {
-    // Emit the actionable guidance exactly once (the false→true transition).
+fn mark_key_invalid(body: &str) {
+    // Emit the actionable guidance exactly once (the false→true transition),
+    // naming the actual cause so the operator knows whether to swap the key or
+    // upgrade the plan.
     if !KEY_INVALID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let reason = if body.contains("plan_required") {
+            "the account has no paid plan (plan_required) — upgrade at https://see-know.eu/pricing"
+        } else {
+            "the API key was rejected (invalid_api_key)"
+        };
         tracing::warn!(
-            "SeekNow (see-know.eu) rejected the API key (HTTP 401 invalid_api_key). \
-             Set a valid key in the UI Settings panel or via HUNTSMAN_SEEKNOW_KEY; \
-             SeekNow lookups are skipped until then."
+            "SeekNow (see-know.eu) lookups disabled: {reason}. Set a valid, \
+             plan-enabled key via HUNTSMAN_SEEKNOW_KEY or the UI Settings panel."
         );
     }
 }
@@ -224,6 +240,29 @@ fn base_url() -> String {
 
 pub fn resolve_key(ctx_key: Option<&str>) -> &str {
     crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
+}
+
+/// Max records per the see-know.eu Universal Search spec (`limit`, default 100,
+/// **max 500**). Requested in full — the standing directive is to use
+/// see-know.eu maximally, and one richer response costs the same budget slot as
+/// a thin one.
+const SEARCH_LIMIT: u32 = 500;
+
+/// Build the `POST /api/v1/search` request body per the see-know.eu spec:
+/// `{"query": <q>, "type": <t>?, "limit": <n>}`. An empty `query_type` omits
+/// `type` so the server auto-detects. Pure (JSON-escapes `query`) so it is
+/// unit-tested.
+fn build_search_body(query: &str, query_type: &str, limit: u32) -> String {
+    if query_type.is_empty() {
+        format!(r#"{{"query":"{}","limit":{}}}"#, escape_json(query), limit)
+    } else {
+        format!(
+            r#"{{"query":"{}","type":"{}","limit":{}}}"#,
+            escape_json(query),
+            query_type,
+            limit
+        )
+    }
 }
 
 /// Universal search via POST /api/v1/search.
@@ -245,15 +284,7 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
         return Ok(Vec::new());
     }
     let url = format!("{}/search", base_url());
-    let body = if query_type.is_empty() {
-        format!(r#"{{"query":"{}"}}"#, escape_json(query))
-    } else {
-        format!(
-            r#"{{"query":"{}","type":"{}"}}"#,
-            escape_json(query),
-            query_type
-        )
-    };
+    let body = build_search_body(query, query_type, SEARCH_LIMIT);
     // The name/auto `/search` path intermittently returns `total:0` even when
     // the record exists (server-side cap races). Retry once on a transient
     // empty before giving up. `cache_put` already refuses to memoise an empty
@@ -413,7 +444,7 @@ fn parse_response(body: &str) -> Result<Value> {
     // Invalid/rejected API key — curl returns the 401 body as "success", so
     // detect it here, latch it, and surface the actionable warning.
     if is_auth_error(body) {
-        mark_key_invalid();
+        mark_key_invalid(body);
         return Ok(Value::Null);
     }
     // Detect quota exhaustion. Per docs the rate-limit error contains
@@ -471,6 +502,34 @@ mod tests {
     }
 
     #[test]
+    fn search_body_includes_limit_and_optional_type() {
+        // Auto-detect: no `type`, always the spec's max `limit`.
+        assert_eq!(
+            build_search_body("john@example.com", "", SEARCH_LIMIT),
+            r#"{"query":"john@example.com","limit":500}"#
+        );
+        // Typed query carries `type` too.
+        assert_eq!(
+            build_search_body("alice", "username", 50),
+            r#"{"query":"alice","type":"username","limit":50}"#
+        );
+        // The query is JSON-escaped (a quote can't break out of the body).
+        assert_eq!(
+            build_search_body("a\"b", "", 1),
+            r#"{"query":"a\"b","limit":1}"#
+        );
+        // We request the spec maximum (default would be 100).
+        assert_eq!(SEARCH_LIMIT, 500);
+    }
+
+    #[test]
+    fn seeknow_client_uses_x_api_key_per_spec() {
+        // Regression guard for the auth header: see-know.eu requires X-API-Key
+        // and rejects Authorization: Bearer ("Missing API key. Use X-API-Key").
+        assert_eq!(CLIENT.auth_scheme(), AuthScheme::XApiKey);
+    }
+
+    #[test]
     fn resolve_key_falls_back_to_hardcoded_when_none() {
         assert_eq!(resolve_key(None), HARDCODED_KEY);
     }
@@ -490,6 +549,11 @@ mod tests {
         ));
         assert!(is_auth_error(
             r#"{"error":"invalid_api_key","message":"Missing API key. Use X-API-Key"}"#
+        ));
+        // A recognised key with no paid plan is also terminal — latch + skip.
+        // (This is the live see-know.eu response observed for the bundled key.)
+        assert!(is_auth_error(
+            r#"{"error":"plan_required","message":"API access requires a paid plan. Upgrade at https://see-know.eu/pricing"}"#
         ));
         // A normal (empty or populated) result is NOT an auth error.
         assert!(!is_auth_error(r#"{"data":{"items":[]}}"#));
