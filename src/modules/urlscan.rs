@@ -44,7 +44,6 @@ struct ScanResult {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)] // url + domain are deserialised for test assertions
 struct PageInfo {
     #[serde(default)]
     url: Option<String>,
@@ -96,7 +95,12 @@ impl Module for UrlScan {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::IpAddress];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::IpAddress,
+            EntityKind::Url,
+            EntityKind::Domain,
+            EntityKind::Address,
+        ];
         KINDS
     }
 
@@ -123,111 +127,158 @@ impl Module for UrlScan {
             return Ok(ModuleResult::new());
         }
 
-        // ── Aggregate intel from all scan results ───────────────────────────
-        let mut unique_ips: BTreeSet<String> = BTreeSet::new();
-        let mut countries: BTreeSet<String> = BTreeSet::new();
-        let mut servers: BTreeSet<String> = BTreeSet::new();
-        let mut any_malicious = false;
-
-        for entry in &data.results {
-            if let Some(ref page) = entry.page {
-                if let Some(ref ip) = page.ip {
-                    let trimmed = ip.trim();
-                    if !trimmed.is_empty() {
-                        unique_ips.insert(trimmed.to_string());
-                    }
-                }
-                if let Some(ref country) = page.country {
-                    let trimmed = country.trim();
-                    if !trimmed.is_empty() {
-                        countries.insert(trimmed.to_string());
-                    }
-                }
-                if let Some(ref server) = page.server {
-                    let trimmed = server.trim();
-                    if !trimmed.is_empty() {
-                        servers.insert(trimmed.to_string());
-                    }
-                }
-            }
-            if let Some(ref verdicts) = entry.verdicts
-                && verdicts.malicious == Some(true)
-            {
-                any_malicious = true;
-            }
-        }
-
-        // ── Build target entity ─────────────────────────────────────────────
-        let confidence = if any_malicious { 0.88 } else { 0.70 };
-        let mut entity = target.to_entity(confidence, &ctx.scan_id);
-        entity.tag("urlscan");
-
-        if any_malicious {
-            entity.tag("urlscan-malicious");
-        }
-
-        // ── Evidence ────────────────────────────────────────────────────────
-        let scan_count = data.results.len();
-        let mut ev = Evidence::new(
-            SRC,
-            format!(
-                "URLScan.io: {scan_count} recent scan(s), {} unique IP(s)",
-                unique_ips.len()
-            ),
-        )
-        .with_attr("scan_count", scan_count.to_string())
-        .with_attr("unique_ips", unique_ips.len().to_string());
-
-        if !countries.is_empty() {
-            let country_list: Vec<&str> = countries.iter().map(String::as_str).collect();
-            ev = ev.with_attr("countries", country_list.join(", "));
-        }
-        if !servers.is_empty() {
-            // Cap at 8 distinct server strings to keep the row readable.
-            let server_list: Vec<&str> = servers.iter().take(8).map(String::as_str).collect();
-            ev = ev.with_attr("servers", server_list.join(", "));
-        }
-        if any_malicious {
-            ev = ev.with_attr("malicious_verdict", "true");
-        }
-
-        entity.add_evidence(ev);
-
         let mut result = ModuleResult::new();
-        result.push(entity);
-
-        // ── Extract unique IPs as child IpAddress entities ──────────────────
-        for ip in &unique_ips {
-            // Only emit valid-looking IPs (v4 or v6).
-            if ip.parse::<std::net::IpAddr>().is_ok() {
-                let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, 0.65, &ctx.scan_id);
-                ip_entity.tag("urlscan");
-                ip_entity.add_evidence(Evidence::new(
-                    SRC,
-                    format!("Resolved IP seen in URLScan.io scans of {}", &target.value),
-                ));
-                result.push(ip_entity);
-            }
+        for e in build_entities(target, &data.results, &ctx.scan_id) {
+            result.push(e);
         }
-
-        for country in &countries {
-            let mut ae = Entity::new(
-                crate::core::entity::EntityKind::Address,
-                country,
-                0.50,
-                &ctx.scan_id,
-            );
-            ae.tag("urlscan");
-            ae.tag("geoint");
-            ae.add_evidence(Evidence::new(
-                SRC,
-                format!("Hosting country from URLScan.io scans of {}", &target.value),
-            ));
-            result.push(ae);
-        }
-
         Ok(result)
     }
+}
+
+/// Trimmed, non-empty view of an optional string field.
+fn nonempty(o: &Option<String>) -> Option<&str> {
+    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Aggregate a set of URLScan.io scan results into entities. **Pure** (no IO) so
+/// the aggregation is unit-tested. Beyond the target entity (with the existing
+/// IP/country/server aggregate) and the child IP/country entities, this now
+/// recovers the previously-discarded `page.url` (the actual pages URLScan
+/// captured — concrete page-level intel) as `Url` entities, and the distinct
+/// `page.domain`s (reverse-IP / related hosts, valuable for an IP-target query)
+/// as `Domain` entities.
+fn build_entities(target: &Target, results: &[ScanResult], scan_id: &str) -> Vec<Entity> {
+    let target_lc = target.value.trim().to_lowercase();
+
+    let mut unique_ips: BTreeSet<String> = BTreeSet::new();
+    let mut countries: BTreeSet<String> = BTreeSet::new();
+    let mut servers: BTreeSet<String> = BTreeSet::new();
+    let mut urls: BTreeSet<String> = BTreeSet::new();
+    let mut domains: BTreeSet<String> = BTreeSet::new();
+    let mut any_malicious = false;
+
+    for entry in results {
+        if let Some(ref page) = entry.page {
+            if let Some(v) = nonempty(&page.ip) {
+                unique_ips.insert(v.to_string());
+            }
+            if let Some(v) = nonempty(&page.country) {
+                countries.insert(v.to_string());
+            }
+            if let Some(v) = nonempty(&page.server) {
+                servers.insert(v.to_string());
+            }
+            if let Some(v) = nonempty(&page.url) {
+                urls.insert(v.to_string());
+            }
+            if let Some(v) = nonempty(&page.domain) {
+                let d = v.to_lowercase();
+                // Skip the target itself; keep related/reverse-IP domains.
+                if d != target_lc {
+                    domains.insert(d);
+                }
+            }
+        }
+        if let Some(ref verdicts) = entry.verdicts
+            && verdicts.malicious == Some(true)
+        {
+            any_malicious = true;
+        }
+    }
+
+    let mut result: Vec<Entity> = Vec::new();
+
+    // ── Target entity + aggregate evidence ──────────────────────────────────
+    let confidence = if any_malicious { 0.88 } else { 0.70 };
+    let mut entity = target.to_entity(confidence, scan_id);
+    entity.tag("urlscan");
+    if any_malicious {
+        entity.tag("urlscan-malicious");
+    }
+
+    let scan_count = results.len();
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "URLScan.io: {scan_count} recent scan(s), {} unique IP(s)",
+            unique_ips.len()
+        ),
+    )
+    .with_attr("scan_count", scan_count.to_string())
+    .with_attr("unique_ips", unique_ips.len().to_string());
+    if !countries.is_empty() {
+        let country_list: Vec<&str> = countries.iter().map(String::as_str).collect();
+        ev = ev.with_attr("countries", country_list.join(", "));
+    }
+    if !servers.is_empty() {
+        // Cap at 8 distinct server strings to keep the row readable.
+        let server_list: Vec<&str> = servers.iter().take(8).map(String::as_str).collect();
+        ev = ev.with_attr("servers", server_list.join(", "));
+    }
+    if !urls.is_empty() {
+        ev = ev.with_attr("scanned_url_count", urls.len().to_string());
+    }
+    if any_malicious {
+        ev = ev.with_attr("malicious_verdict", "true");
+    }
+    entity.add_evidence(ev);
+    result.push(entity);
+
+    // ── Child IP entities ───────────────────────────────────────────────────
+    for ip in &unique_ips {
+        // Only emit valid-looking IPs (v4 or v6).
+        if ip.parse::<std::net::IpAddr>().is_ok() {
+            let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, 0.65, scan_id);
+            ip_entity.tag("urlscan");
+            ip_entity.add_evidence(Evidence::new(
+                SRC,
+                format!("Resolved IP seen in URLScan.io scans of {}", target.value),
+            ));
+            result.push(ip_entity);
+        }
+    }
+
+    // ── Hosting countries → Address entities ────────────────────────────────
+    for country in &countries {
+        let mut ae = Entity::new(EntityKind::Address, country, 0.50, scan_id);
+        ae.tag("urlscan");
+        ae.tag("geoint");
+        ae.add_evidence(Evidence::new(
+            SRC,
+            format!("Hosting country from URLScan.io scans of {}", target.value),
+        ));
+        result.push(ae);
+    }
+
+    // ── Recovered: scanned page URLs → Url entities ─────────────────────────
+    for url in &urls {
+        let mut ue = Entity::new(EntityKind::Url, url, 0.55, scan_id);
+        ue.tag("urlscan");
+        ue.tag("scanned-page");
+        ue.add_evidence(Evidence::new(
+            SRC,
+            format!("Page captured by URLScan.io for {}", target.value),
+        ));
+        result.push(ue);
+    }
+
+    // ── Recovered: distinct page domains → Domain entities ──────────────────
+    for domain in &domains {
+        if domain.contains('.') {
+            let mut de = Entity::new(EntityKind::Domain, domain, 0.55, scan_id);
+            de.tag("urlscan");
+            de.add_evidence(Evidence::new(
+                SRC,
+                format!(
+                    "Domain seen in URLScan.io scans related to {}",
+                    target.value
+                ),
+            ));
+            result.push(de);
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -333,5 +384,75 @@ mod tests {
         let second = &resp.results[1];
         assert!(second.page.is_none());
         assert!(second.verdicts.is_none());
+    }
+
+    fn results(json: &str) -> Vec<ScanResult> {
+        serde_json::from_str::<SearchResp>(json).unwrap().results
+    }
+
+    #[test]
+    fn build_recovers_page_urls_and_related_domains() {
+        // IP-target query: the page domains are reverse-IP hosts worth pivoting.
+        let r = results(
+            r#"{"results":[
+                {"page":{"url":"https://evil.com/login","domain":"evil.com","ip":"9.9.9.9","country":"RU","server":"nginx"},
+                 "verdicts":{"malicious":true}},
+                {"page":{"url":"https://other.net/x","domain":"other.net","ip":"9.9.9.9","country":"RU"}}
+            ]}"#,
+        );
+        let v = build_entities(&Target::new(TargetKind::IpAddress, "9.9.9.9"), &r, "s");
+        // Recovered page URLs as Url entities (previously discarded).
+        let urls: Vec<&str> = v
+            .iter()
+            .filter(|e| e.kind == EntityKind::Url)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(urls.contains(&"https://evil.com/login"));
+        assert!(urls.contains(&"https://other.net/x"));
+        // Recovered page domains as Domain entities.
+        let doms: Vec<&str> = v
+            .iter()
+            .filter(|e| e.kind == EntityKind::Domain)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(doms.contains(&"evil.com") && doms.contains(&"other.net"));
+        // Malicious verdict propagates to the target entity.
+        let target_ent = v
+            .iter()
+            .find(|e| e.kind == EntityKind::IpAddress && e.value == "9.9.9.9");
+        assert!(target_ent.unwrap().has_tag("urlscan-malicious"));
+    }
+
+    #[test]
+    fn build_skips_self_domain_and_surfaces_url_count() {
+        // Domain-target query: page.domain == target is not re-emitted.
+        let r = results(
+            r#"{"results":[
+                {"page":{"url":"https://example.com/a","domain":"example.com","ip":"1.1.1.1"}},
+                {"page":{"url":"https://example.com/b","domain":"EXAMPLE.COM","ip":"1.1.1.1"}}
+            ]}"#,
+        );
+        let v = build_entities(&Target::new(TargetKind::Domain, "example.com"), &r, "s");
+        // The only Domain entity is the target itself (kind echoed by to_entity);
+        // the page domain "example.com" (and its uppercase dup) is not re-emitted.
+        let extra_domains: Vec<&str> = v
+            .iter()
+            .filter(|e| e.kind == EntityKind::Domain && e.value != "example.com")
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(
+            extra_domains.is_empty(),
+            "the target's own domain must not be re-emitted as a pivot: {extra_domains:?}"
+        );
+        // Two distinct page URLs recovered; one deduped IP child.
+        assert_eq!(v.iter().filter(|e| e.kind == EntityKind::Url).count(), 2);
+        let target_ent = v.iter().find(|e| e.value == "example.com").unwrap();
+        assert_eq!(
+            target_ent.evidence[0]
+                .attributes
+                .get("scanned_url_count")
+                .map(String::as_str),
+            Some("2")
+        );
     }
 }
