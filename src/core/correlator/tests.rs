@@ -1700,3 +1700,314 @@ fn au032_ignores_non_colocation_edges() {
     ];
     assert!(rule_au_032_colocation_cluster(&[a, b, c], &rels, "s", 0).is_empty());
 }
+
+// ── Coverage for rules AU-018..AU-029 ───────────────────────────────
+// These eleven rules were defined and dispatched but never had a test that
+// asserted firing behaviour (AU-019 had only a non-ASCII panic guard). Each
+// gets a positive (fires + correct id/severity) and a negative (silent below
+// its threshold) case so a future edit that breaks a trigger is caught.
+
+#[test]
+fn au018_links_email_to_physical_location() {
+    let ents = vec![
+        ent(EntityKind::Email, "a@x.com", 0.70, "epieos", false),
+        ent(
+            EntityKind::Address,
+            "1 King St, Sydney NSW 2000",
+            0.60,
+            "photon",
+            false,
+        ),
+    ];
+    let c = rule_au_018_email_address_colocation(&ents, "scan", 0);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].rule_id, "AU-018");
+    assert_eq!(c[0].severity, Severity::High);
+}
+
+#[test]
+fn au018_silent_without_location_or_below_confidence() {
+    let only_email = vec![ent(EntityKind::Email, "a@x.com", 0.70, "epieos", false)];
+    assert!(rule_au_018_email_address_colocation(&only_email, "scan", 0).is_empty());
+    // Email below the 0.60 floor, even with an address present → nothing.
+    let low = vec![
+        ent(EntityKind::Email, "a@x.com", 0.55, "epieos", false),
+        ent(EntityKind::Address, "1 King St", 0.60, "photon", false),
+    ];
+    assert!(rule_au_018_email_address_colocation(&low, "scan", 0).is_empty());
+}
+
+fn breach_email(value: &str, date: &str) -> Entity {
+    let mut e = Entity::new(EntityKind::Email, value, 0.8, "scan");
+    e.tag("breach");
+    e.add_evidence(Evidence::new("test", "breach").with_attr("breach_date", date));
+    e
+}
+
+#[test]
+fn au019_clusters_breaches_within_thirty_days() {
+    let ents = vec![
+        breach_email("a@x.com", "2024-01-01"),
+        breach_email("b@x.com", "2024-01-10"),
+        breach_email("c@x.com", "2024-01-20"),
+    ];
+    let c = rule_au_019_temporal_breach_cluster(&ents, "scan", 0);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].rule_id, "AU-019");
+    assert_eq!(c[0].entity_uids.len(), 3);
+}
+
+#[test]
+fn au019_does_not_cluster_dates_far_apart() {
+    let ents = vec![
+        breach_email("a@x.com", "2024-01-01"),
+        breach_email("b@x.com", "2024-06-01"),
+        breach_email("c@x.com", "2024-12-01"),
+    ];
+    assert!(rule_au_019_temporal_breach_cluster(&ents, "scan", 0).is_empty());
+}
+
+#[test]
+fn date_diff_days_counts_span_order_independent_and_flags_unparseable() {
+    assert_eq!(date_diff_days("2024-01-01", "2024-01-11"), 10);
+    assert_eq!(date_diff_days("2024-01-11", "2024-01-01"), 10);
+    assert_eq!(date_diff_days("garbage", "2024-01-01"), u64::MAX);
+}
+
+#[test]
+fn au020_fires_on_multiple_persons() {
+    let ents = vec![
+        ent(EntityKind::Person, "John Doe", 0.70, "proxycurl", false),
+        ent(EntityKind::Person, "J. Doe", 0.60, "epieos", false),
+    ];
+    let c = rule_au_020_person_entity_cluster(&ents, "scan", 0);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].rule_id, "AU-020");
+    assert_eq!(c[0].severity, Severity::Medium);
+}
+
+#[test]
+fn au020_silent_for_single_person() {
+    let ents = vec![ent(
+        EntityKind::Person,
+        "John Doe",
+        0.70,
+        "proxycurl",
+        false,
+    )];
+    assert!(rule_au_020_person_entity_cluster(&ents, "scan", 0).is_empty());
+}
+
+#[test]
+fn au022_links_organisation_to_breach() {
+    let mut breach = ent(EntityKind::Email, "x@corp.com", 0.70, "hibp", false);
+    breach.tag("breach");
+    let ents = vec![
+        ent(
+            EntityKind::Organisation,
+            "Corp Pty Ltd",
+            0.70,
+            "opencorporates",
+            false,
+        ),
+        breach,
+    ];
+    let c = rule_au_022_organisation_with_breach(&ents, "scan", 0);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].rule_id, "AU-022");
+    assert_eq!(c[0].severity, Severity::High);
+}
+
+#[test]
+fn au022_silent_without_breach() {
+    let ents = vec![ent(
+        EntityKind::Organisation,
+        "Corp",
+        0.70,
+        "opencorporates",
+        false,
+    )];
+    assert!(rule_au_022_organisation_with_breach(&ents, "scan", 0).is_empty());
+}
+
+/// A Person confirmed by distinct evidence *sources* (AU-023/026 match on
+/// `evidence_sources()`, not tags).
+fn person_from_sources(value: &str, conf: f64, srcs: &[&str]) -> Entity {
+    let mut e = Entity::new(EntityKind::Person, value, conf, "scan");
+    for s in srcs {
+        e.add_evidence(Evidence::new(*s, "x"));
+    }
+    e
+}
+
+#[test]
+fn au023_fires_when_two_identity_sources_agree() {
+    let p = person_from_sources("John Doe", 0.80, &["keybase", "proxycurl"]);
+    let c = rule_au_023_cross_platform_identity(&[p], "scan", 0);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].rule_id, "AU-023");
+    assert_eq!(c[0].severity, Severity::High);
+}
+
+#[test]
+fn au023_silent_with_single_identity_source() {
+    // keybase is an identity source; the other is not → only one match.
+    let p = person_from_sources("John Doe", 0.80, &["keybase", "some_other_source"]);
+    assert!(rule_au_023_cross_platform_identity(&[p], "scan", 0).is_empty());
+}
+
+#[test]
+fn au024_fires_on_two_converging_risk_signals() {
+    let mut e = ent(EntityKind::Email, "x@temp.com", 0.6, "seon", false);
+    e.tag("breach");
+    e.tag("disposable");
+    let c = rule_au_024_email_fraud_signal(&[e], "scan", 0);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].rule_id, "AU-024");
+    assert!(c[0].description.contains("breach-exposed"));
+    assert!(c[0].description.contains("disposable"));
+}
+
+#[test]
+fn au024_silent_with_single_signal() {
+    let mut e = ent(EntityKind::Email, "x@temp.com", 0.6, "seon", false);
+    e.tag("breach");
+    assert!(rule_au_024_email_fraud_signal(&[e], "scan", 0).is_empty());
+}
+
+#[test]
+fn au025_links_registered_company_to_person() {
+    let mut org = ent(
+        EntityKind::Organisation,
+        "Corp Pty Ltd",
+        0.80,
+        "opencorporates",
+        false,
+    );
+    org.tag("opencorporates");
+    let ents = vec![
+        org,
+        ent(EntityKind::Person, "John Doe", 0.70, "proxycurl", false),
+    ];
+    let c = rule_au_025_corporate_identity_link(&ents, "scan", 0);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].rule_id, "AU-025");
+    assert_eq!(c[0].severity, Severity::Medium);
+}
+
+#[test]
+fn au025_silent_without_registry_tag() {
+    // Organisation present but not from the corporate registry → no link.
+    let ents = vec![
+        ent(EntityKind::Organisation, "Corp", 0.80, "some_source", false),
+        ent(EntityKind::Person, "John Doe", 0.70, "proxycurl", false),
+    ];
+    assert!(rule_au_025_corporate_identity_link(&ents, "scan", 0).is_empty());
+}
+
+#[test]
+fn au026_fires_when_two_geo_sources_agree() {
+    let mut a = Entity::new(
+        EntityKind::Address,
+        "1 King St, Sydney NSW 2000",
+        0.70,
+        "scan",
+    );
+    a.add_evidence(Evidence::new("photon", "p"));
+    a.add_evidence(Evidence::new("ip2location", "i"));
+    let c = rule_au_026_validated_address(&[a], "scan", 0);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].rule_id, "AU-026");
+    assert_eq!(c[0].severity, Severity::High);
+}
+
+#[test]
+fn au026_silent_with_single_geo_source() {
+    let mut a = Entity::new(EntityKind::Address, "1 King St", 0.70, "scan");
+    a.add_evidence(Evidence::new("photon", "p"));
+    assert!(rule_au_026_validated_address(&[a], "scan", 0).is_empty());
+}
+
+#[test]
+fn au027_fires_on_geotagged_address_coordinate_chain() {
+    let mut addr = ent(
+        EntityKind::Address,
+        "1 King St, Sydney NSW 2000",
+        0.60,
+        "photon",
+        false,
+    );
+    addr.tag("validated");
+    let coords = ent(
+        EntityKind::Coordinates,
+        "-33.8688,151.2093",
+        0.60,
+        "photon",
+        false,
+    );
+    let c = rule_au_027_address_coordinates_chain(&[addr, coords], "scan", 0);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].rule_id, "AU-027");
+    assert_eq!(c[0].severity, Severity::High);
+}
+
+#[test]
+fn au027_silent_without_any_geo_provenance_tag() {
+    // Both present and above the 0.55 floor, but neither carries a geo tag.
+    let addr = ent(EntityKind::Address, "1 King St", 0.60, "photon", false);
+    let coords = ent(
+        EntityKind::Coordinates,
+        "-33.8,151.2",
+        0.60,
+        "photon",
+        false,
+    );
+    assert!(rule_au_027_address_coordinates_chain(&[addr, coords], "scan", 0).is_empty());
+}
+
+#[test]
+fn au028_fires_on_dangling_subdomain() {
+    let mut d = ent(EntityKind::Domain, "old.corp.com", 0.6, "crtsh", false);
+    d.tag("subdomain-takeover");
+    let c = rule_au_028_subdomain_takeover_risk(&[d], "scan", 0);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].rule_id, "AU-028");
+    assert_eq!(c[0].severity, Severity::Critical);
+}
+
+#[test]
+fn au028_silent_for_healthy_domain() {
+    let d = ent(EntityKind::Domain, "corp.com", 0.6, "crtsh", false);
+    assert!(rule_au_028_subdomain_takeover_risk(&[d], "scan", 0).is_empty());
+}
+
+#[test]
+fn au029_fires_on_vulnerable_cloud_storage() {
+    let mut b = ent(
+        EntityKind::Url,
+        "https://x.s3.amazonaws.com",
+        0.6,
+        "scan",
+        false,
+    );
+    b.tag("cloud-storage");
+    b.tag("vulnerable");
+    let c = rule_au_029_cloud_storage_exposure(&[b], "scan", 0);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].rule_id, "AU-029");
+    assert_eq!(c[0].severity, Severity::Critical);
+}
+
+#[test]
+fn au029_silent_when_not_flagged_vulnerable() {
+    // cloud-storage present but not flagged vulnerable → no exposure.
+    let mut b = ent(
+        EntityKind::Url,
+        "https://x.s3.amazonaws.com",
+        0.6,
+        "scan",
+        false,
+    );
+    b.tag("cloud-storage");
+    assert!(rule_au_029_cloud_storage_exposure(&[b], "scan", 0).is_empty());
+}
