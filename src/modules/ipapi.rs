@@ -24,7 +24,6 @@ const SRC: &str = "ipapi";
 const FIELDS: u64 = 66846719;
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct IpApiResp {
     #[serde(default)]
     status: Option<String>,
@@ -138,101 +137,135 @@ impl Module for IpApi {
         }
 
         let mut result = ModuleResult::new();
-
-        let city = data.city.as_deref().unwrap_or("");
-        let region = data.region_name.as_deref().unwrap_or("");
-        let country = data.country.as_deref().unwrap_or("");
-        let isp = data.isp.as_deref().unwrap_or("");
-
-        let mut ev = Evidence::new(SRC, format!("IP geolocation: {city}, {region}, {country}"))
-            .with_attr("ip", ip);
-        if !city.is_empty() {
-            ev = ev.with_attr("city", city);
+        for e in build_entities(ip, &data, &ctx.scan_id) {
+            result.push(e);
         }
-        if !region.is_empty() {
-            ev = ev.with_attr("region", region);
-        }
-        if !country.is_empty() {
-            ev = ev.with_attr("country", country);
-        }
-        if !isp.is_empty() {
-            ev = ev.with_attr("isp", isp);
-        }
-        if let Some(asn) = &data.asn {
-            ev = ev.with_attr("asn", asn);
-        }
-        if let Some(org) = &data.org {
-            ev = ev.with_attr("org", org);
-        }
-        if let Some(tz) = &data.timezone {
-            ev = ev.with_attr("timezone", tz);
-        }
-
-        if let (Some(lat), Some(lon)) = (data.lat, data.lon)
-            && lat.abs() > 0.01
-            && lon.abs() > 0.01
-        {
-            let coords = format!("{lat:.4},{lon:.4}");
-            // Confidence recalibrated 0.70 → 0.60 — see ip_geo.rs for
-            // rationale (single-source free IP geo overstates
-            // residential precision; corroboration boost lifts the
-            // real value at the merge step).
-            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.60, &ctx.scan_id);
-            ce.tag(tags::GEOINT);
-            if data.mobile == Some(true) {
-                ce.tag("mobile");
-            }
-            if data.proxy == Some(true) {
-                ce.tag(tags::PROXY);
-            }
-            if data.hosting == Some(true) {
-                ce.tag("hosting");
-            }
-            ce.add_evidence(ev.clone());
-            result.push(ce);
-        }
-
-        if !city.is_empty() {
-            let addr = if !region.is_empty() && !country.is_empty() {
-                format!("{city}, {region}, {country}")
-            } else if !country.is_empty() {
-                format!("{city}, {country}")
-            } else {
-                city.to_string()
-            };
-            let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &ctx.scan_id);
-            ae.tag(tags::GEOINT);
-            ae.add_evidence(ev.clone());
-            result.push(ae);
-        }
-
-        if let Some(asn) = &data.asn {
-            let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
-            ae.add_evidence(ev.clone());
-            result.push(ae);
-        }
-
-        if let Some(org) = &data.org
-            && !org.is_empty()
-            && org.len() >= 3
-        {
-            let mut oe = Entity::new(EntityKind::Organisation, org, 0.60, &ctx.scan_id);
-            oe.add_evidence(ev.clone());
-            result.push(oe);
-        }
-
-        if let Some(rev) = &data.reverse
-            && !rev.is_empty()
-            && rev.contains('.')
-        {
-            let mut de = Entity::new(EntityKind::Domain, rev, 0.65, &ctx.scan_id);
-            de.tag(tags::PTR);
-            de.add_evidence(ev);
-            result.push(de);
-        }
-
         Ok(result)
     }
+}
+
+/// Trimmed, non-empty view of an optional string field.
+fn nonempty(o: &Option<String>) -> Option<&str> {
+    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Map an ip-api.com record to its geo/network entities. **Pure** (no IO) so the
+/// multi-entity construction is unit-tested. Recovers the previously-discarded
+/// `zip` (postal precision), `countryCode` (also tagged `country:XX` on the
+/// coordinate for geo-cluster correlation), `asname`, the `region` code, and
+/// `district` — all surfaced on the shared evidence so no API datum is dropped.
+fn build_entities(ip: &str, data: &IpApiResp, scan_id: &str) -> Vec<Entity> {
+    let mut result: Vec<Entity> = Vec::new();
+
+    let city = data.city.as_deref().unwrap_or("");
+    let region = data.region_name.as_deref().unwrap_or("");
+    let country = data.country.as_deref().unwrap_or("");
+    let isp = data.isp.as_deref().unwrap_or("");
+
+    let mut ev = Evidence::new(SRC, format!("IP geolocation: {city}, {region}, {country}"))
+        .with_attr("ip", ip);
+    if !city.is_empty() {
+        ev = ev.with_attr("city", city);
+    }
+    if !region.is_empty() {
+        ev = ev.with_attr("region", region);
+    }
+    if !country.is_empty() {
+        ev = ev.with_attr("country", country);
+    }
+    if !isp.is_empty() {
+        ev = ev.with_attr("isp", isp);
+    }
+    if let Some(asn) = nonempty(&data.asn) {
+        ev = ev.with_attr("asn", asn);
+    }
+    if let Some(org) = nonempty(&data.org) {
+        ev = ev.with_attr("org", org);
+    }
+    if let Some(tz) = nonempty(&data.timezone) {
+        ev = ev.with_attr("timezone", tz);
+    }
+    // ── Recovered fields (previously deserialised then discarded) ──
+    if let Some(cc) = nonempty(&data.country_code) {
+        ev = ev.with_attr("country_code", cc);
+    }
+    if let Some(z) = nonempty(&data.zip) {
+        ev = ev.with_attr("postal", z);
+    }
+    if let Some(an) = nonempty(&data.as_name) {
+        ev = ev.with_attr("as_name", an);
+    }
+    if let Some(rc) = nonempty(&data.region) {
+        ev = ev.with_attr("region_code", rc);
+    }
+    if let Some(d) = nonempty(&data.district) {
+        ev = ev.with_attr("district", d);
+    }
+
+    if let (Some(lat), Some(lon)) = (data.lat, data.lon)
+        && lat.abs() > 0.01
+        && lon.abs() > 0.01
+    {
+        let coords = format!("{lat:.4},{lon:.4}");
+        // Confidence recalibrated 0.70 → 0.60 — see ip_geo.rs for rationale
+        // (single-source free IP geo overstates residential precision;
+        // corroboration boost lifts the real value at the merge step).
+        let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.60, scan_id);
+        ce.tag(tags::GEOINT);
+        if let Some(cc) = nonempty(&data.country_code) {
+            ce.tag(format!("country:{}", cc.to_uppercase()));
+        }
+        if data.mobile == Some(true) {
+            ce.tag("mobile");
+        }
+        if data.proxy == Some(true) {
+            ce.tag(tags::PROXY);
+        }
+        if data.hosting == Some(true) {
+            ce.tag("hosting");
+        }
+        ce.add_evidence(ev.clone());
+        result.push(ce);
+    }
+
+    if !city.is_empty() {
+        let addr = if !region.is_empty() && !country.is_empty() {
+            format!("{city}, {region}, {country}")
+        } else if !country.is_empty() {
+            format!("{city}, {country}")
+        } else {
+            city.to_string()
+        };
+        let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, scan_id);
+        ae.tag(tags::GEOINT);
+        ae.add_evidence(ev.clone());
+        result.push(ae);
+    }
+
+    if let Some(asn) = nonempty(&data.asn) {
+        let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, scan_id);
+        ae.add_evidence(ev.clone());
+        result.push(ae);
+    }
+
+    if let Some(org) = nonempty(&data.org)
+        && org.len() >= 3
+    {
+        let mut oe = Entity::new(EntityKind::Organisation, org, 0.60, scan_id);
+        oe.add_evidence(ev.clone());
+        result.push(oe);
+    }
+
+    if let Some(rev) = nonempty(&data.reverse)
+        && rev.contains('.')
+    {
+        let mut de = Entity::new(EntityKind::Domain, rev, 0.65, scan_id);
+        de.tag(tags::PTR);
+        de.add_evidence(ev);
+        result.push(de);
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -273,5 +306,54 @@ mod tests {
         assert_eq!(data.city.as_deref(), Some("Sydney"));
         assert_eq!(data.mobile, Some(true));
         assert_eq!(data.proxy, Some(false));
+    }
+
+    fn data_of(json: &str) -> IpApiResp {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn build_recovers_postal_country_code_asname_and_tags_country() {
+        let d = data_of(
+            r#"{"status":"success","country":"Australia","countryCode":"AU","region":"NSW",
+                "regionName":"New South Wales","city":"Sydney","zip":"2000","lat":-33.8688,
+                "lon":151.209,"timezone":"Australia/Sydney","isp":"Telstra","org":"Telstra Corp",
+                "as":"AS1221 Telstra","asname":"ASN-TELSTRA","reverse":"host.telstra.net",
+                "mobile":true,"proxy":false,"hosting":false,"district":"CBD"}"#,
+        );
+        let v = build_entities("1.2.3.4", &d, "s");
+        let coords = v
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .unwrap();
+        assert!(coords.has_tag("country:AU") && coords.has_tag("mobile"));
+        let a = &coords.evidence[0].attributes;
+        // Recovered fields surfaced on the shared evidence.
+        assert_eq!(a.get("postal").map(String::as_str), Some("2000")); // zip
+        assert_eq!(a.get("country_code").map(String::as_str), Some("AU"));
+        assert_eq!(a.get("as_name").map(String::as_str), Some("ASN-TELSTRA"));
+        assert_eq!(a.get("region_code").map(String::as_str), Some("NSW"));
+        assert_eq!(a.get("district").map(String::as_str), Some("CBD"));
+        // Existing entity kinds still produced.
+        assert!(
+            v.iter()
+                .any(|e| e.kind == EntityKind::Asn && e.value == "AS1221 Telstra")
+        );
+        assert!(v.iter().any(|e| e.kind == EntityKind::Organisation));
+        assert!(v.iter().any(|e| e.kind == EntityKind::Address));
+        assert!(
+            v.iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "host.telstra.net")
+        );
+    }
+
+    #[test]
+    fn build_skips_null_island_coordinates() {
+        let d = data_of(r#"{"status":"success","city":"X","country":"Y","lat":0.0,"lon":0.0}"#);
+        assert!(
+            !build_entities("1.2.3.4", &d, "s")
+                .iter()
+                .any(|e| e.kind == EntityKind::Coordinates)
+        );
     }
 }
