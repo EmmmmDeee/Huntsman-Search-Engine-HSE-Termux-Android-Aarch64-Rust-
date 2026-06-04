@@ -39,7 +39,6 @@ fn resolve_key(ctx_key: Option<&str>) -> &str {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
-#[allow(dead_code)]
 struct Breach {
     name: String,
     #[serde(default)]
@@ -72,6 +71,144 @@ struct Breach {
     is_subscription_free: Option<bool>,
     #[serde(default)]
     logo_path: Option<String>,
+}
+
+/// Trimmed, non-empty view of an optional string field.
+fn nonempty(o: &Option<String>) -> Option<&str> {
+    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// One evidence record carrying **every** field HIBP returns for a breach, so no
+/// API-provided datum is dropped. The `Breach` struct previously deserialised
+/// `title`/`description`/`added_date`/`is_fabricated`/`is_sensitive`/… only for
+/// test assertions (hence its struct-level dead-code allow); they are now
+/// surfaced. **Pure** (no IO), so the mapping is unit-tested.
+fn breach_evidence(b: &Breach) -> Evidence {
+    let label = nonempty(&b.title).unwrap_or(&b.name);
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "Breach: {label} ({})",
+            nonempty(&b.breach_date).unwrap_or("date unknown")
+        ),
+    )
+    .with_attr("name", &b.name);
+    if let Some(v) = nonempty(&b.title) {
+        ev = ev.with_attr("title", v);
+    }
+    if let Some(v) = nonempty(&b.domain) {
+        ev = ev.with_attr("domain", v);
+    }
+    if let Some(v) = nonempty(&b.breach_date) {
+        // Keep the `breach_date` key: the AU-019 temporal-cluster rule reads it.
+        ev = ev.with_attr("breach_date", v);
+    }
+    if let Some(v) = nonempty(&b.added_date) {
+        ev = ev.with_attr("added_date", v);
+    }
+    if let Some(v) = nonempty(&b.modified_date) {
+        ev = ev.with_attr("modified_date", v);
+    }
+    if let Some(p) = b.pwn_count {
+        ev = ev.with_attr("pwn_count", p.to_string());
+    }
+    if let Some(v) = nonempty(&b.description) {
+        ev = ev.with_attr("description", v);
+    }
+    if !b.data_classes.is_empty() {
+        ev = ev.with_attr("data_classes", b.data_classes.join(", "));
+    }
+    if let Some(v) = b.is_verified {
+        ev = ev.with_attr("is_verified", v.to_string());
+    }
+    if let Some(v) = b.is_fabricated {
+        ev = ev.with_attr("is_fabricated", v.to_string());
+    }
+    if let Some(v) = b.is_sensitive {
+        ev = ev.with_attr("is_sensitive", v.to_string());
+    }
+    if let Some(v) = b.is_retired {
+        ev = ev.with_attr("is_retired", v.to_string());
+    }
+    if let Some(v) = b.is_spam_list {
+        ev = ev.with_attr("is_spam_list", v.to_string());
+    }
+    if let Some(v) = b.is_subscription_free {
+        ev = ev.with_attr("is_subscription_free", v.to_string());
+    }
+    if let Some(v) = nonempty(&b.logo_path) {
+        ev = ev.with_attr("logo_path", v);
+    }
+    ev
+}
+
+/// Reliability-aware aggregate of a breach set. **Pure** so the
+/// counting/union logic is unit-tested without a live API. Surfaces the
+/// classification HIBP provides — sensitive / fabricated / spam-list / retired —
+/// that the module previously discarded, so downstream weighting can tell a
+/// verified breach apart from a fabricated or spam-list one.
+#[derive(Default)]
+struct BreachClassification {
+    total: usize,
+    verified: usize,
+    fabricated: usize,
+    spam_list: usize,
+    sensitive: usize,
+    retired: usize,
+    total_pwns: u64,
+    /// Sorted union of every breach's data classes (what was leaked).
+    data_classes: Vec<String>,
+    has_passwords: bool,
+    has_phone: bool,
+    has_physical: bool,
+    /// Most recent breach date (max ISO-8601 string).
+    latest_date: Option<String>,
+}
+
+fn classify_breaches(breaches: &[Breach]) -> BreachClassification {
+    let mut c = BreachClassification {
+        total: breaches.len(),
+        ..Default::default()
+    };
+    let mut dc_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for b in breaches {
+        if b.is_verified == Some(true) {
+            c.verified += 1;
+        }
+        if b.is_fabricated == Some(true) {
+            c.fabricated += 1;
+        }
+        if b.is_spam_list == Some(true) {
+            c.spam_list += 1;
+        }
+        if b.is_sensitive == Some(true) {
+            c.sensitive += 1;
+        }
+        if b.is_retired == Some(true) {
+            c.retired += 1;
+        }
+        c.total_pwns += b.pwn_count.unwrap_or(0);
+        for dc in &b.data_classes {
+            let dcl = dc.to_lowercase();
+            if dcl.contains("password") {
+                c.has_passwords = true;
+            }
+            if dcl.contains("phone") {
+                c.has_phone = true;
+            }
+            if dcl.contains("physical") || dcl.contains("address") || dcl.contains("location") {
+                c.has_physical = true;
+            }
+            dc_set.insert(dc.clone());
+        }
+        if let Some(d) = nonempty(&b.breach_date)
+            && c.latest_date.as_deref().is_none_or(|cur| d > cur)
+        {
+            c.latest_date = Some(d.to_string());
+        }
+    }
+    c.data_classes = dc_set.into_iter().collect();
+    c
 }
 
 // ── Module impl ─────────────────────────────────────────────────────
@@ -217,20 +354,15 @@ impl Hibp {
             return Ok(());
         }
 
-        let verified_count = breaches
+        let cls = classify_breaches(&breaches);
+        let top_names: String = breaches
             .iter()
-            .filter(|b| b.is_verified == Some(true))
-            .count();
-        let total = breaches.len();
-        let breach_names: Vec<&str> = breaches.iter().map(|b| b.name.as_str()).collect();
-        let top_names: String = breach_names
-            .iter()
+            .map(|b| b.name.as_str())
             .take(10)
-            .copied()
             .collect::<Vec<_>>()
             .join(", ");
 
-        let base_conf = match verified_count {
+        let base_conf = match cls.verified {
             0 => 0.65,
             1..=2 => 0.80,
             3..=5 => 0.88,
@@ -245,84 +377,73 @@ impl Hibp {
         );
         email_ent.tag(tags::BREACH);
         email_ent.tag("hibp");
-        if verified_count >= 3 {
+        if cls.verified >= 3 {
             email_ent.tag(tags::HIGH_EXPOSURE);
         }
-        email_ent.corroboration = verified_count.max(1) as u32;
+        // Reliability classification recovered from previously-discarded fields:
+        // a sensitive breach (e.g. an affair/identity site) is high-signal; a
+        // fabricated or spam-list "breach" is low-fidelity and flagged as such.
+        if cls.sensitive > 0 {
+            email_ent.tag("sensitive-breach");
+        }
+        if cls.fabricated > 0 || cls.spam_list > 0 {
+            email_ent.tag("unverified-breach-data");
+        }
+        if cls.has_passwords {
+            email_ent.tag(tags::PASSWORD_AT_RISK);
+        }
+        if cls.has_phone {
+            email_ent.tag("phone-exposed");
+        }
+        if cls.has_physical {
+            email_ent.tag("address-exposed");
+        }
+        email_ent.corroboration = cls.verified.max(1) as u32;
         email_ent.add_evidence(
             Evidence::new(
                 SRC,
-                format!("Found in {total} breach(es) ({verified_count} verified): {top_names}"),
+                format!(
+                    "Found in {} breach(es) ({} verified): {top_names}",
+                    cls.total, cls.verified
+                ),
             )
-            .with_attr("breach_count", total.to_string())
-            .with_attr("verified_count", verified_count.to_string())
-            .with_attr("breach_names", breach_names.join(", "))
+            .with_attr("breach_count", cls.total.to_string())
+            .with_attr("verified_count", cls.verified.to_string())
+            .with_attr("fabricated_count", cls.fabricated.to_string())
+            .with_attr("spam_list_count", cls.spam_list.to_string())
+            .with_attr("sensitive_count", cls.sensitive.to_string())
+            .with_attr("retired_count", cls.retired.to_string())
+            .with_attr("total_pwn_count", cls.total_pwns.to_string())
+            .with_attr("data_classes", cls.data_classes.join(", "))
             .with_attr(
-                "breach_date",
+                "breach_names",
                 breaches
                     .iter()
-                    .filter_map(|b| b.breach_date.as_deref())
-                    .max()
-                    .unwrap_or(""),
-            ),
+                    .map(|b| b.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+            .with_attr("breach_date", cls.latest_date.clone().unwrap_or_default()),
         );
+        // Per-breach detail — every field HIBP returned, nothing dropped.
+        for breach in &breaches {
+            email_ent.add_evidence(breach_evidence(breach));
+        }
         result.push(email_ent);
 
-        // Extract data classes to tag risk level
-        let mut has_passwords = false;
-        let mut has_phone = false;
-        let mut has_physical = false;
-
+        // Extract associated domains as expansion seeds, each carrying the full
+        // breach record as provenance.
         for breach in &breaches {
-            for dc in &breach.data_classes {
-                let dcl = dc.to_lowercase();
-                if dcl.contains("password") {
-                    has_passwords = true;
-                }
-                if dcl.contains("phone") {
-                    has_phone = true;
-                }
-                if dcl.contains("physical") || dcl.contains("address") || dcl.contains("location") {
-                    has_physical = true;
-                }
-            }
-
-            // Extract associated domains as expansion seeds
-            if let Some(domain) = &breach.domain
-                && !domain.is_empty()
+            if let Some(domain) = nonempty(&breach.domain)
                 && domain.contains('.')
             {
                 let mut de = Entity::new(EntityKind::Domain, domain, 0.55, &ctx.scan_id);
                 de.tag(tags::BREACH);
                 de.tag("hibp");
                 de.tag(tags::BREACH_DERIVED);
-                de.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!(
-                            "Domain from breach '{}' ({})",
-                            breach.name,
-                            breach.breach_date.as_deref().unwrap_or("unknown date")
-                        ),
-                    )
-                    .with_attr("breach_name", &breach.name)
-                    .with_attr("pwn_count", breach.pwn_count.unwrap_or(0).to_string())
-                    .with_attr("data_classes", breach.data_classes.join(", "))
-                    .with_attr("breach_date", breach.breach_date.as_deref().unwrap_or("")),
-                );
+                de.add_evidence(breach_evidence(breach));
                 result.push(de);
             }
-        }
-
-        // Emit risk-level tags on the email entity
-        if has_passwords && let Some(e) = result.entities.first_mut() {
-            e.tag(tags::PASSWORD_AT_RISK);
-        }
-        if has_phone && let Some(e) = result.entities.first_mut() {
-            e.tag("phone-exposed");
-        }
-        if has_physical && let Some(e) = result.entities.first_mut() {
-            e.tag("address-exposed");
         }
 
         Ok(())
@@ -347,15 +468,9 @@ impl Hibp {
             return Ok(());
         }
 
-        let total = breaches.len();
-        let verified = breaches
-            .iter()
-            .filter(|b| b.is_verified == Some(true))
-            .count();
-        let total_pwns: u64 = breaches.iter().filter_map(|b| b.pwn_count).sum();
+        let cls = classify_breaches(&breaches);
         let names: Vec<&str> = breaches.iter().map(|b| b.name.as_str()).collect();
-
-        let base_conf = if verified >= 2 { 0.80 } else { 0.65 };
+        let base_conf = if cls.verified >= 2 { 0.80 } else { 0.65 };
 
         let mut domain_ent = Entity::new(
             EntityKind::Domain,
@@ -365,43 +480,47 @@ impl Hibp {
         );
         domain_ent.tag(tags::BREACH);
         domain_ent.tag("hibp");
-        if total_pwns > 1_000_000 {
+        if cls.total_pwns > 1_000_000 {
             domain_ent.tag(tags::HIGH_EXPOSURE);
         }
-        domain_ent.corroboration = verified.max(1) as u32;
+        if cls.sensitive > 0 {
+            domain_ent.tag("sensitive-breach");
+        }
+        if cls.fabricated > 0 || cls.spam_list > 0 {
+            domain_ent.tag("unverified-breach-data");
+        }
+        domain_ent.corroboration = cls.verified.max(1) as u32;
         domain_ent.add_evidence(
             Evidence::new(
                 SRC,
                 format!(
-                    "Domain affected by {total} breach(es) ({verified} verified, {total_pwns} total records): {}",
-                    names.iter().take(10).copied().collect::<Vec<_>>().join(", ")
+                    "Domain affected by {} breach(es) ({} verified, {} total records): {}",
+                    cls.total,
+                    cls.verified,
+                    cls.total_pwns,
+                    names
+                        .iter()
+                        .take(10)
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             )
-            .with_attr("breach_count", total.to_string())
-            .with_attr("verified_count", verified.to_string())
-            .with_attr("total_pwn_count", total_pwns.to_string())
+            .with_attr("breach_count", cls.total.to_string())
+            .with_attr("verified_count", cls.verified.to_string())
+            .with_attr("fabricated_count", cls.fabricated.to_string())
+            .with_attr("spam_list_count", cls.spam_list.to_string())
+            .with_attr("sensitive_count", cls.sensitive.to_string())
+            .with_attr("retired_count", cls.retired.to_string())
+            .with_attr("total_pwn_count", cls.total_pwns.to_string())
+            .with_attr("data_classes", cls.data_classes.join(", "))
             .with_attr("breach_names", names.join(", ")),
         );
-        result.push(domain_ent);
-
-        // Extract data classes across all breaches for intelligence
-        let mut all_data_classes: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        // Per-breach detail — every field HIBP returned, nothing dropped.
         for breach in &breaches {
-            for dc in &breach.data_classes {
-                all_data_classes.insert(dc.clone());
-            }
+            domain_ent.add_evidence(breach_evidence(breach));
         }
-        if !all_data_classes.is_empty() {
-            let mut sorted: Vec<String> = all_data_classes.into_iter().collect();
-            sorted.sort();
-            if let Some(e) = result.entities.first_mut() {
-                e.add_evidence(
-                    Evidence::new(SRC, format!("Exposed data classes: {}", sorted.join(", ")))
-                        .with_attr("data_classes", sorted.join(", ")),
-                );
-            }
-        }
+        result.push(domain_ent);
 
         Ok(())
     }
@@ -502,5 +621,111 @@ mod tests {
         assert_eq!(breaches[0].name, "Unknown");
         assert!(breaches[0].domain.is_none());
         assert!(breaches[0].data_classes.is_empty());
+    }
+
+    fn parse(json: &str) -> Vec<Breach> {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn classify_counts_reliability_classes_and_unions_data() {
+        let breaches = parse(
+            r#"[
+            {"Name":"A","BreachDate":"2013-10-04","PwnCount":100,
+             "DataClasses":["Email addresses","Passwords"],"IsVerified":true},
+            {"Name":"B","BreachDate":"2019-01-02","PwnCount":50,
+             "DataClasses":["Phone numbers","Physical addresses"],"IsSensitive":true},
+            {"Name":"C","BreachDate":"2011-05-01","PwnCount":5,
+             "DataClasses":["Email addresses"],"IsSpamList":true,"IsFabricated":true}
+        ]"#,
+        );
+        let c = classify_breaches(&breaches);
+        assert_eq!(c.total, 3);
+        assert_eq!(c.verified, 1);
+        assert_eq!(c.sensitive, 1);
+        assert_eq!(c.spam_list, 1);
+        assert_eq!(c.fabricated, 1);
+        assert_eq!(c.total_pwns, 155);
+        assert!(c.has_passwords && c.has_phone && c.has_physical);
+        // Sorted union across all breaches.
+        assert_eq!(
+            c.data_classes,
+            vec![
+                "Email addresses".to_string(),
+                "Passwords".to_string(),
+                "Phone numbers".to_string(),
+                "Physical addresses".to_string(),
+            ]
+        );
+        // Latest date is the max ISO string.
+        assert_eq!(c.latest_date.as_deref(), Some("2019-01-02"));
+    }
+
+    #[test]
+    fn classify_empty_is_all_zero() {
+        let c = classify_breaches(&[]);
+        assert_eq!(c.total, 0);
+        assert_eq!(c.verified, 0);
+        assert!(c.data_classes.is_empty());
+        assert!(c.latest_date.is_none());
+        assert!(!c.has_passwords);
+    }
+
+    #[test]
+    fn breach_evidence_surfaces_every_field() {
+        let b = &parse(
+            r#"[{
+            "Name":"Adobe","Title":"Adobe","Domain":"adobe.com","BreachDate":"2013-10-04",
+            "AddedDate":"2013-12-04","ModifiedDate":"2022-05-15","PwnCount":152445165,
+            "Description":"Adobe breach","DataClasses":["Email addresses","Passwords"],
+            "IsVerified":true,"IsFabricated":false,"IsSensitive":false,"IsRetired":false,
+            "IsSpamList":false,"IsSubscriptionFree":false,
+            "LogoPath":"https://example/Adobe.png"
+        }]"#,
+        )[0];
+        let ev = breach_evidence(b);
+        let a = &ev.attributes;
+        // Previously-discarded fields are now present.
+        assert_eq!(a.get("title").map(String::as_str), Some("Adobe"));
+        assert_eq!(a.get("added_date").map(String::as_str), Some("2013-12-04"));
+        assert_eq!(
+            a.get("modified_date").map(String::as_str),
+            Some("2022-05-15")
+        );
+        assert_eq!(
+            a.get("description").map(String::as_str),
+            Some("Adobe breach")
+        );
+        assert_eq!(a.get("is_fabricated").map(String::as_str), Some("false"));
+        assert_eq!(a.get("is_sensitive").map(String::as_str), Some("false"));
+        assert_eq!(a.get("is_retired").map(String::as_str), Some("false"));
+        assert_eq!(a.get("is_spam_list").map(String::as_str), Some("false"));
+        assert_eq!(
+            a.get("is_subscription_free").map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            a.get("logo_path").map(String::as_str),
+            Some("https://example/Adobe.png")
+        );
+        // And the fields the rules depend on are preserved.
+        assert_eq!(a.get("breach_date").map(String::as_str), Some("2013-10-04"));
+        assert_eq!(a.get("pwn_count").map(String::as_str), Some("152445165"));
+    }
+
+    #[test]
+    fn breach_evidence_omits_absent_optionals_and_titles_from_name() {
+        let b = &parse(r#"[{"Name":"Solo"}]"#)[0];
+        let ev = breach_evidence(b);
+        // Falls back to Name in the summary when Title is absent.
+        assert!(ev.summary.contains("Solo"));
+        assert_eq!(ev.attributes.get("name").map(String::as_str), Some("Solo"));
+        // Absent optionals are not emitted as empty attributes.
+        for k in ["title", "domain", "description", "logo_path", "is_verified"] {
+            assert!(
+                !ev.attributes.contains_key(k),
+                "absent field {k} must be omitted"
+            );
+        }
     }
 }
