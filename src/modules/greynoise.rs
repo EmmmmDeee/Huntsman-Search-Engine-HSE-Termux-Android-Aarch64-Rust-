@@ -24,7 +24,6 @@ use crate::util::http::{fetch_json_or_404, urlencode};
 // ── Response types ────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub(crate) struct CommunityResp {
     /// IP address queried.
     #[serde(default)]
@@ -52,6 +51,81 @@ pub(crate) struct CommunityResp {
 // ── Module ────────────────────────────────────────────────────────
 
 const SRC: &str = "greynoise";
+
+/// Trimmed, non-empty view of an optional string field.
+fn nonempty(o: &Option<String>) -> Option<&str> {
+    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Build the reputation `IpAddress` entity from a GreyNoise community record.
+/// **Pure** (no IO) so the classification→confidence/tag mapping — which the
+/// correlator's `is_benign_infra` veto keys off via the `greynoise-riot` /
+/// `greynoise-benign` tags — is unit-tested directly. Returns `None` for the
+/// "IP not in dataset" reply (no noise, no RIOT, no classification), the
+/// no-findings case `process` previously inlined.
+///
+/// Surfaces the previously-discarded `message` status text, and — when GreyNoise
+/// echoes a different IP than queried (`queried_ip`) — flags `ip-mismatch`, so a
+/// verdict that is actually about another host can't masquerade as this one's.
+fn build_entity(ip: &str, data: &CommunityResp, scan_id: &str) -> Option<Entity> {
+    if !data.noise && !data.riot && data.classification.is_none() {
+        return None;
+    }
+
+    let confidence = match data.classification.as_deref() {
+        Some("malicious") => 0.80,
+        Some("benign") => 0.70,
+        _ => 0.55,
+    };
+
+    let mut entity = Entity::new(EntityKind::IpAddress, ip, confidence, scan_id);
+    if data.noise {
+        entity.tag("greynoise-noise");
+    }
+    if data.riot {
+        entity.tag("greynoise-riot");
+    }
+    match data.classification.as_deref() {
+        Some("malicious") => {
+            entity.tag("malicious");
+            entity.tag("greynoise-malicious");
+        }
+        Some("benign") => entity.tag("greynoise-benign"),
+        _ => entity.tag("greynoise-unknown"),
+    }
+
+    let echoed = nonempty(&data.ip);
+    let mismatch = echoed.is_some_and(|e| e != ip);
+    if mismatch {
+        entity.tag("ip-mismatch");
+    }
+
+    let classification = data.classification.as_deref().unwrap_or("unknown");
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "GreyNoise: classification={classification}, noise={}, riot={}",
+            data.noise, data.riot
+        ),
+    )
+    .with_attr("classification", classification)
+    .with_attr("noise", data.noise.to_string())
+    .with_attr("riot", data.riot.to_string());
+    if let Some(name) = nonempty(&data.name) {
+        ev = ev.with_attr("name", name);
+    }
+    if let Some(link) = nonempty(&data.link) {
+        ev = ev.with_attr("link", link);
+    }
+    if let Some(message) = nonempty(&data.message) {
+        ev = ev.with_attr("message", message);
+    }
+    if mismatch && let Some(e) = echoed {
+        ev = ev.with_attr("queried_ip", e);
+    }
+    entity.add_evidence(ev);
+    Some(entity)
+}
 
 pub struct GreyNoise;
 
@@ -102,54 +176,11 @@ impl Module for GreyNoise {
             return Ok(ModuleResult::new());
         };
 
-        // GreyNoise returns 200 with `message: "IP not observed ..."` for
-        // IPs not in its dataset. Treat those as no-findings.
-        if !data.noise && !data.riot && data.classification.is_none() {
+        // GreyNoise returns 200 with `message: "IP not observed ..."` for IPs
+        // not in its dataset; `build_entity` maps those to `None` (no findings).
+        let Some(entity) = build_entity(ip, &data, &ctx.scan_id) else {
             return Ok(ModuleResult::new());
-        }
-
-        let confidence = match data.classification.as_deref() {
-            Some("malicious") => 0.80,
-            Some("benign") => 0.70,
-            _ => 0.55,
         };
-
-        let mut entity = Entity::new(EntityKind::IpAddress, ip, confidence, &ctx.scan_id);
-
-        // ── Tags ──────────────────────────────────────────────────
-        if data.noise {
-            entity.tag("greynoise-noise");
-        }
-        if data.riot {
-            entity.tag("greynoise-riot");
-        }
-        match data.classification.as_deref() {
-            Some("malicious") => {
-                entity.tag("malicious");
-                entity.tag("greynoise-malicious");
-            }
-            Some("benign") => entity.tag("greynoise-benign"),
-            _ => entity.tag("greynoise-unknown"),
-        }
-
-        // ── Evidence ──────────────────────────────────────────────
-        let classification = data.classification.as_deref().unwrap_or("unknown");
-        let summary = format!(
-            "GreyNoise: classification={classification}, noise={}, riot={}",
-            data.noise, data.riot
-        );
-
-        let mut ev = Evidence::new(SRC, summary)
-            .with_attr("classification", classification)
-            .with_attr("noise", data.noise.to_string())
-            .with_attr("riot", data.riot.to_string());
-        if let Some(name) = data.name.as_deref().filter(|s| !s.is_empty()) {
-            ev = ev.with_attr("name", name);
-        }
-        if let Some(link) = data.link.as_deref().filter(|s| !s.is_empty()) {
-            ev = ev.with_attr("link", link);
-        }
-        entity.add_evidence(ev);
 
         let mut result = ModuleResult::new();
         result.push(entity);
@@ -239,5 +270,64 @@ mod tests {
         assert!(resp.noise);
         assert!(!resp.riot);
         assert_eq!(resp.classification.as_deref(), Some("malicious"));
+    }
+
+    fn resp(json: &str) -> CommunityResp {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn build_entity_malicious_tags_and_scores() {
+        let d = resp(r#"{"ip":"71.6.135.131","noise":true,"classification":"malicious"}"#);
+        let e = build_entity("71.6.135.131", &d, "s").unwrap();
+        assert!((e.confidence - 0.80).abs() < 1e-9);
+        assert!(
+            e.has_tag("malicious")
+                && e.has_tag("greynoise-malicious")
+                && e.has_tag("greynoise-noise")
+        );
+    }
+
+    #[test]
+    fn build_entity_benign_riot_feeds_is_benign_infra_tags() {
+        // The greynoise-riot + greynoise-benign tags the correlator vetoes on.
+        let d = resp(
+            r#"{"ip":"8.8.8.8","noise":true,"riot":true,"classification":"benign","name":"Google Public DNS","message":"Success"}"#,
+        );
+        let e = build_entity("8.8.8.8", &d, "s").unwrap();
+        assert!((e.confidence - 0.70).abs() < 1e-9);
+        assert!(e.has_tag("greynoise-benign") && e.has_tag("greynoise-riot"));
+        let a = &e.evidence[0].attributes;
+        assert_eq!(a.get("name").map(String::as_str), Some("Google Public DNS"));
+        // Recovered status text.
+        assert_eq!(a.get("message").map(String::as_str), Some("Success"));
+    }
+
+    #[test]
+    fn build_entity_none_for_ip_not_in_dataset() {
+        let d = resp(
+            r#"{"ip":"192.168.1.1","noise":false,"riot":false,
+            "message":"IP not observed scanning the internet or contained in RIOT data set."}"#,
+        );
+        assert!(build_entity("192.168.1.1", &d, "s").is_none());
+    }
+
+    #[test]
+    fn build_entity_flags_echoed_ip_mismatch() {
+        // GreyNoise echoed a different IP than queried → verdict is for another host.
+        let d = resp(r#"{"ip":"9.9.9.9","noise":true,"classification":"malicious"}"#);
+        let e = build_entity("1.1.1.1", &d, "s").unwrap();
+        assert!(e.has_tag("ip-mismatch"));
+        assert_eq!(
+            e.evidence[0]
+                .attributes
+                .get("queried_ip")
+                .map(String::as_str),
+            Some("9.9.9.9")
+        );
+        // No mismatch when the echo matches.
+        let ok = resp(r#"{"ip":"1.1.1.1","noise":true,"classification":"malicious"}"#);
+        let e2 = build_entity("1.1.1.1", &ok, "s").unwrap();
+        assert!(!e2.has_tag("ip-mismatch"));
     }
 }
