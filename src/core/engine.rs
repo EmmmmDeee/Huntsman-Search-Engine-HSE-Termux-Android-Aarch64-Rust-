@@ -381,12 +381,14 @@ impl ScanEngine {
                     &mut ctx,
                     &opts,
                     started,
-                    &mut entity_map,
-                    &mut visited,
-                    &mut stats,
-                    dispatched,
-                    &mut lineage,
-                    &mut emitted_corr,
+                    ScanState {
+                        entity_map: &mut entity_map,
+                        visited: &mut visited,
+                        stats: &mut stats,
+                        dispatched: &mut *dispatched,
+                        relations: &mut lineage,
+                        emitted_corr: &mut emitted_corr,
+                    },
                 )
                 .await;
         }
@@ -661,7 +663,6 @@ impl ScanEngine {
     }
 
     /// Drive the expansion loop. Returns the stop reason for diagnostics.
-    #[allow(clippy::too_many_arguments)]
     async fn run_expansion(
         &self,
         scan_id: &str,
@@ -669,13 +670,16 @@ impl ScanEngine {
         ctx: &mut ModuleContext,
         opts: &ScanOptions,
         started: Instant,
-        entity_map: &mut HashMap<String, Entity>,
-        visited: &mut HashSet<(TargetKind, String)>,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
-        relations: &mut Vec<Relation>,
-        emitted_corr: &mut HashSet<String>,
+        state: ScanState<'_>,
     ) -> StopReason {
+        let ScanState {
+            entity_map,
+            visited,
+            stats,
+            dispatched,
+            relations,
+            emitted_corr,
+        } = state;
         // Reused across candidates to capture lineage: the set of entity UIDs
         // present *before* a candidate's dispatch, so new UIDs afterward are
         // children that candidate surfaced. Reusing the buffer avoids a
@@ -1108,6 +1112,20 @@ struct DispatchArgs<'a> {
     is_expansion: bool,
     stats: &'a mut ModuleStats,
     dispatched: &'a mut DispatchLog,
+}
+
+/// The mutable scan-progress accumulators threaded through the expansion loop:
+/// the entity graph, the visited-target set, the run stats, the paid-dispatch
+/// ledger, the lineage edges, and the streamed-correlation dedup set. Bundling
+/// them lets `run_expansion` take a single state object instead of six separate
+/// `&mut` accumulators (which tripped `clippy::too_many_arguments`).
+struct ScanState<'a> {
+    entity_map: &'a mut HashMap<String, Entity>,
+    visited: &'a mut HashSet<(TargetKind, String)>,
+    stats: &'a mut ModuleStats,
+    dispatched: &'a mut DispatchLog,
+    relations: &'a mut Vec<Relation>,
+    emitted_corr: &'a mut HashSet<String>,
 }
 
 impl ScanEngine {
