@@ -75,27 +75,19 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // Depth resolution. `--auto`/`--recursive` only kick in when the operator
     // gave no explicit `--depth` (sentinel: `cmd.depth.is_none()`); otherwise an
     // omitted `--depth` falls back to the product default (DEFAULT_SCAN_DEPTH=2).
-    let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth.is_none() {
-        let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
-        let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
-        eprintln!(
-            "auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={})",
-            has_paid
-        );
-        (auto_depth, auto_conf, cmd.max_concurrent.max(2))
-    } else if cmd.recursive && cmd.depth.is_none() {
-        (
-            crate::core::scan::MAX_DEPTH,
-            cmd.min_expand_confidence.min(0.40),
-            cmd.max_concurrent.max(2),
-        )
-    } else {
-        (
-            cmd.depth.unwrap_or(crate::core::scan::DEFAULT_SCAN_DEPTH),
-            cmd.min_expand_confidence,
-            cmd.max_concurrent,
-        )
-    };
+    let (depth, min_expand_confidence, max_concurrent) = resolve_scan_tuning(
+        cmd.auto,
+        cmd.recursive,
+        cmd.depth,
+        cmd.min_expand_confidence,
+        cmd.max_concurrent,
+        || {
+            let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
+            let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
+            eprintln!("auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={has_paid})");
+            (auto_depth, auto_conf)
+        },
+    );
 
     let mut exclude_modules = split_csv(cmd.exclude).unwrap_or_default();
     if cmd.adaptive {
@@ -108,12 +100,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 "adaptive: no ledger yet (run a few scans first to populate ~/.huntsman/module_stats.json)"
             );
         } else {
-            let added: Vec<String> = routing
-                .recommended_skips
-                .iter()
-                .filter(|m| !exclude_modules.iter().any(|e| e == *m))
-                .cloned()
-                .collect();
+            let added = new_adaptive_skips(&exclude_modules, &routing.recommended_skips);
             if !added.is_empty() {
                 eprintln!(
                     "adaptive: ledger has {} scans; skipping {} historically zero-yield modules: {}",
@@ -286,6 +273,55 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Resolve the effective `(depth, min_expand_confidence, max_concurrent)` from
+/// the scan-mode flags. **Pure**: the `--auto` tuning is supplied lazily through
+/// `optimal`, so no key/file IO (nor its `eprintln`) happens off the auto path.
+///
+/// This pins the non-obvious precedence the inline form left untested:
+/// * `--auto` and `--recursive` take effect **only** when the operator gave no
+///   explicit `--depth`. An explicit depth always wins and — deliberately —
+///   also keeps the operator's `--max-concurrent` as-is (neither mode bumps it).
+/// * `--auto` outranks `--recursive` when both are set.
+/// * Either mode raises concurrency to at least 2; `--recursive` additionally
+///   clamps the expansion floor to ≤ 0.40 so deep walks still expand (while a
+///   floor already below 0.40 is left untouched).
+fn resolve_scan_tuning(
+    auto: bool,
+    recursive: bool,
+    explicit_depth: Option<u32>,
+    base_min_expand_conf: f64,
+    base_max_concurrent: usize,
+    optimal: impl FnOnce() -> (u32, f64),
+) -> (u32, f64, usize) {
+    if auto && explicit_depth.is_none() {
+        let (auto_depth, auto_conf) = optimal();
+        (auto_depth, auto_conf, base_max_concurrent.max(2))
+    } else if recursive && explicit_depth.is_none() {
+        (
+            crate::core::scan::MAX_DEPTH,
+            base_min_expand_conf.min(0.40),
+            base_max_concurrent.max(2),
+        )
+    } else {
+        (
+            explicit_depth.unwrap_or(crate::core::scan::DEFAULT_SCAN_DEPTH),
+            base_min_expand_conf,
+            base_max_concurrent,
+        )
+    }
+}
+
+/// The adaptive `recommended` skips not already excluded by the operator,
+/// preserving recommendation order. **Pure** so the dedup-against-existing
+/// logic is unit-tested without a ledger on disk.
+fn new_adaptive_skips(existing: &[String], recommended: &[String]) -> Vec<String> {
+    recommended
+        .iter()
+        .filter(|m| !existing.iter().any(|e| e == *m))
+        .cloned()
+        .collect()
 }
 
 /// Distinct raw source labels behind an entity — the breach / DB / provider
@@ -647,4 +683,101 @@ fn print_dossier(
     println!();
 
     println!("━━━ END OF DOSSIER ━━━");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use std::cell::Cell;
+
+    #[test]
+    fn tuning_explicit_depth_overrides_modes_and_keeps_optimal_lazy() {
+        // Explicit --depth wins over both --auto and --recursive, the auto
+        // closure must NOT run (no key IO), and --max-concurrent is preserved.
+        let called = Cell::new(false);
+        let (d, c, mc) = resolve_scan_tuning(true, true, Some(5), 0.25, 1, || {
+            called.set(true);
+            (9, 0.9)
+        });
+        assert_eq!((d, mc), (5, 1));
+        assert!((c - 0.25).abs() < 1e-9);
+        assert!(
+            !called.get(),
+            "optimal() must stay lazy when --depth is explicit"
+        );
+    }
+
+    #[test]
+    fn tuning_auto_outranks_recursive_and_bumps_concurrency() {
+        let (d, c, mc) = resolve_scan_tuning(true, true, None, 0.25, 0, || (4, 0.30));
+        assert_eq!(d, 4);
+        assert!((c - 0.30).abs() < 1e-9);
+        assert_eq!(mc, 2, "auto raises concurrency to >= 2");
+    }
+
+    #[test]
+    fn tuning_recursive_uses_max_depth_and_clamps_floor() {
+        let (d, c, mc) = resolve_scan_tuning(false, true, None, 0.80, 5, || (0, 0.0));
+        assert_eq!(d, crate::core::scan::MAX_DEPTH);
+        assert!((c - 0.40).abs() < 1e-9, "floor clamped to <= 0.40");
+        assert_eq!(mc, 5, "concurrency already >= 2 is kept as-is");
+    }
+
+    #[test]
+    fn tuning_recursive_keeps_floor_already_below_clamp() {
+        let (_, c, _) = resolve_scan_tuning(false, true, None, 0.10, 2, || (0, 0.0));
+        assert!(
+            (c - 0.10).abs() < 1e-9,
+            "min() keeps an already-lower floor"
+        );
+    }
+
+    #[test]
+    fn tuning_plain_falls_back_to_default_depth() {
+        let (d, c, mc) = resolve_scan_tuning(false, false, None, 0.33, 3, || (9, 0.9));
+        assert_eq!(d, crate::core::scan::DEFAULT_SCAN_DEPTH);
+        assert!((c - 0.33).abs() < 1e-9);
+        assert_eq!(mc, 3, "plain mode never bumps concurrency");
+    }
+
+    #[test]
+    fn adaptive_skips_drops_already_excluded_and_preserves_order() {
+        let existing = vec!["a".to_string(), "c".to_string()];
+        let recommended = vec![
+            "c".to_string(),
+            "b".to_string(),
+            "a".to_string(),
+            "d".to_string(),
+        ];
+        assert_eq!(
+            new_adaptive_skips(&existing, &recommended),
+            vec!["b".to_string(), "d".to_string()]
+        );
+    }
+
+    #[test]
+    fn adaptive_skips_empty_when_all_already_present() {
+        let existing = vec!["a".to_string(), "b".to_string()];
+        assert!(new_adaptive_skips(&existing, &["a".to_string(), "b".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn source_labels_prefer_source_attr_then_dedup_and_sort() {
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "s");
+        // A "source" attr overrides the raw evidence source name.
+        e.add_evidence(Evidence::new("modB", "m").with_attr("source", "haveibeenpwned"));
+        // No "source" attr → falls back to ev.source ("modA")…
+        e.add_evidence(Evidence::new("modA", "m"));
+        // …and a repeat of that label collapses to one.
+        e.add_evidence(Evidence::new("modA", "m2"));
+        // BTreeSet ⇒ sorted, deduped: 'h' (0x68) < 'm' (0x6D).
+        assert_eq!(entity_source_labels(&e), "haveibeenpwned, modA");
+    }
+
+    #[test]
+    fn source_labels_em_dash_when_no_evidence() {
+        let e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "s");
+        assert_eq!(entity_source_labels(&e), "—");
+    }
 }
