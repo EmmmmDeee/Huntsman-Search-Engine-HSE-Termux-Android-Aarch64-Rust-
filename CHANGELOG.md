@@ -179,6 +179,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Expansion no longer deep-dives shared third-party infrastructure (the domain
+  flood at its root).** The same real name-scan accumulated **683 domains, 599 of
+  them (88%) from `hackertarget`** — a *reverse-IP lookup on two Cloudflare edge
+  IPs* returned 480+ co-tenant strangers (`mysenprints.com` 290, `30shine.com`
+  160, a merch/tee tail), and *subdomain enumeration on shared mail/DNS infra*
+  (`secureserver.net`, `sendgrid.net`, `ns*.dnsmadeeasy.com`) added the rest —
+  none of it about the subject. Two new engine expansion gates, alongside the
+  existing mega-domain and non-routable-IP gates, stop this at the source:
+  - `validation::is_cdn_edge_ip` — a discovered **CDN-edge IP** (Cloudflare's
+    published ranges + Fastly) is not expanded, so no reverse-IP lookup floods
+    the scan with co-tenants. Decided by IP *range*, not a `cdn` tag, so it holds
+    before any reverse-IP module runs (no ordering race).
+  - `scan::is_infra_domain` / `is_noncentral_domain` — shared managed-DNS,
+    registrar, CDN-apex and ESP/mail domains (and AWS Route 53 `awsdns-*`
+    nameservers) join mega-domains as non-central: skipped as incidental
+    (non-seed) expansion targets, so their estates aren't subdomain-enumerated.
+  Both still expand when the candidate **is the seed** (investigating that
+  property directly). On that scan this takes domains **683 → ~84** (the
+  legitimate DNS/profile-derived domains survive) and removes the AU-003/AU-010
+  infrastructure-corroboration noise that rode on the flood. +3 tests.
 - **Threat correlations now respect explicit benign-infrastructure verdicts
   (kills the shared-edge false-positive explosion).** A real name-scan produced
   **883 correlations, 792 (90%) of them AU-031 "malicious adjacency"** — driven

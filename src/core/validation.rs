@@ -188,6 +188,51 @@ pub fn is_non_routable_ip(s: &str) -> bool {
     }
 }
 
+/// True if `s` is an IPv4 address inside a major CDN's anycast edge range
+/// (Cloudflare's published ranges + Fastly's primary block).
+///
+/// A CDN edge IP fronts thousands of unrelated sites, so a reverse-IP /
+/// co-hosting lookup on it returns a flood of co-tenant strangers (a real
+/// person-scan pulled 480+ such domains — and then each one's subdomains —
+/// through two Cloudflare edges). The engine therefore does not expand a
+/// discovered CDN-edge IP as a target: its geo/reputation belong to the CDN, not
+/// the subject, and reverse-IP on it is pure noise. This is decided by IP RANGE,
+/// not by a `cdn`/`cloudflare` tag, so it holds BEFORE any reverse-IP module runs
+/// in the same round — no tag-ordering race. IPv6 returns `false` (the reverse-IP
+/// modules here are v4-only and the v6 CDN space is impractical to enumerate).
+///
+/// Cloudflare ranges are stable and authoritative (`cloudflare.com/ips-v4`); a
+/// stray IP that drifts out of the list simply isn't gated (graceful, never a
+/// false skip of a non-CDN host).
+pub fn is_cdn_edge_ip(s: &str) -> bool {
+    let Ok(IpAddr::V4(v4)) = s.parse::<IpAddr>() else {
+        return false;
+    };
+    let o = v4.octets();
+    // Cloudflare (cloudflare.com/ips-v4) keyed on the first octet; Fastly's
+    // primary anycast block (151.101.0.0/16) is the lone non-Cloudflare entry.
+    match o[0] {
+        104 => (o[1] & 0xF8) == 16 || (o[1] & 0xFC) == 24, // 104.16/13 + 104.24/14
+        172 => (o[1] & 0xF8) == 64,                        // 172.64.0.0/13
+        162 => (o[1] & 0xFE) == 158,                       // 162.158.0.0/15
+        173 => o[1] == 245 && (o[2] & 0xF0) == 48,         // 173.245.48.0/20
+        141 => o[1] == 101 && (o[2] & 0xC0) == 64,         // 141.101.64.0/18
+        108 => o[1] == 162 && (o[2] & 0xC0) == 192,        // 108.162.192.0/18
+        190 => o[1] == 93 && (o[2] & 0xF0) == 240,         // 190.93.240.0/20
+        188 => o[1] == 114 && (o[2] & 0xF0) == 96,         // 188.114.96.0/20
+        197 => o[1] == 234 && (o[2] & 0xFC) == 240,        // 197.234.240.0/22
+        198 => o[1] == 41 && (o[2] & 0x80) == 128,         // 198.41.128.0/17
+        131 => o[1] == 0 && (o[2] & 0xFC) == 72,           // 131.0.72.0/22
+        103 => {
+            (o[1] == 21 && (o[2] & 0xFC) == 244)           // 103.21.244.0/22
+                || (o[1] == 22 && (o[2] & 0xFC) == 200)    // 103.22.200.0/22
+                || (o[1] == 31 && (o[2] & 0xFC) == 4) // 103.31.4.0/22
+        }
+        151 => o[1] == 101, // Fastly 151.101.0.0/16
+        _ => false,
+    }
+}
+
 /// True if `s` parses to an IP that can **never** be a real host *anywhere*:
 /// RFC5737 documentation (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`),
 /// RFC2544 benchmarking (`198.18.0.0/15`), IETF-protocol (`192.0.0.0/24`),
@@ -565,6 +610,26 @@ mod tests {
         assert!(!is_non_routable_ip("198.20.0.1"));
         assert!(!is_non_routable_ip("203.0.114.1"));
         assert!(!is_non_routable_ip("1.1.1.1"));
+    }
+
+    #[test]
+    fn cdn_edge_ip_catches_cloudflare_and_fastly() {
+        // The two Cloudflare edges that reverse-IP'd 480+ co-tenant strangers in
+        // the real scan that motivated this gate.
+        assert!(is_cdn_edge_ip("104.20.37.187")); // 104.16.0.0/13
+        assert!(is_cdn_edge_ip("172.66.147.185")); // 172.64.0.0/13
+        // Other Cloudflare blocks + Fastly.
+        assert!(is_cdn_edge_ip("162.158.0.1")); // 162.158.0.0/15
+        assert!(is_cdn_edge_ip("104.24.1.1")); // 104.24.0.0/14
+        assert!(is_cdn_edge_ip("151.101.1.1")); // Fastly 151.101.0.0/16
+        // Adjacent non-CDN addresses (and DNS resolvers) are NOT gated — only the
+        // shared anycast edges are.
+        assert!(!is_cdn_edge_ip("104.40.0.1")); // outside 104.16/13 + 104.24/14
+        assert!(!is_cdn_edge_ip("172.72.0.1")); // just above 172.64/13
+        assert!(!is_cdn_edge_ip("8.8.8.8"));
+        assert!(!is_cdn_edge_ip("1.1.1.1")); // CF resolver, not an edge range
+        assert!(!is_cdn_edge_ip("not-an-ip"));
+        assert!(!is_cdn_edge_ip("2606:4700::1")); // v6 → false by design
     }
 
     #[test]
