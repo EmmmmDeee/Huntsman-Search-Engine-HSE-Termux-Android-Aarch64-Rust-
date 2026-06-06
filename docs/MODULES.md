@@ -27,7 +27,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
-### people (8)
+### people (9)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -37,6 +37,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `seon` | email, phone | key_gated | no | 95 | person |
 | `employer_pivot` | email, domain | free | no | 92 | address, phone, email, url |
 | `epieos` | email | key_gated | no | 92 | person, username, address |
+| `gravatar` | email | free | no | 90 | person, username, url, address |
 | `proxycurl` | email, username, url | paid | no | 88 | person, address, email, domain, phone, organisation |
 | `contact_enrich` | email, phone | free | no | 85 | person, username, address, url |
 
