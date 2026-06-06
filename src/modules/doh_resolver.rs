@@ -178,6 +178,18 @@ fn records_for_type(
                                     out.push(e);
                                 }
                             }
+                            crate::util::spf::Member::Redirect(red) => {
+                                if seen.insert(format!("spfinc:{red}")) {
+                                    let mut e = Entity::new(EntityKind::Domain, red, 0.65, scan_id);
+                                    e.tag("dns");
+                                    e.tag("spf-redirect");
+                                    e.add_evidence(Evidence::new(
+                                        SRC,
+                                        format!("SPF redirect for {domain}"),
+                                    ));
+                                    out.push(e);
+                                }
+                            }
                         }
                     }
                 }
@@ -429,6 +441,14 @@ mod tests {
             out.iter()
                 .any(|e| e.kind == EntityKind::Domain && e.value == "_spf.example.org")
         );
+    }
+
+    #[test]
+    fn spf_redirect_surfaces_target_as_domain() {
+        let out = run("TXT", &["v=spf1 redirect=_spf.example.net"]);
+        let red = out.iter().find(|e| e.kind == EntityKind::Domain).unwrap();
+        assert_eq!(red.value, "_spf.example.net");
+        assert!(red.has_tag("spf-redirect"));
     }
 
     #[test]

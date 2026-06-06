@@ -139,14 +139,24 @@ pub mod spf {
         Ip(&'a str),
         /// An `include:` domain — guaranteed non-empty and dotted.
         Include(&'a str),
+        /// The `redirect=` modifier's target domain — guaranteed non-empty and
+        /// dotted. Delegates the whole SPF policy to another domain (RFC 7208 §6),
+        /// so for OSINT it is a related-domain pivot just like an `include:`.
+        Redirect(&'a str),
     }
 
-    /// Iterate the `ip4:`/`ip6:`/`include:` members of an SPF record. Bare/blank
-    /// IP mechanisms and empty/dotless includes are skipped (they would only
-    /// normalise to junk entities). Other mechanisms (`a`, `mx`, `ptr`, `exists`,
-    /// `all`, the `redirect=`/`exp=` modifiers) and qualifier prefixes are not
-    /// interpreted here — callers tag the domain itself.
+    /// Iterate the `ip4:`/`ip6:`/`include:`/`redirect=` members of an SPF record.
+    /// Bare/blank IP mechanisms and empty/dotless or macro-bearing
+    /// include/redirect domains are skipped (they would only normalise to junk
+    /// entities). Other mechanisms (`a`, `mx`, `ptr`, `exists`, `all`, the `exp=`
+    /// modifier) and qualifier prefixes are not interpreted here — callers tag the
+    /// domain itself.
     pub fn members(txt: &str) -> impl Iterator<Item = Member<'_>> {
+        // A usable include/redirect target is non-empty, dotted, and free of SPF
+        // macros (`%{…}`) which don't resolve to a literal domain.
+        fn usable_domain(d: &str) -> bool {
+            d.contains('.') && !d.contains('%')
+        }
         txt.split_whitespace().filter_map(|part| {
             if let Some(ip) = part
                 .strip_prefix("ip4:")
@@ -155,7 +165,9 @@ pub mod spf {
                 let ip = ip.split('/').next().unwrap_or(ip);
                 (!ip.is_empty()).then_some(Member::Ip(ip))
             } else if let Some(inc) = part.strip_prefix("include:") {
-                inc.contains('.').then_some(Member::Include(inc))
+                usable_domain(inc).then_some(Member::Include(inc))
+            } else if let Some(red) = part.strip_prefix("redirect=") {
+                usable_domain(red).then_some(Member::Redirect(red))
             } else {
                 None
             }
@@ -191,6 +203,21 @@ pub mod spf {
                     // bare ip4:/ip6:/include: and dotless include:localhost dropped;
                     // a/mx/-all are not IP/include members.
                 ]
+            );
+        }
+
+        #[test]
+        fn members_yields_redirect_target_and_skips_macros() {
+            let got: Vec<Member> =
+                members("v=spf1 redirect=_spf.example.net include:%{i}._spf.macro.test").collect();
+            // The redirect target is surfaced; the macro-bearing include is skipped
+            // (a `%{…}` member is not a literal domain).
+            assert_eq!(got, vec![Member::Redirect("_spf.example.net")]);
+            // A dotless / empty redirect is dropped like a dotless include.
+            assert!(
+                members("v=spf1 redirect= redirect=localhost")
+                    .next()
+                    .is_none()
             );
         }
     }

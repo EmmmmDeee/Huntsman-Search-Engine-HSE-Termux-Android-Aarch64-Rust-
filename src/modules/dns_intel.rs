@@ -406,6 +406,17 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
                                 ));
                                 entities.push(de);
                             }
+                            crate::util::spf::Member::Redirect(red) => {
+                                let mut de =
+                                    Entity::new(EntityKind::Domain, red, 0.65, &ctx.scan_id);
+                                de.tag("dns");
+                                de.tag("spf-redirect");
+                                de.add_evidence(Evidence::new(
+                                    SRC,
+                                    format!("SPF redirect for {domain}"),
+                                ));
+                                entities.push(de);
+                            }
                         }
                     }
                 } else if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"v=dkim1") {

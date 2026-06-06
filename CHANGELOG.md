@@ -12,6 +12,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **SPF `redirect=` targets are now surfaced as related domains.** An SPF record
+  can delegate its whole policy to another domain via the `redirect=` modifier
+  (RFC 7208 §6) — a genuine related-domain pivot that `dns_intel`/`doh_resolver`
+  previously ignored, just as they had ignored `ip6:`. `util::spf::members` gains a
+  `Redirect` variant (and the `Member` `match` in both modules is now exhaustive by
+  construction, so neither can silently skip it again); the target is emitted as a
+  `Domain` tagged `spf-redirect`. The include/redirect domain filter also now skips
+  SPF macro members (`%{…}`), which never resolve to a literal domain. Unit-tested.
 - **`search_engines` AU region detection no longer false-positives on US `61x`
   phone numbers.** `detect_region` treated any phone whose digits merely *started*
   with `61` as Australian (country code 61), so a US number in the `610`/`612`/…
