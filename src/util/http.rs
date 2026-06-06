@@ -48,8 +48,20 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// at connect time); the engine's `url_host_is_private` gate already rejects
 /// private-host *targets*, and this extends the guard to every redirect hop so
 /// a public URL can't 3xx us onto an internal address.
+///
+/// `host` is `Url::host_str()`, which (`url` 2.5) returns IPv6 literals **with**
+/// brackets (`[::1]`). The brackets must be stripped before the `IpAddr` parse
+/// inside `is_private_ip`, or every IPv6-literal hop (loopback `[::1]`, ULA,
+/// link-local, IPv4-mapped metadata `[::ffff:169.254.169.254]`) fails to parse,
+/// returns `false`, and is followed — an SSRF bypass. Mirrors the bracket
+/// handling in [`crate::util::preflight::url_host_is_private`].
 fn redirect_to_private_ip(host: Option<&str>) -> bool {
-    host.is_some_and(crate::util::preflight::is_private_ip)
+    host.map(|h| {
+        h.strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(h)
+    })
+    .is_some_and(crate::util::preflight::is_private_ip)
 }
 
 /// Drop private/reserved IPs from a resolved address set — the SSRF DNS filter.
@@ -736,6 +748,27 @@ mod tests {
             "hostnames resolved at connect, not judged here"
         );
         assert!(!blk(None));
+
+        // IPv6-literal hops arrive bracketed from `Url::host_str()` (url 2.5).
+        // Without bracket-stripping these fail to parse and slip through — a
+        // public site could 3xx the client onto IPv6 loopback / ULA / the
+        // IPv4-mapped cloud-metadata address. Each must be refused.
+        assert!(blk(Some("[::1]")), "IPv6 loopback hop must be refused");
+        assert!(blk(Some("[fc00::1]")), "ULA hop must be refused");
+        assert!(blk(Some("[fe80::1]")), "link-local hop must be refused");
+        assert!(
+            blk(Some("[::ffff:169.254.169.254]")),
+            "IPv4-mapped cloud-metadata hop must be refused"
+        );
+        assert!(
+            blk(Some("[64:ff9b::a9fe:a9fe]")),
+            "NAT64-embedded metadata hop must be refused"
+        );
+        // A public IPv6 hop (bracketed) still follows.
+        assert!(
+            !blk(Some("[2606:4700:4700::1111]")),
+            "public IPv6 hop follows"
+        );
     }
 
     use super::*;

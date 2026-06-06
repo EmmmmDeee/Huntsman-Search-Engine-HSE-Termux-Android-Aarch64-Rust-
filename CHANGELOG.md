@@ -49,6 +49,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   Covers both bare-v4 and IPv4-embedded-in-IPv6 (NAT64/6to4/compat) paths via the
   shared `is_private_v4`. Tested.
 
+- **Redirect SSRF guard now catches IPv6-literal hops.** The HTTP client's
+  redirect policy fed `Url::host_str()` straight to `is_private_ip`, but `url`
+  2.5 returns IPv6 literals *bracketed* (`[::1]`), which fails the `IpAddr`
+  parse and returned `false` — so a public site could `3xx` the client onto an
+  IPv6-literal internal address (loopback `[::1]`, ULA, link-local, or
+  IPv4-mapped/NAT64 cloud-metadata `[::ffff:169.254.169.254]`). The DNS-resolver
+  SSRF filter does not cover this path because IP-literal hops are dialled
+  without a lookup. The guard now strips brackets before the parse, mirroring
+  `preflight::url_host_is_private`. Bare-v4 hops and public IPv6 hops are
+  unaffected. Regression-tested across loopback/ULA/link-local/mapped/NAT64.
+
 ### Fixed
 
 - **Entity search escapes the LIKE escape character.** The `search_entities`
