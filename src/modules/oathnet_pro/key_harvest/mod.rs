@@ -1105,6 +1105,12 @@ mod tests {
                 "openai_admin",
             ),
             ("sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0", "openai"),
+            // OpenRouter `sk-or-` must beat the generic `sk-` stem (regression:
+            // it was declared after `sk-` and resolved as `openai_or_stripe`).
+            (
+                "sk-or-v1-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0",
+                "openrouter",
+            ),
             // gh family
             ("ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "github"),
             ("github_pat_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "github"),
@@ -1118,6 +1124,64 @@ mod tests {
                 .unwrap_or_else(|| panic!("expected {expected} for {cand}, got None"));
             assert_eq!(svc, expected, "wrong service for {cand}");
         }
+    }
+
+    #[test]
+    fn pattern_table_is_structurally_sound() {
+        // 1. Every entry is well-formed: a non-empty prefix + service, and a
+        //    min_len long enough to leave at least one character past the prefix
+        //    (a min_len <= prefix length can never reject anything — a typo).
+        for (k, p) in KEY_PATTERNS.iter().enumerate() {
+            assert!(!p.prefix.is_empty(), "pattern #{k} has an empty prefix");
+            assert!(
+                !p.service.is_empty(),
+                "pattern #{k} ({}) has an empty service",
+                p.prefix
+            );
+            assert!(
+                p.min_len > p.prefix.len(),
+                "pattern #{k} ({}) min_len {} must exceed its prefix length {}",
+                p.prefix,
+                p.min_len,
+                p.prefix.len()
+            );
+        }
+
+        // 2. Specific-before-generic ORDERING, table-wide. `identify_api_key`
+        //    returns the FIRST prefix match in declaration order, so when an
+        //    earlier prefix is a *strict* prefix of a later one (the later
+        //    EXTENDS it — e.g. `sk-or-` extends `sk-`), the later entry is
+        //    shadowed and its keys are mis-attributed to the earlier service.
+        //    That is the reorderable bug the pattern-file header warns about, and
+        //    it is fixed by moving the specific entry above the generic stem.
+        //    (This check found `sk-or-` OpenRouter keys resolving as the generic
+        //    `sk-` `openai_or_stripe`.)
+        //
+        //    Same-service shadowing is excluded (merely redundant), and so are
+        //    EXACT-prefix collisions (`prefix == prefix`): those are inherent
+        //    real-world provider overlaps — Stripe and Clerk both mint `pk_live_`
+        //    — that ordering cannot resolve, so they are not an ordering defect.
+        let mut violations = Vec::new();
+        for (i, earlier) in KEY_PATTERNS.iter().enumerate() {
+            for (offset, later) in KEY_PATTERNS[i + 1..].iter().enumerate() {
+                if later.prefix.len() > earlier.prefix.len()
+                    && later.prefix.starts_with(earlier.prefix)
+                    && earlier.service != later.service
+                {
+                    let j = i + 1 + offset;
+                    violations.push(format!(
+                        "#{j} ({} → {}) shadowed by earlier generic #{i} ({} → {})",
+                        later.prefix, later.service, earlier.prefix, earlier.service
+                    ));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "specific-before-generic ordering violated — move the more-specific prefix above the \
+             generic stem so its keys are not mis-attributed:\n  {}",
+            violations.join("\n  ")
+        );
     }
 
     #[test]

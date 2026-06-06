@@ -38,6 +38,14 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
         service: "openai_admin",
         min_len: 40,
     },
+    // OpenRouter keys are `sk-or-…`; this specific prefix MUST precede the
+    // generic `sk-` stem below or every OpenRouter key is mis-attributed to
+    // `openai_or_stripe` (caught by `pattern_table_is_structurally_sound`).
+    KeyPattern {
+        prefix: "sk-or-",
+        service: "openrouter",
+        min_len: 40,
+    },
     KeyPattern {
         prefix: "sk-",
         service: "openai_or_stripe",
@@ -722,11 +730,6 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
     KeyPattern {
         prefix: "sess-",
         service: "openai_session",
-        min_len: 40,
-    },
-    KeyPattern {
-        prefix: "sk-or-",
-        service: "openrouter",
         min_len: 40,
     },
     KeyPattern {

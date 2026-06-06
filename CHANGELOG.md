@@ -10,8 +10,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+
+- **OpenRouter API keys were mis-classified as OpenAI/Stripe.** The `sk-or-`
+  prefix (OpenRouter) was declared *after* the generic `sk-` stem in the
+  key-harvest pattern table, and `identify_api_key` returns the first
+  declaration-order prefix match — so every `sk-or-…` key resolved to the generic
+  `sk-` → `openai_or_stripe` instead of `openrouter`. Moved `sk-or-` above the
+  stem. Found by the new structural test below.
+
 ### Added
 
+- **Structural-invariant guard for the API-key pattern table
+  (`oathnet_pro::key_harvest`).** A new `pattern_table_is_structurally_sound` test
+  asserts, table-wide, that every entry is well-formed (non-empty prefix/service,
+  `min_len` exceeding the prefix) and — crucially — that no more-specific prefix
+  is shadowed by an earlier generic stem of a *different* service (the
+  mis-classification class above). It generalises the previous hand-picked
+  sk-/gh- whitebox check to all ~170 patterns and any future addition. (Exact
+  same-prefix provider collisions like Stripe vs Clerk `pk_live_`, which ordering
+  cannot resolve, are deliberately out of scope.)
 - **Data-integrity guards for the `username_search` site table.** The 1600-line
   hand-maintained `SITES` table now has two CI-enforced invariants: every probe
   URL is `https://` (a plaintext probe would leak the searched handle to on-path
