@@ -12,6 +12,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`validate_phone_e164` rejects a country code beginning with `0`.** The
+  validator's doc promised it checks "the country code in the conventional 1-3
+  digit range", but the implementation only required digits + a length of 8–15, so
+  `+0123456789` passed despite being invalid E.164 (ITU-T E.164 country codes never
+  begin with `0`). Added the leading-zero check (new `e164.cc_leading_zero`
+  reason), aligning the code with its documented contract. Unit-tested.
 - **`parse_address` no longer mistakes a street number for a postcode.** The
   postal-code scanner examined every whitespace token of every comma-part, so a
   multi-digit street number — the *leading* token of a street part like
