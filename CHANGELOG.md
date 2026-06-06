@@ -10,8 +10,114 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Performance
+
+- **Correlation rule AU-034 (handle reuse) is now linear, not quadratic.** It
+  re-derived `canonical_handle` for every email *inside* the per-username loop —
+  O(U×E) string allocations — and profiling showed it accounted for ~98% of the
+  entire correlation pass, which runs after every expansion round. Emails are
+  now bucketed by their canonical local-part handle once (O(E)); each username
+  resolves its matches with a single hash lookup. Measured on a synthetic mixed
+  entity set, the full correlation pass dropped from 127 ms to 10 ms at 5 000
+  entities (12.7×) and now scales linearly with entity count — a per-round stall
+  a broad breach/stealer scan on a phone would otherwise hit repeatedly.
+  Behaviour is unchanged (the matched set was already order-independent, and the
+  existing AU-034 tests — including multi-email grouping — still pass).
+
+- **Web UI responses are gzip-compressed (`tower-http` `CompressionLayer`).**
+  The embedded SPA (~118 KB) and vendored asset bundle (~528 KB) were served
+  uncompressed on every cold load — the dominant web-UI cost on a phone's mobile
+  link. gzip brings the SPA to under 60 KB on the wire (~4×) and applies to
+  large scan-result JSON exports too. The gzip backend is `flate2`/`miniz_oxide`
+  — pure Rust, no C/zlib dependency, preserving the no-native-libs Termux build.
+  `CompressionLayer`'s default predicate skips already-small bodies and
+  `text/event-stream`, so the SSE live-scan stream is never buffered or
+  compressed (would stall the live event log). The existing vendor-asset
+  ETag/`304` revalidation is unchanged, so warm loads still skip the body
+  entirely. Two contract tests guard it: the SPA arrives gzip-encoded and
+  materially smaller for a gzip-capable client, and the SSE stream stays
+  identity-encoded.
+
 ### Fixed
 
+- **Entity search escapes the LIKE escape character.** The `search_entities`
+  LIKE fallback (used when FTS5 yields nothing) escaped `%` and `_` under
+  `ESCAPE '\'` but not `\` itself, so a backslash in the query consumed the
+  following character — searching `\` matched a literal `%` and missed real
+  backslashes (e.g. a Windows path). The escape char is now escaped first.
+  Wrong-results bug, not a crash (the FTS path and parameterisation were already
+  safe); regression-tested via the fallback.
+- **AU-016 breach-IP→geolocation chain no longer matches a substring IP.** It
+  linked a breach IP to a coordinate when the coordinate's evidence summary
+  *contained* the IP string — but `"11.2.3.45".contains("1.2.3.4")` is `true`, so
+  a breach IP could falsely chain to the coordinates of an unrelated IP that
+  contains it as a substring (a spurious `High` finding). Matching is now
+  anchored: a hit flanked by an IP-extending char (digit or `.`) is rejected,
+  while a legitimate boundary (`"1.2.3.4: City"`, `"1.2.3.4:8080"`) still matches.
+  Regression-tested.
+- **AU-019 temporal breach clusters are bounded to a real 30-day window.** The
+  rule reports breaches "clustered within 30 days" (potential coordinated
+  compromise, `High`), but it measured the gap between *consecutive* sorted dates
+  and rolled the reference forward each step — so a chain like Jan 1 / Jan 30 /
+  Feb 28 / Mar 30 (each pair ≤30 days) collapsed into one ~88-day "cluster",
+  contradicting the claim. The 30-day window is now anchored to each cluster's
+  earliest date, so every reported cluster genuinely spans ≤30 days. Stricter
+  (fewer false coordinated-compromise findings on slow rolling activity);
+  regression-tested with both a real tight cluster and the chained case.
+- **Hex hash/key blobs are no longer misclassified as Bitcoin wallets.**
+  `core::crypto::classify_crypto_address` documents that a 32/64-char hex blob
+  must stay a key, but the legacy-BTC branch (`1…`/`3…`, 26–35 base58) broke it:
+  base58 excludes only `0` among the hex digits, so a 32-char MD5 with no `0` and
+  a `1`/`3` lead satisfied `all(is_base58)` and resolved to `crypto_btc`. With
+  ~13% of MD5s lacking a `0`, that mis-minted ~1–2% of password hashes as
+  cryptocurrency wallets — polluting the entity graph and firing the crypto
+  correlators on hashes. The prefix-less/short base58 branches now reject
+  all-ASCII-hex candidates (a genuine base58 address is never all-hex,
+  `p < (15/58)²⁶`); `0x`-ETH and bech32 are prefix-disambiguated and untouched.
+  Proved by an exhaustive test (no all-hex string of any length/lead digit is
+  ever classified) while the real BTC/ETH examples still resolve.
+- **`abn::company_names` keeps the "& Co" idiom attached in a syndicate.**
+  It split joint-owner strings on `&`, but that `&` is also part of a single
+  company name: `"Ashton & Co Pty Ltd & Berg Pty Ltd"` split into a bogus
+  standalone `"Co Pty Ltd"` (which itself passes `looks_like_company`), so the
+  ABN register was queried for the wrong name. A segment whose first word is
+  `CO`/`COMPANY` is now rejoined to its predecessor before the syndicate split;
+  single `"& Co"` companies and genuine multi-company syndicates are unchanged.
+  Regression-tested.
+- **Company legal-form detection survives trailing punctuation.**
+  `abn::looks_like_company` matched suffixes (`LIMITED`, `LTD`, `INC`, `NL`,
+  `& CO`, …) as space-bounded tokens, so a form as the final token followed by
+  punctuation — `"ACME HOLDINGS LIMITED."`, `"WIDGETS LTD;"`, `"ACME INC,"` —
+  failed the match and the owner was misread as an individual, suppressing the
+  ABN/ACN resolvers for a real company. Punctuation (except `&`, which is part of
+  `"& CO"`) now folds to spaces before matching; the canonical suffix list also
+  shed its period variants as a result. No regression — the word-boundary safety
+  cases (`INCANDESCENT`, `ALTDORF`) and `"& CO"` handling still hold; coverage
+  added for the punctuation forms.
+- **Entity UID normalisation is now idempotent for domains (repeated `www.`).**
+  The `Domain` arm of `normalise` stripped only the *first* leading `www.` label,
+  so `www.www.foo.com` normalised to `www.foo.com` — which itself re-normalised to
+  `foo.com`. Because the normalised value keys the UID, a host that was re-emitted
+  or re-normalised could shift UID and fail to dedup against the same host seen
+  once. The strip now consumes *all* consecutive leading `www.` labels in a single
+  pass, so the result is a fixed point (`normalise(normalise(v)) == normalise(v)`).
+  Found and locked down by two new cross-kind invariant tests — idempotency for
+  **every** `EntityKind` and case-fold invariance for the folded kinds
+  (Email/Username/Domain) — over an adversarial corpus (non-ASCII capitals,
+  `+tag` emails, mixed-case URLs, coordinates, MAC/IPv6 forms). These guards are
+  what surfaced the bug and now prevent the whole class from recurring.
+- **Entity UID normalisation folds non-ASCII uppercase, so internationalised
+  emails/usernames dedup correctly.** `normalise` (which keys every entity's UID)
+  had an `Email | Username` fast path that returned the value unchanged whenever
+  it contained no *ASCII* uppercase byte. A value whose only capital was
+  non-ASCII — a German/Scandinavian name like `Ölaf`, a Cyrillic/Greek handle, or
+  Turkish dotted `İstanbul` — therefore skipped case-folding entirely, while its
+  all-caps spelling (`ÖLAF`) folded normally. The two spellings got different
+  UIDs, so one real identity fragmented into separate entities that never merged
+  or corroborated. Folding is now total (`str::to_lowercase`, full Unicode) — the
+  same bug class as the earlier `email_locale`/`email_header_geo` fixes, here in
+  the core dedup path. The removed fast path also still allocated, so it bought
+  nothing. Regression-tested across Latin-1, Greek, and Turkish capitals.
 - **`email_locale` matches mixed-case names instead of silently missing them.**
   Its surname-suffix and given-name detection compared an *un-lowercased* email
   local part against all-lowercase pattern tables (`first == "guillaume"`,

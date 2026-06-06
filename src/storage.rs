@@ -118,6 +118,19 @@ fn env_i64(var: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
+/// Escape the LIKE metacharacters in `s` for a query using `ESCAPE '\'`.
+///
+/// The escape character `\` is escaped FIRST, then `%` and `_`, so all three
+/// LIKE metacharacters are matched literally. Escaping `\` first is essential:
+/// otherwise a backslash in the input would consume the following character (a
+/// `\` query would match a literal `%`, missing real backslashes). Callers wrap
+/// the result in `%…%` for a substring match.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 impl Store {
     pub fn open(path: &str) -> Result<Self> {
         // Performance pragmas are env-tunable (low-RAM Termux devices may want a
@@ -651,10 +664,7 @@ impl Store {
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(&sql)?;
 
-            let like_pattern = value_contains.map(|v| {
-                let escaped = v.replace('%', "\\%").replace('_', "\\_");
-                format!("%{escaped}%")
-            });
+            let like_pattern = value_contains.map(|v| format!("%{}%", escape_like(v)));
 
             let rows = stmt.query_map(
                 rusqlite::params_from_iter(
@@ -739,9 +749,9 @@ impl Store {
         }
 
         // Fallback: legacy substring scan (also covers infix matches FTS's
-        // token/prefix model can't reach).
-        let escaped = trimmed.replace('%', "\\%").replace('_', "\\_");
-        let pattern = format!("%{escaped}%");
+        // token/prefix model can't reach). `escape_like` neutralises the LIKE
+        // metacharacters (incl. the escape char itself) under `ESCAPE '\'`.
+        let pattern = format!("%{}%", escape_like(trimmed));
         let mut stmt = conn.prepare_cached(
             "SELECT data_json FROM entities WHERE value LIKE ?1 ESCAPE '\\' \
              ORDER BY confidence DESC LIMIT ?2",
@@ -1535,6 +1545,50 @@ mod tests {
     }
 
     #[test]
+    fn entity_survives_a_full_fidelity_storage_roundtrip() {
+        use crate::core::entity::{Evidence, derive_uid, normalise};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "rt");
+        // Exercise every field that a lossy persistence layer could drop or
+        // reorder: a `raw_value` that differs from the normalised value, ordered
+        // evidence attributes, multiple tags, and a non-unit corroboration.
+        let mut e = Entity::new(EntityKind::Email, "Found.User+Tag@Example.COM", 0.83, "rt");
+        e.corroboration = 4;
+        e.tag("breach");
+        e.tag("au:source");
+        e.add_evidence(
+            Evidence::new("hibp", "breach hit")
+                .with_attr("zbreach", "Z")
+                .with_attr("abreach", "A"),
+        );
+        e.add_evidence(Evidence::new("hunter_io", "verified"));
+        let uid = e.uid.clone();
+
+        // The strongest single invariant: serialise → persist → reload →
+        // serialise must be byte-identical. Catches any dropped/reordered field.
+        let before = serde_json::to_string(&e).unwrap();
+        store.upsert_entity(&e).unwrap();
+        let got = store.get_entity(&uid).unwrap().unwrap();
+        assert_eq!(
+            before,
+            serde_json::to_string(&got).unwrap(),
+            "storage round-trip changed the entity"
+        );
+        // The persisted UID must remain reconstructible from its (kind, value),
+        // so a reloaded entity still dedups against a freshly-derived one.
+        assert_eq!(
+            got.uid,
+            derive_uid(&got.kind, &normalise(&got.kind, &got.value))
+        );
+        // The human-facing display value survives, distinct from the normalised
+        // dedup key.
+        assert_eq!(got.value, "found.user+tag@example.com");
+        assert_eq!(got.raw_value, "Found.User+Tag@Example.COM");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn get_entity_not_found() {
         let path = tmp_db();
         let store = Store::open(&path).unwrap();
@@ -1594,6 +1648,41 @@ mod tests {
         store.upsert_entity(&e).unwrap();
         let results = store.search_entities("zzzz_no_match_xyzzy_42", 10).unwrap();
         assert!(results.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn escape_like_neutralises_all_metacharacters() {
+        // `\` first, then `%`/`_` — order matters so the added escapes aren't
+        // themselves re-escaped.
+        assert_eq!(super::escape_like("a%b_c"), "a\\%b\\_c");
+        assert_eq!(super::escape_like("back\\slash"), "back\\\\slash");
+        assert_eq!(super::escape_like("100%_\\"), "100\\%\\_\\\\");
+        assert_eq!(super::escape_like("plain"), "plain"); // no-op on ordinary text
+    }
+
+    #[test]
+    fn search_like_fallback_escapes_backslash() {
+        // A bare `\` query has no FTS tokens, so it exercises the LIKE fallback.
+        // It must match a literal backslash, not (mis-escaped) a `%`.
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "bs");
+        store
+            .upsert_entity(&Entity::new(EntityKind::Username, "back\\slash", 0.9, "bs"))
+            .unwrap();
+        store
+            .upsert_entity(&Entity::new(EntityKind::Username, "plainname", 0.9, "bs"))
+            .unwrap();
+        let hits = store.search_entities("\\", 10).unwrap();
+        assert!(
+            hits.iter().any(|e| e.value == "back\\slash"),
+            "backslash query must match a literal backslash: {hits:?}"
+        );
+        assert!(
+            hits.iter().all(|e| e.value.contains('\\')),
+            "must not match values without a backslash: {hits:?}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

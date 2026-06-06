@@ -69,21 +69,21 @@ pub(super) fn effective_plan(kind: TargetKind, value: &str) -> Vec<EndpointCall>
 /// and the capability is one policy-flip away.
 fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
     match kind {
-        TargetKind::Email => vec![
-            EndpointCall::Stealer,
-            EndpointCall::BreachHub,
-            EndpointCall::EmailCheck,
-        ],
+        // Breach + stealer + external records all come back from the universal
+        // `/search` (run before this plan), which returns them unified with
+        // breach_count/stealer_count/external_count in ONE paid call — the
+        // broadest, most comprehensive endpoint. So the per-kind plan adds only
+        // what `/search` does NOT cover. `email-check` adds the account/service
+        // existence map (distinct data), so it's the only email add-on.
+        TargetKind::Email => vec![EndpointCall::EmailCheck],
         TargetKind::Username => {
             let mut plan = vec![
-                EndpointCall::Stealer,
                 EndpointCall::SocialAggregate,
                 EndpointCall::GithubProfile,
                 EndpointCall::TwitterProfile,
                 EndpointCall::RedditProfile,
                 EndpointCall::TiktokProfile,
                 EndpointCall::UsernameHistory,
-                EndpointCall::BreachHub,
                 EndpointCall::RobloxProfile,
                 EndpointCall::XboxProfile,
                 EndpointCall::MinecraftProfile,
@@ -100,10 +100,14 @@ fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
             }
             plan
         }
-        TargetKind::Phone => vec![EndpointCall::PhoneInfo, EndpointCall::BreachHub],
+        // Phone breach/stealer records come from the universal `/search`
+        // (typed phone); `network/phone` adds carrier/line enrichment `/search`
+        // doesn't. Name breach/stealer likewise come from `/search` auto-detect,
+        // so FullName needs no add-on endpoint.
+        TargetKind::Phone => vec![EndpointCall::PhoneInfo],
         TargetKind::IpAddress => vec![EndpointCall::IpInfo],
         TargetKind::Domain => vec![EndpointCall::DomainIntel, EndpointCall::Whois],
-        TargetKind::FullName => vec![EndpointCall::BreachHub],
+        TargetKind::FullName => Vec::new(),
         _ => Vec::new(),
     }
 }
@@ -140,8 +144,6 @@ pub(super) async fn dispatch_plan(
 /// `invoke()`/`label()`/`argument()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EndpointCall {
-    Stealer,
-    BreachHub,
     EmailCheck,
     SocialAggregate,
     GithubProfile,
@@ -169,8 +171,6 @@ impl EndpointCall {
     /// drives both [`label`](Self::label) and [`invoke`](Self::invoke).
     fn spec(self) -> (&'static str, &'static str, &'static str) {
         match self {
-            Self::Stealer => ("stealer", "stealer", "q"),
-            Self::BreachHub => ("breachhub", "breachhub/search", "q"),
             Self::EmailCheck => ("email_check", "network/email-check", "email"),
             Self::SocialAggregate => ("social", "username/social", "username"),
             Self::GithubProfile => ("github", "username/github", "username"),
@@ -212,8 +212,6 @@ mod tests {
         // Sanity check: every variant must have a distinct label so
         // the dispatch + geo extractor can route by string identity.
         let all = [
-            EndpointCall::Stealer,
-            EndpointCall::BreachHub,
             EndpointCall::EmailCheck,
             EndpointCall::SocialAggregate,
             EndpointCall::GithubProfile,
@@ -238,29 +236,32 @@ mod tests {
     }
 
     #[test]
-    fn plan_email_covers_three_high_yield_endpoints() {
+    fn plan_email_addon_is_only_email_check() {
+        // Breach/stealer/external all come from the universal `/search` (run
+        // separately), so the email plan adds only the distinct account/service
+        // existence map. The dead, redundant `/stealer` + `/breachhub/search`
+        // endpoints (live-verified 404) must NOT be planned.
         let plan = plan_endpoints(TargetKind::Email, "a@b.com");
         let labels: Vec<&str> = plan.iter().map(|c| c.label()).collect();
-        for ep in ["stealer", "breachhub", "email_check"] {
-            assert!(labels.contains(&ep), "email plan missing endpoint {ep}");
-        }
+        assert!(labels.contains(&"email_check"), "got {labels:?}");
+        assert!(!labels.contains(&"stealer"), "404 endpoint must be gone");
+        assert!(!labels.contains(&"breachhub"), "404 endpoint must be gone");
     }
 
     #[test]
-    fn plan_username_covers_all_social_and_gaming_endpoints() {
-        // The remodel widens username dispatch to 11 endpoints (was 4).
-        // Regression guard so we don't accidentally trim it.
+    fn plan_username_covers_social_and_gaming_endpoints() {
+        // Regression guard so we don't accidentally trim the username breadth.
+        // The dead `/stealer` + `/breachhub/search` (404) are gone — their
+        // breach/stealer coverage is served by the universal `/search`.
         let plan = plan_endpoints(TargetKind::Username, "alice");
         let labels: Vec<&str> = plan.iter().map(|c| c.label()).collect();
         for ep in [
-            "stealer",
             "social",
             "github",
             "twitter",
             "reddit",
             "tiktok",
             "username_history",
-            "breachhub",
             "roblox",
             "xbox",
             "minecraft",
@@ -270,6 +271,8 @@ mod tests {
                 "username plan missing endpoint {ep}; got {labels:?}"
             );
         }
+        assert!(!labels.contains(&"stealer"), "404 endpoint must be gone");
+        assert!(!labels.contains(&"breachhub"), "404 endpoint must be gone");
     }
 
     #[test]
@@ -295,9 +298,9 @@ mod tests {
                 "effective plan must DROP free-covered '{dropped}'; got {labels:?}"
             );
         }
-        // …while keeping the paid-unique value: breach/stealer/history plus the
+        // …while keeping the paid-unique value: username-history plus the
         // multi-platform aggregate (one call across many sites — not single-origin).
-        for kept in ["stealer", "social", "username_history", "breachhub"] {
+        for kept in ["social", "username_history"] {
             assert!(
                 labels.contains(&kept),
                 "effective plan must KEEP paid-unique '{kept}'; got {labels:?}"
@@ -367,8 +370,6 @@ mod tests {
     fn endpoint_call_steam_round_trips_via_label() {
         // Ensure the new variant appears in the unique-label set.
         let labels: Vec<&str> = [
-            EndpointCall::Stealer,
-            EndpointCall::BreachHub,
             EndpointCall::EmailCheck,
             EndpointCall::SocialAggregate,
             EndpointCall::GithubProfile,

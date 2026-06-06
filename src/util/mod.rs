@@ -9,6 +9,7 @@ pub mod curl;
 pub mod curl_client;
 pub mod diagnostics;
 pub mod domains;
+pub mod found_keys;
 pub mod geohash;
 pub mod html;
 pub mod http;
@@ -22,6 +23,7 @@ pub mod oui;
 pub mod postcode_au;
 pub mod preflight;
 pub mod proxy;
+pub mod raw_archive;
 pub mod response_cache;
 pub mod see_know;
 pub mod service_defs;
@@ -229,6 +231,14 @@ pub mod str_util {
     /// Whitespace-only is treated as absent. Single definition so the many OSINT
     /// modules that surface "the value if the upstream actually sent one" share
     /// identical semantics instead of each re-deriving them.
+    ///
+    /// ```
+    /// use huntsman_search_engine::util::str_util::nonempty;
+    ///
+    /// assert_eq!(nonempty(&Some("  hi ".to_string())), Some("hi")); // trimmed
+    /// assert_eq!(nonempty(&Some("   ".to_string())), None);          // blank → absent
+    /// assert_eq!(nonempty(&None), None);
+    /// ```
     #[must_use]
     pub fn nonempty(o: &Option<String>) -> Option<&str> {
         o.as_deref().map(str::trim).filter(|s| !s.is_empty())
@@ -237,11 +247,40 @@ pub mod str_util {
     /// The ASCII digits of `s`, in order, with every other character dropped.
     /// One definition of "keep only the digits" for phone / ABN / ACN / LEI
     /// normalisation (was re-derived inline in ~9 places).
+    ///
+    /// ```
+    /// use huntsman_search_engine::util::str_util::ascii_digits;
+    ///
+    /// assert_eq!(ascii_digits("+61 (2) 9374-4000"), "61293744000");
+    /// assert_eq!(ascii_digits("no digits here"), "");
+    /// ```
     #[must_use]
     pub fn ascii_digits(s: &str) -> String {
         s.chars().filter(char::is_ascii_digit).collect()
     }
 
+    /// Borrow the longest prefix of `s` that is at most `max` bytes and ends on a
+    /// UTF-8 character boundary. Zero-copy — caps oversized fields (key fragments,
+    /// scraped summaries) without ever risking the panic of a raw `&s[..max]`.
+    ///
+    /// # Guarantees
+    /// - **Prefix:** `s.starts_with(truncate_safe(s, max))`.
+    /// - **Bounded:** `truncate_safe(s, max).len() <= max`.
+    /// - **Lossless when it fits:** if `s.len() <= max`, the whole of `s` is
+    ///   returned.
+    /// - **Never splits a code point**, so the result is always valid UTF-8;
+    ///   **total** — never panics, for any `s` and any `max` (including `0`).
+    ///
+    /// ```
+    /// use huntsman_search_engine::util::str_util::truncate_safe;
+    ///
+    /// assert_eq!(truncate_safe("hello", 3), "hel");    // ASCII exact cut
+    /// assert_eq!(truncate_safe("hello", 99), "hello"); // fits → whole string
+    /// assert_eq!(truncate_safe("", 0), "");
+    /// // `max` lands inside the 2-byte 'é' (bytes 1..3) → backs off to "a".
+    /// assert_eq!(truncate_safe("aébc", 2), "a");
+    /// ```
+    #[must_use]
     pub fn truncate_safe(s: &str, max: usize) -> &str {
         if s.len() <= max {
             return s;
@@ -260,6 +299,31 @@ pub mod str_util {
     /// usernames/emails match. Multi-char expansions (`æ→ae`, `ß→ss`, `þ→th`) are
     /// handled; non-Latin scripts (Arabic, CJK) have no ASCII fold and are
     /// dropped — callers should split into words *before* folding each token.
+    ///
+    /// # Guarantees
+    /// - **Charset:** the result contains only `[a-z0-9]` — every byte is ASCII
+    ///   lowercase alphanumeric. The result is therefore always valid to index by
+    ///   byte; `name_intel::permute` relies on this for safe slicing. (Proved
+    ///   exhaustively over every Unicode scalar value by
+    ///   `fold_ascii_lower_output_is_ascii_lower_alnum_for_all_scalars`.)
+    /// - **Idempotent:** `fold_ascii_lower(&fold_ascii_lower(s)) == fold_ascii_lower(s)`
+    ///   (a corollary: `[a-z0-9]` map to themselves).
+    /// - **Total:** never panics, on any input including arbitrary Unicode.
+    /// - A token with no foldable Latin content yields the empty string.
+    ///
+    /// ```
+    /// use huntsman_search_engine::util::str_util::fold_ascii_lower;
+    ///
+    /// assert_eq!(fold_ascii_lower("José Müller"), "josemuller"); // diacritics + space dropped
+    /// assert_eq!(fold_ascii_lower("O'Brien-Smith"), "obriensmith"); // punctuation dropped
+    /// assert_eq!(fold_ascii_lower("Straße"), "strasse"); // ß → ss
+    /// assert_eq!(fold_ascii_lower("日本語"), ""); // no ASCII fold → empty
+    /// assert!(
+    ///     fold_ascii_lower("Zoë_99 🎉")
+    ///         .bytes()
+    ///         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    /// );
+    /// ```
     pub fn fold_ascii_lower(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         for ch in s.chars() {
@@ -339,6 +403,34 @@ pub mod str_util {
             assert_eq!(truncate_safe("hello", 3), "hel"); // pure-ASCII exact cut
         }
 
+        /// All four documented guarantees, over an adversarial corpus × every
+        /// `max` (incl. 0 and past the end): prefix, bounded, lossless-when-fits,
+        /// boundary-aligned + idempotent — and the call never panics.
+        #[test]
+        fn truncate_safe_invariants_hold_over_corpus() {
+            for s in [
+                "",
+                "a",
+                "aé😀b",
+                "héllo wörld",
+                "🎉🎉🎉",
+                "ascii-only",
+                "\u{0}\u{7f}\u{200b}",
+            ] {
+                for max in 0..=s.len() + 3 {
+                    let out = truncate_safe(s, max);
+                    assert!(s.starts_with(out), "prefix: {s:?} max={max}");
+                    assert!(out.len() <= max, "bounded: {s:?} max={max}");
+                    assert!(s.is_char_boundary(out.len()), "boundary: {s:?} max={max}");
+                    if s.len() <= max {
+                        assert_eq!(out, s, "lossless when it fits: {s:?} max={max}");
+                    }
+                    // Re-truncating the result at the same cap is a fixed point.
+                    assert_eq!(truncate_safe(out, max), out, "idempotent: {s:?} max={max}");
+                }
+            }
+        }
+
         #[test]
         fn folds_latin_diacritics() {
             assert_eq!(fold_ascii_lower("José"), "jose");
@@ -351,6 +443,45 @@ pub mod str_util {
             assert_eq!(fold_ascii_lower("O'Brien-Smith"), "obriensmith");
             // Non-Latin has no ASCII fold → dropped.
             assert_eq!(fold_ascii_lower("علي"), "");
+        }
+
+        /// Charset guarantee, proved EXHAUSTIVELY: for every Unicode scalar
+        /// value, folding it yields only `[a-z0-9]` and never panics. Because the
+        /// fold is per-character, this covers the entire input domain for the
+        /// charset property — any longer string is a concatenation of these. This
+        /// is the invariant that makes downstream byte-slicing of the result safe.
+        #[test]
+        fn fold_ascii_lower_output_is_ascii_lower_alnum_for_all_scalars() {
+            for cp in 0u32..=0x10_FFFF {
+                let Some(ch) = char::from_u32(cp) else {
+                    continue; // surrogate range: not a scalar value
+                };
+                let folded = fold_ascii_lower(ch.encode_utf8(&mut [0u8; 4]));
+                assert!(
+                    folded
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
+                    "U+{cp:04X} folded to non-[a-z0-9]: {folded:?}"
+                );
+            }
+        }
+
+        /// Idempotence over an adversarial multi-char corpus: the result is a
+        /// fixed point (follows from the charset guarantee, but pinned directly).
+        #[test]
+        fn fold_ascii_lower_is_idempotent() {
+            for s in [
+                "José Müller-Łódź",
+                "O'Brien-Smith",
+                "Straße",
+                "ABC123xyz",
+                "🎉 mixed Ünïcödé 日本語 99",
+                "",
+                "\u{0}\u{7f}\u{200b}", // NUL, DEL, zero-width space
+            ] {
+                let once = fold_ascii_lower(s);
+                assert_eq!(fold_ascii_lower(&once), once, "not idempotent for {s:?}");
+            }
         }
     }
 }
@@ -393,6 +524,16 @@ pub mod geo {
     /// builds on this but additionally drops the near-null-island placeholder
     /// band those APIs emit. Precise sources stay here so a real equatorial fix
     /// isn't discarded.
+    ///
+    /// ```
+    /// use huntsman_search_engine::util::geo::is_valid_coords;
+    ///
+    /// assert!(is_valid_coords(-27.4766, 153.0166)); // Brisbane
+    /// assert!(is_valid_coords(0.0, 153.0));          // a real equatorial fix is kept
+    /// assert!(!is_valid_coords(0.0, 0.0));           // Null Island sentinel
+    /// assert!(!is_valid_coords(91.0, 0.0));          // out of range
+    /// assert!(!is_valid_coords(f64::NAN, 0.0));      // non-finite
+    /// ```
     #[must_use]
     pub fn is_valid_coords(lat: f64, lon: f64) -> bool {
         lat.is_finite()
@@ -421,6 +562,15 @@ pub mod geo {
     /// then became high-confidence false fixes — precisely what
     /// [`is_valid_coords`] exists to reject. Folding the validity check in keeps
     /// the band heuristic while closing that gap in one place.
+    ///
+    /// ```
+    /// use huntsman_search_engine::util::geo::is_plausible_provider_coord;
+    ///
+    /// assert!(is_plausible_provider_coord(-27.47, 153.02)); // real fix
+    /// assert!(!is_plausible_provider_coord(0.001, 0.001));  // null-island jitter
+    /// assert!(!is_plausible_provider_coord(0.0, 153.0));    // a component in the band
+    /// assert!(!is_plausible_provider_coord(91.0, 0.0));     // also fails validity
+    /// ```
     #[must_use]
     pub fn is_plausible_provider_coord(lat: f64, lon: f64) -> bool {
         is_valid_coords(lat, lon) && lat.abs() > NULL_ISLAND_BAND && lon.abs() > NULL_ISLAND_BAND

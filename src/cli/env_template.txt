@@ -27,6 +27,9 @@ HUNTSMAN_GREYNOISE_KEY="insert_greynoise_key_here"
 HUNTSMAN_PULSEDIVE_KEY="insert_pulsedive_key_here"
 HUNTSMAN_URLSCAN_KEY="insert_urlscan_io_key_here"
 HUNTSMAN_IPQS_KEY="insert_ipqs_key_here"
+# People & phone enrichment (free developer tiers):
+HUNTSMAN_FULLCONTACT_KEY="insert_fullcontact_key_here"
+HUNTSMAN_NUMVERIFY_KEY="insert_numverify_apilayer_key_here"
 # [RESERVED] not yet wired to a module:
 HUNTSMAN_ALIENVAULT_KEY="insert_alienvault_otx_key_here"
 HUNTSMAN_MALSHARE_KEY="insert_malshare_key_here"

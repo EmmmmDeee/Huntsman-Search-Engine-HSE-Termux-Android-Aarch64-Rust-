@@ -3,9 +3,11 @@
 //!
 //! Endpoint surface (all under `https://see-know.eu/api/v1`):
 //!
-//!   POST /search                — universal search (auto-detects type)
-//!   GET  /stealer               — stealer-log credential search
-//!   GET  /breachhub/search      — breach record search
+//!   POST /search                — universal search: breach + stealer + external
+//!                                 records unified in one call, with
+//!                                 breach_count/stealer_count/external_count.
+//!                                 The broadest, most comprehensive endpoint, so
+//!                                 it is the primary call for every target kind.
 //!   GET  /network/email-check   — email existence + service map
 //!   GET  /network/ip            — IP geolocation + ASN
 //!   GET  /network/phone         — phone number enrichment
@@ -62,8 +64,8 @@ static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::XApiKey, 75,
 /// and the confidence of recursive searching. So each scan gets a 160-query
 /// envelope (env-tunable via `HUNTSMAN_SEEKNOW_SCAN_CAP`, runtime-overridable
 /// via `ScanOptions::seeknow_scan_cap`). A single Username seed alone plans up
-/// to 13 specialised endpoints (social aggregate, github, twitter, reddit,
-/// tiktok, history, breachhub, roblox, xbox, minecraft, + discord/steam pivots)
+/// to 11 specialised endpoints (social aggregate, github, twitter, reddit,
+/// tiktok, history, roblox, xbox, minecraft, + discord/steam pivots)
 /// on top of the universal `/search`; with depth expansion every discovered
 /// username/email/phone/domain consumes its own matrix, so a cap of 160 lets
 /// the full 18-endpoint pool fire across ~10 recursively-discovered pivots in
@@ -242,6 +244,30 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
     crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
 
+/// A stable, human-identifiable fingerprint of the SeekNow API key used for a
+/// request, so EVERY derived entity records exactly which key/origin returned
+/// it. Provider-prefixed head + short tail uniquely identifies the key (an
+/// operator running several keys can tell which one produced a finding) without
+/// scattering the full secret across the persisted entity store. Pure, so the
+/// format is unit-testable.
+#[must_use]
+pub fn key_fingerprint(key: &str) -> String {
+    let k = key.trim();
+    if k.is_empty() {
+        return "see-know.eu:(no key)".to_string();
+    }
+    if k.len() <= 18 {
+        return format!("see-know.eu:{k}");
+    }
+    let head: String = k.chars().take(13).collect();
+    let tail: String = {
+        let mut t: Vec<char> = k.chars().rev().take(6).collect();
+        t.reverse();
+        t.into_iter().collect()
+    };
+    format!("see-know.eu:{head}\u{2026}{tail}")
+}
+
 /// Max records per the see-know.eu Universal Search spec (`limit`, default 100,
 /// **max 500**). Requested in full — the standing directive is to use
 /// see-know.eu maximally, and one richer response costs the same budget slot as
@@ -285,6 +311,14 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     }
     let url = format!("{}/search", base_url());
     let body = build_search_body(query, query_type, SEARCH_LIMIT);
+    // Human archive label: `search` (auto-detect) or `search-<type>` (typed),
+    // with the actual looked-up value — so the saved filename names exactly what
+    // was queried.
+    let archive_endpoint = if query_type.is_empty() {
+        "search".to_string()
+    } else {
+        format!("search-{query_type}")
+    };
     // The name/auto `/search` path intermittently returns `total:0` even when
     // the record exists (server-side cap races). Retry once on a transient
     // empty before giving up. `cache_put` already refuses to memoise an empty
@@ -292,7 +326,7 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     const MAX_ATTEMPTS: u32 = 2;
     let mut last_err = None;
     for attempt in 0..MAX_ATTEMPTS {
-        match post_json(&url, key, &body).await {
+        match post_json(&url, key, &body, &archive_endpoint, query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 if !items.is_empty() {
@@ -319,7 +353,7 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     }
 }
 
-/// Steam profile lookup via GET /api/v1/gaming/steam?id=<value>
+/// Steam profile lookup via `GET /api/v1/gaming/steam?id=<value>`
 ///
 /// Some plans publish gaming/steam alongside roblox/xbox/minecraft;
 /// safe to call against arbitrary 17-digit Steam IDs surfaced from
@@ -328,7 +362,7 @@ pub async fn steam_profile(key: &str, steam_id: &str) -> Result<Vec<Value>> {
     get_path(key, "gaming/steam", &[("id", steam_id)]).await
 }
 
-// Single-parameter GET endpoints (stealer, breachhub/search, domain/intel,
+// Single-parameter GET endpoints (domain/intel,
 // network/{ip,phone,email-check}, username/{github,twitter,reddit,tiktok,
 // social,history}, gaming/{roblox,xbox,minecraft}, domain/whois) carry no
 // behaviour beyond `get_path(path, &[(param, value)])`, so they are dispatched
@@ -340,12 +374,12 @@ pub async fn steam_profile(key: &str, steam_id: &str) -> Result<Vec<Value>> {
 // through the endpoint planner.
 
 /// Discord user info — captures region/timezone/connected-accounts via
-/// GET /api/v1/discord/user?id=<value>
+/// `GET /api/v1/discord/user?id=<value>`
 pub async fn discord_user(key: &str, discord_id: &str) -> Result<Vec<Value>> {
     get_path(key, "discord/user", &[("id", discord_id)]).await
 }
 
-/// Discord → Roblox linkage via GET /api/v1/discord/to-roblox?id=<value>
+/// Discord → Roblox linkage via `GET /api/v1/discord/to-roblox?id=<value>`
 pub async fn discord_to_roblox(key: &str, discord_id: &str) -> Result<Vec<Value>> {
     get_path(key, "discord/to-roblox", &[("id", discord_id)]).await
 }
@@ -370,6 +404,10 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
         return Ok(Vec::new());
     }
     let url = format!("{}/{path}?{qs}", base_url());
+    // Human archive label: the endpoint path (e.g. `stealer`,
+    // `breachhub/search`) and the actual looked-up value (first query param),
+    // so the saved filename names exactly what was queried.
+    let archive_query = params.first().map(|(_, v)| *v).unwrap_or("");
     // One retry on a transient transport error — flaky mobile/Termux networks
     // drop GETs, and a single-shot call silently loses that endpoint's data
     // (the live transcripts are full of such drops). The retry reuses the same
@@ -381,7 +419,7 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     const MAX_ATTEMPTS: u32 = 2;
     let mut last_err = None;
     for attempt in 0..MAX_ATTEMPTS {
-        match get_json(&url, key).await {
+        match get_json(&url, key, path, archive_query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 cache_put(ck.clone(), items.clone());
@@ -430,13 +468,20 @@ fn escape_json(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-async fn get_json(url: &str, key: &str) -> Result<Value> {
+async fn get_json(url: &str, key: &str, endpoint: &str, query: &str) -> Result<Value> {
     let body = CLIENT.get(url, key).await?;
+    // Retain the paid response verbatim BEFORE parsing/extraction — operator
+    // policy: purchased data is kept in absolute completeness until manually
+    // deleted (see `util::raw_archive`). `endpoint`/`query` name the saved file
+    // so it's obvious what was looked up. Empty bodies are skipped by the archive.
+    crate::util::raw_archive::record("see-know", endpoint, query, &body);
     parse_response(&body)
 }
 
-async fn post_json(url: &str, key: &str, body: &str) -> Result<Value> {
+async fn post_json(url: &str, key: &str, body: &str, endpoint: &str, query: &str) -> Result<Value> {
     let resp = CLIENT.post_json(url, key, body).await?;
+    // Archive the raw paid response verbatim, filed under the queried value.
+    crate::util::raw_archive::record("see-know", endpoint, query, &resp);
     parse_response(&resp)
 }
 
@@ -499,6 +544,23 @@ mod tests {
     #[test]
     fn resolve_key_uses_provided_when_non_empty() {
         assert_eq!(resolve_key(Some("my-key")), "my-key");
+    }
+
+    #[test]
+    fn key_fingerprint_identifies_origin_without_full_secret() {
+        // A SYNTHETIC key in the `seek-…` shape — never a real/embedded value, so
+        // the "single source of truth for embedded keys" architecture guard isn't
+        // tripped by a literal living outside util::keys.rs.
+        let fp = key_fingerprint("seek-1234567890aaaabbbbccccddddeeeeffff0000111122223333");
+        // Provider-prefixed, head + tail present, middle elided.
+        assert!(fp.starts_with("see-know.eu:seek-12345"), "got {fp}");
+        assert!(fp.ends_with("223333"), "got {fp}");
+        assert!(fp.contains('\u{2026}'));
+        // The full secret never appears verbatim — the elided middle is dropped.
+        assert!(!fp.contains("aaaabbbbccccddddeeeeffff"));
+        // Short/empty keys degrade gracefully.
+        assert_eq!(key_fingerprint(""), "see-know.eu:(no key)");
+        assert_eq!(key_fingerprint("short"), "see-know.eu:short");
     }
 
     #[test]

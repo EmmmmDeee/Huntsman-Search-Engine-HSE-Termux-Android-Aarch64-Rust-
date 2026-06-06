@@ -43,6 +43,7 @@ use axum::{
     routing::{get, post},
 };
 use serde_json::json;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 
 use super::{AppState, handlers, scan_handlers};
@@ -228,6 +229,13 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         //    `/static`; serves the embedded SPA for client-side routing.
         .fallback(spa_handler)
         .with_state(state)
+        // gzip every compressible response (the ~118 KB SPA, the ~528 KB vendor
+        // bundle, and large scan-result JSON) so a phone's mobile link carries
+        // ~4x less. `CompressionLayer`'s default predicate skips already-small
+        // bodies and `text/event-stream`, so the SSE live-scan stream is never
+        // buffered. Inner of CORS/security headers so those still apply to the
+        // compressed response.
+        .layer(CompressionLayer::new())
         .layer(cors)
         // Security headers on every response (outermost, so it also covers
         // CORS preflight + the SPA + static + API). See `set_security_headers`.

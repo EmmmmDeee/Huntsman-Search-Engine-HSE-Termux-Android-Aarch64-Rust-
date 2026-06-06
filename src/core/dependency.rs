@@ -10,7 +10,7 @@
 //!
 //! * **Module count per kind** — how many modules consume each
 //!   [`TargetKind`]. Drives the *richness* factor in
-//!   [`crate::core::scan::expansion_weight_with_richness`]: an entity
+//!   [`crate::core::scan::expansion_weight_for_strategy`]: an entity
 //!   that unlocks 30 modules outranks one that unlocks 3, regardless
 //!   of confidence parity.
 //!
@@ -53,6 +53,7 @@ pub const ALL_TARGET_KINDS: &[TargetKind] = &[
     TargetKind::AbnAcn,
     TargetKind::MacAddress,
     TargetKind::ApiKey,
+    TargetKind::CryptoAddress,
 ];
 
 /// Probe seed value used when introspecting a module's `accepts()` via

@@ -98,6 +98,28 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
     crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
 
+/// Provider-prefixed, identifiable fingerprint of the OathNet API key used for a
+/// request, so every derived entity declares which key/origin returned it —
+/// without persisting the full secret across the entity store. Mirrors
+/// `see_know::key_fingerprint`. Pure, so it is unit-testable.
+#[must_use]
+pub fn key_fingerprint(key: &str) -> String {
+    let k = key.trim();
+    if k.is_empty() {
+        return "oathnet.org:(no key)".to_string();
+    }
+    if k.len() <= 12 {
+        return format!("oathnet.org:{k}");
+    }
+    let head: String = k.chars().take(8).collect();
+    let tail: String = {
+        let mut t: Vec<char> = k.chars().rev().take(4).collect();
+        t.reverse();
+        t.into_iter().collect()
+    };
+    format!("oathnet.org:{head}\u{2026}{tail}")
+}
+
 #[derive(Deserialize)]
 struct Envelope {
     #[serde(default)]
@@ -154,6 +176,22 @@ pub async fn search(
         url.push_str(&crate::util::http::urlencode(&sid));
     }
     let body = CLIENT.get(&url, key).await?;
+    // Retain the paid response verbatim BEFORE parsing/extraction — operator
+    // policy: purchased data is kept in absolute completeness until manually
+    // deleted (see `util::raw_archive`). The endpoint label is the last two
+    // path segments (e.g. `/service/v2/breach/search` → `breach-search`) and the
+    // query is the looked-up value, so the saved filename names exactly what was
+    // queried. The archive skips empty bodies on its own.
+    let endpoint_label = path
+        .trim_matches('/')
+        .rsplit('/')
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("-");
+    crate::util::raw_archive::record("oathnet", &endpoint_label, value, &body);
     // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
     // which false-positives on legitimate metadata fields like `session_quota`
     // and `recommended_quota`. Match only true exhaustion signals.

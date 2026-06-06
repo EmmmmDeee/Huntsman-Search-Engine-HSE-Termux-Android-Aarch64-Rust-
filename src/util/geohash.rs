@@ -14,6 +14,21 @@ const BASE32: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
 /// Precision 7 = ±76m on the equator (suburb-level). 8 = ±19m (block).
 /// 9 = ±2.4m (building). The default 7 matches HSE's coordinate
 /// confidence — anything tighter is false precision.
+///
+/// # Guarantees
+/// - On valid coordinates, returns a string of exactly `precision.clamp(1, 12)`
+///   base-32 characters (the standard `0-9 b-z` minus `a i l o` alphabet).
+/// - Out-of-range `lat`/`lon` yield an empty string — never a panic.
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::geohash;
+///
+/// // Canonical reference point (Wikipedia) → its known geohash.
+/// assert_eq!(geohash(57.64911, 10.40744, 11), "u4pruydqqvj");
+/// assert_eq!(geohash(57.64911, 10.40744, 5), "u4pru"); // shorter precision = prefix
+/// // Out-of-range latitude → empty, no panic.
+/// assert_eq!(geohash(91.0, 0.0, 7), "");
+/// ```
 pub fn geohash(lat: f64, lon: f64, precision: u8) -> String {
     if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
         return String::new();
@@ -58,8 +73,24 @@ pub fn geohash(lat: f64, lon: f64, precision: u8) -> String {
     out
 }
 
-/// Parse "lat,lon" strings (as produced by HSE Coordinates entities)
-/// into a (f64, f64) tuple. Tolerates whitespace, trailing characters.
+/// Parse a `"lat,lon"` string (as produced by HSE `Coordinates` entities) into a
+/// `(f64, f64)` pair.
+///
+/// # Guarantees
+/// - Returns `Some((lat, lon))` only when `s` is two comma-separated numbers with
+///   `lat ∈ [-90, 90]` and `lon ∈ [-180, 180]`; surrounding whitespace on each
+///   component is trimmed.
+/// - Returns `None` for any other shape, a non-numeric component, or an
+///   out-of-range value — never panics.
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::parse_coords;
+///
+/// assert_eq!(parse_coords(" -27.47 , 153.02 "), Some((-27.47, 153.02)));
+/// assert_eq!(parse_coords("91.0,0.0"), None); // latitude out of range
+/// assert_eq!(parse_coords("153.02"), None);   // not a pair
+/// assert_eq!(parse_coords("a,b"), None);      // not numeric
+/// ```
 pub fn parse_coords(s: &str) -> Option<(f64, f64)> {
     let (lat_s, lon_s) = s.split_once(',')?;
     let lat: f64 = lat_s.trim().parse().ok()?;
@@ -74,6 +105,18 @@ pub fn parse_coords(s: &str) -> Option<(f64, f64)> {
 /// Returns IANA-style "Etc/GMT±N" identifier — accurate to within
 /// 1-2 hours for any inland location. Refines for Australia (UTC+8/9.5/10),
 /// US (Pacific/Mountain/Central/Eastern), and Europe (CET/EET).
+///
+/// # Guarantees
+/// - Always returns a non-empty `&'static str` (the 15°-band fallback covers
+///   every longitude); never panics, even for out-of-range inputs.
+/// - Refined regions (AU/US/EU) take precedence over the generic band.
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::timezone_for;
+///
+/// assert_eq!(timezone_for(-27.47, 153.02), "Australia/Sydney"); // Brisbane
+/// assert_eq!(timezone_for(51.5074, -0.1278), "Europe/London");
+/// ```
 pub fn timezone_for(lat: f64, lon: f64) -> &'static str {
     // Australia tight bands (more precise than longitude/15)
     if (-44.0..=-10.0).contains(&lat) {
@@ -150,6 +193,20 @@ pub fn timezone_for(lat: f64, lon: f64) -> &'static str {
 /// in OSINT breach data. Falls back to None for ambiguous regions
 /// (oceans, border zones). Caller can then trigger an HTTP-based
 /// reverse geocode (Nominatim) only when this returns None.
+///
+/// # Guarantees
+/// - Returns `Some(iso)` when the point falls in a known country box, else
+///   `None` (ocean / uncovered region) — a coarse first pass, never a panic.
+/// - Bounding boxes overlap at borders; the first match in declaration order
+///   wins, so this is a hint, not an authority.
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::reverse_country_iso;
+///
+/// assert_eq!(reverse_country_iso(-27.47, 153.02), Some("AU")); // Brisbane
+/// assert_eq!(reverse_country_iso(51.5074, -0.1278), Some("GB")); // London
+/// assert_eq!(reverse_country_iso(0.0, -140.0), None); // mid-Pacific → no box
+/// ```
 pub fn reverse_country_iso(lat: f64, lon: f64) -> Option<&'static str> {
     // (iso, lat_min, lat_max, lon_min, lon_max)
     const BOXES: &[(&str, f64, f64, f64, f64)] = &[
@@ -298,6 +355,21 @@ pub fn country_name_for_iso(iso: &str) -> Option<&'static str> {
 
 /// Great-circle distance between two coordinates in kilometres
 /// (Haversine formula). For proximity scoring.
+///
+/// # Guarantees
+/// - A proper metric for finite inputs: non-negative, symmetric, zero iff the
+///   points coincide, and bounded by half the Earth's circumference (≈20 015 km).
+///   Uses the numerically-stable `atan2` form, so identical/antipodal points do
+///   not produce `NaN`. (Invariants proved over a randomised sample in
+///   `haversine_is_a_bounded_symmetric_metric`.)
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::haversine_km;
+///
+/// // Sydney → Melbourne is ~714 km great-circle.
+/// assert!((haversine_km(-33.87, 151.21, -37.81, 144.96) - 714.0).abs() < 15.0);
+/// assert_eq!(haversine_km(10.0, 20.0, 10.0, 20.0), 0.0); // identical → 0, no NaN
+/// ```
 pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     const R: f64 = 6371.0; // Earth radius in km
     let dlat = (lat2 - lat1).to_radians();
@@ -568,6 +640,40 @@ mod tests {
         assert!((d - 714.0).abs() < 15.0, "got {d} km");
         // Identical points → zero distance, no NaN.
         assert_eq!(haversine_km(10.0, 20.0, 10.0, 20.0), 0.0);
+    }
+
+    /// Metric invariants of `haversine_km`, proved over a randomised sample of
+    /// valid coordinates (seeded LCG — deterministic, no `rand` dependency). The
+    /// geo-cluster correlators treat this as a distance, so it must stay a proper
+    /// metric: finite, non-negative, symmetric, identity-zero, and bounded by
+    /// half the Earth's circumference. Guards against a future edit (e.g. swapping
+    /// back to the `acos` form, or transposing a term) silently breaking it.
+    #[test]
+    fn haversine_is_a_bounded_symmetric_metric() {
+        // Half-circumference upper bound: π·R, plus a hair for float slack.
+        let max_km = std::f64::consts::PI * 6371.0 + 1e-6;
+        let mut state: u64 = 0x5DEECE66D;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            // Top 53 bits → [0, 1).
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..50_000 {
+            let lat1 = next() * 180.0 - 90.0;
+            let lon1 = next() * 360.0 - 180.0;
+            let lat2 = next() * 180.0 - 90.0;
+            let lon2 = next() * 360.0 - 180.0;
+            let d = haversine_km(lat1, lon1, lat2, lon2);
+            assert!(d.is_finite() && d >= 0.0, "non-metric distance {d}");
+            assert!(d <= max_km, "distance {d} exceeds half-circumference");
+            // Symmetric: swapping the endpoints is byte-identical (the formula is
+            // symmetric, so this is exact, not approximate).
+            assert_eq!(d, haversine_km(lat2, lon2, lat1, lon1), "asymmetric");
+            // Identity: a point is zero distance from itself.
+            assert_eq!(haversine_km(lat1, lon1, lat1, lon1), 0.0);
+        }
     }
 
     #[test]

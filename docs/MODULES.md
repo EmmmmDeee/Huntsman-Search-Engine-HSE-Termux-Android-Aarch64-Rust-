@@ -27,7 +27,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
-### people (8)
+### people (11)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -35,8 +35,11 @@ records. The engine knows nothing else — every module is a one-file change.
 | `name_intel` | full_name | free | **yes** | 97 | username, email, url |
 | `wikidata` | full_name, organisation | free | no | 96 | person, organisation, domain, username |
 | `seon` | email, phone | key_gated | no | 95 | person |
+| `pgp` | email | free | no | 91 | person, email |
 | `employer_pivot` | email, domain | free | no | 92 | address, phone, email, url |
 | `epieos` | email | key_gated | no | 92 | person, username, address |
+| `gravatar` | email | free | no | 90 | person, username, url, address |
+| `fullcontact` | email, phone | key_gated | no | 89 | person, organisation, address, username, url |
 | `proxycurl` | email, username, url | paid | no | 88 | person, address, email, domain, phone, organisation |
 | `contact_enrich` | email, phone | free | no | 85 | person, username, address, url |
 
@@ -51,18 +54,20 @@ records. The engine knows nothing else — every module is a one-file change.
 | `smtp_vrfy` | email | free | no | 85 | email |
 | `hunter_io` | domain | key_gated | no | 62 | email, person, organisation |
 
-### phone (1)
+### phone (2)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
+| `numverify` | phone | key_gated | no | 139 | address |
 | `phone_intl` | phone | free | **yes** | 140 | phone |
 
-### breach (7)
+### breach (8)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `xposed_or_not` | email | free | no | 128 | — |
 | `see_know` | email, username, phone, full_name, ip_address, domain | paid | no | 126 | email, username, phone, person, ip_address, domain, address, coordinates, organisation, asn, credential, api_key |
+| `psbdmp` | email, username, domain | free | no | 125 | url |
 | `hibp` | email, domain | key_gated | no | 120 | email, domain |
 | `dehashed` | email, username, phone, full_name, ip_address, domain | paid | no | 118 | — |
 | `intelx` | email, username, phone, full_name, ip_address, domain | paid | no | 116 | — |
@@ -103,11 +108,12 @@ records. The engine knows nothing else — every module is a one-file change.
 | `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
 | `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
 
-### infrastructure (16)
+### infrastructure (17)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `hudsonrock` | email, username, domain | free | no | 130 | — |
+| `ripestat` | ip_address, asn | free | no | 107 | asn, organisation, email |
 | `shodan` | ip_address | free | no | 105 | domain, url, asn, organisation, address, ip_address |
 | `criminal_ip` | ip_address | key_gated | no | 103 | organisation, asn |
 | `ipqs` | email, phone, ip_address | key_gated | no | 100 | — |
@@ -165,11 +171,12 @@ records. The engine knows nothing else — every module is a one-file change.
 | `cell_intel` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 64 | coordinates |
 | `local_net` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 58 | mac_address, ip_address |
 
-### other (2)
+### other (3)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `api_key_probe` | api_key | free | **yes** | 200 | api_key, domain |
+| `chain_intel` | crypto_address | free | no | 90 | crypto_address, username |
 | `qld_unclaimed` | full_name, organisation | free | no | 58 | address, coordinates, organisation |
 
 ## Synergy map

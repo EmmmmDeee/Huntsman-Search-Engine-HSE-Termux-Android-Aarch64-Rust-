@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::{Correlation, Severity};
 use crate::core::entity::{Entity, EntityKind};
@@ -38,6 +38,32 @@ fn is_benign_infra(e: &Entity) -> bool {
     BENIGN_INFRA_TAGS.iter().any(|t| e.has_tag(t))
 }
 
+/// True if `text` mentions `ip` as a whole dotted address, not as a substring of
+/// a longer number. A bare `contains` is wrong: `"11.2.3.45".contains("1.2.3.4")`
+/// is `true`, so an unrelated IP in an evidence summary would falsely chain. We
+/// reject a match flanked by an IP-*extending* char (digit or `.`); a following
+/// `:`/space/`)` is a legitimate boundary (`"1.2.3.4:8080"`, `"1.2.3.4: City"`).
+/// `ip`/`text` index by byte safely — `ip` is ASCII.
+fn text_mentions_ip(text: &str, ip: &str) -> bool {
+    if ip.is_empty() {
+        return false;
+    }
+    let bytes = text.as_bytes();
+    let n = ip.len();
+    let extends = |b: u8| b.is_ascii_digit() || b == b'.';
+    let mut from = 0;
+    while let Some(rel) = text[from..].find(ip) {
+        let i = from + rel;
+        let before_ok = i == 0 || !extends(bytes[i - 1]);
+        let after_ok = i + n >= bytes.len() || !extends(bytes[i + n]);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = i + 1;
+    }
+    false
+}
+
 pub(super) fn rule_au_001_multi_breach(
     entities: &[Entity],
     scan_id: &str,
@@ -50,8 +76,13 @@ pub(super) fn rule_au_001_multi_breach(
         "dehashed",
         "hibp",
         "oathnet_pro",
-        "search_engines:oathnet",
         "emailrep",
+        // NOTE: the generic `search_engines` source is deliberately NOT listed.
+        // A web-search hit is not breach corroboration, and counting it would let
+        // one real breach + one search result fire a false Critical. (An earlier
+        // `search_engines:oathnet` entry was dead — the module emits the plain
+        // `search_engines` source — so it was removed rather than "fixed" to
+        // `search_engines`, which would introduce exactly that false positive.)
     ];
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Email) {
@@ -612,9 +643,11 @@ pub(super) fn rule_au_016_breach_ip_geo_chain(
     let linked: Vec<&Entity> = coords
         .iter()
         .filter(|c| {
-            c.evidence
-                .iter()
-                .any(|ev| breach_ips.iter().any(|ip| ev.summary.contains(&ip.value)))
+            c.evidence.iter().any(|ev| {
+                breach_ips
+                    .iter()
+                    .any(|ip| text_mentions_ip(&ev.summary, &ip.value))
+            })
         })
         .copied()
         .collect();
@@ -768,10 +801,14 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
     breach_dates.sort_by_key(|(_, d)| *d);
     let mut clusters: Vec<Vec<String>> = Vec::new();
     let mut current: Vec<String> = vec![breach_dates[0].0.uid.clone()];
-    let mut prev_date = breach_dates[0].1;
+    // Anchor the window to the cluster's FIRST (earliest, since sorted) date, not
+    // a rolling previous date. A rolling gap chains — Jan 1 / Jan 30 / Feb 28 /
+    // Mar 30 are each ≤30 days apart and would collapse into one 88-day "cluster",
+    // contradicting the "within 30 days" claim. Anchoring bounds every cluster to
+    // a genuine ≤30-day span (a real coordinated-compromise window).
+    let mut anchor = breach_dates[0].1;
     for &(e, d) in &breach_dates[1..] {
-        let days_apart = date_diff_days(prev_date, d);
-        if days_apart <= 30 {
+        if date_diff_days(anchor, d) <= 30 {
             if !current.contains(&e.uid) {
                 current.push(e.uid.clone());
             }
@@ -780,8 +817,8 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
                 clusters.push(current);
             }
             current = vec![e.uid.clone()];
+            anchor = d;
         }
-        prev_date = d;
     }
     if current.len() >= 3 {
         clusters.push(current);
@@ -1068,6 +1105,15 @@ pub(super) fn rule_au_026_validated_address(
     out
 }
 
+/// AU-027 — Address ↔ coordinates geolocation chain.
+///
+/// Co-presence signal: fires when the scan holds both geo-tagged `Address` and
+/// `Coordinates` entities (confidence ≥ 0.55). It asserts that multiple geo
+/// artefacts were derived for the subject, NOT that a given address geocodes to
+/// a given coordinate — the correlator runs in `core` and cannot call the
+/// `util::geohash` distance helpers (the `core_does_not_import_util` layering
+/// invariant), so cross-kind proximity is intentionally not verified here.
+/// Spatial proximity between coordinate sets is AU-017's job.
 pub(super) fn rule_au_027_address_coordinates_chain(
     entities: &[Entity],
     scan_id: &str,
@@ -1162,6 +1208,15 @@ pub(super) fn rule_au_029_cloud_storage_exposure(
     )]
 }
 
+/// AU-030 — Multi-source geolocation convergence (source breadth).
+///
+/// Measures how many INDEPENDENT sources produced geo entities for the subject
+/// (`corroborating_sources`, so the unconditional `geo_normalize` enrichment
+/// pass can't inflate the count), escalating Medium→High→Critical at 3/4/5+. It
+/// is source *convergence* — many sources agreeing to provide geolocation — not
+/// a check that those sources agree on the same place; cross-kind proximity is
+/// not verified here (see AU-027 on why the correlator can't). AU-017 covers
+/// spatial clustering of `Coordinates`.
 pub(super) fn rule_au_030_geo_convergence_score(
     entities: &[Entity],
     scan_id: &str,
@@ -1357,26 +1412,42 @@ pub(super) fn rule_au_034_handle_reuse_identity(
         return Vec::new();
     }
 
+    // Bucket emails by the canonical handle of their local-part ONCE — O(E) —
+    // instead of recomputing `canonical_handle` for every email inside the
+    // per-username loop (which was O(U×E) String allocations and dominated the
+    // whole correlation pass on large scans). Each username then resolves its
+    // matches with a single hash lookup, making the rule O(U + E).
+    let mut emails_by_handle: HashMap<String, Vec<&Entity>> = HashMap::new();
+    for e in &emails {
+        // local-part, minus any Gmail-style `+tag` suffix.
+        let local = e.value.split('@').next().unwrap_or_default();
+        let base = local.split('+').next().unwrap_or_default();
+        if !base.is_empty() {
+            emails_by_handle
+                .entry(canonical_handle(base))
+                .or_default()
+                .push(e);
+        }
+    }
+
     let mut out = Vec::new();
     for u in &usernames {
         let handle = canonical_handle(&u.value);
         if handle.len() < MIN_HANDLE_LEN || is_generic_handle(&handle) {
             continue;
         }
+        let Some(matches) = emails_by_handle.get(&handle) else {
+            continue;
+        };
         let mut sources: HashSet<&str> = u.evidence_sources();
-        let mut matched_uids: Vec<String> = Vec::new();
-        let mut matched_values: Vec<&str> = Vec::new();
-        for e in &emails {
-            // local-part, minus any Gmail-style `+tag` suffix.
-            let local = e.value.split('@').next().unwrap_or_default();
-            let base = local.split('+').next().unwrap_or_default();
-            if !base.is_empty() && canonical_handle(base) == handle {
-                matched_uids.push(e.uid.clone());
-                matched_values.push(e.value.as_str());
-                sources.extend(e.evidence_sources());
-            }
+        let mut matched_uids: Vec<String> = Vec::with_capacity(matches.len());
+        let mut matched_values: Vec<&str> = Vec::with_capacity(matches.len());
+        for e in matches {
+            matched_uids.push(e.uid.clone());
+            matched_values.push(e.value.as_str());
+            sources.extend(e.evidence_sources());
         }
-        if matched_uids.is_empty() || sources.len() < MIN_DISTINCT_SOURCES {
+        if sources.len() < MIN_DISTINCT_SOURCES {
             continue;
         }
         matched_uids.sort_unstable();
@@ -1844,6 +1915,195 @@ pub(super) fn rule_au_038_verified_cross_platform_identity(
             hosts.len(),
             hosts.into_iter().collect::<Vec<_>>().join(", ")
         ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
+// ─── Crypto / identity / exposure rules (AU-039 … AU-043) ────────────────────
+//
+// These exploit signal that earlier rules never saw: first-class crypto wallet
+// addresses (`chain_intel`, breach-harvested), ENS-derived handles, PGP-key
+// linked emails, and public paste exposure (`psbdmp`). Each turns a raw
+// enrichment into a ranked, actionable finding.
+
+/// True when a wallet was genuinely *recovered from breach/stealer data* — not
+/// merely seen in some API response. Precision matters: the universal
+/// `found_keys` scanner harvests crypto addresses from EVERY response body
+/// (including `chain_intel`'s own blockchain-explorer replies, which list
+/// contract/related addresses), so a bare `retrieved` tag would mislabel an
+/// explorer artifact as a leak. We therefore require either:
+///   * a breach-record-field harvest (`key_harvest::emit_key`, whose evidence
+///     source is `oathnet_pro` — the shared path both breach pools use), or
+///   * a `found_keys` hit whose `source_provider` is an actual breach pool.
+fn is_breach_exposed_wallet(e: &Entity) -> bool {
+    e.evidence.iter().any(|ev| {
+        let src = ev.source.as_str();
+        src == "oathnet_pro"
+            || src == "see_know"
+            || (src == "found_keys"
+                && ev
+                    .attributes
+                    .get("source_provider")
+                    .is_some_and(|p| matches!(p.as_str(), "see-know" | "oathnet")))
+    })
+}
+
+/// AU-039 — a cryptocurrency wallet co-occurring with a real identity (Person or
+/// Email) in the same confirmed scan: an attribution lead linking on-chain funds
+/// to a person. Co-presence, not proof, so `High` (warrants attention) rather
+/// than `Critical`. One firing per wallet, anchored to the most specific
+/// identity present (Person preferred over Email).
+pub(super) fn rule_au_039_wallet_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let wallets = entities_of_kind(entities, EntityKind::CryptoAddress);
+    if wallets.is_empty() {
+        return Vec::new();
+    }
+    let anchor = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .or_else(|| entities.iter().find(|e| e.kind == EntityKind::Email));
+    let Some(anchor) = anchor else {
+        return Vec::new();
+    };
+    wallets
+        .into_iter()
+        .map(|w| {
+            Correlation::new(
+                "AU-039",
+                "Cryptocurrency wallet linked to identity",
+                Severity::High,
+                format!(
+                    "Wallet {} co-occurs with identity {} — possible attribution",
+                    w.value, anchor.value
+                ),
+                vec![w.uid.clone(), anchor.uid.clone()],
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
+}
+
+/// AU-040 — a cryptocurrency wallet recovered from breach / stealer data
+/// (clipboard-hijacker malware harvests these in volume). Distinct from AU-039:
+/// this is about the *exposure source*, not co-located identity.
+pub(super) fn rule_au_040_wallet_breach_exposure(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::CryptoAddress)
+        .filter(|e| is_breach_exposed_wallet(e))
+        .map(|e| {
+            Correlation::new(
+                "AU-040",
+                "Cryptocurrency wallet exposed in breach/stealer data",
+                Severity::High,
+                format!("Wallet {} was recovered from leaked/stealer data", e.value),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
+}
+
+/// AU-041 — an ENS reverse name resolved an EVM address to a human-chosen handle
+/// (`chain_intel`): an on-chain → identity edge. `Medium` (a handle is a lead,
+/// not an identity by itself).
+pub(super) fn rule_au_041_ens_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username && e.has_tag("ens"))
+        .map(|e| {
+            // The ENS name is on the entity's evidence; surface it when present.
+            let ens = e
+                .evidence
+                .iter()
+                .find_map(|ev| ev.attributes.get("ens_name").cloned())
+                .unwrap_or_else(|| e.value.clone());
+            Correlation::new(
+                "AU-041",
+                "On-chain identity via ENS",
+                Severity::Medium,
+                format!(
+                    "ENS name {ens} ties an EVM address to the handle '{}'",
+                    e.value
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
+}
+
+/// AU-042 — two or more email addresses bound to the same PGP key (`pgp` module):
+/// strong same-owner evidence (the key holder asserted these are theirs).
+/// `High`. One grouped firing over all key-linked emails.
+pub(super) fn rule_au_042_pgp_email_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let linked: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email && e.has_tag("pgp-linked"))
+        .collect();
+    if linked.is_empty() {
+        return Vec::new();
+    }
+    let mut addrs: Vec<&str> = linked.iter().map(|e| e.value.as_str()).collect();
+    addrs.sort_unstable();
+    let uids: Vec<String> = linked.iter().map(|e| e.uid.clone()).collect();
+    vec![Correlation::new(
+        "AU-042",
+        "PGP key binds multiple emails to one identity",
+        Severity::High,
+        format!(
+            "A PGP key links {} email address(es) to one owner: {}",
+            addrs.len(),
+            addrs.join(", ")
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
+/// AU-043 — the subject's data appears in one or more public pastes (`psbdmp`):
+/// a public-exposure signal that corroborates breach findings. `Medium`. One
+/// grouped firing over all paste URLs.
+pub(super) fn rule_au_043_paste_exposure(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let pastes: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Url && e.has_tag(crate::core::tags::PASTE_EXPOSED))
+        .collect();
+    if pastes.is_empty() {
+        return Vec::new();
+    }
+    let uids: Vec<String> = pastes.iter().map(|e| e.uid.clone()).collect();
+    vec![Correlation::new(
+        "AU-043",
+        "Public paste exposure",
+        Severity::Medium,
+        format!("Subject data found in {} public paste(s)", pastes.len()),
         uids,
         scan_id,
         ts,

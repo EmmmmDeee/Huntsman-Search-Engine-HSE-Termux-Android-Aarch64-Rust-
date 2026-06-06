@@ -5,21 +5,28 @@
 //! Multiplier-tier pools (separate quotas, overlapping but distinct
 //! data corpora — combining them maximises coverage).
 //!
-//! Per-target endpoint routing (paid quota spent only where free can't reach):
+//! Per-target endpoint routing. The universal `/search` is the broadest, most
+//! comprehensive endpoint — it returns breach + stealer + external records
+//! unified in ONE paid call (with breach_count/stealer_count/external_count) —
+//! so it is the primary call for EVERY target kind. Per-kind add-ons only cover
+//! data `/search` does not return. (The standalone `/stealer` and
+//! `/breachhub/search` paths were removed: live-verified 404, and fully
+//! subsumed by `/search` — exactly the redundant "restricted searches" the
+//! broad endpoint supersedes.)
 //!
-//!   Email      → /search + /stealer + /breachhub + /network/email-check
-//!   Username   → /search + /stealer + /username/social + /username/history
-//!                + /breachhub  (+ discord/steam ID-resolution pivots)
-//!   Phone      → /search + /network/phone + /breachhub
-//!   Domain     → /domain/intel + /domain/whois
-//!   IpAddress  → /network/ip
-//!   FullName   → /search (auto-detect) + /breachhub
+//!   Email      → /search + /network/email-check (account/service map)
+//!   Username   → /search + /username/social + /username/history
+//!                (+ discord/steam ID-resolution pivots)
+//!   Phone      → /search + /network/phone (carrier/line enrichment)
+//!   Domain     → /search + /domain/intel + /domain/whois
+//!   IpAddress  → /search + /network/ip
+//!   FullName   → /search (auto-detect) — no add-on needed
 //!
 //! Single-origin presence checks (github/twitter/reddit/tiktok/roblox/xbox/
 //! minecraft) are deliberately NOT dispatched — the free `username_search`
 //! stack (600+ sites), `social_probe`, and `search_engines` scraping already
-//! cover those, so SeekNow's paid lookups go only to breach / stealer /
-//! username-history aggregation and cross-platform ID resolution. See the
+//! cover those, so SeekNow's paid lookups go only to the broad `/search`,
+//! username-history aggregation, and cross-platform ID resolution. See the
 //! `endpoints` submodule (`FREE_COVERED_SINGLE_ORIGIN` / `effective_plan`).
 //!
 //! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups (default 160).
@@ -42,6 +49,7 @@ use crate::modules::oathnet_pro::key_harvest::{extract_api_keys_from_item, store
 use crate::util::geo::is_valid_coords;
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
 use crate::util::see_know::{self, val_str};
+use crate::util::url_util::host_from_url;
 
 mod endpoints;
 mod pivots;
@@ -78,9 +86,15 @@ impl Module for SeekNow {
     }
 
     fn priority(&self) -> u8 {
-        // Runs right after oathnet_pro (127). Both are Multiplier-tier
-        // Paid modules. Phase 1 in concurrent dispatch covers both.
-        126
+        // Runs BEFORE oathnet_pro (127). Operator directive: SeekNow is always
+        // prioritised above OathNet — its corpus already incorporates OathNet's
+        // and supersedes it in most ways, so it must query first and seed the
+        // graph (and the per-target dispatch cache) ahead of OathNet, which then
+        // only adds whatever marginal records SeekNow didn't already return.
+        // Both are Multiplier-tier Paid modules in Phase 1 of concurrent
+        // dispatch; Phase 1 runs Paid modules in priority order, so 128 > 127
+        // guarantees SeekNow goes first.
+        128
     }
 
     fn cost(&self) -> ModuleCost {
@@ -104,7 +118,13 @@ impl Module for SeekNow {
             EntityKind::Organisation,
             EntityKind::Asn,
             EntityKind::Credential,
+            EntityKind::Url,
             EntityKind::ApiKey,
+            EntityKind::MacAddress,
+            EntityKind::DeviceId,
+            EntityKind::Password,
+            // Plus `Other(<field>)` for every remaining raw field — see
+            // `extract_rich_detail` (an unbounded set, so not enumerable here).
         ];
         KINDS
     }
@@ -132,6 +152,10 @@ impl Module for SeekNow {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = see_know::resolve_key(ctx.key_opt(see_know::KEY_ENV));
+        // Stable origin fingerprint of the exact key in use — stamped onto every
+        // entity this module produces so each finding declares which API key
+        // (and provider) returned it. Computed once per scan.
+        let key_fp = see_know::key_fingerprint(key);
 
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -167,12 +191,22 @@ impl Module for SeekNow {
             parent.add_evidence(
                 Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search"))
                     .with_attr("hits", total.to_string())
-                    .with_attr("endpoint", "/api/v1/search"),
+                    .with_attr("endpoint", "/api/v1/search")
+                    .with_attr("provider", "see-know.eu")
+                    .with_attr("api_key_origin", &key_fp),
             );
             result.push(parent);
 
             for item in &items {
-                extract_entities(item, v, &ctx.scan_id, &mut seen, &mut result);
+                extract_entities(
+                    item,
+                    v,
+                    &ctx.scan_id,
+                    "search",
+                    &key_fp,
+                    &mut seen,
+                    &mut result,
+                );
                 store_api_credential(item);
                 extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
             }
@@ -186,16 +220,19 @@ impl Module for SeekNow {
         // concurrently (bounded by remaining scan + session budget). What
         // actually runs:
         //
-        //   Email     → stealer, breachhub, email-check
-        //   Username  → stealer, social (multi-platform aggregate, 1 call),
-        //               username-history, breachhub
+        // (breach + stealer + external records already arrived via the broad
+        // `/search` above; these add-ons only cover what `/search` does not):
+        //
+        //   Email     → email-check (account/service existence map)
+        //   Username  → social (multi-platform aggregate, 1 call),
+        //               username-history
         //               (+ discord/user + discord-to-roblox when the value
         //                parses as a Discord ID; + steam when a Steam ID —
         //                ID resolution, not single-site enumeration)
-        //   Phone     → phone_info, breachhub, search(typed phone)
+        //   Phone     → phone_info (carrier/line enrichment)
         //   Domain    → domain/intel, domain/whois
         //   IpAddress → network/ip
-        //   FullName  → /search auto + breachhub
+        //   FullName  → (none — `/search` auto-detect already covers it)
         //
         // The single-origin github/twitter/reddit/tiktok/roblox/xbox/minecraft
         // endpoints are filtered out — free `username_search` handles those, so
@@ -214,7 +251,15 @@ impl Module for SeekNow {
 
             for (endpoint, items) in &endpoint_results {
                 for item in items {
-                    extract_entities(item, v, &ctx.scan_id, &mut seen, &mut result);
+                    extract_entities(
+                        item,
+                        v,
+                        &ctx.scan_id,
+                        endpoint,
+                        &key_fp,
+                        &mut seen,
+                        &mut result,
+                    );
                     store_api_credential(item);
                     extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
                     // Geo-specific extraction — pull coordinates/timezone/
@@ -229,7 +274,8 @@ impl Module for SeekNow {
             // (discord → roblox → steam → …) we chase them across MULTIPLE hops
             // within budget rather than a single round. See [`resolve_identity_pivots`].
             if !ctx.cancel.is_cancelled() {
-                resolve_identity_pivots(key, v, &ctx.scan_id, &mut seen, &mut result).await;
+                resolve_identity_pivots(key, &key_fp, v, &ctx.scan_id, &mut seen, &mut result)
+                    .await;
             }
         }
 
@@ -256,6 +302,7 @@ const MAX_PIVOT_HOPS: usize = 3;
 /// pivot so a discord → roblox → steam chain closes inside one scan.
 async fn resolve_identity_pivots(
     key: &str,
+    key_fp: &str,
     seed_value: &str,
     scan_id: &str,
     seen: &mut HashSet<String>,
@@ -292,7 +339,7 @@ async fn resolve_identity_pivots(
         let before = result.entities.len();
         for (endpoint, items) in &pivot_results {
             for item in items {
-                extract_entities(item, seed_value, scan_id, seen, result);
+                extract_entities(item, seed_value, scan_id, endpoint, key_fp, seen, result);
                 extract_geo_entities(item, endpoint, scan_id, seen, result);
             }
         }
@@ -460,9 +507,15 @@ fn extract_geo_entities(
 /// (operator data-fidelity policy). Scalars are stored as-is; nested
 /// objects/arrays as compact JSON. This is what makes a result traceable to its
 /// actual raw source record rather than just a module name + entity hash.
-fn record_evidence(item: &Value, dbname: &str) -> Evidence {
-    let mut ev =
-        Evidence::new(SRC, format!("SeekNow record from {dbname}")).with_attr("source", dbname);
+fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> Evidence {
+    let mut ev = Evidence::new(SRC, format!("SeekNow record from {dbname}"))
+        .with_attr("source", dbname)
+        // Provenance: which provider, which exact API key, and which endpoint
+        // returned this record. Stamped on EVERY record so a finding always
+        // declares its origin (operator directive: specify the API key origin).
+        .with_attr("provider", "see-know.eu")
+        .with_attr("api_key_origin", key_fp)
+        .with_attr("via_endpoint", endpoint);
     if let Some(obj) = item.as_object() {
         for (k, v) in obj {
             let val = match v {
@@ -489,6 +542,8 @@ fn extract_entities(
     item: &Value,
     target_value: &str,
     scan_id: &str,
+    endpoint: &str,
+    key_fp: &str,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
@@ -496,8 +551,9 @@ fn extract_entities(
         .or_else(|| val_str(item, "source"))
         .unwrap_or_else(|| "see-know".to_string());
     // Full raw record on the evidence chain — every entity derived from this
-    // record carries the complete source data for traceability.
-    let ev = record_evidence(item, &dbname);
+    // record carries the complete source data plus its provenance (provider,
+    // API-key origin, endpoint) for traceability.
+    let ev = record_evidence(item, &dbname, endpoint, key_fp);
 
     let target_lower = target_value.to_lowercase();
 
@@ -628,6 +684,65 @@ fn extract_entities(
         }
     }
 
+    // ── Stealer-log saved-credential URL ──────────────────────────────────
+    //
+    // The single most OSINT-valuable artifact in a stealer record is the URL
+    // the victim had a saved credential for. SeekNow's /stealer endpoint (and
+    // the /search auto-route into it) carries it as `url`/`url_str`. Spider it
+    // into three pivotable entities — exactly OathNet's proven stealer model —
+    // so the rest of the graph (domain enumeration, credential correlation,
+    // login-surface mapping) can converge on it:
+    //
+    //   • the Url itself (the captured login surface);
+    //   • its registrable host as a Domain pivot (drives crt.sh, DNS, whois);
+    //   • a `<username>@<url>` Credential when a login accompanies the URL.
+    //
+    // None are tagged `breach`: a saved-login URL is credential CONTEXT /
+    // infrastructure, not leaked PII — the same policy `extract_stealer_entities`
+    // applies in oathnet_pro, and the same policy the Domain block below uses.
+    if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
+        if url.len() >= 4 && seen.insert(format!("@url:{}", url.to_lowercase())) {
+            let mut e = Entity::new(EntityKind::Url, &url, 0.60, scan_id);
+            e.tag("see-know");
+            e.tag("stealer");
+            e.add_evidence(ev.clone());
+            result.push(e);
+        }
+        // The URL's host → Domain pivot (eTLD-aware host extraction; dotless /
+        // private / scheme-less junk is dropped by `host_from_url`).
+        if let Some(host) = host_from_url(&url)
+            && seen.insert(format!("@stealer-dom:{host}"))
+        {
+            let mut e = Entity::new(EntityKind::Domain, &host, 0.55, scan_id);
+            e.tag("see-know");
+            e.tag("stealer");
+            e.add_evidence(
+                Evidence::new(SRC, format!("Stealer credential captured for {host}"))
+                    .with_attr("url", &url),
+            );
+            result.push(e);
+        }
+        // `<username>@<url>` Credential — the login↔surface binding, surfaced as
+        // a first-class pivotable entity (operator policy: never redacted).
+        if let Some(uname) = val_str(item, "username") {
+            let cred_val = format!("{uname}@{url}");
+            if seen.insert(format!("@cred:{}", cred_val.to_lowercase())) {
+                let mut e = Entity::new(EntityKind::Credential, &cred_val, 0.60, scan_id);
+                e.tag("see-know");
+                e.tag("stealer");
+                e.add_evidence(ev.clone());
+                result.push(e);
+            }
+        }
+    }
+
+    // Maximum-raw-data pass: surface the long tail of the record (names, full
+    // address, organisation, device fingerprints, extra social handles, DOB,
+    // and EVERY remaining scalar field) as first-class entities so nothing
+    // valuable stays locked inside the evidence blob. Operator directive: "I
+    // want everything. Maximum raw data."
+    extract_rich_detail(item, scan_id, &ev, seen, result);
+
     // Domain is infrastructure, not a leaked credential, so it is the one kind
     // NOT tagged `breach` — keep its inline tail (and consume the last `ev`).
     if let Some(domain) = val_str(item, "domain")
@@ -638,6 +753,301 @@ fn extract_entities(
         e.tag("see-know");
         e.add_evidence(ev);
         result.push(e);
+    }
+}
+
+/// Field names already turned into typed entities by `extract_entities` (or
+/// deliberately suppressed as structural/metadata noise). The catch-all pass
+/// skips these so it only emits the *long tail* — every other value-bearing
+/// field — without duplicating a node already created or surfacing envelope
+/// bookkeeping. Lower-cased compare so schema casing variants can't leak through.
+const RICH_DETAIL_SKIP: &[&str] = &[
+    // Already typed above.
+    "email",
+    "username",
+    "phone",
+    "phone_number",
+    "full_name",
+    "name",
+    "ip",
+    "country",
+    "discord_id",
+    "discordid",
+    "steam_id",
+    "steamid",
+    "steam_id64",
+    "password",
+    "passwordhash",
+    "password_hash",
+    "hashed_password",
+    "hash",
+    "url",
+    "url_str",
+    "domain",
+    // Composed/typed in the rich pass itself.
+    "first_name",
+    "firstname",
+    "last_name",
+    "lastname",
+    "company",
+    "employer",
+    "organization",
+    "organisation",
+    "org",
+    "mac",
+    "mac_address",
+    "bssid",
+    "hwid",
+    "machine_id",
+    "device_id",
+    "uuid",
+    "guid",
+    "computer_name",
+    "machine",
+    "hostname",
+    "telegram",
+    "skype",
+    "facebook",
+    "instagram",
+    "twitter",
+    "linkedin",
+    "vk",
+    "snapchat",
+    "city",
+    "state",
+    "region",
+    "province",
+    "zip",
+    "zipcode",
+    "postal",
+    "postal_code",
+    "postcode",
+    "street",
+    "address",
+    "address_line",
+    // Structural / metadata / provenance bookkeeping (kept verbatim on evidence,
+    // but not worth a standalone graph node).
+    "source",
+    "source_db",
+    "dbname",
+    "_origin",
+    "id",
+    "_id",
+    "log_id",
+    "log",
+    "salt",
+    "response_time_ms",
+    "type",
+    "success",
+    "total",
+    "breach_count",
+    "stealer_count",
+    "external_count",
+    "index",
+    "score",
+    "_score",
+];
+
+/// Push a stealer/infrastructure-CONTEXT entity: tags `see-know` plus any
+/// `extra_tags`, but deliberately NOT `breach`. Device fingerprints (MAC, HWID,
+/// hostname, …) are infrastructure/context, not leaked PII — the same policy the
+/// URL/Domain/Credential spidering follows — so they must not carry the `breach`
+/// tag that [`push_breach_entity`] forces.
+fn push_context_entity(
+    result: &mut ModuleResult,
+    mut e: Entity,
+    ev: &Evidence,
+    extra_tags: &[&str],
+) {
+    e.tag("see-know");
+    for t in extra_tags {
+        e.tag(*t);
+    }
+    e.add_evidence(ev.clone());
+    result.push(e);
+}
+
+/// Maximum-raw-data extractor: turn the long tail of a breach/stealer record
+/// into first-class, pivotable entities. Typed where a kind fits (Person,
+/// Organisation, Address, MacAddress, DeviceId, platform Usernames), and
+/// `Other(field)` for everything else — so EVERY value-bearing field of the raw
+/// response becomes a node, not just an evidence attribute. Confidences are
+/// modest (secondary, record-derived) so this breadth never outranks the
+/// primary identity entities.
+fn extract_rich_detail(
+    item: &Value,
+    scan_id: &str,
+    ev: &Evidence,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let Some(obj) = item.as_object() else {
+        return;
+    };
+
+    // ── Names: first + last → a composed Person (the bare `name`/`full_name`
+    // path above only fires when the value already contains a space). ──
+    let first = val_str(item, "first_name").or_else(|| val_str(item, "firstname"));
+    let last = val_str(item, "last_name").or_else(|| val_str(item, "lastname"));
+    if let (Some(f), Some(l)) = (&first, &last) {
+        let full = format!("{} {}", f.trim(), l.trim());
+        if full.len() >= 3 && seen.insert(format!("@person:{}", full.to_lowercase())) {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Person, &full, 0.60, scan_id),
+                ev,
+                &[],
+            );
+        }
+    }
+
+    // ── Organisation / employer. ──
+    for k in ["company", "employer", "organization", "organisation", "org"] {
+        if let Some(o) = val_str(item, k)
+            && o.len() >= 2
+            && seen.insert(format!("@org:{}", o.to_lowercase()))
+        {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Organisation, &o, 0.50, scan_id),
+                ev,
+                &[],
+            );
+        }
+    }
+
+    // ── Device fingerprints — strong stealer-log pivots. ──
+    for k in ["mac", "mac_address", "bssid"] {
+        if let Some(m) = val_str(item, k)
+            && m.len() >= 12
+            && seen.insert(format!("@mac:{}", m.to_lowercase()))
+        {
+            push_context_entity(
+                result,
+                Entity::new(EntityKind::MacAddress, &m, 0.60, scan_id),
+                ev,
+                &["device"],
+            );
+        }
+    }
+    for k in [
+        "hwid",
+        "machine_id",
+        "device_id",
+        "uuid",
+        "guid",
+        "computer_name",
+        "machine",
+        "hostname",
+    ] {
+        if let Some(d) = val_str(item, k)
+            && d.len() >= 3
+            && seen.insert(format!("@device:{k}:{}", d.to_lowercase()))
+        {
+            push_context_entity(
+                result,
+                Entity::new(EntityKind::DeviceId, &d, 0.55, scan_id),
+                ev,
+                &["device", "stealer"],
+            );
+        }
+    }
+
+    // ── Extra social handles → platform-prefixed Username pivots. ──
+    for (k, plat) in [
+        ("telegram", "telegram"),
+        ("skype", "skype"),
+        ("facebook", "facebook"),
+        ("instagram", "instagram"),
+        ("twitter", "twitter"),
+        ("linkedin", "linkedin"),
+        ("vk", "vk"),
+        ("snapchat", "snapchat"),
+    ] {
+        if let Some(h) = val_str(item, k)
+            && h.len() >= 2
+            && seen.insert(format!("@{plat}:{}", h.to_lowercase()))
+        {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Username, format!("{plat}:{h}"), 0.55, scan_id),
+                ev,
+                &[plat],
+            );
+        }
+    }
+
+    // ── Physical location: each part as its own geo-hint Address, plus a
+    // composed multi-part address (street/city/state/postal/country). ──
+    let mut addr_parts: Vec<String> = Vec::new();
+    for k in [
+        "street",
+        "address",
+        "address_line",
+        "city",
+        "state",
+        "region",
+        "province",
+        "zip",
+        "zipcode",
+        "postal",
+        "postal_code",
+        "postcode",
+    ] {
+        if let Some(p) = val_str(item, k)
+            && p.len() >= 2
+        {
+            if seen.insert(format!("@addr-part:{k}:{}", p.to_lowercase())) {
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::Address, &p, 0.45, scan_id),
+                    ev,
+                    &["geo-hint"],
+                );
+            }
+            addr_parts.push(p);
+        }
+    }
+    if addr_parts.len() >= 2 {
+        if let Some(c) = val_str(item, "country") {
+            addr_parts.push(c);
+        }
+        let composed = addr_parts.join(", ");
+        if seen.insert(format!("@addr:{}", composed.to_lowercase())) {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Address, &composed, 0.55, scan_id),
+                ev,
+                &["geo-hint", "composed-address"],
+            );
+        }
+    }
+
+    // ── Catch-all: EVERY remaining value-bearing scalar field becomes an
+    // `Other(field)` node, so nothing in the raw record is left un-surfaced.
+    // Nested objects/arrays are serialised compactly so they're captured too. ──
+    for (k, v) in obj {
+        if RICH_DETAIL_SKIP.contains(&k.to_lowercase().as_str()) {
+            continue;
+        }
+        let val = match v {
+            Value::Null => continue,
+            Value::String(s) => s.clone(),
+            Value::Bool(b) => b.to_string(),
+            Value::Number(n) => n.to_string(),
+            Value::Array(_) | Value::Object(_) => v.to_string(),
+        };
+        if val.is_empty() || val.len() > 2000 {
+            continue;
+        }
+        if seen.insert(format!("@other:{k}:{}", val.to_lowercase())) {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Other(k.clone()), &val, 0.40, scan_id),
+                ev,
+                &["raw-field"],
+            );
+        }
     }
 }
 
@@ -722,7 +1132,15 @@ mod tests {
         });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
-        extract_entities(&item, "15551234567", "scan", &mut seen, &mut result);
+        extract_entities(
+            &item,
+            "15551234567",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
 
         // One entity per recognised field.
         assert_eq!(
@@ -772,6 +1190,125 @@ mod tests {
                 .entities
                 .iter()
                 .any(|e| e.value == "steam:76561198000000000" && e.has_tag("steam"))
+        );
+    }
+
+    #[test]
+    fn extract_entities_spiders_stealer_url_into_pivots() {
+        use serde_json::json;
+        // A stealer-log row: a saved credential for a login URL. The URL is the
+        // highest-value pivot and must spider into Url + Domain + Credential,
+        // none tagged `breach` (credential context / infrastructure, not PII).
+        let item = json!({
+            "dbname": "RedlineStealer",
+            "username": "victim_login",
+            "password": "hunter2",
+            "url": "https://accounts.example.com/login?ref=1",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "victim_login",
+            "scan",
+            "stealer",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+
+        let find = |k: EntityKind, pred: &dyn Fn(&Entity) -> bool| {
+            result.entities.iter().find(|e| e.kind == k && pred(e))
+        };
+        // Url entity for the captured login surface.
+        let url = find(EntityKind::Url, &|e| {
+            e.value.contains("accounts.example.com")
+        })
+        .expect("stealer URL must surface as a Url entity");
+        assert!(url.has_tag("stealer") && url.has_tag("see-know"));
+        assert!(
+            !url.has_tag("breach"),
+            "stealer URL must NOT be tagged breach"
+        );
+        // Host → Domain pivot (eTLD-aware host extraction, lowercased).
+        let dom = find(EntityKind::Domain, &|e| e.value == "accounts.example.com")
+            .expect("stealer URL host must surface as a Domain pivot");
+        assert!(dom.has_tag("stealer") && !dom.has_tag("breach"));
+        // username@url Credential binding.
+        assert!(
+            find(EntityKind::Credential, &|e| {
+                e.value == "victim_login@https://accounts.example.com/login?ref=1"
+            })
+            .is_some(),
+            "login↔surface must surface as a Credential entity"
+        );
+    }
+
+    #[test]
+    fn extract_rich_detail_surfaces_the_whole_record() {
+        use serde_json::json;
+        // A fat record with the long tail SeekNow returns: composed name, org,
+        // device fingerprints, extra social handles, a multi-part address, and
+        // an unrecognised field. Every one must become a pivotable node.
+        let item = json!({
+            "first_name": "Matthew",
+            "last_name": "Diegmann",
+            "company": "Acme Pty Ltd",
+            "mac_address": "DC:44:27:AA:BB:CC",
+            "hwid": "WIN-ABC123XYZ",
+            "telegram": "mattdieg",
+            "city": "Brisbane",
+            "state": "QLD",
+            "postal": "4000",
+            "country": "AU",
+            "gender": "M",
+            "ip_country_code": "AU"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "x",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+
+        let has = |k: EntityKind, pred: &dyn Fn(&Entity) -> bool| {
+            result.entities.iter().any(|e| e.kind == k && pred(e))
+        };
+        // Composed Person from first+last.
+        assert!(has(EntityKind::Person, &|e| e.value == "Matthew Diegmann"));
+        // Organisation.
+        assert!(has(EntityKind::Organisation, &|e| e.value == "Acme Pty Ltd"));
+        // Device fingerprints.
+        assert!(has(EntityKind::MacAddress, &|e| e
+            .value
+            .to_lowercase()
+            .contains("dc:44:27")));
+        assert!(has(EntityKind::DeviceId, &|e| e.value == "WIN-ABC123XYZ"
+            && e.has_tag("stealer")));
+        // Extra social handle as a platform-prefixed Username.
+        assert!(has(EntityKind::Username, &|e| e.value == "telegram:mattdieg"));
+        // Composed multi-part address (parts + country).
+        assert!(has(EntityKind::Address, &|e| e.value.contains("Brisbane")
+            && e.value.contains("AU")
+            && e.has_tag("composed-address")));
+        // Catch-all: unrecognised value-bearing fields become Other(field) nodes
+        // tagged raw-field — NOTHING is dropped.
+        assert!(has(EntityKind::Other("gender".into()), &|e| e.value == "M"
+            && e.has_tag("raw-field")));
+        assert!(has(EntityKind::Other("ip_country_code".into()), &|e| e
+            .value
+            == "AU"));
+        // Structural/metadata keys never become standalone nodes.
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "first_name"))
         );
     }
 
@@ -918,9 +1455,15 @@ mod tests {
     }
 
     #[test]
-    fn priority_below_oathnet_pro() {
-        assert!(SeekNow.priority() < 127);
-        assert!(SeekNow.priority() >= 120);
+    fn priority_above_oathnet_pro() {
+        // Operator directive: SeekNow always queries before OathNet (its corpus
+        // already incorporates OathNet's). Phase 1 dispatches Paid modules in
+        // priority order, so SeekNow's must exceed oathnet_pro's (127).
+        assert!(
+            SeekNow.priority() > 127,
+            "SeekNow priority {} must exceed oathnet_pro's 127 so it runs first",
+            SeekNow.priority()
+        );
     }
 
     #[test]
@@ -949,7 +1492,15 @@ mod tests {
         let mut result = ModuleResult::new();
         result.push(Entity::new(EntityKind::Email, "a@b.com", 0.8, "t"));
         let before = result.entities.len();
-        resolve_identity_pivots("key", "seed", "t", &mut seen, &mut result).await;
+        resolve_identity_pivots(
+            "key",
+            "see-know.eu:test",
+            "seed",
+            "t",
+            &mut seen,
+            &mut result,
+        )
+        .await;
         assert_eq!(
             result.entities.len(),
             before,

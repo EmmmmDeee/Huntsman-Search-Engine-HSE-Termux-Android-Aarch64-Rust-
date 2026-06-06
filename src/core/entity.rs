@@ -91,6 +91,11 @@ pub enum EntityKind {
     MacAddress,
     DeviceId,
 
+    // Financial — cryptocurrency wallet addresses (BTC/ETH/LTC/…). A first-class
+    // OSINT artifact: case-sensitive (base58 / bech32 / 0x-hex), never an API
+    // key, and the pivot point for free chain-explorer enrichment.
+    CryptoAddress,
+
     // Catch-all
     Other(String),
 }
@@ -115,6 +120,7 @@ impl fmt::Display for EntityKind {
             Self::AbnAcn => f.write_str("abn_acn"),
             Self::MacAddress => f.write_str("mac_address"),
             Self::DeviceId => f.write_str("device_id"),
+            Self::CryptoAddress => f.write_str("crypto_address"),
             Self::Other(s) => write!(f, "other:{s}"),
         }
     }
@@ -156,7 +162,7 @@ impl Classification {
     /// NOTE (current state): the engine's expansion visited-set is still keyed
     /// on `(TargetKind, normalised value)` and expands each target at most
     /// once overall — it does not yet key on tier or re-queue on tier
-    /// graduation. `rank()`/[`COUNT`] are the ladder that the planned
+    /// graduation. `rank()`/[`Self::COUNT`] are the ladder that the planned
     /// tier-aware frontier will use; until that lands, this method is consumed
     /// by tests and ranking, not by the live visited-set.
     #[inline]
@@ -325,7 +331,7 @@ impl Entity {
     }
 
     /// Cross-source effective confidence — the stronger of two models over the
-    /// number of DISTINCT corroborating sources `n` (see [`source_count`],
+    /// number of DISTINCT corroborating sources `n` (see [`Self::source_count`],
     /// floored at 1):
     ///
     /// * **Multiplicative** (legacy): `confidence × (1 + 0.15·ln n)` — a gentle,
@@ -365,7 +371,7 @@ impl Entity {
         }
     }
 
-    /// The entity's current confidence tier — alias for [`classify`] that
+    /// The entity's current confidence tier — alias for [`Self::classify`] that
     /// names the role the value is intended to play in a tier-aware bounded
     /// best-first expansion (key the visited-set on `(target, tier_rank)` and
     /// re-queue at most once per tier when a merge lifts the entity).
@@ -420,10 +426,10 @@ impl Entity {
     }
 
     /// Distinct evidence sources that represent *independent* intelligence —
-    /// [`evidence_sources`] minus the deterministic self-enrichment passes in
+    /// [`Self::evidence_sources`] minus the deterministic self-enrichment passes in
     /// [`ENRICHMENT_ONLY_SOURCES`]. This is the honest cross-correlation set
-    /// that drives [`source_count`]/[`c_effective`] and the corroboration
-    /// correlator rules; the full [`evidence_sources`] set is retained for
+    /// that drives [`Self::source_count`]/[`Self::c_effective`] and the corroboration
+    /// correlator rules; the full [`Self::evidence_sources`] set is retained for
     /// display and attribute access.
     pub fn corroborating_sources(&self) -> std::collections::HashSet<&str> {
         self.evidence
@@ -538,15 +544,14 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
 pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
         EntityKind::Email | EntityKind::Username => {
-            let trimmed = value.trim();
-            if trimmed.bytes().all(|b| !b.is_ascii_uppercase()) {
-                return trimmed.to_string();
-            }
-            let mut s = String::with_capacity(trimmed.len());
-            for c in trimmed.chars() {
-                s.extend(c.to_lowercase());
-            }
-            s
+            // Total Unicode case-fold for dedup. `str::to_lowercase` maps every
+            // char through `char::to_lowercase`, so a value whose only capital is
+            // non-ASCII (`Ölaf`, a Cyrillic/Greek handle, Turkish `İ`) folds the
+            // same as its all-caps spelling — they must share a UID. (A previous
+            // ASCII-only "fast path" returned such values unfolded, fragmenting
+            // one identity across two UIDs; it also still allocated, so it bought
+            // nothing.)
+            value.trim().to_lowercase()
         }
         EntityKind::Domain => {
             let trimmed = value.trim();
@@ -556,9 +561,21 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             }
             let len = s.trim_end_matches('.').len();
             s.truncate(len);
-            // Strip www. prefix for deduplication
-            if s.starts_with("www.") && s.len() > 4 {
-                s = s[4..].to_string();
+            // Strip leading `www.` label(s) so `www.foo.com` and `foo.com` dedup
+            // to one host. Consume *all* consecutive leading `www.` labels in a
+            // single pass (not just the first) so the result is a fixed point:
+            // a single strip left `www.www.foo.com` → `www.foo.com`, which then
+            // re-normalised to `foo.com`, so the same host could key to two UIDs.
+            // The non-empty guard keeps a bare `www.` from collapsing to "".
+            let mut host = s.as_str();
+            while let Some(rest) = host.strip_prefix("www.") {
+                if rest.is_empty() {
+                    break;
+                }
+                host = rest;
+            }
+            if host.len() != s.len() {
+                s = host.to_string();
             }
             s
         }
@@ -1271,6 +1288,142 @@ mod tests {
         assert_eq!(result, "myuser");
     }
 
+    #[test]
+    fn normalise_folds_non_ascii_uppercase_for_dedup() {
+        // Regression: the old fast path returned early when a value had no ASCII
+        // uppercase byte, so a value whose only capital is NON-ASCII (e.g. a
+        // German/Scandinavian name, a Cyrillic/Greek handle, Turkish dotted-I)
+        // was never folded — fragmenting one real identity across two UIDs while
+        // its all-caps spelling folded correctly. Unicode folding must be total.
+        for (mixed, lower) in [
+            ("Ölaf", "ölaf"),
+            ("İstanbul", "i\u{307}stanbul"), // İ folds to i + combining dot above
+            ("ÉRIC", "éric"),
+        ] {
+            for kind in [EntityKind::Email, EntityKind::Username] {
+                assert_eq!(
+                    normalise(&kind, mixed),
+                    lower,
+                    "{kind:?}: {mixed:?} must fold to {lower:?}"
+                );
+                // The mixed-case and lower-case spellings must share a UID.
+                assert_eq!(
+                    Entity::new(kind.clone(), mixed, 0.5, "s").uid,
+                    Entity::new(kind.clone(), lower, 0.5, "s").uid,
+                    "{kind:?}: {mixed:?} and {lower:?} must dedup to one UID"
+                );
+            }
+        }
+    }
+
+    /// All entity kinds, for the cross-kind normalisation invariants below.
+    fn all_kinds() -> Vec<EntityKind> {
+        use EntityKind::*;
+        vec![
+            Person,
+            Email,
+            Phone,
+            Username,
+            Credential,
+            ApiKey,
+            Password,
+            IpAddress,
+            Domain,
+            Url,
+            Asn,
+            Address,
+            Coordinates,
+            Organisation,
+            AbnAcn,
+            MacAddress,
+            DeviceId,
+            CryptoAddress,
+            Other("x".into()),
+        ]
+    }
+
+    /// A corpus of awkward values spanning every normalisation arm: non-ASCII
+    /// capitals, `+tag` emails, repeated/leading `www.`, mixed-case URLs with
+    /// query+fragment, coordinates, dashed/`-0.0` numbers, MAC variants, IPv6.
+    const NORM_CORPUS: &[&str] = &[
+        "Ölaf",
+        "ölaf",
+        "ÉRIC",
+        "İstanbul",
+        "Ηandle",
+        "Matthew.Diegmann+tag@Gmail.COM",
+        "  spaced@x.com  ",
+        "WWW.Example.COM.",
+        "www.WWW.com",
+        "www.com",
+        "www.www.google.com",
+        "HTTPS://Host.COM/Path/Sub/?Q=1&b=2#frag",
+        "http://A.B/",
+        "1.23456789,-2.5",
+        "-0.0,0.0",
+        "AA-BB-CC-DD-EE-FF",
+        "+1 (555) 234-9999",
+        "::ffff:1.2.3.4",
+        "2001:DB8::1",
+        "AS13335",
+        "MixedCaseHandle",
+    ];
+
+    #[test]
+    fn normalise_is_idempotent_for_every_kind() {
+        // The normalised value keys the entity UID, so re-normalising an
+        // already-normalised value MUST be a no-op — otherwise a stored or
+        // re-emitted value can shift UID and silently fail to dedup. (Regression:
+        // the `www.` strip removed only the first label, so `www.www.foo.com`
+        // normalised to `www.foo.com` which then re-normalised to `foo.com`.)
+        for k in all_kinds() {
+            for v in NORM_CORPUS {
+                let once = normalise(&k, v);
+                let twice = normalise(&k, &once);
+                assert_eq!(
+                    once, twice,
+                    "normalise not idempotent for {k:?}: {v:?} → {once:?} → {twice:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normalise_is_case_insensitive_for_folded_kinds() {
+        // Email/Username/Domain dedup must be invariant under input case (full
+        // Unicode), so the same identity from differently-cased sources merges.
+        for k in [EntityKind::Email, EntityKind::Username, EntityKind::Domain] {
+            for v in NORM_CORPUS {
+                let base = normalise(&k, v);
+                assert_eq!(
+                    base,
+                    normalise(&k, &v.to_uppercase()),
+                    "{k:?} not case-invariant (upper): {v:?}"
+                );
+                assert_eq!(
+                    base,
+                    normalise(&k, &v.to_lowercase()),
+                    "{k:?} not case-invariant (lower): {v:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normalise_domain_collapses_repeated_www_to_a_fixed_point() {
+        assert_eq!(
+            normalise(&EntityKind::Domain, "www.www.google.com"),
+            "google.com"
+        );
+        assert_eq!(normalise(&EntityKind::Domain, "WWW.Foo.COM"), "foo.com");
+        // A bare `www.` is never collapsed to the empty string (its trailing dot
+        // is stripped first, leaving the literal `www`, which has no `www.` prefix).
+        assert_eq!(normalise(&EntityKind::Domain, "www."), "www");
+        // `www.www.` → trailing dot stripped → `www.www` → strip leading labels
+        // down to the last non-`www.` label, which is itself `www`.
+        assert_eq!(normalise(&EntityKind::Domain, "www.www."), "www");
+    }
+
     // ── Classification::as_str round-trips ──────────────────────────────────
 
     #[test]
@@ -1306,6 +1459,7 @@ mod tests {
             EntityKind::AbnAcn,
             EntityKind::MacAddress,
             EntityKind::DeviceId,
+            EntityKind::CryptoAddress,
             EntityKind::Other("custom".to_string()),
         ];
         for kind in variants {

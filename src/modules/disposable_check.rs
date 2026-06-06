@@ -1,6 +1,6 @@
 //! Disposable email detection via debounce.io (free, no key, unlimited).
 //!
-//! Endpoint: GET https://disposable.debounce.io/?email={email}
+//! Endpoint: `GET https://disposable.debounce.io/?email={email}`
 //! Auth: None.
 //!
 //! Tags email entities as `disposable` when they use throwaway domains

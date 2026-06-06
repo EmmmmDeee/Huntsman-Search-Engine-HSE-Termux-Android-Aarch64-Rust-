@@ -95,6 +95,11 @@ fn core_does_not_import_util_directly() {
                 // number in the unified-scan auto-detector.
                 && !line.contains("util::abn::is_valid_abn")
                 && !line.contains("util::abn::is_valid_acn")
+                // Pure, dependency-free digit-only normaliser — the same leaf
+                // category as the ABN checksums above; `core::scan` uses it in
+                // the target auto-detector to strip separators from a candidate
+                // phone/registry number. No state, no I/O, no upward deps.
+                && !line.contains("util::str_util::ascii_digits")
                 && !line.contains("modules::wigle::reset_budget")
                 && !line.contains("modules::see_know::reset_budget")
                 && !line.contains("modules::oathnet_pro::key_harvest::identify_api_key")

@@ -52,7 +52,13 @@ hickory-resolver   = { version = "0.26", default-features = false, features = ["
 dotenvy            = "0.15"
 # v0.3 — HTTP server, SPA, SSE
 axum               = { version = "0.8",  default-features = false, features = ["http1", "json", "query", "tokio", "original-uri"] }
-tower-http         = { version = "0.6",  features = ["cors"] }
+# `compression-gzip` keeps the web UI cheap on a phone's mobile link: the
+# embedded SPA (~118 KB) and vendor bundle (~528 KB) are served gzip-compressed
+# (~4x smaller) on every fresh load. The gzip backend is `flate2`/`miniz_oxide`
+# — pure Rust, no C/zlib dependency, so it preserves the no-native-libs Termux
+# build. `CompressionLayer`'s default predicate excludes `text/event-stream`,
+# so the SSE live-scan stream is never buffered/compressed.
+tower-http         = { version = "0.6",  features = ["cors", "compression-gzip"] }
 tokio-stream       = { version = "0.1",  features = ["sync"] }
 futures            = "0.3"
 # v1.2 — EXIF metadata parsing for the `exif_geo` module. Pure-Rust,

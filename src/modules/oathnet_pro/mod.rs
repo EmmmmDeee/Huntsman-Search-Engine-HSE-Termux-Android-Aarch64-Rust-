@@ -92,6 +92,9 @@ impl Module for OathnetPro {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = oathnet::resolve_key(ctx.key_opt(oathnet::KEY_ENV));
+        // Origin fingerprint of the exact key in use — stamped on every entity so
+        // each finding declares which API key (and provider) returned it.
+        let key_fp = oathnet::key_fingerprint(key);
 
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -221,7 +224,14 @@ impl Module for OathnetPro {
         result.push(parent);
 
         for item in &items {
-            extract_breach_entities(item, &target.value, &ctx.scan_id, &mut seen, &mut result);
+            extract_breach_entities(
+                item,
+                &target.value,
+                &ctx.scan_id,
+                &key_fp,
+                &mut seen,
+                &mut result,
+            );
             store_api_credential(item);
             extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
         }
@@ -237,7 +247,7 @@ impl Module for OathnetPro {
                 oathnet::search(key, paths::STEALER, field, &target.value, 100).await
         {
             for item in &stealer_items {
-                extract_stealer_entities(item, &ctx.scan_id, &mut seen, &mut result);
+                extract_stealer_entities(item, &ctx.scan_id, &key_fp, &mut seen, &mut result);
                 store_api_credential(item);
                 extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
             }
@@ -390,10 +400,15 @@ fn extract_breach_entities(
     item: &Value,
     target_value: &str,
     scan_id: &str,
+    key_fp: &str,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    let ev = breach_evidence(item);
+    // Provenance: which provider + which exact API key returned this record
+    // (the source database/website is already on the evidence per row).
+    let ev = breach_evidence(item)
+        .with_attr("provider", "oathnet.org")
+        .with_attr("api_key_origin", key_fp);
 
     // Decide whether this breach row actually belongs to the target. Breach
     // databases hold millions of records and a broad search (especially a
@@ -658,10 +673,14 @@ fn push_stealer_entity(
 fn extract_stealer_entities(
     item: &Value,
     scan_id: &str,
+    key_fp: &str,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    let mut ev = Evidence::new(SRC, "Stealer log entry".to_string()).with_attr("source", "stealer");
+    let mut ev = Evidence::new(SRC, "Stealer log entry".to_string())
+        .with_attr("source", "stealer")
+        .with_attr("provider", "oathnet.org")
+        .with_attr("api_key_origin", key_fp);
     if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
         ev = ev.with_attr("url", &url);
     }
@@ -782,6 +801,7 @@ mod tests {
             &item,
             "jordan.meyer@example.com",
             "scan",
+            "oathnet.org:test",
             &mut seen,
             &mut result,
         );
@@ -838,7 +858,7 @@ mod tests {
         });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
-        extract_stealer_entities(&item, "scan", &mut seen, &mut result);
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
 
         let tags_of = |k: EntityKind, needle: &str| -> Vec<String> {
             result
@@ -881,6 +901,7 @@ mod tests {
             &item,
             "unrelated-target-xyz",
             "scan",
+            "oathnet.org:test",
             &mut seen,
             &mut result,
         );
@@ -911,7 +932,14 @@ mod tests {
         });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
-        extract_breach_entities(&item, "Matthew Diegmann", "scan", &mut seen, &mut result);
+        extract_breach_entities(
+            &item,
+            "Matthew Diegmann",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
 
         let email = result
             .entities
@@ -944,7 +972,14 @@ mod tests {
         let parker = json!({ "full_name": "Matthew Parker", "source": "X" });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
-        extract_breach_entities(&parker, "Matthew Diegmann", "scan", &mut seen, &mut result);
+        extract_breach_entities(
+            &parker,
+            "Matthew Diegmann",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
         let p = result
             .entities
             .iter()
@@ -959,7 +994,14 @@ mod tests {
         // The real person — both terms present — is a confirmed target row.
         let diegmann = json!({ "full_name": "Matthew Diegmann", "source": "X" });
         let (mut seen2, mut r2) = (HashSet::new(), ModuleResult::new());
-        extract_breach_entities(&diegmann, "Matthew Diegmann", "scan", &mut seen2, &mut r2);
+        extract_breach_entities(
+            &diegmann,
+            "Matthew Diegmann",
+            "scan",
+            "oathnet.org:test",
+            &mut seen2,
+            &mut r2,
+        );
         let d = r2
             .entities
             .iter()

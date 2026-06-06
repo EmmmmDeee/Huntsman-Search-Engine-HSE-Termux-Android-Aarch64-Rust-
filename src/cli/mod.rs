@@ -310,6 +310,12 @@ pub enum Command {
         /// sweep already covered — each sweep spends quota only on NEW seeds.
         #[arg(long)]
         radar: bool,
+        /// Emit the raw newline-delimited JSON event stream (machine-readable)
+        /// instead of the default human-readable, fully-unredacted structured
+        /// view. Both carry identical data — the default just renders it for a
+        /// human interpreter; `--json` is for piping into another tool.
+        #[arg(long)]
+        json: bool,
     },
     /// Radar mode: continuous Termux signal sweep → automatic pivoting.
     ///
@@ -335,7 +341,7 @@ pub enum Command {
         #[arg(long)]
         free_only: bool,
     },
-    /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report.
+    /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report / full.
     ///
     /// JSON           — `[{ kind, value, ... }, ...]` flat entity list
     /// CSV            — operator-friendly tabular form (same shape as
@@ -345,6 +351,11 @@ pub enum Command {
     /// Report         — pretty-printed JSON dossier (scan + entities +
     ///                  correlations + counts; same shape as
     ///                  `/api/v1/scans/{id}/report.json`)
+    /// Full           — Huntsman's STANDARD maximum-detail dossier: every
+    ///                  entity (incl. candidates) with its full evidence
+    ///                  chain — every raw field, the provenance
+    ///                  (provider / api_key_origin / endpoint) and source
+    ///                  website — nothing hashed, masked, or omitted
     ///
     /// Output goes to stdout by default; pass `--out <path>` to write
     /// to a file.
@@ -352,7 +363,7 @@ pub enum Command {
         /// Scan ID (or `latest` for the most-recent completed scan).
         #[arg(short, long)]
         scan_id: String,
-        /// Output format: json | csv | gexf | report. Default `json`.
+        /// Output format: json | csv | gexf | report | full. Default `json`.
         #[arg(short, long, default_value = "json")]
         format: String,
         /// File path to write to. Omit for stdout.
@@ -498,6 +509,7 @@ pub async fn run() -> Result<()> {
             passive_only,
             modules,
             radar,
+            json,
         } => {
             let value = resolve_seed(value, keys::default_seed())?;
             live::cmd_live(live::LiveCmd {
@@ -510,6 +522,7 @@ pub async fn run() -> Result<()> {
                 passive_only,
                 modules,
                 radar,
+                json,
             })
             .await
         }
@@ -676,8 +689,9 @@ pub(super) fn parse_target_kind(s: &str) -> Result<TargetKind> {
         "abn" | "acn" | "abn_acn" => Ok(TargetKind::AbnAcn),
         "apikey" | "api_key" | "key" => Ok(TargetKind::ApiKey),
         "mac" | "bssid" | "mac_address" => Ok(TargetKind::MacAddress),
+        "crypto" | "crypto_address" | "wallet" | "btc" | "eth" => Ok(TargetKind::CryptoAddress),
         other => Err(Error::InvalidTarget(format!(
-            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, url, asn, coords, address, org, abn, apikey, mac"
+            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, url, asn, coords, address, org, abn, apikey, mac, crypto"
         ))),
     }
 }

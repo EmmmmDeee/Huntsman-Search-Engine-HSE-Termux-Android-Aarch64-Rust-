@@ -6,7 +6,7 @@
 //!
 //! ThreatFox is abuse.ch's IOC sharing platform — every result here is
 //! hand-curated by malware analysts. As of 2024 abuse.ch requires a
-//! free Auth-Key on every request (see https://threatfox.abuse.ch/api).
+//! free Auth-Key on every request (see <https://threatfox.abuse.ch/api>).
 //! Without the key every request would 4xx; we treat the module as
 //! KeyGated and silently no-op when the env var is absent, matching
 //! the project's other key-gated modules.

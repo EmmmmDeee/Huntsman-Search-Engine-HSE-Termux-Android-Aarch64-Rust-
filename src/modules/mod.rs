@@ -14,6 +14,7 @@ pub mod breach_timezone;
 pub mod cell_intel;
 pub mod censys;
 pub mod cert_intel;
+pub mod chain_intel;
 pub mod cloud_storage;
 pub mod contact_enrich;
 pub mod criminal_ip;
@@ -34,11 +35,13 @@ pub mod employer_pivot;
 pub mod epieos;
 pub mod exa_search;
 pub mod exif_geo;
+pub mod fullcontact;
 pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
 pub mod github_user;
 pub mod gleif_lei;
+pub mod gravatar;
 pub mod greynoise;
 pub mod hackertarget;
 pub mod hibp;
@@ -60,17 +63,21 @@ pub mod local_net;
 pub mod mls;
 pub mod mylnikov;
 pub mod name_intel;
+pub mod numverify;
 pub mod oathnet_pro;
 pub mod opencorporates;
 pub mod overpass;
+pub mod pgp;
 pub mod phone_area_geo;
 pub mod phone_carrier_geo;
 pub mod phone_intl;
 pub mod photon;
 pub mod proxycurl;
+pub mod psbdmp;
 pub mod pwned_passwords;
 pub mod qld_unclaimed;
 pub mod rdap_domain;
+pub mod ripestat;
 pub mod search_engines;
 pub mod securitytrails;
 pub mod see_know;
@@ -100,7 +107,68 @@ pub mod xposed_or_not;
 
 use std::sync::Arc;
 
+use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::core::module::Module;
+
+/// Reset the foreign-API-key sink at scan start. Re-exported here so
+/// `core/engine` can drive it without importing `util` directly — the same
+/// architecture-rule shim used for the per-module budget resets (the
+/// dependency direction is `core → modules → util`, never `core → util`).
+pub fn reset_found_keys() {
+    crate::util::found_keys::reset();
+}
+
+/// Drain the foreign-API-key sink into first-class `ApiKey` entities for
+/// `scan_id`. Lives at the module layer (which may use both `util` and
+/// `core::entity`) so the engine's finalisation stays free of any `util`
+/// import. Every entry is a recognised vendor key (the sink uses the
+/// vendor-only identifier), so all are high-confidence.
+pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
+    crate::util::found_keys::drain()
+        .into_iter()
+        .map(|fk| {
+            // A crypto wallet address is identified alongside keys (both are
+            // high-entropy tokens) but is a distinct artifact — emit it as a
+            // chain-tagged CryptoAddress, never a foreign API key.
+            if let Some(chain) = fk.service.strip_prefix("crypto_") {
+                let mut e = Entity::new(EntityKind::CryptoAddress, &fk.key, 0.80, scan_id);
+                e.tag("crypto-address");
+                e.tag("retrieved");
+                e.tag(format!("chain:{chain}"));
+                e.add_evidence(
+                    Evidence::new(
+                        "found_keys",
+                        format!("{chain} wallet address retrieved from {} data", fk.provider),
+                    )
+                    .with_attr("chain", chain)
+                    .with_attr("source_provider", &fk.provider)
+                    .with_attr("source_query", &fk.query)
+                    .with_attr("occurrences", fk.count.to_string()),
+                );
+                return e;
+            }
+            let mut e = Entity::new(EntityKind::ApiKey, &fk.key, 0.80, scan_id);
+            e.tag("api-key");
+            e.tag("foreign-key");
+            e.tag("retrieved");
+            e.tag(format!("service:{}", fk.service));
+            e.add_evidence(
+                Evidence::new(
+                    "found_keys",
+                    format!(
+                        "Foreign {} API key retrieved from {} data",
+                        fk.service, fk.provider
+                    ),
+                )
+                .with_attr("service", &fk.service)
+                .with_attr("source_provider", &fk.provider)
+                .with_attr("source_query", &fk.query)
+                .with_attr("occurrences", fk.count.to_string()),
+            );
+            e
+        })
+        .collect()
+}
 
 /// Built-in module set. The engine sorts by priority — order here is irrelevant.
 pub fn registry() -> Vec<Arc<dyn Module>> {
@@ -148,6 +216,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(hackertarget::HackerTarget),
         Arc::new(threatfox::ThreatFox),
         Arc::new(rdap_domain::RdapDomain),
+        Arc::new(ripestat::RipeStat),
         Arc::new(search_engines::SearchEngines),
         Arc::new(webserver_banner::WebserverBanner),
         Arc::new(web_crawler::WebCrawler),
@@ -159,6 +228,9 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(username_search::UsernameSearch),
         Arc::new(username_variants::UsernameVariants),
         Arc::new(github_user::GithubUser),
+        Arc::new(gravatar::Gravatar),
+        Arc::new(pgp::Pgp),
+        Arc::new(psbdmp::Psbdmp),
         Arc::new(phone_intl::PhoneIntl),
         Arc::new(wayback::Wayback),
         Arc::new(device_sensors::DeviceSensors),
@@ -167,12 +239,15 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(local_net::LocalNet),
         Arc::new(abn_lookup::AbnLookup),
         Arc::new(api_key_probe::ApiKeyProbe),
+        Arc::new(chain_intel::ChainIntel),
         // OSINT orchestration API modules
         Arc::new(seon::Seon),
         Arc::new(keybase::Keybase),
         Arc::new(emailrep::EmailRep),
         Arc::new(epieos::Epieos),
         Arc::new(proxycurl::Proxycurl),
+        Arc::new(fullcontact::FullContact),
+        Arc::new(numverify::NumVerify),
         Arc::new(photon::Photon),
         Arc::new(mylnikov::Mylnikov),
         Arc::new(mls::Mls),

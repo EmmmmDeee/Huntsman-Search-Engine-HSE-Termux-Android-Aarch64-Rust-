@@ -1,6 +1,6 @@
 //! ROI-maximising expansion controls.
 //!
-//! Three orthogonal levers, all opt-in via [`ScanOptions::max_roi`]:
+//! Three orthogonal levers, all opt-in via [`crate::core::scan::ScanOptions::max_roi`]:
 //!
 //! 1. **Convergence-pruning** — an entity with ≥2 corroborating sources
 //!    AND `c_eff ≥ 0.85` is considered "saturated" and is *not*

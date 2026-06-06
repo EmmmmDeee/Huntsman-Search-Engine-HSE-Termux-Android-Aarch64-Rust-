@@ -4,6 +4,7 @@
 //! the other way around. This keeps the engine module-agnostic.
 
 pub mod correlator;
+pub mod crypto;
 pub mod dependency;
 pub mod diff;
 pub mod engine;

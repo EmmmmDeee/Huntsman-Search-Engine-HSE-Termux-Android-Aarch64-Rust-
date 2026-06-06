@@ -1,6 +1,6 @@
 //! ipinfo.io — free IP intelligence (no key for basic queries).
 //!
-//! Endpoint: GET https://ipinfo.io/{ip}/json
+//! Endpoint: `GET https://ipinfo.io/{ip}/json`
 //! Auth: None for basic tier (50K/month).
 //!
 //! Returns city, region, country, org, ASN, hostname, timezone, postal.

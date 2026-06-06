@@ -47,9 +47,10 @@ pub(super) async fn cmd_export(scan_id: String, format: String, out: Option<Stri
         "csv" => render_csv(&store, &sid)?,
         "gexf" => render_gexf(&store, &sid)?,
         "report" => render_report(&store, &sid)?,
+        "full" => render_full(&store, &sid)?,
         other => {
             return Err(Error::Other(format!(
-                "unknown --format '{other}'. Valid: json, csv, gexf, report"
+                "unknown --format '{other}'. Valid: json, csv, gexf, report, full"
             )));
         }
     };
@@ -88,6 +89,227 @@ fn render_gexf(store: &Store, sid: &str) -> Result<String> {
     ))
 }
 
+/// The **full dossier** — Huntsman's standard of maximum output detail. Emits
+/// EVERY entity (including quarantined `candidate` rows — nothing is hidden),
+/// each with its confidence/corroboration/tags and its COMPLETE evidence chain:
+/// every attribute verbatim — the full raw source record, the provenance
+/// (`provider`, `api_key_origin`, `via_endpoint`), and the source website/db —
+/// nothing hashed, masked, truncated, or omitted. A leading provenance summary
+/// lists every provider, API-key origin, and source seen. This is the on-disk
+/// counterpart to the live dossier and the raw archive: the contract is total
+/// transparency for a professional interpreter.
+pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str) -> Result<String> {
+    use std::collections::BTreeSet;
+    use std::fmt::Write as _;
+
+    let scan = store
+        .get_scan(sid)?
+        .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
+    let mut entities = store.entities_for_scan(sid)?;
+    let relations = store.relations_for_scan(sid)?;
+    // Stable, readable grouping: by kind, then value.
+    entities.sort_by(|a, b| {
+        a.kind
+            .to_string()
+            .cmp(&b.kind.to_string())
+            .then_with(|| a.value.cmp(&b.value))
+    });
+
+    // Provenance roll-up across every evidence record.
+    let mut providers: BTreeSet<String> = BTreeSet::new();
+    let mut key_origins: BTreeSet<String> = BTreeSet::new();
+    let mut sources: BTreeSet<String> = BTreeSet::new();
+    for e in &entities {
+        for ev in &e.evidence {
+            if let Some(p) = ev.attributes.get("provider") {
+                providers.insert(p.clone());
+            }
+            if let Some(k) = ev.attributes.get("api_key_origin") {
+                key_origins.insert(k.clone());
+            }
+            for sk in ["source", "source_db", "dbname"] {
+                if let Some(v) = ev.attributes.get(sk).filter(|v| !v.is_empty()) {
+                    sources.insert(v.clone());
+                }
+            }
+        }
+    }
+
+    let mut s = String::new();
+    let _ = writeln!(s, "═══════════════════════════════════════════════════════");
+    let _ = writeln!(s, "HUNTSMAN FULL DOSSIER — complete, unredacted");
+    let _ = writeln!(s, "═══════════════════════════════════════════════════════");
+    let _ = writeln!(s, "scan id    : {}", scan.id);
+    let _ = writeln!(
+        s,
+        "target     : {} = {}",
+        scan.target.kind.canonical_str(),
+        scan.target.value
+    );
+    let _ = writeln!(s, "status     : {:?}", scan.status);
+    let _ = writeln!(s, "entities   : {}", entities.len());
+    let _ = writeln!(s, "relations  : {}", relations.len());
+
+    let _ = writeln!(s, "\n── PROVENANCE ──");
+    let _ = writeln!(s, "providers      : {}", join_or_dash(providers.iter()));
+    let _ = writeln!(s, "api key origins: {}", join_or_dash(key_origins.iter()));
+    let _ = writeln!(s, "sources/sites  : {}", join_or_dash(sources.iter()));
+
+    // Foreign API keys retrieved from endpoint data — surfaced up front because
+    // a leaked third-party credential is the highest-signal finding in a scan.
+    // These are ApiKey entities tagged `foreign-key`: recognised VENDOR keys
+    // (Stripe, AWS, GitHub, PEM blocks, …) identified in any module's response,
+    // with our own auth keys excluded. Bare breach password hashes are NOT here
+    // (they appear as their own entities below). Full evidence is in ENTITIES.
+    let foreign: Vec<&crate::core::entity::Entity> = entities
+        .iter()
+        .filter(|e| e.has_tag("foreign-key"))
+        .collect();
+    let _ = writeln!(s, "\n── FOREIGN API KEYS RETRIEVED ({}) ──", foreign.len());
+    if foreign.is_empty() {
+        let _ = writeln!(s, "  (none identified in this scan's responses)");
+    }
+    for e in &foreign {
+        let attr = |k: &str| {
+            e.evidence
+                .iter()
+                .find_map(|ev| ev.attributes.get(k).cloned())
+                .unwrap_or_default()
+        };
+        let _ = writeln!(
+            s,
+            "  • [{}] {}  (from {} · query={} · seen {}×)",
+            attr("service"),
+            e.value,
+            attr("source_provider"),
+            attr("source_query"),
+            attr("occurrences"),
+        );
+    }
+
+    let _ = writeln!(s, "\n── ENTITIES (every field, fully unredacted) ──");
+    for (i, e) in entities.iter().enumerate() {
+        let _ = writeln!(s, "\n[{}] {} = {}", i + 1, e.kind, e.value);
+        let _ = writeln!(
+            s,
+            "    confidence={:.2}  c_eff={:.2}  corroboration={}  class={}",
+            e.confidence,
+            e.c_effective(),
+            e.corroboration,
+            e.classify()
+        );
+        if !e.tags.is_empty() {
+            let _ = writeln!(s, "    tags: {}", e.tags.join(", "));
+        }
+        for ev in &e.evidence {
+            let _ = writeln!(s, "    ├─ [{}] {}", ev.source, ev.summary);
+            for (k, v) in &ev.attributes {
+                if !v.is_empty() {
+                    let _ = writeln!(s, "    │    {k} = {v}");
+                }
+            }
+        }
+    }
+
+    if !relations.is_empty() {
+        let _ = writeln!(s, "\n── RELATIONS ──");
+        for r in &relations {
+            let _ = writeln!(
+                s,
+                "  {} ──{}──▶ {}  (conf={:.2})",
+                r.from_uid, r.kind, r.to_uid, r.confidence
+            );
+        }
+    }
+
+    // ── RAW SOURCE RECORDS ──────────────────────────────────────────────────
+    // Embed every paid API response this scan fetched, verbatim, recovered from
+    // the on-disk archive. This guarantees the dossier leaves NOTHING out — even
+    // thin records that produced no entity (e.g. a breach hit with only a
+    // `source`, or a paste listing hundreds of unrelated addresses) appear here
+    // in full. The archive files remain saved separately; this is an embedded
+    // copy for a self-contained dossier.
+    //
+    // Responses are tied to THIS scan precisely: the time window [started_at,
+    // finished_at] excludes earlier runs of the same target, and the query-set
+    // (target value + every entity value) excludes a neighbouring back-to-back
+    // scan whose second-granular window touches this one. (A loose ±margin window
+    // bled adjacent scans together — unix timestamps are per-second.)
+    let start = scan.started_at;
+    let end = scan.finished_at.unwrap_or(u64::MAX);
+    let mut queries: std::collections::HashSet<String> = std::collections::HashSet::new();
+    queries.insert(scan.target.value.to_lowercase());
+    for e in &entities {
+        queries.insert(e.value.to_lowercase());
+    }
+    let raws = crate::util::raw_archive::records_for_queries(&queries, start, end);
+    let _ = writeln!(
+        s,
+        "\n── RAW SOURCE RECORDS ({} response{}, verbatim) ──",
+        raws.len(),
+        if raws.len() == 1 { "" } else { "s" }
+    );
+    if raws.is_empty() {
+        let _ = writeln!(
+            s,
+            "  (raw archive empty for this window — disabled, or run predates archiving)"
+        );
+    }
+    for resp in &raws {
+        let _ = writeln!(
+            s,
+            "\n  ▼ {} · endpoint={} · query={} · file={}",
+            resp.provider, resp.endpoint, resp.query, resp.filename
+        );
+        // Pretty-print the verbatim body, indented, so the whole response —
+        // every record, every field — is in the dossier with nothing elided.
+        let pretty =
+            serde_json::to_string_pretty(&resp.raw).unwrap_or_else(|_| resp.raw.to_string());
+        for line in pretty.lines() {
+            let _ = writeln!(s, "    {line}");
+        }
+    }
+
+    Ok(s)
+}
+
+/// Comma-join an iterator of strings, or `(none)` when empty — so an empty
+/// provenance line is explicit rather than a confusing blank.
+fn join_or_dash<'a>(it: impl Iterator<Item = &'a String>) -> String {
+    let joined = it.cloned().collect::<Vec<_>>().join(", ");
+    if joined.is_empty() {
+        "(none)".to_string()
+    } else {
+        joined
+    }
+}
+
+/// Default directory for auto-saved full dossiers: `$HOME/.huntsman/dossiers`.
+pub(crate) fn dossier_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home)
+        .join(".huntsman")
+        .join("dossiers")
+}
+
+/// Render and persist the full dossier for `sid` to
+/// `$HOME/.huntsman/dossiers/<sid>.txt`, returning the path. Called at the end
+/// of every `hse scan` so the maximum-detail dossier — every entity, full
+/// provenance, and every raw API response embedded — is guaranteed to exist for
+/// EVERY search, without the operator running a separate `export`. Best-effort
+/// for the caller: a write failure is returned as an error to log, never fatal.
+pub(crate) fn write_full_dossier(
+    store: &dyn crate::core::port::StoragePort,
+    sid: &str,
+) -> Result<std::path::PathBuf> {
+    let body = render_full(store, sid)?;
+    let dir = dossier_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| Error::Other(format!("create {dir:?}: {e}")))?;
+    let path = dir.join(format!("{sid}.txt"));
+    std::fs::write(&path, &body).map_err(|e| Error::Other(format!("write {path:?}: {e}")))?;
+    Ok(path)
+}
+
 fn render_report(store: &Store, sid: &str) -> Result<String> {
     // Default dossier hides quarantined `candidate` entities (non-target
     // breach-dump rows) — the confirmed-footprint view. They remain available
@@ -102,6 +324,43 @@ fn render_report(store: &Store, sid: &str) -> Result<String> {
 mod tests {
     use super::*;
     use crate::core::scan::{Scan, Target, TargetKind};
+
+    #[test]
+    fn render_full_dumps_every_field_and_provenance() {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("full_test.db");
+        let store = Store::open(db.to_str().unwrap()).unwrap();
+
+        let target = Target::new(TargetKind::Email, "vanamill@hotmail.com");
+        let scan = Scan::new("scan-full", target);
+        store.upsert_scan(&scan).unwrap();
+
+        // A password entity carrying full provenance + a raw source field.
+        let mut e = Entity::new(EntityKind::Password, "thelord", 0.75, "scan-full");
+        e.tag("breach");
+        e.add_evidence(
+            Evidence::new("see_know", "SeekNow record from Snusbase")
+                .with_attr("provider", "see-know.eu")
+                .with_attr("api_key_origin", "see-know.eu:seek-62650f9a…0fd0a4")
+                .with_attr("via_endpoint", "search")
+                .with_attr("source", "Snusbase")
+                .with_attr("username", "3toadsloth"),
+        );
+        store.upsert_entities_batch(&[e]).unwrap();
+
+        let out = render_full(&store, "scan-full").unwrap();
+        // Header + provenance roll-up.
+        assert!(out.contains("HUNTSMAN FULL DOSSIER"));
+        assert!(out.contains("providers      : see-know.eu"));
+        assert!(out.contains("api key origins: see-know.eu:seek-62650f9a…0fd0a4"));
+        assert!(out.contains("sources/sites  : Snusbase"));
+        // The entity, its value, and EVERY evidence attribute verbatim.
+        assert!(out.contains("password = thelord"));
+        assert!(out.contains("api_key_origin = see-know.eu:seek-62650f9a…0fd0a4"));
+        assert!(out.contains("via_endpoint = search"));
+        assert!(out.contains("username = 3toadsloth"));
+    }
 
     #[test]
     fn require_scan_errors_on_missing_and_ok_on_present() {

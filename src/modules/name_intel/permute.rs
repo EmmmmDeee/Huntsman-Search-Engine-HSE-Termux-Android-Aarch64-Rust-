@@ -501,7 +501,7 @@ fn titlecase(s: &str) -> String {
 }
 
 /// Fold a display token to a lowercase ASCII handle token, safe for byte
-/// slicing. Delegates to the shared [`fold_ascii_lower`] so Latin diacritics
+/// slicing. Delegates to the shared [`crate::util::str_util::fold_ascii_lower`] so Latin diacritics
 /// map to their base letter (`José` → `jose`, `Müller` → `muller`) and derived
 /// handles match what platforms actually use; non-Latin scripts have no ASCII
 /// fold and yield an empty token (handled by the caller).

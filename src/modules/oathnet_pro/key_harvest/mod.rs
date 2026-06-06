@@ -40,20 +40,29 @@ pub fn pattern_catalogue() -> Vec<PatternEntry> {
         .collect()
 }
 
-pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
+/// High-confidence, CHEAP key identification: recognised **vendor prefixes**,
+/// **PEM** private-key blocks, and **crypto** addresses only. Deliberately
+/// excludes the generic-hex / URL-param / `user:pass` heuristics.
+///
+/// For a token that matches none of these the cost is just prefix comparisons —
+/// no Shannon-entropy pass, no lowercase allocation. That matters because the
+/// universal response scanner (`util::found_keys`) runs key identification on
+/// EVERY response body across every module: profiling showed the full
+/// [`identify_api_key`] at ~2.8 MB/s, dominated by `is_likely_real_key`
+/// (entropy + context exclusion) firing on every 32/64-char hex token — and
+/// breach corpora are *full* of hex password hashes. Those hashes are already
+/// captured as `Password` entities by the breach modules, so re-deriving them
+/// here as "generic-hex API keys" was both slow and noisy. This function keeps
+/// the universal scan fast and precise (real vendor keys only).
+#[must_use]
+pub fn identify_vendor_api_key(value: &str) -> Option<(&'static str, &str)> {
     let trimmed = value.trim();
     if trimmed.len() < 16 {
         return None;
     }
-    // False-positive gate — sourced from APIKeyScanner's filter
-    // taxonomy (entropy + context exclusion + UUID suppression).
-    // Applied to DIRECT prefix-matched candidates and generic-hex
-    // matches, NOT to the URL-param / user:pass fallbacks below.
-    // Those fallbacks recurse back into this function with the
-    // EXTRACTED substring, so the gate re-runs on the cleaned
-    // value — meaning a URL like
-    // `https://api.example.com/?key=REAL_KEY` doesn't get rejected
-    // wholesale just because the host contains "example".
+    // False-positive gate (entropy + context exclusion + UUID suppression) runs
+    // only on an actual prefix MATCH — rare, so the common no-match token pays
+    // nothing for it.
     for pat in KEY_PATTERNS {
         if trimmed.starts_with(pat.prefix) && trimmed.len() >= pat.min_len {
             if !is_likely_real_key(trimmed) {
@@ -62,23 +71,31 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
             return Some((pat.service, trimmed));
         }
     }
-    // PEM private-key blocks (ported from KeyFinder coverage). Stealer
-    // logs that dump `id_rsa` / `id_ed25519` / OpenVPN configs land
-    // here. Multi-line; checked separately because the prefix-table
-    // requires single-token matches.
+    // PEM private-key blocks (id_rsa / id_ed25519 / OpenVPN configs in stealer
+    // logs). Multi-line; checked separately from the single-token prefix table.
     if let Some(service) = identify_pem_private_key(trimmed) {
         return Some((service, trimmed));
     }
-    // Cryptocurrency wallet addresses. Stealer logs from
-    // clipboard-hijacker malware carry these in volume — the
-    // public-apis lists surface Blockchain.com / Blockstream /
-    // Blockscout / CryptoCompare as free enrichment sources for
-    // any detected address. We detect-and-tag here; the lookup
-    // modules pivot from the emitted entities.
+    // Cryptocurrency wallet addresses (clipboard-hijacker stealer logs carry
+    // these in volume; lookup modules pivot from the emitted entities).
     if let Some(service) = identify_crypto_address(trimmed) {
         return Some((service, trimmed));
     }
-    // Generic hex key detection (32 or 64 char hex = potential API key)
+    None
+}
+
+pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
+    let trimmed = value.trim();
+    if trimmed.len() < 16 {
+        return None;
+    }
+    // High-confidence structured forms first (vendor prefix / PEM / crypto).
+    if let Some(hit) = identify_vendor_api_key(trimmed) {
+        return Some(hit);
+    }
+    // Generic hex key detection (32 or 64 char hex = potential API key). The
+    // entropy/exclusion gate below is the expensive path — see
+    // [`identify_vendor_api_key`] for why the universal scanner skips it.
     if (trimmed.len() == 32 || trimmed.len() == 64)
         && trimmed.chars().all(|c| c.is_ascii_hexdigit())
     {
@@ -532,94 +549,11 @@ fn identify_pem_private_key(s: &str) -> Option<&'static str> {
 // addresses pass entropy ≥ 3.5 trivially.
 
 /// True if `c` is a Base58 character (Bitcoin-style; excludes
-/// 0/O/I/l to avoid ambiguity).
-fn is_base58(c: char) -> bool {
-    matches!(c,
-        '1'..='9' | 'A'..='H' | 'J'..='N' | 'P'..='Z' | 'a'..='k' | 'm'..='z'
-    )
-}
-
-/// Try to classify a string as a cryptocurrency wallet address.
-/// Returns `Some(service_tag)` on a confident match, `None`
-/// otherwise. Confident-match thresholds are deliberately strict
-/// to avoid colliding with the generic-hex / prefix-table paths.
+/// Try to classify a string as a cryptocurrency wallet address. Delegates to
+/// the canonical, shared classifier in `core::crypto` (the same one the target
+/// auto-detector uses) so the shape rules live in exactly one place.
 fn identify_crypto_address(s: &str) -> Option<&'static str> {
-    let len = s.len();
-
-    // ── Bitcoin Bech32 (BIP-173): `bc1` + 39-59 char payload
-    if (39..=62).contains(&len)
-        && (s.starts_with("bc1") || s.starts_with("BC1"))
-        && s.chars().skip(3).all(|c| {
-            // Bech32 charset (RFC) — qpzry9x8gf2tvdw0s3jn54khce6mua7l
-            // plus the digits — lowercase alnum minus b/i/o/1.
-            matches!(c.to_ascii_lowercase(),
-                'a'..='h' | 'j'..='n' | 'p'..='z' | '0' | '2'..='9'
-            )
-        })
-    {
-        return Some("crypto_btc");
-    }
-
-    // ── Litecoin Bech32: `ltc1` + payload, otherwise base58 L/M-prefix
-    if (40..=62).contains(&len)
-        && (s.starts_with("ltc1") || s.starts_with("LTC1"))
-        && s.chars().skip(4).all(|c| {
-            matches!(c.to_ascii_lowercase(),
-                'a'..='h' | 'j'..='n' | 'p'..='z' | '0' | '2'..='9'
-            )
-        })
-    {
-        return Some("crypto_ltc");
-    }
-
-    // ── Ethereum / ERC-20 / Polygon / BSC: `0x` + 40 hex chars (160-bit)
-    // All EVM-compatible chains share the same address shape; the
-    // chain attribution happens at the lookup layer.
-    if len == 42
-        && (s.starts_with("0x") || s.starts_with("0X"))
-        && s.chars().skip(2).all(|c| c.is_ascii_hexdigit())
-    {
-        return Some("crypto_eth");
-    }
-
-    // ── Bitcoin P2PKH (legacy): starts `1`, 26-35 base58 chars
-    if (26..=35).contains(&len) && s.starts_with('1') && s.chars().all(is_base58) {
-        return Some("crypto_btc");
-    }
-
-    // ── Bitcoin P2SH (multisig): starts `3`, 26-35 base58 chars
-    if (26..=35).contains(&len) && s.starts_with('3') && s.chars().all(is_base58) {
-        return Some("crypto_btc");
-    }
-
-    // ── Litecoin legacy: starts `L` or `M`, 26-35 base58 chars
-    if (26..=35).contains(&len)
-        && (s.starts_with('L') || s.starts_with('M'))
-        && s.chars().all(is_base58)
-    {
-        return Some("crypto_ltc");
-    }
-
-    // ── Dogecoin: starts `D`, 34 base58 chars
-    if len == 34 && s.starts_with('D') && s.chars().all(is_base58) {
-        return Some("crypto_doge");
-    }
-
-    // ── Solana: 32-44 base58 chars, no fixed prefix. The shape
-    // overlaps with several BTC-style addresses so we require
-    // exactly the modern (post-2021) 43-44 char form to keep the
-    // false-positive surface tight.
-    if (43..=44).contains(&len) && s.chars().all(is_base58) {
-        return Some("crypto_sol");
-    }
-
-    // ── Monero (XMR): 95 chars, starts `4` or `8` (standard /
-    // subaddress), uses base58 charset
-    if len == 95 && (s.starts_with('4') || s.starts_with('8')) && s.chars().all(is_base58) {
-        return Some("crypto_xmr");
-    }
-
-    None
+    crate::core::crypto::classify_crypto_address(s)
 }
 
 // ── Base64 decode-through scanning (keyhog port) ──────────────────
@@ -741,6 +675,23 @@ fn emit_key(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
+    // A cryptocurrency wallet address is NOT an API key — `identify_*` groups
+    // it here only because both are high-entropy tokens. Emit it as a
+    // first-class CryptoAddress (chain-tagged) and skip the API-key/ROI/key-pool
+    // machinery entirely: it can't authenticate anything.
+    if let Some(chain) = service.strip_prefix("crypto_") {
+        if seen.insert(format!("@crypto:{key_val}")) {
+            let mut e = Entity::new(EntityKind::CryptoAddress, key_val, 0.80, scan_id);
+            e.tag("crypto-address");
+            e.tag(format!("chain:{chain}"));
+            e.add_evidence(
+                Evidence::new(SRC, format!("{chain} wallet address from {source}"))
+                    .with_attr("chain", chain),
+            );
+            result.push(e);
+        }
+        return;
+    }
     let dedup = format!(
         "@apikey:{service}:{}",
         crate::util::str_util::truncate_safe(key_val, 16)
@@ -1313,6 +1264,31 @@ mod tests {
     }
 
     #[test]
+    fn crypto_address_emits_as_crypto_address_not_api_key() {
+        // Regression: a Bitcoin wallet address shares the high-entropy shape of
+        // an API key, but it is NOT one. It must surface as a chain-tagged
+        // CryptoAddress, never an ApiKey — and never enter the key pool.
+        let item = serde_json::json!({
+            // A well-known burn/genesis P2PKH address (valid base58, public).
+            "secret": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+            "dbname": "TestBreach",
+        });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        let crypto: Vec<_> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::CryptoAddress)
+            .collect();
+        assert_eq!(crypto.len(), 1, "got {:?}", result.entities);
+        assert!(crypto[0].has_tag("chain:btc"), "tags: {:?}", crypto[0].tags);
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::ApiKey),
+            "a wallet address must not be classified as an API key"
+        );
+    }
+
+    #[test]
     fn extract_deduplicates_across_fields() {
         // Same key value in two fields → emit once.
         let key = "AKIAJK28SLQQV61MNG9X";
@@ -1596,7 +1572,9 @@ mod tests {
         let mut result = ModuleResult::new();
         extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
         assert_eq!(result.entities.len(), 1);
-        assert!(result.entities[0].has_tag("service:crypto_btc"));
+        // A wallet address is a first-class CryptoAddress, not an API key.
+        assert_eq!(result.entities[0].kind, EntityKind::CryptoAddress);
+        assert!(result.entities[0].has_tag("chain:btc"));
     }
 
     #[test]
@@ -1610,17 +1588,22 @@ mod tests {
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
         extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
-        // Both the ETH wallet and the AWS-shape impostor must surface
-        // (the latter is the operator's deliberate `ETHERSCAN_KEY=`
-        // mis-naming — real Etherscan keys are 34-char alphanumeric
-        // but the value here matches our AWS pattern).
+        // Both surface, each correctly typed: the ETH wallet as a
+        // CryptoAddress (chain:eth), and the AWS-shape impostor (the operator's
+        // deliberate `ETHERSCAN_KEY=` mis-naming — its value matches our AWS
+        // pattern) as an ApiKey (service:aws).
         assert!(
             result
                 .entities
                 .iter()
-                .any(|e| e.has_tag("service:crypto_eth"))
+                .any(|e| e.kind == EntityKind::CryptoAddress && e.has_tag("chain:eth"))
         );
-        assert!(result.entities.iter().any(|e| e.has_tag("service:aws")));
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::ApiKey && e.has_tag("service:aws"))
+        );
     }
 
     // ─── KeyFinder-ported prefix coverage ──────────────────────────

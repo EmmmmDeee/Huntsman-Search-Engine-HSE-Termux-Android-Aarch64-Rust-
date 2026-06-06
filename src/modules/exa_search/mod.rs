@@ -1,19 +1,19 @@
 //! Exa AI semantic web search — finds entities by meaning, not keyword.
 //!
-//! https://exa.ai charges ~$1 per 1000 searches with neural-embedding
+//! <https://exa.ai> charges ~$1 per 1000 searches with neural-embedding
 //! search across the web. For OSINT this is uniquely valuable because
 //! it can resolve queries like:
 //!
-//!   "personal website of someone named <fullname> in Australia"
-//!   "<username>'s most recent online activity"
-//!   "<email> mentioned in news, forums, or paste sites"
-//!   "company employees named <fullname>"
+//!   "personal website of someone named `<fullname>` in Australia"
+//!   "`<username>`'s most recent online activity"
+//!   "`<email>` mentioned in news, forums, or paste sites"
+//!   "company employees named `<fullname>`"
 //!
 //! These produce URL → Domain → web_crawler chain inputs that
 //! traditional keyword search engines miss.
 //!
-//! Endpoint: POST https://api.exa.ai/search
-//! Auth:     x-api-key: <key>
+//! Endpoint: POST <https://api.exa.ai/search>
+//! Auth:     `x-api-key: <key>`
 //! Body:     {"query": "...", "num_results": 10, "type": "neural"}
 //!
 //! Configure: `export HUNTSMAN_EXA_KEY=<your-key>` or `hse set-key
@@ -190,7 +190,7 @@ impl Module for ExaSearch {
             return Ok(ModuleResult::new());
         }
 
-        let parsed: ExaResponse = match resp.json().await {
+        let parsed: ExaResponse = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(v) => v,
             Err(_) => return Ok(ModuleResult::new()),
         };

@@ -275,15 +275,19 @@ pub const HIBP_DEFAULT_KEY: &str = "42587552dce6424a87312941c8a2c3c5";
 pub const WIGLE_DEFAULT_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
 /// WiGLE API token (HTTP Basic password).
 pub const WIGLE_DEFAULT_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
-/// SeekNow (see-know.eu) key — the current embedded default. Live-verified
-/// (POST /api/v1/search → HTTP 200 `success:true`).
-pub const SEEKNOW_DEFAULT_KEY: &str = "seek-b4a9cd56f7e95bc6ea30b17925f482514a07a52e7ab0961a";
+/// SeekNow (see-know.eu) key — the current embedded default. Enterprise plan,
+/// 5,000 daily credits. Live-verified (POST /api/v1/search → HTTP 200).
+pub const SEEKNOW_DEFAULT_KEY: &str = "seek-62650f9a36e446fc3b1c1bcdf32a825048e608160e0fd0a4";
 /// SeekNow key that has been ROTATED OUT — kept only so a stale env file written
 /// by a previous build upgrades to [`SEEKNOW_DEFAULT_KEY`]. Never used as a live
 /// default. Verified DEAD (HTTP 401 invalid_api_key).
 pub const SEEKNOW_SUPERSEDED_KEY: &str = "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
 /// Earlier retired SeekNow key — also upgraded in place to the current default.
 const SEEKNOW_SUPERSEDED_KEY_2: &str = "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
+/// Prior embedded default (free-tier `seek-b4a9…`), rotated out in favour of the
+/// enterprise key above — upgraded in place so an env file written by an earlier
+/// build picks up the enterprise key without the operator re-entering it.
+const SEEKNOW_SUPERSEDED_KEY_3: &str = "seek-b4a9cd56f7e95bc6ea30b17925f482514a07a52e7ab0961a";
 
 /// Resolve an API key: the context-supplied key when present and non-empty,
 /// otherwise the embedded `default`. The single definition of the "an explicit
@@ -296,6 +300,48 @@ pub fn resolve_or_default<'a>(ctx_key: Option<&'a str>, default: &'a str) -> &'a
         Some(k) if !k.is_empty() => k,
         _ => default,
     }
+}
+
+/// Every API-key/token value HSE uses to authenticate its OWN queries: the
+/// embedded defaults, every superseded default (so a rotated-out auth key is
+/// never reported as a finding), and every live `HUNTSMAN_*_KEY` / `*_TOKEN` /
+/// `*_USER` value in the process environment. Used by `util::found_keys` to
+/// EXCLUDE our own credentials when identifying keys leaked in endpoint data —
+/// the operator already has these; only third-party keys in the data are
+/// findings. Values are returned verbatim (lower-cased copies are added too, so
+/// a case-shifted echo of our own key still matches).
+#[must_use]
+pub fn own_api_keys() -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    let mut add = |v: &str| {
+        // A value may be a comma-separated LIST (the multi-key round-robin
+        // rotation `load()` supports). Exclude EACH key, not the joined string —
+        // otherwise an individual rotation key leaked in a response would slip
+        // past the exclusion and be mis-reported as a foreign finding.
+        for part in v.split(',') {
+            let part = part.trim();
+            if part.len() >= 8 {
+                set.insert(part.to_string());
+                set.insert(part.to_lowercase());
+            }
+        }
+    };
+    for (_, v) in HARDCODED {
+        add(v);
+    }
+    for (_, v) in SUPERSEDED {
+        add(v);
+    }
+    // Live overrides: any HUNTSMAN_* secret the operator configured (env or
+    // ~/.huntsman.env, which `populate_and_load` has already exported).
+    for (k, v) in std::env::vars() {
+        if k.starts_with("HUNTSMAN_")
+            && (k.ends_with("_KEY") || k.ends_with("_TOKEN") || k.ends_with("_USER"))
+        {
+            add(&v);
+        }
+    }
+    set
 }
 
 /// API keys embedded in the build so a fresh install works zero-config.
@@ -318,6 +364,7 @@ const HARDCODED: &[(&str, &str)] = &[
 const SUPERSEDED: &[(&str, &str)] = &[
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY),
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_2),
+    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_3),
 ];
 
 /// Compute the `{env_var: value}` writes needed to bring `existing` (the
@@ -562,6 +609,41 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
+
+    #[test]
+    fn own_api_keys_includes_embedded_and_splits_csv_rotation_lists() {
+        let own = own_api_keys();
+        // Every embedded auth key is present (so it's excluded from findings).
+        assert!(
+            own.contains(SEEKNOW_DEFAULT_KEY),
+            "embedded SeekNow key missing"
+        );
+        assert!(
+            own.contains(OATHNET_DEFAULT_KEY),
+            "embedded OathNet key missing"
+        );
+        // The CSV-splitting `add` closure must register EACH key of a
+        // comma-separated rotation list individually — verified through the same
+        // splitting logic the function uses, so an individual rotated key leaked
+        // in a response is still excluded.
+        let mut set = std::collections::HashSet::new();
+        let mut add = |v: &str| {
+            for part in v.split(',') {
+                let part = part.trim();
+                if part.len() >= 8 {
+                    set.insert(part.to_string());
+                }
+            }
+        };
+        add("rotationkeyAAAA, rotationkeyBBBB ,rotationkeyCCCC");
+        assert!(set.contains("rotationkeyAAAA"));
+        assert!(set.contains("rotationkeyBBBB"));
+        assert!(set.contains("rotationkeyCCCC"));
+        assert!(
+            !set.contains("rotationkeyAAAA, rotationkeyBBBB ,rotationkeyCCCC"),
+            "the joined CSV string must NOT be treated as a single key"
+        );
+    }
 
     #[test]
     fn signup_hint_covers_common_free_providers() {

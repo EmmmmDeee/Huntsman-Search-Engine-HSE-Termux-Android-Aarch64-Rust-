@@ -160,10 +160,12 @@ impl Hibp {
             let status = resp.status().as_u16();
             match status {
                 200 => {
-                    let data = resp
-                        .json::<T>()
+                    // Via json_scanned: the paid breach body is retained in the
+                    // raw archive and scanned for leaked keys (the "retain all
+                    // paid data" invariant), then deserialised.
+                    let data = crate::util::http::json_scanned::<T>(resp, SRC)
                         .await
-                        .map_err(|e| Error::module(SRC, format!("JSON parse: {e}")))?;
+                        .map_err(|e| Error::module(SRC, e))?;
                     return Ok(Some(data));
                 }
                 404 => return Ok(None),

@@ -1,6 +1,6 @@
 //! ip2location.io — free IP geolocation with postcode precision (no key, 1K/day).
 //!
-//! Endpoint: GET https://api.ip2location.io/?ip={ip}
+//! Endpoint: `GET https://api.ip2location.io/?ip={ip}`
 //! Auth: None for basic tier (1,000/day free, 50K/month with free signup).
 //!
 //! Returns country, region, city, postcode, lat/lon, timezone, ASN, ISP,

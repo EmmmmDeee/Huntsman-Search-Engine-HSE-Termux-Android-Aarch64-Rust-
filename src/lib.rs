@@ -20,6 +20,14 @@
 //!     `tests/architecture.rs`; full charter in `docs/RUNTIME_INDEPENDENCE.md`.
 
 #![forbid(unsafe_code)]
+// HSE is an *application* crate: its library is read by the maintainer with
+// `cargo doc --document-private-items`, not consumed as a published API. Doc
+// comments on public items therefore link to private helpers (`build_entities`,
+// per-module mappers, …) deliberately, because those links resolve and are
+// useful when browsing the whole tree. We keep the high-value
+// `broken_intra_doc_links` lint denied in CI (it catches typo'd/renamed
+// references — real rot) and relax only this stylistic, library-oriented one.
+#![allow(rustdoc::private_intra_doc_links)]
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

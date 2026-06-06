@@ -189,21 +189,14 @@ pub(super) async fn probe_config_leaks(
             );
             // Scan body for keys AND emit any matches as (service, masked_key)
             // tuples for the caller to convert into ApiKey entities.
+            // Shared token rules (delimiters + length window) with the every-body
+            // scanner, so the two can't drift. A leaked config file is a
+            // high-signal context, so unlike `found_keys` this classifier is the
+            // generic-inclusive `identify_api_key` (a bare 32/64-hex token in a
+            // committed `.env` is very likely a real key, not a password hash).
             let mut found = Vec::new();
-            for word in body.split(|c: char| {
-                c.is_whitespace()
-                    || c == '"'
-                    || c == '\''
-                    || c == '`'
-                    || c == '>'
-                    || c == '<'
-                    || c == '='
-                    || c == ';'
-            }) {
-                let t = word.trim();
-                if t.len() < 16 || t.len() > 200 {
-                    continue;
-                }
+            for t in crate::util::found_keys::key_tokens(&body, crate::util::found_keys::MAX_TOKEN)
+            {
                 if let Some((service, key_val)) =
                     crate::modules::oathnet_pro::key_harvest::identify_api_key(t)
                 {
@@ -801,6 +794,43 @@ mod tests {
         let mut ok = HashSet::new();
         extract_phones("ring +1 2345678 now", &mut ok); // 8 digits
         assert!(ok.contains("+12345678"));
+    }
+
+    #[test]
+    fn extractors_are_utf8_safe_on_adversarial_multibyte_html() {
+        // These run on untrusted, possibly hostile page bodies. The byte-scan
+        // indexes `body` directly, so the invariant is: multibyte UTF-8 around a
+        // match must never split a code point (no panic), a valid ASCII match is
+        // still recovered, and the non-ASCII runs themselves yield nothing.
+        let mut emails = HashSet::new();
+        // 2-/3-/4-byte chars (é, 日本語, 𝔘) abut and surround a real ASCII email,
+        // including a multibyte char immediately before the local part.
+        extract_emails(
+            "日本語语alice@example.com café résumé 𝔘 contact:bob@test.co 日本語",
+            &mut emails,
+        );
+        assert!(emails.contains("alice@example.com"), "got {emails:?}");
+        assert!(emails.contains("bob@test.co"), "got {emails:?}");
+        assert_eq!(
+            emails.len(),
+            2,
+            "multibyte noise must not fabricate: {emails:?}"
+        );
+
+        // A large delimiter-free multibyte blob with no '@' must not panic and
+        // must yield nothing (bounded, char-boundary-safe scan).
+        let blob = "日本語".repeat(50_000);
+        let mut none = HashSet::new();
+        extract_emails(&blob, &mut none);
+        assert!(none.is_empty());
+
+        // Phones: a real E.164 number surrounded by multibyte text.
+        let mut phones = HashSet::new();
+        extract_phones("☎ 日本 +1 415 555 2671 語 résumé", &mut phones);
+        assert!(phones.contains("+14155552671"), "got {phones:?}");
+        let mut pnone = HashSet::new();
+        extract_phones(&blob, &mut pnone); // must not panic
+        assert!(pnone.is_empty());
     }
 
     #[test]

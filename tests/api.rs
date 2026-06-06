@@ -1350,6 +1350,109 @@ async fn scan_events_endpoint_is_server_sent_events() {
     );
 }
 
+#[tokio::test]
+async fn live_events_endpoint_is_server_sent_events() {
+    // The live-session stream shares `scan_events_sse`'s plumbing via
+    // `sse_event_stream` but routes on session ownership; guard its wire
+    // contract independently so the two endpoints can't silently diverge.
+    let app = test_app("live-sse-contract");
+    let body = r#"{"kind":"domain","value":"contoso.com","options":{"modules":[]},"live":{"interval_secs":3600}}"#;
+    let created = app
+        .clone()
+        .oneshot(post_json("/api/v1/live", body))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 202);
+    let live_id = body_json(created).await["live_id"]
+        .as_str()
+        .expect("live_id")
+        .to_string();
+
+    let resp = app
+        .oneshot(get(&format!("/api/v1/live/{live_id}/events")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct.starts_with("text/event-stream"),
+        "live events must stream as SSE, got content-type {ct:?}"
+    );
+}
+
+// ── HTTP response compression (mobile-bandwidth) ─────────────────────────────
+
+/// GET with `Accept-Encoding: gzip`, as every browser sends.
+fn get_gzip(uri: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header(http::header::ACCEPT_ENCODING, "gzip")
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn spa_is_gzip_compressed_for_a_gzip_capable_client() {
+    // The ~118 KB SPA is the heaviest single asset on a fresh load; on a phone's
+    // mobile link it must arrive gzip-compressed. Guard both that the encoding is
+    // negotiated AND that the wire body is materially smaller than the source.
+    let app = test_app("spa-gzip");
+    let resp = app.oneshot(get_gzip("/")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let enc = resp
+        .headers()
+        .get(http::header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(enc, "gzip", "SPA must be gzip-encoded for a gzip client");
+    // A compressed response MUST advertise `Vary: Accept-Encoding` so a shared
+    // cache never hands a gzipped body to a client that didn't negotiate it.
+    let vary = resp
+        .headers()
+        .get_all(http::header::VARY)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect::<Vec<_>>()
+        .join(",")
+        .to_ascii_lowercase();
+    assert!(
+        vary.contains("accept-encoding"),
+        "compressed response must Vary on Accept-Encoding, got {vary:?}"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), 2_000_000)
+        .await
+        .unwrap();
+    // The uncompressed SPA is ~118 KB; gzip should bring the wire body well
+    // under half that. (Generous bound so a future SPA edit doesn't flake.)
+    assert!(
+        bytes.len() < 60_000,
+        "gzipped SPA should be much smaller than the ~118 KB source, got {} bytes",
+        bytes.len()
+    );
+}
+
+#[tokio::test]
+async fn sse_stream_is_never_compressed() {
+    // CompressionLayer's default predicate must exclude `text/event-stream`:
+    // buffering an open keep-alive SSE body to compress it would stall the live
+    // event log. Even with `Accept-Encoding: gzip`, the stream must be identity.
+    let (app, scan_id) = create_scan("sse-nogzip").await;
+    let resp = app
+        .oneshot(get_gzip(&format!("/api/v1/scans/{scan_id}/events")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(
+        resp.headers().get(http::header::CONTENT_ENCODING).is_none(),
+        "SSE stream must not be compressed"
+    );
+    // Body is an open stream — deliberately not read.
+}
+
 // ── Scan diff endpoint ───────────────────────────────────────────────────────
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 //! IPQuery.io — free IP risk assessment + geolocation (no key, unlimited).
 //!
-//! Endpoint: GET https://api.ipquery.io/{ip}
+//! Endpoint: `GET https://api.ipquery.io/{ip}`
 //! Auth: None. Completely free with no rate limit published.
 //!
 //! Returns ISP/ASN/org, city/state/country/coordinates, and risk flags

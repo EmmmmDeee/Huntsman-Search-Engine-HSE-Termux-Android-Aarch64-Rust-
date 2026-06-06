@@ -21,6 +21,7 @@ pub enum TargetKind {
     AbnAcn,
     MacAddress,
     ApiKey,
+    CryptoAddress,
 }
 
 impl TargetKind {
@@ -45,6 +46,7 @@ impl TargetKind {
             EntityKind::AbnAcn => Some(Self::AbnAcn),
             EntityKind::ApiKey => Some(Self::ApiKey),
             EntityKind::MacAddress => Some(Self::MacAddress),
+            EntityKind::CryptoAddress => Some(Self::CryptoAddress),
             EntityKind::Credential
             | EntityKind::DeviceId
             | EntityKind::Password
@@ -69,6 +71,7 @@ impl TargetKind {
             Self::AbnAcn => EntityKind::AbnAcn,
             Self::ApiKey => EntityKind::ApiKey,
             Self::MacAddress => EntityKind::MacAddress,
+            Self::CryptoAddress => EntityKind::CryptoAddress,
         }
     }
 
@@ -99,6 +102,7 @@ impl TargetKind {
             Self::AbnAcn => "abn_acn",
             Self::ApiKey => "api_key",
             Self::MacAddress => "mac_address",
+            Self::CryptoAddress => "crypto_address",
         }
     }
 
@@ -182,6 +186,13 @@ impl TargetKind {
         // 9. Domain — no whitespace/'@', a dot, valid labels, alpha TLD.
         if is_domain_shaped(v) {
             return Self::Domain;
+        }
+        // 9b. Cryptocurrency wallet address (bc1…/0x…/base58). Checked after the
+        // dotted/numeric shapes (which it never matches) but before the free-text
+        // fallback, so a pasted `1A1z…`/`bc1q…`/`0x…` is recognised rather than
+        // mis-bucketed as a Username.
+        if crate::core::crypto::classify_crypto_address(v).is_some() {
+            return Self::CryptoAddress;
         }
         // 10. Free text → Organisation / Address / FullName / Username.
         if has_company_suffix(&lower) {
@@ -500,6 +511,11 @@ impl Target {
                     .collect();
                 if hex.len() != 12 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err("MAC address must be 6 hex octets (e.g. AA:BB:CC:DD:EE:FF)");
+                }
+            }
+            TargetKind::CryptoAddress => {
+                if crate::core::crypto::classify_crypto_address(v).is_none() {
+                    return Err("not a recognised cryptocurrency address shape");
                 }
             }
             TargetKind::Username
@@ -955,6 +971,9 @@ fn seed_marginal_yield(kind: TargetKind, has_paid_keys: bool) -> f64 {
         TargetKind::AbnAcn => (1.3, 1.1),
         TargetKind::Coordinates => (1.2, 1.2),
         TargetKind::ApiKey => (1.1, 1.0),
+        // A wallet address enriches to on-chain activity then stops — terminal,
+        // a single reliable hop with no identity fan-out.
+        TargetKind::CryptoAddress => (1.1, 1.05),
     };
     if has_paid_keys { paid } else { free }
 }
@@ -974,7 +993,7 @@ fn round_retention(kind: TargetKind) -> f64 {
         TargetKind::IpAddress | TargetKind::Asn | TargetKind::Organisation => 0.52,
         TargetKind::Phone | TargetKind::Url => 0.50,
         TargetKind::AbnAcn => 0.45,
-        TargetKind::Coordinates | TargetKind::ApiKey => 0.40,
+        TargetKind::Coordinates | TargetKind::ApiKey | TargetKind::CryptoAddress => 0.40,
     }
 }
 
@@ -1086,6 +1105,8 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
         TargetKind::Coordinates => 8.5,
         TargetKind::AbnAcn => 7.0,
         TargetKind::ApiKey => 3.8,
+        // A wallet address carries no geolocation signal of its own.
+        TargetKind::CryptoAddress => 2.0,
     }
 }
 
