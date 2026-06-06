@@ -71,17 +71,7 @@ impl Module for Whois {
     async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
         let query_value = match target.kind {
             TargetKind::Url => {
-                let trimmed = target.value.trim();
-                let host = trimmed
-                    .strip_prefix("https://")
-                    .or_else(|| trimmed.strip_prefix("http://"))
-                    .unwrap_or(trimmed)
-                    .split('/')
-                    .next()
-                    .unwrap_or("")
-                    .split(':')
-                    .next()
-                    .unwrap_or("");
+                let host = crate::util::url_util::host_only(&target.value);
                 if host.is_empty() {
                     return Ok(ModuleResult::new());
                 }

@@ -55,8 +55,8 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
     if let Some(loc) = &data.loc {
-        let parts: Vec<&str> = loc.split(',').collect();
-        if let (Some(lat_s), Some(lon_s)) = (parts.first(), parts.get(1))
+        let mut parts = loc.split(',');
+        if let (Some(lat_s), Some(lon_s)) = (parts.next(), parts.next())
             && let (Ok(lat), Ok(lon)) = (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>())
             && lat.abs() > MIN_COORD_MAGNITUDE
             && lon.abs() > MIN_COORD_MAGNITUDE
@@ -216,7 +216,7 @@ mod tests {
         serde_json::from_str(json).unwrap()
     }
 
-    fn one<'a>(ents: &'a [Entity], kind: EntityKind) -> Option<&'a Entity> {
+    fn one(ents: &[Entity], kind: EntityKind) -> Option<&Entity> {
         ents.iter().find(|e| e.kind == kind)
     }
 

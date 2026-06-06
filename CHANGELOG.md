@@ -90,6 +90,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Factored URL host extraction onto a shared `url_util::host_only` primitive.**
+  `host_from_url` and the inline scheme/path/port stripping in `wayback` and
+  `whois` each re-implemented the same parse; they now share one borrowing,
+  policy-free `host_only(&str) -> &str` (strip scheme, drop path + port), with the
+  case-fold/dot-requirement layered on only where each caller needs it
+  (`host_from_url` lowercases and requires a dot; `wayback` lowercases; `whois`
+  keeps the host verbatim). Unit-tested. Behaviour-preserving.
 - **De-duplicated the `nonempty` optional-string helper into `util::str_util`.**
   Seven modules (`proxycurl`, `domainsdb`, `seon`, `epieos`, `bgpview`, `photon`,
   `threatfox`) each carried a byte-identical private

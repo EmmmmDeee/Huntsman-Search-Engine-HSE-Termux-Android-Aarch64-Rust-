@@ -50,22 +50,71 @@ pub mod json {
 }
 
 pub mod url_util {
-    pub fn host_from_url(url: &str) -> Option<String> {
-        let trimmed = url.trim();
-        let after_scheme = trimmed
-            .strip_prefix("https://")
-            .or_else(|| trimmed.strip_prefix("http://"))
+    /// The bare host substring of a URL-ish string: strip a leading `http(s)://`
+    /// scheme (case-insensitively — `HTTPS://` is valid per RFC 3986 §3.1), then
+    /// everything from the first `/` (path) and `:` (port). Borrows; applies
+    /// **no** case-folding or validity policy on the host itself — callers layer
+    /// that on (see [`host_from_url`]). A plain host or `host:port` passes through
+    /// as its host. Returns `""` when nothing host-like remains.
+    #[must_use]
+    pub fn host_only(s: &str) -> &str {
+        let trimmed = s.trim();
+        let after_scheme = ["https://", "http://"]
+            .iter()
+            .find_map(|scheme| {
+                trimmed
+                    .get(..scheme.len())
+                    .filter(|p| p.eq_ignore_ascii_case(scheme))
+                    .map(|_| &trimmed[scheme.len()..])
+            })
             .unwrap_or(trimmed);
-        let host = after_scheme
+        after_scheme
             .split('/')
-            .next()?
+            .next()
+            .unwrap_or("")
             .split(':')
-            .next()?
-            .to_lowercase();
+            .next()
+            .unwrap_or("")
+    }
+
+    /// The lowercased host of a URL, or `None` unless it looks like a real domain
+    /// (non-empty and contains a `.`). Built on [`host_only`].
+    #[must_use]
+    pub fn host_from_url(url: &str) -> Option<String> {
+        let host = host_only(url).to_lowercase();
         if host.is_empty() || !host.contains('.') {
             return None;
         }
         Some(host)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{host_from_url, host_only};
+
+        #[test]
+        fn host_only_strips_scheme_path_and_port() {
+            assert_eq!(host_only("https://Example.com:8443/a/b?x=1"), "Example.com");
+            assert_eq!(host_only("http://host.org/"), "host.org");
+            assert_eq!(host_only("  bare.host:25 "), "bare.host");
+            assert_eq!(host_only("plainhost"), "plainhost");
+            assert_eq!(host_only(""), "");
+            // Scheme match is case-insensitive (RFC 3986 §3.1)...
+            assert_eq!(host_only("HTTPS://Up.Example.com/p"), "Up.Example.com");
+            assert_eq!(host_only("HtTp://x.test"), "x.test");
+            // ...but the host slice itself is returned verbatim (no case-folding).
+            assert_eq!(host_only("https://MixedCase.Net"), "MixedCase.Net");
+        }
+
+        #[test]
+        fn host_from_url_lowercases_and_requires_a_dot() {
+            assert_eq!(
+                host_from_url("https://Sub.Example.COM/p"),
+                Some("sub.example.com".to_string())
+            );
+            assert_eq!(host_from_url("http://localhost:8080"), None); // no dot
+            assert_eq!(host_from_url(""), None);
+        }
     }
 }
 

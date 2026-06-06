@@ -38,20 +38,9 @@ struct Row(Vec<String>);
 /// a `Url` is stripped of its scheme, path and port; anything else is just
 /// trimmed and lowercased. Returns `""` when nothing host-like remains.
 fn extract_domain(kind: TargetKind, value: &str) -> String {
-    let trimmed = value.trim();
     match kind {
-        TargetKind::Url => trimmed
-            .strip_prefix("https://")
-            .or_else(|| trimmed.strip_prefix("http://"))
-            .unwrap_or(trimmed)
-            .split('/')
-            .next()
-            .unwrap_or("")
-            .split(':')
-            .next()
-            .unwrap_or("")
-            .to_lowercase(),
-        _ => trimmed.to_lowercase(),
+        TargetKind::Url => crate::util::url_util::host_only(value).to_lowercase(),
+        _ => value.trim().to_lowercase(),
     }
 }
 
