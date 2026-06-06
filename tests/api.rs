@@ -1350,6 +1350,61 @@ async fn scan_events_endpoint_is_server_sent_events() {
     );
 }
 
+// ── HTTP response compression (mobile-bandwidth) ─────────────────────────────
+
+/// GET with `Accept-Encoding: gzip`, as every browser sends.
+fn get_gzip(uri: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header(http::header::ACCEPT_ENCODING, "gzip")
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn spa_is_gzip_compressed_for_a_gzip_capable_client() {
+    // The ~118 KB SPA is the heaviest single asset on a fresh load; on a phone's
+    // mobile link it must arrive gzip-compressed. Guard both that the encoding is
+    // negotiated AND that the wire body is materially smaller than the source.
+    let app = test_app("spa-gzip");
+    let resp = app.oneshot(get_gzip("/")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let enc = resp
+        .headers()
+        .get(http::header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(enc, "gzip", "SPA must be gzip-encoded for a gzip client");
+    let bytes = axum::body::to_bytes(resp.into_body(), 2_000_000)
+        .await
+        .unwrap();
+    // The uncompressed SPA is ~118 KB; gzip should bring the wire body well
+    // under half that. (Generous bound so a future SPA edit doesn't flake.)
+    assert!(
+        bytes.len() < 60_000,
+        "gzipped SPA should be much smaller than the ~118 KB source, got {} bytes",
+        bytes.len()
+    );
+}
+
+#[tokio::test]
+async fn sse_stream_is_never_compressed() {
+    // CompressionLayer's default predicate must exclude `text/event-stream`:
+    // buffering an open keep-alive SSE body to compress it would stall the live
+    // event log. Even with `Accept-Encoding: gzip`, the stream must be identity.
+    let (app, scan_id) = create_scan("sse-nogzip").await;
+    let resp = app
+        .oneshot(get_gzip(&format!("/api/v1/scans/{scan_id}/events")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(
+        resp.headers().get(http::header::CONTENT_ENCODING).is_none(),
+        "SSE stream must not be compressed"
+    );
+    // Body is an open stream — deliberately not read.
+}
+
 // ── Scan diff endpoint ───────────────────────────────────────────────────────
 
 #[tokio::test]
