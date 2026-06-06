@@ -27,7 +27,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
-### people (9)
+### people (10)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -35,6 +35,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `name_intel` | full_name | free | **yes** | 97 | username, email, url |
 | `wikidata` | full_name, organisation | free | no | 96 | person, organisation, domain, username |
 | `seon` | email, phone | key_gated | no | 95 | person |
+| `pgp` | email | free | no | 91 | person, email |
 | `employer_pivot` | email, domain | free | no | 92 | address, phone, email, url |
 | `epieos` | email | key_gated | no | 92 | person, username, address |
 | `gravatar` | email | free | no | 90 | person, username, url, address |
@@ -58,12 +59,13 @@ records. The engine knows nothing else — every module is a one-file change.
 |---|---|---|---|---|---|
 | `phone_intl` | phone | free | **yes** | 140 | phone |
 
-### breach (7)
+### breach (8)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `xposed_or_not` | email | free | no | 128 | — |
 | `see_know` | email, username, phone, full_name, ip_address, domain | paid | no | 126 | email, username, phone, person, ip_address, domain, address, coordinates, organisation, asn, credential, api_key |
+| `psbdmp` | email, username, domain | free | no | 125 | url |
 | `hibp` | email, domain | key_gated | no | 120 | email, domain |
 | `dehashed` | email, username, phone, full_name, ip_address, domain | paid | no | 118 | — |
 | `intelx` | email, username, phone, full_name, ip_address, domain | paid | no | 116 | — |

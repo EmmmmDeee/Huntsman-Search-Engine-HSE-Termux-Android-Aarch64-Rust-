@@ -65,11 +65,13 @@ pub mod name_intel;
 pub mod oathnet_pro;
 pub mod opencorporates;
 pub mod overpass;
+pub mod pgp;
 pub mod phone_area_geo;
 pub mod phone_carrier_geo;
 pub mod phone_intl;
 pub mod photon;
 pub mod proxycurl;
+pub mod psbdmp;
 pub mod pwned_passwords;
 pub mod qld_unclaimed;
 pub mod rdap_domain;
@@ -223,6 +225,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(username_variants::UsernameVariants),
         Arc::new(github_user::GithubUser),
         Arc::new(gravatar::Gravatar),
+        Arc::new(pgp::Pgp),
+        Arc::new(psbdmp::Psbdmp),
         Arc::new(phone_intl::PhoneIntl),
         Arc::new(wayback::Wayback),
         Arc::new(device_sensors::DeviceSensors),
