@@ -244,6 +244,28 @@ pub mod str_util {
         s.chars().filter(char::is_ascii_digit).collect()
     }
 
+    /// Borrow the longest prefix of `s` that is at most `max` bytes and ends on a
+    /// UTF-8 character boundary. Zero-copy — caps oversized fields (key fragments,
+    /// scraped summaries) without ever risking the panic of a raw `&s[..max]`.
+    ///
+    /// # Guarantees
+    /// - **Prefix:** `s.starts_with(truncate_safe(s, max))`.
+    /// - **Bounded:** `truncate_safe(s, max).len() <= max`.
+    /// - **Lossless when it fits:** if `s.len() <= max`, the whole of `s` is
+    ///   returned.
+    /// - **Never splits a code point**, so the result is always valid UTF-8;
+    ///   **total** — never panics, for any `s` and any `max` (including `0`).
+    ///
+    /// ```
+    /// use huntsman_search_engine::util::str_util::truncate_safe;
+    ///
+    /// assert_eq!(truncate_safe("hello", 3), "hel");    // ASCII exact cut
+    /// assert_eq!(truncate_safe("hello", 99), "hello"); // fits → whole string
+    /// assert_eq!(truncate_safe("", 0), "");
+    /// // `max` lands inside the 2-byte 'é' (bytes 1..3) → backs off to "a".
+    /// assert_eq!(truncate_safe("aébc", 2), "a");
+    /// ```
+    #[must_use]
     pub fn truncate_safe(s: &str, max: usize) -> &str {
         if s.len() <= max {
             return s;
@@ -364,6 +386,34 @@ pub mod str_util {
             }
             assert_eq!(truncate_safe(s, 100), s, "<= len returns whole string");
             assert_eq!(truncate_safe("hello", 3), "hel"); // pure-ASCII exact cut
+        }
+
+        /// All four documented guarantees, over an adversarial corpus × every
+        /// `max` (incl. 0 and past the end): prefix, bounded, lossless-when-fits,
+        /// boundary-aligned + idempotent — and the call never panics.
+        #[test]
+        fn truncate_safe_invariants_hold_over_corpus() {
+            for s in [
+                "",
+                "a",
+                "aé😀b",
+                "héllo wörld",
+                "🎉🎉🎉",
+                "ascii-only",
+                "\u{0}\u{7f}\u{200b}",
+            ] {
+                for max in 0..=s.len() + 3 {
+                    let out = truncate_safe(s, max);
+                    assert!(s.starts_with(out), "prefix: {s:?} max={max}");
+                    assert!(out.len() <= max, "bounded: {s:?} max={max}");
+                    assert!(s.is_char_boundary(out.len()), "boundary: {s:?} max={max}");
+                    if s.len() <= max {
+                        assert_eq!(out, s, "lossless when it fits: {s:?} max={max}");
+                    }
+                    // Re-truncating the result at the same cap is a fixed point.
+                    assert_eq!(truncate_safe(out, max), out, "idempotent: {s:?} max={max}");
+                }
+            }
         }
 
         #[test]
