@@ -284,6 +284,20 @@ fn phone_prefix_to_country(phone: &str) -> Option<(&'static str, &'static str, f
     if !phone.is_ascii() {
         return None;
     }
+    // Caribbean NANP territories share country code +1 but use a 4-digit dialling
+    // prefix (1242 Bahamas, 1876 Jamaica, …). The `[3, 2, 1]` scan below can only
+    // see up to `1` and would geolocate every one of them to the US centroid —
+    // an actively misleading wrong-country fix. `phone_intl` is the source of
+    // truth for these 4-digit codes: if it identifies a non-US/CA NANP territory,
+    // return `None` (honest "no precise location") rather than a wrong "US".
+    if phone.starts_with('1')
+        && let Some((prefix, iso, _)) = crate::modules::phone_intl::match_country(phone)
+        && prefix.len() == 4
+        && iso != "US"
+        && iso != "CA"
+    {
+        return None;
+    }
     for len in [3, 2, 1] {
         if phone.len() >= len {
             let prefix = &phone[..len];
@@ -424,6 +438,17 @@ mod tests {
     fn phone_prefix_us() {
         let (_, cc, _, _) = phone_prefix_to_country("12025551234").unwrap();
         assert_eq!(cc, "US");
+    }
+
+    #[test]
+    fn caribbean_nanp_is_not_geolocated_to_the_us() {
+        // Regression: a +1 number with a 4-digit Caribbean dialling prefix used to
+        // fall through the 3-digit scan to `1` → US centroid. It must now return
+        // None (no precise location) rather than an actively-wrong US fix.
+        assert!(phone_prefix_to_country("12424567890").is_none()); // Bahamas (1242)
+        assert!(phone_prefix_to_country("18764567890").is_none()); // Jamaica (1876)
+        // A genuine US/Canada +1 number is unaffected.
+        assert_eq!(phone_prefix_to_country("14165551234").unwrap().1, "US"); // Toronto (NANP)
     }
 
     #[test]

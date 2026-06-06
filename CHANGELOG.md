@@ -12,6 +12,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`geo_intel` no longer geolocates Caribbean phone numbers to the United
+  States.** Its `phone_prefix_to_country` only scanned 1-3 digit dialling codes,
+  but the Caribbean NANP territories share country code +1 with a *4-digit* prefix
+  (`1242` Bahamas, `1876` Jamaica, …) — so every such number fell through to `1`
+  and was placed at the US centroid, an actively-misleading wrong-country fix. It
+  now defers the +1 question to `phone_intl::match_country` (the single source of
+  truth, which knows the 4-digit codes) and returns `None` for a non-US/CA NANP
+  territory rather than a wrong US location. `phone_intl::match_country` is now
+  `pub(crate)` so the two modules share one prefix table instead of diverging.
+  Regression-tested.
 - **`web_crawler` phone extraction now shares the canonical E.164 validity rule.**
   It accepted `7..=15` digits while `core::validation::validate_phone_e164`
   requires `8..=15`, so the crawler could surface a too-short `+1 234567` that the
