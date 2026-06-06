@@ -90,6 +90,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`overpass` brought up to the module spec.** The OSM-node infrastructure
+  classification and the entity fan-out are extracted out of `process` into the
+  pure, IO-free `classify_element` (tags → category, with the six discriminating
+  tag-pairs collapsed behind one `is(k, v)` helper) and `build_entities` (the
+  summary `Coordinates` entity carrying the node count + per-category breakdown,
+  plus one entity per located node), with the per-node cap promoted to a named
+  constant (`MAX_NODES`). Adds unit coverage of every classification category
+  (including the generic fallback), the summary+nodes emission with deterministic
+  category breakdown and name/operator/osm_id evidence, and the
+  cap-nodes-but-count-all-in-summary behaviour. Behaviour-preserving.
 - **`ipinfo` brought up to the module spec.** The five-entity fan-out
   (`Coordinates` from a non-null-island `loc`, `Address` from city/region/country,
   `Organisation` + the leading `Asn` parsed from the `org` string, and the PTR
