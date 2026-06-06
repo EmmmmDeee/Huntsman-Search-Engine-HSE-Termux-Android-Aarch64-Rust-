@@ -570,6 +570,40 @@ mod tests {
         assert_eq!(haversine_km(10.0, 20.0, 10.0, 20.0), 0.0);
     }
 
+    /// Metric invariants of `haversine_km`, proved over a randomised sample of
+    /// valid coordinates (seeded LCG — deterministic, no `rand` dependency). The
+    /// geo-cluster correlators treat this as a distance, so it must stay a proper
+    /// metric: finite, non-negative, symmetric, identity-zero, and bounded by
+    /// half the Earth's circumference. Guards against a future edit (e.g. swapping
+    /// back to the `acos` form, or transposing a term) silently breaking it.
+    #[test]
+    fn haversine_is_a_bounded_symmetric_metric() {
+        // Half-circumference upper bound: π·R, plus a hair for float slack.
+        let max_km = std::f64::consts::PI * 6371.0 + 1e-6;
+        let mut state: u64 = 0x5DEECE66D;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            // Top 53 bits → [0, 1).
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..50_000 {
+            let lat1 = next() * 180.0 - 90.0;
+            let lon1 = next() * 360.0 - 180.0;
+            let lat2 = next() * 180.0 - 90.0;
+            let lon2 = next() * 360.0 - 180.0;
+            let d = haversine_km(lat1, lon1, lat2, lon2);
+            assert!(d.is_finite() && d >= 0.0, "non-metric distance {d}");
+            assert!(d <= max_km, "distance {d} exceeds half-circumference");
+            // Symmetric: swapping the endpoints is byte-identical (the formula is
+            // symmetric, so this is exact, not approximate).
+            assert_eq!(d, haversine_km(lat2, lon2, lat1, lon1), "asymmetric");
+            // Identity: a point is zero distance from itself.
+            assert_eq!(haversine_km(lat1, lon1, lat1, lon1), 0.0);
+        }
+    }
+
     #[test]
     fn reverse_country_iso_aliases_us_subregions() {
         assert_eq!(reverse_country_iso(-33.87, 151.21), Some("AU")); // Sydney
