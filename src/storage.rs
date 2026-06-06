@@ -739,8 +739,14 @@ impl Store {
         }
 
         // Fallback: legacy substring scan (also covers infix matches FTS's
-        // token/prefix model can't reach).
-        let escaped = trimmed.replace('%', "\\%").replace('_', "\\_");
+        // token/prefix model can't reach). Escape the LIKE metacharacters under
+        // `ESCAPE '\'`. The escape char itself MUST be escaped first — otherwise
+        // a `\` in the query (e.g. a Windows path) consumes the following char,
+        // so searching `\` matched a literal `%` and missed real backslashes.
+        let escaped = trimmed
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
         let pattern = format!("%{escaped}%");
         let mut stmt = conn.prepare_cached(
             "SELECT data_json FROM entities WHERE value LIKE ?1 ESCAPE '\\' \
@@ -1638,6 +1644,31 @@ mod tests {
         store.upsert_entity(&e).unwrap();
         let results = store.search_entities("zzzz_no_match_xyzzy_42", 10).unwrap();
         assert!(results.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn search_like_fallback_escapes_backslash() {
+        // A bare `\` query has no FTS tokens, so it exercises the LIKE fallback.
+        // It must match a literal backslash, not (mis-escaped) a `%`.
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "bs");
+        store
+            .upsert_entity(&Entity::new(EntityKind::Username, "back\\slash", 0.9, "bs"))
+            .unwrap();
+        store
+            .upsert_entity(&Entity::new(EntityKind::Username, "plainname", 0.9, "bs"))
+            .unwrap();
+        let hits = store.search_entities("\\", 10).unwrap();
+        assert!(
+            hits.iter().any(|e| e.value == "back\\slash"),
+            "backslash query must match a literal backslash: {hits:?}"
+        );
+        assert!(
+            hits.iter().all(|e| e.value.contains('\\')),
+            "must not match values without a backslash: {hits:?}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

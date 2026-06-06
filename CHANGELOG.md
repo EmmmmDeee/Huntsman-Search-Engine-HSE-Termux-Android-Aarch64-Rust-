@@ -40,6 +40,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Entity search escapes the LIKE escape character.** The `search_entities`
+  LIKE fallback (used when FTS5 yields nothing) escaped `%` and `_` under
+  `ESCAPE '\'` but not `\` itself, so a backslash in the query consumed the
+  following character — searching `\` matched a literal `%` and missed real
+  backslashes (e.g. a Windows path). The escape char is now escaped first.
+  Wrong-results bug, not a crash (the FTS path and parameterisation were already
+  safe); regression-tested via the fallback.
 - **AU-016 breach-IP→geolocation chain no longer matches a substring IP.** It
   linked a breach IP to a coordinate when the coordinate's evidence summary
   *contained* the IP string — but `"11.2.3.45".contains("1.2.3.4")` is `true`, so
