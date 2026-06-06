@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
-    entity::Evidence,
+    entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -30,6 +30,11 @@ const SRC: &str = "urlhaus";
 const KEY_ENV: &str = "HUNTSMAN_ABUSECH_KEY";
 /// Fallback: the ThreatFox key is the same abuse.ch account key.
 const KEY_ENV_FALLBACK: &str = "HUNTSMAN_THREATFOX_KEY";
+
+/// Distinct threat families to surface (lexically-first), keeping the row tidy.
+const MAX_THREATS: usize = 8;
+/// Top URL tags to surface, ranked by frequency.
+const MAX_TAGS: usize = 10;
 
 pub struct UrlHaus;
 
@@ -66,6 +71,105 @@ struct UrlEntry {
     url_status: Option<String>,
     #[serde(default)]
     tags: Option<Vec<String>>,
+}
+
+/// Build the malicious-host entity from an URLhaus `host` response. **Pure** (no
+/// network/IO): records the malicious-URL count, the urlhaus reference, the
+/// first/last-seen window, the third-party blocklist verdicts, the online/offline
+/// URL split, the distinct threat families (lexically-first [`MAX_THREATS`]), and
+/// the top URL tags by frequency ([`MAX_TAGS`]). The individual malicious URLs
+/// are never stored — they are routinely still live. `url_count` is the parsed
+/// host-level count; caller guarantees it is non-zero.
+fn build_threat_entity(
+    kind: EntityKind,
+    host: &str,
+    body: &UrlhausResp,
+    url_count: u64,
+    scan_id: &str,
+) -> Entity {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut entity = Entity::new(kind, host, 0.90, scan_id);
+    entity.tag("malicious");
+    entity.tag("urlhaus");
+
+    let mut ev = Evidence::new(
+        SRC,
+        format!("URLhaus reports {url_count} malicious URL(s) hosted on {host}"),
+    )
+    .with_attr("url_count", url_count.to_string());
+
+    if let Some(r) = body.urlhaus_reference.as_deref() {
+        ev = ev.with_attr("reference", r);
+    }
+    if let Some(f) = body.firstseen.as_deref() {
+        ev = ev.with_attr("first_seen", f);
+    }
+    if let Some(l) = body.lastseen.as_deref() {
+        ev = ev.with_attr("last_seen", l);
+    }
+    if let Some(bl) = &body.blacklists {
+        if let Some(s) = bl.surbl.as_deref() {
+            ev = ev.with_attr("surbl", s);
+        }
+        if let Some(s) = bl.spamhaus_dbl.as_deref() {
+            ev = ev.with_attr("spamhaus_dbl", s);
+        }
+    }
+    if let Some(urls) = body.urls.as_ref() {
+        let online = urls
+            .iter()
+            .filter(|u| u.url_status.as_deref() == Some("online"))
+            .count();
+        ev = ev.with_attr("urls_online", online.to_string());
+
+        let offline = urls
+            .iter()
+            .filter(|u| u.url_status.as_deref() == Some("offline"))
+            .count();
+        ev = ev.with_attr("urls_offline", offline.to_string());
+
+        // Distinct threat families (e.g. "malware_download", "phishing"),
+        // deterministically the lexically-first MAX_THREATS regardless of the
+        // order URLhaus returned the URLs in.
+        let threats: BTreeSet<&str> = urls.iter().filter_map(|u| u.threat.as_deref()).collect();
+        if !threats.is_empty() {
+            ev = ev.with_attr(
+                "threats",
+                threats
+                    .into_iter()
+                    .take(MAX_THREATS)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+
+        // Aggregate tags across URL entries; surface the top MAX_TAGS by count
+        // (ties broken lexically) as `tag(count)`.
+        let mut tag_counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for u in urls {
+            if let Some(tag_list) = &u.tags {
+                for tag in tag_list {
+                    let trimmed = tag.trim();
+                    if !trimmed.is_empty() {
+                        *tag_counts.entry(trimmed).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        if !tag_counts.is_empty() {
+            let mut sorted_tags: Vec<(&str, usize)> = tag_counts.into_iter().collect();
+            sorted_tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+            let top: Vec<String> = sorted_tags
+                .iter()
+                .take(MAX_TAGS)
+                .map(|(tag, count)| format!("{tag}({count})"))
+                .collect();
+            ev = ev.with_attr("top_tags", top.join(", "));
+        }
+    }
+    entity.add_evidence(ev);
+    entity
 }
 
 #[async_trait]
@@ -160,90 +264,14 @@ impl Module for UrlHaus {
             return Ok(ModuleResult::new());
         }
 
-        let mut entity = target.to_entity(0.90, &ctx.scan_id);
-        entity.tag("malicious");
-        entity.tag("urlhaus");
-
-        let mut ev = Evidence::new(
-            SRC,
-            format!("URLhaus reports {url_count} malicious URL(s) hosted on {host}"),
-        )
-        .with_attr("url_count", url_count.to_string());
-
-        if let Some(r) = body.urlhaus_reference.as_deref() {
-            ev = ev.with_attr("reference", r);
-        }
-        if let Some(f) = body.firstseen.as_deref() {
-            ev = ev.with_attr("first_seen", f);
-        }
-        if let Some(l) = body.lastseen.as_deref() {
-            ev = ev.with_attr("last_seen", l);
-        }
-        if let Some(bl) = &body.blacklists {
-            if let Some(s) = bl.surbl.as_deref() {
-                ev = ev.with_attr("surbl", s);
-            }
-            if let Some(s) = bl.spamhaus_dbl.as_deref() {
-                ev = ev.with_attr("spamhaus_dbl", s);
-            }
-        }
-        if let Some(urls) = body.urls.as_ref() {
-            let online = urls
-                .iter()
-                .filter(|u| u.url_status.as_deref() == Some("online"))
-                .count();
-            ev = ev.with_attr("urls_online", online.to_string());
-
-            let offline = urls
-                .iter()
-                .filter(|u| u.url_status.as_deref() == Some("offline"))
-                .count();
-            ev = ev.with_attr("urls_offline", offline.to_string());
-
-            // Distinct threat families seen (e.g. "malware_download",
-            // "phishing"). Capped at the first 8 to keep the row tidy.
-            let mut threats: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-            for u in urls {
-                if let Some(t) = u.threat.as_deref() {
-                    threats.insert(t);
-                    if threats.len() >= 8 {
-                        break;
-                    }
-                }
-            }
-            if !threats.is_empty() {
-                let threat_vec: Vec<&str> = threats.into_iter().collect();
-                ev = ev.with_attr("threats", threat_vec.join(","));
-            }
-
-            // Aggregate tags across URL entries and surface the top ones.
-            let mut tag_counts: std::collections::HashMap<String, usize> =
-                std::collections::HashMap::new();
-            for u in urls {
-                if let Some(ref tag_list) = u.tags {
-                    for tag in tag_list {
-                        let trimmed = tag.trim();
-                        if !trimmed.is_empty() {
-                            *tag_counts.entry(trimmed.to_string()).or_insert(0) += 1;
-                        }
-                    }
-                }
-            }
-            if !tag_counts.is_empty() {
-                let mut sorted_tags: Vec<(String, usize)> = tag_counts.into_iter().collect();
-                sorted_tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-                let top: Vec<String> = sorted_tags
-                    .iter()
-                    .take(10)
-                    .map(|(tag, count)| format!("{tag}({count})"))
-                    .collect();
-                ev = ev.with_attr("top_tags", top.join(", "));
-            }
-        }
-        entity.add_evidence(ev);
-
         let mut result = ModuleResult::new();
-        result.push(entity);
+        result.push(build_threat_entity(
+            target.kind.to_entity_kind(),
+            host,
+            &body,
+            url_count,
+            &ctx.scan_id,
+        ));
         Ok(result)
     }
 }
@@ -286,5 +314,82 @@ mod tests {
         assert_eq!(r.query_status, "ok");
         assert_eq!(r.url_count.as_deref(), Some("3"));
         assert_eq!(r.urls.as_ref().unwrap().len(), 2);
+    }
+
+    fn resp(json: &str) -> UrlhausResp {
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn attr<'a>(e: &'a crate::core::entity::Entity, k: &str) -> Option<&'a str> {
+        e.evidence[0].attributes.get(k).map(String::as_str)
+    }
+
+    #[test]
+    fn threat_entity_aggregates_counts_window_and_blocklists() {
+        let body = resp(
+            r#"{
+              "query_status":"ok",
+              "urlhaus_reference":"https://urlhaus.abuse.ch/host/evil.test/",
+              "url_count":"3",
+              "firstseen":"2024-01-01 00:00:00 UTC",
+              "lastseen":"2024-06-01 00:00:00 UTC",
+              "blacklists":{"surbl":"not_listed","spamhaus_dbl":"listed"},
+              "urls":[
+                {"threat":"malware_download","url_status":"online","tags":["elf","mirai"]},
+                {"threat":"phishing","url_status":"offline","tags":["elf"]},
+                {"threat":"malware_download","url_status":"online","tags":["elf"]}
+              ]
+            }"#,
+        );
+        let e = build_threat_entity(EntityKind::Domain, "evil.test", &body, 3, "s");
+        assert_eq!(e.kind, EntityKind::Domain);
+        assert!(e.has_tag("malicious") && e.has_tag("urlhaus"));
+        assert!((e.confidence - 0.90).abs() < 1e-9);
+        assert_eq!(attr(&e, "url_count"), Some("3"));
+        assert_eq!(
+            attr(&e, "reference"),
+            Some("https://urlhaus.abuse.ch/host/evil.test/")
+        );
+        assert_eq!(attr(&e, "first_seen"), Some("2024-01-01 00:00:00 UTC"));
+        assert_eq!(attr(&e, "surbl"), Some("not_listed"));
+        assert_eq!(attr(&e, "spamhaus_dbl"), Some("listed"));
+        assert_eq!(attr(&e, "urls_online"), Some("2"));
+        assert_eq!(attr(&e, "urls_offline"), Some("1"));
+        // Distinct threat families, lexically sorted.
+        assert_eq!(attr(&e, "threats"), Some("malware_download,phishing"));
+        // top_tags by frequency: elf(3) before mirai(1).
+        assert_eq!(attr(&e, "top_tags"), Some("elf(3), mirai(1)"));
+    }
+
+    #[test]
+    fn threats_are_deterministic_lexical_first_under_cap() {
+        // More distinct families than the cap, supplied out of order — the
+        // result must be the lexically-first MAX_THREATS regardless of input order.
+        let urls: String = ["m", "z", "a", "c", "b", "y", "x", "d", "e", "f"]
+            .iter()
+            .map(|t| format!(r#"{{"threat":"{t}","url_status":"online"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let body = resp(&format!(r#"{{"query_status":"ok","urls":[{urls}]}}"#));
+        let e = build_threat_entity(EntityKind::Domain, "h", &body, 10, "s");
+        let threats = attr(&e, "threats").unwrap();
+        assert_eq!(threats.split(',').count(), MAX_THREATS);
+        assert_eq!(threats, "a,b,c,d,e,f,m,x");
+    }
+
+    #[test]
+    fn no_urls_array_omits_url_aggregates() {
+        // A host hit with a count but no per-URL array (abuse.ch can omit it).
+        let e = build_threat_entity(
+            EntityKind::IpAddress,
+            "1.2.3.4",
+            &resp(r#"{"query_status":"ok","url_count":"5"}"#),
+            5,
+            "s",
+        );
+        assert_eq!(attr(&e, "url_count"), Some("5"));
+        assert_eq!(attr(&e, "urls_online"), None);
+        assert_eq!(attr(&e, "threats"), None);
+        assert_eq!(attr(&e, "top_tags"), None);
     }
 }

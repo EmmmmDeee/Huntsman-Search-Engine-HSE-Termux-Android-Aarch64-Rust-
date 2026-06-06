@@ -90,6 +90,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`urlhaus` brought up to the module spec.** The ~80-line host-threat
+  aggregation (malicious-URL count, reference, first/last-seen window, third-party
+  blocklist verdicts, online/offline URL split, distinct threat families, and the
+  top URL tags by frequency) is extracted out of `process` into the pure, IO-free
+  `build_threat_entity`, with the two list caps promoted to named constants
+  (`MAX_THREATS` / `MAX_TAGS`). The threat-family list is now **deterministic** —
+  the previous early-break-on-insert took whichever distinct families happened to
+  appear first in URLhaus's URL order; it now takes the lexically-first
+  `MAX_THREATS` regardless of input order (byte-identical-output invariant). Adds
+  unit coverage of the full aggregation (counts, window, blocklists, online/offline
+  split, threat sort, frequency-ranked tags), the determinism-under-cap property,
+  and the no-URLs-array omission path. Behaviour-preserving except the threat-list
+  determinism fix.
 - **`rdap_domain` brought up to the module spec.** The RDAP record→entity
   mapping is extracted out of `process` into two pure, IO-free builders:
   `build_domain_entity` (status-phrase `status:` tags, event dates grouped by
