@@ -40,6 +40,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **AU-019 temporal breach clusters are bounded to a real 30-day window.** The
+  rule reports breaches "clustered within 30 days" (potential coordinated
+  compromise, `High`), but it measured the gap between *consecutive* sorted dates
+  and rolled the reference forward each step — so a chain like Jan 1 / Jan 30 /
+  Feb 28 / Mar 30 (each pair ≤30 days) collapsed into one ~88-day "cluster",
+  contradicting the claim. The 30-day window is now anchored to each cluster's
+  earliest date, so every reported cluster genuinely spans ≤30 days. Stricter
+  (fewer false coordinated-compromise findings on slow rolling activity);
+  regression-tested with both a real tight cluster and the chained case.
 - **Hex hash/key blobs are no longer misclassified as Bitcoin wallets.**
   `core::crypto::classify_crypto_address` documents that a 32/64-char hex blob
   must stay a key, but the legacy-BTC branch (`1…`/`3…`, 26–35 base58) broke it:

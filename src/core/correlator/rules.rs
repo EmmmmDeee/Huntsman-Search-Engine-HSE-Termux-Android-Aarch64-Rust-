@@ -773,10 +773,14 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
     breach_dates.sort_by_key(|(_, d)| *d);
     let mut clusters: Vec<Vec<String>> = Vec::new();
     let mut current: Vec<String> = vec![breach_dates[0].0.uid.clone()];
-    let mut prev_date = breach_dates[0].1;
+    // Anchor the window to the cluster's FIRST (earliest, since sorted) date, not
+    // a rolling previous date. A rolling gap chains — Jan 1 / Jan 30 / Feb 28 /
+    // Mar 30 are each ≤30 days apart and would collapse into one 88-day "cluster",
+    // contradicting the "within 30 days" claim. Anchoring bounds every cluster to
+    // a genuine ≤30-day span (a real coordinated-compromise window).
+    let mut anchor = breach_dates[0].1;
     for &(e, d) in &breach_dates[1..] {
-        let days_apart = date_diff_days(prev_date, d);
-        if days_apart <= 30 {
+        if date_diff_days(anchor, d) <= 30 {
             if !current.contains(&e.uid) {
                 current.push(e.uid.clone());
             }
@@ -785,8 +789,8 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
                 clusters.push(current);
             }
             current = vec![e.uid.clone()];
+            anchor = d;
         }
-        prev_date = d;
     }
     if current.len() >= 3 {
         clusters.push(current);

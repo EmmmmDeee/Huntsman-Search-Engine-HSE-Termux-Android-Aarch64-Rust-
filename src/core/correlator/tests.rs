@@ -38,6 +38,39 @@ fn temporal_breach_cluster_survives_non_ascii_breach_date() {
 }
 
 #[test]
+fn temporal_breach_cluster_window_is_anchored_not_rolling() {
+    let mk = |value: &str, date: &str| {
+        let mut e = Entity::new(EntityKind::Email, value, 0.8, "scan");
+        e.tag("breach");
+        e.add_evidence(Evidence::new("test", "breach").with_attr("breach_date", date));
+        e
+    };
+    // Three breaches genuinely within a 30-day window → one cluster fires.
+    let tight = vec![
+        mk("a@x.com", "2024-01-01"),
+        mk("b@x.com", "2024-01-10"),
+        mk("c@x.com", "2024-01-20"),
+    ];
+    let r = rule_au_019_temporal_breach_cluster(&tight, "scan", 0);
+    assert_eq!(r.len(), 1, "a real ≤30-day cluster must fire");
+    assert_eq!(r[0].entity_uids.len(), 3);
+
+    // Rolling chain: each consecutive pair is ≤30 days apart but the span is ~88
+    // days. The anchored window must NOT fuse these into a "within 30 days"
+    // cluster (the old rolling-gap logic did, an over-claim).
+    let chained = vec![
+        mk("a@x.com", "2024-01-01"),
+        mk("b@x.com", "2024-01-30"),
+        mk("c@x.com", "2024-02-28"),
+        mk("d@x.com", "2024-03-30"),
+    ];
+    assert!(
+        rule_au_019_temporal_breach_cluster(&chained, "scan", 0).is_empty(),
+        "a chained >30-day span must not be reported as a 30-day cluster"
+    );
+}
+
+#[test]
 fn candidates_are_excluded_from_correlation() {
     // A breach-dump-style set: one confirmed identity plus many quarantined
     // `candidate` strangers (the AU-002/AU-003 mega-fusion scenario). The
