@@ -105,6 +105,18 @@ pub fn parse_coords(s: &str) -> Option<(f64, f64)> {
 /// Returns IANA-style "Etc/GMT±N" identifier — accurate to within
 /// 1-2 hours for any inland location. Refines for Australia (UTC+8/9.5/10),
 /// US (Pacific/Mountain/Central/Eastern), and Europe (CET/EET).
+///
+/// # Guarantees
+/// - Always returns a non-empty `&'static str` (the 15°-band fallback covers
+///   every longitude); never panics, even for out-of-range inputs.
+/// - Refined regions (AU/US/EU) take precedence over the generic band.
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::timezone_for;
+///
+/// assert_eq!(timezone_for(-27.47, 153.02), "Australia/Sydney"); // Brisbane
+/// assert_eq!(timezone_for(51.5074, -0.1278), "Europe/London");
+/// ```
 pub fn timezone_for(lat: f64, lon: f64) -> &'static str {
     // Australia tight bands (more precise than longitude/15)
     if (-44.0..=-10.0).contains(&lat) {
@@ -181,6 +193,20 @@ pub fn timezone_for(lat: f64, lon: f64) -> &'static str {
 /// in OSINT breach data. Falls back to None for ambiguous regions
 /// (oceans, border zones). Caller can then trigger an HTTP-based
 /// reverse geocode (Nominatim) only when this returns None.
+///
+/// # Guarantees
+/// - Returns `Some(iso)` when the point falls in a known country box, else
+///   `None` (ocean / uncovered region) — a coarse first pass, never a panic.
+/// - Bounding boxes overlap at borders; the first match in declaration order
+///   wins, so this is a hint, not an authority.
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::reverse_country_iso;
+///
+/// assert_eq!(reverse_country_iso(-27.47, 153.02), Some("AU")); // Brisbane
+/// assert_eq!(reverse_country_iso(51.5074, -0.1278), Some("GB")); // London
+/// assert_eq!(reverse_country_iso(0.0, -140.0), None); // mid-Pacific → no box
+/// ```
 pub fn reverse_country_iso(lat: f64, lon: f64) -> Option<&'static str> {
     // (iso, lat_min, lat_max, lon_min, lon_max)
     const BOXES: &[(&str, f64, f64, f64, f64)] = &[
@@ -329,6 +355,21 @@ pub fn country_name_for_iso(iso: &str) -> Option<&'static str> {
 
 /// Great-circle distance between two coordinates in kilometres
 /// (Haversine formula). For proximity scoring.
+///
+/// # Guarantees
+/// - A proper metric for finite inputs: non-negative, symmetric, zero iff the
+///   points coincide, and bounded by half the Earth's circumference (≈20 015 km).
+///   Uses the numerically-stable `atan2` form, so identical/antipodal points do
+///   not produce `NaN`. (Invariants proved over a randomised sample in
+///   `haversine_is_a_bounded_symmetric_metric`.)
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::haversine_km;
+///
+/// // Sydney → Melbourne is ~714 km great-circle.
+/// assert!((haversine_km(-33.87, 151.21, -37.81, 144.96) - 714.0).abs() < 15.0);
+/// assert_eq!(haversine_km(10.0, 20.0, 10.0, 20.0), 0.0); // identical → 0, no NaN
+/// ```
 pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     const R: f64 = 6371.0; // Earth radius in km
     let dlat = (lat2 - lat1).to_radians();
