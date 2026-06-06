@@ -53,6 +53,7 @@ pub const ALL_TARGET_KINDS: &[TargetKind] = &[
     TargetKind::AbnAcn,
     TargetKind::MacAddress,
     TargetKind::ApiKey,
+    TargetKind::CryptoAddress,
 ];
 
 /// Probe seed value used when introspecting a module's `accepts()` via

@@ -549,94 +549,11 @@ fn identify_pem_private_key(s: &str) -> Option<&'static str> {
 // addresses pass entropy ≥ 3.5 trivially.
 
 /// True if `c` is a Base58 character (Bitcoin-style; excludes
-/// 0/O/I/l to avoid ambiguity).
-fn is_base58(c: char) -> bool {
-    matches!(c,
-        '1'..='9' | 'A'..='H' | 'J'..='N' | 'P'..='Z' | 'a'..='k' | 'm'..='z'
-    )
-}
-
-/// Try to classify a string as a cryptocurrency wallet address.
-/// Returns `Some(service_tag)` on a confident match, `None`
-/// otherwise. Confident-match thresholds are deliberately strict
-/// to avoid colliding with the generic-hex / prefix-table paths.
+/// Try to classify a string as a cryptocurrency wallet address. Delegates to
+/// the canonical, shared classifier in `core::crypto` (the same one the target
+/// auto-detector uses) so the shape rules live in exactly one place.
 fn identify_crypto_address(s: &str) -> Option<&'static str> {
-    let len = s.len();
-
-    // ── Bitcoin Bech32 (BIP-173): `bc1` + 39-59 char payload
-    if (39..=62).contains(&len)
-        && (s.starts_with("bc1") || s.starts_with("BC1"))
-        && s.chars().skip(3).all(|c| {
-            // Bech32 charset (RFC) — qpzry9x8gf2tvdw0s3jn54khce6mua7l
-            // plus the digits — lowercase alnum minus b/i/o/1.
-            matches!(c.to_ascii_lowercase(),
-                'a'..='h' | 'j'..='n' | 'p'..='z' | '0' | '2'..='9'
-            )
-        })
-    {
-        return Some("crypto_btc");
-    }
-
-    // ── Litecoin Bech32: `ltc1` + payload, otherwise base58 L/M-prefix
-    if (40..=62).contains(&len)
-        && (s.starts_with("ltc1") || s.starts_with("LTC1"))
-        && s.chars().skip(4).all(|c| {
-            matches!(c.to_ascii_lowercase(),
-                'a'..='h' | 'j'..='n' | 'p'..='z' | '0' | '2'..='9'
-            )
-        })
-    {
-        return Some("crypto_ltc");
-    }
-
-    // ── Ethereum / ERC-20 / Polygon / BSC: `0x` + 40 hex chars (160-bit)
-    // All EVM-compatible chains share the same address shape; the
-    // chain attribution happens at the lookup layer.
-    if len == 42
-        && (s.starts_with("0x") || s.starts_with("0X"))
-        && s.chars().skip(2).all(|c| c.is_ascii_hexdigit())
-    {
-        return Some("crypto_eth");
-    }
-
-    // ── Bitcoin P2PKH (legacy): starts `1`, 26-35 base58 chars
-    if (26..=35).contains(&len) && s.starts_with('1') && s.chars().all(is_base58) {
-        return Some("crypto_btc");
-    }
-
-    // ── Bitcoin P2SH (multisig): starts `3`, 26-35 base58 chars
-    if (26..=35).contains(&len) && s.starts_with('3') && s.chars().all(is_base58) {
-        return Some("crypto_btc");
-    }
-
-    // ── Litecoin legacy: starts `L` or `M`, 26-35 base58 chars
-    if (26..=35).contains(&len)
-        && (s.starts_with('L') || s.starts_with('M'))
-        && s.chars().all(is_base58)
-    {
-        return Some("crypto_ltc");
-    }
-
-    // ── Dogecoin: starts `D`, 34 base58 chars
-    if len == 34 && s.starts_with('D') && s.chars().all(is_base58) {
-        return Some("crypto_doge");
-    }
-
-    // ── Solana: 32-44 base58 chars, no fixed prefix. The shape
-    // overlaps with several BTC-style addresses so we require
-    // exactly the modern (post-2021) 43-44 char form to keep the
-    // false-positive surface tight.
-    if (43..=44).contains(&len) && s.chars().all(is_base58) {
-        return Some("crypto_sol");
-    }
-
-    // ── Monero (XMR): 95 chars, starts `4` or `8` (standard /
-    // subaddress), uses base58 charset
-    if len == 95 && (s.starts_with('4') || s.starts_with('8')) && s.chars().all(is_base58) {
-        return Some("crypto_xmr");
-    }
-
-    None
+    crate::core::crypto::classify_crypto_address(s)
 }
 
 // ── Base64 decode-through scanning (keyhog port) ──────────────────

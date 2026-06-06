@@ -14,6 +14,7 @@ pub mod breach_timezone;
 pub mod cell_intel;
 pub mod censys;
 pub mod cert_intel;
+pub mod chain_intel;
 pub mod cloud_storage;
 pub mod contact_enrich;
 pub mod criminal_ip;
@@ -230,6 +231,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(local_net::LocalNet),
         Arc::new(abn_lookup::AbnLookup),
         Arc::new(api_key_probe::ApiKeyProbe),
+        Arc::new(chain_intel::ChainIntel),
         // OSINT orchestration API modules
         Arc::new(seon::Seon),
         Arc::new(keybase::Keybase),
