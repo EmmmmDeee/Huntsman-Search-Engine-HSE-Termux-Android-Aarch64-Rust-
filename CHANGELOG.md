@@ -12,6 +12,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`doh_resolver` now reconstructs chunked (multi-string) TXT records.** A TXT
+  record is one or more character-strings (RFC 1035 §3.3.14); the DoH JSON
+  resolvers return a multi-string record as space-separated double-quoted chunks
+  (`"v=spf1 ip4:… " "include:… -all"`). The old `trim_matches('"')` stripped only
+  the outer quotes, leaving stray `" "` boundaries that mangled the token at each
+  chunk split — so a long (chunked) SPF record lost members. A new pure
+  `unquote_txt` concatenates the chunk contents with no separator (per the RFC),
+  decoding `\"`/`\\` escapes; bare single strings pass through. Unit-tested,
+  including a chunked SPF record parsing end-to-end into its ip4 + include members.
 - **`dns_intel` SOA-RNAME→email now unescapes the local part (RFC 1035 §8).** The
   decoder correctly *skipped* a backslash-escaped dot when finding the local-part /
   domain split, but never removed the escaping from the result — so

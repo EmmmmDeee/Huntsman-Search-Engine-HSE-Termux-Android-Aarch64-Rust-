@@ -42,6 +42,41 @@ struct DohRecord {
 /// The record types we query, in order.
 const RECORD_TYPES: &[&str] = &["A", "AAAA", "MX", "TXT", "NS", "CNAME"];
 
+/// Reconstruct a TXT record's logical value from the DoH JSON presentation form.
+/// **Pure.** A TXT record is one or more character-strings; the resolvers return
+/// a multi-string record as space-separated double-quoted chunks
+/// (`"v=spf1 ip4:… " "include:… -all"`) and a single string bare. Per RFC 1035
+/// §3.3.14 the strings concatenate with **no** separator, so a long (chunked)
+/// SPF/DKIM record reads correctly instead of keeping the stray `" "` chunk
+/// boundaries that `trim_matches('"')` left behind. Bare data passes through;
+/// `\"`/`\\` escapes inside a chunk are decoded.
+fn unquote_txt(data: &str) -> String {
+    if !data.starts_with('"') {
+        return data.to_string();
+    }
+    let bytes = data.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    let mut in_quotes = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if !in_quotes {
+            in_quotes = c == b'"'; // opening quote; inter-chunk spaces ignored
+            i += 1;
+        } else if c == b'\\' && i + 1 < bytes.len() {
+            out.push(bytes[i + 1]); // `\"` / `\\` → literal
+            i += 2;
+        } else if c == b'"' {
+            in_quotes = false; // closing quote
+            i += 1;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Resolve a target to the domain to query. **Pure**: a `Url` is reduced to its
 /// host; any other kind is trimmed. Returns `None` when nothing queryable remains.
 fn target_domain(kind: TargetKind, value: &str) -> Option<String> {
@@ -114,9 +149,9 @@ fn records_for_type(
                 }
             }
             "TXT" => {
-                let txt = rec.data.trim().trim_matches('"');
-                if crate::util::spf::is_spf(txt) {
-                    for member in crate::util::spf::members(txt) {
+                let txt = unquote_txt(rec.data.trim());
+                if crate::util::spf::is_spf(&txt) {
+                    for member in crate::util::spf::members(&txt) {
                         match member {
                             crate::util::spf::Member::Ip(ip) => {
                                 if seen.insert(format!("spf:{ip}")) {
@@ -357,6 +392,43 @@ mod tests {
         let inc = out.iter().find(|e| e.kind == EntityKind::Domain).unwrap();
         assert_eq!(inc.value, "_spf.google.com");
         assert!(inc.has_tag("spf-include"));
+    }
+
+    #[test]
+    fn unquote_txt_reconstructs_single_and_chunked_records() {
+        // Bare (unquoted) single string — passthrough.
+        assert_eq!(unquote_txt("v=spf1 -all"), "v=spf1 -all");
+        // Single quoted string.
+        assert_eq!(unquote_txt(r#""v=spf1 -all""#), "v=spf1 -all");
+        // Two chunks: concatenated with NO separator (the space lives inside
+        // chunk 1, at the operator's split point) — the stray `" "` is gone.
+        assert_eq!(
+            unquote_txt(r#""v=spf1 ip4:198.51.100.0/24 " "include:_spf.example.com -all""#),
+            "v=spf1 ip4:198.51.100.0/24 include:_spf.example.com -all"
+        );
+        // A token split mid-word across the chunk boundary rejoins cleanly.
+        assert_eq!(unquote_txt(r#""inclu" "de:x.com""#), "include:x.com");
+        // Escaped quote inside a chunk is decoded to a literal.
+        assert_eq!(unquote_txt(r#""a\"b""#), "a\"b");
+    }
+
+    #[test]
+    fn chunked_spf_record_parses_into_members() {
+        // The whole point: a long SPF record split across two DoH chunks must
+        // still yield its ip4 + include members (it would not with the old
+        // trim_matches: the boundary tokens were mangled).
+        let out = run(
+            "TXT",
+            &[r#""v=spf1 ip4:203.0.113.7 " "include:_spf.example.org -all""#],
+        );
+        assert!(
+            out.iter()
+                .any(|e| e.kind == EntityKind::IpAddress && e.value == "203.0.113.7")
+        );
+        assert!(
+            out.iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "_spf.example.org")
+        );
     }
 
     #[test]
