@@ -413,37 +413,15 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
                 } else if b.len() >= 8 && b[..8].eq_ignore_ascii_case(b"v=dmarc1") {
                     dom.tag("dmarc");
                     let txt = String::from_utf8_lossy(b);
-                    for part in txt.split(';') {
-                        let part = part.trim();
-                        if let Some(uri) = part
-                            .strip_prefix("rua=")
-                            .or_else(|| part.strip_prefix("ruf="))
-                        {
-                            for addr in uri.split(',') {
-                                let addr = addr.trim();
-                                if let Some(email) = addr.strip_prefix("mailto:") {
-                                    let email = email.trim();
-                                    if email.contains('@') && email.len() >= 5 {
-                                        let mut ee = Entity::new(
-                                            EntityKind::Email,
-                                            email,
-                                            0.72,
-                                            &ctx.scan_id,
-                                        );
-                                        ee.tag("dmarc-report");
-                                        ee.tag("dns");
-                                        ee.add_evidence(
-                                            Evidence::new(
-                                                SRC,
-                                                format!("DMARC report address for {domain}"),
-                                            )
-                                            .with_attr("record_type", "DMARC"),
-                                        );
-                                        dmarc_emails.push(ee);
-                                    }
-                                }
-                            }
-                        }
+                    for email in dmarc_report_addresses(&txt) {
+                        let mut ee = Entity::new(EntityKind::Email, email, 0.72, &ctx.scan_id);
+                        ee.tag("dmarc-report");
+                        ee.tag("dns");
+                        ee.add_evidence(
+                            Evidence::new(SRC, format!("DMARC report address for {domain}"))
+                                .with_attr("record_type", "DMARC"),
+                        );
+                        dmarc_emails.push(ee);
                     }
                 } else if b.len() >= 24 && b[..24].eq_ignore_ascii_case(b"google-site-verification")
                 {
@@ -760,6 +738,34 @@ fn soa_rname_to_email(rname: &str) -> String {
     String::new()
 }
 
+/// Report-destination emails from a DMARC record's `rua=`/`ruf=` tags. **Pure**.
+/// Each tag is a comma-separated list of `mailto:` URIs, and each URI may carry
+/// an optional `!<size>` maximum-report-size suffix (RFC 7489 §6.2,
+/// e.g. `mailto:dmarc@x.com!10m`) which is stripped before the address is taken.
+/// Only syntactically plausible addresses (contain `@`, length ≥ 5) are returned.
+fn dmarc_report_addresses(txt: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for part in txt.split(';') {
+        let Some(uri_list) = part
+            .trim()
+            .strip_prefix("rua=")
+            .or_else(|| part.trim().strip_prefix("ruf="))
+        else {
+            continue;
+        };
+        for addr in uri_list.split(',') {
+            if let Some(email) = addr.trim().strip_prefix("mailto:") {
+                // Drop the optional "!size" report-size limit (RFC 7489 §6.2).
+                let email = email.split('!').next().unwrap_or(email).trim();
+                if email.contains('@') && email.len() >= 5 {
+                    out.push(email);
+                }
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Tests — merged from all five original modules
 // ---------------------------------------------------------------------------
@@ -802,6 +808,35 @@ mod tests {
         );
         assert_eq!(soa_rname_to_email(""), "");
         assert_eq!(soa_rname_to_email("notanemail"), "");
+    }
+
+    #[test]
+    fn dmarc_report_addresses_extracts_rua_ruf_and_strips_size_suffix() {
+        // Both rua and ruf, comma-separated, with the RFC 7489 §6.2 "!size"
+        // suffix on one URI that must be stripped to a clean address.
+        let got = dmarc_report_addresses(
+            "v=DMARC1; p=reject; rua=mailto:agg@example.com!10m,mailto:agg2@example.net; \
+             ruf=mailto:forensic@example.com; pct=100",
+        );
+        assert_eq!(
+            got,
+            vec![
+                "agg@example.com",
+                "agg2@example.net",
+                "forensic@example.com"
+            ]
+        );
+    }
+
+    #[test]
+    fn dmarc_report_addresses_skips_non_mailto_and_implausible() {
+        // https:// report URIs, a bare mailto:, and a too-short address are all
+        // skipped; no rua/ruf at all yields nothing.
+        assert!(
+            dmarc_report_addresses("v=DMARC1; rua=https://dmarc.example.com/report").is_empty()
+        );
+        assert!(dmarc_report_addresses("v=DMARC1; rua=mailto:,mailto:a@b").is_empty());
+        assert!(dmarc_report_addresses("v=DMARC1; p=none").is_empty());
     }
 
     // -- Subdomain brute tests ----------------------------------------------------

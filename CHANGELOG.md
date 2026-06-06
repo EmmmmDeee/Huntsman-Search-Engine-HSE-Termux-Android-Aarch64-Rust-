@@ -12,6 +12,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`dns_intel` DMARC report addresses now strip the RFC 7489 `!size` suffix.** A
+  DMARC `rua=`/`ruf=` report URI may be suffixed with an optional maximum report
+  size (`mailto:dmarc@example.com!10m`, RFC 7489 §6.2); the parser kept it
+  verbatim, so the surfaced `Email` entity was malformed (`dmarc@example.com!10m`).
+  The `rua`/`ruf` extraction is pulled into the pure, unit-tested
+  `dmarc_report_addresses` (splits the size suffix, keeps only `mailto:` URIs with
+  a plausible address), replacing the inline loop in `process`.
 - **SPF mechanism parsing unified into `util::spf`, fixing two divergences.**
   `dns_intel` and `doh_resolver` each hand-rolled a `v=spf1` parser, and they had
   already drifted: `dns_intel` matched the version tag case-insensitively (correct
