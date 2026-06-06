@@ -1535,6 +1535,50 @@ mod tests {
     }
 
     #[test]
+    fn entity_survives_a_full_fidelity_storage_roundtrip() {
+        use crate::core::entity::{Evidence, derive_uid, normalise};
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "rt");
+        // Exercise every field that a lossy persistence layer could drop or
+        // reorder: a `raw_value` that differs from the normalised value, ordered
+        // evidence attributes, multiple tags, and a non-unit corroboration.
+        let mut e = Entity::new(EntityKind::Email, "Found.User+Tag@Example.COM", 0.83, "rt");
+        e.corroboration = 4;
+        e.tag("breach");
+        e.tag("au:source");
+        e.add_evidence(
+            Evidence::new("hibp", "breach hit")
+                .with_attr("zbreach", "Z")
+                .with_attr("abreach", "A"),
+        );
+        e.add_evidence(Evidence::new("hunter_io", "verified"));
+        let uid = e.uid.clone();
+
+        // The strongest single invariant: serialise → persist → reload →
+        // serialise must be byte-identical. Catches any dropped/reordered field.
+        let before = serde_json::to_string(&e).unwrap();
+        store.upsert_entity(&e).unwrap();
+        let got = store.get_entity(&uid).unwrap().unwrap();
+        assert_eq!(
+            before,
+            serde_json::to_string(&got).unwrap(),
+            "storage round-trip changed the entity"
+        );
+        // The persisted UID must remain reconstructible from its (kind, value),
+        // so a reloaded entity still dedups against a freshly-derived one.
+        assert_eq!(
+            got.uid,
+            derive_uid(&got.kind, &normalise(&got.kind, &got.value))
+        );
+        // The human-facing display value survives, distinct from the normalised
+        // dedup key.
+        assert_eq!(got.value, "found.user+tag@example.com");
+        assert_eq!(got.raw_value, "Found.User+Tag@Example.COM");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn get_entity_not_found() {
         let path = tmp_db();
         let store = Store::open(&path).unwrap();
