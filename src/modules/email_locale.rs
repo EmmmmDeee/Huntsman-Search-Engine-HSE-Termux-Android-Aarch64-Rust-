@@ -96,8 +96,14 @@ fn detect_locale_from_local_part(local: &str) -> Option<LocaleGeo> {
         return None;
     }
 
-    let first = parts[0];
-    let last = parts[parts.len() - 1];
+    // Email local-part case is not significant in practice (RFC 5321 §2.4 leaves
+    // it to the receiver, and the major providers treat it case-insensitively),
+    // and the pattern tables below are all lowercase. Fold the candidate name
+    // parts so an ordinary `Guillaume.Martin@…` or `ERIK.JOHANSSON@…` still
+    // matches instead of silently missing. `to_lowercase` (not ASCII-only) so the
+    // non-ASCII suffixes (`ström`, `oğlu`) fold correctly too.
+    let first = parts[0].to_lowercase();
+    let last = parts[parts.len() - 1].to_lowercase();
 
     for &(suffixes, region, locale) in SURNAME_SUFFIX_PATTERNS {
         for suffix in suffixes {
@@ -114,7 +120,7 @@ fn detect_locale_from_local_part(local: &str) -> Option<LocaleGeo> {
 
     for &(prefixes, region, locale) in GIVEN_NAME_PATTERNS {
         for prefix in prefixes {
-            if first == *prefix {
+            if first.as_str() == *prefix {
                 return Some(LocaleGeo {
                     region,
                     locale,
@@ -207,6 +213,25 @@ mod tests {
     fn french_given_name() {
         let geo = detect_locale_from_local_part("guillaume.martin").unwrap();
         assert!(geo.region.contains("France"));
+    }
+
+    #[test]
+    fn detection_is_case_insensitive() {
+        // Local-part case isn't significant; a capitalised name (the common
+        // `First.Last@` form) or an all-caps address must match the same as the
+        // lowercase form — not silently miss.
+        assert!(
+            detect_locale_from_local_part("Guillaume.Martin")
+                .unwrap()
+                .region
+                .contains("France")
+        );
+        assert!(
+            detect_locale_from_local_part("ERIK.JOHANSSON")
+                .unwrap()
+                .region
+                .contains("Scandinavia")
+        );
     }
 
     #[test]

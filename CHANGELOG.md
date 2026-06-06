@@ -12,6 +12,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`email_locale` matches mixed-case names instead of silently missing them.**
+  Its surname-suffix and given-name detection compared an *un-lowercased* email
+  local part against all-lowercase pattern tables (`first == "guillaume"`,
+  `last.ends_with("sson")`), and `Target::validate` doesn't case-fold the email —
+  so the everyday `Guillaume.Martin@…` / `ERIK.JOHANSSON@…` forms detected no
+  locale at all (only the lowercase spellings the tests happened to use worked).
+  The name parts are now folded with `to_lowercase` (Unicode, so the `ström` /
+  `oğlu` suffixes fold too) before matching. Regression-tested.
 - **IP/WiFi-geo providers no longer emit out-of-range or non-finite
   coordinates.** Six coarse-geolocation modules — `ip_geo`, `ipinfo`, `ipapi`,
   `ip2location`, `ipquery`, `wigle` — gated their `Coordinates` entity on a bare
