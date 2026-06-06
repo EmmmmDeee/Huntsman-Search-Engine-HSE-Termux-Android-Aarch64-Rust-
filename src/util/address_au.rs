@@ -139,7 +139,9 @@ fn is_plausible_postcode(state: &str, postcode: &str) -> bool {
         return false;
     };
     match state {
-        "NSW" => (1000..=2999).contains(&pc) || (1000..=1999).contains(&pc),
+        // 1000–1999 are NSW large-volume-receiver / PO-box ranges, 2000–2999
+        // geographic — one contiguous span.
+        "NSW" => (1000..=2999).contains(&pc),
         "ACT" => {
             (200..=299).contains(&pc) || (2600..=2618).contains(&pc) || (2900..=2920).contains(&pc)
         }
@@ -153,8 +155,23 @@ fn is_plausible_postcode(state: &str, postcode: &str) -> bool {
     }
 }
 
-/// AU phone-number normaliser: returns E.164 form (+61...) when the
+/// AU phone-number normaliser: returns E.164 form (`+61…`) when the
 /// input is a recognisable Australian number (08/02/03/04/07/13/1300/1800).
+///
+/// # Guarantees
+/// - Strips spaces, brackets, and dashes, then maps the recognised AU forms
+///   (`+61…`, `0061…`, a 10-digit `0…`, a 9-digit area/mobile, `1300`/`1800`) to
+///   `+61…`; returns `None` for anything unrecognised. Never panics (operates on
+///   an ASCII digit/`+` buffer).
+///
+/// ```
+/// use huntsman_search_engine::util::address_au::normalise_phone;
+///
+/// assert_eq!(normalise_phone("0410 959 140").as_deref(), Some("+61410959140"));
+/// assert_eq!(normalise_phone("(07) 3739 4511").as_deref(), Some("+61737394511"));
+/// assert_eq!(normalise_phone("+61 2 9374 4000").as_deref(), Some("+61293744000"));
+/// assert_eq!(normalise_phone("not a phone"), None);
+/// ```
 pub fn normalise_phone(s: &str) -> Option<String> {
     let digits: String = s
         .chars()
@@ -242,6 +259,17 @@ mod tests {
         // NSW with VIC postcode → invalid
         let s = "5 Test Street, Sydney NSW 3000";
         assert!(extract_first(s).is_none());
+    }
+
+    #[test]
+    fn accepts_valid_nsw_postcode_range() {
+        // Positive coverage for the NSW arm (1000–2999, one contiguous span):
+        // a geographic 2xxx and an LVR 1xxx both accept; 3000 (VIC) rejects.
+        let geo = extract_first("1 George Street, Sydney NSW 2000").expect("2000 is NSW");
+        assert_eq!(geo.state, "NSW");
+        assert_eq!(geo.postcode, "2000");
+        assert!(extract_first("1 George Street, Sydney NSW 1234").is_some()); // LVR range
+        assert!(extract_first("1 George Street, Sydney NSW 3000").is_none()); // VIC range
     }
 
     #[test]
