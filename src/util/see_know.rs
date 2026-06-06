@@ -244,6 +244,30 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
     crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
 
+/// A stable, human-identifiable fingerprint of the SeekNow API key used for a
+/// request, so EVERY derived entity records exactly which key/origin returned
+/// it. Provider-prefixed head + short tail uniquely identifies the key (an
+/// operator running several keys can tell which one produced a finding) without
+/// scattering the full secret across the persisted entity store. Pure, so the
+/// format is unit-testable.
+#[must_use]
+pub fn key_fingerprint(key: &str) -> String {
+    let k = key.trim();
+    if k.is_empty() {
+        return "see-know.eu:(no key)".to_string();
+    }
+    if k.len() <= 18 {
+        return format!("see-know.eu:{k}");
+    }
+    let head: String = k.chars().take(13).collect();
+    let tail: String = {
+        let mut t: Vec<char> = k.chars().rev().take(6).collect();
+        t.reverse();
+        t.into_iter().collect()
+    };
+    format!("see-know.eu:{head}\u{2026}{tail}")
+}
+
 /// Max records per the see-know.eu Universal Search spec (`limit`, default 100,
 /// **max 500**). Requested in full — the standing directive is to use
 /// see-know.eu maximally, and one richer response costs the same budget slot as
@@ -520,6 +544,20 @@ mod tests {
     #[test]
     fn resolve_key_uses_provided_when_non_empty() {
         assert_eq!(resolve_key(Some("my-key")), "my-key");
+    }
+
+    #[test]
+    fn key_fingerprint_identifies_origin_without_full_secret() {
+        let fp = key_fingerprint("seek-62650f9a36e446fc3b1c1bcdf32a825048e608160e0fd0a4");
+        // Provider-prefixed, head + tail present, middle elided.
+        assert!(fp.starts_with("see-know.eu:seek-62650f9a"), "got {fp}");
+        assert!(fp.ends_with("0fd0a4"), "got {fp}");
+        assert!(fp.contains('\u{2026}'));
+        // The full secret never appears verbatim.
+        assert!(!fp.contains("36e446fc3b1c1bcdf32a825048e608160e0fd"));
+        // Short/empty keys degrade gracefully.
+        assert_eq!(key_fingerprint(""), "see-know.eu:(no key)");
+        assert_eq!(key_fingerprint("short"), "see-know.eu:short");
     }
 
     #[test]

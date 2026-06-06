@@ -152,6 +152,10 @@ impl Module for SeekNow {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = see_know::resolve_key(ctx.key_opt(see_know::KEY_ENV));
+        // Stable origin fingerprint of the exact key in use — stamped onto every
+        // entity this module produces so each finding declares which API key
+        // (and provider) returned it. Computed once per scan.
+        let key_fp = see_know::key_fingerprint(key);
 
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -187,12 +191,14 @@ impl Module for SeekNow {
             parent.add_evidence(
                 Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search"))
                     .with_attr("hits", total.to_string())
-                    .with_attr("endpoint", "/api/v1/search"),
+                    .with_attr("endpoint", "/api/v1/search")
+                    .with_attr("provider", "see-know.eu")
+                    .with_attr("api_key_origin", &key_fp),
             );
             result.push(parent);
 
             for item in &items {
-                extract_entities(item, v, &ctx.scan_id, &mut seen, &mut result);
+                extract_entities(item, v, &ctx.scan_id, "search", &key_fp, &mut seen, &mut result);
                 store_api_credential(item);
                 extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
             }
@@ -237,7 +243,7 @@ impl Module for SeekNow {
 
             for (endpoint, items) in &endpoint_results {
                 for item in items {
-                    extract_entities(item, v, &ctx.scan_id, &mut seen, &mut result);
+                    extract_entities(item, v, &ctx.scan_id, endpoint, &key_fp, &mut seen, &mut result);
                     store_api_credential(item);
                     extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
                     // Geo-specific extraction — pull coordinates/timezone/
@@ -252,7 +258,7 @@ impl Module for SeekNow {
             // (discord → roblox → steam → …) we chase them across MULTIPLE hops
             // within budget rather than a single round. See [`resolve_identity_pivots`].
             if !ctx.cancel.is_cancelled() {
-                resolve_identity_pivots(key, v, &ctx.scan_id, &mut seen, &mut result).await;
+                resolve_identity_pivots(key, &key_fp, v, &ctx.scan_id, &mut seen, &mut result).await;
             }
         }
 
@@ -279,6 +285,7 @@ const MAX_PIVOT_HOPS: usize = 3;
 /// pivot so a discord → roblox → steam chain closes inside one scan.
 async fn resolve_identity_pivots(
     key: &str,
+    key_fp: &str,
     seed_value: &str,
     scan_id: &str,
     seen: &mut HashSet<String>,
@@ -315,7 +322,7 @@ async fn resolve_identity_pivots(
         let before = result.entities.len();
         for (endpoint, items) in &pivot_results {
             for item in items {
-                extract_entities(item, seed_value, scan_id, seen, result);
+                extract_entities(item, seed_value, scan_id, endpoint, key_fp, seen, result);
                 extract_geo_entities(item, endpoint, scan_id, seen, result);
             }
         }
@@ -483,9 +490,15 @@ fn extract_geo_entities(
 /// (operator data-fidelity policy). Scalars are stored as-is; nested
 /// objects/arrays as compact JSON. This is what makes a result traceable to its
 /// actual raw source record rather than just a module name + entity hash.
-fn record_evidence(item: &Value, dbname: &str) -> Evidence {
-    let mut ev =
-        Evidence::new(SRC, format!("SeekNow record from {dbname}")).with_attr("source", dbname);
+fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> Evidence {
+    let mut ev = Evidence::new(SRC, format!("SeekNow record from {dbname}"))
+        .with_attr("source", dbname)
+        // Provenance: which provider, which exact API key, and which endpoint
+        // returned this record. Stamped on EVERY record so a finding always
+        // declares its origin (operator directive: specify the API key origin).
+        .with_attr("provider", "see-know.eu")
+        .with_attr("api_key_origin", key_fp)
+        .with_attr("via_endpoint", endpoint);
     if let Some(obj) = item.as_object() {
         for (k, v) in obj {
             let val = match v {
@@ -512,6 +525,8 @@ fn extract_entities(
     item: &Value,
     target_value: &str,
     scan_id: &str,
+    endpoint: &str,
+    key_fp: &str,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
@@ -519,8 +534,9 @@ fn extract_entities(
         .or_else(|| val_str(item, "source"))
         .unwrap_or_else(|| "see-know".to_string());
     // Full raw record on the evidence chain — every entity derived from this
-    // record carries the complete source data for traceability.
-    let ev = record_evidence(item, &dbname);
+    // record carries the complete source data plus its provenance (provider,
+    // API-key origin, endpoint) for traceability.
+    let ev = record_evidence(item, &dbname, endpoint, key_fp);
 
     let target_lower = target_value.to_lowercase();
 
@@ -1011,7 +1027,7 @@ mod tests {
         });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
-        extract_entities(&item, "15551234567", "scan", &mut seen, &mut result);
+        extract_entities(&item, "15551234567", "scan", "search", "see-know.eu:test", &mut seen, &mut result);
 
         // One entity per recognised field.
         assert_eq!(
@@ -1078,7 +1094,7 @@ mod tests {
         });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
-        extract_entities(&item, "victim_login", "scan", &mut seen, &mut result);
+        extract_entities(&item, "victim_login", "scan", "stealer", "see-know.eu:test", &mut seen, &mut result);
 
         let find = |k: EntityKind, pred: &dyn Fn(&Entity) -> bool| {
             result.entities.iter().find(|e| e.kind == k && pred(e))
@@ -1126,7 +1142,7 @@ mod tests {
         });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
-        extract_entities(&item, "x", "scan", &mut seen, &mut result);
+        extract_entities(&item, "x", "scan", "search", "see-know.eu:test", &mut seen, &mut result);
 
         let has = |k: EntityKind, pred: &dyn Fn(&Entity) -> bool| {
             result.entities.iter().any(|e| e.kind == k && pred(e))
@@ -1340,7 +1356,7 @@ mod tests {
         let mut result = ModuleResult::new();
         result.push(Entity::new(EntityKind::Email, "a@b.com", 0.8, "t"));
         let before = result.entities.len();
-        resolve_identity_pivots("key", "seed", "t", &mut seen, &mut result).await;
+        resolve_identity_pivots("key", "see-know.eu:test", "seed", "t", &mut seen, &mut result).await;
         assert_eq!(
             result.entities.len(),
             before,
