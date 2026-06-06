@@ -90,6 +90,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`sunrise_sunset` brought up to the module spec.** The ~55-line solar-phase
+  entity assembly is extracted out of `process` into the pure, IO-free
+  `build_solar_entity` (date/lat/lon plus every present timestamp and the
+  polymorphic `day_length`, whose numeric-vs-string normalisation is the subtle
+  part), with the nine repeated `with_attr` blocks collapsed into one table-driven
+  loop. Adds unit coverage of the entity build for both the numeric (`formatted=0`)
+  and string (default-endpoint) `day_length` forms with absent-phase omission, and
+  — importantly — the previously-untested `civil_from_days` date arithmetic
+  (epoch, pre-epoch, month rollover, the 2000 leap day, a current date), the one
+  piece of non-trivial pure logic in the file. Behaviour-preserving.
 - **`crtsh` brought up to the module spec.** The CT-log query construction and
   the certificate-entry→entity mapping are extracted out of `process` into the
   pure, IO-free `build_query` and `build_entities` (SAN/common-name splitting,
