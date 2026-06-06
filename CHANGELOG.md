@@ -40,6 +40,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Company legal-form detection survives trailing punctuation.**
+  `abn::looks_like_company` matched suffixes (`LIMITED`, `LTD`, `INC`, `NL`,
+  `& CO`, …) as space-bounded tokens, so a form as the final token followed by
+  punctuation — `"ACME HOLDINGS LIMITED."`, `"WIDGETS LTD;"`, `"ACME INC,"` —
+  failed the match and the owner was misread as an individual, suppressing the
+  ABN/ACN resolvers for a real company. Punctuation (except `&`, which is part of
+  `"& CO"`) now folds to spaces before matching; the canonical suffix list also
+  shed its period variants as a result. No regression — the word-boundary safety
+  cases (`INCANDESCENT`, `ALTDORF`) and `"& CO"` handling still hold; coverage
+  added for the punctuation forms.
 - **Entity UID normalisation is now idempotent for domains (repeated `www.`).**
   The `Domain` arm of `normalise` stripped only the *first* leading `www.` label,
   so `www.www.foo.com` normalised to `www.foo.com` — which itself re-normalised to
