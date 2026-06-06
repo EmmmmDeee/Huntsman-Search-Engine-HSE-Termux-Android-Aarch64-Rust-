@@ -90,6 +90,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`ipqs` brought up to the module spec.** The ~75-line reputation mapping
+  (fraud-score risk band, the proxy/vpn/tor/crawler/disposable/leaked/recent-abuse
+  signal tags, the `country:<CC>` tag, and the per-field evidence across all three
+  IP/email/phone sub-APIs) is extracted out of `process` into the pure, IO-free
+  `build_reputation_entity`. The two risk thresholds become named constants
+  (`HIGH_RISK_SCORE` / `ELEVATED_RISK_SCORE`) and the seven repeated
+  `== Some(true)` tag blocks collapse into one data-driven loop. Replaces the two
+  trivial accepts/cost tests with unit coverage of the high-risk IP path,
+  threshold-exact risk banding, the email field/tag surface, and the
+  missing-score default with IP-field omission. Behaviour-preserving.
 - **`leakix` brought up to the module spec.** The ~90-line exposure-event
   summarisation (top event types / sources / protocols by frequency, the sorted
   open-port set, the earliest/most-recent timestamp window, and the `leak` /
