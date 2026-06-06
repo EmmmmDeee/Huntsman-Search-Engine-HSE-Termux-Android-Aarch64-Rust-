@@ -262,6 +262,31 @@ pub mod str_util {
     /// usernames/emails match. Multi-char expansions (`æ→ae`, `ß→ss`, `þ→th`) are
     /// handled; non-Latin scripts (Arabic, CJK) have no ASCII fold and are
     /// dropped — callers should split into words *before* folding each token.
+    ///
+    /// # Guarantees
+    /// - **Charset:** the result contains only `[a-z0-9]` — every byte is ASCII
+    ///   lowercase alphanumeric. The result is therefore always valid to index by
+    ///   byte; `name_intel::permute` relies on this for safe slicing. (Proved
+    ///   exhaustively over every Unicode scalar value by
+    ///   `fold_ascii_lower_output_is_ascii_lower_alnum_for_all_scalars`.)
+    /// - **Idempotent:** `fold_ascii_lower(&fold_ascii_lower(s)) == fold_ascii_lower(s)`
+    ///   (a corollary: `[a-z0-9]` map to themselves).
+    /// - **Total:** never panics, on any input including arbitrary Unicode.
+    /// - A token with no foldable Latin content yields the empty string.
+    ///
+    /// ```
+    /// use huntsman_search_engine::util::str_util::fold_ascii_lower;
+    ///
+    /// assert_eq!(fold_ascii_lower("José Müller"), "josemuller"); // diacritics + space dropped
+    /// assert_eq!(fold_ascii_lower("O'Brien-Smith"), "obriensmith"); // punctuation dropped
+    /// assert_eq!(fold_ascii_lower("Straße"), "strasse"); // ß → ss
+    /// assert_eq!(fold_ascii_lower("日本語"), ""); // no ASCII fold → empty
+    /// assert!(
+    ///     fold_ascii_lower("Zoë_99 🎉")
+    ///         .bytes()
+    ///         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    /// );
+    /// ```
     pub fn fold_ascii_lower(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         for ch in s.chars() {
@@ -353,6 +378,45 @@ pub mod str_util {
             assert_eq!(fold_ascii_lower("O'Brien-Smith"), "obriensmith");
             // Non-Latin has no ASCII fold → dropped.
             assert_eq!(fold_ascii_lower("علي"), "");
+        }
+
+        /// Charset guarantee, proved EXHAUSTIVELY: for every Unicode scalar
+        /// value, folding it yields only `[a-z0-9]` and never panics. Because the
+        /// fold is per-character, this covers the entire input domain for the
+        /// charset property — any longer string is a concatenation of these. This
+        /// is the invariant that makes downstream byte-slicing of the result safe.
+        #[test]
+        fn fold_ascii_lower_output_is_ascii_lower_alnum_for_all_scalars() {
+            for cp in 0u32..=0x10_FFFF {
+                let Some(ch) = char::from_u32(cp) else {
+                    continue; // surrogate range: not a scalar value
+                };
+                let folded = fold_ascii_lower(ch.encode_utf8(&mut [0u8; 4]));
+                assert!(
+                    folded
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
+                    "U+{cp:04X} folded to non-[a-z0-9]: {folded:?}"
+                );
+            }
+        }
+
+        /// Idempotence over an adversarial multi-char corpus: the result is a
+        /// fixed point (follows from the charset guarantee, but pinned directly).
+        #[test]
+        fn fold_ascii_lower_is_idempotent() {
+            for s in [
+                "José Müller-Łódź",
+                "O'Brien-Smith",
+                "Straße",
+                "ABC123xyz",
+                "🎉 mixed Ünïcödé 日本語 99",
+                "",
+                "\u{0}\u{7f}\u{200b}", // NUL, DEL, zero-width space
+            ] {
+                let once = fold_ascii_lower(s);
+                assert_eq!(fold_ascii_lower(&once), once, "not idempotent for {s:?}");
+            }
         }
     }
 }
