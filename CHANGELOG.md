@@ -27,6 +27,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Credential-safety guards for the live key-validation probes
+  (`api_key_probe`).** These probes transmit a *live secret API key* to each
+  service's validation endpoint, so two new tests lock down that the table stays
+  safe: every probe URL is `https://` (a plaintext endpoint would leak the key to
+  on-path observers — it holds today, this stops a future `http://` entry) and
+  every probe actually carries the key (in the URL or a header, else it would send
+  an unauthenticated request and report a valid key as invalid); plus a uniqueness
+  guard so no two probes share a service or env var (which would shadow one
+  another or validate a key against the wrong endpoint).
 - **Structural-invariant guard for the API-key pattern table
   (`oathnet_pro::key_harvest`).** A new `pattern_table_is_structurally_sound` test
   asserts, table-wide, that every entry is well-formed (non-empty prefix/service,
