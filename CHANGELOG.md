@@ -90,6 +90,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`mylnikov` brought up to the module spec.** The range→confidence banding and
+  the BSSID-location entity assembly are extracted out of `process` into the pure,
+  IO-free `confidence_for_range` and `build_location_entity` (the latter folding in
+  the coordinate-validity gate and returning `None` for missing/invalid fixes).
+  Adds unit coverage of every confidence band at its exact boundary (incl. the
+  missing-range default), the high-confidence entity build with range evidence,
+  the missing-range attribute omission, and rejection of missing-component /
+  Null-Island / out-of-range coordinates. Behaviour-preserving.
 - **`doh_resolver` brought up to the module spec.** The ~100-line per-record-type
   classifier (the deeply-nested A/AAAA/MX/NS/TXT-SPF/CNAME matcher) and the
   target-domain resolution are extracted out of `process` into the pure, IO-free
