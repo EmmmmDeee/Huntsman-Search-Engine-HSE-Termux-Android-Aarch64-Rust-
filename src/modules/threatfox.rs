@@ -165,10 +165,7 @@ fn build_ioc_entity(kind: EntityKind, term: &str, iocs: &[Ioc], scan_id: &str) -
     entity
 }
 
-/// Trimmed, non-empty view of an optional string field.
-fn nonempty(o: &Option<String>) -> Option<&str> {
-    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
-}
+use crate::util::str_util::nonempty;
 
 pub struct ThreatFox;
 

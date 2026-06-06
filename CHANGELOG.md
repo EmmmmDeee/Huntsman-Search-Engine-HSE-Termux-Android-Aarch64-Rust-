@@ -90,6 +90,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **De-duplicated the `nonempty` optional-string helper into `util::str_util`.**
+  Seven modules (`proxycurl`, `domainsdb`, `seon`, `epieos`, `bgpview`, `photon`,
+  `threatfox`) each carried a byte-identical private
+  `nonempty(&Option<String>) -> Option<&str>` (trim + treat-blank-as-absent); they
+  now share one `#[must_use]`, unit-tested definition, so the "surface the value
+  only if the upstream actually sent one" semantics can't drift between providers.
+  Behaviour-preserving.
 - **`mylnikov` brought up to the module spec.** The range→confidence banding and
   the BSSID-location entity assembly are extracted out of `process` into the pure,
   IO-free `confidence_for_range` and `build_location_entity` (the latter folding in

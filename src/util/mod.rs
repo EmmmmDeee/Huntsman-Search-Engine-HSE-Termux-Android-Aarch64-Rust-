@@ -70,6 +70,15 @@ pub mod url_util {
 }
 
 pub mod str_util {
+    /// A trimmed, non-empty borrow of an optional string field, else `None`.
+    /// Whitespace-only is treated as absent. Single definition so the many OSINT
+    /// modules that surface "the value if the upstream actually sent one" share
+    /// identical semantics instead of each re-deriving them.
+    #[must_use]
+    pub fn nonempty(o: &Option<String>) -> Option<&str> {
+        o.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
     pub fn truncate_safe(s: &str, max: usize) -> &str {
         if s.len() <= max {
             return s;
@@ -129,7 +138,16 @@ pub mod str_util {
 
     #[cfg(test)]
     mod tests {
-        use super::{fold_ascii_lower, truncate_safe};
+        use super::{fold_ascii_lower, nonempty, truncate_safe};
+
+        #[test]
+        fn nonempty_trims_and_treats_blank_as_absent() {
+            assert_eq!(nonempty(&Some("  hi ".to_string())), Some("hi"));
+            assert_eq!(nonempty(&Some("x".to_string())), Some("x"));
+            assert_eq!(nonempty(&Some("   ".to_string())), None);
+            assert_eq!(nonempty(&Some(String::new())), None);
+            assert_eq!(nonempty(&None), None);
+        }
 
         #[test]
         fn truncate_safe_never_splits_a_codepoint() {
