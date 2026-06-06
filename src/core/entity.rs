@@ -350,6 +350,15 @@ impl Entity {
     /// it to ~0.89 ("Verified"), which is what four independent sources warrant.
     /// `max` keeps the result monotonic and never below the legacy value, so the
     /// change only ever *adds* confidence for genuinely multi-sourced entities.
+    ///
+    /// ```
+    /// use huntsman_search_engine::core::entity::{Entity, EntityKind};
+    ///
+    /// // Single source (no evidence attached → n = 1): C_eff equals confidence.
+    /// let e = Entity::new(EntityKind::Email, "x@example.com", 0.6, "scan");
+    /// assert_eq!(e.source_count(), 1);
+    /// assert!((e.c_effective() - 0.6).abs() < 1e-9);
+    /// ```
     #[inline]
     pub fn c_effective(&self) -> f64 {
         let n = f64::from(self.source_count());
@@ -359,9 +368,20 @@ impl Entity {
         multiplicative.max(agreement).clamp(0.0, 1.0)
     }
 
-    /// Derived classification tier from `c_effective()`.
+    /// Derived classification tier from [`Self::c_effective`]: `Verified` at
+    /// ≥ 0.75, `Probable` at ≥ 0.40, else `Candidate`.
     ///
-    /// Never stored — always recomputed.
+    /// Never stored — always recomputed, so a tier can only ever rise as merges
+    /// add corroboration.
+    ///
+    /// ```
+    /// use huntsman_search_engine::core::entity::{Classification, Entity, EntityKind};
+    ///
+    /// let mk = |c| Entity::new(EntityKind::Email, "x@example.com", c, "scan").classify();
+    /// assert_eq!(mk(0.90), Classification::Verified);
+    /// assert_eq!(mk(0.50), Classification::Probable);
+    /// assert_eq!(mk(0.20), Classification::Candidate);
+    /// ```
     #[inline]
     pub fn classify(&self) -> Classification {
         match self.c_effective() {
