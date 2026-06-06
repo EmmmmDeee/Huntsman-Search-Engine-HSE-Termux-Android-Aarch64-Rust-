@@ -2470,4 +2470,133 @@ mod tests {
         // ...but the long-evicted oldest seed legitimately dispatches again.
         assert!(log.insert(k("a")), "evicted key must be treated as new");
     }
+
+    // ── End-to-end engine throughput benchmark (ignored; opt-in) ──────────────
+    //
+    // Drives a full multi-round expansion scan over the in-memory store with a
+    // deterministic fan-out module (no network, no SQLite), so the measured time
+    // is pure engine orchestration: per-round dispatch, entity merge, incremental
+    // correlation, ranking, and checkpointing. Run on demand:
+    //   cargo test -p huntsman-search-engine --lib core::engine::tests::bench_ -- \
+    //     --ignored --nocapture
+    //
+    // Finding (debug build, ~10x slower than release): orchestration scales
+    // ~O(n^1.4) in the entity count — superlinear (the incremental correlation
+    // and checkpoint each re-touch the whole working set per round) but firmly
+    // sub-quadratic. In release that is ~tens of ms for a few thousand entities,
+    // which is negligible against a real scan's network time (every module awaits
+    // HTTP for 100s of ms–seconds; HSE is IO-bound by design). So this is a
+    // baseline/diagnostic, NOT an assertive guard: end-to-end timing carries too
+    // much tokio-scheduling variance for a stable threshold, and the dominant
+    // pure-CPU cost (the correlation pass) is already guarded by
+    // `correlator::perf::pass_is_subquadratic`. Re-run this if the orchestration
+    // is ever reworked, to confirm it stays sub-quadratic.
+    use crate::core::entity::EntityKind;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Emits `WIDTH` fresh Username entities per dispatch (unique values via a
+    /// global counter), at a confidence above the expansion threshold — so the
+    /// scan fans out every round until it hits the `max_entities` budget. That
+    /// budget is the knob the benchmark sweeps to expose end-to-end scaling.
+    struct FanoutModule {
+        width: u64,
+    }
+
+    static FANOUT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    #[async_trait::async_trait]
+    impl Module for FanoutModule {
+        fn name(&self) -> &'static str {
+            "bench_fanout"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, _: &Target) -> bool {
+            true
+        }
+        fn produces(&self) -> &'static [EntityKind] {
+            const K: &[EntityKind] = &[EntityKind::Username];
+            K
+        }
+        async fn process(
+            &self,
+            _: &Target,
+            ctx: &ModuleContext,
+        ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+            let mut r = crate::core::module::ModuleResult::new();
+            for _ in 0..self.width {
+                let n = FANOUT_SEQ.fetch_add(1, Ordering::Relaxed);
+                let mut e =
+                    Entity::new(EntityKind::Username, format!("user{n}"), 0.9, &ctx.scan_id);
+                e.tag("bench");
+                e.add_evidence(crate::core::entity::Evidence::new(
+                    "bench_fanout",
+                    "synthetic",
+                ));
+                r.push(e);
+            }
+            Ok(r)
+        }
+    }
+
+    async fn run_bench_scan(max_entities: usize) -> (usize, std::time::Duration) {
+        use crate::core::test_support::InMemoryStore;
+        let store = Arc::new(InMemoryStore::new());
+        let store_port: Arc<dyn StoragePort> = store.clone();
+        let (bus, _rx) = tokio::sync::broadcast::channel(4096);
+        let engine = ScanEngine::new(
+            vec![Arc::new(FanoutModule { width: 8 })],
+            store_port,
+            bus.clone(),
+        );
+        let opts = ScanOptions {
+            depth: 12,
+            max_entities: Some(max_entities),
+            max_concurrent: 4,
+            ..Default::default()
+        };
+        let target = Target::new(TargetKind::Username, "seed");
+        let scan = Scan::new(
+            crate::core::entity::scan_id("username", "seed"),
+            target.clone(),
+        )
+        .with_options(opts);
+        let ctx = ModuleContext {
+            scan_id: scan.id.clone(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        };
+        let start = std::time::Instant::now();
+        let _ = engine.run(scan, target, ctx).await;
+        let elapsed = start.elapsed();
+        (store.entity_count(), elapsed)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "engine throughput baseline; run with --ignored --nocapture"]
+    async fn bench_end_to_end_scan_scaling() {
+        // Warm up allocator / code paths so the first sample isn't penalised.
+        FANOUT_SEQ.store(0, Ordering::Relaxed);
+        let _ = run_bench_scan(1000).await;
+
+        eprintln!("end-to-end scan — min-of-3 total time by entity budget (debug build):");
+        for &cap in &[1000usize, 2000, 4000] {
+            let mut best = std::time::Duration::MAX;
+            let mut n = 0;
+            for _ in 0..3 {
+                FANOUT_SEQ.store(0, Ordering::Relaxed);
+                let (c, dt) = run_bench_scan(cap).await;
+                best = best.min(dt);
+                n = c;
+            }
+            eprintln!(
+                "  max_entities={cap:5}  entities={n:5}  {:8.1} ms",
+                best.as_secs_f64() * 1e3
+            );
+        }
+    }
 }
