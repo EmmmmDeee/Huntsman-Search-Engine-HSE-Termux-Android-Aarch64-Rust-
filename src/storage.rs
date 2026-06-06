@@ -118,6 +118,19 @@ fn env_i64(var: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
+/// Escape the LIKE metacharacters in `s` for a query using `ESCAPE '\'`.
+///
+/// The escape character `\` is escaped FIRST, then `%` and `_`, so all three
+/// LIKE metacharacters are matched literally. Escaping `\` first is essential:
+/// otherwise a backslash in the input would consume the following character (a
+/// `\` query would match a literal `%`, missing real backslashes). Callers wrap
+/// the result in `%…%` for a substring match.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 impl Store {
     pub fn open(path: &str) -> Result<Self> {
         // Performance pragmas are env-tunable (low-RAM Termux devices may want a
@@ -651,10 +664,7 @@ impl Store {
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(&sql)?;
 
-            let like_pattern = value_contains.map(|v| {
-                let escaped = v.replace('%', "\\%").replace('_', "\\_");
-                format!("%{escaped}%")
-            });
+            let like_pattern = value_contains.map(|v| format!("%{}%", escape_like(v)));
 
             let rows = stmt.query_map(
                 rusqlite::params_from_iter(
@@ -739,15 +749,9 @@ impl Store {
         }
 
         // Fallback: legacy substring scan (also covers infix matches FTS's
-        // token/prefix model can't reach). Escape the LIKE metacharacters under
-        // `ESCAPE '\'`. The escape char itself MUST be escaped first — otherwise
-        // a `\` in the query (e.g. a Windows path) consumes the following char,
-        // so searching `\` matched a literal `%` and missed real backslashes.
-        let escaped = trimmed
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        let pattern = format!("%{escaped}%");
+        // token/prefix model can't reach). `escape_like` neutralises the LIKE
+        // metacharacters (incl. the escape char itself) under `ESCAPE '\'`.
+        let pattern = format!("%{}%", escape_like(trimmed));
         let mut stmt = conn.prepare_cached(
             "SELECT data_json FROM entities WHERE value LIKE ?1 ESCAPE '\\' \
              ORDER BY confidence DESC LIMIT ?2",
@@ -1645,6 +1649,16 @@ mod tests {
         let results = store.search_entities("zzzz_no_match_xyzzy_42", 10).unwrap();
         assert!(results.is_empty());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn escape_like_neutralises_all_metacharacters() {
+        // `\` first, then `%`/`_` — order matters so the added escapes aren't
+        // themselves re-escaped.
+        assert_eq!(super::escape_like("a%b_c"), "a\\%b\\_c");
+        assert_eq!(super::escape_like("back\\slash"), "back\\\\slash");
+        assert_eq!(super::escape_like("100%_\\"), "100\\%\\_\\\\");
+        assert_eq!(super::escape_like("plain"), "plain"); // no-op on ordinary text
     }
 
     #[test]
