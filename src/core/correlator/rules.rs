@@ -38,6 +38,32 @@ fn is_benign_infra(e: &Entity) -> bool {
     BENIGN_INFRA_TAGS.iter().any(|t| e.has_tag(t))
 }
 
+/// True if `text` mentions `ip` as a whole dotted address, not as a substring of
+/// a longer number. A bare `contains` is wrong: `"11.2.3.45".contains("1.2.3.4")`
+/// is `true`, so an unrelated IP in an evidence summary would falsely chain. We
+/// reject a match flanked by an IP-*extending* char (digit or `.`); a following
+/// `:`/space/`)` is a legitimate boundary (`"1.2.3.4:8080"`, `"1.2.3.4: City"`).
+/// `ip`/`text` index by byte safely — `ip` is ASCII.
+fn text_mentions_ip(text: &str, ip: &str) -> bool {
+    if ip.is_empty() {
+        return false;
+    }
+    let bytes = text.as_bytes();
+    let n = ip.len();
+    let extends = |b: u8| b.is_ascii_digit() || b == b'.';
+    let mut from = 0;
+    while let Some(rel) = text[from..].find(ip) {
+        let i = from + rel;
+        let before_ok = i == 0 || !extends(bytes[i - 1]);
+        let after_ok = i + n >= bytes.len() || !extends(bytes[i + n]);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = i + 1;
+    }
+    false
+}
+
 pub(super) fn rule_au_001_multi_breach(
     entities: &[Entity],
     scan_id: &str,
@@ -617,9 +643,11 @@ pub(super) fn rule_au_016_breach_ip_geo_chain(
     let linked: Vec<&Entity> = coords
         .iter()
         .filter(|c| {
-            c.evidence
-                .iter()
-                .any(|ev| breach_ips.iter().any(|ip| ev.summary.contains(&ip.value)))
+            c.evidence.iter().any(|ev| {
+                breach_ips
+                    .iter()
+                    .any(|ip| text_mentions_ip(&ev.summary, &ip.value))
+            })
         })
         .copied()
         .collect();

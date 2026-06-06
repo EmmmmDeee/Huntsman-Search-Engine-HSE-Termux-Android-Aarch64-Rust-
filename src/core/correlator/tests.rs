@@ -1490,6 +1490,38 @@ fn rule_016_no_fire_without_breach_tag() {
 }
 
 #[test]
+fn rule_016_does_not_chain_on_substring_ip_match() {
+    // Breach IP 1.2.3.4 must NOT chain to a coordinate geolocated from the
+    // unrelated 11.2.3.45 (which contains "1.2.3.4" as a substring). A bare
+    // `contains` would mis-fire this High finding.
+    let mut breach = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.72, "s");
+    breach.tag("breach");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.55,152.27", 0.65, "s");
+    coord.add_evidence(Evidence::new(
+        "ip_geo",
+        "Geolocation for 11.2.3.45: Gatton, QLD",
+    ));
+    assert!(
+        rule_au_016_breach_ip_geo_chain(&[breach, coord], "s", 0).is_empty(),
+        "substring IP match must not chain"
+    );
+
+    // A trailing ':' (IP: city / IP:port) is still a legitimate whole-IP match.
+    let mut breach2 = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.72, "s");
+    breach2.tag("breach");
+    let mut coord2 = Entity::new(EntityKind::Coordinates, "-27.55,152.27", 0.65, "s");
+    coord2.add_evidence(Evidence::new(
+        "ip_geo",
+        "Geolocation for 1.2.3.4: Gatton, QLD",
+    ));
+    assert_eq!(
+        rule_au_016_breach_ip_geo_chain(&[breach2, coord2], "s", 0).len(),
+        1,
+        "exact whole-IP match (even followed by ':') must still chain"
+    );
+}
+
+#[test]
 fn rule_017_multi_geo_convergence_fires() {
     let c1 = Entity::new(EntityKind::Coordinates, "-27.55,152.27", 0.60, "s");
     let c2 = Entity::new(EntityKind::Coordinates, "-27.60,152.30", 0.65, "s");

@@ -40,6 +40,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **AU-016 breach-IP→geolocation chain no longer matches a substring IP.** It
+  linked a breach IP to a coordinate when the coordinate's evidence summary
+  *contained* the IP string — but `"11.2.3.45".contains("1.2.3.4")` is `true`, so
+  a breach IP could falsely chain to the coordinates of an unrelated IP that
+  contains it as a substring (a spurious `High` finding). Matching is now
+  anchored: a hit flanked by an IP-extending char (digit or `.`) is rejected,
+  while a legitimate boundary (`"1.2.3.4: City"`, `"1.2.3.4:8080"`) still matches.
+  Regression-tested.
 - **AU-019 temporal breach clusters are bounded to a real 30-day window.** The
   rule reports breaches "clustered within 30 days" (potential coordinated
   compromise, `High`), but it measured the gap between *consecutive* sorted dates
