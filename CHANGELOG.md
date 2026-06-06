@@ -12,6 +12,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Data-integrity guards for the `username_search` site table.** The 1600-line
+  hand-maintained `SITES` table now has two CI-enforced invariants: every probe
+  URL is `https://` (a plaintext probe would leak the searched handle to on-path
+  observers — it held already, but nothing guarded it), and every `Site::cat` is
+  one of a canonical `CATEGORIES` allow-list (so a typo like `socail` or an
+  undocumented bucket fails CI instead of silently mis-classifying). Writing the
+  allow-list surfaced real drift: the table had grown to **18** categories while
+  the doc comment still listed 13 — `media`, `crowdfunding`, `education`, `travel`
+  and `sharing` were undocumented; the canonical set now reflects reality.
+
 - **`validate_phone_e164` rejects a country code beginning with `0`.** The
   validator's doc promised it checks "the country code in the conventional 1-3
   digit range", but the implementation only required digits + a length of 8–15, so

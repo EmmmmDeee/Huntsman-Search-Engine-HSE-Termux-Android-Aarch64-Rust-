@@ -1,17 +1,44 @@
 pub(super) struct Site {
     /// Display name.
     pub(super) name: &'static str,
-    /// `{}` is replaced with the urlencoded username.
+    /// `{}` is replaced with the urlencoded username. Always `https://` — a
+    /// plaintext probe would leak the searched username to network observers.
     pub(super) url: &'static str,
     /// HTTP request method. Most sites accept GET; some return cleaner
     /// status codes for HEAD.
     pub(super) method: Method,
     /// How to interpret the response.
     pub(super) detect: Detect,
-    /// Maigret-style category: social, dev, gaming, music, video,
-    /// photo, forum, blog, dating, business, crypto, messaging, other.
+    /// Maigret-style category — must be one of [`CATEGORIES`].
     pub(super) cat: &'static str,
 }
+
+/// The canonical category set every [`Site::cat`] must use. Doubles as the
+/// allow-list a unit test enforces, so a typo (`socail`) or an undocumented new
+/// bucket can't slip into the 1600-line table unnoticed. Sorted.
+// Consumed only by the test that enforces it; it stands as living documentation
+// of the allowed buckets in non-test builds.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const CATEGORIES: &[&str] = &[
+    "blog",
+    "business",
+    "crowdfunding",
+    "crypto",
+    "dating",
+    "dev",
+    "education",
+    "forum",
+    "gaming",
+    "media",
+    "messaging",
+    "music",
+    "other",
+    "photo",
+    "sharing",
+    "social",
+    "travel",
+    "video",
+];
 
 #[derive(Clone, Copy)]
 pub(super) enum Method {

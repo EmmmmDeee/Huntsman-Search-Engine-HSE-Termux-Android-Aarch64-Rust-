@@ -65,6 +65,8 @@ pub struct UsernameSearch;
 /// One site to probe. Kept inline (rather than loaded from a JSON file)
 /// so the binary stays self-contained and the list is reviewable in PR.
 mod sites;
+#[cfg(test)]
+use sites::CATEGORIES;
 use sites::{Detect, Method, SITES};
 
 #[async_trait]
@@ -403,6 +405,21 @@ mod tests {
     }
 
     #[test]
+    fn every_probe_url_is_https() {
+        // A username probe over plaintext http leaks the searched handle to any
+        // on-path observer — unacceptable for an OSINT tool. Guard the invariant
+        // (it holds today; this stops a future http:// entry slipping in).
+        for site in SITES {
+            assert!(
+                site.url.starts_with("https://"),
+                "{} probe URL is not https: {}",
+                site.name,
+                site.url
+            );
+        }
+    }
+
+    #[test]
     fn categories_cover_maigret_domains() {
         let cats: std::collections::BTreeSet<&str> = SITES.iter().map(|s| s.cat).collect();
         // At minimum: social, dev, gaming, music, video, photo, forum
@@ -412,6 +429,22 @@ mod tests {
             assert!(
                 cats.contains(expected),
                 "missing category: {expected} (have: {cats:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn every_category_is_canonical() {
+        // The reverse of the coverage check: no site may use a category outside
+        // the documented CATEGORIES allow-list, so a typo ("socail") or an
+        // undocumented bucket fails CI instead of silently mis-classifying.
+        assert!(CATEGORIES.is_sorted(), "CATEGORIES must stay sorted");
+        for site in SITES {
+            assert!(
+                CATEGORIES.contains(&site.cat),
+                "{} uses non-canonical category {:?} (add it to sites::CATEGORIES if intended)",
+                site.name,
+                site.cat
             );
         }
     }
