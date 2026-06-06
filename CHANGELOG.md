@@ -12,6 +12,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`dns_intel` SOA-RNAME→email now unescapes the local part (RFC 1035 §8).** The
+  decoder correctly *skipped* a backslash-escaped dot when finding the local-part /
+  domain split, but never removed the escaping from the result — so
+  `hostmaster\.ops.example.com` produced `hostmaster\.ops@example.com` (stray
+  backslash) instead of `hostmaster.ops@example.com`. A new pure
+  `unescape_dns_label` decodes both `\X` literal escapes (the common `\.`) and
+  `\DDD` decimal byte escapes; both it and the dotted-local-part path are
+  unit-tested.
 - **`dns_intel` DMARC report addresses now strip the RFC 7489 `!size` suffix.** A
   DMARC `rua=`/`ruf=` report URI may be suffixed with an optional maximum report
   size (`mailto:dmarc@example.com!10m`, RFC 7489 §6.2); the parser kept it

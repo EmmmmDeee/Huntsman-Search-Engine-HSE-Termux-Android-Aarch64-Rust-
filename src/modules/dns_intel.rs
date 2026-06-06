@@ -711,9 +711,12 @@ fn reverse_ip(ip: &str) -> Option<String> {
     }
 }
 
-/// SOA RNAME field is encoded as `local-part.domain` (no `@` allowed in
-/// DNS labels). Decode by replacing the first unescaped `.` with `@`.
-/// Returns empty string when the input doesn't look like an email.
+/// SOA RNAME field is encoded as `local-part.domain` (no `@` allowed in DNS
+/// labels), with any literal `.` in the local part backslash-escaped (RFC 1035
+/// §8). Decode by splitting on the first *unescaped* `.` into `@`, then
+/// **unescaping** the local part so `hostmaster\.ops.example.com` becomes
+/// `hostmaster.ops@example.com`. Returns an empty string when the input doesn't
+/// look like an email.
 fn soa_rname_to_email(rname: &str) -> String {
     if rname.is_empty() || !rname.contains('.') {
         return String::new();
@@ -731,11 +734,44 @@ fn soa_rname_to_email(rname: &str) -> String {
             if local.is_empty() || domain.is_empty() {
                 return String::new();
             }
-            return format!("{local}@{domain}");
+            return format!("{}@{domain}", unescape_dns_label(local));
         }
         i += 1;
     }
     String::new()
+}
+
+/// Decode DNS presentation-format escapes in a label: `\DDD` (a decimal byte) or
+/// `\X` (the literal char `X`, covering the common `\.` and `\\`). A trailing
+/// lone `\` is dropped. **Pure**.
+fn unescape_dns_label(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        // `\DDD` decimal escape (exactly three digits, ≤ 255).
+        if i + 3 < bytes.len()
+            && bytes[i + 1..i + 4].iter().all(u8::is_ascii_digit)
+            && let Ok(n) = std::str::from_utf8(&bytes[i + 1..i + 4])
+                .unwrap_or("")
+                .parse::<u16>()
+            && n <= 255
+        {
+            out.push(n as u8);
+            i += 4;
+        } else if i + 1 < bytes.len() {
+            out.push(bytes[i + 1]); // `\X` → literal X (e.g. `\.` → `.`)
+            i += 2;
+        } else {
+            i += 1; // trailing lone backslash — drop it
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Report-destination emails from a DMARC record's `rua=`/`ruf=` tags. **Pure**.
@@ -808,6 +844,30 @@ mod tests {
         );
         assert_eq!(soa_rname_to_email(""), "");
         assert_eq!(soa_rname_to_email("notanemail"), "");
+    }
+
+    #[test]
+    fn soa_rname_unescapes_dotted_local_part() {
+        // A literal dot in the mailbox local part is `\.`-escaped in the RNAME;
+        // the split must skip it AND the output must drop the backslash.
+        assert_eq!(
+            soa_rname_to_email(r"hostmaster\.ops.example.com"),
+            "hostmaster.ops@example.com"
+        );
+        // `\DDD` decimal escape (46 = '.') decodes the same way.
+        assert_eq!(
+            soa_rname_to_email(r"first\046last.example.org"),
+            "first.last@example.org"
+        );
+    }
+
+    #[test]
+    fn unescape_dns_label_handles_literal_and_decimal_escapes() {
+        assert_eq!(unescape_dns_label(r"a\.b"), "a.b");
+        assert_eq!(unescape_dns_label(r"a\\b"), r"a\b");
+        assert_eq!(unescape_dns_label(r"x\046y"), "x.y"); // \046 = '.'
+        assert_eq!(unescape_dns_label("plain"), "plain");
+        assert_eq!(unescape_dns_label(r"trailing\"), "trailing"); // lone backslash dropped
     }
 
     #[test]
