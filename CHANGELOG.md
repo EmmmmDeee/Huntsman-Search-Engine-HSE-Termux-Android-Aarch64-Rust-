@@ -90,6 +90,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`ipinfo` brought up to the module spec.** The five-entity fan-out
+  (`Coordinates` from a non-null-island `loc`, `Address` from city/region/country,
+  `Organisation` + the leading `Asn` parsed from the `org` string, and the PTR
+  `Domain` from a dotted `hostname`) is extracted out of `process` into the pure,
+  IO-free `build_entities`, with the null-island coordinate threshold promoted to
+  a named constant (`MIN_COORD_MAGNITUDE`). Adds unit coverage of the full
+  five-entity record, null-island/sub-threshold `loc` rejection, the region-absent
+  address form, an `org` without an `AS…` prefix yielding no `Asn`, and a dotless
+  hostname not becoming a `Domain`. Behaviour-preserving.
 - **`sunrise_sunset` brought up to the module spec.** The ~55-line solar-phase
   entity assembly is extracted out of `process` into the pure, IO-free
   `build_solar_entity` (date/lat/lon plus every present timestamp and the
