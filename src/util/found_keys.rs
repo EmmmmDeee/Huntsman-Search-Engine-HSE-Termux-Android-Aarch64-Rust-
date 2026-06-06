@@ -248,4 +248,55 @@ mod tests {
             "our own auth key must be excluded from findings"
         );
     }
+
+    // ── Adversarial-input invariants (scan_body runs on hostile response bodies) ──
+
+    #[test]
+    fn scan_body_survives_multibyte_and_adversarial_input() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        let key = format!("sk_{}_{}", "live", "4eC39HqLyjWDarjtT1zdp7dc");
+        // Multibyte UTF-8 tokens, NUL/control bytes, and a 200 KB delimiter-free
+        // blob (a DoS attempt) all surround two delimited copies of a real key.
+        // Invariant: no panic (tokens may be non-ASCII), the genuine key is still
+        // recovered, and none of the noise fabricates a finding.
+        let giant = "A".repeat(200_000);
+        let body = format!("café résumé 日本語 \u{0}\u{1}\u{7f} {key} token={key} {giant}");
+        scan_body("see-know", "café@example.com", &body); // must not panic
+        let snap = snapshot();
+        assert!(
+            snap.iter().any(|f| f.key == key),
+            "real key must survive amid adversarial/multibyte noise"
+        );
+        assert_eq!(
+            snap.len(),
+            1,
+            "adversarial noise must not fabricate keys: {snap:?}"
+        );
+    }
+
+    #[test]
+    fn scan_body_enforces_token_length_bounds() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        // A vendor-prefixed token longer than MAX_TOKEN is the DoS shape: it must
+        // be rejected by the cheap length gate, never handed to the identifier.
+        let oversized = format!("sk_{}_{}", "live", "x".repeat(MAX_TOKEN));
+        // And a token shorter than MIN_TOKEN is below the floor.
+        let undersized = "sk_live_x"; // 9 < 16
+        scan_body("p", "q", &format!("{oversized} {undersized}"));
+        assert!(
+            snapshot().is_empty(),
+            "out-of-bounds tokens must yield no findings"
+        );
+    }
+
+    #[test]
+    fn scan_body_is_quiet_on_empty_and_whitespace_bodies() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        scan_body("p", "q", "");
+        scan_body("p", "q", "   \n\t  \r\n ");
+        assert!(snapshot().is_empty());
+    }
 }
