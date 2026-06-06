@@ -24,6 +24,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   validity check in with the null-island band so the gap can't reopen in one
   module at a time. The eight modules already on `is_valid_coords` are
   unchanged. Unit-tested (range, finite, and band cases).
+- **Forward geocoders validate their coordinates too.** `geocode`, `photon`,
+  `overpass`, and `mls` turned an external lat/lon straight into a `Coordinates`
+  entity without a range/finite check — the same straggler gap. They now gate on
+  `is_valid_coords` (the *no-band* form: geocoding a real equatorial place is
+  legitimate, so the IP-provider null-island band must not apply here). A
+  malformed geometry or null-island fix is dropped instead of surfaced.
+  Regression-tested via `photon::build_forward`.
 - **OUI classifier recognises Tesla's `DC:44:27` prefix again.** One entry in
   the curated `util::oui` table was mis-typed as a 7-character `"DC44271"`.
   `classify_mac` extracts the first **6** hex digits of a MAC and compares for

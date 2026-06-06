@@ -119,6 +119,9 @@ impl Module for Mls {
         let Some(loc) = body.location else {
             return Ok(result);
         };
+        if !crate::util::geo::is_valid_coords(loc.lat, loc.lng) {
+            return Ok(result);
+        }
         let accuracy_m = body.accuracy.unwrap_or(5000.0);
         let confidence = confidence_from_accuracy(accuracy_m);
         let coord_str = format!("{:.6},{:.6}", loc.lat, loc.lng);

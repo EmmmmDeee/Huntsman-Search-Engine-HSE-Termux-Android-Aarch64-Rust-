@@ -111,6 +111,9 @@ fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Option<Entity>
         return None;
     }
     let (lon, lat) = (geom.coordinates[0], geom.coordinates[1]);
+    if !crate::util::geo::is_valid_coords(lat, lon) {
+        return None;
+    }
     let coords = format!("{lat:.6},{lon:.6}");
 
     let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.60, scan_id);
@@ -360,6 +363,18 @@ mod tests {
         let no_coords: Feature =
             serde_json::from_str(r#"{"geometry":{"coordinates":[1.0]}}"#).unwrap();
         assert!(build_forward("x", &no_coords, "s").is_none());
+    }
+
+    #[test]
+    fn build_forward_rejects_out_of_range_and_null_island() {
+        // A malformed geometry must not become a Coordinates entity (it would be
+        // a high-confidence false fix). Longitude is `coordinates[0]`.
+        let oob: Feature =
+            serde_json::from_str(r#"{"geometry":{"coordinates":[999.0,500.0]}}"#).unwrap();
+        assert!(build_forward("x", &oob, "s").is_none());
+        let null_island: Feature =
+            serde_json::from_str(r#"{"geometry":{"coordinates":[0.0,0.0]}}"#).unwrap();
+        assert!(build_forward("x", &null_island, "s").is_none());
     }
 
     // ── Reverse: Address with name folded in + OSM classification ────────

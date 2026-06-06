@@ -100,7 +100,9 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
         let category = classify_element(tags);
         *categories.entry(category).or_default() += 1;
 
-        if let (Some(nlat), Some(nlon)) = (elem.lat, elem.lon) {
+        if let (Some(nlat), Some(nlon)) = (elem.lat, elem.lon)
+            && crate::util::geo::is_valid_coords(nlat, nlon)
+        {
             let node_coords = format!("{nlat:.6},{nlon:.6}");
             let mut ce = Entity::new(EntityKind::Coordinates, &node_coords, 0.55, scan_id);
             ce.tag("overpass");

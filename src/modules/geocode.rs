@@ -147,6 +147,7 @@ impl Geocode {
         if let Some(first) = results.first()
             && let (Some(lat_str), Some(lon_str)) = (&first.lat, &first.lon)
             && let (Ok(lat), Ok(lon)) = (lat_str.parse::<f64>(), lon_str.parse::<f64>())
+            && crate::util::geo::is_valid_coords(lat, lon)
         {
             let coords = format!("{lat:.6},{lon:.6}");
             let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.65, &ctx.scan_id);
