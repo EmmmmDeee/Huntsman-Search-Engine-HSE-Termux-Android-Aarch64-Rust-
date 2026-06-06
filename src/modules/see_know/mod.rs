@@ -42,6 +42,7 @@ use crate::modules::oathnet_pro::key_harvest::{extract_api_keys_from_item, store
 use crate::util::geo::is_valid_coords;
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
 use crate::util::see_know::{self, val_str};
+use crate::util::url_util::host_from_url;
 
 mod endpoints;
 mod pivots;
@@ -104,6 +105,7 @@ impl Module for SeekNow {
             EntityKind::Organisation,
             EntityKind::Asn,
             EntityKind::Credential,
+            EntityKind::Url,
             EntityKind::ApiKey,
         ];
         KINDS
@@ -628,6 +630,58 @@ fn extract_entities(
         }
     }
 
+    // ── Stealer-log saved-credential URL ──────────────────────────────────
+    //
+    // The single most OSINT-valuable artifact in a stealer record is the URL
+    // the victim had a saved credential for. SeekNow's /stealer endpoint (and
+    // the /search auto-route into it) carries it as `url`/`url_str`. Spider it
+    // into three pivotable entities — exactly OathNet's proven stealer model —
+    // so the rest of the graph (domain enumeration, credential correlation,
+    // login-surface mapping) can converge on it:
+    //
+    //   • the Url itself (the captured login surface);
+    //   • its registrable host as a Domain pivot (drives crt.sh, DNS, whois);
+    //   • a `<username>@<url>` Credential when a login accompanies the URL.
+    //
+    // None are tagged `breach`: a saved-login URL is credential CONTEXT /
+    // infrastructure, not leaked PII — the same policy `extract_stealer_entities`
+    // applies in oathnet_pro, and the same policy the Domain block below uses.
+    if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
+        if url.len() >= 4 && seen.insert(format!("@url:{}", url.to_lowercase())) {
+            let mut e = Entity::new(EntityKind::Url, &url, 0.60, scan_id);
+            e.tag("see-know");
+            e.tag("stealer");
+            e.add_evidence(ev.clone());
+            result.push(e);
+        }
+        // The URL's host → Domain pivot (eTLD-aware host extraction; dotless /
+        // private / scheme-less junk is dropped by `host_from_url`).
+        if let Some(host) = host_from_url(&url)
+            && seen.insert(format!("@stealer-dom:{host}"))
+        {
+            let mut e = Entity::new(EntityKind::Domain, &host, 0.55, scan_id);
+            e.tag("see-know");
+            e.tag("stealer");
+            e.add_evidence(
+                Evidence::new(SRC, format!("Stealer credential captured for {host}"))
+                    .with_attr("url", &url),
+            );
+            result.push(e);
+        }
+        // `<username>@<url>` Credential — the login↔surface binding, surfaced as
+        // a first-class pivotable entity (operator policy: never redacted).
+        if let Some(uname) = val_str(item, "username") {
+            let cred_val = format!("{uname}@{url}");
+            if seen.insert(format!("@cred:{}", cred_val.to_lowercase())) {
+                let mut e = Entity::new(EntityKind::Credential, &cred_val, 0.60, scan_id);
+                e.tag("see-know");
+                e.tag("stealer");
+                e.add_evidence(ev.clone());
+                result.push(e);
+            }
+        }
+    }
+
     // Domain is infrastructure, not a leaked credential, so it is the one kind
     // NOT tagged `breach` — keep its inline tail (and consume the last `ev`).
     if let Some(domain) = val_str(item, "domain")
@@ -772,6 +826,46 @@ mod tests {
                 .entities
                 .iter()
                 .any(|e| e.value == "steam:76561198000000000" && e.has_tag("steam"))
+        );
+    }
+
+    #[test]
+    fn extract_entities_spiders_stealer_url_into_pivots() {
+        use serde_json::json;
+        // A stealer-log row: a saved credential for a login URL. The URL is the
+        // highest-value pivot and must spider into Url + Domain + Credential,
+        // none tagged `breach` (credential context / infrastructure, not PII).
+        let item = json!({
+            "dbname": "RedlineStealer",
+            "username": "victim_login",
+            "password": "hunter2",
+            "url": "https://accounts.example.com/login?ref=1",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(&item, "victim_login", "scan", &mut seen, &mut result);
+
+        let find = |k: EntityKind, pred: &dyn Fn(&Entity) -> bool| {
+            result.entities.iter().find(|e| e.kind == k && pred(e))
+        };
+        // Url entity for the captured login surface.
+        let url = find(EntityKind::Url, &|e| {
+            e.value.contains("accounts.example.com")
+        })
+        .expect("stealer URL must surface as a Url entity");
+        assert!(url.has_tag("stealer") && url.has_tag("see-know"));
+        assert!(!url.has_tag("breach"), "stealer URL must NOT be tagged breach");
+        // Host → Domain pivot (eTLD-aware host extraction, lowercased).
+        let dom = find(EntityKind::Domain, &|e| e.value == "accounts.example.com")
+            .expect("stealer URL host must surface as a Domain pivot");
+        assert!(dom.has_tag("stealer") && !dom.has_tag("breach"));
+        // username@url Credential binding.
+        assert!(
+            find(EntityKind::Credential, &|e| {
+                e.value == "victim_login@https://accounts.example.com/login?ref=1"
+            })
+            .is_some(),
+            "login↔surface must surface as a Credential entity"
         );
     }
 
