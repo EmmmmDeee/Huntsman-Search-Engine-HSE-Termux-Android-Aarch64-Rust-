@@ -35,6 +35,7 @@ pub mod employer_pivot;
 pub mod epieos;
 pub mod exa_search;
 pub mod exif_geo;
+pub mod fullcontact;
 pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
@@ -62,6 +63,7 @@ pub mod local_net;
 pub mod mls;
 pub mod mylnikov;
 pub mod name_intel;
+pub mod numverify;
 pub mod oathnet_pro;
 pub mod opencorporates;
 pub mod overpass;
@@ -244,6 +246,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(emailrep::EmailRep),
         Arc::new(epieos::Epieos),
         Arc::new(proxycurl::Proxycurl),
+        Arc::new(fullcontact::FullContact),
+        Arc::new(numverify::NumVerify),
         Arc::new(photon::Photon),
         Arc::new(mylnikov::Mylnikov),
         Arc::new(mls::Mls),

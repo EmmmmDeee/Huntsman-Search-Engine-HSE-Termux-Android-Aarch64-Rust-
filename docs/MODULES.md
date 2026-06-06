@@ -27,7 +27,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
-### people (10)
+### people (11)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -39,6 +39,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `employer_pivot` | email, domain | free | no | 92 | address, phone, email, url |
 | `epieos` | email | key_gated | no | 92 | person, username, address |
 | `gravatar` | email | free | no | 90 | person, username, url, address |
+| `fullcontact` | email, phone | key_gated | no | 89 | person, organisation, address, username, url |
 | `proxycurl` | email, username, url | paid | no | 88 | person, address, email, domain, phone, organisation |
 | `contact_enrich` | email, phone | free | no | 85 | person, username, address, url |
 
@@ -53,10 +54,11 @@ records. The engine knows nothing else — every module is a one-file change.
 | `smtp_vrfy` | email | free | no | 85 | email |
 | `hunter_io` | domain | key_gated | no | 62 | email, person, organisation |
 
-### phone (1)
+### phone (2)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
+| `numverify` | phone | key_gated | no | 139 | address |
 | `phone_intl` | phone | free | **yes** | 140 | phone |
 
 ### breach (8)
