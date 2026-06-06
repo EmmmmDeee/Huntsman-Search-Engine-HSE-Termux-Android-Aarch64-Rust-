@@ -90,6 +90,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`rdap_domain` brought up to the module spec.** The RDAP record→entity
+  mapping is extracted out of `process` into two pure, IO-free builders:
+  `build_domain_entity` (status-phrase `status:` tags, event dates grouped by
+  slugified action, deduplicated contact *role* names, DNSSEC delegation state,
+  nameserver list) and `build_ns_entity` (one Domain per nameserver, blank-name
+  rejection), with the nameserver cap lifted to a module-level `MAX_NS` constant.
+  Adds unit coverage of status slugging, repeated-action event grouping, role
+  dedup (reinforcing the never-raw-PII invariant), signed/unsigned DNSSEC, the
+  bare-record optional-omission path, and nameserver normalisation/rejection;
+  `slugify` keeps its existing tests. Behaviour-preserving.
 - **`dehashed` brought up to the module spec.** The two pure pieces of `process`
   are extracted and tested: `selector_for` (target-kind → DeHashed query
   selector, returning `None` for unsupported kinds) and `build_breach_entity`
