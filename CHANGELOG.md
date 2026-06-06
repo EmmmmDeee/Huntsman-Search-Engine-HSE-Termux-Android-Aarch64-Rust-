@@ -90,6 +90,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`opencorporates` brought up to the module spec.** The per-company fan-out
+  (the `Organisation` plus a `validated` `Address` and an AU `AbnAcn`
+  company-number entity) is extracted out of `process` into the pure, IO-free
+  `build_company_entities`, with the page size and address-length floor promoted
+  to named constants (`PER_PAGE`, `MIN_ADDRESS_LEN`, the former also replacing a
+  hardcoded `per_page=5` in the query) and the eight repeated `with_attr` blocks
+  collapsed into one table-driven loop. Adds unit coverage of the full AU triple
+  (org+address+company-number), the non-AU case (no `AbnAcn`, no `country:AU`/
+  `active` tags), the short-address/missing-number optional-drop path, and
+  blank/whitespace-name rejection. Also now trims whitespace-only names (which the
+  old empty-only check let through). Behaviour-preserving.
 - **`urlhaus` brought up to the module spec.** The ~80-line host-threat
   aggregation (malicious-URL count, reference, first/last-seen window, third-party
   blocklist verdicts, online/offline URL split, distinct threat families, and the
