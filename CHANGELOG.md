@@ -12,6 +12,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`search_engines` username-variant generation no longer panics on a
+  multi-byte handle.** `generate_username_variants` produced its truncation
+  variant with a byte slice `lower[..len-1]`, which panics when the handle ends in
+  a multi-byte codepoint (e.g. `andré`) by cutting mid-character — the same
+  boundary hazard the module's name-dork builder already guards against. The last
+  *char* is now dropped instead. The previously-untested 473-line `queries.rs`
+  gains coverage of separator swaps, trailing-digit and truncation variants, the
+  digit-terminated skip, multibyte non-panic (incl. an all-non-ASCII handle), and
+  `detect_region`'s Australian-seed detection.
 - **`search_engines` family-name extraction now works for `initial.surname@`
   emails.** `extract_family_names` derived the surname from an `Email` target by
   dropping the first character (the likely first-initial), but for the very common

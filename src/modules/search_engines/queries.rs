@@ -464,10 +464,96 @@ pub(super) fn generate_username_variants(base: &str) -> Vec<String> {
         variants.push(format!("{lower}2"));
     }
 
-    // Truncation: jdespal → jdespa (off-by-one typos / platform limits)
-    if lower.len() >= 5 {
-        variants.push(lower[..lower.len() - 1].to_string());
+    // Truncation: jdespal → jdespa (off-by-one typos / platform limits). Drop
+    // the last CHAR, not byte: `lower[..len-1]` panics when the handle ends in a
+    // multi-byte codepoint (e.g. `andré`) by slicing mid-codepoint — the same
+    // boundary hazard the name-dork builder guards against above.
+    if lower.chars().count() >= 5 {
+        let mut chars = lower.chars();
+        chars.next_back();
+        variants.push(chars.as_str().to_string());
     }
 
     variants
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn separator_swaps_are_generated_and_deduped() {
+        let v = generate_username_variants("jerome.despal");
+        assert!(v.contains(&"jeromedespal".to_string())); // separators removed
+        assert!(v.contains(&"jerome_despal".to_string())); // → underscore
+        assert!(v.contains(&"jerome-despal".to_string())); // → dash
+        // The original form is never emitted as its own variant.
+        assert!(!v.contains(&"jerome.despal".to_string()));
+    }
+
+    #[test]
+    fn trailing_digit_and_truncation_variants() {
+        let v = generate_username_variants("jdespal");
+        assert!(v.contains(&"jdespal1".to_string()));
+        assert!(v.contains(&"jdespal2".to_string()));
+        assert!(v.contains(&"jdespa".to_string())); // last char dropped
+    }
+
+    #[test]
+    fn digit_terminated_handles_skip_digit_variants() {
+        // Already ends in a digit → no `…1`/`…2` appended.
+        let v = generate_username_variants("agent007");
+        assert!(!v.iter().any(|s| s.ends_with("0071") || s.ends_with("0072")));
+    }
+
+    #[test]
+    fn multibyte_handle_truncates_by_char_without_panicking() {
+        // Regression: a handle ending in a multi-byte codepoint must not panic
+        // on the truncation slice, and must drop a whole char.
+        let v = generate_username_variants("andré");
+        assert!(v.contains(&"andr".to_string())); // 'é' dropped whole
+        assert!(v.iter().all(|s| s != "andré"));
+
+        // Pure non-ASCII handle (every char multi-byte) — also must not panic.
+        let _ = generate_username_variants("Ωμέγα");
+    }
+
+    #[test]
+    fn short_handle_yields_no_variants() {
+        // No separators, < 4 chars → nothing (too short to pivot on).
+        assert!(generate_username_variants("ab").is_empty());
+    }
+
+    #[test]
+    fn detect_region_flags_australian_seeds() {
+        use crate::core::scan::Target;
+        assert_eq!(
+            detect_region(&Target::new(TargetKind::Domain, "example.com.au")),
+            Some(Region::Au)
+        );
+        assert_eq!(
+            detect_region(&Target::new(TargetKind::Email, "person@deakin.edu.au")),
+            Some(Region::Au)
+        );
+        assert_eq!(
+            detect_region(&Target::new(TargetKind::Phone, "+61 412 345 678")),
+            Some(Region::Au)
+        );
+        assert_eq!(
+            detect_region(&Target::new(
+                TargetKind::Address,
+                "10 Queen St, Brisbane QLD"
+            )),
+            Some(Region::Au)
+        );
+        // Non-AU seeds → no region.
+        assert_eq!(
+            detect_region(&Target::new(TargetKind::Domain, "example.com")),
+            None
+        );
+        assert_eq!(
+            detect_region(&Target::new(TargetKind::Username, "jdoe")),
+            None
+        );
+    }
 }
