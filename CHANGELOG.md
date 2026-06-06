@@ -10,6 +10,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Performance
+
+- **Web UI responses are gzip-compressed (`tower-http` `CompressionLayer`).**
+  The embedded SPA (~118 KB) and vendored asset bundle (~528 KB) were served
+  uncompressed on every cold load — the dominant web-UI cost on a phone's mobile
+  link. gzip brings the SPA to under 60 KB on the wire (~4×) and applies to
+  large scan-result JSON exports too. The gzip backend is `flate2`/`miniz_oxide`
+  — pure Rust, no C/zlib dependency, preserving the no-native-libs Termux build.
+  `CompressionLayer`'s default predicate skips already-small bodies and
+  `text/event-stream`, so the SSE live-scan stream is never buffered or
+  compressed (would stall the live event log). The existing vendor-asset
+  ETag/`304` revalidation is unchanged, so warm loads still skip the body
+  entirely. Two contract tests guard it: the SPA arrives gzip-encoded and
+  materially smaller for a gzip-capable client, and the SSE stream stays
+  identity-encoded.
+
 ### Fixed
 
 - **`email_locale` matches mixed-case names instead of silently missing them.**
