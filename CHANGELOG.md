@@ -90,6 +90,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`smtp_vrfy` brought up to the module spec.** The five-way outcome→entity
+  mapping (no-MX plus the SMTP valid/invalid/catch-all/unreachable verdicts),
+  previously open-coded as five near-identical `Entity::new` blocks split across
+  `process`, is folded into one pure, IO-free `build_entity` driven by a unified
+  `SmtpVerdict` enum (the old `SmtpResult` renamed and given a `NoMx` variant so
+  the no-MX path is no longer a special-cased early return). Confidence/tag/
+  evidence selection is now a single `match`, with `mx_host` attached whenever an
+  MX was found and `smtp_code` only on a rejection. Adds unit coverage of every
+  verdict (tags, confidence, evidence attributes) plus the deliverability-ladder
+  ordering invariant (valid > catch-all > invalid > unreachable), alongside the
+  existing async metadata/no-MX integration tests. Behaviour-preserving.
 - **`securitytrails` brought up to the module spec.** Both response→entity
   mappings — the subdomain enumeration (`{label}.{domain}` qualification +
   parent-count evidence) and the reverse-IP associated-record path (trailing-dot
