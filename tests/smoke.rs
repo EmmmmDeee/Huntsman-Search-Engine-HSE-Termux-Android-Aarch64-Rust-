@@ -1189,14 +1189,21 @@ async fn concurrent_dispatch_is_faster_than_sequential() {
 
     assert_eq!(res_s.entity_count, 1, "4 modules echo the same email UID");
     assert_eq!(res_c.entity_count, 1, "4 modules echo the same email UID");
-    // RELATIVE assertion — immune to absolute CI-runner slowness (a 3x-slower
-    // box scales both runs together). Concurrent must be clearly faster than
-    // sequential; require at least 1.5x speedup (true ratio ≈ 4x, so this is
-    // a wide margin that still catches a regression where concurrency breaks).
+    // DETERMINISTIC proof of concurrency: the engine actually ran ≥2 of the four
+    // 200 ms modules at the same instant. `peak` is the max simultaneous
+    // in-flight count (shared across both runs; the max_concurrent=4 run drives
+    // it above 1). This asserts the *mechanism* — whether dispatch overlaps —
+    // rather than wall-clock, which flaked under parallel test load even with a
+    // wide ratio margin (a starved runner can stretch the concurrent run past
+    // 1.5x of sequential without any concurrency regression).
+    let observed_peak = peak.load(std::sync::atomic::Ordering::SeqCst);
     assert!(
-        con.as_secs_f64() * 1.5 < seq.as_secs_f64(),
-        "concurrent ({con:?}) should be >=1.5x faster than sequential ({seq:?})"
+        observed_peak >= 2,
+        "concurrent dispatch must overlap modules; peak in-flight was {observed_peak}"
     );
+    // Wall-clock is reported for humans, never asserted (non-deterministic under
+    // parallel test load). Concurrent should still be visibly faster in practice.
+    eprintln!("dispatch timing: sequential {seq:?}, concurrent {con:?}");
 }
 
 #[tokio::test]
