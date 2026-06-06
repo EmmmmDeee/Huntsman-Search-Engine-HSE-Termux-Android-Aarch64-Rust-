@@ -90,6 +90,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`webserver_banner` brought up to the module spec.** The inline URL/host/port
+  parsing is extracted out of `process` into the pure, IO-free `extract_host_port`
+  (returning `None` for an unparseable URL or empty/path-shaped host). Test
+  coverage is broadened from the two stack-tag spot checks to the full fingerprint
+  surface: every `apply_stack_tags` signature (nginx/apache/iis/cloudflare-via-
+  Server-or-cf-ray/aws-cloudfront/fastly/wordpress/drupal/php/aspnet), the
+  case-insensitive + quiet-on-unknown behaviour, `capture_headers`'
+  fingerprint-only/non-empty filtering, and the host/port extraction across
+  URL+port, bare-domain, and junk inputs. Behaviour-preserving.
 - **`opencorporates` brought up to the module spec.** The per-company fan-out
   (the `Organisation` plus a `validated` `Address` and an AU `AbnAcn`
   company-number entity) is extracted out of `process` into the pure, IO-free
