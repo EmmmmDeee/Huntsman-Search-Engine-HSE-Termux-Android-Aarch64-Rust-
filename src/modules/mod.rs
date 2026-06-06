@@ -65,6 +65,7 @@ pub mod mylnikov;
 pub mod name_intel;
 pub mod numverify;
 pub mod oathnet_pro;
+pub mod ofac_sanctions;
 pub mod opencorporates;
 pub mod overpass;
 pub mod pgp;
@@ -277,6 +278,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(qld_unclaimed::QldUnclaimed),
         Arc::new(acnc_charities::AcncCharities),
         Arc::new(gleif_lei::GleifLei),
+        Arc::new(ofac_sanctions::OfacSanctions),
     ]
 }
 

@@ -74,12 +74,13 @@ records. The engine knows nothing else — every module is a one-file change.
 | `pwned_passwords` | email, username | free | no | 115 | — |
 | `leakix` | ip_address, domain | key_gated | no | 102 | — |
 
-### threat (3)
+### threat (4)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `urlhaus` | ip_address, domain | free | no | 110 | — |
 | `threatfox` | ip_address, domain | key_gated | no | 109 | domain, ip_address, url |
+| `ofac_sanctions` | crypto_address | free | yes | 95 | crypto_address, organisation |
 | `virustotal` | ip_address, domain | key_gated | no | 55 | — |
 
 ### corporate (4)
