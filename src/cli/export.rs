@@ -208,6 +208,54 @@ fn render_full(store: &Store, sid: &str) -> Result<String> {
         }
     }
 
+    // ── RAW SOURCE RECORDS ──────────────────────────────────────────────────
+    // Embed every paid API response this scan fetched, verbatim, recovered from
+    // the on-disk archive. This guarantees the dossier leaves NOTHING out — even
+    // thin records that produced no entity (e.g. a breach hit with only a
+    // `source`, or a paste listing hundreds of unrelated addresses) appear here
+    // in full. The archive files remain saved separately; this is an embedded
+    // copy for a self-contained dossier.
+    //
+    // Responses are tied to THIS scan precisely: the time window [started_at,
+    // finished_at] excludes earlier runs of the same target, and the query-set
+    // (target value + every entity value) excludes a neighbouring back-to-back
+    // scan whose second-granular window touches this one. (A loose ±margin window
+    // bled adjacent scans together — unix timestamps are per-second.)
+    let start = scan.started_at;
+    let end = scan.finished_at.unwrap_or(u64::MAX);
+    let mut queries: std::collections::HashSet<String> = std::collections::HashSet::new();
+    queries.insert(scan.target.value.to_lowercase());
+    for e in &entities {
+        queries.insert(e.value.to_lowercase());
+    }
+    let raws = crate::util::raw_archive::records_for_queries(&queries, start, end);
+    let _ = writeln!(
+        s,
+        "\n── RAW SOURCE RECORDS ({} response{}, verbatim) ──",
+        raws.len(),
+        if raws.len() == 1 { "" } else { "s" }
+    );
+    if raws.is_empty() {
+        let _ = writeln!(
+            s,
+            "  (raw archive empty for this window — disabled, or run predates archiving)"
+        );
+    }
+    for resp in &raws {
+        let _ = writeln!(
+            s,
+            "\n  ▼ {} · endpoint={} · query={} · file={}",
+            resp.provider, resp.endpoint, resp.query, resp.filename
+        );
+        // Pretty-print the verbatim body, indented, so the whole response —
+        // every record, every field — is in the dossier with nothing elided.
+        let pretty =
+            serde_json::to_string_pretty(&resp.raw).unwrap_or_else(|_| resp.raw.to_string());
+        for line in pretty.lines() {
+            let _ = writeln!(s, "    {line}");
+        }
+    }
+
     Ok(s)
 }
 

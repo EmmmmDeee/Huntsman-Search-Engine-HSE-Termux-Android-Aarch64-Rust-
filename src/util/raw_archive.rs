@@ -185,6 +185,101 @@ pub fn record(provider: &str, endpoint: &str, query: &str, raw: &str) {
     }
 }
 
+/// One archived response, parsed back from disk for inclusion in a dossier.
+/// `raw` is the verbatim provider body (structured JSON, or a string for a
+/// non-JSON body) exactly as it was stored.
+#[derive(Debug, Clone)]
+pub struct ArchivedResponse {
+    pub provider: String,
+    pub endpoint: String,
+    pub query: String,
+    pub unix: u64,
+    pub filename: String,
+    pub raw: Value,
+}
+
+/// Every archived response whose capture time falls within `[start_unix,
+/// end_unix]` — i.e. every paid API response a single scan fetched, recovered
+/// verbatim from the on-disk archive so a dossier can embed the COMPLETE raw
+/// corpus (including thin records that produced no entity). Returns them in
+/// chronological order. Best-effort: unreadable / malformed files are skipped,
+/// never fatal. The archive files themselves are left in place (the raw dumps
+/// stay saved separately).
+#[must_use]
+pub fn records_in_window(start_unix: u64, end_unix: u64) -> Vec<ArchivedResponse> {
+    records_filtered_dir(&archive_dir(), start_unix, end_unix, None)
+}
+
+/// Every archived response captured within `[start_unix, end_unix]` **whose
+/// query is one of `queries`** (lower-cased). This is how a dossier ties raw
+/// responses to a specific scan precisely: the time window excludes earlier runs
+/// of the same target, and the query-set excludes a neighbouring back-to-back
+/// scan whose window touches this one at the shared second boundary (unix
+/// timestamps are second-granular). `queries` should be the scan's target value
+/// plus every entity value it produced — covering the seed and every expansion
+/// pivot that was re-queried.
+#[must_use]
+pub fn records_for_queries(
+    queries: &std::collections::HashSet<String>,
+    start_unix: u64,
+    end_unix: u64,
+) -> Vec<ArchivedResponse> {
+    records_filtered_dir(&archive_dir(), start_unix, end_unix, Some(queries))
+}
+
+/// Env-free core for [`records_in_window`] / [`records_for_queries`] — the
+/// window filter, optional query-set filter, and parse, so all three are
+/// unit-testable against a temp archive.
+fn records_filtered_dir(
+    dir: &std::path::Path,
+    start_unix: u64,
+    end_unix: u64,
+    queries: Option<&std::collections::HashSet<String>>,
+) -> Vec<ArchivedResponse> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(doc) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let unix = doc.pointer("/_meta/unix").and_then(Value::as_u64).unwrap_or(0);
+        if unix < start_unix || unix > end_unix {
+            continue;
+        }
+        let meta_str = |k: &str| {
+            doc.pointer(&format!("/_meta/{k}"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        let query = meta_str("query");
+        if let Some(set) = queries
+            && !set.contains(&query.to_lowercase())
+        {
+            continue;
+        }
+        out.push(ArchivedResponse {
+            provider: meta_str("provider"),
+            endpoint: meta_str("endpoint"),
+            query,
+            unix,
+            filename: entry.file_name().to_string_lossy().into_owned(),
+            raw: doc.get("raw").cloned().unwrap_or(Value::Null),
+        });
+    }
+    out.sort_by(|a, b| a.unix.cmp(&b.unix).then_with(|| a.filename.cmp(&b.filename)));
+    out
+}
+
 /// Write one complete archive file (mode 0600 on unix), creating the archive
 /// directory if missing. Each file is written once and never appended to, so no
 /// cross-writer locking is needed — the unique `seq` in the name guarantees a
@@ -285,6 +380,55 @@ mod tests {
         let body = build_body("oathnet", "breach-search", "x", 0, "503 Service Unavailable");
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["raw"], "503 Service Unavailable");
+    }
+
+    #[test]
+    fn records_in_window_recovers_full_responses_and_filters_by_time() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("hse_win_{}_{nanos}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Two in-window responses (one structured, one thin/no-entity) + one out.
+        write_file(
+            &dir.join(build_filename("see-know", "search-email", "v@x.com", 1000, 1)),
+            &build_body("see-know", "search-email", "v@x.com", 1000, r#"{"results":[{"source":"INF0SEC Leaks"}]}"#),
+        )
+        .unwrap();
+        write_file(
+            &dir.join(build_filename("oathnet", "breach-search", "v@x.com", 1005, 2)),
+            &build_body("oathnet", "breach-search", "v@x.com", 1005, r#"{"data":{"items":[{"password":"PLAINTEXT"}]}}"#),
+        )
+        .unwrap();
+        write_file(
+            &dir.join(build_filename("see-know", "search-email", "old", 50, 3)),
+            &build_body("see-know", "search-email", "old", 50, r#"{"x":1}"#),
+        )
+        .unwrap();
+
+        let got = records_filtered_dir(&dir, 900, 1100, None);
+        assert_eq!(got.len(), 2, "only the two in-window responses");
+        // Chronological order, provenance recovered, raw body intact verbatim.
+        assert_eq!(got[0].provider, "see-know");
+        assert_eq!(got[0].query, "v@x.com");
+        assert_eq!(got[0].raw["results"][0]["source"], "INF0SEC Leaks");
+        assert_eq!(got[1].raw["data"]["items"][0]["password"], "PLAINTEXT");
+        // The out-of-window record is excluded.
+        assert!(!got.iter().any(|r| r.query == "old"));
+
+        // Query-set filter: same window, but restrict to a different value —
+        // both in-window responses are for "v@x.com", so an unrelated query set
+        // excludes them (this is what stops a neighbouring scan bleeding in).
+        let mut other: std::collections::HashSet<String> = std::collections::HashSet::new();
+        other.insert("someone-else@x.com".to_string());
+        assert!(records_filtered_dir(&dir, 900, 1100, Some(&other)).is_empty());
+        // Matching query-set keeps them.
+        let mut mine: std::collections::HashSet<String> = std::collections::HashSet::new();
+        mine.insert("v@x.com".to_string());
+        assert_eq!(records_filtered_dir(&dir, 900, 1100, Some(&mine)).len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
