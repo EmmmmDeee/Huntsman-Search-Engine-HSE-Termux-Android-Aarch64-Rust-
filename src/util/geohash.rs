@@ -14,6 +14,21 @@ const BASE32: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
 /// Precision 7 = ±76m on the equator (suburb-level). 8 = ±19m (block).
 /// 9 = ±2.4m (building). The default 7 matches HSE's coordinate
 /// confidence — anything tighter is false precision.
+///
+/// # Guarantees
+/// - On valid coordinates, returns a string of exactly `precision.clamp(1, 12)`
+///   base-32 characters (the standard `0-9 b-z` minus `a i l o` alphabet).
+/// - Out-of-range `lat`/`lon` yield an empty string — never a panic.
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::geohash;
+///
+/// // Canonical reference point (Wikipedia) → its known geohash.
+/// assert_eq!(geohash(57.64911, 10.40744, 11), "u4pruydqqvj");
+/// assert_eq!(geohash(57.64911, 10.40744, 5), "u4pru"); // shorter precision = prefix
+/// // Out-of-range latitude → empty, no panic.
+/// assert_eq!(geohash(91.0, 0.0, 7), "");
+/// ```
 pub fn geohash(lat: f64, lon: f64, precision: u8) -> String {
     if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
         return String::new();
@@ -58,8 +73,24 @@ pub fn geohash(lat: f64, lon: f64, precision: u8) -> String {
     out
 }
 
-/// Parse "lat,lon" strings (as produced by HSE Coordinates entities)
-/// into a (f64, f64) tuple. Tolerates whitespace, trailing characters.
+/// Parse a `"lat,lon"` string (as produced by HSE `Coordinates` entities) into a
+/// `(f64, f64)` pair.
+///
+/// # Guarantees
+/// - Returns `Some((lat, lon))` only when `s` is two comma-separated numbers with
+///   `lat ∈ [-90, 90]` and `lon ∈ [-180, 180]`; surrounding whitespace on each
+///   component is trimmed.
+/// - Returns `None` for any other shape, a non-numeric component, or an
+///   out-of-range value — never panics.
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::parse_coords;
+///
+/// assert_eq!(parse_coords(" -27.47 , 153.02 "), Some((-27.47, 153.02)));
+/// assert_eq!(parse_coords("91.0,0.0"), None); // latitude out of range
+/// assert_eq!(parse_coords("153.02"), None);   // not a pair
+/// assert_eq!(parse_coords("a,b"), None);      // not numeric
+/// ```
 pub fn parse_coords(s: &str) -> Option<(f64, f64)> {
     let (lat_s, lon_s) = s.split_once(',')?;
     let lat: f64 = lat_s.trim().parse().ok()?;
