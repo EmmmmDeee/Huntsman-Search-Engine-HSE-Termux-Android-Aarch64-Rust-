@@ -38,6 +38,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   materially smaller for a gzip-capable client, and the SSE stream stays
   identity-encoded.
 
+### Security
+
+- **SSRF guard blocks reserved Class E (240.0.0.0/4).** `preflight::is_private_addr`
+  rejected RFC1918, loopback, link-local (incl. cloud metadata), CGNAT, 0/8,
+  multicast and broadcast, but not the reserved-for-future 240.0.0.0/4 range
+  (multicast only covers 224–239; broadcast only `255.255.255.255`). A target in
+  240–254.x is non-globally-routable and is now denied, consistent with the
+  guard's deny-non-public stance. Public space just below (223.x) stays allowed.
+  Covers both bare-v4 and IPv4-embedded-in-IPv6 (NAT64/6to4/compat) paths via the
+  shared `is_private_v4`. Tested.
+
 ### Fixed
 
 - **Entity search escapes the LIKE escape character.** The `search_entities`

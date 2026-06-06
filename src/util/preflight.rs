@@ -100,6 +100,10 @@ fn is_private_v4(v4: std::net::Ipv4Addr) -> bool {
         || v4.octets()[0] == 0
         // CGNAT (100.64.0.0/10)
         || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
+        // Class E "reserved for future use" (240.0.0.0/4, RFC 1112) — not
+        // globally routable, so an SSRF guard denies it (multicast 224/4 and the
+        // broadcast address are already covered above; this closes 240–254.x).
+        || v4.octets()[0] >= 240
 }
 
 /// Extract the IPv4 address embedded in a v6 address that the host may route to
@@ -269,6 +273,17 @@ mod tests {
         for ip in ["1.1.1.1", "8.8.8.8", "203.0.113.5", "13.107.42.14"] {
             assert!(!is_private_ip(ip), "expected {ip} public");
         }
+    }
+
+    #[test]
+    fn class_e_v4_rejected() {
+        // 240.0.0.0/4 is reserved/non-routable — an SSRF target there must be
+        // blocked, while genuine public space just below stays allowed.
+        for ip in ["240.0.0.1", "250.1.2.3", "255.255.255.254"] {
+            assert!(is_private_ip(ip), "expected {ip} private (Class E 240/4)");
+        }
+        // The public space just below the multicast/Class-E block stays allowed.
+        assert!(!is_private_ip("223.255.255.255"), "223.x is public");
     }
 
     #[test]
