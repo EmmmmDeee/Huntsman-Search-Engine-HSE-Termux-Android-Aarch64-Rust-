@@ -5,21 +5,28 @@
 //! Multiplier-tier pools (separate quotas, overlapping but distinct
 //! data corpora — combining them maximises coverage).
 //!
-//! Per-target endpoint routing (paid quota spent only where free can't reach):
+//! Per-target endpoint routing. The universal `/search` is the broadest, most
+//! comprehensive endpoint — it returns breach + stealer + external records
+//! unified in ONE paid call (with breach_count/stealer_count/external_count) —
+//! so it is the primary call for EVERY target kind. Per-kind add-ons only cover
+//! data `/search` does not return. (The standalone `/stealer` and
+//! `/breachhub/search` paths were removed: live-verified 404, and fully
+//! subsumed by `/search` — exactly the redundant "restricted searches" the
+//! broad endpoint supersedes.)
 //!
-//!   Email      → /search + /stealer + /breachhub + /network/email-check
-//!   Username   → /search + /stealer + /username/social + /username/history
-//!                + /breachhub  (+ discord/steam ID-resolution pivots)
-//!   Phone      → /search + /network/phone + /breachhub
-//!   Domain     → /domain/intel + /domain/whois
-//!   IpAddress  → /network/ip
-//!   FullName   → /search (auto-detect) + /breachhub
+//!   Email      → /search + /network/email-check (account/service map)
+//!   Username   → /search + /username/social + /username/history
+//!                (+ discord/steam ID-resolution pivots)
+//!   Phone      → /search + /network/phone (carrier/line enrichment)
+//!   Domain     → /search + /domain/intel + /domain/whois
+//!   IpAddress  → /search + /network/ip
+//!   FullName   → /search (auto-detect) — no add-on needed
 //!
 //! Single-origin presence checks (github/twitter/reddit/tiktok/roblox/xbox/
 //! minecraft) are deliberately NOT dispatched — the free `username_search`
 //! stack (600+ sites), `social_probe`, and `search_engines` scraping already
-//! cover those, so SeekNow's paid lookups go only to breach / stealer /
-//! username-history aggregation and cross-platform ID resolution. See the
+//! cover those, so SeekNow's paid lookups go only to the broad `/search`,
+//! username-history aggregation, and cross-platform ID resolution. See the
 //! `endpoints` submodule (`FREE_COVERED_SINGLE_ORIGIN` / `effective_plan`).
 //!
 //! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups (default 160).
@@ -194,16 +201,19 @@ impl Module for SeekNow {
         // concurrently (bounded by remaining scan + session budget). What
         // actually runs:
         //
-        //   Email     → stealer, breachhub, email-check
-        //   Username  → stealer, social (multi-platform aggregate, 1 call),
-        //               username-history, breachhub
+        // (breach + stealer + external records already arrived via the broad
+        // `/search` above; these add-ons only cover what `/search` does not):
+        //
+        //   Email     → email-check (account/service existence map)
+        //   Username  → social (multi-platform aggregate, 1 call),
+        //               username-history
         //               (+ discord/user + discord-to-roblox when the value
         //                parses as a Discord ID; + steam when a Steam ID —
         //                ID resolution, not single-site enumeration)
-        //   Phone     → phone_info, breachhub, search(typed phone)
+        //   Phone     → phone_info (carrier/line enrichment)
         //   Domain    → domain/intel, domain/whois
         //   IpAddress → network/ip
-        //   FullName  → /search auto + breachhub
+        //   FullName  → (none — `/search` auto-detect already covers it)
         //
         // The single-origin github/twitter/reddit/tiktok/roblox/xbox/minecraft
         // endpoints are filtered out — free `username_search` handles those, so

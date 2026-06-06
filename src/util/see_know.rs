@@ -3,9 +3,11 @@
 //!
 //! Endpoint surface (all under `https://see-know.eu/api/v1`):
 //!
-//!   POST /search                — universal search (auto-detects type)
-//!   GET  /stealer               — stealer-log credential search
-//!   GET  /breachhub/search      — breach record search
+//!   POST /search                — universal search: breach + stealer + external
+//!                                 records unified in one call, with
+//!                                 breach_count/stealer_count/external_count.
+//!                                 The broadest, most comprehensive endpoint, so
+//!                                 it is the primary call for every target kind.
 //!   GET  /network/email-check   — email existence + service map
 //!   GET  /network/ip            — IP geolocation + ASN
 //!   GET  /network/phone         — phone number enrichment
@@ -62,8 +64,8 @@ static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::XApiKey, 75,
 /// and the confidence of recursive searching. So each scan gets a 160-query
 /// envelope (env-tunable via `HUNTSMAN_SEEKNOW_SCAN_CAP`, runtime-overridable
 /// via `ScanOptions::seeknow_scan_cap`). A single Username seed alone plans up
-/// to 13 specialised endpoints (social aggregate, github, twitter, reddit,
-/// tiktok, history, breachhub, roblox, xbox, minecraft, + discord/steam pivots)
+/// to 11 specialised endpoints (social aggregate, github, twitter, reddit,
+/// tiktok, history, roblox, xbox, minecraft, + discord/steam pivots)
 /// on top of the universal `/search`; with depth expansion every discovered
 /// username/email/phone/domain consumes its own matrix, so a cap of 160 lets
 /// the full 18-endpoint pool fire across ~10 recursively-discovered pivots in
@@ -336,7 +338,7 @@ pub async fn steam_profile(key: &str, steam_id: &str) -> Result<Vec<Value>> {
     get_path(key, "gaming/steam", &[("id", steam_id)]).await
 }
 
-// Single-parameter GET endpoints (stealer, breachhub/search, domain/intel,
+// Single-parameter GET endpoints (domain/intel,
 // network/{ip,phone,email-check}, username/{github,twitter,reddit,tiktok,
 // social,history}, gaming/{roblox,xbox,minecraft}, domain/whois) carry no
 // behaviour beyond `get_path(path, &[(param, value)])`, so they are dispatched
