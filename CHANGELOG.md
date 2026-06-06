@@ -90,6 +90,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`disposable_check` brought up to the module spec.** The throwaway-email
+  verdict→entity mapping is extracted from `process` into the pure, IO-free
+  `build_email_entity`, and the stringly-typed `disposable` field is parsed
+  through `is_disposable` — affirmative-`true`-only and **fail-open**, so a
+  malformed verdict can no longer brand a real address as a throwaway. The
+  confidence split (disposable 0.20 vs legit 0.75) and the always-present
+  `disposable=<bool>` evidence attribute are now named constants and unit-tested
+  (verdict parsing, tags, confidence, evidence, and the disposable-<-legit
+  ordering invariant), replacing the two trivial accepts/cost tests. Also
+  declares `produces()` (Email) to match its peers. Behaviour-preserving.
 - **Codebase-wide dependency refresh.** Updated the full locked dependency graph
   to current versions and bumped the direct majors, all verified green (fmt,
   `clippy -D warnings`, the entire test suite, `cargo deny`, `cargo machete`,
