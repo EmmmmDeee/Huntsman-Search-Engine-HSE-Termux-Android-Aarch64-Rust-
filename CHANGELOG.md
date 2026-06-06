@@ -295,10 +295,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `field_str` helper (text passes through, numbers/bools are stringified,
   null/empty/missing → `None`). CKAN's envelope is a fixed API contract, not a
   per-portal shape, so the copies could only ever drift, never legitimately
-  differ — they now live once in `util::ckan` with a focused test module
-  (numeric-field stringification, `success=false`, lenient defaults). Future
-  CKAN-backed registers reuse it instead of re-deriving the parser.
-  Behaviour-preserving.
+  differ — they now live once in `util::ckan`, alongside a
+  `datastore_search_url` builder that url-encodes the full-text query (so a
+  name containing `&`/`=` can't inject extra parameters — previously re-derived
+  in each module's `query_url`). Covered by a focused test module
+  (numeric-field stringification, `success=false`, lenient defaults, query
+  encoding). Future CKAN-backed registers reuse the surface instead of
+  re-deriving the parser. Behaviour-preserving.
 - **Single source for the mobile-Chrome User-Agent.** The exact same
   Android/Chrome UA string was hard-coded in four places — `util::curl::UA_MOBILE`
   (canonical), `username_search`'s `BROWSER_UA`, `curl_client`'s `DEFAULT_UA`, and

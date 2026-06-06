@@ -53,6 +53,22 @@ pub fn field_str(rec: &Map<String, Value>, key: &str) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+/// Build a CKAN `datastore_search` URL: a full-text query `q` against
+/// `resource_id` on a portal's `action_base` (e.g.
+/// `https://data.gov.au/data/api/3/action`), capped at `limit` rows.
+///
+/// `q` is url-encoded, so a query containing `&`, `=`, spaces or other
+/// reserved characters can't break out of the value and inject extra query
+/// parameters — the one correctness property every CKAN caller needs, kept in
+/// one place.
+#[must_use]
+pub fn datastore_search_url(action_base: &str, resource_id: &str, q: &str, limit: usize) -> String {
+    format!(
+        "{action_base}/datastore_search?resource_id={resource_id}&q={}&limit={limit}",
+        crate::util::http::urlencode(q)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +132,21 @@ mod tests {
         // Records survive as raw JSON objects (numeric Amount kept as a number,
         // ready for field_str to stringify on demand).
         assert_eq!(field_str(&res.records[1], "Amount").as_deref(), Some("4.5"));
+    }
+
+    #[test]
+    fn datastore_search_url_encodes_the_query() {
+        let base = "https://data.gov.au/data/api/3/action";
+        let url = datastore_search_url(base, "abc-123", "Red Cross", 20);
+        assert_eq!(
+            url,
+            "https://data.gov.au/data/api/3/action/datastore_search?resource_id=abc-123&q=Red+Cross&limit=20"
+        );
+        // A query carrying CKAN's own delimiters must be encoded so it can't
+        // inject extra parameters: `&` → %26, `=` → %3D (not a literal `&q=`).
+        let inject = datastore_search_url(base, "r", "a&limit=9999&x=y", 5);
+        assert!(inject.ends_with("&q=a%26limit%3D9999%26x%3Dy&limit=5"));
+        assert_eq!(inject.matches("&limit=").count(), 1, "only the real limit");
     }
 
     #[test]

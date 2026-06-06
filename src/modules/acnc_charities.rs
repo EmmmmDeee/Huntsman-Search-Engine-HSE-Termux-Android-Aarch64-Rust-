@@ -38,10 +38,14 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::ckan::{Response as CkanResp, field_str};
-use crate::util::http::{fetch_json, urlencode};
+use crate::util::http::fetch_json;
 use crate::util::url_util::host_from_url;
 
 const SRC: &str = "acnc_charities";
+
+/// CKAN action-endpoint base for `data.gov.au` (note the extra `/data` path
+/// segment vs. other portals).
+const ACTION_BASE: &str = "https://data.gov.au/data/api/3/action";
 
 /// CKAN resource id of the "ACNC Register of Australian charities" CSV datastore
 /// on `data.gov.au`. Stable per-resource; if the ACNC ever re-publishes the
@@ -126,10 +130,7 @@ fn record_is_exact(rec: &Map<String, Value>, query: &str) -> bool {
 
 /// The datastore_search URL for one full-text query.
 fn query_url(q: &str) -> String {
-    format!(
-        "https://data.gov.au/data/api/3/action/datastore_search?resource_id={RESOURCE_ID}&q={}&limit={MAX_RECORDS}",
-        urlencode(q)
-    )
+    crate::util::ckan::datastore_search_url(ACTION_BASE, RESOURCE_ID, q, MAX_RECORDS)
 }
 
 /// Build the geocodable registered-address string from the locality fields

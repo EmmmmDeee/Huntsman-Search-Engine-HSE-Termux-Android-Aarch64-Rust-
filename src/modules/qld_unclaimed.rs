@@ -29,10 +29,13 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::ckan::{Response as CkanResp, field_str};
-use crate::util::http::{fetch_json, urlencode};
+use crate::util::http::fetch_json;
 use crate::util::postcode_au::Locality;
 
 const SRC: &str = "qld_unclaimed";
+
+/// CKAN action-endpoint base for the Queensland Government Open Data Portal.
+const ACTION_BASE: &str = "https://www.data.qld.gov.au/api/3/action";
 
 /// CKAN resource id of the Public Trustee "Unclaimed monies" register on
 /// `data.qld.gov.au`. Stable per-resource; if the portal ever re-publishes the
@@ -104,10 +107,7 @@ fn owner_matches_full_name(owner: &str, seed: &str) -> bool {
 
 /// The datastore_search URL for one full-text query.
 fn query_url(q: &str) -> String {
-    format!(
-        "https://www.data.qld.gov.au/api/3/action/datastore_search?resource_id={RESOURCE_ID}&q={}&limit={MAX_RECORDS}",
-        urlencode(q)
-    )
+    crate::util::ckan::datastore_search_url(ACTION_BASE, RESOURCE_ID, q, MAX_RECORDS)
 }
 
 /// Merge an exact-name (`primary`) record set *ahead of* a broad surname
