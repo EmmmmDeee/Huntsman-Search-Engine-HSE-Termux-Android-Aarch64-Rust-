@@ -1918,7 +1918,7 @@ mod tests {
             "table|sqlite_sequence",
             // `PRAGMA optimize` (run at open — see `Store::open`) materialises
             // the query-planner statistics tables. The bundled SQLite shipped
-            // with rusqlite ≥0.40 creates both stat1 and stat4 here; earlier
+            // with rusqlite ≥0.39 creates both stat1 and stat4 here; very early
             // bundles left a fresh DB without them. Benign — these only feed the
             // planner, no app data, and improve query plans on Termux.
             "table|sqlite_stat1",

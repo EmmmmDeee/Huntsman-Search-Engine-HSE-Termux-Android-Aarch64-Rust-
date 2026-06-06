@@ -380,33 +380,43 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
             for t in &txts {
                 let t = t.trim_matches('"');
                 let b = t.as_bytes();
-                if b.len() >= 6 && b[..6].eq_ignore_ascii_case(b"v=spf1") {
+                if crate::util::spf::is_spf(t) {
                     dom.tag("spf");
-                    for part in t.split_whitespace() {
-                        if let Some(ip) = part.strip_prefix("ip4:") {
-                            let ip = ip.split('/').next().unwrap_or(ip);
-                            if !ip.is_empty() {
+                    for member in crate::util::spf::members(t) {
+                        match member {
+                            crate::util::spf::Member::Ip(ip) => {
                                 let mut ie =
                                     Entity::new(EntityKind::IpAddress, ip, 0.75, &ctx.scan_id);
                                 ie.tag("dns");
                                 ie.tag("spf");
                                 ie.add_evidence(Evidence::new(
                                     SRC,
-                                    format!("SPF ip4 for {domain}"),
+                                    format!("SPF authorised sender for {domain}"),
                                 ));
                                 entities.push(ie);
                             }
-                        } else if let Some(inc) = part.strip_prefix("include:")
-                            && inc.contains('.')
-                        {
-                            let mut de = Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
-                            de.tag("dns");
-                            de.tag("spf-include");
-                            de.add_evidence(Evidence::new(
-                                SRC,
-                                format!("SPF include for {domain}"),
-                            ));
-                            entities.push(de);
+                            crate::util::spf::Member::Include(inc) => {
+                                let mut de =
+                                    Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
+                                de.tag("dns");
+                                de.tag("spf-include");
+                                de.add_evidence(Evidence::new(
+                                    SRC,
+                                    format!("SPF include for {domain}"),
+                                ));
+                                entities.push(de);
+                            }
+                            crate::util::spf::Member::Redirect(red) => {
+                                let mut de =
+                                    Entity::new(EntityKind::Domain, red, 0.65, &ctx.scan_id);
+                                de.tag("dns");
+                                de.tag("spf-redirect");
+                                de.add_evidence(Evidence::new(
+                                    SRC,
+                                    format!("SPF redirect for {domain}"),
+                                ));
+                                entities.push(de);
+                            }
                         }
                     }
                 } else if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"v=dkim1") {
@@ -414,37 +424,15 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
                 } else if b.len() >= 8 && b[..8].eq_ignore_ascii_case(b"v=dmarc1") {
                     dom.tag("dmarc");
                     let txt = String::from_utf8_lossy(b);
-                    for part in txt.split(';') {
-                        let part = part.trim();
-                        if let Some(uri) = part
-                            .strip_prefix("rua=")
-                            .or_else(|| part.strip_prefix("ruf="))
-                        {
-                            for addr in uri.split(',') {
-                                let addr = addr.trim();
-                                if let Some(email) = addr.strip_prefix("mailto:") {
-                                    let email = email.trim();
-                                    if email.contains('@') && email.len() >= 5 {
-                                        let mut ee = Entity::new(
-                                            EntityKind::Email,
-                                            email,
-                                            0.72,
-                                            &ctx.scan_id,
-                                        );
-                                        ee.tag("dmarc-report");
-                                        ee.tag("dns");
-                                        ee.add_evidence(
-                                            Evidence::new(
-                                                SRC,
-                                                format!("DMARC report address for {domain}"),
-                                            )
-                                            .with_attr("record_type", "DMARC"),
-                                        );
-                                        dmarc_emails.push(ee);
-                                    }
-                                }
-                            }
-                        }
+                    for email in dmarc_report_addresses(&txt) {
+                        let mut ee = Entity::new(EntityKind::Email, email, 0.72, &ctx.scan_id);
+                        ee.tag("dmarc-report");
+                        ee.tag("dns");
+                        ee.add_evidence(
+                            Evidence::new(SRC, format!("DMARC report address for {domain}"))
+                                .with_attr("record_type", "DMARC"),
+                        );
+                        dmarc_emails.push(ee);
                     }
                 } else if b.len() >= 24 && b[..24].eq_ignore_ascii_case(b"google-site-verification")
                 {
@@ -734,9 +722,12 @@ fn reverse_ip(ip: &str) -> Option<String> {
     }
 }
 
-/// SOA RNAME field is encoded as `local-part.domain` (no `@` allowed in
-/// DNS labels). Decode by replacing the first unescaped `.` with `@`.
-/// Returns empty string when the input doesn't look like an email.
+/// SOA RNAME field is encoded as `local-part.domain` (no `@` allowed in DNS
+/// labels), with any literal `.` in the local part backslash-escaped (RFC 1035
+/// §8). Decode by splitting on the first *unescaped* `.` into `@`, then
+/// **unescaping** the local part so `hostmaster\.ops.example.com` becomes
+/// `hostmaster.ops@example.com`. Returns an empty string when the input doesn't
+/// look like an email.
 fn soa_rname_to_email(rname: &str) -> String {
     if rname.is_empty() || !rname.contains('.') {
         return String::new();
@@ -754,11 +745,72 @@ fn soa_rname_to_email(rname: &str) -> String {
             if local.is_empty() || domain.is_empty() {
                 return String::new();
             }
-            return format!("{local}@{domain}");
+            return format!("{}@{domain}", unescape_dns_label(local));
         }
         i += 1;
     }
     String::new()
+}
+
+/// Decode DNS presentation-format escapes in a label: `\DDD` (a decimal byte) or
+/// `\X` (the literal char `X`, covering the common `\.` and `\\`). A trailing
+/// lone `\` is dropped. **Pure**.
+fn unescape_dns_label(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        // `\DDD` decimal escape (exactly three digits, ≤ 255).
+        if i + 3 < bytes.len()
+            && bytes[i + 1..i + 4].iter().all(u8::is_ascii_digit)
+            && let Ok(n) = std::str::from_utf8(&bytes[i + 1..i + 4])
+                .unwrap_or("")
+                .parse::<u16>()
+            && n <= 255
+        {
+            out.push(n as u8);
+            i += 4;
+        } else if i + 1 < bytes.len() {
+            out.push(bytes[i + 1]); // `\X` → literal X (e.g. `\.` → `.`)
+            i += 2;
+        } else {
+            i += 1; // trailing lone backslash — drop it
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Report-destination emails from a DMARC record's `rua=`/`ruf=` tags. **Pure**.
+/// Each tag is a comma-separated list of `mailto:` URIs, and each URI may carry
+/// an optional `!<size>` maximum-report-size suffix (RFC 7489 §6.2,
+/// e.g. `mailto:dmarc@x.com!10m`) which is stripped before the address is taken.
+/// Only syntactically plausible addresses (contain `@`, length ≥ 5) are returned.
+fn dmarc_report_addresses(txt: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for part in txt.split(';') {
+        let Some(uri_list) = part
+            .trim()
+            .strip_prefix("rua=")
+            .or_else(|| part.trim().strip_prefix("ruf="))
+        else {
+            continue;
+        };
+        for addr in uri_list.split(',') {
+            if let Some(email) = addr.trim().strip_prefix("mailto:") {
+                // Drop the optional "!size" report-size limit (RFC 7489 §6.2).
+                let email = email.split('!').next().unwrap_or(email).trim();
+                if email.contains('@') && email.len() >= 5 {
+                    out.push(email);
+                }
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -803,6 +855,59 @@ mod tests {
         );
         assert_eq!(soa_rname_to_email(""), "");
         assert_eq!(soa_rname_to_email("notanemail"), "");
+    }
+
+    #[test]
+    fn soa_rname_unescapes_dotted_local_part() {
+        // A literal dot in the mailbox local part is `\.`-escaped in the RNAME;
+        // the split must skip it AND the output must drop the backslash.
+        assert_eq!(
+            soa_rname_to_email(r"hostmaster\.ops.example.com"),
+            "hostmaster.ops@example.com"
+        );
+        // `\DDD` decimal escape (46 = '.') decodes the same way.
+        assert_eq!(
+            soa_rname_to_email(r"first\046last.example.org"),
+            "first.last@example.org"
+        );
+    }
+
+    #[test]
+    fn unescape_dns_label_handles_literal_and_decimal_escapes() {
+        assert_eq!(unescape_dns_label(r"a\.b"), "a.b");
+        assert_eq!(unescape_dns_label(r"a\\b"), r"a\b");
+        assert_eq!(unescape_dns_label(r"x\046y"), "x.y"); // \046 = '.'
+        assert_eq!(unescape_dns_label("plain"), "plain");
+        assert_eq!(unescape_dns_label(r"trailing\"), "trailing"); // lone backslash dropped
+    }
+
+    #[test]
+    fn dmarc_report_addresses_extracts_rua_ruf_and_strips_size_suffix() {
+        // Both rua and ruf, comma-separated, with the RFC 7489 §6.2 "!size"
+        // suffix on one URI that must be stripped to a clean address.
+        let got = dmarc_report_addresses(
+            "v=DMARC1; p=reject; rua=mailto:agg@example.com!10m,mailto:agg2@example.net; \
+             ruf=mailto:forensic@example.com; pct=100",
+        );
+        assert_eq!(
+            got,
+            vec![
+                "agg@example.com",
+                "agg2@example.net",
+                "forensic@example.com"
+            ]
+        );
+    }
+
+    #[test]
+    fn dmarc_report_addresses_skips_non_mailto_and_implausible() {
+        // https:// report URIs, a bare mailto:, and a too-short address are all
+        // skipped; no rua/ruf at all yields nothing.
+        assert!(
+            dmarc_report_addresses("v=DMARC1; rua=https://dmarc.example.com/report").is_empty()
+        );
+        assert!(dmarc_report_addresses("v=DMARC1; rua=mailto:,mailto:a@b").is_empty());
+        assert!(dmarc_report_addresses("v=DMARC1; p=none").is_empty());
     }
 
     // -- Subdomain brute tests ----------------------------------------------------

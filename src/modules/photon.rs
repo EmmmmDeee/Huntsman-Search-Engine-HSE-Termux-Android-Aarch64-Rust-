@@ -75,10 +75,7 @@ struct Props {
     osm_value: Option<String>,
 }
 
-/// Trimmed, non-empty view of an optional string field.
-fn nonempty(o: &Option<String>) -> Option<&str> {
-    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
-}
+use crate::util::str_util::nonempty;
 
 /// Join the present address parts in order, dropping case-insensitive duplicates
 /// (the place `name` is often also the `city`, e.g. "Sydney").

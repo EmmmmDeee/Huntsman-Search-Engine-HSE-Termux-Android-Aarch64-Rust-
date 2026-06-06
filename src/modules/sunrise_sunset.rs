@@ -52,6 +52,80 @@ struct SsResults {
     astronomical_twilight_end: Option<String>,
 }
 
+/// Build the chronolocation entity from a solar-phase result. **Pure** (no
+/// network/IO): records the queried date/lat/lon plus every present solar
+/// timestamp (sunrise/sunset/solar-noon, the three twilight bands) and the day
+/// length, normalising `day_length` from either its numeric (seconds) or string
+/// form. `coord` is the original target value (kept verbatim as the entity).
+fn build_solar_entity(
+    coord: &str,
+    lat: f64,
+    lon: f64,
+    today: &str,
+    results: &SsResults,
+    scan_id: &str,
+) -> Entity {
+    let mut entity = Entity::new(EntityKind::Coordinates, coord, 0.55, scan_id);
+    entity.tag("sunrise-sunset");
+    entity.tag("chronolocation");
+    entity.tag("geoint");
+
+    let mut ev = Evidence::new(
+        SRC,
+        format!("Solar phases for {lat:.4},{lon:.4} on {today}"),
+    )
+    .with_attr("date", today)
+    .with_attr("latitude", format!("{lat:.6}"))
+    .with_attr("longitude", format!("{lon:.6}"));
+
+    for (attr, val) in [
+        ("sunrise_utc", results.sunrise.as_deref()),
+        ("sunset_utc", results.sunset.as_deref()),
+        ("solar_noon_utc", results.solar_noon.as_deref()),
+        (
+            "civil_twilight_begin",
+            results.civil_twilight_begin.as_deref(),
+        ),
+        ("civil_twilight_end", results.civil_twilight_end.as_deref()),
+        (
+            "nautical_twilight_begin",
+            results.nautical_twilight_begin.as_deref(),
+        ),
+        (
+            "nautical_twilight_end",
+            results.nautical_twilight_end.as_deref(),
+        ),
+        (
+            "astronomical_twilight_begin",
+            results.astronomical_twilight_begin.as_deref(),
+        ),
+        (
+            "astronomical_twilight_end",
+            results.astronomical_twilight_end.as_deref(),
+        ),
+    ] {
+        if let Some(v) = val {
+            ev = ev.with_attr(attr, v);
+        }
+    }
+
+    // `day_length` is a number (seconds) on the formatted=0 API but a string on
+    // the default endpoint — accept either.
+    if let Some(v) = &results.day_length {
+        let dl = match v {
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::String(s) => s.clone(),
+            _ => String::new(),
+        };
+        if !dl.is_empty() {
+            ev = ev.with_attr("day_length_s", dl);
+        }
+    }
+
+    entity.add_evidence(ev);
+    entity
+}
+
 #[async_trait]
 impl Module for SunriseSunset {
     fn name(&self) -> &'static str {
@@ -116,60 +190,14 @@ impl Module for SunriseSunset {
         };
 
         let mut result = ModuleResult::new();
-
-        let mut entity = Entity::new(EntityKind::Coordinates, &target.value, 0.55, &ctx.scan_id);
-        entity.tag("sunrise-sunset");
-        entity.tag("chronolocation");
-        entity.tag("geoint");
-
-        let mut ev = Evidence::new(
-            SRC,
-            format!("Solar phases for {lat:.4},{lon:.4} on {today}"),
-        )
-        .with_attr("date", &today)
-        .with_attr("latitude", format!("{lat:.6}"))
-        .with_attr("longitude", format!("{lon:.6}"));
-
-        if let Some(v) = results.sunrise.as_deref() {
-            ev = ev.with_attr("sunrise_utc", v);
-        }
-        if let Some(v) = results.sunset.as_deref() {
-            ev = ev.with_attr("sunset_utc", v);
-        }
-        if let Some(v) = results.solar_noon.as_deref() {
-            ev = ev.with_attr("solar_noon_utc", v);
-        }
-        if let Some(v) = &results.day_length {
-            let dl = match v {
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::String(s) => s.clone(),
-                _ => String::new(),
-            };
-            if !dl.is_empty() {
-                ev = ev.with_attr("day_length_s", dl);
-            }
-        }
-        if let Some(v) = results.civil_twilight_begin.as_deref() {
-            ev = ev.with_attr("civil_twilight_begin", v);
-        }
-        if let Some(v) = results.civil_twilight_end.as_deref() {
-            ev = ev.with_attr("civil_twilight_end", v);
-        }
-        if let Some(v) = results.nautical_twilight_begin.as_deref() {
-            ev = ev.with_attr("nautical_twilight_begin", v);
-        }
-        if let Some(v) = results.nautical_twilight_end.as_deref() {
-            ev = ev.with_attr("nautical_twilight_end", v);
-        }
-        if let Some(v) = results.astronomical_twilight_begin.as_deref() {
-            ev = ev.with_attr("astronomical_twilight_begin", v);
-        }
-        if let Some(v) = results.astronomical_twilight_end.as_deref() {
-            ev = ev.with_attr("astronomical_twilight_end", v);
-        }
-
-        entity.add_evidence(ev);
-        result.push(entity);
+        result.push(build_solar_entity(
+            &target.value,
+            lat,
+            lon,
+            &today,
+            &results,
+            &ctx.scan_id,
+        ));
         Ok(result)
     }
 }
@@ -234,5 +262,68 @@ mod tests {
         let res = r.results.unwrap();
         assert!(res.sunrise.is_some());
         assert!(res.sunset.is_some());
+    }
+
+    #[test]
+    fn civil_from_days_matches_known_dates() {
+        // Unix epoch and a handful of known day-counts (days since 1970-01-01).
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+        assert_eq!(civil_from_days(31), (1970, 2, 1));
+        // 2000-02-29 (leap day) is day 11016.
+        assert_eq!(civil_from_days(11016), (2000, 2, 29));
+        // 2024-06-16 is day 19890.
+        assert_eq!(civil_from_days(19890), (2024, 6, 16));
+    }
+
+    fn results(json: &str) -> SsResults {
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
+        e.evidence[0].attributes.get(k).map(String::as_str)
+    }
+
+    #[test]
+    fn solar_entity_records_phases_and_numeric_day_length() {
+        let res = results(
+            r#"{
+                "sunrise":"2024-06-15T20:00:00+00:00",
+                "sunset":"2024-06-16T07:00:00+00:00",
+                "solar_noon":"2024-06-16T01:30:00+00:00",
+                "day_length":39600,
+                "civil_twilight_begin":"2024-06-15T19:30:00+00:00"
+            }"#,
+        );
+        let e = build_solar_entity("-33.8,151.2", -33.8, 151.2, "2024-06-16", &res, "s");
+        assert_eq!(e.kind, EntityKind::Coordinates);
+        assert!(e.has_tag("sunrise-sunset") && e.has_tag("chronolocation") && e.has_tag("geoint"));
+        assert!((e.confidence - 0.55).abs() < 1e-9);
+        assert_eq!(attr(&e, "date"), Some("2024-06-16"));
+        assert_eq!(attr(&e, "latitude"), Some("-33.800000"));
+        assert_eq!(attr(&e, "longitude"), Some("151.200000"));
+        assert_eq!(attr(&e, "sunrise_utc"), Some("2024-06-15T20:00:00+00:00"));
+        assert_eq!(
+            attr(&e, "solar_noon_utc"),
+            Some("2024-06-16T01:30:00+00:00")
+        );
+        assert_eq!(
+            attr(&e, "civil_twilight_begin"),
+            Some("2024-06-15T19:30:00+00:00")
+        );
+        // Numeric day_length normalised to a string.
+        assert_eq!(attr(&e, "day_length_s"), Some("39600"));
+    }
+
+    #[test]
+    fn solar_entity_accepts_string_day_length_and_omits_absent_phases() {
+        // The default (formatted) endpoint returns day_length as "11:00:00".
+        let res = results(r#"{"sunrise":"6:00:00 AM","day_length":"11:00:00"}"#);
+        let e = build_solar_entity("0,0", 0.0, 0.0, "2024-01-01", &res, "s");
+        assert_eq!(attr(&e, "day_length_s"), Some("11:00:00"));
+        assert_eq!(attr(&e, "sunrise_utc"), Some("6:00:00 AM"));
+        // Phases the response omitted must not appear.
+        assert_eq!(attr(&e, "sunset_utc"), None);
+        assert_eq!(attr(&e, "nautical_twilight_begin"), None);
     }
 }

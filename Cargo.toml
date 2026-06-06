@@ -32,7 +32,14 @@ hex                = "0.4"
 # Termux/Linux/CI. A 0.13 move must re-create that with `rustls-no-provider` + a
 # hand-built ClientConfig, and be validated on-device first.
 reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-rusqlite           = { version = "0.40", features = ["bundled"] }
+# Pinned to 0.39 ON PURPOSE — do NOT bump to 0.40 without a toolchain audit.
+# 0.40 pulls `libsqlite3-sys` 0.38, whose build script uses the unstable
+# `cfg_select!` macro (rust-lang/rust#115585). That fails to compile on the
+# project's MSRV (1.88) and on current stable toolchains that have not yet
+# stabilised the feature — a hard build break on the primary target. 0.39 keeps
+# `libsqlite3-sys` 0.37, which builds on 1.88+. A 0.40 move must wait until
+# `cfg_select!` is stable on/below our MSRV.
+rusqlite           = { version = "0.39", features = ["bundled"] }
 clap               = { version = "4",    features = ["derive", "env"] }
 regex              = "1"
 thiserror          = "2"

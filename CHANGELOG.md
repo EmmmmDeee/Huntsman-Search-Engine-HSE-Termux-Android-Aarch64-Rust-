@@ -12,6 +12,113 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`validate_phone_e164` rejects a country code beginning with `0`.** The
+  validator's doc promised it checks "the country code in the conventional 1-3
+  digit range", but the implementation only required digits + a length of 8–15, so
+  `+0123456789` passed despite being invalid E.164 (ITU-T E.164 country codes never
+  begin with `0`). Added the leading-zero check (new `e164.cc_leading_zero`
+  reason), aligning the code with its documented contract. Unit-tested.
+- **`parse_address` no longer mistakes a street number for a postcode.** The
+  postal-code scanner examined every whitespace token of every comma-part, so a
+  multi-digit street number — the *leading* token of a street part like
+  `1234 Smith St` — was captured as `postal_code` (a plausible-but-wrong 4-digit
+  AU postcode / 5-digit US ZIP). A real postcode trails its part (`QLD 4000`,
+  `4000`), so only the **last** token of each part is now a candidate; the
+  street-name tokens that follow a leading number disqualify it. Address parsing
+  feeds geocode/overpass, so this removes a wrong structured field from `Address`
+  entities. Regression-tested (incl. a street number that coincides with a real
+  trailing postcode), and `util::geohash` gains coverage for `haversine_km` and
+  `reverse_country_iso`'s US-subregion aliasing.
+- **Registrable-domain extraction now handles multi-label public suffixes.**
+  `web_crawler` and `search_engines` each carried an identical naive "last two
+  labels" extractor, so `shop.example.com.au` collapsed to the bare suffix
+  `com.au` and `a.b.co.uk` to `co.uk` — mis-grouping **every** `.com.au`/`.org.au`/
+  `.gov.au`/`.co.uk` site, which for an AU-focused tool means the external-domain
+  set a crawl produces was frequently wrong. Both now call one shared, tested
+  `util::domains::registrable_domain` backed by a small curated multi-label-suffix
+  table (the `.au` second levels + common international ones) — deliberately *not*
+  a full Public Suffix List, honouring the project's no-heavyweight-dependency
+  constraint while fixing the cases its data actually contains. (This revisits a
+  previously-documented "deliberate 2-label, no-PSL" simplification: the original
+  objection was to the PSL dependency, which a ~40-entry curated table does not
+  introduce.) The suffix table is asserted sorted for its `binary_search`. An SPF record
+  can delegate its whole policy to another domain via the `redirect=` modifier
+  (RFC 7208 §6) — a genuine related-domain pivot that `dns_intel`/`doh_resolver`
+  previously ignored, just as they had ignored `ip6:`. `util::spf::members` gains a
+  `Redirect` variant (and the `Member` `match` in both modules is now exhaustive by
+  construction, so neither can silently skip it again); the target is emitted as a
+  `Domain` tagged `spf-redirect`. The include/redirect domain filter also now skips
+  SPF macro members (`%{…}`), which never resolve to a literal domain. Unit-tested.
+- **`search_engines` AU region detection no longer false-positives on US `61x`
+  phone numbers.** `detect_region` treated any phone whose digits merely *started*
+  with `61` as Australian (country code 61), so a US number in the `610`/`612`/…
+  area codes (`610-555-1234` → `6105551234`) wrongly triggered AU-specific dorks
+  when regional search was enabled. The bare-`61` path now requires full
+  international length (61 + 9 national digits = 11) to read as the country code;
+  `+61` stays unambiguous. Unit-tested against a US `610` number and AU forms.
+- **`hse import` no longer panics displaying a multi-byte entity value.** The
+  text listing truncated each value with a byte slice `&value[..len.min(70)]`;
+  since an entity value is arbitrary text (a non-ASCII name/address), a value over
+  70 bytes whose 70th byte fell mid-codepoint would panic the command. Switched to
+  the existing char-boundary-safe `str_util::truncate_safe`. (Found by sweeping the
+  tree for the same byte-slice class as the username-variant panic below; the
+  other `&s[..len.min(N)]` sites all operate on ASCII hex IDs / geohashes / keys.)
+- **`search_engines` username-variant generation no longer panics on a
+  multi-byte handle.** `generate_username_variants` produced its truncation
+  variant with a byte slice `lower[..len-1]`, which panics when the handle ends in
+  a multi-byte codepoint (e.g. `andré`) by cutting mid-character — the same
+  boundary hazard the module's name-dork builder already guards against. The last
+  *char* is now dropped instead. The previously-untested 473-line `queries.rs`
+  gains coverage of separator swaps, trailing-digit and truncation variants, the
+  digit-terminated skip, multibyte non-panic (incl. an all-non-ASCII handle), and
+  `detect_region`'s Australian-seed detection.
+- **`search_engines` family-name extraction now works for `initial.surname@`
+  emails.** `extract_family_names` derived the surname from an `Email` target by
+  dropping the first character (the likely first-initial), but for the very common
+  `j.smith@…` / `j_smith@…` forms it kept the separator — `lastname` became
+  `".smith"`, which never equalled the alphanumeric-trimmed words it is compared
+  against, so **no household/family leads were ever produced for those addresses**.
+  The leading separator is now stripped (`j.smith` → `smith`); `jsmith` is
+  unchanged. The previously-untested function (293-line `extract.rs`) gains unit
+  coverage of the FullName path, both email forms, the short-surname rejection,
+  multibyte-surname title-casing/dedup, and the non-applicable kinds.
+- **`doh_resolver` now reconstructs chunked (multi-string) TXT records.** A TXT
+  record is one or more character-strings (RFC 1035 §3.3.14); the DoH JSON
+  resolvers return a multi-string record as space-separated double-quoted chunks
+  (`"v=spf1 ip4:… " "include:… -all"`). The old `trim_matches('"')` stripped only
+  the outer quotes, leaving stray `" "` boundaries that mangled the token at each
+  chunk split — so a long (chunked) SPF record lost members. A new pure
+  `unquote_txt` concatenates the chunk contents with no separator (per the RFC),
+  decoding `\"`/`\\` escapes; bare single strings pass through. Unit-tested,
+  including a chunked SPF record parsing end-to-end into its ip4 + include members.
+- **`dns_intel` SOA-RNAME→email now unescapes the local part (RFC 1035 §8).** The
+  decoder correctly *skipped* a backslash-escaped dot when finding the local-part /
+  domain split, but never removed the escaping from the result — so
+  `hostmaster\.ops.example.com` produced `hostmaster\.ops@example.com` (stray
+  backslash) instead of `hostmaster.ops@example.com`. A new pure
+  `unescape_dns_label` decodes both `\X` literal escapes (the common `\.`) and
+  `\DDD` decimal byte escapes; both it and the dotted-local-part path are
+  unit-tested.
+- **`dns_intel` DMARC report addresses now strip the RFC 7489 `!size` suffix.** A
+  DMARC `rua=`/`ruf=` report URI may be suffixed with an optional maximum report
+  size (`mailto:dmarc@example.com!10m`, RFC 7489 §6.2); the parser kept it
+  verbatim, so the surfaced `Email` entity was malformed (`dmarc@example.com!10m`).
+  The `rua`/`ruf` extraction is pulled into the pure, unit-tested
+  `dmarc_report_addresses` (splits the size suffix, keeps only `mailto:` URIs with
+  a plausible address), replacing the inline loop in `process`.
+- **SPF mechanism parsing unified into `util::spf`, fixing two divergences.**
+  `dns_intel` and `doh_resolver` each hand-rolled a `v=spf1` parser, and they had
+  already drifted: `dns_intel` matched the version tag case-insensitively (correct
+  per RFC 7208 §4.5) while `doh_resolver` used a case-sensitive `starts_with`, and
+  **both silently dropped every `ip6:` mechanism** despite the modules tagging
+  A/AAAA results `ipv4`/`ipv6`. Both now call one tested `util::spf` primitive
+  (`is_spf` + a `members` iterator yielding `ip4:`/`ip6:` addresses — CIDR stripped,
+  IPv6 colons preserved — and dotted `include:` domains, skipping bare/blank
+  mechanisms). `doh_resolver` thereby gains case-insensitive SPF detection and both
+  modules gain IPv6 authorised-sender extraction. Each module keeps its own
+  dedup/entity/tagging; the IP evidence label is corrected to "SPF authorised
+  sender".
+
 - **Correlation rule AU-038 — verified cross-platform identity.** `search_engines`
   tags a `Url` `confirmed-profile` when the searched handle is the exact path on a
   canonical social host (the target's own, engine-verified profile). AU-038 fires
@@ -90,6 +197,211 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Guarded three SPF/address parse paths against blank-value entities** (PR #104
+  review). `doh_resolver` now skips a bare `ip4:` / `ip4:/24` (empty IP) and
+  requires SPF `include:` hosts to be non-empty and dotted — matching the
+  MX/NS/CNAME rule its own doc promised; `opencorporates` trims the registered
+  address before the length-floor check so a whitespace-only address can't
+  normalise into a blank `Address` entity. Each is covered by a new unit test.
+- **Factored URL host extraction onto a shared `url_util::host_only` primitive.**
+  `host_from_url` and the inline scheme/path/port stripping in `wayback` and
+  `whois` each re-implemented the same parse; they now share one borrowing,
+  policy-free `host_only(&str) -> &str` (strip scheme, drop path + port), with the
+  case-fold/dot-requirement layered on only where each caller needs it
+  (`host_from_url` lowercases and requires a dot; `wayback` lowercases; `whois`
+  keeps the host verbatim). Unit-tested. Behaviour-preserving.
+- **De-duplicated the `nonempty` optional-string helper into `util::str_util`.**
+  Seven modules (`proxycurl`, `domainsdb`, `seon`, `epieos`, `bgpview`, `photon`,
+  `threatfox`) each carried a byte-identical private
+  `nonempty(&Option<String>) -> Option<&str>` (trim + treat-blank-as-absent); they
+  now share one `#[must_use]`, unit-tested definition, so the "surface the value
+  only if the upstream actually sent one" semantics can't drift between providers.
+  Behaviour-preserving.
+- **`mylnikov` brought up to the module spec.** The range→confidence banding and
+  the BSSID-location entity assembly are extracted out of `process` into the pure,
+  IO-free `confidence_for_range` and `build_location_entity` (the latter folding in
+  the coordinate-validity gate and returning `None` for missing/invalid fixes).
+  Adds unit coverage of every confidence band at its exact boundary (incl. the
+  missing-range default), the high-confidence entity build with range evidence,
+  the missing-range attribute omission, and rejection of missing-component /
+  Null-Island / out-of-range coordinates. Behaviour-preserving.
+- **`doh_resolver` brought up to the module spec.** The ~100-line per-record-type
+  classifier (the deeply-nested A/AAAA/MX/NS/TXT-SPF/CNAME matcher) and the
+  target-domain resolution are extracted out of `process` into the pure, IO-free
+  `records_for_type` and `target_domain`, with the queried record set lifted to a
+  named constant (`RECORD_TYPES`). `process` keeps only the per-type fetch loop and
+  cancellation. Adds unit coverage of URL/domain resolution, A/AAAA IP tagging, the
+  MX last-field/dot rules, SPF `ip4:`/`include:` extraction (with CIDR stripping
+  and non-SPF TXT ignored), NS/CNAME trailing-dot trimming, and the
+  type-prefixed cross-record dedup (an A-record IP and an SPF `ip4:` of the same
+  value stay distinct while intra-run repeats collapse). Behaviour-preserving.
+- **`overpass` brought up to the module spec.** The OSM-node infrastructure
+  classification and the entity fan-out are extracted out of `process` into the
+  pure, IO-free `classify_element` (tags → category, with the six discriminating
+  tag-pairs collapsed behind one `is(k, v)` helper) and `build_entities` (the
+  summary `Coordinates` entity carrying the node count + per-category breakdown,
+  plus one entity per located node), with the per-node cap promoted to a named
+  constant (`MAX_NODES`). Adds unit coverage of every classification category
+  (including the generic fallback), the summary+nodes emission with deterministic
+  category breakdown and name/operator/osm_id evidence, and the
+  cap-nodes-but-count-all-in-summary behaviour. Behaviour-preserving.
+- **`ipinfo` brought up to the module spec.** The five-entity fan-out
+  (`Coordinates` from a non-null-island `loc`, `Address` from city/region/country,
+  `Organisation` + the leading `Asn` parsed from the `org` string, and the PTR
+  `Domain` from a dotted `hostname`) is extracted out of `process` into the pure,
+  IO-free `build_entities`, with the null-island coordinate threshold promoted to
+  a named constant (`MIN_COORD_MAGNITUDE`). Adds unit coverage of the full
+  five-entity record, null-island/sub-threshold `loc` rejection, the region-absent
+  address form, an `org` without an `AS…` prefix yielding no `Asn`, and a dotless
+  hostname not becoming a `Domain`. Behaviour-preserving.
+- **`sunrise_sunset` brought up to the module spec.** The ~55-line solar-phase
+  entity assembly is extracted out of `process` into the pure, IO-free
+  `build_solar_entity` (date/lat/lon plus every present timestamp and the
+  polymorphic `day_length`, whose numeric-vs-string normalisation is the subtle
+  part), with the nine repeated `with_attr` blocks collapsed into one table-driven
+  loop. Adds unit coverage of the entity build for both the numeric (`formatted=0`)
+  and string (default-endpoint) `day_length` forms with absent-phase omission, and
+  — importantly — the previously-untested `civil_from_days` date arithmetic
+  (epoch, pre-epoch, month rollover, the 2000 leap day, a current date), the one
+  piece of non-trivial pure logic in the file. Behaviour-preserving.
+- **`crtsh` brought up to the module spec.** The CT-log query construction and
+  the certificate-entry→entity mapping are extracted out of `process` into the
+  pure, IO-free `build_query` and `build_entities` (SAN/common-name splitting,
+  wildcard skipping, cross-response dedup, subdomain classification + confidence,
+  highest-confidence capping), with the email-length floor and result cap promoted
+  to named constants (`MIN_EMAIL_LEN`, `MAX_ENTITIES`). **Fixes a latent
+  case-sensitivity bug**: the subdomain check compared a lower-cased SAN against
+  the raw target value, so a mixed-case target (`Example.com`) mis-scored its own
+  subdomains as unrelated (0.45 instead of 0.75); the base is now case-folded.
+  Adds unit coverage of per-kind query shaping, subdomain/dedup/wildcard handling,
+  the case-insensitive base match, SAN-email surfacing above the length floor, and
+  the highest-confidence-first cap. Behaviour-preserving except the case-fold fix.
+- **`webserver_banner` brought up to the module spec.** The inline URL/host/port
+  parsing is extracted out of `process` into the pure, IO-free `extract_host_port`
+  (returning `None` for an unparseable URL or empty/path-shaped host). Test
+  coverage is broadened from the two stack-tag spot checks to the full fingerprint
+  surface: every `apply_stack_tags` signature (nginx/apache/iis/cloudflare-via-
+  Server-or-cf-ray/aws-cloudfront/fastly/wordpress/drupal/php/aspnet), the
+  case-insensitive + quiet-on-unknown behaviour, `capture_headers`'
+  fingerprint-only/non-empty filtering, and the host/port extraction across
+  URL+port, bare-domain, and junk inputs. Behaviour-preserving.
+- **`opencorporates` brought up to the module spec.** The per-company fan-out
+  (the `Organisation` plus a `validated` `Address` and an AU `AbnAcn`
+  company-number entity) is extracted out of `process` into the pure, IO-free
+  `build_company_entities`, with the page size and address-length floor promoted
+  to named constants (`PER_PAGE`, `MIN_ADDRESS_LEN`, the former also replacing a
+  hardcoded `per_page=5` in the query) and the eight repeated `with_attr` blocks
+  collapsed into one table-driven loop. Adds unit coverage of the full AU triple
+  (org+address+company-number), the non-AU case (no `AbnAcn`, no `country:AU`/
+  `active` tags), the short-address/missing-number optional-drop path, and
+  blank/whitespace-name rejection. Also now trims whitespace-only names (which the
+  old empty-only check let through). Behaviour-preserving.
+- **`urlhaus` brought up to the module spec.** The ~80-line host-threat
+  aggregation (malicious-URL count, reference, first/last-seen window, third-party
+  blocklist verdicts, online/offline URL split, distinct threat families, and the
+  top URL tags by frequency) is extracted out of `process` into the pure, IO-free
+  `build_threat_entity`, with the two list caps promoted to named constants
+  (`MAX_THREATS` / `MAX_TAGS`). The threat-family list is now **deterministic** —
+  the previous early-break-on-insert took whichever distinct families happened to
+  appear first in URLhaus's URL order; it now takes the lexically-first
+  `MAX_THREATS` regardless of input order (byte-identical-output invariant). Adds
+  unit coverage of the full aggregation (counts, window, blocklists, online/offline
+  split, threat sort, frequency-ranked tags), the determinism-under-cap property,
+  and the no-URLs-array omission path. Behaviour-preserving except the threat-list
+  determinism fix.
+- **`rdap_domain` brought up to the module spec.** The RDAP record→entity
+  mapping is extracted out of `process` into two pure, IO-free builders:
+  `build_domain_entity` (status-phrase `status:` tags, event dates grouped by
+  slugified action, deduplicated contact *role* names, DNSSEC delegation state,
+  nameserver list) and `build_ns_entity` (one Domain per nameserver, blank-name
+  rejection), with the nameserver cap lifted to a module-level `MAX_NS` constant.
+  Adds unit coverage of status slugging, repeated-action event grouping, role
+  dedup (reinforcing the never-raw-PII invariant), signed/unsigned DNSSEC, the
+  bare-record optional-omission path, and nameserver normalisation/rejection;
+  `slugify` keeps its existing tests. Behaviour-preserving.
+- **`dehashed` brought up to the module spec.** The two pure pieces of `process`
+  are extracted and tested: `selector_for` (target-kind → DeHashed query
+  selector, returning `None` for unsupported kinds) and `build_breach_entity`
+  (the aggregate-only entity mapping — total hit count vs returned rows, top
+  databases by frequency with the `database_name`→`obtained_from` fallback, the
+  created-at range, and the breach tags). The database cap becomes a named
+  constant (`MAX_DATABASES`). Adds unit coverage asserting `selector_for` answers
+  for exactly the kinds `accepts` admits, the full aggregation (server total
+  exceeding returned rows, source-fallback frequency ranking, created-at range),
+  and the count-only response that omits the optional aggregates — reinforcing
+  the no-credentials-in-evidence invariant at the unit level. Behaviour-preserving.
+- **`wayback` brought up to the module spec.** Both pure pieces of `process` are
+  extracted and tested: `extract_domain` (URL scheme/path/port stripping +
+  lowercasing) and `build_entity` (the CDX-rows → archive-entity mapping —
+  snapshot count, earliest/most-recent bookend timestamps raw + ISO, and the
+  status-code distribution, returning `None` for a header-only/unarchived
+  response). Adds unit coverage of the URL-host extraction, the empty/header-only
+  no-entity case, and the snapshot-count/bookend/status-distribution summary,
+  plus the previously-missing `Url`-kind `accepts` assertion. `iso_from_cdx`
+  keeps its existing tests. Behaviour-preserving.
+- **`smtp_vrfy` brought up to the module spec.** The five-way outcome→entity
+  mapping (no-MX plus the SMTP valid/invalid/catch-all/unreachable verdicts),
+  previously open-coded as five near-identical `Entity::new` blocks split across
+  `process`, is folded into one pure, IO-free `build_entity` driven by a unified
+  `SmtpVerdict` enum (the old `SmtpResult` renamed and given a `NoMx` variant so
+  the no-MX path is no longer a special-cased early return). Confidence/tag/
+  evidence selection is now a single `match`, with `mx_host` attached whenever an
+  MX was found and `smtp_code` only on a rejection. Adds unit coverage of every
+  verdict (tags, confidence, evidence attributes) plus the deliverability-ladder
+  ordering invariant (valid > catch-all > invalid > unreachable), alongside the
+  existing async metadata/no-MX integration tests. Behaviour-preserving.
+- **`securitytrails` brought up to the module spec.** Both response→entity
+  mappings — the subdomain enumeration (`{label}.{domain}` qualification +
+  parent-count evidence) and the reverse-IP associated-record path (trailing-dot
+  trim and rejection of blanks, bare IP-literal PTRs, and dotless single labels)
+  — are extracted out of the IO-bound `subdomain_search` / `reverse_ip` methods
+  into the pure, IO-free `build_subdomain_entity` / `build_associated_entity`,
+  with the reverse-IP record cap promoted to a named constant
+  (`MAX_REVERSE_RECORDS`). Replaces the two trivial accepts/cost tests with unit
+  coverage of host qualification, blank-label skipping, trailing-dot trimming,
+  and the full non-hostname rejection set (v4/v6 literals, dotless labels). Also
+  corrects the module-doc IP endpoint (`/v1/ips/list`, matching the code, not the
+  stale `/v1/ips/nearby/`). Behaviour-preserving.
+- **`ipqs` brought up to the module spec.** The ~75-line reputation mapping
+  (fraud-score risk band, the proxy/vpn/tor/crawler/disposable/leaked/recent-abuse
+  signal tags, the `country:<CC>` tag, and the per-field evidence across all three
+  IP/email/phone sub-APIs) is extracted out of `process` into the pure, IO-free
+  `build_reputation_entity`. The two risk thresholds become named constants
+  (`HIGH_RISK_SCORE` / `ELEVATED_RISK_SCORE`) and the seven repeated
+  `== Some(true)` tag blocks collapse into one data-driven loop. Replaces the two
+  trivial accepts/cost tests with unit coverage of the high-risk IP path,
+  threshold-exact risk banding, the email field/tag surface, and the
+  missing-score default with IP-field omission. Behaviour-preserving.
+- **`leakix` brought up to the module spec.** The ~90-line exposure-event
+  summarisation (top event types / sources / protocols by frequency, the sorted
+  open-port set, the earliest/most-recent timestamp window, and the `leak` /
+  `ssh-exposed` tags) is extracted out of `process` into the pure, IO-free
+  `build_exposure_entity`, with the top-N and port caps promoted to named
+  constants and the repeated services∪leaks iteration collapsed behind a single
+  closure (removing four interim `Vec` allocations). Replaces the two trivial
+  accepts/cost tests with unit coverage of the count/port/window summary,
+  case-insensitive `ssh-exposed` tagging, services-only attribute omission, and
+  the port cap. Behaviour-preserving.
+- **`threatfox` brought up to the module spec.** The ~90-line IOC aggregation
+  (malware families / IOC + threat types / context tags folded into capped,
+  deduplicated, deterministically-ordered attribute lists, plus max analyst
+  confidence and the outer first/last-seen window) is extracted out of `process`
+  into the pure, IO-free `build_ioc_entity`, with the list caps promoted to named
+  constants and empty/whitespace fields filtered through a shared `nonempty`
+  helper. Replaces the two trivial accepts/cost tests with unit coverage of the
+  single-IOC mapping, cross-batch aggregation (dedup + sort + max-confidence +
+  outer window), sparse-record attribute omission, and the family/tag caps.
+  Behaviour-preserving.
+- **`disposable_check` brought up to the module spec.** The throwaway-email
+  verdict→entity mapping is extracted from `process` into the pure, IO-free
+  `build_email_entity`, and the stringly-typed `disposable` field is parsed
+  through `is_disposable` — affirmative-`true`-only and **fail-open**, so a
+  malformed verdict can no longer brand a real address as a throwaway. The
+  confidence split (disposable 0.20 vs legit 0.75) and the always-present
+  `disposable=<bool>` evidence attribute are now named constants and unit-tested
+  (verdict parsing, tags, confidence, evidence, and the disposable-<-legit
+  ordering invariant), replacing the two trivial accepts/cost tests. Also
+  declares `produces()` (Email) to match its peers. Behaviour-preserving.
 - **Codebase-wide dependency refresh.** Updated the full locked dependency graph
   to current versions and bumped the direct majors, all verified green (fmt,
   `clippy -D warnings`, the entire test suite, `cargo deny`, `cargo machete`,
@@ -179,6 +491,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Restored a buildable tree on stable + MSRV — `rusqlite` pinned back to 0.39.**
+  The earlier `rusqlite 0.40` bump pulled `libsqlite3-sys 0.38`, whose build
+  script uses the still-unstable `cfg_select!` macro (rust-lang/rust#115585).
+  That is a hard compile error on the project's MSRV (1.88) **and** on current
+  stable toolchains that have not yet stabilised the feature — i.e. the whole
+  project failed to build on the primary target. Pinned `rusqlite = 0.39`
+  (`libsqlite3-sys 0.37`), which builds on 1.88+, with a guard comment so the
+  bump is not reintroduced before `cfg_select!` lands on/below our MSRV. The
+  bundled-SQLite schema (incl. `sqlite_stat1`/`sqlite_stat4`) is byte-identical,
+  so no storage behaviour changes.
 - **Expansion no longer deep-dives shared third-party infrastructure (the domain
   flood at its root).** The same real name-scan accumulated **683 domains, 599 of
   them (88%) from `hackertarget`** — a *reverse-IP lookup on two Cloudflare edge

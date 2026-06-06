@@ -140,10 +140,7 @@ struct PhoneAccountDetails {
     telegram: Option<AccountPresence>,
 }
 
-/// Trimmed, non-empty view of an optional string field.
-fn nonempty(o: &Option<String>) -> Option<&str> {
-    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
-}
+use crate::util::str_util::nonempty;
 
 /// The platforms a presence map reports as `registered: true`, in declared order.
 fn registered_accounts<'a>(

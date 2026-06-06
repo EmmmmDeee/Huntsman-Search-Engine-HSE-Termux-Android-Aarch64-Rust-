@@ -52,10 +52,7 @@ struct DomainEntry {
     is_dead: Option<String>,
 }
 
-/// Trimmed, non-empty view of an optional string field.
-fn nonempty(o: &Option<String>) -> Option<&str> {
-    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
-}
+use crate::util::str_util::nonempty;
 
 /// Map one registered-domain record to a `Domain` entity. **Pure** (no
 /// network/IO). `broad_match` (from the zone's `total` exceeding

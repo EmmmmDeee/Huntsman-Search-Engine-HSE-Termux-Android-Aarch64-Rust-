@@ -50,26 +50,189 @@ pub mod json {
 }
 
 pub mod url_util {
-    pub fn host_from_url(url: &str) -> Option<String> {
-        let trimmed = url.trim();
-        let after_scheme = trimmed
-            .strip_prefix("https://")
-            .or_else(|| trimmed.strip_prefix("http://"))
+    /// The bare host substring of a URL-ish string: strip a leading `http(s)://`
+    /// scheme (case-insensitively — `HTTPS://` is valid per RFC 3986 §3.1), then
+    /// everything from the first `/` (path) and `:` (port). Borrows; applies
+    /// **no** case-folding or validity policy on the host itself — callers layer
+    /// that on (see [`host_from_url`]). A plain host or `host:port` passes through
+    /// as its host. Returns `""` when nothing host-like remains.
+    #[must_use]
+    pub fn host_only(s: &str) -> &str {
+        let trimmed = s.trim();
+        let after_scheme = ["https://", "http://"]
+            .iter()
+            .find_map(|scheme| {
+                trimmed
+                    .get(..scheme.len())
+                    .filter(|p| p.eq_ignore_ascii_case(scheme))
+                    .map(|_| &trimmed[scheme.len()..])
+            })
             .unwrap_or(trimmed);
-        let host = after_scheme
+        after_scheme
             .split('/')
-            .next()?
+            .next()
+            .unwrap_or("")
             .split(':')
-            .next()?
-            .to_lowercase();
+            .next()
+            .unwrap_or("")
+    }
+
+    /// The lowercased host of a URL, or `None` unless it looks like a real domain
+    /// (non-empty and contains a `.`). Built on [`host_only`].
+    #[must_use]
+    pub fn host_from_url(url: &str) -> Option<String> {
+        let host = host_only(url).to_lowercase();
         if host.is_empty() || !host.contains('.') {
             return None;
         }
         Some(host)
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{host_from_url, host_only};
+
+        #[test]
+        fn host_only_strips_scheme_path_and_port() {
+            assert_eq!(host_only("https://Example.com:8443/a/b?x=1"), "Example.com");
+            assert_eq!(host_only("http://host.org/"), "host.org");
+            assert_eq!(host_only("  bare.host:25 "), "bare.host");
+            assert_eq!(host_only("plainhost"), "plainhost");
+            assert_eq!(host_only(""), "");
+            // Scheme match is case-insensitive (RFC 3986 §3.1)...
+            assert_eq!(host_only("HTTPS://Up.Example.com/p"), "Up.Example.com");
+            assert_eq!(host_only("HtTp://x.test"), "x.test");
+            // ...but the host slice itself is returned verbatim (no case-folding).
+            assert_eq!(host_only("https://MixedCase.Net"), "MixedCase.Net");
+        }
+
+        #[test]
+        fn host_from_url_lowercases_and_requires_a_dot() {
+            assert_eq!(
+                host_from_url("https://Sub.Example.COM/p"),
+                Some("sub.example.com".to_string())
+            );
+            assert_eq!(host_from_url("http://localhost:8080"), None); // no dot
+            assert_eq!(host_from_url(""), None);
+        }
+    }
+}
+
+pub mod spf {
+    //! Minimal SPF (RFC 7208) mechanism extraction, shared by the DNS modules so
+    //! `dns_intel` and `doh_resolver` can't drift in what they pull out of a
+    //! `v=spf1` record (they had: one case-sensitive version check, one
+    //! case-insensitive; both silently dropping `ip6:`).
+
+    /// True if `txt` is an SPF record. Per RFC 7208 §4.5 the `v=spf1` version
+    /// tag is matched case-insensitively.
+    #[must_use]
+    pub fn is_spf(txt: &str) -> bool {
+        let b = txt.as_bytes();
+        b.len() >= 6 && b[..6].eq_ignore_ascii_case(b"v=spf1")
+    }
+
+    /// An authorising member of an SPF record that resolves to an entity.
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Member<'a> {
+        /// An `ip4:` / `ip6:` address with any CIDR suffix stripped — never empty.
+        Ip(&'a str),
+        /// An `include:` domain — guaranteed non-empty and dotted.
+        Include(&'a str),
+        /// The `redirect=` modifier's target domain — guaranteed non-empty and
+        /// dotted. Delegates the whole SPF policy to another domain (RFC 7208 §6),
+        /// so for OSINT it is a related-domain pivot just like an `include:`.
+        Redirect(&'a str),
+    }
+
+    /// Iterate the `ip4:`/`ip6:`/`include:`/`redirect=` members of an SPF record.
+    /// Bare/blank IP mechanisms and empty/dotless or macro-bearing
+    /// include/redirect domains are skipped (they would only normalise to junk
+    /// entities). Other mechanisms (`a`, `mx`, `ptr`, `exists`, `all`, the `exp=`
+    /// modifier) and qualifier prefixes are not interpreted here — callers tag the
+    /// domain itself.
+    pub fn members(txt: &str) -> impl Iterator<Item = Member<'_>> {
+        // A usable include/redirect target is non-empty, dotted, and free of SPF
+        // macros (`%{…}`) which don't resolve to a literal domain.
+        fn usable_domain(d: &str) -> bool {
+            d.contains('.') && !d.contains('%')
+        }
+        txt.split_whitespace().filter_map(|part| {
+            if let Some(ip) = part
+                .strip_prefix("ip4:")
+                .or_else(|| part.strip_prefix("ip6:"))
+            {
+                let ip = ip.split('/').next().unwrap_or(ip);
+                (!ip.is_empty()).then_some(Member::Ip(ip))
+            } else if let Some(inc) = part.strip_prefix("include:") {
+                usable_domain(inc).then_some(Member::Include(inc))
+            } else if let Some(red) = part.strip_prefix("redirect=") {
+                usable_domain(red).then_some(Member::Redirect(red))
+            } else {
+                None
+            }
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{Member, is_spf, members};
+
+        #[test]
+        fn is_spf_is_case_insensitive_on_the_version_tag() {
+            assert!(is_spf("v=spf1 -all"));
+            assert!(is_spf("V=SPF1 ip4:1.2.3.4 -all")); // RFC 7208 §4.5
+            assert!(!is_spf("v=dmarc1"));
+            assert!(!is_spf("spf1"));
+            assert!(!is_spf(""));
+        }
+
+        #[test]
+        fn members_yields_ip4_ip6_and_includes_skipping_junk() {
+            let got: Vec<Member> = members(
+                "v=spf1 ip4:198.51.100.0/24 ip6:2001:db8::/32 include:_spf.example.com \
+                 ip4: ip6: include: include:localhost a mx -all",
+            )
+            .collect();
+            assert_eq!(
+                got,
+                vec![
+                    Member::Ip("198.51.100.0"),
+                    Member::Ip("2001:db8::"), // IPv6 colons preserved, CIDR stripped
+                    Member::Include("_spf.example.com"),
+                    // bare ip4:/ip6:/include: and dotless include:localhost dropped;
+                    // a/mx/-all are not IP/include members.
+                ]
+            );
+        }
+
+        #[test]
+        fn members_yields_redirect_target_and_skips_macros() {
+            let got: Vec<Member> =
+                members("v=spf1 redirect=_spf.example.net include:%{i}._spf.macro.test").collect();
+            // The redirect target is surfaced; the macro-bearing include is skipped
+            // (a `%{…}` member is not a literal domain).
+            assert_eq!(got, vec![Member::Redirect("_spf.example.net")]);
+            // A dotless / empty redirect is dropped like a dotless include.
+            assert!(
+                members("v=spf1 redirect= redirect=localhost")
+                    .next()
+                    .is_none()
+            );
+        }
+    }
 }
 
 pub mod str_util {
+    /// A trimmed, non-empty borrow of an optional string field, else `None`.
+    /// Whitespace-only is treated as absent. Single definition so the many OSINT
+    /// modules that surface "the value if the upstream actually sent one" share
+    /// identical semantics instead of each re-deriving them.
+    #[must_use]
+    pub fn nonempty(o: &Option<String>) -> Option<&str> {
+        o.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
     pub fn truncate_safe(s: &str, max: usize) -> &str {
         if s.len() <= max {
             return s;
@@ -129,7 +292,16 @@ pub mod str_util {
 
     #[cfg(test)]
     mod tests {
-        use super::{fold_ascii_lower, truncate_safe};
+        use super::{fold_ascii_lower, nonempty, truncate_safe};
+
+        #[test]
+        fn nonempty_trims_and_treats_blank_as_absent() {
+            assert_eq!(nonempty(&Some("  hi ".to_string())), Some("hi"));
+            assert_eq!(nonempty(&Some("x".to_string())), Some("x"));
+            assert_eq!(nonempty(&Some("   ".to_string())), None);
+            assert_eq!(nonempty(&Some(String::new())), None);
+            assert_eq!(nonempty(&None), None);
+        }
 
         #[test]
         fn truncate_safe_never_splits_a_codepoint() {

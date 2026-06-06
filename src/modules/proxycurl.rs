@@ -129,10 +129,7 @@ impl DateField {
     }
 }
 
-/// Trimmed, non-empty view of an optional string field.
-fn nonempty(o: &Option<String>) -> Option<&str> {
-    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
-}
+use crate::util::str_util::nonempty;
 
 impl LinkedInProfile {
     /// Best display name: prefer `full_name`, else compose `first`+`last`, else

@@ -70,6 +70,12 @@ pub fn validate_phone_e164(s: &str) -> ValidationReport {
     if !digits.chars().all(|c| c.is_ascii_digit()) {
         return ValidationReport::fail("e164.non_digit", "non-digit after '+'");
     }
+    // ITU-T E.164: a country code is 1-3 digits and never begins with 0, so the
+    // first digit after the `+` is 1-9. (`+0…` is what the loose digit-only check
+    // used to wave through despite the documented country-code rule.)
+    if digits.starts_with('0') {
+        return ValidationReport::fail("e164.cc_leading_zero", "country code cannot start with 0");
+    }
     if !(8..=15).contains(&digits.len()) {
         return ValidationReport::fail(
             "e164.length",
@@ -500,6 +506,12 @@ mod tests {
         assert_eq!(
             validate_phone_e164("+1234567890123456").reason,
             "e164.length"
+        );
+        // ITU-T E.164: a country code never starts with 0, so `+0…` is invalid
+        // even though its length is in range (it used to slip through).
+        assert_eq!(
+            validate_phone_e164("+0123456789").reason,
+            "e164.cc_leading_zero"
         );
     }
 

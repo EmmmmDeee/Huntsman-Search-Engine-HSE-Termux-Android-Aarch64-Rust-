@@ -92,10 +92,7 @@ impl Module for BgpView {
     }
 }
 
-/// Trimmed, non-empty view of an optional string field.
-fn nonempty(o: &Option<String>) -> Option<&str> {
-    o.as_deref().map(str::trim).filter(|s| !s.is_empty())
-}
+use crate::util::str_util::nonempty;
 
 /// `IpAddress` entities for the prefixes an ASN announces (the network blocks it
 /// owns), each tagged `bgp-prefix` and carrying the owning org name when known.

@@ -82,16 +82,9 @@ impl Module for WebserverBanner {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let (host, port) = match target.kind {
-            TargetKind::Url => match url::Url::parse(target.value.trim()) {
-                Ok(u) => (u.host_str().unwrap_or("").to_string(), u.port()),
-                Err(_) => return Ok(ModuleResult::new()),
-            },
-            _ => (target.value.trim().to_string(), None),
-        };
-        if host.is_empty() || host.contains('/') {
+        let Some((host, port)) = extract_host_port(target.kind, &target.value) else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let port_suffix = port.map_or(String::new(), |p| format!(":{p}"));
         for scheme in ["https", "http"] {
@@ -131,6 +124,24 @@ impl Module for WebserverBanner {
         }
         Ok(ModuleResult::new())
     }
+}
+
+/// Resolve a target to the `(host, optional port)` to probe. **Pure** (no
+/// network/IO): a `Url` is parsed and its host + explicit port taken; any other
+/// kind is used verbatim. Returns `None` for an unparseable URL or a host that is
+/// empty or path-shaped (contains `/`), the cases where there is nothing to HEAD.
+fn extract_host_port(kind: TargetKind, value: &str) -> Option<(String, Option<u16>)> {
+    let (host, port) = match kind {
+        TargetKind::Url => {
+            let u = url::Url::parse(value.trim()).ok()?;
+            (u.host_str().unwrap_or("").to_string(), u.port())
+        }
+        _ => (value.trim().to_string(), None),
+    };
+    if host.is_empty() || host.contains('/') {
+        return None;
+    }
+    Some((host, port))
 }
 
 fn capture_headers(h: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
@@ -223,5 +234,81 @@ mod tests {
         let mut e = Entity::new(EntityKind::Domain, "x.com", 0.5, "s");
         apply_stack_tags(&mut e, &[("cf-ray".into(), "1234abcd".into())]);
         assert!(e.has_tag("cloudflare"));
+    }
+
+    fn tags_for(headers: &[(&str, &str)]) -> Entity {
+        let mut e = Entity::new(EntityKind::Domain, "x.com", 0.5, "s");
+        let owned: Vec<(String, String)> = headers
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        apply_stack_tags(&mut e, &owned);
+        e
+    }
+
+    #[test]
+    fn apply_stack_tags_covers_full_signature_set() {
+        // IIS via Server value, ASP.NET via header name.
+        let e = tags_for(&[
+            ("server", "Microsoft-IIS/10.0"),
+            ("x-aspnet-version", "4.0.30319"),
+        ]);
+        assert!(e.has_tag("iis") && e.has_tag("aspnet"));
+
+        // Cloudflare via Server value (not just cf-ray).
+        assert!(tags_for(&[("server", "cloudflare")]).has_tag("cloudflare"));
+        // AWS CloudFront + Fastly are header-name driven.
+        assert!(tags_for(&[("x-amz-cf-id", "abc")]).has_tag("aws-cloudfront"));
+        assert!(tags_for(&[("x-served-by", "cache-syd")]).has_tag("fastly"));
+        assert!(tags_for(&[("x-cache", "HIT")]).has_tag("fastly"));
+        // CMS fingerprints in any header value.
+        assert!(tags_for(&[("x-generator", "WordPress 6.5")]).has_tag("wordpress"));
+        assert!(tags_for(&[("x-generator", "Drupal 10 (https://drupal.org)")]).has_tag("drupal"));
+        // Apache.
+        assert!(tags_for(&[("server", "Apache/2.4.52")]).has_tag("apache"));
+    }
+
+    #[test]
+    fn apply_stack_tags_is_case_insensitive_and_quiet_on_unknown() {
+        assert!(tags_for(&[("server", "NGINX/1.25")]).has_tag("nginx"));
+        // An unrecognised stack raises none of the family tags.
+        let e = tags_for(&[("server", "GoatServer/1.0")]);
+        for t in ["nginx", "apache", "iis", "cloudflare", "wordpress", "php"] {
+            assert!(!e.has_tag(t), "unexpected tag {t}");
+        }
+    }
+
+    #[test]
+    fn capture_headers_keeps_only_fingerprint_headers_nonempty() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut h = HeaderMap::new();
+        h.insert("server", HeaderValue::from_static("nginx"));
+        h.insert("content-type", HeaderValue::from_static("text/html")); // not fingerprint
+        h.insert("x-powered-by", HeaderValue::from_static("")); // empty → dropped
+        let got = capture_headers(&h);
+        assert_eq!(got, vec![("server".to_string(), "nginx".to_string())]);
+    }
+
+    #[test]
+    fn extract_host_port_handles_url_domain_and_rejects_junk() {
+        // URL with explicit port.
+        assert_eq!(
+            extract_host_port(TargetKind::Url, "https://example.com:8443/a"),
+            Some(("example.com".to_string(), Some(8443)))
+        );
+        // URL without explicit port → None port.
+        assert_eq!(
+            extract_host_port(TargetKind::Url, "http://host.org/"),
+            Some(("host.org".to_string(), None))
+        );
+        // Bare domain.
+        assert_eq!(
+            extract_host_port(TargetKind::Domain, "  example.com "),
+            Some(("example.com".to_string(), None))
+        );
+        // Unparseable URL and a path-shaped domain → nothing to probe.
+        assert_eq!(extract_host_port(TargetKind::Url, "not a url"), None);
+        assert_eq!(extract_host_port(TargetKind::Domain, "x.com/path"), None);
+        assert_eq!(extract_host_port(TargetKind::Domain, "  "), None);
     }
 }

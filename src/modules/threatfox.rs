@@ -58,6 +58,115 @@ struct Ioc {
     tags: Option<Vec<String>>,
 }
 
+/// A malware family / IOC-tag list this long is plenty for an operator; cap so a
+/// pathological IOC record can't blow up a single evidence row.
+const MAX_FAMILIES: usize = 8;
+const MAX_IOC_TAGS: usize = 16;
+
+/// Aggregate a non-empty batch of ThreatFox IOC records into the single
+/// `malicious` entity for `term`. **Pure** (no network/IO): folds the per-IOC
+/// malware families, IOC/threat types and context tags into deduplicated,
+/// capped, deterministically-ordered (`BTreeSet`) attribute lists, takes the
+/// **max** analyst confidence and the **outer** first/last-seen window across
+/// the batch, and records the hit count. Caller guarantees `iocs` is non-empty.
+fn build_ioc_entity(kind: EntityKind, term: &str, iocs: &[Ioc], scan_id: &str) -> Entity {
+    use std::collections::BTreeSet;
+
+    let mut entity = Entity::new(kind, term, 0.92, scan_id);
+    entity.tag("threatfox");
+    entity.tag("threat-intel");
+    entity.tag("malicious");
+
+    let mut families: BTreeSet<String> = BTreeSet::new();
+    let mut types: BTreeSet<String> = BTreeSet::new();
+    let mut threat_types: BTreeSet<String> = BTreeSet::new();
+    let mut ioc_tags: BTreeSet<String> = BTreeSet::new();
+    let mut max_confidence: u32 = 0;
+    let mut first_seen: Option<&str> = None;
+    let mut last_seen: Option<&str> = None;
+    for ioc in iocs {
+        if let Some(m) = nonempty(&ioc.malware) {
+            families.insert(m.to_string());
+        }
+        if let Some(t) = nonempty(&ioc.ioc_type) {
+            types.insert(t.to_string());
+        }
+        if let Some(t) = nonempty(&ioc.threat_type) {
+            threat_types.insert(t.to_string());
+        }
+        if let Some(tags) = ioc.tags.as_deref() {
+            for t in tags {
+                let t = t.trim();
+                if !t.is_empty() {
+                    ioc_tags.insert(t.to_string());
+                }
+            }
+        }
+        if let Some(c) = ioc.confidence_level {
+            max_confidence = max_confidence.max(c);
+        }
+        // Widest observed window: earliest first_seen, latest last_seen.
+        if let Some(f) = nonempty(&ioc.first_seen)
+            && first_seen.is_none_or(|e| f < e)
+        {
+            first_seen = Some(f);
+        }
+        if let Some(l) = nonempty(&ioc.last_seen)
+            && last_seen.is_none_or(|e| l > e)
+        {
+            last_seen = Some(l);
+        }
+    }
+
+    let mut ev = Evidence::new(
+        SRC,
+        format!("ThreatFox: {} IOC record(s) match {term}", iocs.len()),
+    )
+    .with_attr("hits", iocs.len().to_string());
+    if !families.is_empty() {
+        ev = ev.with_attr(
+            "malware_families",
+            families
+                .into_iter()
+                .take(MAX_FAMILIES)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    if !types.is_empty() {
+        ev = ev.with_attr("ioc_types", types.into_iter().collect::<Vec<_>>().join(","));
+    }
+    if !threat_types.is_empty() {
+        ev = ev.with_attr(
+            "threat_types",
+            threat_types.into_iter().collect::<Vec<_>>().join(","),
+        );
+    }
+    if !ioc_tags.is_empty() {
+        ev = ev.with_attr(
+            "ioc_tags",
+            ioc_tags
+                .into_iter()
+                .take(MAX_IOC_TAGS)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    if max_confidence > 0 {
+        ev = ev.with_attr("max_confidence", max_confidence.to_string());
+    }
+    if let Some(f) = first_seen {
+        ev = ev.with_attr("first_seen", f);
+    }
+    if let Some(l) = last_seen {
+        ev = ev.with_attr("last_seen", l);
+    }
+    entity.add_evidence(ev);
+    entity
+}
+
+use crate::util::str_util::nonempty;
+
 pub struct ThreatFox;
 
 #[async_trait]
@@ -172,92 +281,8 @@ impl Module for ThreatFox {
             EntityKind::Domain
         };
 
-        let mut entity = Entity::new(kind, term, 0.92, &ctx.scan_id);
-        entity.tag("threatfox");
-        entity.tag("threat-intel");
-        entity.tag("malicious");
-
-        // Aggregate threat families + ioc types + per-IOC context tags.
-        let mut families: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut types: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut threat_types: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
-        let mut ioc_tags: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut max_confidence: u32 = 0;
-        let mut first_seen: Option<String> = None;
-        let mut last_seen: Option<String> = None;
-        for ioc in &parsed.data {
-            if let Some(m) = ioc.malware.as_deref() {
-                families.insert(m.to_string());
-            }
-            if let Some(t) = ioc.ioc_type.as_deref() {
-                types.insert(t.to_string());
-            }
-            if let Some(t) = ioc.threat_type.as_deref() {
-                threat_types.insert(t.to_string());
-            }
-            if let Some(tags) = ioc.tags.as_deref() {
-                for t in tags {
-                    if !t.trim().is_empty() {
-                        ioc_tags.insert(t.to_string());
-                    }
-                }
-            }
-            if let Some(c) = ioc.confidence_level {
-                max_confidence = max_confidence.max(c);
-            }
-            // Only allocate when we actually replace the running min/max.
-            if let Some(f) = ioc.first_seen.as_deref()
-                && first_seen.as_deref().is_none_or(|e| f < e)
-            {
-                first_seen = Some(f.to_string());
-            }
-            if let Some(l) = ioc.last_seen.as_deref()
-                && last_seen.as_deref().is_none_or(|e| l > e)
-            {
-                last_seen = Some(l.to_string());
-            }
-        }
-
-        let mut ev = Evidence::new(
-            SRC,
-            format!(
-                "ThreatFox: {} IOC record(s) match {term}",
-                parsed.data.len()
-            ),
-        )
-        .with_attr("hits", parsed.data.len().to_string());
-        if !families.is_empty() {
-            let families_vec: Vec<String> = families.into_iter().take(8).collect();
-            ev = ev.with_attr("malware_families", families_vec.join(","));
-        }
-        if !types.is_empty() {
-            ev = ev.with_attr("ioc_types", types.into_iter().collect::<Vec<_>>().join(","));
-        }
-        if !threat_types.is_empty() {
-            ev = ev.with_attr(
-                "threat_types",
-                threat_types.into_iter().collect::<Vec<_>>().join(","),
-            );
-        }
-        if !ioc_tags.is_empty() {
-            // Cap at 16 so a noisy IOC doesn't blow up the evidence row.
-            let tags_vec: Vec<String> = ioc_tags.into_iter().take(16).collect();
-            ev = ev.with_attr("ioc_tags", tags_vec.join(","));
-        }
-        if max_confidence > 0 {
-            ev = ev.with_attr("max_confidence", max_confidence.to_string());
-        }
-        if let Some(f) = first_seen {
-            ev = ev.with_attr("first_seen", f);
-        }
-        if let Some(l) = last_seen {
-            ev = ev.with_attr("last_seen", l);
-        }
-        entity.add_evidence(ev);
-
         let mut result = ModuleResult::new();
-        result.push(entity);
+        result.push(build_ioc_entity(kind, term, &parsed.data, &ctx.scan_id));
         Ok(result)
     }
 }
@@ -279,5 +304,108 @@ mod tests {
         // ThreatFox requires an Auth-Key header on every request
         // (https://threatfox.abuse.ch/api).
         assert!(matches!(ThreatFox.cost(), ModuleCost::KeyGated));
+    }
+
+    fn ioc(json: &str) -> Ioc {
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
+        e.evidence[0].attributes.get(k).map(String::as_str)
+    }
+
+    #[test]
+    fn single_ioc_marks_malicious_with_threat_band_confidence() {
+        let e = build_ioc_entity(
+            EntityKind::Domain,
+            "evil.test",
+            &[ioc(
+                r#"{"ioc_type":"domain","threat_type":"botnet_cc","malware":"CobaltStrike",
+                    "confidence_level":75}"#,
+            )],
+            "s",
+        );
+        assert_eq!(e.kind, EntityKind::Domain);
+        assert!(e.has_tag("threatfox") && e.has_tag("threat-intel") && e.has_tag("malicious"));
+        assert!((e.confidence - 0.92).abs() < 1e-9);
+        assert_eq!(attr(&e, "hits"), Some("1"));
+        assert_eq!(attr(&e, "malware_families"), Some("CobaltStrike"));
+        assert_eq!(attr(&e, "ioc_types"), Some("domain"));
+        assert_eq!(attr(&e, "threat_types"), Some("botnet_cc"));
+        assert_eq!(attr(&e, "max_confidence"), Some("75"));
+    }
+
+    #[test]
+    fn aggregates_dedup_sorted_and_takes_max_confidence_and_outer_window() {
+        let e = build_ioc_entity(
+            EntityKind::IpAddress,
+            "1.2.3.4",
+            &[
+                ioc(
+                    r#"{"malware":"WSHRAT","ioc_type":"ip:port","confidence_level":40,
+                        "first_seen":"2024-03-01","last_seen":"2024-03-10",
+                        "tags":["RAT","keylogger"]}"#,
+                ),
+                ioc(
+                    r#"{"malware":"Magecart","ioc_type":"ip:port","confidence_level":90,
+                        "first_seen":"2024-01-15","last_seen":"2024-06-20",
+                        "tags":["skimmer","RAT"]}"#,
+                ),
+            ],
+            "s",
+        );
+        assert_eq!(e.kind, EntityKind::IpAddress);
+        assert_eq!(attr(&e, "hits"), Some("2"));
+        // BTreeSet → deduplicated + lexicographically sorted.
+        assert_eq!(attr(&e, "malware_families"), Some("Magecart,WSHRAT"));
+        assert_eq!(attr(&e, "ioc_types"), Some("ip:port")); // deduped to one
+        assert_eq!(attr(&e, "ioc_tags"), Some("RAT,keylogger,skimmer"));
+        // max confidence, not last-wins.
+        assert_eq!(attr(&e, "max_confidence"), Some("90"));
+        // Outer window: earliest first_seen, latest last_seen across the batch.
+        assert_eq!(attr(&e, "first_seen"), Some("2024-01-15"));
+        assert_eq!(attr(&e, "last_seen"), Some("2024-06-20"));
+    }
+
+    #[test]
+    fn sparse_ioc_omits_absent_attributes() {
+        // Only ioc_type present; everything else null/empty must be omitted,
+        // not emitted blank.
+        let e = build_ioc_entity(
+            EntityKind::Domain,
+            "x.test",
+            &[ioc(
+                r#"{"ioc_type":"domain","malware":"  ","confidence_level":0}"#,
+            )],
+            "s",
+        );
+        assert_eq!(attr(&e, "ioc_types"), Some("domain"));
+        assert_eq!(attr(&e, "malware_families"), None); // whitespace-only dropped
+        assert_eq!(attr(&e, "max_confidence"), None); // 0 is not surfaced
+        assert_eq!(attr(&e, "first_seen"), None);
+        assert_eq!(attr(&e, "threat_types"), None);
+    }
+
+    #[test]
+    fn family_and_tag_lists_are_capped() {
+        let many_families: Vec<Ioc> = (0..20)
+            .map(|i| ioc(&format!(r#"{{"malware":"fam{i:02}"}}"#)))
+            .collect();
+        let e = build_ioc_entity(EntityKind::Domain, "x.test", &many_families, "s");
+        let fams = attr(&e, "malware_families").unwrap();
+        assert_eq!(fams.split(',').count(), MAX_FAMILIES);
+
+        let big_tags = ioc(&format!(
+            r#"{{"tags":[{}]}}"#,
+            (0..30)
+                .map(|i| format!(r#""t{i:02}""#))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        let e = build_ioc_entity(EntityKind::Domain, "x.test", &[big_tags], "s");
+        assert_eq!(
+            attr(&e, "ioc_tags").unwrap().split(',').count(),
+            MAX_IOC_TAGS
+        );
     }
 }

@@ -42,6 +42,91 @@ struct IpInfoResp {
     timezone: Option<String>,
 }
 
+/// `loc` coordinates with both components below this magnitude are treated as a
+/// null-island (0,0) placeholder, not a real geolocation, and dropped.
+const MIN_COORD_MAGNITUDE: f64 = 0.01;
+
+/// Map an ipinfo.io record to its entities. **Pure** (no network/IO): yields up
+/// to five — `Coordinates` from a real (non-null-island) `loc`, an `Address` from
+/// city/region/country, an `Organisation` plus the leading `Asn` parsed out of
+/// the `org` string (`"AS15169 Google LLC"`), and the PTR `Domain` from a
+/// dotted `hostname`. Each is independent; absent/blank fields are skipped.
+fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
+    let mut out = Vec::new();
+
+    if let Some(loc) = &data.loc {
+        let mut parts = loc.split(',');
+        if let (Some(lat_s), Some(lon_s)) = (parts.next(), parts.next())
+            && let (Ok(lat), Ok(lon)) = (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>())
+            && lat.abs() > MIN_COORD_MAGNITUDE
+            && lon.abs() > MIN_COORD_MAGNITUDE
+        {
+            let coords = format!("{lat:.4},{lon:.4}");
+            // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
+            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.58, scan_id);
+            ce.tag(tags::GEOINT);
+            ce.tag("ipinfo");
+            let mut ev = Evidence::new(SRC, format!("IP geo for {ip}"));
+            if let Some(c) = &data.city {
+                ev = ev.with_attr("city", c);
+            }
+            if let Some(r) = &data.region {
+                ev = ev.with_attr("region", r);
+            }
+            if let Some(co) = &data.country {
+                ev = ev.with_attr("country", co);
+            }
+            ce.add_evidence(ev);
+            out.push(ce);
+        }
+    }
+
+    let city = data.city.as_deref().unwrap_or("");
+    let region = data.region.as_deref().unwrap_or("");
+    let country = data.country.as_deref().unwrap_or("");
+    if !city.is_empty() {
+        let addr = if !region.is_empty() {
+            format!("{city}, {region}, {country}")
+        } else {
+            format!("{city}, {country}")
+        };
+        let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, scan_id);
+        ae.tag("ipinfo");
+        ae.add_evidence(Evidence::new(SRC, format!("Address for {ip}")));
+        out.push(ae);
+    }
+
+    if let Some(org) = &data.org
+        && !org.is_empty()
+    {
+        let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+        oe.tag("ipinfo");
+        oe.add_evidence(Evidence::new(SRC, format!("Org for {ip}")));
+        out.push(oe);
+        if let Some(asn) = org.split_whitespace().next()
+            && asn.starts_with("AS")
+        {
+            let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, scan_id);
+            ae.tag("ipinfo");
+            ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
+            out.push(ae);
+        }
+    }
+
+    if let Some(hostname) = &data.hostname
+        && !hostname.is_empty()
+        && hostname.contains('.')
+    {
+        let mut de = Entity::new(EntityKind::Domain, hostname, 0.70, scan_id);
+        de.tag("ipinfo");
+        de.tag(tags::PTR);
+        de.add_evidence(Evidence::new(SRC, format!("Hostname for {ip}")));
+        out.push(de);
+    }
+
+    out
+}
+
 pub struct IpInfo;
 
 #[async_trait]
@@ -99,78 +184,7 @@ impl Module for IpInfo {
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
 
         let mut result = ModuleResult::new();
-
-        if let Some(loc) = &data.loc {
-            let parts: Vec<&str> = loc.split(',').collect();
-            if let (Some(lat_s), Some(lon_s)) = (parts.first(), parts.get(1))
-                && let (Ok(lat), Ok(lon)) =
-                    (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>())
-                && lat.abs() > 0.01
-                && lon.abs() > 0.01
-            {
-                let coords = format!("{lat:.4},{lon:.4}");
-                // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
-                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.58, &ctx.scan_id);
-                ce.tag(tags::GEOINT);
-                ce.tag("ipinfo");
-                let mut ev = Evidence::new(SRC, format!("IP geo for {ip}"));
-                if let Some(c) = &data.city {
-                    ev = ev.with_attr("city", c);
-                }
-                if let Some(r) = &data.region {
-                    ev = ev.with_attr("region", r);
-                }
-                if let Some(co) = &data.country {
-                    ev = ev.with_attr("country", co);
-                }
-                ce.add_evidence(ev);
-                result.push(ce);
-            }
-        }
-
-        let city = data.city.as_deref().unwrap_or("");
-        let region = data.region.as_deref().unwrap_or("");
-        let country = data.country.as_deref().unwrap_or("");
-        if !city.is_empty() {
-            let addr = if !region.is_empty() {
-                format!("{city}, {region}, {country}")
-            } else {
-                format!("{city}, {country}")
-            };
-            let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, &ctx.scan_id);
-            ae.tag("ipinfo");
-            ae.add_evidence(Evidence::new(SRC, format!("Address for {ip}")));
-            result.push(ae);
-        }
-
-        if let Some(org) = &data.org
-            && !org.is_empty()
-        {
-            let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
-            oe.tag("ipinfo");
-            oe.add_evidence(Evidence::new(SRC, format!("Org for {ip}")));
-            result.push(oe);
-            if let Some(asn) = org.split_whitespace().next()
-                && asn.starts_with("AS")
-            {
-                let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
-                ae.tag("ipinfo");
-                ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
-                result.push(ae);
-            }
-        }
-
-        if let Some(hostname) = &data.hostname
-            && !hostname.is_empty()
-            && hostname.contains('.')
-        {
-            let mut de = Entity::new(EntityKind::Domain, hostname, 0.70, &ctx.scan_id);
-            de.tag("ipinfo");
-            de.tag(tags::PTR);
-            de.add_evidence(Evidence::new(SRC, format!("Hostname for {ip}")));
-            result.push(de);
-        }
-
+        result.entities = build_entities(ip, &data, &ctx.scan_id);
         Ok(result)
     }
 }
@@ -196,5 +210,79 @@ mod tests {
         let r: IpInfoResp = serde_json::from_str(j).unwrap();
         assert_eq!(r.city.as_deref(), Some("Mountain View"));
         assert_eq!(r.org.as_deref(), Some("AS15169 Google LLC"));
+    }
+
+    fn data(json: &str) -> IpInfoResp {
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn one(ents: &[Entity], kind: EntityKind) -> Option<&Entity> {
+        ents.iter().find(|e| e.kind == kind)
+    }
+
+    #[test]
+    fn full_record_yields_all_five_entities() {
+        let d = data(
+            r#"{"ip":"8.8.8.8","hostname":"dns.google","city":"Mountain View",
+                "region":"California","country":"US","loc":"37.4056,-122.0775",
+                "org":"AS15169 Google LLC"}"#,
+        );
+        let ents = build_entities("8.8.8.8", &d, "s");
+        assert_eq!(ents.len(), 5);
+
+        let coords = one(&ents, EntityKind::Coordinates).unwrap();
+        // Entity::new normalises Coordinates to 6-decimal lat,lon.
+        assert_eq!(coords.value, "37.405600,-122.077500");
+        assert!(coords.has_tag(tags::GEOINT) && coords.has_tag("ipinfo"));
+        assert_eq!(
+            coords.evidence[0]
+                .attributes
+                .get("city")
+                .map(String::as_str),
+            Some("Mountain View")
+        );
+
+        assert_eq!(
+            one(&ents, EntityKind::Address).unwrap().value,
+            "Mountain View, California, US"
+        );
+        assert_eq!(
+            one(&ents, EntityKind::Organisation).unwrap().value,
+            "AS15169 Google LLC"
+        );
+        let asn = one(&ents, EntityKind::Asn).unwrap();
+        assert_eq!(asn.value, "AS15169");
+        assert!((asn.confidence - 0.80).abs() < 1e-9);
+        let dom = one(&ents, EntityKind::Domain).unwrap();
+        assert_eq!(dom.value, "dns.google");
+        assert!(dom.has_tag(tags::PTR));
+    }
+
+    #[test]
+    fn null_island_loc_is_dropped() {
+        // 0,0 (and sub-threshold magnitudes) is a placeholder, not a location.
+        let ents = build_entities("1.2.3.4", &data(r#"{"loc":"0,0"}"#), "s");
+        assert!(one(&ents, EntityKind::Coordinates).is_none());
+        let ents = build_entities("1.2.3.4", &data(r#"{"loc":"0.001,0.001"}"#), "s");
+        assert!(one(&ents, EntityKind::Coordinates).is_none());
+    }
+
+    #[test]
+    fn address_omits_region_when_absent() {
+        let ents = build_entities("1.2.3.4", &data(r#"{"city":"Sydney","country":"AU"}"#), "s");
+        assert_eq!(one(&ents, EntityKind::Address).unwrap().value, "Sydney, AU");
+    }
+
+    #[test]
+    fn org_without_as_prefix_yields_no_asn() {
+        let ents = build_entities("1.2.3.4", &data(r#"{"org":"Cloudflare Inc"}"#), "s");
+        assert!(one(&ents, EntityKind::Organisation).is_some());
+        assert!(one(&ents, EntityKind::Asn).is_none());
+    }
+
+    #[test]
+    fn dotless_hostname_is_not_a_domain() {
+        let ents = build_entities("1.2.3.4", &data(r#"{"hostname":"localhost"}"#), "s");
+        assert!(one(&ents, EntityKind::Domain).is_none());
     }
 }
