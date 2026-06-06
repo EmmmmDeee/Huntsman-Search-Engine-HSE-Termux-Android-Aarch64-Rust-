@@ -62,11 +62,14 @@ const CURL_MAX_DOWNLOAD_BYTES: &str = "33554432";
 /// (e.g. `socks5://127.0.0.1:9050` or `http://user:pass@host:port`),
 /// the proxy is passed to curl via `-x`. This enables Tor routing,
 /// residential proxy services, or any SOCKS/HTTP proxy chain.
-/// Resolve `url`'s host, drop private/reserved IPs, and return curl `--resolve`
-/// args pinning host:port to a vetted PUBLIC IP — TOCTOU-safe, since curl then
-/// will not re-resolve the initial host. Returns `None` when the host resolves
-/// only to private/reserved space (or is unparseable), so the caller refuses
-/// the fetch. This is the curl-fallback half of the SSRF defense, mirroring
+/// Vet `url`'s host against the private/reserved set and return the curl args
+/// that make the fetch SSRF-safe. For a **hostname**, resolves it, drops
+/// private/reserved addresses, and returns `--resolve host:port:<public-ip>` so
+/// curl will not re-resolve (TOCTOU-safe). For an **IP literal**, curl dials it
+/// directly with no DNS lookup, so there is nothing to pin: the literal is
+/// checked in-process and accepted with an **empty** arg set. Returns `None`
+/// when the host is private/reserved (or unparseable), so the caller refuses the
+/// fetch. The curl-fallback half of the SSRF defense, mirroring
 /// `http::SsrfResolver`; it covers attacker-controlled hosts such as
 /// employer_pivot's `https://{discovered_domain}/...`.
 async fn ssrf_resolve_pin(url: &str) -> Option<Vec<String>> {
