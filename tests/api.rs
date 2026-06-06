@@ -1350,6 +1350,40 @@ async fn scan_events_endpoint_is_server_sent_events() {
     );
 }
 
+#[tokio::test]
+async fn live_events_endpoint_is_server_sent_events() {
+    // The live-session stream shares `scan_events_sse`'s plumbing via
+    // `sse_event_stream` but routes on session ownership; guard its wire
+    // contract independently so the two endpoints can't silently diverge.
+    let app = test_app("live-sse-contract");
+    let body = r#"{"kind":"domain","value":"contoso.com","options":{"modules":[]},"live":{"interval_secs":3600}}"#;
+    let created = app
+        .clone()
+        .oneshot(post_json("/api/v1/live", body))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 202);
+    let live_id = body_json(created).await["live_id"]
+        .as_str()
+        .expect("live_id")
+        .to_string();
+
+    let resp = app
+        .oneshot(get(&format!("/api/v1/live/{live_id}/events")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct.starts_with("text/event-stream"),
+        "live events must stream as SSE, got content-type {ct:?}"
+    );
+}
+
 // ── HTTP response compression (mobile-bandwidth) ─────────────────────────────
 
 /// GET with `Accept-Encoding: gzip`, as every browser sends.

@@ -22,6 +22,7 @@ use tokio_stream::{StreamExt as _, wrappers::BroadcastStream};
 
 use super::AppState;
 use crate::core::{
+    event::{Event, EventBus},
     module::ModuleContext,
     scan::{Target, TargetKind},
 };
@@ -480,15 +481,37 @@ pub async fn search_entities(
 
 const SSE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-pub async fn scan_events_sse(
-    State(s): State<Arc<AppState>>,
-    Path(target_sid): Path<String>,
-) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let rx = s.bus.subscribe();
-
-    let stream = BroadcastStream::new(rx)
+/// Build the SSE body stream shared by the scan- and live-event endpoints.
+///
+/// `accept` selects which bus events belong on this stream (by `scan_id` and/or
+/// live-session ownership). Centralising the plumbing here is what keeps the two
+/// endpoints from drifting — every subtle SSE property lives in one place:
+///
+/// * **Lag tolerance** — a slow client that overflows its broadcast buffer
+///   yields `Err(Lagged)`, which falls through to `_ => None`: the missed events
+///   are skipped but the stream stays open (dropping a few live-log lines under
+///   load beats tearing the stream down).
+/// * **Idle timeout** — if no *matching* event arrives within
+///   [`SSE_IDLE_TIMEOUT`] the stream ends, reclaiming a client that vanished
+///   without a clean close (half-open TCP the keep-alive write hasn't tripped
+///   yet). A finished scan stops emitting, so its stream closes ~timeout later,
+///   as intended; the browser's `EventSource` transparently reconnects if the
+///   session is still live (only relevant when an interval exceeds the timeout).
+/// * **Keep-alive** — periodic comment pings hold the connection open and surface
+///   a dead socket promptly via the failing write.
+///
+/// On client disconnect axum drops this stream, dropping the broadcast receiver
+/// and unsubscribing it — so there is no per-connection resource to leak.
+fn sse_event_stream<F>(
+    bus: &EventBus,
+    accept: F,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>> + use<F>>
+where
+    F: Fn(&Event) -> bool + Send + 'static,
+{
+    let stream = BroadcastStream::new(bus.subscribe())
         .filter_map(move |msg| match msg {
-            Ok(event) if event.scan_id == target_sid => {
+            Ok(event) if accept(&event) => {
                 let payload = serde_json::to_string(&event.kind).unwrap_or_default();
                 Some(Ok(SseEvent::default().data(payload)))
             }
@@ -499,6 +522,13 @@ pub async fn scan_events_sse(
         .filter_map(std::result::Result::ok);
 
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+pub async fn scan_events_sse(
+    State(s): State<Arc<AppState>>,
+    Path(target_sid): Path<String>,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    sse_event_stream(&s.bus, move |event| event.scan_id == target_sid)
 }
 
 // ─── Settings handlers ─────────────────────────────────────────────────────
@@ -747,25 +777,12 @@ pub async fn live_events_sse(
     State(s): State<Arc<AppState>>,
     Path(target_lid): Path<String>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let rx = s.bus.subscribe();
+    // A live session's stream carries both its own lifecycle events (emitted
+    // under `scan_id == live_id`) and every per-iteration scan it spawned.
     let live = s.live.clone();
-
-    let stream = BroadcastStream::new(rx)
-        .filter_map(move |msg| match msg {
-            Ok(event)
-                if event.scan_id == target_lid
-                    || live.session_owns_scan(&target_lid, &event.scan_id) =>
-            {
-                let payload = serde_json::to_string(&event.kind).unwrap_or_default();
-                Some(Ok(SseEvent::default().data(payload)))
-            }
-            _ => None,
-        })
-        .timeout(SSE_IDLE_TIMEOUT)
-        .take_while(std::result::Result::is_ok)
-        .filter_map(std::result::Result::ok);
-
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    sse_event_stream(&s.bus, move |event| {
+        event.scan_id == target_lid || live.session_owns_scan(&target_lid, &event.scan_id)
+    })
 }
 
 // ─── Tests (from scan.rs) ─────────────────────────────────────────────────
