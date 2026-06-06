@@ -548,13 +548,16 @@ mod tests {
 
     #[test]
     fn key_fingerprint_identifies_origin_without_full_secret() {
-        let fp = key_fingerprint("seek-62650f9a36e446fc3b1c1bcdf32a825048e608160e0fd0a4");
+        // A SYNTHETIC key in the `seek-…` shape — never a real/embedded value, so
+        // the "single source of truth for embedded keys" architecture guard isn't
+        // tripped by a literal living outside util::keys.rs.
+        let fp = key_fingerprint("seek-1234567890aaaabbbbccccddddeeeeffff0000111122223333");
         // Provider-prefixed, head + tail present, middle elided.
-        assert!(fp.starts_with("see-know.eu:seek-62650f9a"), "got {fp}");
-        assert!(fp.ends_with("0fd0a4"), "got {fp}");
+        assert!(fp.starts_with("see-know.eu:seek-12345"), "got {fp}");
+        assert!(fp.ends_with("223333"), "got {fp}");
         assert!(fp.contains('\u{2026}'));
-        // The full secret never appears verbatim.
-        assert!(!fp.contains("36e446fc3b1c1bcdf32a825048e608160e0fd"));
+        // The full secret never appears verbatim — the elided middle is dropped.
+        assert!(!fp.contains("aaaabbbbccccddddeeeeffff"));
         // Short/empty keys degrade gracefully.
         assert_eq!(key_fingerprint(""), "see-know.eu:(no key)");
         assert_eq!(key_fingerprint("short"), "see-know.eu:short");

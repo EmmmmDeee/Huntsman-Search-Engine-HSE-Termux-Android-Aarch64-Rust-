@@ -100,7 +100,60 @@ pub mod xposed_or_not;
 
 use std::sync::Arc;
 
+use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::core::module::Module;
+
+/// Reset the foreign-API-key sink at scan start. Re-exported here so
+/// `core/engine` can drive it without importing `util` directly — the same
+/// architecture-rule shim used for the per-module budget resets (the
+/// dependency direction is `core → modules → util`, never `core → util`).
+pub fn reset_found_keys() {
+    crate::util::found_keys::reset();
+}
+
+/// Drain the foreign-API-key sink into first-class `ApiKey` entities for
+/// `scan_id`. Lives at the module layer (which may use both `util` and
+/// `core::entity`) so the engine's finalisation stays free of any `util`
+/// import. A heuristic match (generic-hex / url-param — usually a password
+/// hash) gets a lower base confidence and a distinct `key-confidence:*` tag so
+/// the dossier and correlations can separate confirmed vendor keys from the
+/// long tail without losing either.
+pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
+    crate::util::found_keys::drain()
+        .into_iter()
+        .map(|fk| {
+            let (conf, confidence_tag) = if fk.heuristic {
+                (0.45, "key-confidence:heuristic")
+            } else {
+                (0.80, "key-confidence:vendor")
+            };
+            let mut e = Entity::new(EntityKind::ApiKey, &fk.key, conf, scan_id);
+            e.tag("api-key");
+            e.tag("foreign-key");
+            e.tag("retrieved");
+            e.tag(confidence_tag);
+            e.tag(format!("service:{}", fk.service));
+            e.add_evidence(
+                Evidence::new(
+                    "found_keys",
+                    format!(
+                        "Foreign {} API key retrieved from {} data",
+                        fk.service, fk.provider
+                    ),
+                )
+                .with_attr("service", &fk.service)
+                .with_attr("source_provider", &fk.provider)
+                .with_attr("source_query", &fk.query)
+                .with_attr("occurrences", fk.count.to_string())
+                .with_attr(
+                    "confidence_class",
+                    if fk.heuristic { "heuristic" } else { "vendor" },
+                ),
+            );
+            e
+        })
+        .collect()
+}
 
 /// Built-in module set. The engine sorts by priority — order here is irrelevant.
 pub fn registry() -> Vec<Arc<dyn Module>> {

@@ -289,7 +289,8 @@ impl ScanEngine {
         crate::modules::wigle::reset_budget();
         // Clear the foreign-API-key sink so this scan reports only the keys IT
         // retrieves from endpoint responses (and refresh the own-key exclusion).
-        crate::util::found_keys::reset();
+        // Via the module-layer shim — core must not import util directly.
+        crate::modules::reset_found_keys();
         // Apply the regional-search toggle for this scan. Regional augmentation
         // is on when EITHER the per-scan flag (`--regional`) is set OR the
         // persistent default `feature.regional` is on (universal toggleability;
@@ -433,44 +434,7 @@ impl ScanEngine {
         // tags/evidence is GREATEST-merged, never duplicated or blindly
         // overwritten.
         let mut entity_map = entity_map;
-        for fk in crate::util::found_keys::drain() {
-            // A heuristic (generic-hex / url-param) match is far more likely a
-            // password hash than a real key, so it gets a lower base confidence
-            // and a distinct tag — the dossier and any correlation can separate
-            // confirmed vendor keys from the long tail without losing either.
-            let (conf, confidence_tag) = if fk.heuristic {
-                (0.45, "key-confidence:heuristic")
-            } else {
-                (0.80, "key-confidence:vendor")
-            };
-            let mut e = Entity::new(
-                crate::core::entity::EntityKind::ApiKey,
-                &fk.key,
-                conf,
-                &scan.id,
-            );
-            e.tag("api-key");
-            e.tag("foreign-key");
-            e.tag("retrieved");
-            e.tag(confidence_tag);
-            e.tag(format!("service:{}", fk.service));
-            e.add_evidence(
-                crate::core::entity::Evidence::new(
-                    "found_keys",
-                    format!(
-                        "Foreign {} API key retrieved from {} data",
-                        fk.service, fk.provider
-                    ),
-                )
-                .with_attr("service", &fk.service)
-                .with_attr("source_provider", &fk.provider)
-                .with_attr("source_query", &fk.query)
-                .with_attr("occurrences", fk.count.to_string())
-                .with_attr(
-                    "confidence_class",
-                    if fk.heuristic { "heuristic" } else { "vendor" },
-                ),
-            );
+        for e in crate::modules::drain_found_key_entities(&scan.id) {
             match entity_map.get_mut(&e.uid) {
                 Some(existing) => existing.merge(e),
                 None => {
