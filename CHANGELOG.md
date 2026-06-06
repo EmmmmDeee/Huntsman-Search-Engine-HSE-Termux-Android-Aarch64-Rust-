@@ -40,6 +40,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Entity UID normalisation folds non-ASCII uppercase, so internationalised
+  emails/usernames dedup correctly.** `normalise` (which keys every entity's UID)
+  had an `Email | Username` fast path that returned the value unchanged whenever
+  it contained no *ASCII* uppercase byte. A value whose only capital was
+  non-ASCII — a German/Scandinavian name like `Ölaf`, a Cyrillic/Greek handle, or
+  Turkish dotted `İstanbul` — therefore skipped case-folding entirely, while its
+  all-caps spelling (`ÖLAF`) folded normally. The two spellings got different
+  UIDs, so one real identity fragmented into separate entities that never merged
+  or corroborated. Folding is now total (`str::to_lowercase`, full Unicode) — the
+  same bug class as the earlier `email_locale`/`email_header_geo` fixes, here in
+  the core dedup path. The removed fast path also still allocated, so it bought
+  nothing. Regression-tested across Latin-1, Greek, and Turkish capitals.
 - **`email_locale` matches mixed-case names instead of silently missing them.**
   Its surname-suffix and given-name detection compared an *un-lowercased* email
   local part against all-lowercase pattern tables (`first == "guillaume"`,

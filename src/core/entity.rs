@@ -544,15 +544,14 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
 pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
         EntityKind::Email | EntityKind::Username => {
-            let trimmed = value.trim();
-            if trimmed.bytes().all(|b| !b.is_ascii_uppercase()) {
-                return trimmed.to_string();
-            }
-            let mut s = String::with_capacity(trimmed.len());
-            for c in trimmed.chars() {
-                s.extend(c.to_lowercase());
-            }
-            s
+            // Total Unicode case-fold for dedup. `str::to_lowercase` maps every
+            // char through `char::to_lowercase`, so a value whose only capital is
+            // non-ASCII (`Ölaf`, a Cyrillic/Greek handle, Turkish `İ`) folds the
+            // same as its all-caps spelling — they must share a UID. (A previous
+            // ASCII-only "fast path" returned such values unfolded, fragmenting
+            // one identity across two UIDs; it also still allocated, so it bought
+            // nothing.)
+            value.trim().to_lowercase()
         }
         EntityKind::Domain => {
             let trimmed = value.trim();
@@ -1275,6 +1274,34 @@ mod tests {
     fn normalise_username_lowercases_and_trims() {
         let result = normalise(&EntityKind::Username, "  MyUser  ");
         assert_eq!(result, "myuser");
+    }
+
+    #[test]
+    fn normalise_folds_non_ascii_uppercase_for_dedup() {
+        // Regression: the old fast path returned early when a value had no ASCII
+        // uppercase byte, so a value whose only capital is NON-ASCII (e.g. a
+        // German/Scandinavian name, a Cyrillic/Greek handle, Turkish dotted-I)
+        // was never folded — fragmenting one real identity across two UIDs while
+        // its all-caps spelling folded correctly. Unicode folding must be total.
+        for (mixed, lower) in [
+            ("Ölaf", "ölaf"),
+            ("İstanbul", "i\u{307}stanbul"), // İ folds to i + combining dot above
+            ("ÉRIC", "éric"),
+        ] {
+            for kind in [EntityKind::Email, EntityKind::Username] {
+                assert_eq!(
+                    normalise(&kind, mixed),
+                    lower,
+                    "{kind:?}: {mixed:?} must fold to {lower:?}"
+                );
+                // The mixed-case and lower-case spellings must share a UID.
+                assert_eq!(
+                    Entity::new(kind.clone(), mixed, 0.5, "s").uid,
+                    Entity::new(kind.clone(), lower, 0.5, "s").uid,
+                    "{kind:?}: {mixed:?} and {lower:?} must dedup to one UID"
+                );
+            }
+        }
     }
 
     // ── Classification::as_str round-trips ──────────────────────────────────
