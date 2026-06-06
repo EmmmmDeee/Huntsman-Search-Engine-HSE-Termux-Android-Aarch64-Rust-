@@ -350,4 +350,55 @@ mod tests {
         assert_eq!(r.entities[0].value, "Australia");
         assert!(r.entities[0].has_tag("domain-inferred"));
     }
+
+    #[test]
+    fn tables_are_well_formed_and_iso_consistent() {
+        // Both lookups compare against a *lowercased* domain
+        // (classify_by_known_service / classify_by_cctld), so any entry carrying
+        // an uppercase letter can never match — it would be silently dead data,
+        // the same failure mode that hid a mistyped OUI prefix. Guard the shape
+        // of every entry, plus the invariant that one ISO code names exactly one
+        // country across both tables (so "AU" can't drift to two spellings).
+        fn two_upper(cc: &str) -> bool {
+            cc.len() == 2 && cc.bytes().all(|b| b.is_ascii_uppercase())
+        }
+        let mut iso_name: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        let mut check_iso = |cc: &'static str, name: &'static str| {
+            assert!(
+                two_upper(cc),
+                "ISO code {cc:?} must be two uppercase ASCII letters"
+            );
+            if let Some(prev) = iso_name.insert(cc, name) {
+                assert_eq!(
+                    prev, name,
+                    "ISO {cc} names two countries: {prev:?} vs {name:?}"
+                );
+            }
+        };
+
+        for &(pattern, location, cc) in GEO_SERVICES {
+            assert_eq!(
+                pattern,
+                pattern.to_ascii_lowercase(),
+                "GEO_SERVICES pattern {pattern:?} must be lowercase to match a lowercased domain"
+            );
+            assert!(
+                pattern.contains('.') && !pattern.starts_with('.') && !pattern.ends_with('.'),
+                "GEO_SERVICES pattern {pattern:?} must be a bare domain (interior dot, no leading/trailing dot)"
+            );
+            check_iso(cc, location);
+        }
+        for &(tld, location, cc) in CCTLD_MAP {
+            assert_eq!(
+                tld,
+                tld.to_ascii_lowercase(),
+                "CCTLD tld {tld:?} must be lowercase to match a lowercased domain"
+            );
+            assert!(
+                tld.starts_with('.') && tld.len() >= 3,
+                "CCTLD tld {tld:?} must start with '.' and be a real suffix"
+            );
+            check_iso(cc, location);
+        }
+    }
 }

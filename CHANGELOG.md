@@ -67,6 +67,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Well-formedness + ISO-consistency guard for the `geo_domain_classifier`
+  tables.** Both lookups (`classify_by_known_service`, `classify_by_cctld`)
+  compare against a *lowercased* domain, so any of the 122 `GEO_SERVICES` /
+  `CCTLD_MAP` entries carrying an uppercase letter would silently never match —
+  the same dead-data failure mode as the OUI typo above. A new test asserts
+  every pattern is lowercase and well-shaped (ccTLDs start with `.`; service
+  domains carry an interior dot), every ISO code is two uppercase letters, and a
+  given code names exactly one country across both tables. Currently clean;
+  preventive against future additions.
 - **`dns_intel` now discloses SaaS vendor relationships from domain-verification
   TXT records.** Publishing a `…-domain-verification=` record proves an org has
   onboarded a given vendor — real OSINT for mapping its tech/vendor stack. The
