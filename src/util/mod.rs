@@ -231,6 +231,14 @@ pub mod str_util {
     /// Whitespace-only is treated as absent. Single definition so the many OSINT
     /// modules that surface "the value if the upstream actually sent one" share
     /// identical semantics instead of each re-deriving them.
+    ///
+    /// ```
+    /// use huntsman_search_engine::util::str_util::nonempty;
+    ///
+    /// assert_eq!(nonempty(&Some("  hi ".to_string())), Some("hi")); // trimmed
+    /// assert_eq!(nonempty(&Some("   ".to_string())), None);          // blank → absent
+    /// assert_eq!(nonempty(&None), None);
+    /// ```
     #[must_use]
     pub fn nonempty(o: &Option<String>) -> Option<&str> {
         o.as_deref().map(str::trim).filter(|s| !s.is_empty())
@@ -239,6 +247,13 @@ pub mod str_util {
     /// The ASCII digits of `s`, in order, with every other character dropped.
     /// One definition of "keep only the digits" for phone / ABN / ACN / LEI
     /// normalisation (was re-derived inline in ~9 places).
+    ///
+    /// ```
+    /// use huntsman_search_engine::util::str_util::ascii_digits;
+    ///
+    /// assert_eq!(ascii_digits("+61 (2) 9374-4000"), "61293744000");
+    /// assert_eq!(ascii_digits("no digits here"), "");
+    /// ```
     #[must_use]
     pub fn ascii_digits(s: &str) -> String {
         s.chars().filter(char::is_ascii_digit).collect()
@@ -509,6 +524,16 @@ pub mod geo {
     /// builds on this but additionally drops the near-null-island placeholder
     /// band those APIs emit. Precise sources stay here so a real equatorial fix
     /// isn't discarded.
+    ///
+    /// ```
+    /// use huntsman_search_engine::util::geo::is_valid_coords;
+    ///
+    /// assert!(is_valid_coords(-27.4766, 153.0166)); // Brisbane
+    /// assert!(is_valid_coords(0.0, 153.0));          // a real equatorial fix is kept
+    /// assert!(!is_valid_coords(0.0, 0.0));           // Null Island sentinel
+    /// assert!(!is_valid_coords(91.0, 0.0));          // out of range
+    /// assert!(!is_valid_coords(f64::NAN, 0.0));      // non-finite
+    /// ```
     #[must_use]
     pub fn is_valid_coords(lat: f64, lon: f64) -> bool {
         lat.is_finite()
@@ -537,6 +562,15 @@ pub mod geo {
     /// then became high-confidence false fixes — precisely what
     /// [`is_valid_coords`] exists to reject. Folding the validity check in keeps
     /// the band heuristic while closing that gap in one place.
+    ///
+    /// ```
+    /// use huntsman_search_engine::util::geo::is_plausible_provider_coord;
+    ///
+    /// assert!(is_plausible_provider_coord(-27.47, 153.02)); // real fix
+    /// assert!(!is_plausible_provider_coord(0.001, 0.001));  // null-island jitter
+    /// assert!(!is_plausible_provider_coord(0.0, 153.0));    // a component in the band
+    /// assert!(!is_plausible_provider_coord(91.0, 0.0));     // also fails validity
+    /// ```
     #[must_use]
     pub fn is_plausible_provider_coord(lat: f64, lon: f64) -> bool {
         is_valid_coords(lat, lon) && lat.abs() > NULL_ISLAND_BAND && lon.abs() > NULL_ISLAND_BAND
