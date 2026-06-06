@@ -115,40 +115,34 @@ fn records_for_type(
             }
             "TXT" => {
                 let txt = rec.data.trim().trim_matches('"');
-                if txt.starts_with("v=spf1") {
-                    for part in txt.split_whitespace() {
-                        // Both IPv4 and IPv6 SPF members — `ip6:` was previously
-                        // dropped on the floor. The CIDR suffix (if any) is split
-                        // off; the IPv6 address keeps its internal colons.
-                        if let Some(ip) = part
-                            .strip_prefix("ip4:")
-                            .or_else(|| part.strip_prefix("ip6:"))
-                        {
-                            let ip = ip.split('/').next().unwrap_or(ip);
-                            // Skip a bare `ip4:`/`ip6:` with no address — an empty
-                            // value would normalise to a blank entity.
-                            if !ip.is_empty() && seen.insert(format!("spf:{ip}")) {
-                                let mut e = Entity::new(EntityKind::IpAddress, ip, 0.75, scan_id);
-                                e.tag("dns");
-                                e.tag("spf");
-                                e.add_evidence(Evidence::new(
-                                    SRC,
-                                    format!("SPF authorised sender for {domain}"),
-                                ));
-                                out.push(e);
+                if crate::util::spf::is_spf(txt) {
+                    for member in crate::util::spf::members(txt) {
+                        match member {
+                            crate::util::spf::Member::Ip(ip) => {
+                                if seen.insert(format!("spf:{ip}")) {
+                                    let mut e =
+                                        Entity::new(EntityKind::IpAddress, ip, 0.75, scan_id);
+                                    e.tag("dns");
+                                    e.tag("spf");
+                                    e.add_evidence(Evidence::new(
+                                        SRC,
+                                        format!("SPF authorised sender for {domain}"),
+                                    ));
+                                    out.push(e);
+                                }
                             }
-                        }
-                        // Match the MX/NS/CNAME rule: a usable host is non-empty
-                        // and dotted (skip a bare `include:` or a dotless label).
-                        if let Some(inc) = part.strip_prefix("include:")
-                            && inc.contains('.')
-                            && seen.insert(format!("spfinc:{inc}"))
-                        {
-                            let mut e = Entity::new(EntityKind::Domain, inc, 0.65, scan_id);
-                            e.tag("dns");
-                            e.tag("spf-include");
-                            e.add_evidence(Evidence::new(SRC, format!("SPF include for {domain}")));
-                            out.push(e);
+                            crate::util::spf::Member::Include(inc) => {
+                                if seen.insert(format!("spfinc:{inc}")) {
+                                    let mut e = Entity::new(EntityKind::Domain, inc, 0.65, scan_id);
+                                    e.tag("dns");
+                                    e.tag("spf-include");
+                                    e.add_evidence(Evidence::new(
+                                        SRC,
+                                        format!("SPF include for {domain}"),
+                                    ));
+                                    out.push(e);
+                                }
+                            }
                         }
                     }
                 }

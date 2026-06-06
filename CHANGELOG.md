@@ -12,13 +12,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
-- **`doh_resolver` now surfaces SPF `ip6:` members.** The SPF TXT parser only ever
-  read `ip4:` mechanisms, silently discarding every `ip6:` authorised-sender IP —
-  despite the module tagging A/AAAA results `ipv4`/`ipv6` and advertising "extracts
-  IPs from … TXT". Both mechanisms are now parsed through one branch (CIDR suffix
-  stripped, IPv6 colons preserved, canonicalised by `Entity::new`), and the IP
-  evidence label is corrected from the copy-pasted "SPF include" to "SPF authorised
-  sender". Unit-tested with a dual ip4/ip6 record.
+- **SPF mechanism parsing unified into `util::spf`, fixing two divergences.**
+  `dns_intel` and `doh_resolver` each hand-rolled a `v=spf1` parser, and they had
+  already drifted: `dns_intel` matched the version tag case-insensitively (correct
+  per RFC 7208 §4.5) while `doh_resolver` used a case-sensitive `starts_with`, and
+  **both silently dropped every `ip6:` mechanism** despite the modules tagging
+  A/AAAA results `ipv4`/`ipv6`. Both now call one tested `util::spf` primitive
+  (`is_spf` + a `members` iterator yielding `ip4:`/`ip6:` addresses — CIDR stripped,
+  IPv6 colons preserved — and dotted `include:` domains, skipping bare/blank
+  mechanisms). `doh_resolver` thereby gains case-insensitive SPF detection and both
+  modules gain IPv6 authorised-sender extraction. Each module keeps its own
+  dedup/entity/tagging; the IP evidence label is corrected to "SPF authorised
+  sender".
 
 - **Correlation rule AU-038 — verified cross-platform identity.** `search_engines`
   tags a `Url` `confirmed-profile` when the searched handle is the exact path on a

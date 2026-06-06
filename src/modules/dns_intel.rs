@@ -380,33 +380,32 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
             for t in &txts {
                 let t = t.trim_matches('"');
                 let b = t.as_bytes();
-                if b.len() >= 6 && b[..6].eq_ignore_ascii_case(b"v=spf1") {
+                if crate::util::spf::is_spf(t) {
                     dom.tag("spf");
-                    for part in t.split_whitespace() {
-                        if let Some(ip) = part.strip_prefix("ip4:") {
-                            let ip = ip.split('/').next().unwrap_or(ip);
-                            if !ip.is_empty() {
+                    for member in crate::util::spf::members(t) {
+                        match member {
+                            crate::util::spf::Member::Ip(ip) => {
                                 let mut ie =
                                     Entity::new(EntityKind::IpAddress, ip, 0.75, &ctx.scan_id);
                                 ie.tag("dns");
                                 ie.tag("spf");
                                 ie.add_evidence(Evidence::new(
                                     SRC,
-                                    format!("SPF ip4 for {domain}"),
+                                    format!("SPF authorised sender for {domain}"),
                                 ));
                                 entities.push(ie);
                             }
-                        } else if let Some(inc) = part.strip_prefix("include:")
-                            && inc.contains('.')
-                        {
-                            let mut de = Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
-                            de.tag("dns");
-                            de.tag("spf-include");
-                            de.add_evidence(Evidence::new(
-                                SRC,
-                                format!("SPF include for {domain}"),
-                            ));
-                            entities.push(de);
+                            crate::util::spf::Member::Include(inc) => {
+                                let mut de =
+                                    Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
+                                de.tag("dns");
+                                de.tag("spf-include");
+                                de.add_evidence(Evidence::new(
+                                    SRC,
+                                    format!("SPF include for {domain}"),
+                                ));
+                                entities.push(de);
+                            }
                         }
                     }
                 } else if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"v=dkim1") {
