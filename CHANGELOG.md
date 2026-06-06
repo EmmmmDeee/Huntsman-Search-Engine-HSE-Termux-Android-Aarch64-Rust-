@@ -40,6 +40,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Hex hash/key blobs are no longer misclassified as Bitcoin wallets.**
+  `core::crypto::classify_crypto_address` documents that a 32/64-char hex blob
+  must stay a key, but the legacy-BTC branch (`1…`/`3…`, 26–35 base58) broke it:
+  base58 excludes only `0` among the hex digits, so a 32-char MD5 with no `0` and
+  a `1`/`3` lead satisfied `all(is_base58)` and resolved to `crypto_btc`. With
+  ~13% of MD5s lacking a `0`, that mis-minted ~1–2% of password hashes as
+  cryptocurrency wallets — polluting the entity graph and firing the crypto
+  correlators on hashes. The prefix-less/short base58 branches now reject
+  all-ASCII-hex candidates (a genuine base58 address is never all-hex,
+  `p < (15/58)²⁶`); `0x`-ETH and bech32 are prefix-disambiguated and untouched.
+  Proved by an exhaustive test (no all-hex string of any length/lead digit is
+  ever classified) while the real BTC/ETH examples still resolve.
+- **`abn::company_names` keeps the "& Co" idiom attached in a syndicate.**
+  It split joint-owner strings on `&`, but that `&` is also part of a single
+  company name: `"Ashton & Co Pty Ltd & Berg Pty Ltd"` split into a bogus
+  standalone `"Co Pty Ltd"` (which itself passes `looks_like_company`), so the
+  ABN register was queried for the wrong name. A segment whose first word is
+  `CO`/`COMPANY` is now rejoined to its predecessor before the syndicate split;
+  single `"& Co"` companies and genuine multi-company syndicates are unchanged.
+  Regression-tested.
 - **Company legal-form detection survives trailing punctuation.**
   `abn::looks_like_company` matched suffixes (`LIMITED`, `LTD`, `INC`, `NL`,
   `& CO`, …) as space-bounded tokens, so a form as the final token followed by
