@@ -12,6 +12,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **OUI classifier recognises Tesla's `DC:44:27` prefix again.** One entry in
+  the curated `util::oui` table was mis-typed as a 7-character `"DC44271"`.
+  `classify_mac` extracts the first **6** hex digits of a MAC and compares for
+  equality, so this prefix could never match any input — a Tesla on the
+  `DC:44:27` OUI silently classified as `Unregistered`. Corrected to `"DC4427"`
+  (its real IEEE registration) and guarded by a new structural test
+  (`oui_table_prefixes_are_well_formed`) asserting every table prefix is exactly
+  6 uppercase-hex chars, so a future typo fails the suite instead of going dark.
 - **`geo_intel` no longer geolocates Caribbean phone numbers to the United
   States.** Its `phone_prefix_to_country` only scanned 1-3 digit dialling codes,
   but the Caribbean NANP territories share country code +1 with a *4-digit* prefix

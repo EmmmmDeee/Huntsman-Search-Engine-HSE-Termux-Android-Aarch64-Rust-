@@ -172,7 +172,7 @@ const OUI_TABLE: &[(&str, &str, DeviceClass)] = &[
     ("4CFCAA", "Tesla",          DeviceClass::Vehicle),
     ("984FEE", "Tesla",          DeviceClass::Vehicle),
     ("CC51B3", "Tesla",          DeviceClass::Vehicle),
-    ("DC44271", "Tesla",         DeviceClass::Vehicle),
+    ("DC4427", "Tesla",          DeviceClass::Vehicle),
 
     // ── Hikvision / Dahua / Axis — IP cameras ──
     ("4C71DD", "Hikvision",      DeviceClass::Camera),
@@ -282,6 +282,16 @@ mod tests {
     }
 
     #[test]
+    fn classify_tesla_dc4427_now_reachable() {
+        // Regression: this OUI was mis-entered as a 7-char "DC44271", which could
+        // never equal classify_mac's 6-hex extract, so a Tesla on the DC:44:27
+        // prefix classified as Unregistered. The corrected "DC4427" resolves.
+        let info = classify_mac("DC:44:27:AA:BB:CC").unwrap();
+        assert_eq!(info.vendor, "Tesla");
+        assert_eq!(info.class, DeviceClass::Vehicle);
+    }
+
+    #[test]
     fn classify_hikvision_camera() {
         let info = classify_mac("4C-71-DD-AB-CD-EF").unwrap();
         assert_eq!(info.vendor, "Hikvision");
@@ -348,6 +358,30 @@ mod tests {
         let b = classify_mac("3C:07:54:FF:FF:FF").unwrap();
         assert_eq!(a.vendor, b.vendor);
         assert_eq!(a.class, b.class);
+    }
+
+    #[test]
+    fn oui_table_prefixes_are_well_formed() {
+        // Every OUI is 24 bits — exactly 6 hex digits. `classify_mac` extracts
+        // the first 6 hex chars of the input and uppercases them, then
+        // `lookup_prefix` compares for *equality*, so any table prefix that
+        // isn't exactly 6 uppercase-hex chars can never equal an extracted
+        // prefix: it's unreachable dead data. This guard turns that silent
+        // mis-entry into a test failure (it caught a 7-char "DC44271" Tesla
+        // typo that classified no MAC at all).
+        for &(p, vendor, _) in OUI_TABLE {
+            assert_eq!(
+                p.len(),
+                6,
+                "OUI prefix {p:?} ({vendor}) must be exactly 6 hex chars"
+            );
+            assert!(
+                p.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b)),
+                "OUI prefix {p:?} ({vendor}) must be uppercase hex — \
+                 lowercase/non-hex can't match classify_mac's normalised input"
+            );
+        }
     }
 
     #[test]
