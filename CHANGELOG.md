@@ -12,6 +12,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`hse import` no longer panics displaying a multi-byte entity value.** The
+  text listing truncated each value with a byte slice `&value[..len.min(70)]`;
+  since an entity value is arbitrary text (a non-ASCII name/address), a value over
+  70 bytes whose 70th byte fell mid-codepoint would panic the command. Switched to
+  the existing char-boundary-safe `str_util::truncate_safe`. (Found by sweeping the
+  tree for the same byte-slice class as the username-variant panic below; the
+  other `&s[..len.min(N)]` sites all operate on ASCII hex IDs / geohashes / keys.)
 - **`search_engines` username-variant generation no longer panics on a
   multi-byte handle.** `generate_username_variants` produced its truncation
   variant with a byte slice `lower[..len-1]`, which panics when the handle ends in

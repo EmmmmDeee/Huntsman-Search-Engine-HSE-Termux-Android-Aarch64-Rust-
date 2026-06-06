@@ -426,7 +426,10 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
                     "  [{:.2}] {:15} {}",
                     e.confidence,
                     e.kind.to_string(),
-                    &e.value[..e.value.len().min(70)]
+                    // `truncate_safe`, not `&value[..len.min(70)]`: an entity
+                    // value is arbitrary text (a non-ASCII name/address), so a
+                    // raw byte slice at 70 panics when it lands mid-codepoint.
+                    crate::util::str_util::truncate_safe(&e.value, 70)
                 );
             }
         }
