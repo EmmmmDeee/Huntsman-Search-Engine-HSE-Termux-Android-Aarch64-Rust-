@@ -758,6 +758,23 @@ fn emit_key(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
+    // A cryptocurrency wallet address is NOT an API key — `identify_*` groups
+    // it here only because both are high-entropy tokens. Emit it as a
+    // first-class CryptoAddress (chain-tagged) and skip the API-key/ROI/key-pool
+    // machinery entirely: it can't authenticate anything.
+    if let Some(chain) = service.strip_prefix("crypto_") {
+        if seen.insert(format!("@crypto:{key_val}")) {
+            let mut e = Entity::new(EntityKind::CryptoAddress, key_val, 0.80, scan_id);
+            e.tag("crypto-address");
+            e.tag(format!("chain:{chain}"));
+            e.add_evidence(
+                Evidence::new(SRC, format!("{chain} wallet address from {source}"))
+                    .with_attr("chain", chain),
+            );
+            result.push(e);
+        }
+        return;
+    }
     let dedup = format!(
         "@apikey:{service}:{}",
         crate::util::str_util::truncate_safe(key_val, 16)
@@ -1330,6 +1347,31 @@ mod tests {
     }
 
     #[test]
+    fn crypto_address_emits_as_crypto_address_not_api_key() {
+        // Regression: a Bitcoin wallet address shares the high-entropy shape of
+        // an API key, but it is NOT one. It must surface as a chain-tagged
+        // CryptoAddress, never an ApiKey — and never enter the key pool.
+        let item = serde_json::json!({
+            // A well-known burn/genesis P2PKH address (valid base58, public).
+            "secret": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+            "dbname": "TestBreach",
+        });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        let crypto: Vec<_> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::CryptoAddress)
+            .collect();
+        assert_eq!(crypto.len(), 1, "got {:?}", result.entities);
+        assert!(crypto[0].has_tag("chain:btc"), "tags: {:?}", crypto[0].tags);
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::ApiKey),
+            "a wallet address must not be classified as an API key"
+        );
+    }
+
+    #[test]
     fn extract_deduplicates_across_fields() {
         // Same key value in two fields → emit once.
         let key = "AKIAJK28SLQQV61MNG9X";
@@ -1613,7 +1655,9 @@ mod tests {
         let mut result = ModuleResult::new();
         extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
         assert_eq!(result.entities.len(), 1);
-        assert!(result.entities[0].has_tag("service:crypto_btc"));
+        // A wallet address is a first-class CryptoAddress, not an API key.
+        assert_eq!(result.entities[0].kind, EntityKind::CryptoAddress);
+        assert!(result.entities[0].has_tag("chain:btc"));
     }
 
     #[test]
@@ -1627,17 +1671,22 @@ mod tests {
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
         extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
-        // Both the ETH wallet and the AWS-shape impostor must surface
-        // (the latter is the operator's deliberate `ETHERSCAN_KEY=`
-        // mis-naming — real Etherscan keys are 34-char alphanumeric
-        // but the value here matches our AWS pattern).
+        // Both surface, each correctly typed: the ETH wallet as a
+        // CryptoAddress (chain:eth), and the AWS-shape impostor (the operator's
+        // deliberate `ETHERSCAN_KEY=` mis-naming — its value matches our AWS
+        // pattern) as an ApiKey (service:aws).
         assert!(
             result
                 .entities
                 .iter()
-                .any(|e| e.has_tag("service:crypto_eth"))
+                .any(|e| e.kind == EntityKind::CryptoAddress && e.has_tag("chain:eth"))
         );
-        assert!(result.entities.iter().any(|e| e.has_tag("service:aws")));
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::ApiKey && e.has_tag("service:aws"))
+        );
     }
 
     // ─── KeyFinder-ported prefix coverage ──────────────────────────

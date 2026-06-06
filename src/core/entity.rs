@@ -91,6 +91,11 @@ pub enum EntityKind {
     MacAddress,
     DeviceId,
 
+    // Financial — cryptocurrency wallet addresses (BTC/ETH/LTC/…). A first-class
+    // OSINT artifact: case-sensitive (base58 / bech32 / 0x-hex), never an API
+    // key, and the pivot point for free chain-explorer enrichment.
+    CryptoAddress,
+
     // Catch-all
     Other(String),
 }
@@ -115,6 +120,7 @@ impl fmt::Display for EntityKind {
             Self::AbnAcn => f.write_str("abn_acn"),
             Self::MacAddress => f.write_str("mac_address"),
             Self::DeviceId => f.write_str("device_id"),
+            Self::CryptoAddress => f.write_str("crypto_address"),
             Self::Other(s) => write!(f, "other:{s}"),
         }
     }
@@ -1306,6 +1312,7 @@ mod tests {
             EntityKind::AbnAcn,
             EntityKind::MacAddress,
             EntityKind::DeviceId,
+            EntityKind::CryptoAddress,
             EntityKind::Other("custom".to_string()),
         ];
         for kind in variants {

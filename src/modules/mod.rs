@@ -121,6 +121,26 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
     crate::util::found_keys::drain()
         .into_iter()
         .map(|fk| {
+            // A crypto wallet address is identified alongside keys (both are
+            // high-entropy tokens) but is a distinct artifact — emit it as a
+            // chain-tagged CryptoAddress, never a foreign API key.
+            if let Some(chain) = fk.service.strip_prefix("crypto_") {
+                let mut e = Entity::new(EntityKind::CryptoAddress, &fk.key, 0.80, scan_id);
+                e.tag("crypto-address");
+                e.tag("retrieved");
+                e.tag(format!("chain:{chain}"));
+                e.add_evidence(
+                    Evidence::new(
+                        "found_keys",
+                        format!("{chain} wallet address retrieved from {} data", fk.provider),
+                    )
+                    .with_attr("chain", chain)
+                    .with_attr("source_provider", &fk.provider)
+                    .with_attr("source_query", &fk.query)
+                    .with_attr("occurrences", fk.count.to_string()),
+                );
+                return e;
+            }
             let mut e = Entity::new(EntityKind::ApiKey, &fk.key, 0.80, scan_id);
             e.tag("api-key");
             e.tag("foreign-key");

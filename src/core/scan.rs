@@ -45,7 +45,11 @@ impl TargetKind {
             EntityKind::AbnAcn => Some(Self::AbnAcn),
             EntityKind::ApiKey => Some(Self::ApiKey),
             EntityKind::MacAddress => Some(Self::MacAddress),
+            // CryptoAddress has no scan target YET (no module consumes it); the
+            // free chain-explorer enrichment module that will accept it is the
+            // next step. Until then it is a correctly-typed leaf, not expanded.
             EntityKind::Credential
+            | EntityKind::CryptoAddress
             | EntityKind::DeviceId
             | EntityKind::Password
             | EntityKind::Other(_) => None,
