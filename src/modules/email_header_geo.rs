@@ -57,6 +57,11 @@ impl Module for EmailHeaderGeo {
         let Some((_, domain)) = email.split_once('@') else {
             return Ok(result);
         };
+        // DNS labels are case-insensitive (RFC 4343); fold the domain so the
+        // lowercase ccTLD / regional-provider tables still match a mixed-case
+        // address such as `User@Bigpond.COM.AU` instead of missing entirely.
+        let domain = domain.to_ascii_lowercase();
+        let domain = domain.as_str();
 
         if CONSUMER_PROVIDERS.iter().any(|p| {
             domain == *p
@@ -331,5 +336,25 @@ mod tests {
                 .iter()
                 .any(|e| e.has_tag("email-provider-inferred"))
         );
+    }
+
+    #[tokio::test]
+    async fn mixed_case_domain_is_detected() {
+        // DNS is case-insensitive; a mixed-case address must geolocate the same
+        // as its lowercase form (the ccTLD table is lowercase, so without folding
+        // this produced nothing).
+        let m = EmailHeaderGeo;
+        let target = Target::new(TargetKind::Email, "Alice@Company.COM.AU");
+        let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        let ctx = ModuleContext {
+            scan_id: "test".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: Default::default(),
+            cancel: Default::default(),
+            proxy_pool: Default::default(),
+        };
+        let r = m.process(&target, &ctx).await.unwrap();
+        assert!(r.entities.iter().any(|e| e.value == "Australia"));
     }
 }

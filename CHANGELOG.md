@@ -20,6 +20,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   locale at all (only the lowercase spellings the tests happened to use worked).
   The name parts are now folded with `to_lowercase` (Unicode, so the `ström` /
   `oğlu` suffixes fold too) before matching. Regression-tested.
+- **`email_header_geo` folds the email domain before matching.** The same class
+  of bug as `email_locale`: the domain after `@` was tested against the
+  lowercase ccTLD / regional-provider tables (`ends_with(".com.au")`,
+  `contains("bigpond")`) without case-folding, so a mixed-case
+  `User@Bigpond.COM.AU` geolocated to nothing. DNS labels are case-insensitive
+  (RFC 4343), so the domain is now lowercased first. Regression-tested.
 - **IP/WiFi-geo providers no longer emit out-of-range or non-finite
   coordinates.** Six coarse-geolocation modules — `ip_geo`, `ipinfo`, `ipapi`,
   `ip2location`, `ipquery`, `wigle` — gated their `Coordinates` entity on a bare
