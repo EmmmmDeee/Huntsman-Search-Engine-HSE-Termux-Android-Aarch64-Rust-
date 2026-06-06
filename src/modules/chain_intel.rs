@@ -2,18 +2,21 @@
 //!
 //! Closes the loop opened by `EntityKind::CryptoAddress`: addresses surfaced in
 //! breach/stealer data (clipboard-hijacker malware harvests these in volume) or
-//! pasted as a seed are now *enriched* with their on-chain activity, not left as
+//! pasted as a seed are *enriched* with their on-chain activity, not left as
 //! dead-end leads.
 //!
-//! Sources (both free, keyless, no rate-limit billing):
-//!   * BTC — `https://blockstream.info/api/address/<addr>` (Esplora)
-//!   * ETH/EVM — `https://eth.blockscout.com/api?module=account&action=balance`
+//! Sources (all free, keyless, no rate-limit billing):
+//!   * BTC / LTC — Esplora (`blockstream.info` / `litecoinspace.org`):
+//!     confirmed + mempool stats → balance, total received, tx count.
+//!   * ETH/EVM — Blockscout v2 (`eth.blockscout.com`): balance, tx count, and
+//!     the reverse **ENS name** when set — an EVM address → human handle edge
+//!     that feeds the username/identity graph.
 //!
-//! Other chains (LTC/DOGE/SOL/XMR) are recognised by the classifier but have no
-//! wired free keyless explorer yet, so the module returns cleanly for them
-//! rather than guessing. The enrichment is OSINT-grade triage: is this wallet
-//! real, funded, and active? — emitted as evidence + an `active`/`dormant` tag
-//! on the address entity. One or two small JSON GETs; Termux-friendly.
+//! Honesty is a hard requirement: an evidence field is emitted only when the
+//! source actually provides it (e.g. ETH reports no "total received" cheaply, so
+//! that attribute is simply absent rather than faked). DOGE/SOL/XMR are
+//! recognised by the classifier but have no wired free keyless explorer, so the
+//! module returns cleanly for them. One-to-two small JSON GETs; Termux-friendly.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -31,7 +34,8 @@ const SRC: &str = "chain_intel";
 
 pub struct ChainIntel;
 
-/// Esplora (`blockstream.info`) address response: confirmed + mempool stats.
+/// Esplora address response (`blockstream.info`, `litecoinspace.org`): confirmed
+/// + mempool stats.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct EsploraAddress {
@@ -47,11 +51,33 @@ struct EsploraStats {
     tx_count: u64,
 }
 
-/// Blockscout `account/balance` response (`result` is wei, as a string).
+/// Blockscout v2 `/addresses/<addr>` — current balance (wei) + reverse ENS name.
 #[derive(Deserialize, Default)]
 #[serde(default)]
-struct BlockscoutBalance {
-    result: String,
+struct BlockscoutAddress {
+    coin_balance: Option<String>,
+    ens_domain_name: Option<String>,
+}
+
+/// Blockscout v2 `/addresses/<addr>/counters` — authoritative tx count.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct BlockscoutCounters {
+    transactions_count: Option<String>,
+}
+
+/// Normalised enrichment for any chain — only the fields the source genuinely
+/// provides are `Some`, so the evidence never fabricates a value.
+struct Enrichment {
+    unit: &'static str,
+    decimals: u32,
+    balance: u128,
+    /// Lifetime total received (Esplora gives this; Blockscout balance does not).
+    received: Option<u128>,
+    /// Confirmed transaction count, when the source reports it.
+    tx_count: Option<u64>,
+    /// Reverse ENS name (EVM only), e.g. `vitalik.eth`.
+    ens: Option<String>,
 }
 
 #[async_trait]
@@ -61,7 +87,7 @@ impl Module for ChainIntel {
     }
 
     fn description(&self) -> &'static str {
-        "Cryptocurrency wallet enrichment — on-chain balance & activity (BTC/ETH, free)"
+        "Cryptocurrency wallet enrichment — on-chain balance, activity & ENS (BTC/LTC/ETH, free)"
     }
 
     fn priority(&self) -> u8 {
@@ -81,7 +107,7 @@ impl Module for ChainIntel {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::CryptoAddress];
+        const KINDS: &[EntityKind] = &[EntityKind::CryptoAddress, EntityKind::Username];
         KINDS
     }
 
@@ -93,18 +119,40 @@ impl Module for ChainIntel {
         };
 
         let enriched = match chain {
-            "crypto_btc" => enrich_btc(ctx, addr).await,
+            "crypto_btc" => enrich_esplora(ctx, "https://blockstream.info/api", addr, "BTC").await,
+            "crypto_ltc" => enrich_esplora(ctx, "https://litecoinspace.org/api", addr, "LTC").await,
             "crypto_eth" => enrich_eth(ctx, addr).await,
             // Recognised but no free keyless explorer wired — clean no-op.
             _ => None,
         };
 
-        if let Some(ev) = enriched {
-            let mut e = Entity::new(EntityKind::CryptoAddress, addr, 0.80, &ctx.scan_id);
-            e.tag("crypto-address");
-            e.tag(format!("chain:{}", chain_label(chain)));
-            e.add_evidence(ev);
-            result.push(e);
+        let Some(enr) = enriched else {
+            return Ok(result);
+        };
+
+        let mut e = Entity::new(EntityKind::CryptoAddress, addr, 0.80, &ctx.scan_id);
+        e.tag("crypto-address");
+        e.tag(format!("chain:{}", chain_label(chain)));
+        e.add_evidence(build_evidence(chain_label(chain), &enr));
+        result.push(e);
+
+        // The reverse ENS name links an EVM address to a human-chosen handle —
+        // a high-value identity pivot. Emit the handle (its label, minus the
+        // `.eth` suffix the username stack can't probe) as a Username, tagged so
+        // its origin is clear.
+        if let Some(ens) = &enr.ens {
+            let handle = ens.strip_suffix(".eth").unwrap_or(ens);
+            if handle.len() >= 2 && !handle.contains('.') {
+                let mut u = Entity::new(EntityKind::Username, handle, 0.70, &ctx.scan_id);
+                u.tag(SRC);
+                u.tag("ens");
+                u.add_evidence(
+                    Evidence::new(SRC, format!("ENS reverse name for {addr}"))
+                        .with_attr("ens_name", ens)
+                        .with_attr("address", addr),
+                );
+                result.push(u);
+            }
         }
         Ok(result)
     }
@@ -117,7 +165,6 @@ fn format_units(amount: u128, decimals: u32) -> String {
     let scale = 10u128.pow(decimals);
     let whole = amount / scale;
     let frac = amount % scale;
-    // Trim trailing zeros from the fractional part for readability.
     let frac_str = format!("{frac:0width$}", width = decimals as usize);
     let frac_trimmed = frac_str.trim_end_matches('0');
     if frac_trimmed.is_empty() {
@@ -127,87 +174,187 @@ fn format_units(amount: u128, decimals: u32) -> String {
     }
 }
 
-/// Build the enrichment evidence shared shape: balance, total received, tx
-/// count, and an activity verdict. Pure (no I/O) for unit testing.
-fn build_evidence(
-    chain: &str,
-    unit: &str,
-    received: u128,
-    balance: u128,
-    decimals: u32,
-    tx_count: u64,
-) -> Evidence {
-    let activity = if tx_count == 0 { "dormant" } else { "active" };
-    Evidence::new(SRC, format!("{chain} on-chain activity: {activity}"))
+/// Build enrichment evidence, emitting only the fields the source provided. The
+/// activity verdict prefers the precise tx-count signal; absent that, it falls
+/// back to a coarser funded/empty signal from the balance — never claiming more
+/// than is known. Pure (no I/O) for unit testing.
+fn build_evidence(chain: &str, e: &Enrichment) -> Evidence {
+    let activity = match e.tx_count {
+        Some(0) => "dormant",
+        Some(_) => "active",
+        None if e.balance > 0 => "funded",
+        None => "empty",
+    };
+    let mut ev = Evidence::new(SRC, format!("{chain} on-chain activity: {activity}"))
         .with_attr("chain", chain)
         .with_attr(
             "balance",
-            format!("{} {unit}", format_units(balance, decimals)),
+            format!("{} {}", format_units(e.balance, e.decimals), e.unit),
         )
-        .with_attr(
+        .with_attr("activity", activity);
+    if let Some(received) = e.received {
+        ev = ev.with_attr(
             "total_received",
-            format!("{} {unit}", format_units(received, decimals)),
-        )
-        .with_attr("tx_count", tx_count.to_string())
-        .with_attr("activity", activity)
+            format!("{} {}", format_units(received, e.decimals), e.unit),
+        );
+    }
+    if let Some(tx) = e.tx_count {
+        ev = ev.with_attr("tx_count", tx.to_string());
+    }
+    if let Some(ens) = &e.ens {
+        ev = ev.with_attr("ens_name", ens);
+    }
+    ev
 }
 
-async fn enrich_btc(ctx: &ModuleContext, addr: &str) -> Option<Evidence> {
-    let url = format!("https://blockstream.info/api/address/{addr}");
+/// Esplora-compatible enrichment (BTC, LTC) — both report 8-decimal coins.
+async fn enrich_esplora(
+    ctx: &ModuleContext,
+    api_base: &str,
+    addr: &str,
+    unit: &'static str,
+) -> Option<Enrichment> {
+    let url = format!("{api_base}/address/{addr}");
     let a: EsploraAddress = fetch_json(&ctx.http, SRC, &url).await.ok()?;
     let received = a.chain_stats.funded_txo_sum.max(0) as u128;
     let spent = a.chain_stats.spent_txo_sum.max(0) as u128;
-    let balance = received.saturating_sub(spent);
-    let tx_count = a.chain_stats.tx_count + a.mempool_stats.tx_count;
-    // Satoshis → BTC (8 decimals).
-    Some(build_evidence("btc", "BTC", received, balance, 8, tx_count))
+    Some(Enrichment {
+        unit,
+        decimals: 8,
+        balance: received.saturating_sub(spent),
+        received: Some(received),
+        tx_count: Some(a.chain_stats.tx_count + a.mempool_stats.tx_count),
+        ens: None,
+    })
 }
 
-async fn enrich_eth(ctx: &ModuleContext, addr: &str) -> Option<Evidence> {
-    let url =
-        format!("https://eth.blockscout.com/api?module=account&action=balance&address={addr}");
-    let b: BlockscoutBalance = fetch_json(&ctx.http, SRC, &url).await.ok()?;
-    let wei: u128 = b.result.trim().parse().ok()?;
-    // Blockscout's balance endpoint reports the current balance only; total
-    // received / tx count would need a second heavier call, so report balance
-    // and mark activity by whether the balance is non-zero.
-    let tx_count = u64::from(wei > 0);
-    // Wei → ETH (18 decimals).
-    Some(build_evidence("eth", "ETH", wei, wei, 18, tx_count))
+async fn enrich_eth(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
+    let base = "https://eth.blockscout.com/api/v2/addresses";
+    let a: BlockscoutAddress = fetch_json(&ctx.http, SRC, &format!("{base}/{addr}"))
+        .await
+        .ok()?;
+    let balance: u128 = a
+        .coin_balance
+        .as_deref()
+        .and_then(|s| s.trim().parse().ok())?;
+    // tx count is a second, best-effort call — its absence must not drop the
+    // balance/ENS we already have.
+    let tx_count =
+        fetch_json::<BlockscoutCounters>(&ctx.http, SRC, &format!("{base}/{addr}/counters"))
+            .await
+            .ok()
+            .and_then(|c| c.transactions_count)
+            .and_then(|s| s.trim().parse::<u64>().ok());
+    Some(Enrichment {
+        unit: "ETH",
+        decimals: 18,
+        balance,
+        received: None, // Blockscout balance endpoint doesn't expose lifetime received.
+        tx_count,
+        ens: a.ens_domain_name.filter(|s| !s.is_empty()),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn enr() -> Enrichment {
+        Enrichment {
+            unit: "BTC",
+            decimals: 8,
+            balance: 150_000_000,
+            received: Some(200_000_000),
+            tx_count: Some(7),
+            ens: None,
+        }
+    }
+
     #[test]
     fn format_units_handles_btc_and_eth_scales() {
-        // 1.5 BTC in satoshis.
         assert_eq!(format_units(150_000_000, 8), "1.5");
-        // Exactly 1 BTC — no trailing fraction.
         assert_eq!(format_units(100_000_000, 8), "1");
-        // Dust.
         assert_eq!(format_units(1, 8), "0.00000001");
         assert_eq!(format_units(0, 8), "0");
-        // 2.5 ETH in wei (18 decimals) — exceeds f64 exact-int range, so the
-        // integer path matters.
+        // 2.5 ETH in wei (18 decimals) — exceeds f64 exact-int range.
         assert_eq!(format_units(2_500_000_000_000_000_000, 18), "2.5");
     }
 
     #[test]
-    fn build_evidence_marks_activity_and_formats_amounts() {
-        // A funded, active BTC wallet: received 2 BTC, spent 0.5 (balance 1.5).
-        let ev = build_evidence("btc", "BTC", 200_000_000, 150_000_000, 8, 7);
+    fn evidence_reports_full_esplora_fields() {
+        let ev = build_evidence("btc", &enr());
         let g = |k: &str| ev.attributes.get(k).cloned().unwrap_or_default();
-        assert_eq!(g("chain"), "btc");
         assert_eq!(g("balance"), "1.5 BTC");
         assert_eq!(g("total_received"), "2 BTC");
         assert_eq!(g("tx_count"), "7");
         assert_eq!(g("activity"), "active");
+    }
 
-        // A never-used address is dormant.
-        let ev0 = build_evidence("btc", "BTC", 0, 0, 8, 0);
-        assert_eq!(ev0.attributes.get("activity").unwrap(), "dormant");
+    #[test]
+    fn evidence_omits_unknown_fields_and_never_fabricates() {
+        // ETH-style: balance + tx_count known, NO total_received, plus ENS.
+        let e = Enrichment {
+            unit: "ETH",
+            decimals: 18,
+            balance: 5_688_240_446_715_981_478,
+            received: None,
+            tx_count: Some(78_246),
+            ens: Some("vitalik.eth".into()),
+        };
+        let ev = build_evidence("eth", &e);
+        assert!(
+            !ev.attributes.contains_key("total_received"),
+            "must NOT fabricate a total_received it doesn't have"
+        );
+        assert_eq!(ev.attributes.get("tx_count").unwrap(), "78246");
+        assert_eq!(ev.attributes.get("activity").unwrap(), "active");
+        assert_eq!(ev.attributes.get("ens_name").unwrap(), "vitalik.eth");
+        assert_eq!(
+            ev.attributes.get("balance").unwrap(),
+            "5.688240446715981478 ETH"
+        );
+    }
+
+    #[test]
+    fn activity_falls_back_to_funded_empty_without_tx_count() {
+        let funded = Enrichment {
+            unit: "ETH",
+            decimals: 18,
+            balance: 1,
+            received: None,
+            tx_count: None,
+            ens: None,
+        };
+        assert_eq!(
+            build_evidence("eth", &funded)
+                .attributes
+                .get("activity")
+                .unwrap(),
+            "funded"
+        );
+        let empty = Enrichment {
+            balance: 0,
+            ..funded
+        };
+        assert_eq!(
+            build_evidence("eth", &empty)
+                .attributes
+                .get("activity")
+                .unwrap(),
+            "empty"
+        );
+        // A dormant (seen but zero-tx) address is distinct from unknown.
+        let dormant = Enrichment {
+            tx_count: Some(0),
+            ..empty
+        };
+        assert_eq!(
+            build_evidence("eth", &dormant)
+                .attributes
+                .get("activity")
+                .unwrap(),
+            "dormant"
+        );
     }
 
     #[test]

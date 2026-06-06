@@ -173,7 +173,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `api_key_probe` | api_key | free | **yes** | 200 | api_key, domain |
-| `chain_intel` | crypto_address | free | no | 90 | crypto_address |
+| `chain_intel` | crypto_address | free | no | 90 | crypto_address, username |
 | `qld_unclaimed` | full_name, organisation | free | no | 58 | address, coordinates, organisation |
 
 ## Synergy map
