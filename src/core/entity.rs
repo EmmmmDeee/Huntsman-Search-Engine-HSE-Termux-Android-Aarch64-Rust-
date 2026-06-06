@@ -350,6 +350,15 @@ impl Entity {
     /// it to ~0.89 ("Verified"), which is what four independent sources warrant.
     /// `max` keeps the result monotonic and never below the legacy value, so the
     /// change only ever *adds* confidence for genuinely multi-sourced entities.
+    ///
+    /// ```
+    /// use huntsman_search_engine::core::entity::{Entity, EntityKind};
+    ///
+    /// // Single source (no evidence attached → n = 1): C_eff equals confidence.
+    /// let e = Entity::new(EntityKind::Email, "x@example.com", 0.6, "scan");
+    /// assert_eq!(e.source_count(), 1);
+    /// assert!((e.c_effective() - 0.6).abs() < 1e-9);
+    /// ```
     #[inline]
     pub fn c_effective(&self) -> f64 {
         let n = f64::from(self.source_count());
@@ -359,9 +368,20 @@ impl Entity {
         multiplicative.max(agreement).clamp(0.0, 1.0)
     }
 
-    /// Derived classification tier from `c_effective()`.
+    /// Derived classification tier from [`Self::c_effective`]: `Verified` at
+    /// ≥ 0.75, `Probable` at ≥ 0.40, else `Candidate`.
     ///
-    /// Never stored — always recomputed.
+    /// Never stored — always recomputed, so a tier can only ever rise as merges
+    /// add corroboration.
+    ///
+    /// ```
+    /// use huntsman_search_engine::core::entity::{Classification, Entity, EntityKind};
+    ///
+    /// let mk = |c| Entity::new(EntityKind::Email, "x@example.com", c, "scan").classify();
+    /// assert_eq!(mk(0.90), Classification::Verified);
+    /// assert_eq!(mk(0.50), Classification::Probable);
+    /// assert_eq!(mk(0.20), Classification::Candidate);
+    /// ```
     #[inline]
     pub fn classify(&self) -> Classification {
         match self.c_effective() {
@@ -447,13 +467,36 @@ impl Entity {
 
     /// Merge `other` into `self` using GREATEST-semantics.
     ///
+    /// This is the deduplication primitive: two entities with the same `uid`
+    /// (same kind + normalised value) are folded so corroboration only ever
+    /// grows — replaying the same finding never regresses confidence or drops
+    /// evidence.
+    ///
     /// Rules:
-    /// - `uid` must match (panics in debug, no-op in release if not)
-    /// - `confidence`  = max(self, other)      — never decreases
-    /// - `corroboration` += other.corroboration — only increases
-    /// - `observed_at`  = max(self, other)      — most recent wins
-    /// - `evidence` appended
-    /// - `tags` union (dedup)
+    /// - `uid` must match (debug-asserts; a mismatch is a no-op in release)
+    /// - `confidence`  = max(self, other)        — never decreases
+    /// - `corroboration` += other.corroboration  — only increases
+    /// - `observed_at`  = max(self, other)        — most recent wins
+    /// - `evidence` merged, de-duplicated by `(source, summary)`
+    /// - `tags` unioned (de-duplicated)
+    ///
+    /// ```
+    /// use huntsman_search_engine::core::entity::{Entity, EntityKind, Evidence};
+    ///
+    /// let mut a = Entity::new(EntityKind::Email, "x@example.com", 0.5, "scan");
+    /// a.tag("breach");
+    /// a.add_evidence(Evidence::new("hibp", "seen"));
+    ///
+    /// let mut b = Entity::new(EntityKind::Email, "X@Example.com", 0.9, "scan");
+    /// b.tag("paste-exposed");
+    /// b.add_evidence(Evidence::new("dehashed", "seen"));
+    ///
+    /// assert_eq!(a.uid, b.uid); // same kind + normalised value → same UID
+    /// a.merge(b);
+    /// assert_eq!(a.confidence, 0.9);    // GREATEST: confidence never decreases
+    /// assert!(a.has_tag("breach") && a.has_tag("paste-exposed")); // tags unioned
+    /// assert_eq!(a.evidence.len(), 2);  // distinct evidence both kept
+    /// ```
     pub fn merge(&mut self, other: Self) {
         debug_assert_eq!(self.uid, other.uid, "merge: UID mismatch");
         if self.uid != other.uid {
