@@ -374,19 +374,25 @@ pub mod geo {
     }
 
     /// Canonical validity check for a geographic coordinate, shared by every
-    /// module that turns an external lat/lon into a `Coordinates` entity
-    /// (`geo_intel`, `ip_whois_geo`, `wifi_intel`, `mylnikov`, `cell_intel`,
-    /// `exif_geo`, `censys`, `device_sensors`, …). Each previously hand-rolled
-    /// some subset of these guards — most only rejected `0,0` and let
-    /// out-of-range/NaN values through, which then became high-confidence false
-    /// fixes that poison the geo-cluster correlator. One definition keeps the
-    /// policy consistent.
+    /// module that turns an external lat/lon into a `Coordinates` entity (the
+    /// forward geocoders `geocode`/`photon`/`overpass`, the precise-fix sources
+    /// `geo_intel`/`exif_geo`/`wifi_intel`/`cell_intel`/`mls`, …). Modules
+    /// previously hand-rolled some subset of these guards — most only rejected
+    /// `0,0` and let out-of-range/NaN values through, which then became
+    /// high-confidence false fixes that poison the geo-cluster correlator. One
+    /// definition keeps the policy consistent.
     ///
     /// Rejects:
     ///   - non-finite values (NaN, ±inf) from malformed JSON,
     ///   - out-of-range values (`|lat| > 90`, `|lon| > 180`), and
     ///   - the `0.0, 0.0` "Null Island" sentinel that geo APIs and the Android
     ///     location stack emit when they have no real fix.
+    ///
+    /// Coarse IP/WiFi-geo providers (`ip_geo`, `ipinfo`, `ipapi`, `ip2location`,
+    /// `ipquery`, `wigle`) want [`is_plausible_provider_coord`] instead: it
+    /// builds on this but additionally drops the near-null-island placeholder
+    /// band those APIs emit. Precise sources stay here so a real equatorial fix
+    /// isn't discarded.
     #[must_use]
     pub fn is_valid_coords(lat: f64, lon: f64) -> bool {
         lat.is_finite()
