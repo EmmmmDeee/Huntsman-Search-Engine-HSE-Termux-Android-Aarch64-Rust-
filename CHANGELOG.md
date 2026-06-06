@@ -18,6 +18,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   rest of the system rejects. Acceptance now goes through `validate_phone_e164`
   itself — one definition of "valid E.164", no crawler-only false positives.
   Unit-tested at the 7-vs-8-digit boundary.
+- **`web_crawler` email extraction now shares the canonical syntax validator.**
+  The byte-scan's ad-hoc "local non-empty" check let through malformed runs it can
+  grab from page text — `john..doe@example.com` (consecutive dots),
+  `.lead@example.com` / `trail.@example.com` (edge dots) — as bogus `Email`
+  entities. Acceptance now also passes `core::validation::validate_email_syntax`
+  (the same one-`@`/no-edge-or-consecutive-dot/bounded-local definition used
+  system-wide), while keeping the extraction-specific TLD-length, total-length and
+  asset-extension filters. Unit-tested.
 - **`web_crawler` email extraction stopped leaking modern asset filenames.** The
   scanner filtered retina/asset filenames that look like emails (`logo@2x.png`)
   but only for `.png/.jpg/.gif/.css/.js` — so `logo@2x.webp`, `icon@3x.svg`,

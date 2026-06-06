@@ -441,15 +441,20 @@ pub(super) fn extract_emails(body: &str, emails: &mut HashSet<String>) {
         while domain_end > i + 1 && bytes[domain_end - 1] == b'.' {
             domain_end -= 1;
         }
-        let local = &body[local_start..i];
         let domain = &body[i + 1..domain_end];
-        if !local.is_empty()
-            && domain.contains('.')
-            && domain.len() > 3
-            && domain_end - local_start <= 254
-        {
+        // `domain.len() > 3` cheaply rejects a too-short TLD (`x@y.z`); the
+        // `<= 254` cap is the RFC 5321 address-length ceiling (the validator caps
+        // the local part but not the whole address). All chars here are ASCII, so
+        // the lowercased length equals `domain_end - local_start`.
+        if domain.contains('.') && domain.len() > 3 && domain_end - local_start <= 254 {
             let lower = body[local_start..domain_end].to_lowercase();
-            if !ASSET_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)) {
+            // Share the canonical email-syntax definition (one '@', sane local,
+            // no edge/consecutive dots) instead of the old ad-hoc local-non-empty
+            // check, so the crawler can't surface `a..b@x.com` / `a@.x.com` /
+            // oversized-local artifacts that validation rejects everywhere else.
+            if crate::core::validation::validate_email_syntax(&lower).valid
+                && !ASSET_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+            {
                 emails.insert(lower);
             }
         }
@@ -728,6 +733,23 @@ mod tests {
         let mut dup = HashSet::new();
         extract_emails("a@b.com a@b.com", &mut dup);
         assert_eq!(dup.len(), 1);
+    }
+
+    #[test]
+    fn email_extraction_rejects_syntactically_invalid_candidates() {
+        // Routed through the canonical validator, malformed runs the byte-scan
+        // can grab (consecutive dots, an edge dot) are no longer surfaced, while
+        // an ordinary address alongside them still is.
+        let mut emails = HashSet::new();
+        extract_emails(
+            "bad john..doe@example.com and .lead@example.com and trail.@example.com \
+             but good real.person@example.com",
+            &mut emails,
+        );
+        assert!(emails.contains("real.person@example.com"));
+        assert!(!emails.contains("john..doe@example.com")); // consecutive dots
+        assert!(!emails.contains(".lead@example.com")); // leading dot
+        assert!(!emails.contains("trail.@example.com")); // trailing-dot local
     }
 
     #[test]
