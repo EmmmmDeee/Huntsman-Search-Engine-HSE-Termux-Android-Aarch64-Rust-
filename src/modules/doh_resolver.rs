@@ -119,7 +119,9 @@ fn records_for_type(
                     for part in txt.split_whitespace() {
                         if let Some(ip) = part.strip_prefix("ip4:") {
                             let ip = ip.split('/').next().unwrap_or(ip);
-                            if seen.insert(format!("spf:{ip}")) {
+                            // Skip a bare `ip4:` (or `ip4:/24`) with no address —
+                            // an empty value would normalise to a blank entity.
+                            if !ip.is_empty() && seen.insert(format!("spf:{ip}")) {
                                 let mut e = Entity::new(EntityKind::IpAddress, ip, 0.75, scan_id);
                                 e.tag("dns");
                                 e.tag("spf");
@@ -130,7 +132,10 @@ fn records_for_type(
                                 out.push(e);
                             }
                         }
+                        // Match the MX/NS/CNAME rule: a usable host is non-empty
+                        // and dotted (skip a bare `include:` or a dotless label).
                         if let Some(inc) = part.strip_prefix("include:")
+                            && inc.contains('.')
                             && seen.insert(format!("spfinc:{inc}"))
                         {
                             let mut e = Entity::new(EntityKind::Domain, inc, 0.65, scan_id);
@@ -345,6 +350,17 @@ mod tests {
         let inc = out.iter().find(|e| e.kind == EntityKind::Domain).unwrap();
         assert_eq!(inc.value, "_spf.google.com");
         assert!(inc.has_tag("spf-include"));
+    }
+
+    #[test]
+    fn spf_skips_empty_ip4_and_dotless_or_empty_include() {
+        // Bare `ip4:`, `ip4:/24`, dotless `include:`, and empty `include:` must
+        // not produce blank/garbage entities.
+        let out = run(
+            "TXT",
+            &["v=spf1 ip4: ip4:/24 include: include:localhost -all"],
+        );
+        assert!(out.is_empty());
     }
 
     #[test]

@@ -90,6 +90,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Guarded three SPF/address parse paths against blank-value entities** (PR #104
+  review). `doh_resolver` now skips a bare `ip4:` / `ip4:/24` (empty IP) and
+  requires SPF `include:` hosts to be non-empty and dotted — matching the
+  MX/NS/CNAME rule its own doc promised; `opencorporates` trims the registered
+  address before the length-floor check so a whitespace-only address can't
+  normalise into a blank `Address` entity. Each is covered by a new unit test.
 - **Factored URL host extraction onto a shared `url_util::host_only` primitive.**
   `host_from_url` and the inline scheme/path/port stripping in `wayback` and
   `whois` each re-implemented the same parse; they now share one borrowing,

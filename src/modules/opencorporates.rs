@@ -72,7 +72,9 @@ fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) -> Vec<Enti
     entity.add_evidence(ev);
     out.push(entity);
 
-    if let Some(addr) = co.registered_address_in_full.as_deref()
+    // Trim first: a whitespace-only/short address would normalise to a blank
+    // `Address` entity. The length floor (≥ MIN_ADDRESS_LEN) then implies non-empty.
+    if let Some(addr) = co.registered_address_in_full.as_deref().map(str::trim)
         && addr.len() >= MIN_ADDRESS_LEN
     {
         let mut ae = Entity::new(EntityKind::Address, addr, 0.70, scan_id);
@@ -361,6 +363,16 @@ mod tests {
         // Address too short (< MIN_ADDRESS_LEN) and no company_number → org only.
         assert_eq!(ents.len(), 1);
         assert_eq!(ents[0].kind, EntityKind::Organisation);
+    }
+
+    #[test]
+    fn whitespace_address_does_not_create_blank_entity() {
+        // A whitespace-only registered address must not become an Address entity.
+        let co = company(
+            r#"{"name":"Acme","jurisdiction_code":"au","registered_address_in_full":"        "}"#,
+        );
+        let ents = build_company_entities(&co, 1, "s");
+        assert!(ents.iter().all(|e| e.kind != EntityKind::Address));
     }
 
     #[test]
