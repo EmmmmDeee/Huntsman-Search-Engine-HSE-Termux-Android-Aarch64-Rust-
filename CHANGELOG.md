@@ -90,6 +90,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`doh_resolver` brought up to the module spec.** The ~100-line per-record-type
+  classifier (the deeply-nested A/AAAA/MX/NS/TXT-SPF/CNAME matcher) and the
+  target-domain resolution are extracted out of `process` into the pure, IO-free
+  `records_for_type` and `target_domain`, with the queried record set lifted to a
+  named constant (`RECORD_TYPES`). `process` keeps only the per-type fetch loop and
+  cancellation. Adds unit coverage of URL/domain resolution, A/AAAA IP tagging, the
+  MX last-field/dot rules, SPF `ip4:`/`include:` extraction (with CIDR stripping
+  and non-SPF TXT ignored), NS/CNAME trailing-dot trimming, and the
+  type-prefixed cross-record dedup (an A-record IP and an SPF `ip4:` of the same
+  value stay distinct while intra-run repeats collapse). Behaviour-preserving.
 - **`overpass` brought up to the module spec.** The OSM-node infrastructure
   classification and the entity fan-out are extracted out of `process` into the
   pure, IO-free `classify_element` (tags → category, with the six discriminating

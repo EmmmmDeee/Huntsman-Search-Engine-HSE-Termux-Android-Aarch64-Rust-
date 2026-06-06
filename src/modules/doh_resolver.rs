@@ -39,6 +39,125 @@ struct DohRecord {
     data: String,
 }
 
+/// The record types we query, in order.
+const RECORD_TYPES: &[&str] = &["A", "AAAA", "MX", "TXT", "NS", "CNAME"];
+
+/// Resolve a target to the domain to query. **Pure**: a `Url` is reduced to its
+/// host; any other kind is trimmed. Returns `None` when nothing queryable remains.
+fn target_domain(kind: TargetKind, value: &str) -> Option<String> {
+    let domain = match kind {
+        TargetKind::Url => crate::util::url_util::host_from_url(value)?,
+        _ => value.trim().to_string(),
+    };
+    if domain.is_empty() {
+        None
+    } else {
+        Some(domain)
+    }
+}
+
+/// Map one record type's answers to entities. **Pure** (no network/IO): parses
+/// each record per its type — A/AAAA → `IpAddress`, MX/NS/CNAME → `Domain`, and
+/// SPF `TXT` → the `ip4:`/`include:` members — deduplicating across the whole
+/// resolution via the shared `seen` set (keyed by a type prefix so an IP from an
+/// A record and an SPF `ip4:` of the same value are distinct). Skips blank /
+/// dotless hosts. `rtype` outside [`RECORD_TYPES`] yields nothing.
+fn records_for_type(
+    rtype: &str,
+    records: &[DohRecord],
+    domain: &str,
+    seen: &mut HashSet<String>,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let mut out = Vec::new();
+    for rec in records {
+        match rtype {
+            "A" | "AAAA" => {
+                let ip = rec.data.trim().trim_matches('"');
+                if !ip.is_empty() && seen.insert(format!("ip:{ip}")) {
+                    let mut e = Entity::new(EntityKind::IpAddress, ip, 0.80, scan_id);
+                    e.tag("dns");
+                    e.tag(if rtype == "A" { "ipv4" } else { "ipv6" });
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("{rtype} record for {domain}"))
+                            .with_attr("record_type", rtype),
+                    );
+                    out.push(e);
+                }
+            }
+            "MX" => {
+                let mx = rec
+                    .data
+                    .split_whitespace()
+                    .last()
+                    .unwrap_or("")
+                    .trim_end_matches('.');
+                if !mx.is_empty() && mx.contains('.') && seen.insert(format!("mx:{mx}")) {
+                    let mut e = Entity::new(EntityKind::Domain, mx, 0.75, scan_id);
+                    e.tag("dns");
+                    e.tag("mx");
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("MX record for {domain}"))
+                            .with_attr("mx_host", mx),
+                    );
+                    out.push(e);
+                }
+            }
+            "NS" => {
+                let ns = rec.data.trim().trim_end_matches('.');
+                if !ns.is_empty() && ns.contains('.') && seen.insert(format!("ns:{ns}")) {
+                    let mut e = Entity::new(EntityKind::Domain, ns, 0.70, scan_id);
+                    e.tag("dns");
+                    e.tag("nameserver");
+                    e.add_evidence(Evidence::new(SRC, format!("NS record for {domain}")));
+                    out.push(e);
+                }
+            }
+            "TXT" => {
+                let txt = rec.data.trim().trim_matches('"');
+                if txt.starts_with("v=spf1") {
+                    for part in txt.split_whitespace() {
+                        if let Some(ip) = part.strip_prefix("ip4:") {
+                            let ip = ip.split('/').next().unwrap_or(ip);
+                            if seen.insert(format!("spf:{ip}")) {
+                                let mut e = Entity::new(EntityKind::IpAddress, ip, 0.75, scan_id);
+                                e.tag("dns");
+                                e.tag("spf");
+                                e.add_evidence(Evidence::new(
+                                    SRC,
+                                    format!("SPF include for {domain}"),
+                                ));
+                                out.push(e);
+                            }
+                        }
+                        if let Some(inc) = part.strip_prefix("include:")
+                            && seen.insert(format!("spfinc:{inc}"))
+                        {
+                            let mut e = Entity::new(EntityKind::Domain, inc, 0.65, scan_id);
+                            e.tag("dns");
+                            e.tag("spf-include");
+                            e.add_evidence(Evidence::new(SRC, format!("SPF include for {domain}")));
+                            out.push(e);
+                        }
+                    }
+                }
+            }
+            "CNAME" => {
+                let cname = rec.data.trim().trim_end_matches('.');
+                if !cname.is_empty() && cname.contains('.') && seen.insert(format!("cn:{cname}")) {
+                    let mut e = Entity::new(EntityKind::Domain, cname, 0.80, scan_id);
+                    e.tag("dns");
+                    e.tag("cname");
+                    e.add_evidence(Evidence::new(SRC, format!("CNAME for {domain}")));
+                    out.push(e);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 pub struct DohResolver;
 
 #[async_trait]
@@ -69,123 +188,25 @@ impl Module for DohResolver {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let domain = match target.kind {
-            TargetKind::Url => match crate::util::url_util::host_from_url(&target.value) {
-                Some(h) => h,
-                None => return Ok(ModuleResult::new()),
-            },
-            _ => target.value.trim().to_string(),
-        };
-        let domain = domain.as_str();
-        if domain.is_empty() {
+        let Some(domain) = target_domain(target.kind, &target.value) else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
 
-        for rtype in &["A", "AAAA", "MX", "TXT", "NS", "CNAME"] {
+        for rtype in RECORD_TYPES {
             if ctx.cancel.is_cancelled() {
                 break;
             }
-            let records = query_doh(domain, rtype, &ctx.http).await;
-            for rec in &records {
-                match *rtype {
-                    "A" | "AAAA" => {
-                        let ip = rec.data.trim().trim_matches('"');
-                        if !ip.is_empty() && seen.insert(format!("ip:{ip}")) {
-                            let mut e = Entity::new(EntityKind::IpAddress, ip, 0.80, &ctx.scan_id);
-                            e.tag("dns");
-                            e.tag(if *rtype == "A" { "ipv4" } else { "ipv6" });
-                            e.add_evidence(
-                                Evidence::new(SRC, format!("{rtype} record for {domain}"))
-                                    .with_attr("record_type", *rtype),
-                            );
-                            result.push(e);
-                        }
-                    }
-                    "MX" => {
-                        let mx = rec
-                            .data
-                            .split_whitespace()
-                            .last()
-                            .unwrap_or("")
-                            .trim_end_matches('.');
-                        if !mx.is_empty() && mx.contains('.') && seen.insert(format!("mx:{mx}")) {
-                            let mut e = Entity::new(EntityKind::Domain, mx, 0.75, &ctx.scan_id);
-                            e.tag("dns");
-                            e.tag("mx");
-                            e.add_evidence(
-                                Evidence::new(SRC, format!("MX record for {domain}"))
-                                    .with_attr("mx_host", mx),
-                            );
-                            result.push(e);
-                        }
-                    }
-                    "NS" => {
-                        let ns = rec.data.trim().trim_end_matches('.');
-                        if !ns.is_empty() && ns.contains('.') && seen.insert(format!("ns:{ns}")) {
-                            let mut e = Entity::new(EntityKind::Domain, ns, 0.70, &ctx.scan_id);
-                            e.tag("dns");
-                            e.tag("nameserver");
-                            e.add_evidence(Evidence::new(SRC, format!("NS record for {domain}")));
-                            result.push(e);
-                        }
-                    }
-                    "TXT" => {
-                        let txt = rec.data.trim().trim_matches('"');
-                        if txt.starts_with("v=spf1") {
-                            for part in txt.split_whitespace() {
-                                if let Some(ip) = part.strip_prefix("ip4:") {
-                                    let ip = ip.split('/').next().unwrap_or(ip);
-                                    if seen.insert(format!("spf:{ip}")) {
-                                        let mut e = Entity::new(
-                                            EntityKind::IpAddress,
-                                            ip,
-                                            0.75,
-                                            &ctx.scan_id,
-                                        );
-                                        e.tag("dns");
-                                        e.tag("spf");
-                                        e.add_evidence(Evidence::new(
-                                            SRC,
-                                            format!("SPF include for {domain}"),
-                                        ));
-                                        result.push(e);
-                                    }
-                                }
-                                if let Some(inc) = part.strip_prefix("include:")
-                                    && seen.insert(format!("spfinc:{inc}"))
-                                {
-                                    let mut e =
-                                        Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
-                                    e.tag("dns");
-                                    e.tag("spf-include");
-                                    e.add_evidence(Evidence::new(
-                                        SRC,
-                                        format!("SPF include for {domain}"),
-                                    ));
-                                    result.push(e);
-                                }
-                            }
-                        }
-                    }
-                    "CNAME" => {
-                        let cname = rec.data.trim().trim_end_matches('.');
-                        if !cname.is_empty()
-                            && cname.contains('.')
-                            && seen.insert(format!("cn:{cname}"))
-                        {
-                            let mut e = Entity::new(EntityKind::Domain, cname, 0.80, &ctx.scan_id);
-                            e.tag("dns");
-                            e.tag("cname");
-                            e.add_evidence(Evidence::new(SRC, format!("CNAME for {domain}")));
-                            result.push(e);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            let records = query_doh(&domain, rtype, &ctx.http).await;
+            result.entities.extend(records_for_type(
+                rtype,
+                &records,
+                &domain,
+                &mut seen,
+                &ctx.scan_id,
+            ));
         }
         Ok(result)
     }
@@ -245,5 +266,119 @@ mod tests {
         let resp: DohResp = serde_json::from_str(json).unwrap();
         assert_eq!(resp.answer.len(), 1);
         assert_eq!(resp.answer[0].data, "93.184.216.34");
+    }
+
+    fn rec(data: &str) -> DohRecord {
+        DohRecord {
+            name: String::new(),
+            rtype: 0,
+            data: data.to_string(),
+        }
+    }
+
+    fn run(rtype: &str, datas: &[&str]) -> Vec<Entity> {
+        let records: Vec<DohRecord> = datas.iter().map(|d| rec(d)).collect();
+        let mut seen = HashSet::new();
+        records_for_type(rtype, &records, "example.com", &mut seen, "s")
+    }
+
+    #[test]
+    fn target_domain_reduces_url_and_trims() {
+        assert_eq!(
+            target_domain(TargetKind::Domain, "  Example.com "),
+            Some("Example.com".into())
+        );
+        assert_eq!(
+            target_domain(TargetKind::Url, "https://host.example.com/a?b=1"),
+            Some("host.example.com".into())
+        );
+        assert_eq!(target_domain(TargetKind::Domain, "   "), None);
+    }
+
+    #[test]
+    fn a_and_aaaa_become_tagged_ip_entities() {
+        let a = run("A", &["93.184.216.34"]);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].kind, EntityKind::IpAddress);
+        assert!(a[0].has_tag("dns") && a[0].has_tag("ipv4"));
+        assert_eq!(
+            a[0].evidence[0]
+                .attributes
+                .get("record_type")
+                .map(String::as_str),
+            Some("A")
+        );
+
+        let aaaa = run("AAAA", &["2606:2800:220:1:248:1893:25c8:1946"]);
+        assert!(aaaa[0].has_tag("ipv6"));
+    }
+
+    #[test]
+    fn mx_takes_last_field_and_requires_a_dot() {
+        // Priority + host; only the host is kept, trailing dot stripped.
+        let mx = run("MX", &["10 mail.example.com."]);
+        assert_eq!(mx.len(), 1);
+        assert_eq!(mx[0].kind, EntityKind::Domain);
+        assert_eq!(mx[0].value, "mail.example.com");
+        assert!(mx[0].has_tag("mx"));
+        // A dotless MX host (e.g. "0 .") is rejected.
+        assert!(run("MX", &["0 ."]).is_empty());
+    }
+
+    #[test]
+    fn spf_txt_extracts_ip4_and_includes_others_ignored() {
+        let out = run(
+            "TXT",
+            &[
+                "v=spf1 ip4:198.51.100.0/24 include:_spf.google.com -all",
+                "some-unrelated-txt-record",
+            ],
+        );
+        // One IP (CIDR stripped) + one include domain; the non-SPF TXT ignored.
+        assert_eq!(out.len(), 2);
+        let ip = out
+            .iter()
+            .find(|e| e.kind == EntityKind::IpAddress)
+            .unwrap();
+        assert_eq!(ip.value, "198.51.100.0");
+        assert!(ip.has_tag("spf"));
+        let inc = out.iter().find(|e| e.kind == EntityKind::Domain).unwrap();
+        assert_eq!(inc.value, "_spf.google.com");
+        assert!(inc.has_tag("spf-include"));
+    }
+
+    #[test]
+    fn dedup_is_cross_type_and_prefixed() {
+        // Same value as both an A record and an SPF ip4 → distinct (prefixed keys),
+        // but a repeated A record within the run is deduped.
+        let mut seen = HashSet::new();
+        let a = records_for_type(
+            "A",
+            &[rec("1.2.3.4"), rec("1.2.3.4")],
+            "example.com",
+            &mut seen,
+            "s",
+        );
+        assert_eq!(a.len(), 1); // intra-run dedup
+        let spf = records_for_type(
+            "TXT",
+            &[rec("v=spf1 ip4:1.2.3.4 -all")],
+            "example.com",
+            &mut seen,
+            "s",
+        );
+        // Different key prefix (spf: vs ip:) → still surfaced.
+        assert_eq!(spf.len(), 1);
+        assert!(spf[0].has_tag("spf"));
+    }
+
+    #[test]
+    fn ns_and_cname_strip_trailing_dot_and_need_a_dot() {
+        assert_eq!(run("NS", &["ns1.example.com."])[0].value, "ns1.example.com");
+        assert_eq!(
+            run("CNAME", &["target.cdn.net."])[0].value,
+            "target.cdn.net"
+        );
+        assert!(run("CNAME", &["localhost"]).is_empty());
     }
 }
