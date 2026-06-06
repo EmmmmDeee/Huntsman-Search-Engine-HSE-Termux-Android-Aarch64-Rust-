@@ -381,4 +381,45 @@ mod tests {
     fn unknown_prefix() {
         assert!(match_country("000000000").is_none());
     }
+
+    #[test]
+    fn country_table_is_well_formed_and_prefix_ordered() {
+        // 1. Every entry is well-formed: a digit-only dialling prefix, a 2-letter
+        //    uppercase ISO code, and a non-empty name.
+        for (prefix, iso, name) in COUNTRIES {
+            assert!(
+                !prefix.is_empty() && prefix.bytes().all(|b| b.is_ascii_digit()),
+                "bad dialling prefix {prefix:?} ({name})"
+            );
+            assert!(
+                iso.len() == 2 && iso.bytes().all(|b| b.is_ascii_uppercase()),
+                "bad ISO code {iso:?} ({name})"
+            );
+            assert!(!name.is_empty(), "empty country name for {iso}");
+        }
+
+        // 2. Longest-prefix-first ordering, table-wide. `match_country` returns the
+        //    FIRST prefix that the number starts with, so when an earlier entry's
+        //    prefix is a string-prefix of a later one's, that later country is
+        //    unreachable — every one of its numbers resolves to the earlier code.
+        //    The specific code must precede its generic stem (1876 Jamaica before
+        //    1 US). Generalises the hand-picked `longest_prefix_wins` check to all
+        //    229 entries and any future addition. (Also catches an exact-duplicate
+        //    prefix, which `starts_with` flags.)
+        let mut violations = Vec::new();
+        for (i, (earlier, _, ename)) in COUNTRIES.iter().enumerate() {
+            for (later, _, lname) in &COUNTRIES[i + 1..] {
+                if later.starts_with(earlier) {
+                    violations.push(format!(
+                        "+{later} ({lname}) is shadowed by the earlier +{earlier} ({ename})"
+                    ));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "phone-prefix ordering violated — move the specific code above its generic stem:\n  {}",
+            violations.join("\n  ")
+        );
+    }
 }
