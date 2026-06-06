@@ -90,6 +90,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`wayback` brought up to the module spec.** Both pure pieces of `process` are
+  extracted and tested: `extract_domain` (URL scheme/path/port stripping +
+  lowercasing) and `build_entity` (the CDX-rows → archive-entity mapping —
+  snapshot count, earliest/most-recent bookend timestamps raw + ISO, and the
+  status-code distribution, returning `None` for a header-only/unarchived
+  response). Adds unit coverage of the URL-host extraction, the empty/header-only
+  no-entity case, and the snapshot-count/bookend/status-distribution summary,
+  plus the previously-missing `Url`-kind `accepts` assertion. `iso_from_cdx`
+  keeps its existing tests. Behaviour-preserving.
 - **`smtp_vrfy` brought up to the module spec.** The five-way outcome→entity
   mapping (no-MX plus the SMTP valid/invalid/catch-all/unreachable verdicts),
   previously open-coded as five near-identical `Entity::new` blocks split across
