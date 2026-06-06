@@ -4,7 +4,7 @@
 //! [`ScanEngine::run`] in a loop with the same `Target` and `ScanOptions`
 //! on every tick. Each iteration is a normal scan — events flow through
 //! the existing [`EventBus`] and entities/correlations persist to the
-//! store via [`Store`] exactly as one-shot scans do.
+//! store via [`crate::storage::Store`] exactly as one-shot scans do.
 //!
 //! Why this design choice:
 //! - Reuses every piece of the engine (correlator, expansion, throttle,

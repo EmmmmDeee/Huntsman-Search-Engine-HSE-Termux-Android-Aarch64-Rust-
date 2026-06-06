@@ -8,7 +8,7 @@
 //! Engine selection rationale:
 //!   - Yahoo/AOL: Bing-powered, most reliable from datacenter IPs,
 //!     /RU= redirect URL decoding
-//!   - Bing: <cite> tag extraction, reliable from datacenter IPs
+//!   - Bing: `<cite>` tag extraction, reliable from datacenter IPs
 //!   - DuckDuckGo HTML: no JS, `uddg` redirect decoded
 //!   - Google: /url?q= redirect extraction (requires JS since 2025,
 //!     best from residential IPs)

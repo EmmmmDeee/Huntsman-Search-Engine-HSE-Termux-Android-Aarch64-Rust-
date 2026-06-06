@@ -1,6 +1,6 @@
 //! domainsdb.info — free domain registration search (no key, unlimited).
 //!
-//! Endpoint: GET https://api.domainsdb.info/v1/domains/search?domain={query}&zone={tld}&limit=20
+//! Endpoint: `GET https://api.domainsdb.info/v1/domains/search?domain={query}&zone={tld}&limit=20`
 //!
 //! Searches registered domains matching a keyword — useful for finding
 //! related/typosquatting domains from an Organisation or FullName target.

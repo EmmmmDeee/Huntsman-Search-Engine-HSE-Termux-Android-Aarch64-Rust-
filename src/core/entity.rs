@@ -162,7 +162,7 @@ impl Classification {
     /// NOTE (current state): the engine's expansion visited-set is still keyed
     /// on `(TargetKind, normalised value)` and expands each target at most
     /// once overall — it does not yet key on tier or re-queue on tier
-    /// graduation. `rank()`/[`COUNT`] are the ladder that the planned
+    /// graduation. `rank()`/[`Self::COUNT`] are the ladder that the planned
     /// tier-aware frontier will use; until that lands, this method is consumed
     /// by tests and ranking, not by the live visited-set.
     #[inline]
@@ -331,7 +331,7 @@ impl Entity {
     }
 
     /// Cross-source effective confidence — the stronger of two models over the
-    /// number of DISTINCT corroborating sources `n` (see [`source_count`],
+    /// number of DISTINCT corroborating sources `n` (see [`Self::source_count`],
     /// floored at 1):
     ///
     /// * **Multiplicative** (legacy): `confidence × (1 + 0.15·ln n)` — a gentle,
@@ -371,7 +371,7 @@ impl Entity {
         }
     }
 
-    /// The entity's current confidence tier — alias for [`classify`] that
+    /// The entity's current confidence tier — alias for [`Self::classify`] that
     /// names the role the value is intended to play in a tier-aware bounded
     /// best-first expansion (key the visited-set on `(target, tier_rank)` and
     /// re-queue at most once per tier when a merge lifts the entity).
@@ -426,10 +426,10 @@ impl Entity {
     }
 
     /// Distinct evidence sources that represent *independent* intelligence —
-    /// [`evidence_sources`] minus the deterministic self-enrichment passes in
+    /// [`Self::evidence_sources`] minus the deterministic self-enrichment passes in
     /// [`ENRICHMENT_ONLY_SOURCES`]. This is the honest cross-correlation set
-    /// that drives [`source_count`]/[`c_effective`] and the corroboration
-    /// correlator rules; the full [`evidence_sources`] set is retained for
+    /// that drives [`Self::source_count`]/[`Self::c_effective`] and the corroboration
+    /// correlator rules; the full [`Self::evidence_sources`] set is retained for
     /// display and attribute access.
     pub fn corroborating_sources(&self) -> std::collections::HashSet<&str> {
         self.evidence

@@ -1,8 +1,8 @@
 //! DNS-over-HTTPS resolution via Cloudflare + Google public resolvers.
 //!
 //! Endpoints (free, no key, unlimited):
-//!   GET https://cloudflare-dns.com/dns-query?name={domain}&type={type}
-//!   GET https://dns.google/resolve?name={domain}&type={type}
+//!   `GET https://cloudflare-dns.com/dns-query?name={domain}&type={type}`
+//!   `GET https://dns.google/resolve?name={domain}&type={type}`
 //!
 //! Queries A, AAAA, MX, TXT, NS, CNAME records. Extracts IPs from A/AAAA,
 //! mail servers from MX, nameservers from NS, SPF/DKIM/DMARC from TXT.

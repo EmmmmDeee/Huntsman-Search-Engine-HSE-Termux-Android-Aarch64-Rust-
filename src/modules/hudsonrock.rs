@@ -2,7 +2,7 @@
 //!
 //! Endpoints:
 //!   /api/json/v2/osint-tools/search-by-login?username=<email_or_username>
-//!   /api/json/v2/osint-tools/search-by-domain?domain=<domain>
+//!   `/api/json/v2/osint-tools/search-by-domain?domain=<domain>`
 //!
 //! Security: stealer credentials are NEVER stored in evidence — only the
 //! aggregate compromise metadata (machine name, OS, date, malware family,

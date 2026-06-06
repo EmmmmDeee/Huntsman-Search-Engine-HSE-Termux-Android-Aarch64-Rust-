@@ -6,7 +6,7 @@
 //! * [`routes`]   — the `Router` definition and the SPA static fallback.
 //!
 //! Binds to `127.0.0.1` by default (architecture invariant — no LAN exposure).
-//! The router is wired in [`crate::cli::cmd_serve`].
+//! The router is wired in `cli::serve::cmd_serve` (a private `pub(super)` fn).
 
 pub mod handlers;
 pub mod routes;

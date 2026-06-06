@@ -156,7 +156,7 @@ impl QuotaBudget {
     /// Charge one query against both per-scan and per-session counters.
     /// Callers MUST gate on `remaining()` before incrementing.
     ///
-    /// Prefer [`try_increment`] for new code: `remaining()`-then-`increment()`
+    /// Prefer [`Self::try_increment`] for new code: `remaining()`-then-`increment()`
     /// is a non-atomic check-then-act, so concurrent callers can all observe
     /// room and then all increment past the cap.
     pub fn increment(&self) {

@@ -60,7 +60,7 @@ pub fn should_skip_external_ip(ip: &str) -> bool {
 /// **Embedded-IPv4 v6 forms.** Several v6 representations carry an IPv4 address
 /// the host may route to the underlying v4 — including internal ranges. These
 /// are decoded and judged by the IPv4 rules, closing an SSRF bypass:
-///   * IPv4-mapped `::ffff:a.b.c.d` — folded by [`to_canonical`] before the match
+///   * IPv4-mapped `::ffff:a.b.c.d` — folded by [`std::net::IpAddr::to_canonical`] before the match
 ///     (so `::ffff:169.254.169.254` hits the v4 arm);
 ///   * **NAT64** `64:ff9b::a.b.c.d` — Android cellular networks commonly run
 ///     NAT64/464XLAT, so `64:ff9b::<private-v4>` is a real on-device SSRF vector;

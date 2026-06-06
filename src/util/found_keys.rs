@@ -84,7 +84,8 @@ fn insert_own_for_test(key: &str) {
 /// value, provenance kept) — excluding our own auth credentials. Best-effort and
 /// infallible: safe to call on every response, JSON or not.
 ///
-/// Identification uses [`identify_vendor_api_key`] (recognised vendor prefixes /
+/// Identification uses [`crate::modules::oathnet_pro::key_harvest::identify_vendor_api_key`]
+/// (recognised vendor prefixes /
 /// PEM / crypto), NOT the generic-hex heuristic. That is deliberate: this runs
 /// on EVERY response body, and entropy-scanning every 32/64-char hex token (of
 /// which breach corpora have thousands) was measured at ~2.8 MB/s and produced

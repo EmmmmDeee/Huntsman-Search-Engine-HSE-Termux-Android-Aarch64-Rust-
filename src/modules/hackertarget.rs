@@ -1,9 +1,9 @@
 //! HackerTarget — free DNS/subdomain/reverse-IP lookups.
 //!
 //! Endpoints (all free, no key):
-//!   GET https://api.hackertarget.com/hostsearch/?q={domain}
-//!   GET https://api.hackertarget.com/reverseiplookup/?q={ip}
-//!   GET https://api.hackertarget.com/reversedns/?q={ip}
+//!   `GET https://api.hackertarget.com/hostsearch/?q={domain}`
+//!   `GET https://api.hackertarget.com/reverseiplookup/?q={ip}`
+//!   `GET https://api.hackertarget.com/reversedns/?q={ip}`
 //!
 //! Rate limit: 100 queries/day without key. Returns plain-text CSV.
 

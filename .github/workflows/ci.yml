@@ -39,6 +39,15 @@ jobs:
       - name: Clippy (warnings = errors)
         run: cargo clippy --all-targets --locked -- -D warnings
 
+      - name: Docs (no broken intra-doc links, bare URLs, or stray HTML tags)
+        # Guards the maintainer's primary reference against silent rot. Denies the
+        # three stable, high-value rustdoc lints specifically rather than blanket
+        # `-D warnings` — so a future toolchain adding a new rustdoc lint can't
+        # break CI on unchanged code. `--document-private-items` because HSE's lib
+        # is read internally, not as a published API (see the crate-root allow of
+        # `private_intra_doc_links`).
+        run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" cargo doc --no-deps --document-private-items --locked
+
       - name: Test
         run: cargo test --all --locked
 

@@ -5,7 +5,7 @@
 //! entities and emits `Person`, `Address`, `Domain`, `Organisation`
 //! entities from the results.
 //!
-//! Free API — requires a GUID from https://abr.business.gov.au/Tools/WebServicesRegister
+//! Free API — requires a GUID from <https://abr.business.gov.au/Tools/WebServicesRegister>
 //! (instant, free registration). Set `HUNTSMAN_ABR_GUID` in the env file.
 
 use std::time::Duration;

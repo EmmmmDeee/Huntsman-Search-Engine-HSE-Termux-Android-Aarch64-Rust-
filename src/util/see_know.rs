@@ -353,7 +353,7 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     }
 }
 
-/// Steam profile lookup via GET /api/v1/gaming/steam?id=<value>
+/// Steam profile lookup via `GET /api/v1/gaming/steam?id=<value>`
 ///
 /// Some plans publish gaming/steam alongside roblox/xbox/minecraft;
 /// safe to call against arbitrary 17-digit Steam IDs surfaced from
@@ -374,12 +374,12 @@ pub async fn steam_profile(key: &str, steam_id: &str) -> Result<Vec<Value>> {
 // through the endpoint planner.
 
 /// Discord user info — captures region/timezone/connected-accounts via
-/// GET /api/v1/discord/user?id=<value>
+/// `GET /api/v1/discord/user?id=<value>`
 pub async fn discord_user(key: &str, discord_id: &str) -> Result<Vec<Value>> {
     get_path(key, "discord/user", &[("id", discord_id)]).await
 }
 
-/// Discord → Roblox linkage via GET /api/v1/discord/to-roblox?id=<value>
+/// Discord → Roblox linkage via `GET /api/v1/discord/to-roblox?id=<value>`
 pub async fn discord_to_roblox(key: &str, discord_id: &str) -> Result<Vec<Value>> {
     get_path(key, "discord/to-roblox", &[("id", discord_id)]).await
 }

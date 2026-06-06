@@ -24,7 +24,7 @@ pub(super) struct ScanCmd {
     pub free_only: bool,
     pub passive_only: bool,
     pub module_timeout_ms: Option<u64>,
-    /// `None` ⇒ apply the product default ([`DEFAULT_SCAN_DEPTH`]) unless
+    /// `None` ⇒ apply the product default ([`crate::core::scan::DEFAULT_SCAN_DEPTH`]) unless
     /// `--auto`/`--recursive` chooses one; `Some(n)` is an explicit override.
     pub depth: Option<u32>,
     pub recursive: bool,
