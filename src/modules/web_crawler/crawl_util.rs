@@ -406,6 +406,17 @@ pub(super) fn extract_registrable_domain(host: &str) -> Option<String> {
     crate::util::domains::registrable_domain(host)
 }
 
+/// File extensions that turn an `@`-bearing asset filename — retina sprites
+/// (`logo@2x.webp`), icon fonts, stylesheets — into a bogus "email". The scan
+/// drops a candidate whose tail matches one, cutting false positives.
+/// **Deliberately excludes extensions that are also real gTLDs**: `.zip` and
+/// `.mov` were delegated in 2023, so `someone@archive.zip` is a real address and
+/// must NOT be filtered.
+const ASSET_EXTENSIONS: &[&str] = &[
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".bmp", ".tiff", ".css", ".js",
+    ".mjs", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".pdf",
+];
+
 pub(super) fn extract_emails(body: &str, emails: &mut HashSet<String>) {
     let bytes = body.as_bytes();
     let len = bytes.len();
@@ -438,12 +449,7 @@ pub(super) fn extract_emails(body: &str, emails: &mut HashSet<String>) {
             && domain_end - local_start <= 254
         {
             let lower = body[local_start..domain_end].to_lowercase();
-            if !lower.ends_with(".png")
-                && !lower.ends_with(".jpg")
-                && !lower.ends_with(".gif")
-                && !lower.ends_with(".css")
-                && !lower.ends_with(".js")
-            {
+            if !ASSET_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)) {
                 emails.insert(lower);
             }
         }
@@ -723,6 +729,30 @@ mod tests {
         let mut dup = HashSet::new();
         extract_emails("a@b.com a@b.com", &mut dup);
         assert_eq!(dup.len(), 1);
+    }
+
+    #[test]
+    fn email_extraction_filters_modern_asset_extensions_but_not_gtlds() {
+        let mut emails = HashSet::new();
+        extract_emails(
+            "sprites logo@2x.webp icon@3x.svg hero@2x.jpeg fav@2x.ico font@1x.woff2 \
+             — but real ops@acme.com and archive lover@backups.zip stay",
+            &mut emails,
+        );
+        // Retina/asset filenames the old 5-extension filter missed are now dropped.
+        for asset in [
+            "logo@2x.webp",
+            "icon@3x.svg",
+            "hero@2x.jpeg",
+            "fav@2x.ico",
+            "font@1x.woff2",
+        ] {
+            assert!(!emails.contains(asset), "asset leaked as email: {asset}");
+        }
+        // Real addresses survive — including the `.zip` gTLD, which must NOT be
+        // mistaken for a file extension.
+        assert!(emails.contains("ops@acme.com"));
+        assert!(emails.contains("lover@backups.zip"));
     }
 
     #[test]

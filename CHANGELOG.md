@@ -12,6 +12,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`web_crawler` email extraction stopped leaking modern asset filenames.** The
+  scanner filtered retina/asset filenames that look like emails (`logo@2x.png`)
+  but only for `.png/.jpg/.gif/.css/.js` — so `logo@2x.webp`, `icon@3x.svg`,
+  `hero@2x.jpeg`, `fav@2x.ico` and web-font files were extracted as bogus `Email`
+  entities that pollute the graph. The filter is now a complete, data-driven
+  `ASSET_EXTENSIONS` list. It **deliberately excludes `.zip` and `.mov`**, which
+  became real gTLDs in 2023 — so a genuine `someone@archive.zip` address is still
+  captured. Unit-tested both directions.
 - **OpenRouter API keys were mis-classified as OpenAI/Stripe.** The `sk-or-`
   prefix (OpenRouter) was declared *after* the generic `sk-` stem in the
   key-harvest pattern table, and `identify_api_key` returns the first
