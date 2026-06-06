@@ -60,8 +60,32 @@ fn lock() -> MutexGuard<'static, Sink> {
 /// Token-length window: below 16 chars almost nothing real matches; above 512
 /// is past every known vendor key (GitLab's ~256 is the longest) and into
 /// base64-blob DoS territory.
-const MIN_TOKEN: usize = 16;
-const MAX_TOKEN: usize = 512;
+pub(crate) const MIN_TOKEN: usize = 16;
+pub(crate) const MAX_TOKEN: usize = 512;
+
+/// Token boundary for key-candidate extraction: whitespace plus the structural
+/// punctuation that brackets values in JSON, query strings, and env files.
+/// Shared by every body scanner so the two call sites cannot drift — the
+/// config-leak probe previously used a narrower set (no `, & { } [ ]`), missing
+/// keys followed by a query/array separator.
+fn is_key_delimiter(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '"' | '\'' | '`' | '>' | '<' | '=' | ';' | ',' | '&' | '{' | '}' | '[' | ']'
+        )
+}
+
+/// Candidate key tokens of `body`: maximal non-delimiter runs, trimmed, within
+/// `[MIN_TOKEN, max_len]`. Zero-copy (`&str` slices of `body`); the caller
+/// applies its own classifier (vendor-only on every body, generic-inclusive on
+/// high-signal config leaks). The single source of truth for how a response
+/// body is split into key candidates.
+pub(crate) fn key_tokens(body: &str, max_len: usize) -> impl Iterator<Item = &str> {
+    body.split(is_key_delimiter)
+        .map(str::trim)
+        .filter(move |t| t.len() >= MIN_TOKEN && t.len() <= max_len)
+}
 
 /// Clear the sink and refresh the own-key exclusion set. Called by the engine at
 /// the start of every scan so each scan reports only the keys IT retrieved, and
@@ -101,17 +125,7 @@ pub fn scan_body(provider: &str, query: &str, body: &str) {
     // the O(hits) merge — not the O(body) scan — keeps the sink from serialising
     // the whole scan. Hits are rare, so this Vec is almost always empty.
     let mut hits: Vec<(&'static str, String)> = Vec::new();
-    for word in body.split(|c: char| {
-        c.is_whitespace()
-            || matches!(
-                c,
-                '"' | '\'' | '`' | '>' | '<' | '=' | ';' | ',' | '&' | '{' | '}' | '[' | ']'
-            )
-    }) {
-        let t = word.trim();
-        if t.len() < MIN_TOKEN || t.len() > MAX_TOKEN {
-            continue;
-        }
+    for t in key_tokens(body, MAX_TOKEN) {
         if let Some((service, key_val)) = identify_vendor_api_key(t) {
             hits.push((service, key_val.to_string()));
         }
@@ -288,6 +302,37 @@ mod tests {
         assert!(
             snapshot().is_empty(),
             "out-of-bounds tokens must yield no findings"
+        );
+    }
+
+    #[test]
+    fn key_tokens_uses_full_delimiter_set_and_length_window() {
+        // `&`, `,`, and `[ ] "` are delimiters (the set the config-leak probe
+        // used to omit), so a token followed by a query/array separator is
+        // isolated rather than glued to the next field.
+        let body = "a=ABCDEFGHIJKLMNOP&b=QRSTUVWXYZ012345,[\"deadbeefdeadbeef\"]";
+        let toks: Vec<&str> = key_tokens(body, MAX_TOKEN).collect();
+        assert!(
+            toks.contains(&"ABCDEFGHIJKLMNOP"),
+            "isolated by '&': {toks:?}"
+        );
+        assert!(
+            toks.contains(&"QRSTUVWXYZ012345"),
+            "isolated by ',': {toks:?}"
+        );
+        assert!(
+            toks.contains(&"deadbeefdeadbeef"),
+            "isolated by '[]\"': {toks:?}"
+        );
+
+        // Length window: sub-MIN and over-max tokens are dropped; exactly max kept.
+        let short = "x".repeat(MIN_TOKEN - 1);
+        let over = "y".repeat(MAX_TOKEN + 1);
+        assert_eq!(key_tokens(&format!("{short} {over}"), MAX_TOKEN).count(), 0);
+        let at_max = "z".repeat(MAX_TOKEN);
+        assert_eq!(
+            key_tokens(&at_max, MAX_TOKEN).collect::<Vec<_>>(),
+            vec![at_max.as_str()]
         );
     }
 

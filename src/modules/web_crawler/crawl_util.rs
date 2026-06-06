@@ -189,21 +189,14 @@ pub(super) async fn probe_config_leaks(
             );
             // Scan body for keys AND emit any matches as (service, masked_key)
             // tuples for the caller to convert into ApiKey entities.
+            // Shared token rules (delimiters + length window) with the every-body
+            // scanner, so the two can't drift. A leaked config file is a
+            // high-signal context, so unlike `found_keys` this classifier is the
+            // generic-inclusive `identify_api_key` (a bare 32/64-hex token in a
+            // committed `.env` is very likely a real key, not a password hash).
             let mut found = Vec::new();
-            for word in body.split(|c: char| {
-                c.is_whitespace()
-                    || c == '"'
-                    || c == '\''
-                    || c == '`'
-                    || c == '>'
-                    || c == '<'
-                    || c == '='
-                    || c == ';'
-            }) {
-                let t = word.trim();
-                if t.len() < 16 || t.len() > 200 {
-                    continue;
-                }
+            for t in crate::util::found_keys::key_tokens(&body, crate::util::found_keys::MAX_TOKEN)
+            {
                 if let Some((service, key_val)) =
                     crate::modules::oathnet_pro::key_harvest::identify_api_key(t)
                 {
