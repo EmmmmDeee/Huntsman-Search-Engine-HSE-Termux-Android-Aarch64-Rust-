@@ -12,6 +12,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`search_engines` family-name extraction now works for `initial.surname@`
+  emails.** `extract_family_names` derived the surname from an `Email` target by
+  dropping the first character (the likely first-initial), but for the very common
+  `j.smith@…` / `j_smith@…` forms it kept the separator — `lastname` became
+  `".smith"`, which never equalled the alphanumeric-trimmed words it is compared
+  against, so **no household/family leads were ever produced for those addresses**.
+  The leading separator is now stripped (`j.smith` → `smith`); `jsmith` is
+  unchanged. The previously-untested function (293-line `extract.rs`) gains unit
+  coverage of the FullName path, both email forms, the short-surname rejection,
+  multibyte-surname title-casing/dedup, and the non-applicable kinds.
 - **`doh_resolver` now reconstructs chunked (multi-string) TXT records.** A TXT
   record is one or more character-strings (RFC 1035 §3.3.14); the DoH JSON
   resolvers return a multi-string record as space-separated double-quoted chunks
