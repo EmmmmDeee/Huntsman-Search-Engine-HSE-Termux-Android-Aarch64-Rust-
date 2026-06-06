@@ -73,6 +73,21 @@ async fn ssrf_resolve_pin(url: &str) -> Option<Vec<String>> {
     let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?;
     let port = parsed.port_or_known_default()?;
+
+    // IP-literal host: curl dials the literal directly — no DNS lookup, so there
+    // is no rebinding race and `--resolve` (which only rewrites name lookups)
+    // would do nothing. Just vet the literal and emit no pin. `host_str()`
+    // brackets IPv6 literals (`[2606:…]`); strip them before the parse, or every
+    // IPv6-literal target fails `lookup_host` below (getaddrinfo rejects the
+    // brackets) and is wrongly refused — public ones included.
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        return (!crate::util::preflight::is_private_addr(ip)).then(Vec::new);
+    }
+
     let ip = tokio::net::lookup_host((host, port))
         .await
         .ok()?
@@ -297,7 +312,9 @@ mod tests {
             "http://10.0.0.1/x",
             "http://192.168.1.1/x",
             "http://169.254.169.254/latest/meta-data/",
-            "http://[::1]/x",
+            "http://[::1]/x",                    // IPv6 loopback (bracketed)
+            "http://[fc00::1]/x",                // IPv6 ULA
+            "http://[::ffff:169.254.169.254]/x", // IPv4-mapped metadata
         ] {
             assert!(
                 ssrf_resolve_pin(u).await.is_none(),
@@ -307,13 +324,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ssrf_pin_allows_public_host_and_pins_it() {
-        let pin = ssrf_resolve_pin("http://8.8.8.8/x")
-            .await
-            .expect("public IP must be pinned");
-        assert_eq!(
-            pin,
-            vec!["--resolve".to_string(), "8.8.8.8:80:8.8.8.8".to_string()]
-        );
+    async fn ssrf_pin_allows_public_ip_literal_without_a_pointless_pin() {
+        // An IP-literal target is dialled directly by curl (no DNS lookup), so
+        // there is no rebinding race and `--resolve` would rewrite nothing. The
+        // vetted-public literal must be accepted with an empty arg set rather
+        // than a redundant `--resolve host:port:host`.
+        for u in ["http://8.8.8.8/x", "http://[2606:4700:4700::1111]/x"] {
+            let pin = ssrf_resolve_pin(u)
+                .await
+                .unwrap_or_else(|| panic!("public literal {u} must be accepted"));
+            assert!(pin.is_empty(), "{u} needs no --resolve pin, got {pin:?}");
+        }
     }
 }

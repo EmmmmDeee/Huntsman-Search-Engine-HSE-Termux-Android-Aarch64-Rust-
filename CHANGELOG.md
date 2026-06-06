@@ -62,6 +62,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **curl fallback no longer refuses every IPv6-literal target.** The SSRF pin
+  (`ssrf_resolve_pin`) fed `Url::host_str()` to `tokio::net::lookup_host`, but
+  IPv6 literals come back *bracketed* (`[2606:…]`) and `getaddrinfo` rejects the
+  brackets — so the lookup failed and **all** IPv6-literal URLs (public ones
+  included) were refused on the curl path, while IPv4 literals got a pointless
+  `--resolve host:port:host` (curl dials a literal directly; there is no name to
+  rewrite). IP-literal hosts are now vetted in-process (brackets stripped, parsed,
+  checked against the private/reserved set) and accepted with no `--resolve` arg;
+  private/reserved literals — including `[::1]`, ULA, and IPv4-mapped metadata —
+  still fail closed. Hostname pinning is unchanged. Regression-tested.
+
 - **Entity search escapes the LIKE escape character.** The `search_entities`
   LIKE fallback (used when FTS5 yields nothing) escaped `%` and `_` under
   `ESCAPE '\'` but not `\` itself, so a backslash in the query consumed the
