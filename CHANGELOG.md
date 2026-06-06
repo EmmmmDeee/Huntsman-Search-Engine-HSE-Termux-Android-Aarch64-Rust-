@@ -179,6 +179,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Restored a buildable tree on stable + MSRV — `rusqlite` pinned back to 0.39.**
+  The earlier `rusqlite 0.40` bump pulled `libsqlite3-sys 0.38`, whose build
+  script uses the still-unstable `cfg_select!` macro (rust-lang/rust#115585).
+  That is a hard compile error on the project's MSRV (1.88) **and** on current
+  stable toolchains that have not yet stabilised the feature — i.e. the whole
+  project failed to build on the primary target. Pinned `rusqlite = 0.39`
+  (`libsqlite3-sys 0.37`), which builds on 1.88+, with a guard comment so the
+  bump is not reintroduced before `cfg_select!` lands on/below our MSRV. The
+  bundled-SQLite schema (incl. `sqlite_stat1`/`sqlite_stat4`) is byte-identical,
+  so no storage behaviour changes.
 - **Expansion no longer deep-dives shared third-party infrastructure (the domain
   flood at its root).** The same real name-scan accumulated **683 domains, 599 of
   them (88%) from `hackertarget`** — a *reverse-IP lookup on two Cloudflare edge
