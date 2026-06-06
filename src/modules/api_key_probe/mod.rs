@@ -332,7 +332,11 @@ mod tests {
                  send an unauthenticated request",
                 probe.service
             );
-            assert!(!probe.category.is_empty(), "{}: empty category", probe.service);
+            assert!(
+                !probe.category.is_empty(),
+                "{}: empty category",
+                probe.service
+            );
         }
     }
 

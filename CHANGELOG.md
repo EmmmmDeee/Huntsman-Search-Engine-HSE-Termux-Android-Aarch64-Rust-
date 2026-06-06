@@ -27,6 +27,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`dns_intel` now discloses SaaS vendor relationships from domain-verification
+  TXT records.** Publishing a `…-domain-verification=` record proves an org has
+  onboarded a given vendor — real OSINT for mapping its tech/vendor stack. The
+  module previously recognised only Google and Microsoft; the detection is now a
+  curated, case-insensitive `VERIFICATION_VENDORS` table (Google, Facebook, Apple,
+  Atlassian, Adobe, Stripe, DocuSign, Dropbox, Zoom, GlobalSign, Pinterest, Cisco,
+  Microsoft) surfaced as a namespaced `verified:<vendor>` tag (was the ad-hoc
+  `google-verified` / `ms-verified`). A wrong prefix simply never matches, so the
+  table fails safe. Unit-tested.
 - **Credential-safety guards for the live key-validation probes
   (`api_key_probe`).** These probes transmit a *live secret API key* to each
   service's validation endpoint, so two new tests lock down that the table stays

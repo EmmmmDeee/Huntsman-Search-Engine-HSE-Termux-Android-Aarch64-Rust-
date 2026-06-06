@@ -434,11 +434,10 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
                         );
                         dmarc_emails.push(ee);
                     }
-                } else if b.len() >= 24 && b[..24].eq_ignore_ascii_case(b"google-site-verification")
-                {
-                    dom.tag("google-verified");
-                } else if b.len() >= 3 && b[..3].eq_ignore_ascii_case(b"ms=") {
-                    dom.tag("ms-verified");
+                } else if let Some(vendor) = verification_vendor(t) {
+                    // Domain-ownership verification record → discloses a SaaS
+                    // vendor relationship (`verified:google`, `verified:atlassian`, …).
+                    dom.tag(format!("verified:{vendor}"));
                 }
             }
             for txt in &txts {
@@ -813,6 +812,41 @@ fn dmarc_report_addresses(txt: &str) -> Vec<&str> {
     out
 }
 
+/// Domain-ownership verification TXT prefixes → the vendor they prove a
+/// relationship with. A published verification record discloses which SaaS the
+/// organisation has onboarded — real OSINT for mapping its vendor/tech stack.
+/// Curated from each provider's published setup docs and matched
+/// case-insensitively; a prefix that is even slightly wrong simply never matches
+/// (no false positives), so the table fails safe.
+const VERIFICATION_VENDORS: &[(&str, &str)] = &[
+    ("google-site-verification=", "google"),
+    ("facebook-domain-verification=", "facebook"),
+    ("apple-domain-verification=", "apple"),
+    ("atlassian-domain-verification=", "atlassian"),
+    ("adobe-idp-site-verification=", "adobe"),
+    ("adobe-sign-verification=", "adobe"),
+    ("stripe-verification=", "stripe"),
+    ("docusign=", "docusign"),
+    ("dropbox-domain-verification=", "dropbox"),
+    ("zoom-domain-verification=", "zoom"),
+    ("globalsign-domain-verification=", "globalsign"),
+    ("pinterest-site-verification=", "pinterest"),
+    ("cisco-ci-domain-verification=", "cisco"),
+    // Microsoft 365 tenant verification — short and generic, so it is matched
+    // last (nothing else in the table shares this prefix).
+    ("ms=", "microsoft"),
+];
+
+/// The vendor a TXT record verifies domain ownership for, if any. **Pure**:
+/// a case-insensitive prefix match against [`VERIFICATION_VENDORS`].
+fn verification_vendor(txt: &str) -> Option<&'static str> {
+    let b = txt.as_bytes();
+    VERIFICATION_VENDORS.iter().find_map(|(prefix, vendor)| {
+        let p = prefix.as_bytes();
+        (b.len() >= p.len() && b[..p.len()].eq_ignore_ascii_case(p)).then_some(*vendor)
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tests — merged from all five original modules
 // ---------------------------------------------------------------------------
@@ -897,6 +931,42 @@ mod tests {
                 "forensic@example.com"
             ]
         );
+    }
+
+    #[test]
+    fn verification_vendor_maps_known_records_case_insensitively() {
+        assert_eq!(
+            verification_vendor("google-site-verification=abc123"),
+            Some("google")
+        );
+        assert_eq!(
+            verification_vendor("facebook-domain-verification=deadbeef"),
+            Some("facebook")
+        );
+        assert_eq!(
+            verification_vendor("atlassian-domain-verification=xyz"),
+            Some("atlassian")
+        );
+        // Microsoft 365's short `MS=` tenant token, matched case-insensitively.
+        assert_eq!(verification_vendor("MS=ms12345678"), Some("microsoft"));
+        // Not a verification record → None (SPF, a random TXT, empty).
+        assert_eq!(verification_vendor("v=spf1 -all"), None);
+        assert_eq!(verification_vendor("just some text"), None);
+        assert_eq!(verification_vendor(""), None);
+    }
+
+    #[test]
+    fn verification_vendor_table_is_sound() {
+        // Every entry maps a non-empty, lowercase prefix to a non-empty vendor —
+        // a sanity guard so a future addition can't break the lookup.
+        for (prefix, vendor) in VERIFICATION_VENDORS {
+            assert!(!prefix.is_empty() && !vendor.is_empty());
+            assert_eq!(
+                *vendor,
+                vendor.to_lowercase(),
+                "vendor tag must be lowercase"
+            );
+        }
     }
 
     #[test]
