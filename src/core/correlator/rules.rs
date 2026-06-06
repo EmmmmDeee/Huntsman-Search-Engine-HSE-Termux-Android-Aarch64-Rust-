@@ -1105,6 +1105,15 @@ pub(super) fn rule_au_026_validated_address(
     out
 }
 
+/// AU-027 — Address ↔ coordinates geolocation chain.
+///
+/// Co-presence signal: fires when the scan holds both geo-tagged `Address` and
+/// `Coordinates` entities (confidence ≥ 0.55). It asserts that multiple geo
+/// artefacts were derived for the subject, NOT that a given address geocodes to
+/// a given coordinate — the correlator runs in `core` and cannot call the
+/// `util::geohash` distance helpers (the `core_does_not_import_util` layering
+/// invariant), so cross-kind proximity is intentionally not verified here.
+/// Spatial proximity between coordinate sets is AU-017's job.
 pub(super) fn rule_au_027_address_coordinates_chain(
     entities: &[Entity],
     scan_id: &str,
@@ -1199,6 +1208,15 @@ pub(super) fn rule_au_029_cloud_storage_exposure(
     )]
 }
 
+/// AU-030 — Multi-source geolocation convergence (source breadth).
+///
+/// Measures how many INDEPENDENT sources produced geo entities for the subject
+/// (`corroborating_sources`, so the unconditional `geo_normalize` enrichment
+/// pass can't inflate the count), escalating Medium→High→Critical at 3/4/5+. It
+/// is source *convergence* — many sources agreeing to provide geolocation — not
+/// a check that those sources agree on the same place; cross-kind proximity is
+/// not verified here (see AU-027 on why the correlator can't). AU-017 covers
+/// spatial clustering of `Coordinates`.
 pub(super) fn rule_au_030_geo_convergence_score(
     entities: &[Entity],
     scan_id: &str,
