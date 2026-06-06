@@ -90,6 +90,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`leakix` brought up to the module spec.** The ~90-line exposure-event
+  summarisation (top event types / sources / protocols by frequency, the sorted
+  open-port set, the earliest/most-recent timestamp window, and the `leak` /
+  `ssh-exposed` tags) is extracted out of `process` into the pure, IO-free
+  `build_exposure_entity`, with the top-N and port caps promoted to named
+  constants and the repeated services∪leaks iteration collapsed behind a single
+  closure (removing four interim `Vec` allocations). Replaces the two trivial
+  accepts/cost tests with unit coverage of the count/port/window summary,
+  case-insensitive `ssh-exposed` tagging, services-only attribute omission, and
+  the port cap. Behaviour-preserving.
 - **`threatfox` brought up to the module spec.** The ~90-line IOC aggregation
   (malware families / IOC + threat types / context tags folded into capped,
   deduplicated, deterministically-ordered attribute lists, plus max analyst
