@@ -432,11 +432,19 @@ fn escape_json(s: &str) -> String {
 
 async fn get_json(url: &str, key: &str) -> Result<Value> {
     let body = CLIENT.get(url, key).await?;
+    // Retain the paid response verbatim BEFORE parsing/extraction — operator
+    // policy: purchased data is kept in absolute completeness until manually
+    // deleted (see `util::raw_archive`). The full request URL is the query
+    // context. Auth-error/empty bodies are skipped by the archive itself.
+    crate::util::raw_archive::record("see_know", url, &body);
     parse_response(&body)
 }
 
 async fn post_json(url: &str, key: &str, body: &str) -> Result<Value> {
     let resp = CLIENT.post_json(url, key, body).await?;
+    // Archive the raw paid response verbatim. The POST body carries the query
+    // (`{"query":…}`), so record it as the context alongside the response.
+    crate::util::raw_archive::record("see_know", body, &resp);
     parse_response(&resp)
 }
 

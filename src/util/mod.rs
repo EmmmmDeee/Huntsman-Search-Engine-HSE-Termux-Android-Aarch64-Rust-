@@ -22,6 +22,7 @@ pub mod oui;
 pub mod postcode_au;
 pub mod preflight;
 pub mod proxy;
+pub mod raw_archive;
 pub mod response_cache;
 pub mod see_know;
 pub mod service_defs;

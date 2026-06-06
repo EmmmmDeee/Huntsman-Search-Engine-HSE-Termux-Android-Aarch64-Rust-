@@ -154,6 +154,11 @@ pub async fn search(
         url.push_str(&crate::util::http::urlencode(&sid));
     }
     let body = CLIENT.get(&url, key).await?;
+    // Retain the paid response verbatim BEFORE parsing/extraction — operator
+    // policy: purchased data is kept in absolute completeness until manually
+    // deleted (see `util::raw_archive`). The full request URL is the query
+    // context; the archive skips empty bodies on its own.
+    crate::util::raw_archive::record("oathnet", &url, &body);
     // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
     // which false-positives on legitimate metadata fields like `session_quota`
     // and `recommended_quota`. Match only true exhaustion signals.
