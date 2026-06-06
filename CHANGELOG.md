@@ -62,6 +62,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`url_util::host_only` keeps a bracketed IPv6 literal intact.** It dropped the
+  `:port` by splitting on the first colon, which truncated an IPv6-literal
+  authority (`[2606:4700::1]:443`) to `[2606` — the inner colons are part of the
+  address, not a port delimiter. Downstream callers then keyed on the corrupted
+  host: the whois query, the Wayback CDX lookup, and the raw-archive provider
+  label. A bracketed literal is now returned whole (brackets included, matching
+  `Url::host_str`); scheme/path/port handling for every other host is unchanged.
+  Tested.
+
 - **curl fallback no longer refuses every IPv6-literal target.** The SSRF pin
   (`ssrf_resolve_pin`) fed `Url::host_str()` to `tokio::net::lookup_host`, but
   IPv6 literals come back *bracketed* (`[2606:…]`) and `getaddrinfo` rejects the

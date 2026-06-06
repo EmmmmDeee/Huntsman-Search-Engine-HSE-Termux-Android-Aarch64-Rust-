@@ -59,6 +59,11 @@ pub mod url_util {
     /// **no** case-folding or validity policy on the host itself — callers layer
     /// that on (see [`host_from_url`]). A plain host or `host:port` passes through
     /// as its host. Returns `""` when nothing host-like remains.
+    ///
+    /// A **bracketed IPv6 literal** (`[2606:4700::1]:443`) is returned intact
+    /// **with** its brackets (matching `Url::host_str`): the colons inside the
+    /// brackets are part of the address, not the `:port` separator, so the naive
+    /// "split on the first colon" would otherwise truncate it to `[2606`.
     #[must_use]
     pub fn host_only(s: &str) -> &str {
         let trimmed = s.trim();
@@ -71,13 +76,18 @@ pub mod url_util {
                     .map(|_| &trimmed[scheme.len()..])
             })
             .unwrap_or(trimmed);
-        after_scheme
-            .split('/')
-            .next()
-            .unwrap_or("")
-            .split(':')
-            .next()
-            .unwrap_or("")
+        let authority = after_scheme.split('/').next().unwrap_or("");
+        // Bracketed IPv6 literal: the host is the whole `[...]`; its inner colons
+        // are not a port delimiter. Return it (brackets included) before the
+        // port split below would cut it at the first colon.
+        if let Some(after_open) = authority.strip_prefix('[')
+            && let Some(close) = after_open.find(']')
+        {
+            // `close` indexes into `after_open` (one past the `[`), so the `]`
+            // sits at `close + 1` in `authority`; include it.
+            return &authority[..close + 2];
+        }
+        authority.split(':').next().unwrap_or("")
     }
 
     /// The lowercased host of a URL, or `None` unless it looks like a real domain
@@ -107,6 +117,20 @@ pub mod url_util {
             assert_eq!(host_only("HtTp://x.test"), "x.test");
             // ...but the host slice itself is returned verbatim (no case-folding).
             assert_eq!(host_only("https://MixedCase.Net"), "MixedCase.Net");
+        }
+
+        #[test]
+        fn host_only_keeps_bracketed_ipv6_literal_intact() {
+            // The colons inside the brackets are part of the address, not a
+            // `:port` delimiter — the host must not be truncated at the first.
+            assert_eq!(
+                host_only("https://[2606:4700:4700::1111]:443/dns-query"),
+                "[2606:4700:4700::1111]"
+            );
+            assert_eq!(host_only("http://[::1]/admin"), "[::1]");
+            assert_eq!(host_only("[fe80::1]:8080"), "[fe80::1]");
+            // No port after the literal.
+            assert_eq!(host_only("https://[2001:db8::1]/"), "[2001:db8::1]");
         }
 
         #[test]
