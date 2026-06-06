@@ -288,6 +288,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Single source for the mobile-Chrome User-Agent.** The exact same
+  Android/Chrome UA string was hard-coded in four places — `util::curl::UA_MOBILE`
+  (canonical), `username_search`'s `BROWSER_UA`, `curl_client`'s `DEFAULT_UA`, and
+  an inline `social_probe` curl arg. The three duplicates now reference
+  `util::curl::UA_MOBILE`, so bumping the Chrome version (or the device
+  fingerprint) is a one-line change that can't leave a module behind.
+  Behaviour-preserving (all four were byte-identical).
 - **`phone_area_geo` reuses the canonical ISO→country-name table.** Its private
   8-entry `country_name` match is replaced by a delegation to
   `geohash::country_name_for_iso` (55 countries) — every ISO the module's area

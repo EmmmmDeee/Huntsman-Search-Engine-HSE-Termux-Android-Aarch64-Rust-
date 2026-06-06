@@ -32,9 +32,7 @@ use crate::core::error::{Error, Result};
 /// Android 14 — matches what an operator's Termux-launched browser
 /// would send, which is what the providers' CDN fingerprinting
 /// expects.
-const DEFAULT_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) \
-     AppleWebKit/537.36 (KHTML, like Gecko) \
-     Chrome/125.0.0.0 Mobile Safari/537.36";
+const DEFAULT_UA: &str = crate::util::curl::UA_MOBILE;
 
 /// How a provider's API key is presented on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

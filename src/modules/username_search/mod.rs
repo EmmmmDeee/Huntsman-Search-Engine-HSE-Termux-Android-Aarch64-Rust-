@@ -40,9 +40,7 @@ const BODY_PROBE_CAP: usize = 256 * 1024;
 /// even when the username existed. Sending a real Chrome-on-Android
 /// UA (chosen to match the `util::curl_client` fingerprint used by
 /// the paid OSINT modules) restores hit rate.
-const BROWSER_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) \
-    AppleWebKit/537.36 (KHTML, like Gecko) \
-    Chrome/125.0.0.0 Mobile Safari/537.36";
+const BROWSER_UA: &str = crate::util::curl::UA_MOBILE;
 
 /// Accept header — wide image/html/anything spec that matches what a
 /// browser sends. Some WAFs (notably Akamai Bot Manager) score
