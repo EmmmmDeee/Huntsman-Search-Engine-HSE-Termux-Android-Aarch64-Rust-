@@ -90,6 +90,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`crtsh` brought up to the module spec.** The CT-log query construction and
+  the certificate-entry→entity mapping are extracted out of `process` into the
+  pure, IO-free `build_query` and `build_entities` (SAN/common-name splitting,
+  wildcard skipping, cross-response dedup, subdomain classification + confidence,
+  highest-confidence capping), with the email-length floor and result cap promoted
+  to named constants (`MIN_EMAIL_LEN`, `MAX_ENTITIES`). **Fixes a latent
+  case-sensitivity bug**: the subdomain check compared a lower-cased SAN against
+  the raw target value, so a mixed-case target (`Example.com`) mis-scored its own
+  subdomains as unrelated (0.45 instead of 0.75); the base is now case-folded.
+  Adds unit coverage of per-kind query shaping, subdomain/dedup/wildcard handling,
+  the case-insensitive base match, SAN-email surfacing above the length floor, and
+  the highest-confidence-first cap. Behaviour-preserving except the case-fold fix.
 - **`webserver_banner` brought up to the module spec.** The inline URL/host/port
   parsing is extracted out of `process` into the pure, IO-free `extract_host_port`
   (returning `None` for an unparseable URL or empty/path-shaped host). Test
