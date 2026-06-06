@@ -178,8 +178,7 @@ impl Module for IpQuery {
 
         if let Some(loc) = &data.location {
             if let (Some(lat), Some(lon)) = (loc.latitude, loc.longitude)
-                && lat.abs() > 0.01
-                && lon.abs() > 0.01
+                && crate::util::geo::is_plausible_provider_coord(lat, lon)
             {
                 let coords = format!("{lat:.4},{lon:.4}");
                 // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.

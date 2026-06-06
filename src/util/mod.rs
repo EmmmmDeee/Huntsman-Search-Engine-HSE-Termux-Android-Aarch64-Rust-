@@ -396,6 +396,30 @@ pub mod geo {
             && !(lat == 0.0 && lon == 0.0)
     }
 
+    /// Magnitude (in degrees) below which a *coarse* geolocation provider's
+    /// coordinate component is treated as that provider's "no fix" placeholder
+    /// rather than a real position. Several IP/WiFi-geo APIs return `0.0000` or a
+    /// sub-degree jitter around null island when they have no location.
+    pub const NULL_ISLAND_BAND: f64 = 0.01;
+
+    /// Validity check for coordinates coming from a *coarse* IP/WiFi-geolocation
+    /// provider (`ipinfo`, `ipapi`, `ip2location`, `ipquery`, `wigle`, …):
+    /// [`is_valid_coords`] **and** clear of the near-null-island
+    /// [`NULL_ISLAND_BAND`] those providers emit as an "unknown" placeholder (a
+    /// `loc` like `0.0000,0.0000` or `0.001,0.001`). Both components must exceed
+    /// the band.
+    ///
+    /// Prefer this over a bare `lat.abs() > 0.01 && lon.abs() > 0.01`: that idiom
+    /// (which had been copied across the five providers above) dropped null
+    /// island but *silently accepted out-of-range and non-finite values*, which
+    /// then became high-confidence false fixes — precisely what
+    /// [`is_valid_coords`] exists to reject. Folding the validity check in keeps
+    /// the band heuristic while closing that gap in one place.
+    #[must_use]
+    pub fn is_plausible_provider_coord(lat: f64, lon: f64) -> bool {
+        is_valid_coords(lat, lon) && lat.abs() > NULL_ISLAND_BAND && lon.abs() > NULL_ISLAND_BAND
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -415,6 +439,33 @@ pub mod geo {
             assert!(!is_valid_coords(10.0, 181.0)); // lon out of range
             assert!(!is_valid_coords(f64::NAN, 10.0)); // non-finite
             assert!(!is_valid_coords(10.0, f64::INFINITY));
+        }
+
+        #[test]
+        fn plausible_provider_coord_keeps_real_fixes() {
+            assert!(is_plausible_provider_coord(-27.4766, 153.0166)); // Brisbane
+            assert!(is_plausible_provider_coord(51.5074, -0.1278)); // London
+        }
+
+        #[test]
+        fn plausible_provider_coord_drops_null_island_band() {
+            // The band the IP/WiFi providers emit as "no fix".
+            assert!(!is_plausible_provider_coord(0.0, 0.0));
+            assert!(!is_plausible_provider_coord(0.001, 0.001));
+            // Either component inside the band is enough to drop it.
+            assert!(!is_plausible_provider_coord(0.005, 120.0));
+            assert!(!is_plausible_provider_coord(45.0, -0.004));
+        }
+
+        #[test]
+        fn plausible_provider_coord_rejects_out_of_range_and_nonfinite() {
+            // The gap the bare `abs() > 0.01` idiom left open: these used to pass
+            // straight through into a high-confidence Coordinates entity.
+            assert!(!is_plausible_provider_coord(500.0, 999.0));
+            assert!(!is_plausible_provider_coord(91.0, 10.0));
+            assert!(!is_plausible_provider_coord(10.0, 181.0));
+            assert!(!is_plausible_provider_coord(f64::INFINITY, f64::INFINITY));
+            assert!(!is_plausible_provider_coord(f64::NAN, 10.0));
         }
     }
 }

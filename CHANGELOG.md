@@ -12,6 +12,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **IP/WiFi-geo providers no longer emit out-of-range or non-finite
+  coordinates.** Six coarse-geolocation modules — `ip_geo`, `ipinfo`, `ipapi`,
+  `ip2location`, `ipquery`, `wigle` — gated their `Coordinates` entity on a bare
+  `lat.abs() > 0.01 && lon.abs() > 0.01` (and `ip_geo` on nothing at all). That
+  dropped null island but silently let a malformed provider `loc` like
+  `500,999`, `inf,inf`, or `NaN` through as a *high-confidence* fix — exactly the
+  false-fix that poisons the geo-cluster correlator, and the reason
+  `util::geo::is_valid_coords` exists. They now share a new
+  `util::geo::is_plausible_provider_coord`, which folds the range/finite
+  validity check in with the null-island band so the gap can't reopen in one
+  module at a time. The eight modules already on `is_valid_coords` are
+  unchanged. Unit-tested (range, finite, and band cases).
 - **OUI classifier recognises Tesla's `DC:44:27` prefix again.** One entry in
   the curated `util::oui` table was mis-typed as a 7-character `"DC44271"`.
   `classify_mac` extracts the first **6** hex digits of a MAC and compares for

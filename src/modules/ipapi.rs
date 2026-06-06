@@ -169,8 +169,7 @@ impl Module for IpApi {
         }
 
         if let (Some(lat), Some(lon)) = (data.lat, data.lon)
-            && lat.abs() > 0.01
-            && lon.abs() > 0.01
+            && crate::util::geo::is_plausible_provider_coord(lat, lon)
         {
             let coords = format!("{lat:.4},{lon:.4}");
             // Confidence recalibrated 0.70 → 0.60 — see ip_geo.rs for

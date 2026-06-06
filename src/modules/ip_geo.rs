@@ -105,7 +105,9 @@ impl Module for IpGeo {
 
         let mut result = ModuleResult::new();
 
-        if let (Some(lat), Some(lon)) = (data.lat, data.lon) {
+        if let (Some(lat), Some(lon)) = (data.lat, data.lon)
+            && crate::util::geo::is_plausible_provider_coord(lat, lon)
+        {
             let coords = format!("{lat:.6},{lon:.6}");
             // Confidence scaled by IP type: hosting/proxy locations are
             // datacenter-level (low geo value), mobile IPs are cell-tower-level.

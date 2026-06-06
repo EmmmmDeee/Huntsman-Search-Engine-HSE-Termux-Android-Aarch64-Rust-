@@ -42,10 +42,6 @@ struct IpInfoResp {
     timezone: Option<String>,
 }
 
-/// `loc` coordinates with both components below this magnitude are treated as a
-/// null-island (0,0) placeholder, not a real geolocation, and dropped.
-const MIN_COORD_MAGNITUDE: f64 = 0.01;
-
 /// Map an ipinfo.io record to its entities. **Pure** (no network/IO): yields up
 /// to five — `Coordinates` from a real (non-null-island) `loc`, an `Address` from
 /// city/region/country, an `Organisation` plus the leading `Asn` parsed out of
@@ -58,8 +54,7 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
         let mut parts = loc.split(',');
         if let (Some(lat_s), Some(lon_s)) = (parts.next(), parts.next())
             && let (Ok(lat), Ok(lon)) = (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>())
-            && lat.abs() > MIN_COORD_MAGNITUDE
-            && lon.abs() > MIN_COORD_MAGNITUDE
+            && crate::util::geo::is_plausible_provider_coord(lat, lon)
         {
             let coords = format!("{lat:.4},{lon:.4}");
             // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.

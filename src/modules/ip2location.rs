@@ -117,8 +117,7 @@ impl Module for Ip2Location {
         let zip = data.zip_code.as_deref().unwrap_or("");
 
         if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
-            && lat.abs() > 0.01
-            && lon.abs() > 0.01
+            && crate::util::geo::is_plausible_provider_coord(lat, lon)
         {
             let coords = format!("{lat:.4},{lon:.4}");
             // Confidence recalibrated 0.72 → 0.62 — see ip_geo.rs. The

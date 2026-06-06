@@ -784,7 +784,7 @@ fn emit_bssid_entities(
         );
         result.push(addr);
     }
-    if lat.abs() > 0.01 && lon.abs() > 0.01 {
+    if crate::util::geo::is_plausible_provider_coord(lat, lon) {
         let mut e = Entity::new(
             EntityKind::Coordinates,
             format!("{lat:.6},{lon:.6}"),
