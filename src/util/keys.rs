@@ -302,6 +302,42 @@ pub fn resolve_or_default<'a>(ctx_key: Option<&'a str>, default: &'a str) -> &'a
     }
 }
 
+/// Every API-key/token value HSE uses to authenticate its OWN queries: the
+/// embedded defaults, every superseded default (so a rotated-out auth key is
+/// never reported as a finding), and every live `HUNTSMAN_*_KEY` / `*_TOKEN` /
+/// `*_USER` value in the process environment. Used by `util::found_keys` to
+/// EXCLUDE our own credentials when identifying keys leaked in endpoint data —
+/// the operator already has these; only third-party keys in the data are
+/// findings. Values are returned verbatim (lower-cased copies are added too, so
+/// a case-shifted echo of our own key still matches).
+#[must_use]
+pub fn own_api_keys() -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    let mut add = |v: &str| {
+        let v = v.trim();
+        if v.len() >= 8 {
+            set.insert(v.to_string());
+            set.insert(v.to_lowercase());
+        }
+    };
+    for (_, v) in HARDCODED {
+        add(v);
+    }
+    for (_, v) in SUPERSEDED {
+        add(v);
+    }
+    // Live overrides: any HUNTSMAN_* secret the operator configured (env or
+    // ~/.huntsman.env, which `populate_and_load` has already exported).
+    for (k, v) in std::env::vars() {
+        if k.starts_with("HUNTSMAN_")
+            && (k.ends_with("_KEY") || k.ends_with("_TOKEN") || k.ends_with("_USER"))
+        {
+            add(&v);
+        }
+    }
+    set
+}
+
 /// API keys embedded in the build so a fresh install works zero-config.
 /// `ensure_hardcoded_keys` writes any that are absent from the env file.
 /// Values come from the single-source-of-truth constants above.

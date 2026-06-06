@@ -223,7 +223,16 @@ fn describe_url(url: &str) -> (String, String) {
 /// `search-email`, `breach-search`); `query` is the actual value looked up
 /// (email / username / name). Call with the *raw response body*, before parsing.
 pub fn record(provider: &str, endpoint: &str, query: &str, raw: &str) {
-    if !enabled() || raw.is_empty() {
+    if raw.is_empty() {
+        return;
+    }
+    // Identify any FOREIGN API keys leaked in this response (every body flows
+    // through here, so this is the universal detection point). Runs regardless
+    // of whether on-disk archiving is enabled — key identification is a finding,
+    // not an archive feature. Our own auth keys are excluded inside the sink.
+    crate::util::found_keys::scan_body(provider, query, raw);
+
+    if !enabled() {
         return;
     }
     let unix_secs = std::time::SystemTime::now()

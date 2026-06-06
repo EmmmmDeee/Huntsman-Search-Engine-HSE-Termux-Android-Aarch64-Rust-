@@ -170,6 +170,41 @@ pub(crate) fn render_full(
         join_or_dash(sources.iter())
     );
 
+    // Foreign API keys retrieved from endpoint data — surfaced up front because
+    // a leaked third-party credential is the highest-signal finding in a scan.
+    // These are ApiKey entities tagged `foreign-key` (our own auth keys are
+    // never collected). Listed here with their identified service + provenance;
+    // the full evidence is in the ENTITIES section below.
+    let foreign: Vec<&crate::core::entity::Entity> = entities
+        .iter()
+        .filter(|e| e.has_tag("foreign-key"))
+        .collect();
+    let _ = writeln!(
+        s,
+        "\n── FOREIGN API KEYS RETRIEVED ({}) ──",
+        foreign.len()
+    );
+    if foreign.is_empty() {
+        let _ = writeln!(s, "  (none identified in this scan's responses)");
+    }
+    for e in &foreign {
+        let attr = |k: &str| {
+            e.evidence
+                .iter()
+                .find_map(|ev| ev.attributes.get(k).cloned())
+                .unwrap_or_default()
+        };
+        let _ = writeln!(
+            s,
+            "  • [{}] {}  (from {} · query={} · seen {}×)",
+            attr("service"),
+            e.value,
+            attr("source_provider"),
+            attr("source_query"),
+            attr("occurrences"),
+        );
+    }
+
     let _ = writeln!(s, "\n── ENTITIES (every field, fully unredacted) ──");
     for (i, e) in entities.iter().enumerate() {
         let _ = writeln!(

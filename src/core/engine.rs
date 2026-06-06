@@ -287,6 +287,9 @@ impl ScanEngine {
         crate::modules::oathnet_pro::reset_budget();
         crate::modules::see_know::reset_budget();
         crate::modules::wigle::reset_budget();
+        // Clear the foreign-API-key sink so this scan reports only the keys IT
+        // retrieves from endpoint responses (and refresh the own-key exclusion).
+        crate::util::found_keys::reset();
         // Apply the regional-search toggle for this scan. Regional augmentation
         // is on when EITHER the per-scan flag (`--regional`) is set OR the
         // persistent default `feature.regional` is on (universal toggleability;
@@ -420,7 +423,32 @@ impl ScanEngine {
         // granular `first_err`, preserving the prior continue-on-error
         // resilience semantics (partial persist → Complete-with-error;
         // nothing persisted → Failed).
-        let entities: Vec<Entity> = entity_map.into_values().collect();
+        let mut entities: Vec<Entity> = entity_map.into_values().collect();
+        // Mint ApiKey entities for every FOREIGN key identified in this scan's
+        // endpoint responses (deduped by value across all modules; our own auth
+        // keys already excluded by the sink). This guarantees leaked third-party
+        // keys land in the graph + dossier no matter which module surfaced the
+        // data — not only the breach pools that scan their own record fields. The
+        // store upserts by UID, so a key a module already emitted just merges.
+        for fk in crate::util::found_keys::drain() {
+            let mut e =
+                Entity::new(crate::core::entity::EntityKind::ApiKey, &fk.key, 0.70, &scan.id);
+            e.tag("api-key");
+            e.tag("foreign-key");
+            e.tag("retrieved");
+            e.tag(format!("service:{}", fk.service));
+            e.add_evidence(
+                crate::core::entity::Evidence::new(
+                    "found_keys",
+                    format!("Foreign {} API key retrieved from {} data", fk.service, fk.provider),
+                )
+                .with_attr("service", &fk.service)
+                .with_attr("source_provider", &fk.provider)
+                .with_attr("source_query", &fk.query)
+                .with_attr("occurrences", fk.count.to_string()),
+            );
+            entities.push(e);
+        }
         let total = entities.len();
         let (persisted, first_err): (usize, Option<String>) = match self
             .store
