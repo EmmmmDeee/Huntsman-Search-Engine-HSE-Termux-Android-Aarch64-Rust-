@@ -198,7 +198,15 @@ impl Module for SeekNow {
             result.push(parent);
 
             for item in &items {
-                extract_entities(item, v, &ctx.scan_id, "search", &key_fp, &mut seen, &mut result);
+                extract_entities(
+                    item,
+                    v,
+                    &ctx.scan_id,
+                    "search",
+                    &key_fp,
+                    &mut seen,
+                    &mut result,
+                );
                 store_api_credential(item);
                 extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
             }
@@ -243,7 +251,15 @@ impl Module for SeekNow {
 
             for (endpoint, items) in &endpoint_results {
                 for item in items {
-                    extract_entities(item, v, &ctx.scan_id, endpoint, &key_fp, &mut seen, &mut result);
+                    extract_entities(
+                        item,
+                        v,
+                        &ctx.scan_id,
+                        endpoint,
+                        &key_fp,
+                        &mut seen,
+                        &mut result,
+                    );
                     store_api_credential(item);
                     extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
                     // Geo-specific extraction — pull coordinates/timezone/
@@ -258,7 +274,8 @@ impl Module for SeekNow {
             // (discord → roblox → steam → …) we chase them across MULTIPLE hops
             // within budget rather than a single round. See [`resolve_identity_pivots`].
             if !ctx.cancel.is_cancelled() {
-                resolve_identity_pivots(key, &key_fp, v, &ctx.scan_id, &mut seen, &mut result).await;
+                resolve_identity_pivots(key, &key_fp, v, &ctx.scan_id, &mut seen, &mut result)
+                    .await;
             }
         }
 
@@ -746,21 +763,109 @@ fn extract_entities(
 /// bookkeeping. Lower-cased compare so schema casing variants can't leak through.
 const RICH_DETAIL_SKIP: &[&str] = &[
     // Already typed above.
-    "email", "username", "phone", "phone_number", "full_name", "name", "ip", "country",
-    "discord_id", "discordid", "steam_id", "steamid", "steam_id64", "password", "passwordhash",
-    "password_hash", "hashed_password", "hash", "url", "url_str", "domain",
+    "email",
+    "username",
+    "phone",
+    "phone_number",
+    "full_name",
+    "name",
+    "ip",
+    "country",
+    "discord_id",
+    "discordid",
+    "steam_id",
+    "steamid",
+    "steam_id64",
+    "password",
+    "passwordhash",
+    "password_hash",
+    "hashed_password",
+    "hash",
+    "url",
+    "url_str",
+    "domain",
     // Composed/typed in the rich pass itself.
-    "first_name", "firstname", "last_name", "lastname", "company", "employer", "organization",
-    "organisation", "org", "mac", "mac_address", "bssid", "hwid", "machine_id", "device_id",
-    "uuid", "guid", "computer_name", "machine", "hostname", "telegram", "skype", "facebook",
-    "instagram", "twitter", "linkedin", "vk", "snapchat", "city", "state", "region", "province",
-    "zip", "zipcode", "postal", "postal_code", "postcode", "street", "address", "address_line",
+    "first_name",
+    "firstname",
+    "last_name",
+    "lastname",
+    "company",
+    "employer",
+    "organization",
+    "organisation",
+    "org",
+    "mac",
+    "mac_address",
+    "bssid",
+    "hwid",
+    "machine_id",
+    "device_id",
+    "uuid",
+    "guid",
+    "computer_name",
+    "machine",
+    "hostname",
+    "telegram",
+    "skype",
+    "facebook",
+    "instagram",
+    "twitter",
+    "linkedin",
+    "vk",
+    "snapchat",
+    "city",
+    "state",
+    "region",
+    "province",
+    "zip",
+    "zipcode",
+    "postal",
+    "postal_code",
+    "postcode",
+    "street",
+    "address",
+    "address_line",
     // Structural / metadata / provenance bookkeeping (kept verbatim on evidence,
     // but not worth a standalone graph node).
-    "source", "source_db", "dbname", "_origin", "id", "_id", "log_id", "log", "salt",
-    "response_time_ms", "type", "success", "total", "breach_count", "stealer_count",
-    "external_count", "index", "score", "_score",
+    "source",
+    "source_db",
+    "dbname",
+    "_origin",
+    "id",
+    "_id",
+    "log_id",
+    "log",
+    "salt",
+    "response_time_ms",
+    "type",
+    "success",
+    "total",
+    "breach_count",
+    "stealer_count",
+    "external_count",
+    "index",
+    "score",
+    "_score",
 ];
+
+/// Push a stealer/infrastructure-CONTEXT entity: tags `see-know` plus any
+/// `extra_tags`, but deliberately NOT `breach`. Device fingerprints (MAC, HWID,
+/// hostname, …) are infrastructure/context, not leaked PII — the same policy the
+/// URL/Domain/Credential spidering follows — so they must not carry the `breach`
+/// tag that [`push_breach_entity`] forces.
+fn push_context_entity(
+    result: &mut ModuleResult,
+    mut e: Entity,
+    ev: &Evidence,
+    extra_tags: &[&str],
+) {
+    e.tag("see-know");
+    for t in extra_tags {
+        e.tag(*t);
+    }
+    e.add_evidence(ev.clone());
+    result.push(e);
+}
 
 /// Maximum-raw-data extractor: turn the long tail of a breach/stealer record
 /// into first-class, pivotable entities. Typed where a kind fits (Person,
@@ -817,7 +922,7 @@ fn extract_rich_detail(
             && m.len() >= 12
             && seen.insert(format!("@mac:{}", m.to_lowercase()))
         {
-            push_breach_entity(
+            push_context_entity(
                 result,
                 Entity::new(EntityKind::MacAddress, &m, 0.60, scan_id),
                 ev,
@@ -839,7 +944,7 @@ fn extract_rich_detail(
             && d.len() >= 3
             && seen.insert(format!("@device:{k}:{}", d.to_lowercase()))
         {
-            push_breach_entity(
+            push_context_entity(
                 result,
                 Entity::new(EntityKind::DeviceId, &d, 0.55, scan_id),
                 ev,
@@ -1027,7 +1132,15 @@ mod tests {
         });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
-        extract_entities(&item, "15551234567", "scan", "search", "see-know.eu:test", &mut seen, &mut result);
+        extract_entities(
+            &item,
+            "15551234567",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
 
         // One entity per recognised field.
         assert_eq!(
@@ -1094,7 +1207,15 @@ mod tests {
         });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
-        extract_entities(&item, "victim_login", "scan", "stealer", "see-know.eu:test", &mut seen, &mut result);
+        extract_entities(
+            &item,
+            "victim_login",
+            "scan",
+            "stealer",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
 
         let find = |k: EntityKind, pred: &dyn Fn(&Entity) -> bool| {
             result.entities.iter().find(|e| e.kind == k && pred(e))
@@ -1105,7 +1226,10 @@ mod tests {
         })
         .expect("stealer URL must surface as a Url entity");
         assert!(url.has_tag("stealer") && url.has_tag("see-know"));
-        assert!(!url.has_tag("breach"), "stealer URL must NOT be tagged breach");
+        assert!(
+            !url.has_tag("breach"),
+            "stealer URL must NOT be tagged breach"
+        );
         // Host → Domain pivot (eTLD-aware host extraction, lowercased).
         let dom = find(EntityKind::Domain, &|e| e.value == "accounts.example.com")
             .expect("stealer URL host must surface as a Domain pivot");
@@ -1142,7 +1266,15 @@ mod tests {
         });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
-        extract_entities(&item, "x", "scan", "search", "see-know.eu:test", &mut seen, &mut result);
+        extract_entities(
+            &item,
+            "x",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
 
         let has = |k: EntityKind, pred: &dyn Fn(&Entity) -> bool| {
             result.entities.iter().any(|e| e.kind == k && pred(e))
@@ -1168,12 +1300,16 @@ mod tests {
         // tagged raw-field — NOTHING is dropped.
         assert!(has(EntityKind::Other("gender".into()), &|e| e.value == "M"
             && e.has_tag("raw-field")));
-        assert!(has(EntityKind::Other("ip_country_code".into()), &|e| e.value == "AU"));
+        assert!(has(EntityKind::Other("ip_country_code".into()), &|e| e
+            .value
+            == "AU"));
         // Structural/metadata keys never become standalone nodes.
-        assert!(!result
-            .entities
-            .iter()
-            .any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "first_name")));
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "first_name"))
+        );
     }
 
     #[test]
@@ -1356,7 +1492,15 @@ mod tests {
         let mut result = ModuleResult::new();
         result.push(Entity::new(EntityKind::Email, "a@b.com", 0.8, "t"));
         let before = result.entities.len();
-        resolve_identity_pivots("key", "see-know.eu:test", "seed", "t", &mut seen, &mut result).await;
+        resolve_identity_pivots(
+            "key",
+            "see-know.eu:test",
+            "seed",
+            "t",
+            &mut seen,
+            &mut result,
+        )
+        .await;
         assert_eq!(
             result.entities.len(),
             before,

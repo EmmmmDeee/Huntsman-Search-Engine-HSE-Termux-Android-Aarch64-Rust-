@@ -98,10 +98,7 @@ fn render_gexf(store: &Store, sid: &str) -> Result<String> {
 /// lists every provider, API-key origin, and source seen. This is the on-disk
 /// counterpart to the live dossier and the raw archive: the contract is total
 /// transparency for a professional interpreter.
-pub(crate) fn render_full(
-    store: &dyn crate::core::port::StoragePort,
-    sid: &str,
-) -> Result<String> {
+pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str) -> Result<String> {
     use std::collections::BTreeSet;
     use std::fmt::Write as _;
 
@@ -154,21 +151,9 @@ pub(crate) fn render_full(
     let _ = writeln!(s, "relations  : {}", relations.len());
 
     let _ = writeln!(s, "\n── PROVENANCE ──");
-    let _ = writeln!(
-        s,
-        "providers      : {}",
-        join_or_dash(providers.iter())
-    );
-    let _ = writeln!(
-        s,
-        "api key origins: {}",
-        join_or_dash(key_origins.iter())
-    );
-    let _ = writeln!(
-        s,
-        "sources/sites  : {}",
-        join_or_dash(sources.iter())
-    );
+    let _ = writeln!(s, "providers      : {}", join_or_dash(providers.iter()));
+    let _ = writeln!(s, "api key origins: {}", join_or_dash(key_origins.iter()));
+    let _ = writeln!(s, "sources/sites  : {}", join_or_dash(sources.iter()));
 
     // Foreign API keys retrieved from endpoint data — surfaced up front because
     // a leaked third-party credential is the highest-signal finding in a scan.
@@ -183,11 +168,13 @@ pub(crate) fn render_full(
     // generic-hex / url-param matches (which are mostly password hashes in
     // breach data). Both are reported — nothing dropped — but a leaked Stripe or
     // AWS key is never buried under a column of MD5s.
-    let (vendor, heuristic): (Vec<&crate::core::entity::Entity>, Vec<&crate::core::entity::Entity>) =
-        foreign
-            .iter()
-            .copied()
-            .partition(|e| !e.has_tag("key-confidence:heuristic"));
+    let (vendor, heuristic): (
+        Vec<&crate::core::entity::Entity>,
+        Vec<&crate::core::entity::Entity>,
+    ) = foreign
+        .iter()
+        .copied()
+        .partition(|e| !e.has_tag("key-confidence:heuristic"));
     let render_key = |s: &mut String, e: &crate::core::entity::Entity| {
         use std::fmt::Write as _;
         let attr = |k: &str| {
@@ -233,13 +220,7 @@ pub(crate) fn render_full(
 
     let _ = writeln!(s, "\n── ENTITIES (every field, fully unredacted) ──");
     for (i, e) in entities.iter().enumerate() {
-        let _ = writeln!(
-            s,
-            "\n[{}] {} = {}",
-            i + 1,
-            e.kind,
-            e.value
-        );
+        let _ = writeln!(s, "\n[{}] {} = {}", i + 1, e.kind, e.value);
         let _ = writeln!(
             s,
             "    confidence={:.2}  c_eff={:.2}  corroboration={}  class={}",

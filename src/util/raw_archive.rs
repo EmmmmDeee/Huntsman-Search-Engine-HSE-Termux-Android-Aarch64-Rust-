@@ -188,10 +188,34 @@ fn describe_url(url: &str) -> (String, String) {
     };
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let urldecode = crate::util::http::urldecode;
-    let first_qval = query_str
-        .split('&')
-        .find_map(|kv| kv.split_once('=').map(|(_, v)| v))
-        .filter(|v| !v.is_empty());
+    // First NON-credential query value. Picking the first value blindly would
+    // write our OWN auth key into the filename + `_meta.query` for endpoints that
+    // put credentials first (`?api_key=…&q=…`) — archiving is on by default, so
+    // that would leak the operator's key onto disk. Credential-named params are
+    // skipped; the value we surface is the actual lookup term.
+    const CRED_PARAMS: &[&str] = &[
+        "key",
+        "api_key",
+        "apikey",
+        "api-key",
+        "token",
+        "access_token",
+        "auth",
+        "auth_token",
+        "secret",
+        "password",
+        "pass",
+        "apptoken",
+        "app_token",
+        "x-api-key",
+    ];
+    let first_qval = query_str.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        if v.is_empty() || CRED_PARAMS.contains(&k.trim().to_lowercase().as_str()) {
+            return None;
+        }
+        Some(v)
+    });
 
     if let Some(qv) = first_qval {
         // Query-string API (`…/search?q=value`): endpoint is the last path
@@ -294,6 +318,14 @@ pub fn records_for_queries(
 /// Env-free core for [`records_in_window`] / [`records_for_queries`] — the
 /// window filter, optional query-set filter, and parse, so all three are
 /// unit-testable against a temp archive.
+///
+/// The archive is append-only and never evicted, so it grows without bound and
+/// the auto-dossier reads it on every scan. To keep that O(matching files) and
+/// not O(total archived files), each filename — which embeds the UTC timestamp
+/// and the query slug (`<provider>__<endpoint>__<queryslug>__<UTC>__<seq>.json`)
+/// — is pre-filtered *before* the file is opened. Only files that survive the
+/// cheap filename checks are read and parsed; the exact `_meta.unix` / query
+/// checks below stay as the authoritative guard.
 fn records_filtered_dir(
     dir: &std::path::Path,
     start_unix: u64,
@@ -304,18 +336,52 @@ fn records_filtered_dir(
     let Ok(rd) = std::fs::read_dir(dir) else {
         return out;
     };
+    // Fixed-width UTC stamps sort lexicographically in chronological order, so a
+    // string compare against the window bounds is exact. `u64::MAX` (an open
+    // upper bound from a still-running scan) disables the upper filename check.
+    let utc_lo = format_utc(start_unix);
+    let utc_hi = (end_unix != u64::MAX).then(|| format_utc(end_unix));
+    // Pre-slug the wanted queries once so the per-file check is a set lookup.
+    let want_slugs: Option<std::collections::HashSet<String>> =
+        queries.map(|set| set.iter().map(|q| slug(q, 80)).collect());
+
     for entry in rd.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        let filename = entry.file_name().to_string_lossy().into_owned();
+        if !filename.ends_with(".json") {
             continue;
         }
+        // Cheap filename pre-filter (no I/O). Skip only when the name parses to
+        // the known 5-field shape; anything else falls through to a full read so
+        // a legacy/odd filename is never silently dropped.
+        let parts: Vec<&str> = filename.split("__").collect();
+        if parts.len() == 5 {
+            let (fq_slug, futc) = (parts[2], parts[3]);
+            if futc < utc_lo.as_str() {
+                continue;
+            }
+            if let Some(hi) = &utc_hi
+                && futc > hi.as_str()
+            {
+                continue;
+            }
+            if let Some(want) = &want_slugs
+                && !want.contains(fq_slug)
+            {
+                continue;
+            }
+        }
+
+        let path = entry.path();
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
         let Ok(doc) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
-        let unix = doc.pointer("/_meta/unix").and_then(Value::as_u64).unwrap_or(0);
+        let unix = doc
+            .pointer("/_meta/unix")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         if unix < start_unix || unix > end_unix {
             continue;
         }
@@ -340,7 +406,11 @@ fn records_filtered_dir(
             raw: doc.get("raw").cloned().unwrap_or(Value::Null),
         });
     }
-    out.sort_by(|a, b| a.unix.cmp(&b.unix).then_with(|| a.filename.cmp(&b.filename)));
+    out.sort_by(|a, b| {
+        a.unix
+            .cmp(&b.unix)
+            .then_with(|| a.filename.cmp(&b.filename))
+    });
     out
 }
 
@@ -389,7 +459,10 @@ mod tests {
 
     #[test]
     fn slug_is_human_legible_and_filesystem_safe() {
-        assert_eq!(slug("matthewdiegmann@gmail.com", 80), "matthewdiegmann_at_gmail.com");
+        assert_eq!(
+            slug("matthewdiegmann@gmail.com", 80),
+            "matthewdiegmann_at_gmail.com"
+        );
         assert_eq!(slug("Matthew Diegmann", 80), "Matthew_Diegmann");
         assert_eq!(slug("mattdieg123", 80), "mattdieg123");
         // No path traversal, no slashes survive.
@@ -410,7 +483,13 @@ mod tests {
 
     #[test]
     fn build_filename_is_blatantly_self_describing() {
-        let name = build_filename("see_know", "stealer", "matthewdiegmann@gmail.com", 1_780_726_449, 7);
+        let name = build_filename(
+            "see_know",
+            "stealer",
+            "matthewdiegmann@gmail.com",
+            1_780_726_449,
+            7,
+        );
         assert_eq!(
             name,
             "see_know__stealer__matthewdiegmann_at_gmail.com__20260606T061409Z__0007.json"
@@ -441,7 +520,13 @@ mod tests {
 
     #[test]
     fn build_body_falls_back_to_verbatim_string_for_non_json() {
-        let body = build_body("oathnet", "breach-search", "x", 0, "503 Service Unavailable");
+        let body = build_body(
+            "oathnet",
+            "breach-search",
+            "x",
+            0,
+            "503 Service Unavailable",
+        );
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["raw"], "503 Service Unavailable");
     }
@@ -462,6 +547,19 @@ mod tests {
             describe_url("https://api.example.org"),
             ("api.example.org".to_string(), "api.example.org".to_string())
         );
+        // Credential-named params are SKIPPED so our own auth key never lands in
+        // a filename / `_meta.query`; the real lookup term is used instead.
+        assert_eq!(
+            describe_url("https://api.example.org/v1/lookup?api_key=SECRET123456&q=target%40x.com"),
+            ("lookup".to_string(), "target@x.com".to_string())
+        );
+        // When EVERY query param is a credential, fall back to the path/host —
+        // never the secret.
+        let (_, q) = describe_url("https://api.example.org/v1/ping?token=DEADBEEFSECRET");
+        assert_ne!(
+            q, "DEADBEEFSECRET",
+            "an auth token must never become the query label"
+        );
     }
 
     #[test]
@@ -474,13 +572,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         // Two in-window responses (one structured, one thin/no-entity) + one out.
         write_file(
-            &dir.join(build_filename("see-know", "search-email", "v@x.com", 1000, 1)),
-            &build_body("see-know", "search-email", "v@x.com", 1000, r#"{"results":[{"source":"INF0SEC Leaks"}]}"#),
+            &dir.join(build_filename(
+                "see-know",
+                "search-email",
+                "v@x.com",
+                1000,
+                1,
+            )),
+            &build_body(
+                "see-know",
+                "search-email",
+                "v@x.com",
+                1000,
+                r#"{"results":[{"source":"INF0SEC Leaks"}]}"#,
+            ),
         )
         .unwrap();
         write_file(
-            &dir.join(build_filename("oathnet", "breach-search", "v@x.com", 1005, 2)),
-            &build_body("oathnet", "breach-search", "v@x.com", 1005, r#"{"data":{"items":[{"password":"PLAINTEXT"}]}}"#),
+            &dir.join(build_filename(
+                "oathnet",
+                "breach-search",
+                "v@x.com",
+                1005,
+                2,
+            )),
+            &build_body(
+                "oathnet",
+                "breach-search",
+                "v@x.com",
+                1005,
+                r#"{"data":{"items":[{"password":"PLAINTEXT"}]}}"#,
+            ),
         )
         .unwrap();
         write_file(
@@ -523,9 +645,21 @@ mod tests {
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!("hse_raw_{}_{nanos}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let name = build_filename("see_know", "search-email", "vanamill@hotmail.com", 1_780_726_449, 3);
+        let name = build_filename(
+            "see_know",
+            "search-email",
+            "vanamill@hotmail.com",
+            1_780_726_449,
+            3,
+        );
         let path = dir.join(&name);
-        let body = build_body("see_know", "search-email", "vanamill@hotmail.com", 1_780_726_449, r#"{"x":1}"#);
+        let body = build_body(
+            "see_know",
+            "search-email",
+            "vanamill@hotmail.com",
+            1_780_726_449,
+            r#"{"x":1}"#,
+        );
         write_file(&path, &body).expect("write succeeds");
 
         assert!(path.exists());

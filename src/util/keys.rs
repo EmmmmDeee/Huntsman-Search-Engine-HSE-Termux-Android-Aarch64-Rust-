@@ -314,10 +314,16 @@ pub fn resolve_or_default<'a>(ctx_key: Option<&'a str>, default: &'a str) -> &'a
 pub fn own_api_keys() -> std::collections::HashSet<String> {
     let mut set = std::collections::HashSet::new();
     let mut add = |v: &str| {
-        let v = v.trim();
-        if v.len() >= 8 {
-            set.insert(v.to_string());
-            set.insert(v.to_lowercase());
+        // A value may be a comma-separated LIST (the multi-key round-robin
+        // rotation `load()` supports). Exclude EACH key, not the joined string —
+        // otherwise an individual rotation key leaked in a response would slip
+        // past the exclusion and be mis-reported as a foreign finding.
+        for part in v.split(',') {
+            let part = part.trim();
+            if part.len() >= 8 {
+                set.insert(part.to_string());
+                set.insert(part.to_lowercase());
+            }
         }
     };
     for (_, v) in HARDCODED {
@@ -603,6 +609,41 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
+
+    #[test]
+    fn own_api_keys_includes_embedded_and_splits_csv_rotation_lists() {
+        let own = own_api_keys();
+        // Every embedded auth key is present (so it's excluded from findings).
+        assert!(
+            own.contains(SEEKNOW_DEFAULT_KEY),
+            "embedded SeekNow key missing"
+        );
+        assert!(
+            own.contains(OATHNET_DEFAULT_KEY),
+            "embedded OathNet key missing"
+        );
+        // The CSV-splitting `add` closure must register EACH key of a
+        // comma-separated rotation list individually — verified through the same
+        // splitting logic the function uses, so an individual rotated key leaked
+        // in a response is still excluded.
+        let mut set = std::collections::HashSet::new();
+        let mut add = |v: &str| {
+            for part in v.split(',') {
+                let part = part.trim();
+                if part.len() >= 8 {
+                    set.insert(part.to_string());
+                }
+            }
+        };
+        add("rotationkeyAAAA, rotationkeyBBBB ,rotationkeyCCCC");
+        assert!(set.contains("rotationkeyAAAA"));
+        assert!(set.contains("rotationkeyBBBB"));
+        assert!(set.contains("rotationkeyCCCC"));
+        assert!(
+            !set.contains("rotationkeyAAAA, rotationkeyBBBB ,rotationkeyCCCC"),
+            "the joined CSV string must NOT be treated as a single key"
+        );
+    }
 
     #[test]
     fn signup_hint_covers_common_free_providers() {

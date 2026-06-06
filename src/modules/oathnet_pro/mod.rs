@@ -224,7 +224,14 @@ impl Module for OathnetPro {
         result.push(parent);
 
         for item in &items {
-            extract_breach_entities(item, &target.value, &ctx.scan_id, &key_fp, &mut seen, &mut result);
+            extract_breach_entities(
+                item,
+                &target.value,
+                &ctx.scan_id,
+                &key_fp,
+                &mut seen,
+                &mut result,
+            );
             store_api_credential(item);
             extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
         }
@@ -925,7 +932,14 @@ mod tests {
         });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
-        extract_breach_entities(&item, "Matthew Diegmann", "scan", "oathnet.org:test", &mut seen, &mut result);
+        extract_breach_entities(
+            &item,
+            "Matthew Diegmann",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
 
         let email = result
             .entities
@@ -958,7 +972,14 @@ mod tests {
         let parker = json!({ "full_name": "Matthew Parker", "source": "X" });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
-        extract_breach_entities(&parker, "Matthew Diegmann", "scan", "oathnet.org:test", &mut seen, &mut result);
+        extract_breach_entities(
+            &parker,
+            "Matthew Diegmann",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
         let p = result
             .entities
             .iter()
@@ -973,7 +994,14 @@ mod tests {
         // The real person — both terms present — is a confirmed target row.
         let diegmann = json!({ "full_name": "Matthew Diegmann", "source": "X" });
         let (mut seen2, mut r2) = (HashSet::new(), ModuleResult::new());
-        extract_breach_entities(&diegmann, "Matthew Diegmann", "scan", "oathnet.org:test", &mut seen2, &mut r2);
+        extract_breach_entities(
+            &diegmann,
+            "Matthew Diegmann",
+            "scan",
+            "oathnet.org:test",
+            &mut seen2,
+            &mut r2,
+        );
         let d = r2
             .entities
             .iter()

@@ -423,13 +423,16 @@ impl ScanEngine {
         // granular `first_err`, preserving the prior continue-on-error
         // resilience semantics (partial persist → Complete-with-error;
         // nothing persisted → Failed).
-        let mut entities: Vec<Entity> = entity_map.into_values().collect();
         // Mint ApiKey entities for every FOREIGN key identified in this scan's
         // endpoint responses (deduped by value across all modules; our own auth
         // keys already excluded by the sink). This guarantees leaked third-party
         // keys land in the graph + dossier no matter which module surfaced the
-        // data — not only the breach pools that scan their own record fields. The
-        // store upserts by UID, so a key a module already emitted just merges.
+        // data — not only the breach pools that scan their own record fields.
+        // They are merged THROUGH `entity_map` by UID (not appended to the batch)
+        // so a key a specialised module already emitted with richer
+        // tags/evidence is GREATEST-merged, never duplicated or blindly
+        // overwritten.
+        let mut entity_map = entity_map;
         for fk in crate::util::found_keys::drain() {
             // A heuristic (generic-hex / url-param) match is far more likely a
             // password hash than a real key, so it gets a lower base confidence
@@ -440,8 +443,12 @@ impl ScanEngine {
             } else {
                 (0.80, "key-confidence:vendor")
             };
-            let mut e =
-                Entity::new(crate::core::entity::EntityKind::ApiKey, &fk.key, conf, &scan.id);
+            let mut e = Entity::new(
+                crate::core::entity::EntityKind::ApiKey,
+                &fk.key,
+                conf,
+                &scan.id,
+            );
             e.tag("api-key");
             e.tag("foreign-key");
             e.tag("retrieved");
@@ -450,7 +457,10 @@ impl ScanEngine {
             e.add_evidence(
                 crate::core::entity::Evidence::new(
                     "found_keys",
-                    format!("Foreign {} API key retrieved from {} data", fk.service, fk.provider),
+                    format!(
+                        "Foreign {} API key retrieved from {} data",
+                        fk.service, fk.provider
+                    ),
                 )
                 .with_attr("service", &fk.service)
                 .with_attr("source_provider", &fk.provider)
@@ -461,8 +471,14 @@ impl ScanEngine {
                     if fk.heuristic { "heuristic" } else { "vendor" },
                 ),
             );
-            entities.push(e);
+            match entity_map.get_mut(&e.uid) {
+                Some(existing) => existing.merge(e),
+                None => {
+                    entity_map.insert(e.uid.clone(), e);
+                }
+            }
         }
+        let entities: Vec<Entity> = entity_map.into_values().collect();
         let total = entities.len();
         let (persisted, first_err): (usize, Option<String>) = match self
             .store

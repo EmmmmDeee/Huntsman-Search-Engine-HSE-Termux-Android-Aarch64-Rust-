@@ -99,7 +99,10 @@ pub fn scan_body(provider: &str, query: &str, body: &str) {
     let mut hits: Vec<(&'static str, String)> = Vec::new();
     for word in body.split(|c: char| {
         c.is_whitespace()
-            || matches!(c, '"' | '\'' | '`' | '>' | '<' | '=' | ';' | ',' | '{' | '}' | '[' | ']')
+            || matches!(
+                c,
+                '"' | '\'' | '`' | '>' | '<' | '=' | ';' | ',' | '&' | '{' | '}' | '[' | ']'
+            )
     }) {
         let t = word.trim();
         if t.len() < MIN_TOKEN || t.len() > MAX_TOKEN {
@@ -186,8 +189,15 @@ mod tests {
         assert_eq!(stripe[0].count, 2, "both occurrences counted");
         assert_eq!(stripe[0].provider, "see-know");
         assert_eq!(stripe[0].query, "victim@example.com");
-        assert!(stripe[0].service.contains("stripe"), "identified: {}", stripe[0].service);
-        assert!(!stripe[0].heuristic, "a vendor-prefixed key is not heuristic");
+        assert!(
+            stripe[0].service.contains("stripe"),
+            "identified: {}",
+            stripe[0].service
+        );
+        assert!(
+            !stripe[0].heuristic,
+            "a vendor-prefixed key is not heuristic"
+        );
         // drain empties the sink.
         assert!(!drain().is_empty());
         assert!(snapshot().is_empty());
@@ -204,7 +214,10 @@ mod tests {
         scan_body("oathnet", "victim@example.com", &format!("hash={hash}"));
         let snap = snapshot();
         let h = snap.iter().find(|f| f.key == hash).expect("hash kept");
-        assert!(h.heuristic, "a bare hex hash is heuristic, not a vendor key");
+        assert!(
+            h.heuristic,
+            "a bare hex hash is heuristic, not a vendor key"
+        );
         assert_eq!(h.service, "generic_hex");
     }
 

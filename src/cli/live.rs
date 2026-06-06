@@ -186,7 +186,10 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
             }
         }
         E::ScanComplete { entity_count, .. } => {
-            format!("▪ scan complete — {entity_count} entit{}", plural(*entity_count))
+            format!(
+                "▪ scan complete — {entity_count} entit{}",
+                plural(*entity_count)
+            )
         }
         E::LiveStop { reason, .. } => format!("◆ live stop — {reason}"),
     }
@@ -237,7 +240,12 @@ mod tests {
     fn render_entity_prints_full_unredacted_evidence() {
         // A stealer record: the password and raw URL MUST appear verbatim — the
         // live view is the transparency contract, nothing masked or truncated.
-        let mut e = Entity::new(EntityKind::Credential, "victim@https://site/login", 0.6, "scan");
+        let mut e = Entity::new(
+            EntityKind::Credential,
+            "victim@https://site/login",
+            0.6,
+            "scan",
+        );
         e.tag("see-know");
         e.tag("stealer");
         e.add_evidence(
