@@ -561,9 +561,21 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             }
             let len = s.trim_end_matches('.').len();
             s.truncate(len);
-            // Strip www. prefix for deduplication
-            if s.starts_with("www.") && s.len() > 4 {
-                s = s[4..].to_string();
+            // Strip leading `www.` label(s) so `www.foo.com` and `foo.com` dedup
+            // to one host. Consume *all* consecutive leading `www.` labels in a
+            // single pass (not just the first) so the result is a fixed point:
+            // a single strip left `www.www.foo.com` → `www.foo.com`, which then
+            // re-normalised to `foo.com`, so the same host could key to two UIDs.
+            // The non-empty guard keeps a bare `www.` from collapsing to "".
+            let mut host = s.as_str();
+            while let Some(rest) = host.strip_prefix("www.") {
+                if rest.is_empty() {
+                    break;
+                }
+                host = rest;
+            }
+            if host.len() != s.len() {
+                s = host.to_string();
             }
             s
         }
@@ -1302,6 +1314,114 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// All entity kinds, for the cross-kind normalisation invariants below.
+    fn all_kinds() -> Vec<EntityKind> {
+        use EntityKind::*;
+        vec![
+            Person,
+            Email,
+            Phone,
+            Username,
+            Credential,
+            ApiKey,
+            Password,
+            IpAddress,
+            Domain,
+            Url,
+            Asn,
+            Address,
+            Coordinates,
+            Organisation,
+            AbnAcn,
+            MacAddress,
+            DeviceId,
+            CryptoAddress,
+            Other("x".into()),
+        ]
+    }
+
+    /// A corpus of awkward values spanning every normalisation arm: non-ASCII
+    /// capitals, `+tag` emails, repeated/leading `www.`, mixed-case URLs with
+    /// query+fragment, coordinates, dashed/`-0.0` numbers, MAC variants, IPv6.
+    const NORM_CORPUS: &[&str] = &[
+        "Ölaf",
+        "ölaf",
+        "ÉRIC",
+        "İstanbul",
+        "Ηandle",
+        "Matthew.Diegmann+tag@Gmail.COM",
+        "  spaced@x.com  ",
+        "WWW.Example.COM.",
+        "www.WWW.com",
+        "www.com",
+        "www.www.google.com",
+        "HTTPS://Host.COM/Path/Sub/?Q=1&b=2#frag",
+        "http://A.B/",
+        "1.23456789,-2.5",
+        "-0.0,0.0",
+        "AA-BB-CC-DD-EE-FF",
+        "+1 (555) 234-9999",
+        "::ffff:1.2.3.4",
+        "2001:DB8::1",
+        "AS13335",
+        "MixedCaseHandle",
+    ];
+
+    #[test]
+    fn normalise_is_idempotent_for_every_kind() {
+        // The normalised value keys the entity UID, so re-normalising an
+        // already-normalised value MUST be a no-op — otherwise a stored or
+        // re-emitted value can shift UID and silently fail to dedup. (Regression:
+        // the `www.` strip removed only the first label, so `www.www.foo.com`
+        // normalised to `www.foo.com` which then re-normalised to `foo.com`.)
+        for k in all_kinds() {
+            for v in NORM_CORPUS {
+                let once = normalise(&k, v);
+                let twice = normalise(&k, &once);
+                assert_eq!(
+                    once, twice,
+                    "normalise not idempotent for {k:?}: {v:?} → {once:?} → {twice:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normalise_is_case_insensitive_for_folded_kinds() {
+        // Email/Username/Domain dedup must be invariant under input case (full
+        // Unicode), so the same identity from differently-cased sources merges.
+        for k in [EntityKind::Email, EntityKind::Username, EntityKind::Domain] {
+            for v in NORM_CORPUS {
+                let base = normalise(&k, v);
+                assert_eq!(
+                    base,
+                    normalise(&k, &v.to_uppercase()),
+                    "{k:?} not case-invariant (upper): {v:?}"
+                );
+                assert_eq!(
+                    base,
+                    normalise(&k, &v.to_lowercase()),
+                    "{k:?} not case-invariant (lower): {v:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normalise_domain_collapses_repeated_www_to_a_fixed_point() {
+        assert_eq!(
+            normalise(&EntityKind::Domain, "www.www.google.com"),
+            "google.com"
+        );
+        assert_eq!(normalise(&EntityKind::Domain, "WWW.Foo.COM"), "foo.com");
+        // A bare `www.` is never collapsed to the empty string (its trailing dot
+        // is stripped first, leaving the literal `www`, which has no `www.` prefix).
+        assert_eq!(normalise(&EntityKind::Domain, "www."), "www");
+        // `www.www.` → trailing dot stripped → `www.www` → strip leading labels
+        // down to the last non-`www.` label, which is itself `www`.
+        assert_eq!(normalise(&EntityKind::Domain, "www.www."), "www");
     }
 
     // ── Classification::as_str round-trips ──────────────────────────────────

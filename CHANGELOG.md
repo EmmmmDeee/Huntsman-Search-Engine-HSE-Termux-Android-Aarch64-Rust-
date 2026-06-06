@@ -40,6 +40,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Entity UID normalisation is now idempotent for domains (repeated `www.`).**
+  The `Domain` arm of `normalise` stripped only the *first* leading `www.` label,
+  so `www.www.foo.com` normalised to `www.foo.com` — which itself re-normalised to
+  `foo.com`. Because the normalised value keys the UID, a host that was re-emitted
+  or re-normalised could shift UID and fail to dedup against the same host seen
+  once. The strip now consumes *all* consecutive leading `www.` labels in a single
+  pass, so the result is a fixed point (`normalise(normalise(v)) == normalise(v)`).
+  Found and locked down by two new cross-kind invariant tests — idempotency for
+  **every** `EntityKind` and case-fold invariance for the folded kinds
+  (Email/Username/Domain) — over an adversarial corpus (non-ASCII capitals,
+  `+tag` emails, mixed-case URLs, coordinates, MAC/IPv6 forms). These guards are
+  what surfaced the bug and now prevent the whole class from recurring.
 - **Entity UID normalisation folds non-ASCII uppercase, so internationalised
   emails/usernames dedup correctly.** `normalise` (which keys every entity's UID)
   had an `Email | Username` fast path that returned the value unchanged whenever
