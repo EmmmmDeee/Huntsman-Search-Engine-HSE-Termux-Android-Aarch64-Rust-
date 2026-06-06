@@ -29,7 +29,6 @@
 //! query can't pivot state-wide name noise.
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::core::{
@@ -38,6 +37,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::ckan::{Response as CkanResp, field_str};
 use crate::util::http::{fetch_json, urlencode};
 use crate::util::url_util::host_from_url;
 
@@ -67,40 +67,6 @@ const ADDR_CONF: f64 = 0.60;
 const DOMAIN_CONF: f64 = 0.55;
 
 pub struct AcncCharities;
-
-#[derive(Deserialize)]
-struct CkanResp {
-    /// CKAN action endpoints return HTTP 200 even on application errors (bad
-    /// resource id, datastore offline, rate-limit), signalling failure via
-    /// `success: false`. Captured so we can surface those rather than silently
-    /// treating a missing `result` as "no findings".
-    #[serde(default)]
-    success: Option<bool>,
-    #[serde(default)]
-    result: Option<CkanResult>,
-}
-
-#[derive(Deserialize)]
-struct CkanResult {
-    #[serde(default)]
-    total: Option<u64>,
-    /// Records are returned with CKAN-inferred field types (text vs numeric), so
-    /// we keep them as raw JSON objects and stringify fields defensively rather
-    /// than risk a deserialize failure on a numeric `ABN`/`Postcode`.
-    #[serde(default)]
-    records: Vec<Map<String, Value>>,
-}
-
-/// Stringify a CKAN field value (text stays as-is, numbers/bools are rendered,
-/// null/missing → `None`) and trim it; empty becomes `None`.
-fn field_str(rec: &Map<String, Value>, key: &str) -> Option<String> {
-    let s = match rec.get(key)? {
-        Value::String(s) => s.trim().to_string(),
-        Value::Null => return None,
-        other => other.to_string(),
-    };
-    if s.is_empty() { None } else { Some(s) }
-}
 
 /// An 11-digit Australian Business Number (digits only), else `None`. ACNC
 /// stores the ABN as text but a numeric-typed datastore column would arrive as a

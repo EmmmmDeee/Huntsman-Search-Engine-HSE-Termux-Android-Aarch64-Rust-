@@ -20,7 +20,6 @@
 //! coordinates.
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::core::{
@@ -29,6 +28,7 @@ use crate::core::{
     module::{Module, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::ckan::{Response as CkanResp, field_str};
 use crate::util::http::{fetch_json, urlencode};
 use crate::util::postcode_au::Locality;
 
@@ -50,40 +50,6 @@ const POSTCODE_CAP: usize = 6;
 const SUBURB_CAP: usize = 8;
 
 pub struct QldUnclaimed;
-
-#[derive(Deserialize)]
-struct CkanResp {
-    /// CKAN action endpoints return HTTP 200 even on application errors (bad
-    /// resource id, datastore offline, rate-limit), signalling failure via
-    /// `success: false`. Captured so we can surface those rather than silently
-    /// treating a missing `result` as "no findings".
-    #[serde(default)]
-    success: Option<bool>,
-    #[serde(default)]
-    result: Option<CkanResult>,
-}
-
-#[derive(Deserialize)]
-struct CkanResult {
-    #[serde(default)]
-    total: Option<u64>,
-    /// Records are returned with CKAN-inferred field types (text vs numeric), so
-    /// we keep them as raw JSON objects and stringify fields defensively rather
-    /// than risk a deserialize failure on a numeric `Amount`/`PCode`.
-    #[serde(default)]
-    records: Vec<Map<String, Value>>,
-}
-
-/// Stringify a CKAN field value (text stays as-is, numbers/bools are rendered,
-/// null/missing → `None`) and trim it; empty becomes `None`.
-fn field_str(rec: &Map<String, Value>, key: &str) -> Option<String> {
-    let s = match rec.get(key)? {
-        Value::String(s) => s.trim().to_string(),
-        Value::Null => return None,
-        other => other.to_string(),
-    };
-    if s.is_empty() { None } else { Some(s) }
-}
 
 /// A 4-digit Australian postcode, else `None`.
 fn postcode(rec: &Map<String, Value>) -> Option<String> {
