@@ -317,6 +317,57 @@ mod tests {
         assert!(lookup_area_code("12345").is_none());
     }
 
+    #[test]
+    fn area_tables_are_well_formed_and_prefix_ordered() {
+        // Country prefixes must not shadow each other (longest-first), or a whole
+        // country's table becomes unreachable.
+        let mut cc_violations = Vec::new();
+        for (i, (earlier, _)) in AREA_CODE_TABLES.iter().enumerate() {
+            assert!(
+                !earlier.is_empty() && earlier.bytes().all(|b| b.is_ascii_digit()),
+                "non-digit country prefix {earlier:?}"
+            );
+            for (later, _) in &AREA_CODE_TABLES[i + 1..] {
+                if later.starts_with(earlier) {
+                    cc_violations.push(format!("+{later} shadowed by earlier +{earlier}"));
+                }
+            }
+        }
+        assert!(
+            cc_violations.is_empty(),
+            "country-prefix ordering: {cc_violations:?}"
+        );
+
+        // Within each country, `lookup_area_code` returns the first area code the
+        // national number starts with — so (as with the international country
+        // table) no earlier area code may be a string-prefix of a later one, or
+        // that city is unreachable. Variable-length tables (GB, DE) are where this
+        // bites. Also assert each entry is well-formed.
+        for (country_prefix, table) in AREA_CODE_TABLES {
+            let mut violations = Vec::new();
+            for (i, (earlier, _city, cc)) in table.iter().enumerate() {
+                assert!(
+                    !earlier.is_empty() && earlier.bytes().all(|b| b.is_ascii_digit()),
+                    "+{country_prefix}: non-digit area code {earlier:?}"
+                );
+                assert!(
+                    cc.len() == 2 && cc.bytes().all(|b| b.is_ascii_uppercase()),
+                    "+{country_prefix}: bad ISO {cc:?}"
+                );
+                for (later, lcity, _) in &table[i + 1..] {
+                    if later.starts_with(*earlier) {
+                        violations.push(format!("{later} ({lcity}) shadowed by earlier {earlier}"));
+                    }
+                }
+            }
+            assert!(
+                violations.is_empty(),
+                "area-code ordering in +{country_prefix}:\n  {}",
+                violations.join("\n  ")
+            );
+        }
+    }
+
     #[tokio::test]
     async fn module_metadata() {
         let m = PhoneAreaGeo;

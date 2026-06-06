@@ -68,6 +68,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   Microsoft) surfaced as a namespaced `verified:<vendor>` tag (was the ad-hoc
   `google-verified` / `ms-verified`). A wrong prefix simply never matches, so the
   table fails safe. Unit-tested.
+- **Ordering guard for the `phone_area_geo` area-code tables.** `lookup_area_code`
+  returns the first area code a national number starts with, so — as with the
+  international country table — an earlier code that prefixes a later one shadows
+  that city (the hazard bites the variable-length GB/DE tables). A new test asserts
+  the within-table and country-prefix ordering plus per-entry well-formedness
+  across all seven country tables. Currently clean; preventive against future
+  additions.
 - **Credential-safety guards for the live key-validation probes
   (`api_key_probe`).** These probes transmit a *live secret API key* to each
   service's validation endpoint, so two new tests lock down that the table stays
