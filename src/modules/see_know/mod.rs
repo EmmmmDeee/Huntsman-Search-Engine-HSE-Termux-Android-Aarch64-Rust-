@@ -120,6 +120,11 @@ impl Module for SeekNow {
             EntityKind::Credential,
             EntityKind::Url,
             EntityKind::ApiKey,
+            EntityKind::MacAddress,
+            EntityKind::DeviceId,
+            EntityKind::Password,
+            // Plus `Other(<field>)` for every remaining raw field — see
+            // `extract_rich_detail` (an unbounded set, so not enumerable here).
         ];
         KINDS
     }
@@ -698,6 +703,13 @@ fn extract_entities(
         }
     }
 
+    // Maximum-raw-data pass: surface the long tail of the record (names, full
+    // address, organisation, device fingerprints, extra social handles, DOB,
+    // and EVERY remaining scalar field) as first-class entities so nothing
+    // valuable stays locked inside the evidence blob. Operator directive: "I
+    // want everything. Maximum raw data."
+    extract_rich_detail(item, scan_id, &ev, seen, result);
+
     // Domain is infrastructure, not a leaked credential, so it is the one kind
     // NOT tagged `breach` — keep its inline tail (and consume the last `ev`).
     if let Some(domain) = val_str(item, "domain")
@@ -708,6 +720,213 @@ fn extract_entities(
         e.tag("see-know");
         e.add_evidence(ev);
         result.push(e);
+    }
+}
+
+/// Field names already turned into typed entities by `extract_entities` (or
+/// deliberately suppressed as structural/metadata noise). The catch-all pass
+/// skips these so it only emits the *long tail* — every other value-bearing
+/// field — without duplicating a node already created or surfacing envelope
+/// bookkeeping. Lower-cased compare so schema casing variants can't leak through.
+const RICH_DETAIL_SKIP: &[&str] = &[
+    // Already typed above.
+    "email", "username", "phone", "phone_number", "full_name", "name", "ip", "country",
+    "discord_id", "discordid", "steam_id", "steamid", "steam_id64", "password", "passwordhash",
+    "password_hash", "hashed_password", "hash", "url", "url_str", "domain",
+    // Composed/typed in the rich pass itself.
+    "first_name", "firstname", "last_name", "lastname", "company", "employer", "organization",
+    "organisation", "org", "mac", "mac_address", "bssid", "hwid", "machine_id", "device_id",
+    "uuid", "guid", "computer_name", "machine", "hostname", "telegram", "skype", "facebook",
+    "instagram", "twitter", "linkedin", "vk", "snapchat", "city", "state", "region", "province",
+    "zip", "zipcode", "postal", "postal_code", "postcode", "street", "address", "address_line",
+    // Structural / metadata / provenance bookkeeping (kept verbatim on evidence,
+    // but not worth a standalone graph node).
+    "source", "source_db", "dbname", "_origin", "id", "_id", "log_id", "log", "salt",
+    "response_time_ms", "type", "success", "total", "breach_count", "stealer_count",
+    "external_count", "index", "score", "_score",
+];
+
+/// Maximum-raw-data extractor: turn the long tail of a breach/stealer record
+/// into first-class, pivotable entities. Typed where a kind fits (Person,
+/// Organisation, Address, MacAddress, DeviceId, platform Usernames), and
+/// `Other(field)` for everything else — so EVERY value-bearing field of the raw
+/// response becomes a node, not just an evidence attribute. Confidences are
+/// modest (secondary, record-derived) so this breadth never outranks the
+/// primary identity entities.
+fn extract_rich_detail(
+    item: &Value,
+    scan_id: &str,
+    ev: &Evidence,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let Some(obj) = item.as_object() else {
+        return;
+    };
+
+    // ── Names: first + last → a composed Person (the bare `name`/`full_name`
+    // path above only fires when the value already contains a space). ──
+    let first = val_str(item, "first_name").or_else(|| val_str(item, "firstname"));
+    let last = val_str(item, "last_name").or_else(|| val_str(item, "lastname"));
+    if let (Some(f), Some(l)) = (&first, &last) {
+        let full = format!("{} {}", f.trim(), l.trim());
+        if full.len() >= 3 && seen.insert(format!("@person:{}", full.to_lowercase())) {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Person, &full, 0.60, scan_id),
+                ev,
+                &[],
+            );
+        }
+    }
+
+    // ── Organisation / employer. ──
+    for k in ["company", "employer", "organization", "organisation", "org"] {
+        if let Some(o) = val_str(item, k)
+            && o.len() >= 2
+            && seen.insert(format!("@org:{}", o.to_lowercase()))
+        {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Organisation, &o, 0.50, scan_id),
+                ev,
+                &[],
+            );
+        }
+    }
+
+    // ── Device fingerprints — strong stealer-log pivots. ──
+    for k in ["mac", "mac_address", "bssid"] {
+        if let Some(m) = val_str(item, k)
+            && m.len() >= 12
+            && seen.insert(format!("@mac:{}", m.to_lowercase()))
+        {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::MacAddress, &m, 0.60, scan_id),
+                ev,
+                &["device"],
+            );
+        }
+    }
+    for k in [
+        "hwid",
+        "machine_id",
+        "device_id",
+        "uuid",
+        "guid",
+        "computer_name",
+        "machine",
+        "hostname",
+    ] {
+        if let Some(d) = val_str(item, k)
+            && d.len() >= 3
+            && seen.insert(format!("@device:{k}:{}", d.to_lowercase()))
+        {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::DeviceId, &d, 0.55, scan_id),
+                ev,
+                &["device", "stealer"],
+            );
+        }
+    }
+
+    // ── Extra social handles → platform-prefixed Username pivots. ──
+    for (k, plat) in [
+        ("telegram", "telegram"),
+        ("skype", "skype"),
+        ("facebook", "facebook"),
+        ("instagram", "instagram"),
+        ("twitter", "twitter"),
+        ("linkedin", "linkedin"),
+        ("vk", "vk"),
+        ("snapchat", "snapchat"),
+    ] {
+        if let Some(h) = val_str(item, k)
+            && h.len() >= 2
+            && seen.insert(format!("@{plat}:{}", h.to_lowercase()))
+        {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Username, format!("{plat}:{h}"), 0.55, scan_id),
+                ev,
+                &[plat],
+            );
+        }
+    }
+
+    // ── Physical location: each part as its own geo-hint Address, plus a
+    // composed multi-part address (street/city/state/postal/country). ──
+    let mut addr_parts: Vec<String> = Vec::new();
+    for k in [
+        "street",
+        "address",
+        "address_line",
+        "city",
+        "state",
+        "region",
+        "province",
+        "zip",
+        "zipcode",
+        "postal",
+        "postal_code",
+        "postcode",
+    ] {
+        if let Some(p) = val_str(item, k)
+            && p.len() >= 2
+        {
+            if seen.insert(format!("@addr-part:{k}:{}", p.to_lowercase())) {
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::Address, &p, 0.45, scan_id),
+                    ev,
+                    &["geo-hint"],
+                );
+            }
+            addr_parts.push(p);
+        }
+    }
+    if addr_parts.len() >= 2 {
+        if let Some(c) = val_str(item, "country") {
+            addr_parts.push(c);
+        }
+        let composed = addr_parts.join(", ");
+        if seen.insert(format!("@addr:{}", composed.to_lowercase())) {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Address, &composed, 0.55, scan_id),
+                ev,
+                &["geo-hint", "composed-address"],
+            );
+        }
+    }
+
+    // ── Catch-all: EVERY remaining value-bearing scalar field becomes an
+    // `Other(field)` node, so nothing in the raw record is left un-surfaced.
+    // Nested objects/arrays are serialised compactly so they're captured too. ──
+    for (k, v) in obj {
+        if RICH_DETAIL_SKIP.contains(&k.to_lowercase().as_str()) {
+            continue;
+        }
+        let val = match v {
+            Value::Null => continue,
+            Value::String(s) => s.clone(),
+            Value::Bool(b) => b.to_string(),
+            Value::Number(n) => n.to_string(),
+            Value::Array(_) | Value::Object(_) => v.to_string(),
+        };
+        if val.is_empty() || val.len() > 2000 {
+            continue;
+        }
+        if seen.insert(format!("@other:{k}:{}", val.to_lowercase())) {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Other(k.clone()), &val, 0.40, scan_id),
+                ev,
+                &["raw-field"],
+            );
+        }
     }
 }
 
@@ -883,6 +1102,62 @@ mod tests {
             .is_some(),
             "login↔surface must surface as a Credential entity"
         );
+    }
+
+    #[test]
+    fn extract_rich_detail_surfaces_the_whole_record() {
+        use serde_json::json;
+        // A fat record with the long tail SeekNow returns: composed name, org,
+        // device fingerprints, extra social handles, a multi-part address, and
+        // an unrecognised field. Every one must become a pivotable node.
+        let item = json!({
+            "first_name": "Matthew",
+            "last_name": "Diegmann",
+            "company": "Acme Pty Ltd",
+            "mac_address": "DC:44:27:AA:BB:CC",
+            "hwid": "WIN-ABC123XYZ",
+            "telegram": "mattdieg",
+            "city": "Brisbane",
+            "state": "QLD",
+            "postal": "4000",
+            "country": "AU",
+            "gender": "M",
+            "ip_country_code": "AU"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(&item, "x", "scan", &mut seen, &mut result);
+
+        let has = |k: EntityKind, pred: &dyn Fn(&Entity) -> bool| {
+            result.entities.iter().any(|e| e.kind == k && pred(e))
+        };
+        // Composed Person from first+last.
+        assert!(has(EntityKind::Person, &|e| e.value == "Matthew Diegmann"));
+        // Organisation.
+        assert!(has(EntityKind::Organisation, &|e| e.value == "Acme Pty Ltd"));
+        // Device fingerprints.
+        assert!(has(EntityKind::MacAddress, &|e| e
+            .value
+            .to_lowercase()
+            .contains("dc:44:27")));
+        assert!(has(EntityKind::DeviceId, &|e| e.value == "WIN-ABC123XYZ"
+            && e.has_tag("stealer")));
+        // Extra social handle as a platform-prefixed Username.
+        assert!(has(EntityKind::Username, &|e| e.value == "telegram:mattdieg"));
+        // Composed multi-part address (parts + country).
+        assert!(has(EntityKind::Address, &|e| e.value.contains("Brisbane")
+            && e.value.contains("AU")
+            && e.has_tag("composed-address")));
+        // Catch-all: unrecognised value-bearing fields become Other(field) nodes
+        // tagged raw-field — NOTHING is dropped.
+        assert!(has(EntityKind::Other("gender".into()), &|e| e.value == "M"
+            && e.has_tag("raw-field")));
+        assert!(has(EntityKind::Other("ip_country_code".into()), &|e| e.value == "AU"));
+        // Structural/metadata keys never become standalone nodes.
+        assert!(!result
+            .entities
+            .iter()
+            .any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "first_name")));
     }
 
     #[test]
