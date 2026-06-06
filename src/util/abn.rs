@@ -101,8 +101,34 @@ pub fn looks_like_company(name: &str) -> bool {
 /// capped at 5 so a large trust can't flood the graph. Empty for individuals.
 pub fn company_names(owner: &str) -> Vec<String> {
     let normalised = owner.replace(" AND ", " & ").replace(" and ", " & ");
-    let parts: Vec<String> = normalised
-        .split('&')
+
+    // Split on `&`, but first rejoin the "& Co" / "& Company" idiom: that `&`
+    // is part of a single company name ("Ashton & Co Pty Ltd"), not a syndicate
+    // separator. A naive split orphans the tail as a bogus standalone company
+    // ("Co Pty Ltd" — which itself passes `looks_like_company`), so the ABN
+    // register would be queried for the wrong name. A segment is a continuation
+    // only when its first word is exactly `CO`/`CO.`/`COMPANY` (so "Coffee Pty
+    // Ltd" is NOT misread as a continuation).
+    let mut segments: Vec<String> = Vec::new();
+    for seg in normalised.split('&') {
+        let seg = seg.trim();
+        let first = seg
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('.')
+            .to_uppercase();
+        if matches!(first.as_str(), "CO" | "COMPANY") && !segments.is_empty() {
+            let prev = segments.last_mut().unwrap();
+            prev.push_str(" & ");
+            prev.push_str(seg);
+        } else {
+            segments.push(seg.to_string());
+        }
+    }
+
+    let parts: Vec<String> = segments
+        .into_iter()
         .map(|p| match p.find("- SEE") {
             Some(i) => p[..i].trim().to_string(),
             None => p.trim().to_string(),
@@ -242,6 +268,22 @@ mod tests {
         );
         // A single "& CO" company is NOT split into two non-companies.
         assert_eq!(company_names("SMITH & CO"), vec!["SMITH & CO"]);
+        // Regression: the "& Co" idiom INSIDE a syndicate must stay attached to
+        // its name, not be orphaned into a bogus standalone "Co Pty Ltd".
+        assert_eq!(
+            company_names("ASHTON & CO PTY LTD & BERG PTY LTD"),
+            vec!["ASHTON & CO PTY LTD", "BERG PTY LTD"]
+        );
+        // "Company" spelled out, and a real `&`-joined firm name, both survive.
+        assert_eq!(
+            company_names("DALE & COMPANY PTY LTD & ROE PTY LTD"),
+            vec!["DALE & COMPANY PTY LTD", "ROE PTY LTD"]
+        );
+        // A non-"Co" word starting with "co" (Coffee) is NOT a continuation.
+        assert_eq!(
+            company_names("COFFEE PTY LTD & BREW PTY LTD"),
+            vec!["COFFEE PTY LTD", "BREW PTY LTD"]
+        );
         // A plain single company is returned whole.
         assert_eq!(
             company_names("ACME WIDGETS PTY LTD"),
