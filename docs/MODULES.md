@@ -106,11 +106,12 @@ records. The engine knows nothing else — every module is a one-file change.
 | `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
 | `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
 
-### infrastructure (16)
+### infrastructure (17)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `hudsonrock` | email, username, domain | free | no | 130 | — |
+| `ripestat` | ip_address, asn | free | no | 107 | asn, organisation, email |
 | `shodan` | ip_address | free | no | 105 | domain, url, asn, organisation, address, ip_address |
 | `criminal_ip` | ip_address | key_gated | no | 103 | organisation, asn |
 | `ipqs` | email, phone, ip_address | key_gated | no | 100 | — |

@@ -75,6 +75,7 @@ pub mod psbdmp;
 pub mod pwned_passwords;
 pub mod qld_unclaimed;
 pub mod rdap_domain;
+pub mod ripestat;
 pub mod search_engines;
 pub mod securitytrails;
 pub mod see_know;
@@ -213,6 +214,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(hackertarget::HackerTarget),
         Arc::new(threatfox::ThreatFox),
         Arc::new(rdap_domain::RdapDomain),
+        Arc::new(ripestat::RipeStat),
         Arc::new(search_engines::SearchEngines),
         Arc::new(webserver_banner::WebserverBanner),
         Arc::new(web_crawler::WebCrawler),
