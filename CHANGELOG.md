@@ -90,6 +90,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`dehashed` brought up to the module spec.** The two pure pieces of `process`
+  are extracted and tested: `selector_for` (target-kind → DeHashed query
+  selector, returning `None` for unsupported kinds) and `build_breach_entity`
+  (the aggregate-only entity mapping — total hit count vs returned rows, top
+  databases by frequency with the `database_name`→`obtained_from` fallback, the
+  created-at range, and the breach tags). The database cap becomes a named
+  constant (`MAX_DATABASES`). Adds unit coverage asserting `selector_for` answers
+  for exactly the kinds `accepts` admits, the full aggregation (server total
+  exceeding returned rows, source-fallback frequency ranking, created-at range),
+  and the count-only response that omits the optional aggregates — reinforcing
+  the no-credentials-in-evidence invariant at the unit level. Behaviour-preserving.
 - **`wayback` brought up to the module spec.** Both pure pieces of `process` are
   extracted and tested: `extract_domain` (URL scheme/path/port stripping +
   lowercasing) and `build_entity` (the CDX-rows → archive-entity mapping —
