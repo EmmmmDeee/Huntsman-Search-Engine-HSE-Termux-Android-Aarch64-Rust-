@@ -90,6 +90,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`threatfox` brought up to the module spec.** The ~90-line IOC aggregation
+  (malware families / IOC + threat types / context tags folded into capped,
+  deduplicated, deterministically-ordered attribute lists, plus max analyst
+  confidence and the outer first/last-seen window) is extracted out of `process`
+  into the pure, IO-free `build_ioc_entity`, with the list caps promoted to named
+  constants and empty/whitespace fields filtered through a shared `nonempty`
+  helper. Replaces the two trivial accepts/cost tests with unit coverage of the
+  single-IOC mapping, cross-batch aggregation (dedup + sort + max-confidence +
+  outer window), sparse-record attribute omission, and the family/tag caps.
+  Behaviour-preserving.
 - **`disposable_check` brought up to the module spec.** The throwaway-email
   verdict→entity mapping is extracted from `process` into the pure, IO-free
   `build_email_entity`, and the stringly-typed `disposable` field is parsed
