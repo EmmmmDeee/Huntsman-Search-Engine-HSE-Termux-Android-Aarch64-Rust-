@@ -160,6 +160,61 @@ fn build_body(provider: &str, endpoint: &str, query: &str, unix_secs: u64, raw: 
     serde_json::to_string_pretty(&doc).unwrap_or_else(|_| doc.to_string())
 }
 
+/// Archive an HTTP JSON response keyed off its URL — the universal entry point
+/// for the shared transport layer, so EVERY module's API response is retained,
+/// not just the two breach pools. `provider` is the module/source name; the
+/// endpoint label and query value are derived from `url` (path tail + first
+/// query parameter, falling back to the last path segment), so the saved file
+/// still names what was looked up. Best-effort; non-JSON/HTML bodies are fine
+/// (stored verbatim as a string).
+pub fn record_http(provider: &str, url: &str, body: &str) {
+    let (endpoint, query) = describe_url(url);
+    record(provider, &endpoint, &query, body);
+}
+
+/// Derive `(endpoint, query)` labels from a request URL: the endpoint is the
+/// last one or two non-empty path segments (e.g. `…/v3/breachedaccount/x` →
+/// `breachedaccount`), and the query is the first query-string value, else the
+/// last path segment, else the host. Pure, so it is unit-testable.
+fn describe_url(url: &str) -> (String, String) {
+    let after_scheme = url.splitn(2, "://").last().unwrap_or(url);
+    let (host_path, query_str) = match after_scheme.split_once('?') {
+        Some((hp, q)) => (hp, q),
+        None => (after_scheme, ""),
+    };
+    let (host, path) = match host_path.split_once('/') {
+        Some((h, p)) => (h, p),
+        None => (host_path, ""),
+    };
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let urldecode = crate::util::http::urldecode;
+    let first_qval = query_str
+        .split('&')
+        .find_map(|kv| kv.split_once('=').map(|(_, v)| v))
+        .filter(|v| !v.is_empty());
+
+    if let Some(qv) = first_qval {
+        // Query-string API (`…/search?q=value`): endpoint is the last path
+        // segment (or host), the looked-up value is the first query parameter.
+        let endpoint = segs
+            .last()
+            .map(|s| (*s).to_string())
+            .unwrap_or_else(|| host.to_string());
+        (endpoint, urldecode(qv))
+    } else if segs.len() >= 2 {
+        // Path-style API (`…/breachedaccount/<value>`): the last segment is the
+        // value, the one before names the endpoint.
+        (
+            segs[segs.len() - 2].to_string(),
+            urldecode(segs[segs.len() - 1]),
+        )
+    } else if let Some(last) = segs.last() {
+        (host.to_string(), urldecode(last))
+    } else {
+        (host.to_string(), host.to_string())
+    }
+}
+
 /// Persist one paid-provider response to its own file, verbatim. Best-effort and
 /// infallible from the caller's view: any I/O error is logged at debug and
 /// swallowed so archiving can never fail a scan or drop the in-flight result.
@@ -380,6 +435,24 @@ mod tests {
         let body = build_body("oathnet", "breach-search", "x", 0, "503 Service Unavailable");
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["raw"], "503 Service Unavailable");
+    }
+
+    #[test]
+    fn describe_url_derives_endpoint_and_query() {
+        // Query param → query value (URL-decoded); path tail → endpoint.
+        assert_eq!(
+            describe_url("https://haveibeenpwned.com/api/v3/breachedaccount/a%40b.com"),
+            ("breachedaccount".to_string(), "a@b.com".to_string())
+        );
+        assert_eq!(
+            describe_url("https://crt.sh/?q=example.com&output=json"),
+            ("crt.sh".to_string(), "example.com".to_string())
+        );
+        // No path, no query → host is both.
+        assert_eq!(
+            describe_url("https://api.example.org"),
+            ("api.example.org".to_string(), "api.example.org".to_string())
+        );
     }
 
     #[test]

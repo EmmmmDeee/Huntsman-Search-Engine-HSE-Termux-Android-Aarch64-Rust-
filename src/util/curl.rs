@@ -220,6 +220,9 @@ pub async fn fetch_via_proxy(url: &str, timeout_ms: u64, ua: &str, proxy: &str) 
 /// Fetch JSON from a URL via curl, deserialise as T.
 pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u64) -> Option<T> {
     let body = fetch(url, timeout_ms).await?;
+    // Archive the raw JSON body before parsing (universal raw retention). The
+    // curl path carries no module name, so the URL host is the provider label.
+    crate::util::raw_archive::record_http(crate::util::url_util::host_only(url), url, &body);
     match serde_json::from_str(&body) {
         Ok(v) => Some(v),
         Err(e) => {

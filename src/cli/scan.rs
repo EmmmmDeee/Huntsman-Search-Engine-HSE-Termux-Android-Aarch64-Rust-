@@ -188,6 +188,15 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let correlations = store.correlations_for_scan(&sid)?;
     let relations = store.relations_for_scan(&sid)?;
 
+    // Guarantee maximum-detail output on EVERY search: auto-write the full
+    // dossier (every entity, full provenance, every raw API response embedded)
+    // and announce its path on stderr — regardless of the chosen stdout format.
+    // Best-effort: a dossier write failure must never fail the scan itself.
+    match crate::cli::export::write_full_dossier(store.as_ref(), &sid) {
+        Ok(path) => eprintln!("full dossier: {}", path.display()),
+        Err(e) => eprintln!("warning: could not write full dossier: {e}"),
+    }
+
     if cmd.output == "json" {
         // Full self-optimization payload — scan + entities + correlations
         // + diagnostics (module ranking, confidence calibration, geo

@@ -98,7 +98,10 @@ fn render_gexf(store: &Store, sid: &str) -> Result<String> {
 /// lists every provider, API-key origin, and source seen. This is the on-disk
 /// counterpart to the live dossier and the raw archive: the contract is total
 /// transparency for a professional interpreter.
-fn render_full(store: &Store, sid: &str) -> Result<String> {
+pub(crate) fn render_full(
+    store: &dyn crate::core::port::StoragePort,
+    sid: &str,
+) -> Result<String> {
     use std::collections::BTreeSet;
     use std::fmt::Write as _;
 
@@ -268,6 +271,32 @@ fn join_or_dash<'a>(it: impl Iterator<Item = &'a String>) -> String {
     } else {
         joined
     }
+}
+
+/// Default directory for auto-saved full dossiers: `$HOME/.huntsman/dossiers`.
+pub(crate) fn dossier_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home)
+        .join(".huntsman")
+        .join("dossiers")
+}
+
+/// Render and persist the full dossier for `sid` to
+/// `$HOME/.huntsman/dossiers/<sid>.txt`, returning the path. Called at the end
+/// of every `hse scan` so the maximum-detail dossier — every entity, full
+/// provenance, and every raw API response embedded — is guaranteed to exist for
+/// EVERY search, without the operator running a separate `export`. Best-effort
+/// for the caller: a write failure is returned as an error to log, never fatal.
+pub(crate) fn write_full_dossier(
+    store: &dyn crate::core::port::StoragePort,
+    sid: &str,
+) -> Result<std::path::PathBuf> {
+    let body = render_full(store, sid)?;
+    let dir = dossier_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| Error::Other(format!("create {dir:?}: {e}")))?;
+    let path = dir.join(format!("{sid}.txt"));
+    std::fs::write(&path, &body).map_err(|e| Error::Other(format!("write {path:?}: {e}")))?;
+    Ok(path)
 }
 
 fn render_report(store: &Store, sid: &str) -> Result<String> {

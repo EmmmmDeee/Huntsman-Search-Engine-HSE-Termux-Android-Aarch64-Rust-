@@ -271,6 +271,9 @@ const JSON_BODY_CAP: usize = 32 * 1024 * 1024;
 /// parseable string instead of failing outright.
 async fn read_json_text(resp: reqwest::Response, module: &str) -> Result<String> {
     use futures::StreamExt as _;
+    // Capture the request URL before the body stream consumes `resp`, so the
+    // raw archive can key this response by what was queried.
+    let url = resp.url().to_string();
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
     while let Some(chunk) = stream.next().await {
@@ -286,7 +289,13 @@ async fn read_json_text(resp: reqwest::Response, module: &str) -> Result<String>
         }
         buf.extend_from_slice(&bytes);
     }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    // Universal raw retention: every module's JSON response is archived verbatim
+    // here — the single chokepoint shared by fetch_json, fetch_json_or_404,
+    // fetch_keyed_json and json_scanned — so the full dossier's RAW SOURCE
+    // RECORDS section is complete for ANY scan, not only the breach pools.
+    crate::util::raw_archive::record_http(module, &url, &text);
+    Ok(text)
 }
 
 /// Last up-to-4 *characters* of a key for log lines — char-boundary-safe.
@@ -616,6 +625,18 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
 /// but extracted because five modules had this verbatim helper repeated.
 pub fn urlencode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}
+
+/// Decode one `application/x-www-form-urlencoded` component (`%40` → `@`,
+/// `+` → space) — the inverse of [`urlencode`]. Used to recover a legible query
+/// value from a URL for the raw archive's filenames. Lossy-UTF8 on the decoded
+/// bytes so a malformed escape can never panic.
+#[must_use]
+pub fn urldecode(s: &str) -> String {
+    url::form_urlencoded::parse(format!("={s}").as_bytes())
+        .next()
+        .map(|(_, v)| v.into_owned())
+        .unwrap_or_else(|| s.to_string())
 }
 
 /// Parse a reqwest Response as JSON while scanning the raw body for API
