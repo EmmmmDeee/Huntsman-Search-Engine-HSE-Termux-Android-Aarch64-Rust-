@@ -646,11 +646,10 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
         service: "gcp_service",
         min_len: 20,
     },
-    KeyPattern {
-        prefix: "glpat-",
-        service: "gitlab",
-        min_len: 20,
-    },
+    // (Removed an accidental duplicate `glpat-` → `gitlab` entry here: it had the
+    // same prefix and min_len as the earlier `glpat-` → `gitlab_pat`, so it was
+    // unreachable. `gitlab_pat` is the precise label — glpat- is a GitLab
+    // Personal Access Token.)
     KeyPattern {
         prefix: "gldt-",
         service: "gitlab_deploy",

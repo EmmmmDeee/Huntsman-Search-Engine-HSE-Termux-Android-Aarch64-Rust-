@@ -18,6 +18,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   declaration-order prefix match — so every `sk-or-…` key resolved to the generic
   `sk-` → `openai_or_stripe` instead of `openrouter`. Moved `sk-or-` above the
   stem. Found by the new structural test below.
+- **Removed an unreachable duplicate `glpat-` pattern.** The key-harvest table
+  had two `glpat-` entries with identical prefix and `min_len` (`gitlab_pat` and
+  `gitlab`); the second was dead. Kept the precise `gitlab_pat` label (`glpat-` is
+  a GitLab Personal Access Token). No behaviour change. (The `pk_live_`
+  Stripe-vs-Clerk overlap is left as-is — a genuine cross-provider prefix
+  collision, not an in-tree defect.)
 
 ### Added
 
