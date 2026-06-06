@@ -302,3 +302,6 @@ fn evaluate_relation_rules(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod perf;
