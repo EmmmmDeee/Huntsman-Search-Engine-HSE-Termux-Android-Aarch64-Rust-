@@ -58,7 +58,7 @@ fn target_domain(kind: TargetKind, value: &str) -> Option<String> {
 
 /// Map one record type's answers to entities. **Pure** (no network/IO): parses
 /// each record per its type — A/AAAA → `IpAddress`, MX/NS/CNAME → `Domain`, and
-/// SPF `TXT` → the `ip4:`/`include:` members — deduplicating across the whole
+/// SPF `TXT` → the `ip4:`/`ip6:`/`include:` members — deduplicating across the whole
 /// resolution via the shared `seen` set (keyed by a type prefix so an IP from an
 /// A record and an SPF `ip4:` of the same value are distinct). Skips blank /
 /// dotless hosts. `rtype` outside [`RECORD_TYPES`] yields nothing.
@@ -117,17 +117,23 @@ fn records_for_type(
                 let txt = rec.data.trim().trim_matches('"');
                 if txt.starts_with("v=spf1") {
                     for part in txt.split_whitespace() {
-                        if let Some(ip) = part.strip_prefix("ip4:") {
+                        // Both IPv4 and IPv6 SPF members — `ip6:` was previously
+                        // dropped on the floor. The CIDR suffix (if any) is split
+                        // off; the IPv6 address keeps its internal colons.
+                        if let Some(ip) = part
+                            .strip_prefix("ip4:")
+                            .or_else(|| part.strip_prefix("ip6:"))
+                        {
                             let ip = ip.split('/').next().unwrap_or(ip);
-                            // Skip a bare `ip4:` (or `ip4:/24`) with no address —
-                            // an empty value would normalise to a blank entity.
+                            // Skip a bare `ip4:`/`ip6:` with no address — an empty
+                            // value would normalise to a blank entity.
                             if !ip.is_empty() && seen.insert(format!("spf:{ip}")) {
                                 let mut e = Entity::new(EntityKind::IpAddress, ip, 0.75, scan_id);
                                 e.tag("dns");
                                 e.tag("spf");
                                 e.add_evidence(Evidence::new(
                                     SRC,
-                                    format!("SPF include for {domain}"),
+                                    format!("SPF authorised sender for {domain}"),
                                 ));
                                 out.push(e);
                             }
@@ -331,22 +337,29 @@ mod tests {
     }
 
     #[test]
-    fn spf_txt_extracts_ip4_and_includes_others_ignored() {
+    fn spf_txt_extracts_ip4_ip6_and_includes_others_ignored() {
         let out = run(
             "TXT",
             &[
-                "v=spf1 ip4:198.51.100.0/24 include:_spf.google.com -all",
+                "v=spf1 ip4:198.51.100.0/24 ip6:2001:db8::/32 include:_spf.google.com -all",
                 "some-unrelated-txt-record",
             ],
         );
-        // One IP (CIDR stripped) + one include domain; the non-SPF TXT ignored.
-        assert_eq!(out.len(), 2);
-        let ip = out
+        // IPv4 + IPv6 (both CIDR-stripped) + one include domain; non-SPF ignored.
+        assert_eq!(out.len(), 3);
+        let ips: Vec<&str> = out
+            .iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(ips.contains(&"198.51.100.0"));
+        // IPv6 member surfaced with its internal colons intact (CIDR removed).
+        assert!(ips.contains(&"2001:db8::"));
+        let first_ip = out
             .iter()
             .find(|e| e.kind == EntityKind::IpAddress)
             .unwrap();
-        assert_eq!(ip.value, "198.51.100.0");
-        assert!(ip.has_tag("spf"));
+        assert!(first_ip.has_tag("spf"));
         let inc = out.iter().find(|e| e.kind == EntityKind::Domain).unwrap();
         assert_eq!(inc.value, "_spf.google.com");
         assert!(inc.has_tag("spf-include"));

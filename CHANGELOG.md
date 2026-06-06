@@ -12,6 +12,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`doh_resolver` now surfaces SPF `ip6:` members.** The SPF TXT parser only ever
+  read `ip4:` mechanisms, silently discarding every `ip6:` authorised-sender IP —
+  despite the module tagging A/AAAA results `ipv4`/`ipv6` and advertising "extracts
+  IPs from … TXT". Both mechanisms are now parsed through one branch (CIDR suffix
+  stripped, IPv6 colons preserved, canonicalised by `Entity::new`), and the IP
+  evidence label is corrected from the copy-pasted "SPF include" to "SPF authorised
+  sender". Unit-tested with a dual ip4/ip6 record.
+
 - **Correlation rule AU-038 — verified cross-platform identity.** `search_engines`
   tags a `Url` `confirmed-profile` when the searched handle is the exact path on a
   canonical social host (the target's own, engine-verified profile). AU-038 fires
