@@ -12,6 +12,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Performance
 
+- **Correlation rule AU-034 (handle reuse) is now linear, not quadratic.** It
+  re-derived `canonical_handle` for every email *inside* the per-username loop —
+  O(U×E) string allocations — and profiling showed it accounted for ~98% of the
+  entire correlation pass, which runs after every expansion round. Emails are
+  now bucketed by their canonical local-part handle once (O(E)); each username
+  resolves its matches with a single hash lookup. Measured on a synthetic mixed
+  entity set, the full correlation pass dropped from 127 ms to 10 ms at 5 000
+  entities (12.7×) and now scales linearly with entity count — a per-round stall
+  a broad breach/stealer scan on a phone would otherwise hit repeatedly.
+  Behaviour is unchanged (the matched set was already order-independent, and the
+  existing AU-034 tests — including multi-email grouping — still pass).
+
 - **Web UI responses are gzip-compressed (`tower-http` `CompressionLayer`).**
   The embedded SPA (~118 KB) and vendored asset bundle (~528 KB) were served
   uncompressed on every cold load — the dominant web-UI cost on a phone's mobile

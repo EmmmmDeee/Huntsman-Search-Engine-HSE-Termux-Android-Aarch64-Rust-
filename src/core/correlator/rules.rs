@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::{Correlation, Severity};
 use crate::core::entity::{Entity, EntityKind};
@@ -1357,26 +1357,42 @@ pub(super) fn rule_au_034_handle_reuse_identity(
         return Vec::new();
     }
 
+    // Bucket emails by the canonical handle of their local-part ONCE — O(E) —
+    // instead of recomputing `canonical_handle` for every email inside the
+    // per-username loop (which was O(U×E) String allocations and dominated the
+    // whole correlation pass on large scans). Each username then resolves its
+    // matches with a single hash lookup, making the rule O(U + E).
+    let mut emails_by_handle: HashMap<String, Vec<&Entity>> = HashMap::new();
+    for e in &emails {
+        // local-part, minus any Gmail-style `+tag` suffix.
+        let local = e.value.split('@').next().unwrap_or_default();
+        let base = local.split('+').next().unwrap_or_default();
+        if !base.is_empty() {
+            emails_by_handle
+                .entry(canonical_handle(base))
+                .or_default()
+                .push(e);
+        }
+    }
+
     let mut out = Vec::new();
     for u in &usernames {
         let handle = canonical_handle(&u.value);
         if handle.len() < MIN_HANDLE_LEN || is_generic_handle(&handle) {
             continue;
         }
+        let Some(matches) = emails_by_handle.get(&handle) else {
+            continue;
+        };
         let mut sources: HashSet<&str> = u.evidence_sources();
-        let mut matched_uids: Vec<String> = Vec::new();
-        let mut matched_values: Vec<&str> = Vec::new();
-        for e in &emails {
-            // local-part, minus any Gmail-style `+tag` suffix.
-            let local = e.value.split('@').next().unwrap_or_default();
-            let base = local.split('+').next().unwrap_or_default();
-            if !base.is_empty() && canonical_handle(base) == handle {
-                matched_uids.push(e.uid.clone());
-                matched_values.push(e.value.as_str());
-                sources.extend(e.evidence_sources());
-            }
+        let mut matched_uids: Vec<String> = Vec::with_capacity(matches.len());
+        let mut matched_values: Vec<&str> = Vec::with_capacity(matches.len());
+        for e in matches {
+            matched_uids.push(e.uid.clone());
+            matched_values.push(e.value.as_str());
+            sources.extend(e.evidence_sources());
         }
-        if matched_uids.is_empty() || sources.len() < MIN_DISTINCT_SOURCES {
+        if sources.len() < MIN_DISTINCT_SOURCES {
             continue;
         }
         matched_uids.sort_unstable();
