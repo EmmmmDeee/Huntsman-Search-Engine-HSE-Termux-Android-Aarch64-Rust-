@@ -1375,6 +1375,20 @@ async fn spa_is_gzip_compressed_for_a_gzip_capable_client() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert_eq!(enc, "gzip", "SPA must be gzip-encoded for a gzip client");
+    // A compressed response MUST advertise `Vary: Accept-Encoding` so a shared
+    // cache never hands a gzipped body to a client that didn't negotiate it.
+    let vary = resp
+        .headers()
+        .get_all(http::header::VARY)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect::<Vec<_>>()
+        .join(",")
+        .to_ascii_lowercase();
+    assert!(
+        vary.contains("accept-encoding"),
+        "compressed response must Vary on Accept-Encoding, got {vary:?}"
+    );
     let bytes = axum::body::to_bytes(resp.into_body(), 2_000_000)
         .await
         .unwrap();
