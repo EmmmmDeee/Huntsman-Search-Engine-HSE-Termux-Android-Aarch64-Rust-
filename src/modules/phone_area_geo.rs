@@ -126,17 +126,9 @@ fn lookup_area_code(digits: &str) -> Option<AreaCodeGeo> {
 }
 
 fn country_name(cc: &str) -> &'static str {
-    match cc {
-        "AU" => "Australia",
-        "GB" => "United Kingdom",
-        "US" => "United States",
-        "DE" => "Germany",
-        "FR" => "France",
-        "JP" => "Japan",
-        "NZ" => "New Zealand",
-        "CA" => "Canada",
-        _ => "Unknown",
-    }
+    // Reuse the canonical ISO→name table (55 countries) rather than maintain a
+    // divergent 8-entry copy; every ISO this module's area tables use is covered.
+    crate::util::geohash::country_name_for_iso(cc).unwrap_or("Unknown")
 }
 
 const AU_AREAS: &[(&str, &str, &str)] = &[

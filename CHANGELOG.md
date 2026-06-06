@@ -288,6 +288,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`phone_area_geo` reuses the canonical ISO→country-name table.** Its private
+  8-entry `country_name` match is replaced by a delegation to
+  `geohash::country_name_for_iso` (55 countries) — every ISO the module's area
+  tables use is covered with identical names, so it's behaviour-preserving and
+  removes a divergent copy.
 - **Consolidated digit-only string normalisation into `util::str_util::ascii_digits`.**
   The `s.chars().filter(char::is_ascii_digit).collect()` idiom was re-derived inline
   in ~9 places (phone parsing, ABN/ACN/LEI, target detection); they now share one
