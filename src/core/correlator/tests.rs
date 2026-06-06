@@ -598,6 +598,18 @@ fn au001_ignores_non_breach_sources() {
     assert!(rule_au_001_multi_breach(&[e], "s1", 0).is_empty());
 }
 
+#[test]
+fn au001_does_not_count_generic_search_as_a_breach_source() {
+    // A web-search hit alongside ONE real breach source is a single breach
+    // source — `search_engines` must never count toward the Critical multi-breach
+    // finding (guards against re-adding it to BREACH_SOURCES).
+    let one = email("x@y.com", &["hibp", "search_engines"]);
+    assert!(rule_au_001_multi_breach(&[one], "s1", 0).is_empty());
+    // Two genuine breach sources still fire.
+    let two = email("x@y.com", &["hibp", "dehashed"]);
+    assert_eq!(rule_au_001_multi_breach(&[two], "s1", 0).len(), 1);
+}
+
 // ── AU-002 ──────────────────────────────────────────────────────────
 
 #[test]

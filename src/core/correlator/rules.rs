@@ -50,8 +50,13 @@ pub(super) fn rule_au_001_multi_breach(
         "dehashed",
         "hibp",
         "oathnet_pro",
-        "search_engines:oathnet",
         "emailrep",
+        // NOTE: the generic `search_engines` source is deliberately NOT listed.
+        // A web-search hit is not breach corroboration, and counting it would let
+        // one real breach + one search result fire a false Critical. (An earlier
+        // `search_engines:oathnet` entry was dead — the module emits the plain
+        // `search_engines` source — so it was removed rather than "fixed" to
+        // `search_engines`, which would introduce exactly that false positive.)
     ];
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Email) {
