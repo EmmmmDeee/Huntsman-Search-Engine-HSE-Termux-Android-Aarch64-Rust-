@@ -310,6 +310,12 @@ pub enum Command {
         /// sweep already covered — each sweep spends quota only on NEW seeds.
         #[arg(long)]
         radar: bool,
+        /// Emit the raw newline-delimited JSON event stream (machine-readable)
+        /// instead of the default human-readable, fully-unredacted structured
+        /// view. Both carry identical data — the default just renders it for a
+        /// human interpreter; `--json` is for piping into another tool.
+        #[arg(long)]
+        json: bool,
     },
     /// Radar mode: continuous Termux signal sweep → automatic pivoting.
     ///
@@ -498,6 +504,7 @@ pub async fn run() -> Result<()> {
             passive_only,
             modules,
             radar,
+            json,
         } => {
             let value = resolve_seed(value, keys::default_seed())?;
             live::cmd_live(live::LiveCmd {
@@ -510,6 +517,7 @@ pub async fn run() -> Result<()> {
                 passive_only,
                 modules,
                 radar,
+                json,
             })
             .await
         }
