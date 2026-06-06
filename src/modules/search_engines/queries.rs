@@ -149,7 +149,12 @@ pub(super) fn detect_region(target: &Target) -> Option<Region> {
             .then_some(Region::Au),
         TargetKind::Phone => {
             let digits: String = v.chars().filter(char::is_ascii_digit).collect();
-            (v.contains("+61") || digits.starts_with("61")).then_some(Region::Au)
+            // `+61` is unambiguous. A *bare* `61…` is only the AU country code at
+            // full international length (61 + 9 national digits = 11); gating on
+            // that stops a domestic number like the US `610` area code
+            // (`610-555-1234` → `6105551234`, 10 digits) from falsely tagging AU.
+            let bare_au_cc = digits.len() >= 11 && digits.starts_with("61");
+            (v.contains("+61") || bare_au_cc).then_some(Region::Au)
         }
         TargetKind::Address | TargetKind::Organisation => (v.contains("australia")
             || [" nsw", " vic", " qld", " wa", " sa", " tas", " act", " nt"]
@@ -554,6 +559,26 @@ mod tests {
         assert_eq!(
             detect_region(&Target::new(TargetKind::Username, "jdoe")),
             None
+        );
+    }
+
+    #[test]
+    fn detect_region_phone_distinguishes_au_cc_from_us_area_code() {
+        use crate::core::scan::Target;
+        // Bare AU country code at full international length → AU.
+        assert_eq!(
+            detect_region(&Target::new(TargetKind::Phone, "61 412 345 678")),
+            Some(Region::Au)
+        );
+        // US `610` area code (10 digits) must NOT be read as AU country code.
+        assert_eq!(
+            detect_region(&Target::new(TargetKind::Phone, "610-555-1234")),
+            None
+        );
+        // `+61` stays unambiguous regardless of spacing.
+        assert_eq!(
+            detect_region(&Target::new(TargetKind::Phone, "+61 2 9000 0000")),
+            Some(Region::Au)
         );
     }
 }

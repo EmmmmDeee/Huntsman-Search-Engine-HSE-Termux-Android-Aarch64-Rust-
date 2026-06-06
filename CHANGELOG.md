@@ -12,6 +12,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`search_engines` AU region detection no longer false-positives on US `61x`
+  phone numbers.** `detect_region` treated any phone whose digits merely *started*
+  with `61` as Australian (country code 61), so a US number in the `610`/`612`/…
+  area codes (`610-555-1234` → `6105551234`) wrongly triggered AU-specific dorks
+  when regional search was enabled. The bare-`61` path now requires full
+  international length (61 + 9 national digits = 11) to read as the country code;
+  `+61` stays unambiguous. Unit-tested against a US `610` number and AU forms.
 - **`hse import` no longer panics displaying a multi-byte entity value.** The
   text listing truncated each value with a byte slice `&value[..len.min(70)]`;
   since an entity value is arbitrary text (a non-ASCII name/address), a value over
