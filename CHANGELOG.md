@@ -29,7 +29,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   entities. Regression-tested (incl. a street number that coincides with a real
   trailing postcode), and `util::geohash` gains coverage for `haversine_km` and
   `reverse_country_iso`'s US-subregion aliasing.
-- **SPF `redirect=` targets are now surfaced as related domains.** An SPF record
+- **Registrable-domain extraction now handles multi-label public suffixes.**
+  `web_crawler` and `search_engines` each carried an identical naive "last two
+  labels" extractor, so `shop.example.com.au` collapsed to the bare suffix
+  `com.au` and `a.b.co.uk` to `co.uk` — mis-grouping **every** `.com.au`/`.org.au`/
+  `.gov.au`/`.co.uk` site, which for an AU-focused tool means the external-domain
+  set a crawl produces was frequently wrong. Both now call one shared, tested
+  `util::domains::registrable_domain` backed by a small curated multi-label-suffix
+  table (the `.au` second levels + common international ones) — deliberately *not*
+  a full Public Suffix List, honouring the project's no-heavyweight-dependency
+  constraint while fixing the cases its data actually contains. (This revisits a
+  previously-documented "deliberate 2-label, no-PSL" simplification: the original
+  objection was to the PSL dependency, which a ~40-entry curated table does not
+  introduce.) The suffix table is asserted sorted for its `binary_search`. An SPF record
   can delegate its whole policy to another domain via the `redirect=` modifier
   (RFC 7208 §6) — a genuine related-domain pivot that `dns_intel`/`doh_resolver`
   previously ignored, just as they had ignored `ip6:`. `util::spf::members` gains a

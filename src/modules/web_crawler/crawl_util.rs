@@ -403,16 +403,7 @@ impl<'a> Iterator for LinkIter<'a> {
 }
 
 pub(super) fn extract_registrable_domain(host: &str) -> Option<String> {
-    let parts: Vec<&str> = host.split('.').collect();
-    if parts.len() >= 2 {
-        Some(format!(
-            "{}.{}",
-            parts[parts.len() - 2],
-            parts[parts.len() - 1]
-        ))
-    } else {
-        None
-    }
+    crate::util::domains::registrable_domain(host)
 }
 
 pub(super) fn extract_emails(body: &str, emails: &mut HashSet<String>) {
@@ -688,10 +679,12 @@ mod tests {
             extract_registrable_domain("example.com").as_deref(),
             Some("example.com")
         );
-        // Documents the deliberate 2-label simplification (no PSL): a.b.co.uk → co.uk.
+        // Multi-label public suffixes are handled via util::domains'
+        // curated table (not a full PSL): a.b.co.uk → b.co.uk, the registrable
+        // domain, rather than the bare suffix co.uk.
         assert_eq!(
             extract_registrable_domain("a.b.co.uk").as_deref(),
-            Some("co.uk")
+            Some("b.co.uk")
         );
         assert_eq!(extract_registrable_domain("localhost"), None);
     }
