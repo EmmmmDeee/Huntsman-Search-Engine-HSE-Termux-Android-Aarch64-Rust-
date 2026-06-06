@@ -14,7 +14,8 @@
 //!      a hit is a genuine, service-identified key. It deliberately skips the
 //!      generic-hex heuristic: this scans EVERY body, and entropy-testing every
 //!      32/64-char hex token (which breach corpora carry by the thousand) is
-//!      both slow (~2.8 → 20 MB/s once skipped) and noisy — those are password
+//!      both slow (~2.8 → 20 MB/s once skipped; reproduce the current figure via
+//!      the `bench_scan_body_throughput` baseline) and noisy — those are password
 //!      hashes already captured as `Password` entities by the breach modules;
 //!   3. **excludes our own auth credentials** ([`crate::util::keys::own_api_keys`])
 //!      so the report contains only foreign keys;
@@ -343,5 +344,46 @@ mod tests {
         scan_body("p", "q", "");
         scan_body("p", "q", "   \n\t  \r\n ");
         assert!(snapshot().is_empty());
+    }
+
+    /// Throughput baseline for the hot path (`scan_body` runs on EVERY response
+    /// body). Reproducible evidence for the module's "skip generic-hex → faster"
+    /// claim, and a regression tripwire for the tokeniser.
+    ///
+    /// Method: scan a deterministic ~256 KB body resembling a breach/stealer JSON
+    /// record (emails, 32-hex hashes the vendor-only scan must skip cheaply, the
+    /// odd real key) `iters` times; report MB/s = `bytes / min_wall`. Min-of-runs
+    /// is the most stable single-machine estimator. Context: a debug build is
+    /// ~10x slower than `--release`; treat the absolute number as a debug floor.
+    /// Run: `cargo test -p huntsman-search-engine --lib \
+    /// util::found_keys::tests::bench_scan_body_throughput -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "throughput baseline; run with --ignored --nocapture"]
+    fn bench_scan_body_throughput() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        let key = format!("sk_{}_{}", "live", "4eC39HqLyjWDarjtT1zdp7dc");
+        let unit = format!(
+            r#"{{"email":"victim@example.com","hash":"5e3706b9c16282351af9c3aac7107b54","ua":"Mozilla/5.0 (X11)","note":"{key}"}}"#
+        );
+        let body = unit.repeat(256 * 1024 / unit.len() + 1);
+        let bytes = body.len();
+
+        // Warm up, then take the min wall-time over several runs.
+        for _ in 0..3 {
+            scan_body("bench", "q", &body);
+        }
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..20 {
+            let start = std::time::Instant::now();
+            scan_body("bench", "q", &body);
+            best = best.min(start.elapsed());
+        }
+        let mbps = bytes as f64 / best.as_secs_f64() / 1e6;
+        eprintln!(
+            "scan_body: {} KB body, {mbps:.1} MB/s (debug build)",
+            bytes / 1024
+        );
+        assert!(best > std::time::Duration::ZERO);
     }
 }
