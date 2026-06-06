@@ -304,8 +304,7 @@ impl Module for PhoneIntl {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         // Strip every char except digits (drop +, spaces, dashes, parens).
-        let mut digits = String::with_capacity(target.value.len());
-        digits.extend(target.value.chars().filter(char::is_ascii_digit));
+        let digits = crate::util::str_util::ascii_digits(&target.value);
         if digits.len() < 7 || digits.len() > 15 {
             // E.164 mandates 7–15 digits total (incl. country code).
             return Ok(ModuleResult::new());

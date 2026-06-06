@@ -165,7 +165,7 @@ fn au_abn_acn(entity: &GleifEntity) -> Option<String> {
         return None;
     }
     let raw = entity.registered_as.as_deref()?;
-    let digits: String = raw.chars().filter(char::is_ascii_digit).collect();
+    let digits = crate::util::str_util::ascii_digits(raw);
     matches!(digits.len(), 9 | 11).then_some(digits)
 }
 

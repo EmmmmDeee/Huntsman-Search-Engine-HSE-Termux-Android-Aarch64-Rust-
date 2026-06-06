@@ -103,7 +103,7 @@ impl Module for AbnLookup {
 
         match target.kind {
             TargetKind::AbnAcn => {
-                let digits: String = value.chars().filter(char::is_ascii_digit).collect();
+                let digits = crate::util::str_util::ascii_digits(value);
                 if digits.len() == 11 {
                     if let Some(data) = fetch_abn(guid, &digits).await? {
                         parse_abn_result(&data, &ctx.scan_id, &mut result);

@@ -446,7 +446,7 @@ impl Target {
                 }
             }
             TargetKind::Phone => {
-                let digits: String = v.chars().filter(char::is_ascii_digit).collect();
+                let digits = crate::util::str_util::ascii_digits(v);
                 if digits.len() < 6 {
                     return Err("phone needs at least 6 digits");
                 }

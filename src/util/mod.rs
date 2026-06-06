@@ -233,6 +233,14 @@ pub mod str_util {
         o.as_deref().map(str::trim).filter(|s| !s.is_empty())
     }
 
+    /// The ASCII digits of `s`, in order, with every other character dropped.
+    /// One definition of "keep only the digits" for phone / ABN / ACN / LEI
+    /// normalisation (was re-derived inline in ~9 places).
+    #[must_use]
+    pub fn ascii_digits(s: &str) -> String {
+        s.chars().filter(char::is_ascii_digit).collect()
+    }
+
     pub fn truncate_safe(s: &str, max: usize) -> &str {
         if s.len() <= max {
             return s;
@@ -292,7 +300,7 @@ pub mod str_util {
 
     #[cfg(test)]
     mod tests {
-        use super::{fold_ascii_lower, nonempty, truncate_safe};
+        use super::{ascii_digits, fold_ascii_lower, nonempty, truncate_safe};
 
         #[test]
         fn nonempty_trims_and_treats_blank_as_absent() {
@@ -301,6 +309,16 @@ pub mod str_util {
             assert_eq!(nonempty(&Some("   ".to_string())), None);
             assert_eq!(nonempty(&Some(String::new())), None);
             assert_eq!(nonempty(&None), None);
+        }
+
+        #[test]
+        fn ascii_digits_keeps_only_digits_in_order() {
+            assert_eq!(ascii_digits("+61 (4) 123-456"), "614123456");
+            assert_eq!(ascii_digits("AS13335"), "13335");
+            assert_eq!(ascii_digits("no digits here"), "");
+            assert_eq!(ascii_digits(""), "");
+            // Non-ASCII digits (e.g. Arabic-Indic ٤) are not ASCII → dropped.
+            assert_eq!(ascii_digits("a١2b3"), "23");
         }
 
         #[test]

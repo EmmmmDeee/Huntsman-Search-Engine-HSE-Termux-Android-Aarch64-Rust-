@@ -148,7 +148,7 @@ pub(super) fn detect_region(target: &Target) -> Option<Region> {
             .is_some_and(|(_, d)| host_au(d))
             .then_some(Region::Au),
         TargetKind::Phone => {
-            let digits: String = v.chars().filter(char::is_ascii_digit).collect();
+            let digits = crate::util::str_util::ascii_digits(&v);
             // `+61` is unambiguous. A *bare* `61…` is only the AU country code at
             // full international length (61 + 9 national digits = 11); gating on
             // that stops a domestic number like the US `610` area code
@@ -310,7 +310,7 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
         TargetKind::FullName => build_queries_fullname(v),
         TargetKind::Phone => {
             let mut q = vec![format!("\"{v}\"")];
-            let digits: String = v.chars().filter(char::is_ascii_digit).collect();
+            let digits = crate::util::str_util::ascii_digits(v);
             if digits.len() >= 7 {
                 q.push(format!(
                     "\"{v}\" site:whitepages.com OR site:truecaller.com \
@@ -397,7 +397,7 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
             ]
         }
         TargetKind::AbnAcn => {
-            let digits: String = v.chars().filter(char::is_ascii_digit).collect();
+            let digits = crate::util::str_util::ascii_digits(v);
             vec![
                 format!("\"{v}\""),
                 format!(

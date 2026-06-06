@@ -107,7 +107,7 @@ fn field_str(rec: &Map<String, Value>, key: &str) -> Option<String> {
 /// JSON number, so we normalise to digits and length-check.
 fn abn_digits(rec: &Map<String, Value>) -> Option<String> {
     let raw = field_str(rec, "ABN")?;
-    let digits: String = raw.chars().filter(char::is_ascii_digit).collect();
+    let digits = crate::util::str_util::ascii_digits(&raw);
     (digits.len() == 11).then_some(digits)
 }
 

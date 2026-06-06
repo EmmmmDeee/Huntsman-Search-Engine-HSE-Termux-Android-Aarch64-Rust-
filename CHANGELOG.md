@@ -288,6 +288,10 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Consolidated digit-only string normalisation into `util::str_util::ascii_digits`.**
+  The `s.chars().filter(char::is_ascii_digit).collect()` idiom was re-derived inline
+  in ~9 places (phone parsing, ABN/ACN/LEI, target detection); they now share one
+  `#[must_use]`, unit-tested definition. Behaviour-preserving.
 - **Guarded three SPF/address parse paths against blank-value entities** (PR #104
   review). `doh_resolver` now skips a bare `ip4:` / `ip4:/24` (empty IP) and
   requires SPF `include:` hosts to be non-empty and dotted — matching the

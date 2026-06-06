@@ -95,7 +95,7 @@ struct TimezoneInference {
 
 fn extract_hours_from_value(value: &str) -> Vec<u32> {
     let mut hours = Vec::new();
-    let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+    let digits = crate::util::str_util::ascii_digits(value);
     // Extract plausible unix timestamps (10-digit sequences) from the value
     if digits.len() >= 10 {
         for chunk in digits.as_bytes().windows(10) {
