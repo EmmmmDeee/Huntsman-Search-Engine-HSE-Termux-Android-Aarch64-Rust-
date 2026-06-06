@@ -447,13 +447,36 @@ impl Entity {
 
     /// Merge `other` into `self` using GREATEST-semantics.
     ///
+    /// This is the deduplication primitive: two entities with the same `uid`
+    /// (same kind + normalised value) are folded so corroboration only ever
+    /// grows — replaying the same finding never regresses confidence or drops
+    /// evidence.
+    ///
     /// Rules:
-    /// - `uid` must match (panics in debug, no-op in release if not)
-    /// - `confidence`  = max(self, other)      — never decreases
-    /// - `corroboration` += other.corroboration — only increases
-    /// - `observed_at`  = max(self, other)      — most recent wins
-    /// - `evidence` appended
-    /// - `tags` union (dedup)
+    /// - `uid` must match (debug-asserts; a mismatch is a no-op in release)
+    /// - `confidence`  = max(self, other)        — never decreases
+    /// - `corroboration` += other.corroboration  — only increases
+    /// - `observed_at`  = max(self, other)        — most recent wins
+    /// - `evidence` merged, de-duplicated by `(source, summary)`
+    /// - `tags` unioned (de-duplicated)
+    ///
+    /// ```
+    /// use huntsman_search_engine::core::entity::{Entity, EntityKind, Evidence};
+    ///
+    /// let mut a = Entity::new(EntityKind::Email, "x@example.com", 0.5, "scan");
+    /// a.tag("breach");
+    /// a.add_evidence(Evidence::new("hibp", "seen"));
+    ///
+    /// let mut b = Entity::new(EntityKind::Email, "X@Example.com", 0.9, "scan");
+    /// b.tag("paste-exposed");
+    /// b.add_evidence(Evidence::new("dehashed", "seen"));
+    ///
+    /// assert_eq!(a.uid, b.uid); // same kind + normalised value → same UID
+    /// a.merge(b);
+    /// assert_eq!(a.confidence, 0.9);    // GREATEST: confidence never decreases
+    /// assert!(a.has_tag("breach") && a.has_tag("paste-exposed")); // tags unioned
+    /// assert_eq!(a.evidence.len(), 2);  // distinct evidence both kept
+    /// ```
     pub fn merge(&mut self, other: Self) {
         debug_assert_eq!(self.uid, other.uid, "merge: UID mismatch");
         if self.uid != other.uid {
