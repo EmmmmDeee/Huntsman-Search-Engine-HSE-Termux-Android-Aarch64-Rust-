@@ -12,6 +12,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`parse_address` no longer mistakes a street number for a postcode.** The
+  postal-code scanner examined every whitespace token of every comma-part, so a
+  multi-digit street number — the *leading* token of a street part like
+  `1234 Smith St` — was captured as `postal_code` (a plausible-but-wrong 4-digit
+  AU postcode / 5-digit US ZIP). A real postcode trails its part (`QLD 4000`,
+  `4000`), so only the **last** token of each part is now a candidate; the
+  street-name tokens that follow a leading number disqualify it. Address parsing
+  feeds geocode/overpass, so this removes a wrong structured field from `Address`
+  entities. Regression-tested (incl. a street number that coincides with a real
+  trailing postcode), and `util::geohash` gains coverage for `haversine_km` and
+  `reverse_country_iso`'s US-subregion aliasing.
 - **SPF `redirect=` targets are now surfaced as related domains.** An SPF record
   can delegate its whole policy to another domain via the `redirect=` modifier
   (RFC 7208 §6) — a genuine related-domain pivot that `dns_intel`/`doh_resolver`

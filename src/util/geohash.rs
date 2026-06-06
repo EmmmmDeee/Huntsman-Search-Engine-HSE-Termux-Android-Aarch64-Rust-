@@ -412,13 +412,17 @@ pub fn parse_address(input: &str) -> AddressComponents {
                     out.country = Some("Australia".to_string());
                 }
             }
-            // Postal code (bare digits, 4-10 chars)
-            if out.postal_code.is_none()
-                && token.chars().all(|c| c.is_ascii_digit())
-                && (4..=10).contains(&token.len())
-            {
-                out.postal_code = Some(token.to_string());
-            }
+        }
+        // Postal code (bare digits, 4-10 chars). Only the LAST token of a part
+        // is a candidate: a real postcode trails its part ("QLD 4000", "4000"),
+        // whereas a leading digit run like the street number in "1234 Smith St"
+        // is followed by the street name and must NOT be captured as a postcode.
+        if out.postal_code.is_none()
+            && let Some(tok) = part.split_whitespace().last()
+            && tok.chars().all(|c| c.is_ascii_digit())
+            && (4..=10).contains(&tok.len())
+        {
+            out.postal_code = Some(tok.to_string());
         }
     }
 
@@ -539,5 +543,38 @@ mod tests {
         assert_eq!(a.city.as_deref(), Some("Brisbane"));
         assert_eq!(a.state.as_deref(), Some("QLD"));
         assert_eq!(a.postal_code.as_deref(), Some("4000"));
+    }
+
+    #[test]
+    fn parse_address_does_not_mistake_street_number_for_postal() {
+        // Regression: a multi-digit street number is the LEADING token of a
+        // street part, not a postcode — it must not be captured as postal_code.
+        let a = parse_address("1234 Smith St, Sydney, NSW");
+        assert_eq!(a.street.as_deref(), Some("1234 Smith St"));
+        assert_eq!(a.postal_code, None);
+        assert_eq!(a.state.as_deref(), Some("NSW"));
+
+        // A trailing postcode is still captured even alongside a long street no.
+        let b = parse_address("4000 George St, Brisbane, QLD 4000");
+        assert_eq!(b.street.as_deref(), Some("4000 George St"));
+        assert_eq!(b.postal_code.as_deref(), Some("4000")); // from "QLD 4000", not the street
+        assert_eq!(b.state.as_deref(), Some("QLD"));
+    }
+
+    #[test]
+    fn haversine_known_distance_sydney_to_melbourne() {
+        // SYD (-33.87,151.21) → MEL (-37.81,144.96) is ~714 km great-circle.
+        let d = haversine_km(-33.87, 151.21, -37.81, 144.96);
+        assert!((d - 714.0).abs() < 15.0, "got {d} km");
+        // Identical points → zero distance, no NaN.
+        assert_eq!(haversine_km(10.0, 20.0, 10.0, 20.0), 0.0);
+    }
+
+    #[test]
+    fn reverse_country_iso_aliases_us_subregions() {
+        assert_eq!(reverse_country_iso(-33.87, 151.21), Some("AU")); // Sydney
+        assert_eq!(reverse_country_iso(61.0, -150.0), Some("US")); // Alaska → US
+        assert_eq!(reverse_country_iso(21.3, -157.8), Some("US")); // Hawaii → US
+        assert_eq!(reverse_country_iso(0.0, -30.0), None); // mid-Atlantic
     }
 }
