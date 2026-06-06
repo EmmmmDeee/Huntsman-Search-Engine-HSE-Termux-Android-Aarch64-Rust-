@@ -12,6 +12,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`web_crawler` phone extraction now shares the canonical E.164 validity rule.**
+  It accepted `7..=15` digits while `core::validation::validate_phone_e164`
+  requires `8..=15`, so the crawler could surface a too-short `+1 234567` that the
+  rest of the system rejects. Acceptance now goes through `validate_phone_e164`
+  itself — one definition of "valid E.164", no crawler-only false positives.
+  Unit-tested at the 7-vs-8-digit boundary.
 - **`web_crawler` email extraction stopped leaking modern asset filenames.** The
   scanner filtered retina/asset filenames that look like emails (`logo@2x.png`)
   but only for `.png/.jpg/.gif/.css/.js` — so `logo@2x.webp`, `icon@3x.svg`,

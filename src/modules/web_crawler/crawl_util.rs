@@ -476,7 +476,6 @@ pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
         if bytes[i] == b'+' && i + 8 < bytes.len() && matches!(bytes[i + 1], b'1'..=b'9') {
             let start = i;
             i += 1;
-            let mut digits = 0u32;
             while i < bytes.len()
                 && (bytes[i].is_ascii_digit()
                     || bytes[i] == b'-'
@@ -484,17 +483,17 @@ pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
                     || bytes[i] == b'('
                     || bytes[i] == b')')
             {
-                if bytes[i].is_ascii_digit() {
-                    digits += 1;
-                }
                 i += 1;
             }
-            if (7..=15).contains(&digits) {
-                let raw = &body[start..i];
-                let cleaned: String = raw
-                    .chars()
-                    .filter(|c| c.is_ascii_digit() || *c == '+')
-                    .collect();
+            let cleaned: String = body[start..i]
+                .chars()
+                .filter(|c| c.is_ascii_digit() || *c == '+')
+                .collect();
+            // Accept only what the canonical E.164 validator accepts (8-15 digits
+            // after the `+`) — the same definition the rest of the system uses, so
+            // the crawler can't surface a too-short "+1 234567" that validation
+            // would reject everywhere else.
+            if crate::core::validation::validate_phone_e164(&cleaned).valid {
                 phones.insert(cleaned);
             }
         } else {
@@ -767,6 +766,19 @@ mod tests {
         assert!(!phones.iter().any(|p| p.len() < 8)); // +123 is too short to qualify
         // E.164 country codes never start with 0 — `+0…` is a scrape artifact.
         assert!(!phones.iter().any(|p| p.starts_with("+0")));
+
+        // Acceptance now goes through the canonical E.164 validator, so a 7-digit
+        // "+X" (below the 8-digit E.164 minimum) is rejected here just as it is
+        // everywhere else — no more crawler-only too-short numbers.
+        let mut short = HashSet::new();
+        extract_phones("ring +1 234567 now", &mut short); // 7 digits
+        assert!(
+            short.is_empty(),
+            "7-digit number should be rejected: {short:?}"
+        );
+        let mut ok = HashSet::new();
+        extract_phones("ring +1 2345678 now", &mut ok); // 8 digits
+        assert!(ok.contains("+12345678"));
     }
 
     #[test]
