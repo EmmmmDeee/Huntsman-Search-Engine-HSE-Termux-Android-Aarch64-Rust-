@@ -190,7 +190,7 @@ impl Module for ExaSearch {
             return Ok(ModuleResult::new());
         }
 
-        let parsed: ExaResponse = match resp.json().await {
+        let parsed: ExaResponse = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(v) => v,
             Err(_) => return Ok(ModuleResult::new()),
         };

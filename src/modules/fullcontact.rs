@@ -25,11 +25,10 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, read_body_capped};
+use crate::util::http::error_snippet;
 
 const SRC: &str = "fullcontact";
 const KEY_ENV: &str = "HUNTSMAN_FULLCONTACT_KEY";
-const BODY_CAP: usize = 512 * 1024;
 
 pub struct FullContact;
 
@@ -151,11 +150,11 @@ impl Module for FullContact {
                 format!("HTTP {status}: {}", error_snippet(resp).await),
             ));
         }
-        let Some(text) = read_body_capped(resp, BODY_CAP).await else {
-            return Ok(ModuleResult::new());
-        };
-        let parsed: FcResp =
-            serde_json::from_str(&text).map_err(|e| Error::module(SRC, e.to_string()))?;
+        // Via json_scanned: the response is retained in the raw archive and
+        // scanned for leaked keys, then deserialised.
+        let parsed: FcResp = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
         result

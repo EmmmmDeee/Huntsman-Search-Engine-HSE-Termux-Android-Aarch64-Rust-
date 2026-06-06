@@ -667,9 +667,11 @@ async fn fetch_wigle_typed(
         ));
     }
 
-    resp.json()
+    // Via json_scanned: retain the paid WiGLE response in the raw archive +
+    // key-scan it, then deserialise.
+    crate::util::http::json_scanned(resp, SRC)
         .await
-        .map_err(|e| Error::module(SRC, e.to_string()))
+        .map_err(|e| Error::module(SRC, e))
 }
 
 impl Wigle {
@@ -735,7 +737,9 @@ async fn fetch_detail(
     if !resp.status().is_success() {
         return None;
     }
-    resp.json::<DetailResp>().await.ok()
+    crate::util::http::json_scanned::<DetailResp>(resp, SRC)
+        .await
+        .ok()
 }
 
 /// Emit Address + Coordinates entities for a successful BSSID

@@ -100,10 +100,9 @@ impl Module for NumVerify {
             }
             return Err(Error::module(SRC, format!("HTTP {status}")));
         }
-        let parsed: NvResp = resp
-            .json()
+        let parsed: NvResp = crate::util::http::json_scanned(resp, SRC)
             .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .map_err(|e| Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
         if let Some(e) = build_entity(&parsed, &ctx.scan_id) {

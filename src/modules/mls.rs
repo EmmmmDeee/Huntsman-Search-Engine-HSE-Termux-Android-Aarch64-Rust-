@@ -110,7 +110,7 @@ impl Module for Mls {
             return Ok(ModuleResult::new());
         }
 
-        let body: MlsResp = match resp.json().await {
+        let body: MlsResp = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(v) => v,
             Err(_) => return Ok(ModuleResult::new()),
         };

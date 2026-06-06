@@ -177,7 +177,7 @@ impl Module for DomainsDb {
             if !r.status().is_success() {
                 continue;
             }
-            let Ok(data) = r.json::<DbResp>().await else {
+            let Ok(data) = crate::util::http::json_scanned::<DbResp>(r, SRC).await else {
                 continue;
             };
 
