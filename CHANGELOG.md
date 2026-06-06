@@ -90,6 +90,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`securitytrails` brought up to the module spec.** Both response→entity
+  mappings — the subdomain enumeration (`{label}.{domain}` qualification +
+  parent-count evidence) and the reverse-IP associated-record path (trailing-dot
+  trim and rejection of blanks, bare IP-literal PTRs, and dotless single labels)
+  — are extracted out of the IO-bound `subdomain_search` / `reverse_ip` methods
+  into the pure, IO-free `build_subdomain_entity` / `build_associated_entity`,
+  with the reverse-IP record cap promoted to a named constant
+  (`MAX_REVERSE_RECORDS`). Replaces the two trivial accepts/cost tests with unit
+  coverage of host qualification, blank-label skipping, trailing-dot trimming,
+  and the full non-hostname rejection set (v4/v6 literals, dotless labels). Also
+  corrects the module-doc IP endpoint (`/v1/ips/list`, matching the code, not the
+  stale `/v1/ips/nearby/`). Behaviour-preserving.
 - **`ipqs` brought up to the module spec.** The ~75-line reputation mapping
   (fraud-score risk band, the proxy/vpn/tor/crawler/disposable/leaked/recent-abuse
   signal tags, the `country:<CC>` tag, and the per-field evidence across all three

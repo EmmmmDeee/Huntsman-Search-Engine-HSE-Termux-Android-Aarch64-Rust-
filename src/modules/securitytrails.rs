@@ -1,8 +1,11 @@
 //! SecurityTrails subdomain enumeration + reverse IP lookup. Key-gated; free tier 50 q/mo.
 //!
 //! Domain path: `GET https://api.securitytrails.com/v1/domain/{domain}/subdomains`
-//! IP path:     `GET https://api.securitytrails.com/v1/ips/nearby/{ip}` (associated domains)
+//! IP path:     `GET https://api.securitytrails.com/v1/ips/list?ipAddresses={ip}` (associated domains)
 //! Auth:        `APIKEY` request header
+//!
+//! Both response→entity mappings are pure ([`build_subdomain_entity`],
+//! [`build_associated_entity`]) so they are unit-tested without a live key.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -36,6 +39,61 @@ struct AssociatedResp {
 struct AssociatedRecord {
     #[serde(default)]
     hostname: Option<String>,
+}
+
+/// Cap on associated-domain records turned into entities from one reverse-IP
+/// lookup — a busy shared host can list thousands; 30 is enough to pivot on
+/// without flooding expansion.
+const MAX_REVERSE_RECORDS: usize = 30;
+
+/// Build the `Domain` entity for one enumerated subdomain label under `domain`.
+/// **Pure** (no network/IO). `total_str` is the parent's reported subdomain
+/// count, carried as evidence context. Returns `None` for a blank label.
+fn build_subdomain_entity(
+    domain: &str,
+    sub: &str,
+    total_str: &str,
+    scan_id: &str,
+) -> Option<Entity> {
+    let sub = sub.trim();
+    if sub.is_empty() {
+        return None;
+    }
+    let host = format!("{sub}.{domain}");
+    let mut e = Entity::new(EntityKind::Domain, &host, 0.88, scan_id);
+    e.tag("subdomain");
+    e.tag("securitytrails");
+    e.add_evidence(
+        Evidence::new(SRC, format!("Subdomain of {domain} per SecurityTrails"))
+            .with_attr("parent_domain", domain)
+            .with_attr("total_subdomains", total_str),
+    );
+    Some(e)
+}
+
+/// Build the `Domain` entity for one reverse-IP associated record. **Pure** (no
+/// network/IO): trims a trailing dot and rejects anything that is not a usable
+/// hostname — blank, a bare IP literal (the PTR pointing back at the IP itself),
+/// or a single label with no dot. Returns `None` for a rejected record.
+fn build_associated_entity(ip: &str, hostname: Option<&str>, scan_id: &str) -> Option<Entity> {
+    let hostname = hostname?.trim().trim_end_matches('.');
+    if hostname.is_empty()
+        || hostname.parse::<std::net::IpAddr>().is_ok()
+        || !hostname.contains('.')
+    {
+        return None;
+    }
+    let mut e = Entity::new(EntityKind::Domain, hostname, 0.82, scan_id);
+    e.tag("securitytrails");
+    e.tag("reverse-ip");
+    e.add_evidence(
+        Evidence::new(
+            SRC,
+            format!("Domain associated with {ip} per SecurityTrails"),
+        )
+        .with_attr("ip", ip),
+    );
+    Some(e)
 }
 
 pub struct SecurityTrails;
@@ -103,19 +161,9 @@ impl SecurityTrails {
         let total_str = total.to_string();
         let mut result = ModuleResult::with_capacity(body.subdomains.len());
         for sub in &body.subdomains {
-            if sub.is_empty() {
-                continue;
+            if let Some(e) = build_subdomain_entity(&domain, sub, &total_str, &ctx.scan_id) {
+                result.push(e);
             }
-            let host = format!("{sub}.{domain}");
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.88, &ctx.scan_id);
-            e.tag("subdomain");
-            e.tag("securitytrails");
-            e.add_evidence(
-                Evidence::new(SRC, format!("Subdomain of {domain} per SecurityTrails"))
-                    .with_attr("parent_domain", &domain)
-                    .with_attr("total_subdomains", &total_str),
-            );
-            result.push(e);
         }
         Ok(result)
     }
@@ -143,28 +191,10 @@ impl SecurityTrails {
         };
 
         let mut result = ModuleResult::new();
-        for record in body.records.iter().take(30) {
-            let Some(hostname) = record.hostname.as_deref() else {
-                continue;
-            };
-            let hostname = hostname.trim().trim_end_matches('.');
-            if hostname.is_empty()
-                || hostname.parse::<std::net::IpAddr>().is_ok()
-                || !hostname.contains('.')
-            {
-                continue;
+        for record in body.records.iter().take(MAX_REVERSE_RECORDS) {
+            if let Some(e) = build_associated_entity(ip, record.hostname.as_deref(), &ctx.scan_id) {
+                result.push(e);
             }
-            let mut e = Entity::new(EntityKind::Domain, hostname, 0.82, &ctx.scan_id);
-            e.tag("securitytrails");
-            e.tag("reverse-ip");
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Domain associated with {ip} per SecurityTrails"),
-                )
-                .with_attr("ip", ip),
-            );
-            result.push(e);
         }
         Ok(result)
     }
@@ -220,5 +250,48 @@ mod tests {
     #[test]
     fn cost_is_key_gated() {
         assert!(matches!(SecurityTrails.cost(), ModuleCost::KeyGated));
+    }
+
+    fn ev_attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
+        e.evidence[0].attributes.get(k).map(String::as_str)
+    }
+
+    #[test]
+    fn subdomain_entity_qualifies_host_and_carries_count() {
+        let e = build_subdomain_entity("example.com", "mail", "42", "s").unwrap();
+        assert_eq!(e.kind, EntityKind::Domain);
+        assert_eq!(e.value, "mail.example.com");
+        assert!(e.has_tag("subdomain") && e.has_tag("securitytrails"));
+        assert!((e.confidence - 0.88).abs() < 1e-9);
+        assert_eq!(ev_attr(&e, "parent_domain"), Some("example.com"));
+        assert_eq!(ev_attr(&e, "total_subdomains"), Some("42"));
+    }
+
+    #[test]
+    fn blank_subdomain_label_is_skipped() {
+        assert!(build_subdomain_entity("example.com", "  ", "1", "s").is_none());
+    }
+
+    #[test]
+    fn associated_entity_accepts_real_hostname() {
+        let e = build_associated_entity("1.2.3.4", Some("mail.acme.com."), "s").unwrap();
+        assert_eq!(e.kind, EntityKind::Domain);
+        // Trailing dot stripped before the value reaches the entity.
+        assert_eq!(e.value, "mail.acme.com");
+        assert!(e.has_tag("reverse-ip") && e.has_tag("securitytrails"));
+        assert!((e.confidence - 0.82).abs() < 1e-9);
+        assert_eq!(ev_attr(&e, "ip"), Some("1.2.3.4"));
+    }
+
+    #[test]
+    fn associated_entity_rejects_non_hostnames() {
+        // None / blank.
+        assert!(build_associated_entity("1.2.3.4", None, "s").is_none());
+        assert!(build_associated_entity("1.2.3.4", Some("  "), "s").is_none());
+        // Bare IP literal (PTR pointing back at the IP itself).
+        assert!(build_associated_entity("1.2.3.4", Some("1.2.3.4"), "s").is_none());
+        assert!(build_associated_entity("::1", Some("2001:db8::1"), "s").is_none());
+        // Single label, no dot.
+        assert!(build_associated_entity("1.2.3.4", Some("localhost"), "s").is_none());
     }
 }
