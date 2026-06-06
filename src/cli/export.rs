@@ -157,26 +157,19 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
 
     // Foreign API keys retrieved from endpoint data — surfaced up front because
     // a leaked third-party credential is the highest-signal finding in a scan.
-    // These are ApiKey entities tagged `foreign-key` (our own auth keys are
-    // never collected). Listed here with their identified service + provenance;
-    // the full evidence is in the ENTITIES section below.
+    // These are ApiKey entities tagged `foreign-key`: recognised VENDOR keys
+    // (Stripe, AWS, GitHub, PEM blocks, …) identified in any module's response,
+    // with our own auth keys excluded. Bare breach password hashes are NOT here
+    // (they appear as their own entities below). Full evidence is in ENTITIES.
     let foreign: Vec<&crate::core::entity::Entity> = entities
         .iter()
         .filter(|e| e.has_tag("foreign-key"))
         .collect();
-    // Split recognised vendor keys (the high-signal findings) from heuristic
-    // generic-hex / url-param matches (which are mostly password hashes in
-    // breach data). Both are reported — nothing dropped — but a leaked Stripe or
-    // AWS key is never buried under a column of MD5s.
-    let (vendor, heuristic): (
-        Vec<&crate::core::entity::Entity>,
-        Vec<&crate::core::entity::Entity>,
-    ) = foreign
-        .iter()
-        .copied()
-        .partition(|e| !e.has_tag("key-confidence:heuristic"));
-    let render_key = |s: &mut String, e: &crate::core::entity::Entity| {
-        use std::fmt::Write as _;
+    let _ = writeln!(s, "\n── FOREIGN API KEYS RETRIEVED ({}) ──", foreign.len());
+    if foreign.is_empty() {
+        let _ = writeln!(s, "  (none identified in this scan's responses)");
+    }
+    for e in &foreign {
         let attr = |k: &str| {
             e.evidence
                 .iter()
@@ -185,37 +178,13 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         };
         let _ = writeln!(
             s,
-            "    • [{}] {}  (from {} · query={} · seen {}×)",
+            "  • [{}] {}  (from {} · query={} · seen {}×)",
             attr("service"),
             e.value,
             attr("source_provider"),
             attr("source_query"),
             attr("occurrences"),
         );
-    };
-    let _ = writeln!(
-        s,
-        "\n── FOREIGN API KEYS RETRIEVED (vendor: {}, heuristic: {}) ──",
-        vendor.len(),
-        heuristic.len()
-    );
-    if foreign.is_empty() {
-        let _ = writeln!(s, "  (none identified in this scan's responses)");
-    }
-    if !vendor.is_empty() {
-        let _ = writeln!(s, "  vendor-identified (high confidence):");
-        for &e in &vendor {
-            render_key(&mut s, e);
-        }
-    }
-    if !heuristic.is_empty() {
-        let _ = writeln!(
-            s,
-            "  heuristic (generic high-entropy token; often a password hash):"
-        );
-        for &e in &heuristic {
-            render_key(&mut s, e);
-        }
     }
 
     let _ = writeln!(s, "\n── ENTITIES (every field, fully unredacted) ──");

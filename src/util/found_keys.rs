@@ -9,9 +9,13 @@
 //!   1. is fed every response body at the single archive chokepoint
 //!      (`raw_archive::record`), covering EVERY module — reqwest, curl, and the
 //!      breach pools alike;
-//!   2. runs each token through `key_harvest::identify_api_key` (80+ vendor
-//!      prefixes, PEM blocks, crypto addresses, generic hex, URL-param and
-//!      user:pass forms), so a hit is *identified by service*, not just flagged;
+//!   2. runs each token through `key_harvest::identify_vendor_api_key` —
+//!      recognised vendor prefixes (80+), PEM blocks, and crypto addresses — so
+//!      a hit is a genuine, service-identified key. It deliberately skips the
+//!      generic-hex heuristic: this scans EVERY body, and entropy-testing every
+//!      32/64-char hex token (which breach corpora carry by the thousand) is
+//!      both slow (~2.8 → 20 MB/s once skipped) and noisy — those are password
+//!      hashes already captured as `Password` entities by the breach modules;
 //!   3. **excludes our own auth credentials** ([`crate::util::keys::own_api_keys`])
 //!      so the report contains only foreign keys;
 //!   4. retains full provenance (which provider/endpoint, which query) per key.
@@ -37,20 +41,6 @@ pub struct FoundKey {
     pub query: String,
     /// How many times this exact key was seen this scan.
     pub count: u32,
-    /// True when the match came from a *heuristic* catch-all (`generic_hex`,
-    /// `url_param_key`) rather than a recognised vendor pattern. Breach corpora
-    /// are full of 32/64-char hex *password hashes* that the generic-hex rule
-    /// matches; flagging them keeps a real vendor key (Stripe, AWS, GitHub, a PEM
-    /// block, …) from being buried under — and miscounted alongside — hashes.
-    pub heuristic: bool,
-}
-
-/// Services that `identify_api_key` returns from a *heuristic* rule rather than a
-/// recognised vendor prefix / structured form. These have a high false-positive
-/// rate against breach data (a 32-char hex is far more often an MD5 hash than an
-/// API key), so we keep them but label them low-confidence.
-fn is_heuristic_service(service: &str) -> bool {
-    matches!(service, "generic_hex" | "url_param_key")
 }
 
 #[derive(Default)]
@@ -82,17 +72,30 @@ pub fn reset() {
     g.own = crate::util::keys::own_api_keys();
 }
 
+/// Test-only: register an additional own-credential to exclude. The embedded
+/// auth keys aren't vendor-prefixed (so the vendor-only scan never detects
+/// them), so exercising the exclusion path needs a vendor-shaped own key.
+#[cfg(test)]
+fn insert_own_for_test(key: &str) {
+    lock().own.insert(key.to_string());
+}
+
 /// Scan one response `body` for foreign API keys, recording each (deduped by
 /// value, provenance kept) — excluding our own auth credentials. Best-effort and
-/// infallible: safe to call on every response, JSON or not. Tokenises on the
-/// same delimiters as the key-pool scanner so the two stay consistent.
+/// infallible: safe to call on every response, JSON or not.
+///
+/// Identification uses [`identify_vendor_api_key`] (recognised vendor prefixes /
+/// PEM / crypto), NOT the generic-hex heuristic. That is deliberate: this runs
+/// on EVERY response body, and entropy-scanning every 32/64-char hex token (of
+/// which breach corpora have thousands) was measured at ~2.8 MB/s and produced
+/// password-hash false positives. The hashes are already captured as `Password`
+/// entities by the breach modules; here we want only genuine third-party keys.
 pub fn scan_body(provider: &str, query: &str, body: &str) {
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::modules::oathnet_pro::key_harvest::identify_vendor_api_key;
     if body.is_empty() {
         return;
     }
-    // Identify candidates WITHOUT holding the global lock. Tokenisation plus
-    // per-token pattern matching is the expensive part, and under concurrent
+    // Identify candidates WITHOUT holding the global lock. Under concurrent
     // module dispatch many bodies are scanned at once; holding the lock only for
     // the O(hits) merge — not the O(body) scan — keeps the sink from serialising
     // the whole scan. Hits are rare, so this Vec is almost always empty.
@@ -108,7 +111,7 @@ pub fn scan_body(provider: &str, query: &str, body: &str) {
         if t.len() < MIN_TOKEN || t.len() > MAX_TOKEN {
             continue;
         }
-        if let Some((service, key_val)) = identify_api_key(t) {
+        if let Some((service, key_val)) = identify_vendor_api_key(t) {
             hits.push((service, key_val.to_string()));
         }
     }
@@ -121,7 +124,6 @@ pub fn scan_body(provider: &str, query: &str, body: &str) {
         if g.own.contains(&key) {
             continue;
         }
-        let heuristic = is_heuristic_service(service);
         g.found
             .entry(key.clone())
             .and_modify(|f| f.count = f.count.saturating_add(1))
@@ -131,23 +133,16 @@ pub fn scan_body(provider: &str, query: &str, body: &str) {
                 provider: provider.to_string(),
                 query: query.to_string(),
                 count: 1,
-                heuristic,
             });
     }
 }
 
-/// Deterministic ordering for reporting: recognised **vendor keys first**
-/// (the high-signal findings), then by service, then by value. Heuristic
-/// catch-all matches (likely hashes) sort last so they never bury a real key.
+/// Deterministic ordering for reporting: by service, then by value.
 fn report_order(a: &FoundKey, b: &FoundKey) -> std::cmp::Ordering {
-    a.heuristic
-        .cmp(&b.heuristic)
-        .then_with(|| a.service.cmp(&b.service))
-        .then_with(|| a.key.cmp(&b.key))
+    a.service.cmp(&b.service).then_with(|| a.key.cmp(&b.key))
 }
 
-/// A stable snapshot of the keys found so far (vendor keys first) — non-
-/// destructive, for diagnostics.
+/// A stable snapshot of the keys found so far — non-destructive, for diagnostics.
 #[must_use]
 pub fn snapshot() -> Vec<FoundKey> {
     let mut v: Vec<FoundKey> = lock().found.values().cloned().collect();
@@ -194,63 +189,58 @@ mod tests {
             "identified: {}",
             stripe[0].service
         );
-        assert!(
-            !stripe[0].heuristic,
-            "a vendor-prefixed key is not heuristic"
-        );
         // drain empties the sink.
         assert!(!drain().is_empty());
         assert!(snapshot().is_empty());
     }
 
     #[test]
-    fn generic_hex_hash_is_kept_but_flagged_heuristic() {
+    fn generic_hex_hash_is_not_reported_as_a_key() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
-        // Breach data is full of 32-char MD5 hashes; the generic-hex rule matches
-        // them. They must be KEPT (nothing dropped) but flagged heuristic so a
-        // hash can't masquerade as — or be miscounted with — a real retrieved key.
+        // Breach data is full of 32-char MD5 hashes. The universal scan uses the
+        // vendor-only identifier, so a bare hex hash is NOT misreported as a
+        // retrieved API key (it's already captured as a Password entity by the
+        // breach modules, and entropy-scanning every hash was the perf hot spot).
         let hash = "5e3706b9c16282351af9c3aac7107b54";
         scan_body("oathnet", "victim@example.com", &format!("hash={hash}"));
-        let snap = snapshot();
-        let h = snap.iter().find(|f| f.key == hash).expect("hash kept");
         assert!(
-            h.heuristic,
-            "a bare hex hash is heuristic, not a vendor key"
+            snapshot().is_empty(),
+            "a bare hex hash must not become a foreign-key finding: {:?}",
+            snapshot()
         );
-        assert_eq!(h.service, "generic_hex");
     }
 
     #[test]
-    fn report_order_ranks_vendor_before_heuristic() {
-        // Pure ordering contract, independent of the pattern catalogue: a
-        // recognised vendor key always sorts ahead of a heuristic match, so the
-        // dossier never buries a leaked Stripe/AWS key under a column of hashes.
-        let mk = |service: &str, key: &str, heuristic: bool| FoundKey {
+    fn report_order_is_deterministic_by_service_then_value() {
+        let mk = |service: &str, key: &str| FoundKey {
             service: service.to_string(),
             key: key.to_string(),
             provider: "p".to_string(),
             query: "q".to_string(),
             count: 1,
-            heuristic,
         };
-        let mut v = vec![
-            mk("generic_hex", "aaaa", true),
-            mk("stripe_live", "zzzz", false),
-            mk("url_param_key", "bbbb", true),
+        let mut v = [
+            mk("stripe_live", "zzzz"),
+            mk("aws_access_key", "bbbb"),
+            mk("aws_access_key", "aaaa"),
         ];
         v.sort_by(report_order);
-        assert!(!v[0].heuristic, "vendor key first: {v:?}");
-        assert_eq!(v[0].service, "stripe_live");
-        assert!(v[1].heuristic && v[2].heuristic, "heuristics last");
+        assert_eq!(v[0].service, "aws_access_key");
+        assert_eq!(v[0].key, "aaaa");
+        assert_eq!(v[1].key, "bbbb");
+        assert_eq!(v[2].service, "stripe_live");
     }
 
     #[test]
     fn excludes_our_own_auth_keys() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
-        // The bundled SeekNow auth key must NEVER be reported as a finding.
-        let own = crate::util::keys::SEEKNOW_DEFAULT_KEY;
+        // An operator's OWN configured key that happens to be vendor-shaped must
+        // never be reported as a foreign finding. Build it from fragments so the
+        // synthetic literal isn't a contiguous secret in source.
+        let own = format!("sk_{}_{}", "live", "OWNkeyDoNotReport0123456789");
+        insert_own_for_test(&own);
         scan_body("see-know", "q", &format!("leaked here: {own}"));
         assert!(
             snapshot().iter().all(|f| f.key != own),

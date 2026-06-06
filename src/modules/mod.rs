@@ -114,24 +114,16 @@ pub fn reset_found_keys() {
 /// Drain the foreign-API-key sink into first-class `ApiKey` entities for
 /// `scan_id`. Lives at the module layer (which may use both `util` and
 /// `core::entity`) so the engine's finalisation stays free of any `util`
-/// import. A heuristic match (generic-hex / url-param — usually a password
-/// hash) gets a lower base confidence and a distinct `key-confidence:*` tag so
-/// the dossier and correlations can separate confirmed vendor keys from the
-/// long tail without losing either.
+/// import. Every entry is a recognised vendor key (the sink uses the
+/// vendor-only identifier), so all are high-confidence.
 pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
     crate::util::found_keys::drain()
         .into_iter()
         .map(|fk| {
-            let (conf, confidence_tag) = if fk.heuristic {
-                (0.45, "key-confidence:heuristic")
-            } else {
-                (0.80, "key-confidence:vendor")
-            };
-            let mut e = Entity::new(EntityKind::ApiKey, &fk.key, conf, scan_id);
+            let mut e = Entity::new(EntityKind::ApiKey, &fk.key, 0.80, scan_id);
             e.tag("api-key");
             e.tag("foreign-key");
             e.tag("retrieved");
-            e.tag(confidence_tag);
             e.tag(format!("service:{}", fk.service));
             e.add_evidence(
                 Evidence::new(
@@ -144,11 +136,7 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
                 .with_attr("service", &fk.service)
                 .with_attr("source_provider", &fk.provider)
                 .with_attr("source_query", &fk.query)
-                .with_attr("occurrences", fk.count.to_string())
-                .with_attr(
-                    "confidence_class",
-                    if fk.heuristic { "heuristic" } else { "vendor" },
-                ),
+                .with_attr("occurrences", fk.count.to_string()),
             );
             e
         })

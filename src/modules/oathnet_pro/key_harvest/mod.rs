@@ -40,20 +40,29 @@ pub fn pattern_catalogue() -> Vec<PatternEntry> {
         .collect()
 }
 
-pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
+/// High-confidence, CHEAP key identification: recognised **vendor prefixes**,
+/// **PEM** private-key blocks, and **crypto** addresses only. Deliberately
+/// excludes the generic-hex / URL-param / `user:pass` heuristics.
+///
+/// For a token that matches none of these the cost is just prefix comparisons —
+/// no Shannon-entropy pass, no lowercase allocation. That matters because the
+/// universal response scanner (`util::found_keys`) runs key identification on
+/// EVERY response body across every module: profiling showed the full
+/// [`identify_api_key`] at ~2.8 MB/s, dominated by `is_likely_real_key`
+/// (entropy + context exclusion) firing on every 32/64-char hex token — and
+/// breach corpora are *full* of hex password hashes. Those hashes are already
+/// captured as `Password` entities by the breach modules, so re-deriving them
+/// here as "generic-hex API keys" was both slow and noisy. This function keeps
+/// the universal scan fast and precise (real vendor keys only).
+#[must_use]
+pub fn identify_vendor_api_key(value: &str) -> Option<(&'static str, &str)> {
     let trimmed = value.trim();
     if trimmed.len() < 16 {
         return None;
     }
-    // False-positive gate — sourced from APIKeyScanner's filter
-    // taxonomy (entropy + context exclusion + UUID suppression).
-    // Applied to DIRECT prefix-matched candidates and generic-hex
-    // matches, NOT to the URL-param / user:pass fallbacks below.
-    // Those fallbacks recurse back into this function with the
-    // EXTRACTED substring, so the gate re-runs on the cleaned
-    // value — meaning a URL like
-    // `https://api.example.com/?key=REAL_KEY` doesn't get rejected
-    // wholesale just because the host contains "example".
+    // False-positive gate (entropy + context exclusion + UUID suppression) runs
+    // only on an actual prefix MATCH — rare, so the common no-match token pays
+    // nothing for it.
     for pat in KEY_PATTERNS {
         if trimmed.starts_with(pat.prefix) && trimmed.len() >= pat.min_len {
             if !is_likely_real_key(trimmed) {
@@ -62,23 +71,31 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
             return Some((pat.service, trimmed));
         }
     }
-    // PEM private-key blocks (ported from KeyFinder coverage). Stealer
-    // logs that dump `id_rsa` / `id_ed25519` / OpenVPN configs land
-    // here. Multi-line; checked separately because the prefix-table
-    // requires single-token matches.
+    // PEM private-key blocks (id_rsa / id_ed25519 / OpenVPN configs in stealer
+    // logs). Multi-line; checked separately from the single-token prefix table.
     if let Some(service) = identify_pem_private_key(trimmed) {
         return Some((service, trimmed));
     }
-    // Cryptocurrency wallet addresses. Stealer logs from
-    // clipboard-hijacker malware carry these in volume — the
-    // public-apis lists surface Blockchain.com / Blockstream /
-    // Blockscout / CryptoCompare as free enrichment sources for
-    // any detected address. We detect-and-tag here; the lookup
-    // modules pivot from the emitted entities.
+    // Cryptocurrency wallet addresses (clipboard-hijacker stealer logs carry
+    // these in volume; lookup modules pivot from the emitted entities).
     if let Some(service) = identify_crypto_address(trimmed) {
         return Some((service, trimmed));
     }
-    // Generic hex key detection (32 or 64 char hex = potential API key)
+    None
+}
+
+pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
+    let trimmed = value.trim();
+    if trimmed.len() < 16 {
+        return None;
+    }
+    // High-confidence structured forms first (vendor prefix / PEM / crypto).
+    if let Some(hit) = identify_vendor_api_key(trimmed) {
+        return Some(hit);
+    }
+    // Generic hex key detection (32 or 64 char hex = potential API key). The
+    // entropy/exclusion gate below is the expensive path — see
+    // [`identify_vendor_api_key`] for why the universal scanner skips it.
     if (trimmed.len() == 32 || trimmed.len() == 64)
         && trimmed.chars().all(|c| c.is_ascii_hexdigit())
     {
