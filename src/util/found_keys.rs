@@ -37,6 +37,20 @@ pub struct FoundKey {
     pub query: String,
     /// How many times this exact key was seen this scan.
     pub count: u32,
+    /// True when the match came from a *heuristic* catch-all (`generic_hex`,
+    /// `url_param_key`) rather than a recognised vendor pattern. Breach corpora
+    /// are full of 32/64-char hex *password hashes* that the generic-hex rule
+    /// matches; flagging them keeps a real vendor key (Stripe, AWS, GitHub, a PEM
+    /// block, …) from being buried under — and miscounted alongside — hashes.
+    pub heuristic: bool,
+}
+
+/// Services that `identify_api_key` returns from a *heuristic* rule rather than a
+/// recognised vendor prefix / structured form. These have a high false-positive
+/// rate against breach data (a 32-char hex is far more often an MD5 hash than an
+/// API key), so we keep them but label them low-confidence.
+fn is_heuristic_service(service: &str) -> bool {
+    matches!(service, "generic_hex" | "url_param_key")
 }
 
 #[derive(Default)]
@@ -77,7 +91,12 @@ pub fn scan_body(provider: &str, query: &str, body: &str) {
     if body.is_empty() {
         return;
     }
-    let mut g = lock();
+    // Identify candidates WITHOUT holding the global lock. Tokenisation plus
+    // per-token pattern matching is the expensive part, and under concurrent
+    // module dispatch many bodies are scanned at once; holding the lock only for
+    // the O(hits) merge — not the O(body) scan — keeps the sink from serialising
+    // the whole scan. Hits are rare, so this Vec is almost always empty.
+    let mut hits: Vec<(&'static str, String)> = Vec::new();
     for word in body.split(|c: char| {
         c.is_whitespace()
             || matches!(c, '"' | '\'' | '`' | '>' | '<' | '=' | ';' | ',' | '{' | '}' | '[' | ']')
@@ -86,32 +105,50 @@ pub fn scan_body(provider: &str, query: &str, body: &str) {
         if t.len() < MIN_TOKEN || t.len() > MAX_TOKEN {
             continue;
         }
-        let Some((service, key_val)) = identify_api_key(t) else {
-            continue;
-        };
+        if let Some((service, key_val)) = identify_api_key(t) {
+            hits.push((service, key_val.to_string()));
+        }
+    }
+    if hits.is_empty() {
+        return;
+    }
+    let mut g = lock();
+    for (service, key) in hits {
         // Exclude our own auth credentials — the operator already has those.
-        if g.own.contains(key_val) {
+        if g.own.contains(&key) {
             continue;
         }
+        let heuristic = is_heuristic_service(service);
         g.found
-            .entry(key_val.to_string())
+            .entry(key.clone())
             .and_modify(|f| f.count = f.count.saturating_add(1))
             .or_insert_with(|| FoundKey {
                 service: service.to_string(),
-                key: key_val.to_string(),
+                key,
                 provider: provider.to_string(),
                 query: query.to_string(),
                 count: 1,
+                heuristic,
             });
     }
 }
 
-/// A stable (service, then key) snapshot of the keys found so far — non-
+/// Deterministic ordering for reporting: recognised **vendor keys first**
+/// (the high-signal findings), then by service, then by value. Heuristic
+/// catch-all matches (likely hashes) sort last so they never bury a real key.
+fn report_order(a: &FoundKey, b: &FoundKey) -> std::cmp::Ordering {
+    a.heuristic
+        .cmp(&b.heuristic)
+        .then_with(|| a.service.cmp(&b.service))
+        .then_with(|| a.key.cmp(&b.key))
+}
+
+/// A stable snapshot of the keys found so far (vendor keys first) — non-
 /// destructive, for diagnostics.
 #[must_use]
 pub fn snapshot() -> Vec<FoundKey> {
     let mut v: Vec<FoundKey> = lock().found.values().cloned().collect();
-    v.sort_by(|a, b| a.service.cmp(&b.service).then_with(|| a.key.cmp(&b.key)));
+    v.sort_by(report_order);
     v
 }
 
@@ -121,7 +158,7 @@ pub fn snapshot() -> Vec<FoundKey> {
 pub fn drain() -> Vec<FoundKey> {
     let mut g = lock();
     let mut v: Vec<FoundKey> = g.found.drain().map(|(_, f)| f).collect();
-    v.sort_by(|a, b| a.service.cmp(&b.service).then_with(|| a.key.cmp(&b.key)));
+    v.sort_by(report_order);
     v
 }
 
@@ -150,9 +187,49 @@ mod tests {
         assert_eq!(stripe[0].provider, "see-know");
         assert_eq!(stripe[0].query, "victim@example.com");
         assert!(stripe[0].service.contains("stripe"), "identified: {}", stripe[0].service);
+        assert!(!stripe[0].heuristic, "a vendor-prefixed key is not heuristic");
         // drain empties the sink.
         assert!(!drain().is_empty());
         assert!(snapshot().is_empty());
+    }
+
+    #[test]
+    fn generic_hex_hash_is_kept_but_flagged_heuristic() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        // Breach data is full of 32-char MD5 hashes; the generic-hex rule matches
+        // them. They must be KEPT (nothing dropped) but flagged heuristic so a
+        // hash can't masquerade as — or be miscounted with — a real retrieved key.
+        let hash = "5e3706b9c16282351af9c3aac7107b54";
+        scan_body("oathnet", "victim@example.com", &format!("hash={hash}"));
+        let snap = snapshot();
+        let h = snap.iter().find(|f| f.key == hash).expect("hash kept");
+        assert!(h.heuristic, "a bare hex hash is heuristic, not a vendor key");
+        assert_eq!(h.service, "generic_hex");
+    }
+
+    #[test]
+    fn report_order_ranks_vendor_before_heuristic() {
+        // Pure ordering contract, independent of the pattern catalogue: a
+        // recognised vendor key always sorts ahead of a heuristic match, so the
+        // dossier never buries a leaked Stripe/AWS key under a column of hashes.
+        let mk = |service: &str, key: &str, heuristic: bool| FoundKey {
+            service: service.to_string(),
+            key: key.to_string(),
+            provider: "p".to_string(),
+            query: "q".to_string(),
+            count: 1,
+            heuristic,
+        };
+        let mut v = vec![
+            mk("generic_hex", "aaaa", true),
+            mk("stripe_live", "zzzz", false),
+            mk("url_param_key", "bbbb", true),
+        ];
+        v.sort_by(report_order);
+        assert!(!v[0].heuristic, "vendor key first: {v:?}");
+        assert_eq!(v[0].service, "stripe_live");
+        assert!(v[1].heuristic && v[2].heuristic, "heuristics last");
     }
 
     #[test]

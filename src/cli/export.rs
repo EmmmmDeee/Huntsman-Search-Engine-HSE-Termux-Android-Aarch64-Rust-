@@ -179,15 +179,17 @@ pub(crate) fn render_full(
         .iter()
         .filter(|e| e.has_tag("foreign-key"))
         .collect();
-    let _ = writeln!(
-        s,
-        "\n── FOREIGN API KEYS RETRIEVED ({}) ──",
-        foreign.len()
-    );
-    if foreign.is_empty() {
-        let _ = writeln!(s, "  (none identified in this scan's responses)");
-    }
-    for e in &foreign {
+    // Split recognised vendor keys (the high-signal findings) from heuristic
+    // generic-hex / url-param matches (which are mostly password hashes in
+    // breach data). Both are reported — nothing dropped — but a leaked Stripe or
+    // AWS key is never buried under a column of MD5s.
+    let (vendor, heuristic): (Vec<&crate::core::entity::Entity>, Vec<&crate::core::entity::Entity>) =
+        foreign
+            .iter()
+            .copied()
+            .partition(|e| !e.has_tag("key-confidence:heuristic"));
+    let render_key = |s: &mut String, e: &crate::core::entity::Entity| {
+        use std::fmt::Write as _;
         let attr = |k: &str| {
             e.evidence
                 .iter()
@@ -196,13 +198,37 @@ pub(crate) fn render_full(
         };
         let _ = writeln!(
             s,
-            "  • [{}] {}  (from {} · query={} · seen {}×)",
+            "    • [{}] {}  (from {} · query={} · seen {}×)",
             attr("service"),
             e.value,
             attr("source_provider"),
             attr("source_query"),
             attr("occurrences"),
         );
+    };
+    let _ = writeln!(
+        s,
+        "\n── FOREIGN API KEYS RETRIEVED (vendor: {}, heuristic: {}) ──",
+        vendor.len(),
+        heuristic.len()
+    );
+    if foreign.is_empty() {
+        let _ = writeln!(s, "  (none identified in this scan's responses)");
+    }
+    if !vendor.is_empty() {
+        let _ = writeln!(s, "  vendor-identified (high confidence):");
+        for &e in &vendor {
+            render_key(&mut s, e);
+        }
+    }
+    if !heuristic.is_empty() {
+        let _ = writeln!(
+            s,
+            "  heuristic (generic high-entropy token; often a password hash):"
+        );
+        for &e in &heuristic {
+            render_key(&mut s, e);
+        }
     }
 
     let _ = writeln!(s, "\n── ENTITIES (every field, fully unredacted) ──");

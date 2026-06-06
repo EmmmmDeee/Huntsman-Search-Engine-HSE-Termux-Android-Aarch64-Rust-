@@ -431,11 +431,21 @@ impl ScanEngine {
         // data — not only the breach pools that scan their own record fields. The
         // store upserts by UID, so a key a module already emitted just merges.
         for fk in crate::util::found_keys::drain() {
+            // A heuristic (generic-hex / url-param) match is far more likely a
+            // password hash than a real key, so it gets a lower base confidence
+            // and a distinct tag — the dossier and any correlation can separate
+            // confirmed vendor keys from the long tail without losing either.
+            let (conf, confidence_tag) = if fk.heuristic {
+                (0.45, "key-confidence:heuristic")
+            } else {
+                (0.80, "key-confidence:vendor")
+            };
             let mut e =
-                Entity::new(crate::core::entity::EntityKind::ApiKey, &fk.key, 0.70, &scan.id);
+                Entity::new(crate::core::entity::EntityKind::ApiKey, &fk.key, conf, &scan.id);
             e.tag("api-key");
             e.tag("foreign-key");
             e.tag("retrieved");
+            e.tag(confidence_tag);
             e.tag(format!("service:{}", fk.service));
             e.add_evidence(
                 crate::core::entity::Evidence::new(
@@ -445,7 +455,11 @@ impl ScanEngine {
                 .with_attr("service", &fk.service)
                 .with_attr("source_provider", &fk.provider)
                 .with_attr("source_query", &fk.query)
-                .with_attr("occurrences", fk.count.to_string()),
+                .with_attr("occurrences", fk.count.to_string())
+                .with_attr(
+                    "confidence_class",
+                    if fk.heuristic { "heuristic" } else { "vendor" },
+                ),
             );
             entities.push(e);
         }
