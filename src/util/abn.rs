@@ -147,6 +147,68 @@ mod tests {
         assert!(!is_valid_acn("0000000190")); // 10 digits
     }
 
+    /// Structural property of a check digit: for **every** 8-digit prefix,
+    /// exactly one of the ten possible final digits yields a valid ACN. This
+    /// proves the validator is a proper check function — it never accepts two
+    /// check digits for one prefix (too permissive) and never rejects the one
+    /// correct number (too strict) — without reimplementing the algorithm here.
+    #[test]
+    fn acn_has_exactly_one_valid_check_digit_per_prefix() {
+        // A deterministic spread of prefixes (small LCG; no rand dependency).
+        let mut state: u32 = 0x1234_5678;
+        for _ in 0..20_000 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let prefix = state % 100_000_000; // 8 digits (leading zeros allowed)
+            let prefix_str = format!("{prefix:08}");
+            let valid = (0..10)
+                .filter(|d| is_valid_acn(&format!("{prefix_str}{d}")))
+                .count();
+            assert_eq!(
+                valid, 1,
+                "prefix {prefix_str} accepted {valid} check digits, expected exactly 1"
+            );
+        }
+    }
+
+    /// The defining guarantee of the ABN's mod-89 checksum: it detects *all*
+    /// single-digit errors. For a population of valid ABNs, mutating any one
+    /// digit to any other value must always invalidate the number. (Holds because
+    /// 89 is prime and no `Δdigit × positional-weight` is a multiple of it for
+    /// digit deltas in 1..=9.)
+    #[test]
+    fn abn_rejects_every_single_digit_mutation_of_a_valid_abn() {
+        // Collect valid ABNs by deterministic rejection sampling.
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut checked = 0usize;
+        while checked < 300 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let n = state % 100_000_000_000; // 11 digits
+            let s = format!("{n:011}");
+            if !is_valid_abn(&s) {
+                continue;
+            }
+            let digits: Vec<u8> = s.bytes().map(|b| b - b'0').collect();
+            for pos in 0..11 {
+                for nd in 0..10u8 {
+                    if nd == digits[pos] {
+                        continue;
+                    }
+                    let mut m = digits.clone();
+                    m[pos] = nd;
+                    let mutated: String = m.iter().map(|d| (d + b'0') as char).collect();
+                    assert!(
+                        !is_valid_abn(&mutated),
+                        "single-digit mutation {mutated} of valid ABN {s} was accepted"
+                    );
+                }
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 300, "should have sampled 300 valid ABNs");
+    }
+
     #[test]
     fn company_names_splits_real_joint_syndicates() {
         // Real owner strings from the QLD register (q="Pty Ltd").
