@@ -341,7 +341,7 @@ pub enum Command {
         #[arg(long)]
         free_only: bool,
     },
-    /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report.
+    /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report / full.
     ///
     /// JSON           — `[{ kind, value, ... }, ...]` flat entity list
     /// CSV            — operator-friendly tabular form (same shape as
@@ -351,6 +351,11 @@ pub enum Command {
     /// Report         — pretty-printed JSON dossier (scan + entities +
     ///                  correlations + counts; same shape as
     ///                  `/api/v1/scans/{id}/report.json`)
+    /// Full           — Huntsman's STANDARD maximum-detail dossier: every
+    ///                  entity (incl. candidates) with its full evidence
+    ///                  chain — every raw field, the provenance
+    ///                  (provider / api_key_origin / endpoint) and source
+    ///                  website — nothing hashed, masked, or omitted
     ///
     /// Output goes to stdout by default; pass `--out <path>` to write
     /// to a file.
@@ -358,7 +363,7 @@ pub enum Command {
         /// Scan ID (or `latest` for the most-recent completed scan).
         #[arg(short, long)]
         scan_id: String,
-        /// Output format: json | csv | gexf | report. Default `json`.
+        /// Output format: json | csv | gexf | report | full. Default `json`.
         #[arg(short, long, default_value = "json")]
         format: String,
         /// File path to write to. Omit for stdout.
