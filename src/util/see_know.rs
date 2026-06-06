@@ -285,6 +285,14 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     }
     let url = format!("{}/search", base_url());
     let body = build_search_body(query, query_type, SEARCH_LIMIT);
+    // Human archive label: `search` (auto-detect) or `search-<type>` (typed),
+    // with the actual looked-up value — so the saved filename names exactly what
+    // was queried.
+    let archive_endpoint = if query_type.is_empty() {
+        "search".to_string()
+    } else {
+        format!("search-{query_type}")
+    };
     // The name/auto `/search` path intermittently returns `total:0` even when
     // the record exists (server-side cap races). Retry once on a transient
     // empty before giving up. `cache_put` already refuses to memoise an empty
@@ -292,7 +300,7 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     const MAX_ATTEMPTS: u32 = 2;
     let mut last_err = None;
     for attempt in 0..MAX_ATTEMPTS {
-        match post_json(&url, key, &body).await {
+        match post_json(&url, key, &body, &archive_endpoint, query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 if !items.is_empty() {
@@ -370,6 +378,10 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
         return Ok(Vec::new());
     }
     let url = format!("{}/{path}?{qs}", base_url());
+    // Human archive label: the endpoint path (e.g. `stealer`,
+    // `breachhub/search`) and the actual looked-up value (first query param),
+    // so the saved filename names exactly what was queried.
+    let archive_query = params.first().map(|(_, v)| *v).unwrap_or("");
     // One retry on a transient transport error — flaky mobile/Termux networks
     // drop GETs, and a single-shot call silently loses that endpoint's data
     // (the live transcripts are full of such drops). The retry reuses the same
@@ -381,7 +393,7 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     const MAX_ATTEMPTS: u32 = 2;
     let mut last_err = None;
     for attempt in 0..MAX_ATTEMPTS {
-        match get_json(&url, key).await {
+        match get_json(&url, key, path, archive_query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 cache_put(ck.clone(), items.clone());
@@ -430,21 +442,20 @@ fn escape_json(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-async fn get_json(url: &str, key: &str) -> Result<Value> {
+async fn get_json(url: &str, key: &str, endpoint: &str, query: &str) -> Result<Value> {
     let body = CLIENT.get(url, key).await?;
     // Retain the paid response verbatim BEFORE parsing/extraction — operator
     // policy: purchased data is kept in absolute completeness until manually
-    // deleted (see `util::raw_archive`). The full request URL is the query
-    // context. Auth-error/empty bodies are skipped by the archive itself.
-    crate::util::raw_archive::record("see_know", url, &body);
+    // deleted (see `util::raw_archive`). `endpoint`/`query` name the saved file
+    // so it's obvious what was looked up. Empty bodies are skipped by the archive.
+    crate::util::raw_archive::record("see-know", endpoint, query, &body);
     parse_response(&body)
 }
 
-async fn post_json(url: &str, key: &str, body: &str) -> Result<Value> {
+async fn post_json(url: &str, key: &str, body: &str, endpoint: &str, query: &str) -> Result<Value> {
     let resp = CLIENT.post_json(url, key, body).await?;
-    // Archive the raw paid response verbatim. The POST body carries the query
-    // (`{"query":…}`), so record it as the context alongside the response.
-    crate::util::raw_archive::record("see_know", body, &resp);
+    // Archive the raw paid response verbatim, filed under the queried value.
+    crate::util::raw_archive::record("see-know", endpoint, query, &resp);
     parse_response(&resp)
 }
 

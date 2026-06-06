@@ -40,7 +40,7 @@ impl Module for AbnLookup {
 
     fn priority(&self) -> u8 {
         // Government / public-records band (110-118): dispatched right after the
-        // top enumerators (oathnet 127, see_know 126) and ahead of the generic
+        // top enumerators (see_know 128, oathnet 127) and ahead of the generic
         // free modules, so authoritative registry data lands early. ABN/ACN is
         // the flagship AU government source — highest of the gov band.
         118

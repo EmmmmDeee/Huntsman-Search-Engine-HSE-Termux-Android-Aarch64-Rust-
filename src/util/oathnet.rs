@@ -156,9 +156,20 @@ pub async fn search(
     let body = CLIENT.get(&url, key).await?;
     // Retain the paid response verbatim BEFORE parsing/extraction — operator
     // policy: purchased data is kept in absolute completeness until manually
-    // deleted (see `util::raw_archive`). The full request URL is the query
-    // context; the archive skips empty bodies on its own.
-    crate::util::raw_archive::record("oathnet", &url, &body);
+    // deleted (see `util::raw_archive`). The endpoint label is the last two
+    // path segments (e.g. `/service/v2/breach/search` → `breach-search`) and the
+    // query is the looked-up value, so the saved filename names exactly what was
+    // queried. The archive skips empty bodies on its own.
+    let endpoint_label = path
+        .trim_matches('/')
+        .rsplit('/')
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("-");
+    crate::util::raw_archive::record("oathnet", &endpoint_label, value, &body);
     // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
     // which false-positives on legitimate metadata fields like `session_quota`
     // and `recommended_quota`. Match only true exhaustion signals.

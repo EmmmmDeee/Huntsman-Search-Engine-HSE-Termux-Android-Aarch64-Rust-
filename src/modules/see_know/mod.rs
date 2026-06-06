@@ -79,9 +79,15 @@ impl Module for SeekNow {
     }
 
     fn priority(&self) -> u8 {
-        // Runs right after oathnet_pro (127). Both are Multiplier-tier
-        // Paid modules. Phase 1 in concurrent dispatch covers both.
-        126
+        // Runs BEFORE oathnet_pro (127). Operator directive: SeekNow is always
+        // prioritised above OathNet — its corpus already incorporates OathNet's
+        // and supersedes it in most ways, so it must query first and seed the
+        // graph (and the per-target dispatch cache) ahead of OathNet, which then
+        // only adds whatever marginal records SeekNow didn't already return.
+        // Both are Multiplier-tier Paid modules in Phase 1 of concurrent
+        // dispatch; Phase 1 runs Paid modules in priority order, so 128 > 127
+        // guarantees SeekNow goes first.
+        128
     }
 
     fn cost(&self) -> ModuleCost {
@@ -1012,9 +1018,15 @@ mod tests {
     }
 
     #[test]
-    fn priority_below_oathnet_pro() {
-        assert!(SeekNow.priority() < 127);
-        assert!(SeekNow.priority() >= 120);
+    fn priority_above_oathnet_pro() {
+        // Operator directive: SeekNow always queries before OathNet (its corpus
+        // already incorporates OathNet's). Phase 1 dispatches Paid modules in
+        // priority order, so SeekNow's must exceed oathnet_pro's (127).
+        assert!(
+            SeekNow.priority() > 127,
+            "SeekNow priority {} must exceed oathnet_pro's 127 so it runs first",
+            SeekNow.priority()
+        );
     }
 
     #[test]
