@@ -50,26 +50,40 @@ pub fn is_valid_acn(s: &str) -> bool {
 /// Heuristic: does `name` carry an Australian corporate legal-form suffix
 /// (`PTY LTD`, `LIMITED`, `LTD`, `PTY`, `INC`, `NL`, `& CO`)? Used to decide
 /// whether a register owner is a company worth pivoting to the ABN/ACN
-/// resolvers, vs an individual. Case-insensitive; leading space anchors each
-/// suffix so substrings inside words (e.g. `BUILT`) don't match.
+/// resolvers, vs an individual. Case-insensitive and punctuation-insensitive.
 pub fn looks_like_company(name: &str) -> bool {
-    // Double-pad so each suffix can be matched as a whitespace-bounded token —
-    // otherwise " INC" would falsely fire inside "INCANDESCENT", " LTD" inside
-    // "ALTDORF", etc.
-    let u = format!(" {} ", name.to_uppercase());
+    // Normalise so a legal-form suffix is recognised regardless of surrounding
+    // punctuation: uppercase, reduce every char that is not alphanumeric or `&`
+    // (the only punctuation that is itself part of a form — "& CO") to a space,
+    // and collapse runs of whitespace. This folds "Pty. Ltd.", "LTD,",
+    // "LIMITED.", "Inc)" onto the canonical space-delimited tokens below —
+    // previously a trailing comma/period/paren on the final token defeated the
+    // match and a real company was misread as an individual.
+    let folded: String = name
+        .to_uppercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '&' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    // Double-pad the collapsed token stream so each suffix matches only as a
+    // whitespace-bounded token — otherwise " INC" would falsely fire inside
+    // "INCANDESCENT", " LTD" inside "ALTDORF".
+    let u = format!(
+        " {} ",
+        folded.split_whitespace().collect::<Vec<_>>().join(" ")
+    );
     const SUFFIXES: &[&str] = &[
         " PTY LTD ",
-        " PTY. LTD. ",
-        " PTY LTD. ",
-        " PTY. LTD ",
         " LIMITED ",
         " LTD ",
-        " LTD. ",
         " PTY ",
-        " PTY. ",
         " INCORPORATED ",
         " INC ",
-        " INC. ",
         " NL ",
         " & CO ",
         " AND CO ",
@@ -251,5 +265,31 @@ mod tests {
         assert!(!looks_like_company("KAREEM AYALA"));
         // No false match inside a word.
         assert!(!looks_like_company("INCANDESCENT BAY"));
+        assert!(!looks_like_company("ALTDORF ESTATES"));
+    }
+
+    #[test]
+    fn company_form_survives_trailing_punctuation() {
+        // Regression: a legal-form suffix as the final token followed by
+        // punctuation (comma, period, semicolon, paren) previously failed the
+        // space-bounded match, misreading a real company as an individual and
+        // suppressing the ABN/ACN resolvers. Punctuation now folds to a space.
+        for name in [
+            "ACME HOLDINGS LIMITED.",
+            "WIDGETS LTD;",
+            "ACME INC,",
+            "Smith Pty. Ltd.",
+            "(BHP GROUP LIMITED)",
+            "FOO BAR NL.",
+        ] {
+            assert!(
+                looks_like_company(name),
+                "{name:?} should look like a company"
+            );
+        }
+        // `& CO` survives — the `&` is preserved, not folded to a space (which
+        // would leave a bare " CO " that must NOT match on its own).
+        assert!(looks_like_company("SMITH & CO."));
+        assert!(!looks_like_company("ACME COMPANY")); // bare "CO..." is not a form
     }
 }
