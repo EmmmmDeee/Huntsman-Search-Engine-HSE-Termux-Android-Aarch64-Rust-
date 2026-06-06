@@ -225,6 +225,11 @@ const RULES: &[RuleFn] = &[
     rule_au_036_email_alias_convergence,
     rule_au_037_credential_exposure,
     rule_au_038_verified_cross_platform_identity,
+    rule_au_039_wallet_identity,
+    rule_au_040_wallet_breach_exposure,
+    rule_au_041_ens_identity,
+    rule_au_042_pgp_email_identity,
+    rule_au_043_paste_exposure,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

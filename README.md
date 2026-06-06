@@ -274,7 +274,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 1600+ tests (unit + API integration + architecture boundary enforcement)
-- 38 correlator rules (AU-001 through AU-038), incl. 2 graph-aware edge rules
+- 43 correlator rules (AU-001 through AU-043), incl. 2 graph-aware edge rules
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 

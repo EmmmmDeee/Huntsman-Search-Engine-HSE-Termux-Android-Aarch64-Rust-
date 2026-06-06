@@ -1700,3 +1700,122 @@ fn au032_ignores_non_colocation_edges() {
     ];
     assert!(rule_au_032_colocation_cluster(&[a, b, c], &rels, "s", 0).is_empty());
 }
+
+// ── Crypto / identity / exposure rules (AU-039 … AU-043) ─────────────
+
+/// Build an entity with tags + a single evidence record (with optional attrs).
+fn mk_tagged(kind: EntityKind, value: &str, src: &str, tags: &[&str]) -> Entity {
+    let mut e = Entity::new(kind, value, 0.8, "scan");
+    e.add_evidence(Evidence::new(src, "x".to_string()));
+    for t in tags {
+        e.tag(*t);
+    }
+    e
+}
+
+#[test]
+fn au_039_links_wallet_to_identity() {
+    let ents = vec![
+        mk_tagged(
+            EntityKind::CryptoAddress,
+            "1A1zP1eP...",
+            "chain_intel",
+            &["crypto-address"],
+        ),
+        mk_tagged(EntityKind::Person, "Matthew Diegmann", "see_know", &[]),
+    ];
+    let out = rule_au_039_wallet_identity(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-039");
+    assert_eq!(out[0].severity, Severity::High);
+    assert_eq!(out[0].entity_uids.len(), 2);
+    // No identity present ⇒ no firing.
+    let only_wallet = vec![mk_tagged(
+        EntityKind::CryptoAddress,
+        "x",
+        "chain_intel",
+        &[],
+    )];
+    assert!(rule_au_039_wallet_identity(&only_wallet, "scan", 0).is_empty());
+}
+
+#[test]
+fn au_040_fires_only_on_breach_harvested_wallets() {
+    let found_keys_from = |value: &str, provider: &str| {
+        let mut e = Entity::new(EntityKind::CryptoAddress, value, 0.8, "scan");
+        e.tag("retrieved");
+        e.add_evidence(Evidence::new("found_keys", "x").with_attr("source_provider", provider));
+        e
+    };
+    let ents = vec![
+        // found_keys harvest from an actual breach pool → genuine exposure.
+        found_keys_from("0xleaked", "see-know"),
+        // found_keys harvest from chain_intel's OWN explorer response → an
+        // explorer artifact, NOT a breach leak (the precision case).
+        found_keys_from("0xexplorer", "chain_intel"),
+        // Breach-record-field harvest via the shared key-harvest path.
+        mk_tagged(
+            EntityKind::CryptoAddress,
+            "0xfield",
+            "oathnet_pro",
+            &["crypto-address"],
+        ),
+        // Pure chain_intel enrichment of a pasted seed — not an exposure.
+        mk_tagged(
+            EntityKind::CryptoAddress,
+            "0xseed",
+            "chain_intel",
+            &["crypto-address"],
+        ),
+    ];
+    let out = rule_au_040_wallet_breach_exposure(&ents, "scan", 0);
+    let fired: HashSet<&String> = out.iter().flat_map(|c| c.entity_uids.iter()).collect();
+    let uid = |v: &str| ents.iter().find(|e| e.value == v).unwrap().uid.clone();
+    assert_eq!(out.len(), 2, "only genuine breach exposures fire: {out:?}");
+    assert!(fired.contains(&uid("0xleaked")) && fired.contains(&uid("0xfield")));
+    assert!(!fired.contains(&uid("0xexplorer")) && !fired.contains(&uid("0xseed")));
+    assert!(out.iter().all(|c| c.severity == Severity::High));
+}
+
+#[test]
+fn au_041_fires_on_ens_handle() {
+    let mut ens = Entity::new(EntityKind::Username, "vitalik", 0.7, "scan");
+    ens.tag("ens");
+    ens.add_evidence(Evidence::new("chain_intel", "x").with_attr("ens_name", "vitalik.eth"));
+    let out = rule_au_041_ens_identity(&[ens], "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].description.contains("vitalik.eth"));
+    // A plain username (no ens tag) must not fire.
+    let plain = mk_tagged(EntityKind::Username, "bob", "username_search", &[]);
+    assert!(rule_au_041_ens_identity(&[plain], "scan", 0).is_empty());
+}
+
+#[test]
+fn au_042_groups_pgp_linked_emails() {
+    let ents = vec![
+        mk_tagged(EntityKind::Email, "alt@work.com", "pgp", &["pgp-linked"]),
+        mk_tagged(EntityKind::Email, "other@home.com", "pgp", &["pgp-linked"]),
+        mk_tagged(EntityKind::Email, "unrelated@x.com", "hibp", &[]),
+    ];
+    let out = rule_au_042_pgp_email_identity(&ents, "scan", 0);
+    assert_eq!(out.len(), 1, "one grouped firing");
+    assert_eq!(out[0].entity_uids.len(), 2, "only the pgp-linked emails");
+    assert_eq!(out[0].severity, Severity::High);
+}
+
+#[test]
+fn au_043_fires_on_paste_exposure() {
+    let ents = vec![
+        mk_tagged(
+            EntityKind::Url,
+            "https://pastebin.com/abc",
+            "psbdmp",
+            &[crate::core::tags::PASTE_EXPOSED],
+        ),
+        mk_tagged(EntityKind::Url, "https://example.com", "web_crawler", &[]),
+    ];
+    let out = rule_au_043_paste_exposure(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].entity_uids.len(), 1, "only the paste url");
+    assert!(out[0].description.contains("1 public paste"));
+}
