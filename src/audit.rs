@@ -421,6 +421,24 @@ pub fn audit(entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     };
 
     let mut findings: Vec<Finding> = Vec::new();
+
+    // An empty result is the single most important thing to surface. With no
+    // entities there is no quality to grade, so the bare penalty model would score
+    // it a misleading 100/100 "clean, well-sourced". Flag it: the cause is either
+    // total source failure (connectivity / missing keys → see source-health) or a
+    // target with no discoverable footprint for this seed.
+    if entity_total == 0 {
+        findings.push(Finding {
+            severity: Severity::High,
+            category: "empty-result",
+            message: "scan produced 0 entities — no intelligence was gathered".into(),
+            examples: Vec::new(),
+            recommendation: "Check source health (modules that errored or were \
+                blocked, missing API keys) and connectivity. If every source ran \
+                cleanly, the target likely has no discoverable footprint for this seed."
+                .into(),
+        });
+    }
     let count = |k: &str| entities.iter().filter(|e| e.kind == k).count();
 
     // ── 1. Infrastructure pollution ──────────────────────────────────────────
@@ -743,6 +761,35 @@ mod tests {
             sources: vec!["test".into()],
             tags: tags.iter().map(|s| (*s).to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn empty_scan_is_flagged_not_scored_as_clean() {
+        // A 0-entity scan must NOT score a misleading 100/100 "well-sourced": it
+        // is flagged with an `empty-result` finding and drops out of the A band.
+        let r = audit(&[], LogSignals::default());
+        let f = r
+            .findings
+            .iter()
+            .find(|f| f.category == "empty-result")
+            .expect("empty scan must surface an empty-result finding");
+        assert_eq!(f.severity, Severity::High);
+        assert!(
+            r.score < 90,
+            "an empty scan must not grade as A, got {}",
+            r.score
+        );
+        // A non-empty scan must NOT get the empty-result finding.
+        let nonempty = audit(
+            &[ent("email", "a@b.com", 1.0, 2, &[])],
+            LogSignals::default(),
+        );
+        assert!(
+            !nonempty
+                .findings
+                .iter()
+                .any(|f| f.category == "empty-result")
+        );
     }
 
     #[test]
