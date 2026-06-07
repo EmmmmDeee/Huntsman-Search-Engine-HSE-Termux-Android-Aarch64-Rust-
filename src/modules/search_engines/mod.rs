@@ -1532,6 +1532,57 @@ mod tests {
     }
 
     #[test]
+    fn build_entities_suppresses_platform_freemail_and_broker_result_hosts() {
+        // A person/email/username search surfaces SERP hits whose host is a
+        // mega/social platform, a freemail provider, a data-broker, a breach
+        // aggregator, or a privacy search engine. None are the subject's own
+        // asset — they are merely where a mention appeared — so the bare Domain
+        // must be suppressed (the specific Url page is kept elsewhere). Only a
+        // genuine personal/external domain survives.
+        let target = Target::new(TargetKind::Email, "subject@example.org");
+        let mk = |url: &str| SearchResult {
+            url: url.to_string(),
+            title: "subject".to_string(),
+            snippet: "subject mention".to_string(),
+            engine: "duckduckgo",
+            query: "subject".to_string(),
+        };
+        let results = vec![
+            mk("https://www.youtube.com/watch?v=abc"),
+            mk("https://facebook.com/groups/xyz"),
+            mk("https://gmail.com/signup"),
+            mk("https://neighborwho.com/person/123"),
+            mk("https://snusbase.com/result"),
+            mk("https://metager.org/meta/meta.ger3"),
+            mk("https://subjects-personal-blog.com/about"),
+        ];
+        let res = build_entities(&target, "s", &results);
+        let domains: Vec<&str> = res
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Domain)
+            .map(|e| e.value.as_str())
+            .collect();
+        for noise in [
+            "youtube.com",
+            "facebook.com",
+            "gmail.com",
+            "neighborwho.com",
+            "snusbase.com",
+            "metager.org",
+        ] {
+            assert!(
+                !domains.contains(&noise),
+                "{noise} must be suppressed as a bare result host, got {domains:?}"
+            );
+        }
+        assert!(
+            domains.iter().any(|d| d.contains("subjects-personal-blog")),
+            "a genuine personal domain must survive, got {domains:?}"
+        );
+    }
+
+    #[test]
     fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
         // The domain branch of `build_entities` has three couplings worth pinning:
         // a host under the target domain is a SUBDOMAIN (conf 0.70); any other

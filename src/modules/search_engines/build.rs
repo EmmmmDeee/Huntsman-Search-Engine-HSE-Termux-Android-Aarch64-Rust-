@@ -91,6 +91,14 @@ pub(super) fn build_entities(
         } else if target_domain.as_ref().is_none_or(|td| domain != *td)
             && !is_generic_domain(&domain)
             && !is_search_tooling_domain(&domain)
+            // A bare SERP-result host that is a mega/social PLATFORM or a freemail
+            // provider is never the subject's own asset — it is merely *where* a
+            // mention surfaced (the specific profile/page is still kept as a Url
+            // entity by the path-match gate). Emitting facebook.com / youtube.com /
+            // gmail.com as standalone Domain findings is exactly the generic noise
+            // that buries individualised PII; drop it here.
+            && !crate::util::domains::is_social_platform(&domain)
+            && !crate::util::domains::is_freemail(&domain)
             && seen_domains.insert(domain.clone())
         {
             let mut e = Entity::new(EntityKind::Domain, &domain, 0.45, scan_id);

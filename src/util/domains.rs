@@ -60,6 +60,15 @@ const SOCIAL: &[&str] = &[
     "github.com",
     "gitlab.com",
     "medium.com",
+    "myspace.com",
+    "soundcloud.com",
+    "tumblr.com",
+    "vimeo.com",
+    "flickr.com",
+    "snapchat.com",
+    "threads.net",
+    "mastodon.social",
+    "bsky.app",
 ];
 
 /// Common **multi-label public suffixes** under which the public registers a
