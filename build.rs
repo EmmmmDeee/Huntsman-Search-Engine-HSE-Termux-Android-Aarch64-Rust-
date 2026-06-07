@@ -36,22 +36,32 @@ fn main() {
     std::fs::write(Path::new(&dir).join("source_manifest.rs"), out)
         .expect("write source_manifest.rs");
 
-    // Rebuild the manifest whenever the source tree changes.
-    println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=build.rs");
+    // NB: `collect` already emitted a `rerun-if-changed` for every file AND every
+    // directory it walked. A directory `rerun-if-changed` only watches its DIRECT
+    // children (cargo does not recurse), so a blanket `rerun-if-changed=src` would
+    // leave the manifest STALE for every file under src/core, src/modules, … after
+    // an edit. Declaring each file (content changes) AND each directory (file
+    // add/remove at any depth) is what keeps the manifest accurate.
 }
 
 /// Recursively collect `*.rs` files under `dir` as (path-with-forward-slashes,
-/// line_count). Stable and platform-independent (paths use `/`).
+/// line_count), and declare each visited directory + file as a `rerun-if-changed`
+/// input so the manifest is regenerated on any source change at any depth.
 fn collect(dir: &Path, out: &mut Vec<(String, u32)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
+    // Watch this directory so a file added/removed directly under it reruns us.
+    println!("cargo:rerun-if-changed={}", dir.display());
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
             collect(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") {
+            // Watch this file so a content change reruns us (a directory watch
+            // alone does NOT catch edits to files in subdirectories).
+            println!("cargo:rerun-if-changed={}", path.display());
             let lines = std::fs::read_to_string(&path)
                 .map(|s| s.lines().count() as u32)
                 .unwrap_or(0);

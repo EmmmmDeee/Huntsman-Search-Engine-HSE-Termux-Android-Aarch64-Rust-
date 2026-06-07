@@ -125,6 +125,37 @@ mod tests {
     }
 
     #[test]
+    fn source_manifest_line_counts_match_on_disk() {
+        // Guards build.rs `rerun-if-changed` correctness: a manifest entry's line
+        // count must equal the file's ACTUAL count. A `rerun-if-changed=src`
+        // directory watch only catches DIRECT children (cargo doesn't recurse), so
+        // it left subdirectory files stale after edits — this asserts the per-file
+        // watch keeps them accurate. Read via the compile-time CARGO_MANIFEST_DIR.
+        use crate::source_manifest::SOURCE_FILES;
+        let root = env!("CARGO_MANIFEST_DIR");
+        for rel in [
+            "src/lib.rs",
+            "src/main.rs",
+            "src/core/entity.rs",
+            "src/modules/mod.rs",
+        ] {
+            let recorded = SOURCE_FILES
+                .iter()
+                .find(|(p, _)| *p == rel)
+                .map(|(_, n)| *n)
+                .unwrap_or_else(|| panic!("{rel} missing from manifest"));
+            let actual = std::fs::read_to_string(format!("{root}/{rel}"))
+                .unwrap_or_else(|_| panic!("cannot read {rel}"))
+                .lines()
+                .count() as u32;
+            assert_eq!(
+                recorded, actual,
+                "manifest LOC for {rel} is stale — build.rs rerun-if-changed gap?"
+            );
+        }
+    }
+
+    #[test]
     fn architecture_constants_are_correct() {
         assert_eq!(DEFAULT_BIND, "127.0.0.1:8080");
         assert_eq!(MODULE_TIMEOUT_MS, 3000);
