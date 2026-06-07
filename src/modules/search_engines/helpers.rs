@@ -41,23 +41,67 @@ pub(super) enum FetchOutcome {
     Unreachable,
 }
 
-/// Decode the handful of HTML entities that show up in engine result markup
-/// and percent-encoded redirect hrefs. Mirrors `util::html`'s decoder (which
-/// already handled `&apos;`) so a title/snippet/URL decoded here matches one
-/// decoded there. Not a full entity decoder by design — just the entities
-/// observed in real SERP output.
+/// Decode the HTML entities that show up in engine result markup and
+/// percent-encoded redirect hrefs, in a single left-to-right pass:
+///   * the named entities real SERP output uses (`&amp; &lt; &gt; &quot; &apos;
+///     &#39; &nbsp;`), and
+///   * any *numeric* character reference — decimal `&#8217;` or hex `&#x2019;`
+///     — which titles/snippets are full of (curly quotes `&#8220;`/`&#8221;`,
+///     en/em dashes `&#8211;`/`&#8212;`, `&nbsp;`). Without these a title
+///     reached the user as literal `Smith&nbsp;&amp; Sons &#8211; O&#8217;Brien`.
+///
+/// A single pass (rather than chained `replace`s) is both correct and
+/// double-decode-safe: the escaped text `&amp;lt;` decodes to the literal
+/// `&lt;`, never collapsing all the way to `<`, because each `&…;` is consumed
+/// exactly once. An unrecognised or malformed `&…;` is emitted verbatim.
 pub(super) fn decode_html_entities(s: &str) -> String {
-    // `&amp;` is decoded LAST, not first: decoding it first turns the escaped
-    // text `&amp;lt;` (which must round-trip to the literal `&lt;`) into `&lt;`
-    // and then into `<` — a double-decode. Resolving every other entity before
-    // collapsing `&amp;`→`&` keeps a literal, intentionally-escaped entity intact.
-    s.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&#x27;", "'")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let inner = &rest[amp + 1..]; // text after the '&'
+        // Entity bodies are short and ASCII; `find(';')` lands on an ASCII byte
+        // (a char boundary), so the slice below can never split a codepoint.
+        if let Some(semi) = inner.find(';')
+            && semi <= 10
+            && let Some(ch) = decode_one_entity(&inner[..semi])
+        {
+            out.push(ch);
+            rest = &inner[semi + 1..];
+            continue;
+        }
+        out.push('&');
+        rest = inner;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Decode a single entity body (the text between `&` and `;`) to its character,
+/// or `None` if unrecognised/malformed. Named set covers real SERP output;
+/// numeric references (`#8217`, `#x2019`) are decoded generically.
+fn decode_one_entity(body: &str) -> Option<char> {
+    match body {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        // Normalise a non-breaking space to a regular space so stored text stays
+        // clean and word-splittable (no stray U+00A0 inside names/snippets).
+        "nbsp" => Some(' '),
+        _ => {
+            let num = body.strip_prefix('#')?;
+            let cp = match num.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => num.parse::<u32>().ok()?,
+            };
+            char::from_u32(cp)
+        }
+    }
 }
 
 /// Resolve an href into a clean URL, decoding engine-specific redirects.
@@ -1731,6 +1775,28 @@ mod tests {
         assert_eq!(decode_html_entities("&amp;lt;"), "&lt;");
         assert_eq!(decode_html_entities("a&#39;b&amp;c"), "a'b&c");
         assert_eq!(decode_html_entities("plain text"), "plain text");
+    }
+
+    #[test]
+    fn decode_html_entities_handles_nbsp_and_numeric_references() {
+        // The pervasive real-SERP cases: nbsp, curly quotes, dashes — decimal
+        // and hex numeric references must all resolve to real characters.
+        assert_eq!(
+            decode_html_entities("Smith&nbsp;&amp; Sons &#8211; O&#8217;Brien"),
+            "Smith & Sons – O’Brien",
+        );
+        assert_eq!(
+            decode_html_entities("&#8220;Law&#8221;"),
+            "\u{201c}Law\u{201d}"
+        );
+        assert_eq!(decode_html_entities("it&#x2019;s"), "it’s"); // hex
+        // Malformed / unknown references are emitted verbatim, never panicking.
+        assert_eq!(decode_html_entities("a & b"), "a & b"); // bare ampersand
+        assert_eq!(decode_html_entities("R&D"), "R&D");
+        assert_eq!(decode_html_entities("&#xZZ;"), "&#xZZ;"); // bad hex
+        assert_eq!(decode_html_entities("&unknownentity;"), "&unknownentity;");
+        // A multibyte char immediately after a bare '&' must not panic.
+        assert_eq!(decode_html_entities("&café"), "&café");
     }
 
     #[test]
