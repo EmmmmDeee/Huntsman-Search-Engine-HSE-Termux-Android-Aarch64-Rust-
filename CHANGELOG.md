@@ -334,6 +334,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Active TCP-connect port scan (`portscan`) — the active counterpart to the
+  passive IP intel.** For an `IpAddress` target it does a bounded, polite connect
+  scan of ~23 common service ports (1.5 s/port × 16 concurrent), re-emits the IP
+  with an `open_ports` evidence attribute, and emits a `Url` entity for each open
+  web port (`http(s)://ip:port`) so `web_crawler`/`webserver_banner` enrich the
+  live service. Pairs with `netblock` (CIDR → host IPs → port sweep). **Non-passive**
+  (skipped under `--passive-only`); pure tokio, no API, no native deps, no root;
+  refuses non-routable/reserved IPs so it can't be aimed at internal space. Tested
+  (shape, sorted/unique port table, IPv6 URL bracketing, a real localhost
+  open/closed detection, and the non-routable guard).
+
 - **`hse scan --full` — the no-compromise complete scan (CLI + Web UI parity).**
   One option that auto-detects the seed kind and runs EVERY module (overriding
   `--free-only`/`--passive-only`/`--modules`), expands to MAX_DEPTH (3) at the

@@ -73,6 +73,7 @@ pub mod phone_area_geo;
 pub mod phone_carrier_geo;
 pub mod phone_intl;
 pub mod photon;
+pub mod portscan;
 pub mod proxycurl;
 pub mod psbdmp;
 pub mod pwned_passwords;
@@ -271,6 +272,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(cloud_storage::CloudStorage),
         Arc::new(bgpview::BgpView),
         Arc::new(netblock::Netblock),
+        Arc::new(portscan::PortScan),
         Arc::new(typosquat::Typosquat),
         // People-centric enrichment
         Arc::new(name_intel::NameIntel),
