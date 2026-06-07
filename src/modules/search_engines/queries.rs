@@ -165,13 +165,18 @@ pub(super) fn detect_region(target: &Target) -> Option<Region> {
     }
 }
 
-/// Minimal, autonomous region-scoped dorks appended only when regional searching
-/// is on AND a region is detected; empty otherwise (geo-neutral preserved).
+/// Minimal, autonomous region-scoped dorks appended when regional searching is
+/// on. HSE is Australia-focused, so a seed carrying no region signal of its own
+/// defaults to AU — every scan then favours Australian sources (`.au` TLDs, AU
+/// directories) without losing the geolocation-neutral base queries. A seed with
+/// an explicit signal (e.g. a `.uk`-style address) would still report its own
+/// region via [`detect_region`]; only the unknown case defaults to AU.
 pub(super) fn regional_dorks(target: &Target) -> Vec<String> {
-    let Some(region) = detect_region(target) else {
-        return Vec::new();
-    };
+    let region = detect_region(target).unwrap_or(Region::Au);
     let v = target.value.trim();
+    if v.is_empty() {
+        return Vec::new();
+    }
     match region {
         Region::Au => {
             let mut d = vec![format!(

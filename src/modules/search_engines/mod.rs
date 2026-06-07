@@ -542,8 +542,17 @@ mod tests {
                 .any(|q| q.contains("site:com.au") && q.contains("site:gov.au"))
         );
         assert!(d.iter().any(|q| q.contains("whitepages.com.au")));
-        // Region-less seed → no augmentation.
-        assert!(regional_dorks(&Target::new(TargetKind::Username, "kylo4kylo")).is_empty());
+        // AU-focused default: a region-less seed still gets AU-scoped dorks (the
+        // `.au` ccTLD dork at minimum), so every scan favours Australian sources.
+        let dd = regional_dorks(&Target::new(TargetKind::Username, "kylo4kylo"));
+        assert!(
+            dd.iter().any(|q| q.contains("site:com.au")),
+            "region-less seed should default to AU dorks, got {dd:?}"
+        );
+        // Still minimal.
+        assert!(dd.len() <= 2, "AU-default augmentation must stay minimal");
+        // An empty value never produces dorks.
+        assert!(regional_dorks(&Target::new(TargetKind::Username, "")).is_empty());
     }
 
     #[test]

@@ -759,12 +759,12 @@ pub struct ScanOptions {
     #[serde(default)]
     pub max_roi: bool,
 
-    /// Opt-in regional searching. Off by default → search-engine queries are
-    /// geolocation-neutral (global). When on, the search module *autonomously*
-    /// adds a minimal set of region-scoped dorks for any seed that carries a
-    /// clear region signal (e.g. an `.au` host / `+61` phone / ABN). Toggled
-    /// before the scan (CLI `--regional`, or the API/Settings).
-    #[serde(default)]
+    /// Australian-focused regional searching. **On by default** — the search
+    /// module adds a minimal set of `.au`/AU-directory dorks on top of the
+    /// geolocation-neutral base for every seed (one carrying no region signal of
+    /// its own defaults to AU), so results favour Australian sources out of the
+    /// box. Opt out (purely global) via CLI `--no-regional` or the API/Settings.
+    #[serde(default = "default_regional_search")]
     pub regional_search: bool,
 
     /// When `max_roi` is on, terminate recursion as soon as a round's
@@ -924,7 +924,11 @@ impl Default for ScanOptions {
             webhook_url: None,
             profile: None,
             max_roi: false,
-            regional_search: false,
+            // AU-focused by default: every scan adds Australian-source dorks
+            // (`.au` TLDs, AU directories) on top of the geo-neutral base, so the
+            // tool favours Australian results out of the box. Opt out with
+            // `--no-regional` / the API/Settings toggle for a purely global scan.
+            regional_search: true,
             min_marginal_yield: None,
             expansion_strategy: ExpansionStrategy::default(),
             seeknow_scan_cap: None,
@@ -934,6 +938,13 @@ impl Default for ScanOptions {
 
 fn default_min_expand_confidence() -> f64 {
     0.50
+}
+
+/// Serde default for [`ScanOptions::regional_search`] — AU-focused on by default
+/// so API/web requests that omit it still favour Australian sources (matches the
+/// CLI `hse scan` default; opt out with the Settings toggle).
+fn default_regional_search() -> bool {
+    true
 }
 
 /// Serde default for [`ScanOptions::depth`] — the product default applied to

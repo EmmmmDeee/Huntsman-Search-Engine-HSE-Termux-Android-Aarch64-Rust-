@@ -151,12 +151,12 @@ pub enum Command {
         /// (default 0.75 new entities per dispatched target).
         #[arg(long)]
         max_roi: bool,
-        /// Regional searching: off by default (queries are geolocation-neutral);
-        /// when set, the search module autonomously adds minimal region-scoped
-        /// dorks for seeds that carry a clear region signal (`.au` host, `+61`
-        /// phone, ABN, …).
-        #[arg(long = "regional")]
-        regional_search: bool,
+        /// Australian-focused regional searching is ON by default: the search
+        /// module adds minimal `.au` / AU-directory dorks on top of the
+        /// geolocation-neutral base (a seed with no region signal defaults to
+        /// AU). Pass `--no-regional` for a purely global scan.
+        #[arg(long = "no-regional", action = clap::ArgAction::SetTrue)]
+        no_regional: bool,
         /// When `--max-roi` is set, override the default marginal-yield
         /// floor (0.75). Lower = recurse further before giving up.
         #[arg(long)]
@@ -498,7 +498,7 @@ pub async fn run() -> Result<()> {
             max_concurrent,
             adaptive,
             max_roi,
-            regional_search,
+            no_regional,
             min_marginal_yield,
             expansion_strategy,
             seeknow_scan_cap,
@@ -527,7 +527,8 @@ pub async fn run() -> Result<()> {
                 max_concurrent,
                 adaptive,
                 max_roi: max_roi && !full,
-                regional_search,
+                // AU-focused regional searching is on unless explicitly disabled.
+                regional_search: !no_regional,
                 min_marginal_yield,
                 expansion_strategy,
                 seeknow_scan_cap,
