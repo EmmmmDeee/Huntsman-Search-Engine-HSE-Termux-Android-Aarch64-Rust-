@@ -417,6 +417,56 @@ fn scan_body_for_keys(body: &str) {
 mod tests {
     use super::*;
 
+    /// SERP HTML comes from arbitrary, untrusted search engines — it can be
+    /// truncated, malformed, or have a multibyte codepoint butted against any
+    /// structural marker (`href=`, a quote, `<cite>`, the ` ›` breadcrumb, `>`,
+    /// `/url?q=`, `&`). The result parser and its iterators must NEVER panic
+    /// (a mid-codepoint byte slice would), so a hostile page can't crash a scan.
+    /// This drives the whole pipeline over a battery of adversarial inputs; the
+    /// assertion is simply that none of them unwind.
+    #[test]
+    fn result_parsers_never_panic_on_adversarial_html() {
+        let m = "é"; // 2-byte codepoint to land next to markers
+        let bell = "›"; // 3-byte U+203A, the Bing breadcrumb glyph
+        let cases: Vec<String> = vec![
+            String::new(),
+            "<".into(),
+            "href=".into(),        // truncated, no quote
+            format!("href={m}"),   // multibyte right after marker
+            "href=\"".into(),      // open quote, no close
+            format!("href=\"{m}"), // unterminated multibyte value
+            format!("<a href=\"http://{}.com/{m}\">{m}</a>", "x".repeat(50)),
+            "<cite".into(),                // truncated cite, no '>'
+            format!("<cite>{m}{bell}{m}"), // cite, no close, multibyte+breadcrumb
+            format!("<cite>http://a.com {bell} {m}</cite>"),
+            "</cite>".into(),
+            format!("<cite>{}</cite>", bell.repeat(100)),
+            "/url?q=".into(),             // truncated google redirect
+            format!("/url?q=http://{m}"), // multibyte, no terminator
+            format!("/url?q=https%3A%2F%2F{m}&sa=U"),
+            format!("a href='//{m}.com' {m}> <cite>{m}{bell}</cite> /url?q={m}\""),
+            format!("<a href=\"{m}>"),             // marker then bare '>'
+            "&amp;&lt;&#x;&#;&#999999999;".into(), // entity edge cases via add_result
+            format!("<a href=\"javascript:{m}\">x</a>"), // filtered scheme + multibyte
+            "\u{0}\u{1}<a href=\"\u{7}\">\u{0}</a>".into(), // control chars
+            format!("<a href=\"http://b.com\">{}</a>", m.repeat(5000)), // bulk anchor text
+        ];
+        for (i, html) in cases.iter().enumerate() {
+            // Each of these would unwind on a bad byte slice; reaching the next
+            // line is the assertion.
+            let _ = parse_results(html, "fuzz", "the query");
+            let _ = HrefIter::new(html).count();
+            let _ = CiteIter::new(html).count();
+            let _ = GoogleUrlIter::new(html).count();
+            let _ = external_link_count(html, "fuzz");
+            // Sanity: any URL produced is non-empty and the title/snippet are
+            // valid UTF-8 (guaranteed by `&str`, but assert the result shape).
+            for r in parse_results(html, "fuzz", "the query") {
+                assert!(!r.url.is_empty(), "case {i}: empty URL emitted");
+            }
+        }
+    }
+
     #[test]
     fn cite_iter_extracts_bing_display_urls() {
         // Bing puts the display URL in <cite>, often with " ›" breadcrumbs and
