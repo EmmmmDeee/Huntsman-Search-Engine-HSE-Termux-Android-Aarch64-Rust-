@@ -570,6 +570,15 @@ pub(crate) fn build_scan_report(
         "entity_count": entities.len(),
         "correlations": correlations,
         "correlation_count": correlations.len(),
+        // DETERMINISM: `exported_at` is the SOLE intentional source of
+        // non-determinism in any export. It is meaningful here — report.json is a
+        // point-in-time snapshot whose "when was this pulled" is part of its
+        // value — and is the documented exception to byte-reproducibility. The
+        // diffable/reproducible artifacts are the debug bundle (no timestamp,
+        // proven byte-stable) and entity-level `scan_diff`. The
+        // `export_formats_determinism_audit` test pins that NO OTHER field of the
+        // report varies across renders, so any newly-introduced non-determinism
+        // fails CI rather than silently breaking reproducibility.
         "exported_at": crate::core::entity::unix_now(),
     })))
 }

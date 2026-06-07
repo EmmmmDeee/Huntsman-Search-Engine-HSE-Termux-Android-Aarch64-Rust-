@@ -628,6 +628,72 @@ mod tests {
     }
 
     #[test]
+    fn export_formats_determinism_audit() {
+        // DETERMINISM REQUIREMENT: evidence (not assertion) that every export
+        // format is byte-reproducible for a fixed store — so exports are diffable
+        // across runs/time — with `report.json`'s `exported_at` as the ONE
+        // documented exception. If a future change adds non-determinism anywhere
+        // else, this fails.
+        use crate::core::entity::{Entity, EntityKind};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("audit.db").to_str().unwrap()).unwrap();
+        let scan = Scan::new(
+            "scan-au",
+            Target::new(TargetKind::Email, "z@example-real.com"),
+        );
+        store.upsert_scan(&scan).unwrap();
+        store
+            .upsert_entities_batch(&[
+                Entity::new(EntityKind::Email, "z@example-real.com", 0.8, "scan-au"),
+                Entity::new(EntityKind::Username, "zeta", 0.6, "scan-au"),
+                Entity::new(EntityKind::Domain, "example-real.com", 0.5, "scan-au"),
+            ])
+            .unwrap();
+
+        type StoreFmt = fn(&Store, &str) -> Result<String>;
+        type PortFmt = fn(&dyn crate::core::port::StoragePort, &str) -> Result<String>;
+
+        // Byte-reproducible formats (Store-typed).
+        let store_fmts: &[(&str, StoreFmt)] = &[
+            ("json", render_json),
+            ("csv", render_csv),
+            ("gexf", render_gexf),
+        ];
+        for (name, render) in store_fmts {
+            let a = render(&store, "scan-au").unwrap();
+            let b = render(&store, "scan-au").unwrap();
+            assert_eq!(a, b, "format `{name}` is not byte-deterministic");
+        }
+        // full + debug take `&dyn StoragePort`.
+        let port_fmts: &[(&str, PortFmt)] =
+            &[("full", render_full), ("debug", render_debug_bundle)];
+        for (name, render) in port_fmts {
+            let a = render(&store, "scan-au").unwrap();
+            let b = render(&store, "scan-au").unwrap();
+            assert_eq!(a, b, "format `{name}` is not byte-deterministic");
+        }
+
+        // report.json: deterministic EXCEPT the documented `exported_at`. Compare
+        // structurally with that one field removed — robust regardless of whether
+        // the two renders happened to land in the same wall-clock second.
+        let mut r1: serde_json::Value =
+            serde_json::from_str(&render_report(&store, "scan-au").unwrap()).unwrap();
+        let mut r2: serde_json::Value =
+            serde_json::from_str(&render_report(&store, "scan-au").unwrap()).unwrap();
+        assert!(
+            r1.get("exported_at").is_some(),
+            "exported_at must be present"
+        );
+        for r in [&mut r1, &mut r2] {
+            r.as_object_mut().unwrap().remove("exported_at");
+        }
+        assert_eq!(
+            r1, r2,
+            "report.json varies in a field OTHER than the documented `exported_at`"
+        );
+    }
+
+    #[test]
     fn require_scan_errors_on_missing_and_ok_on_present() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("export_test.db");
