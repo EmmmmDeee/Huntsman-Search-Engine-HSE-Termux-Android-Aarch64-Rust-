@@ -247,9 +247,11 @@ impl ScanEngine {
         );
     }
 
-    /// Emit an `EntityExcluded` event — an expansion-pruning decision made
-    /// visible so recursion is never a black box (the reason names exactly why
-    /// the entity was not pivoted on this round).
+    /// Emit an `EntityExcluded` event — an expansion-pruning OR admission-drop
+    /// decision made visible so the pipeline is never a black box (the reason
+    /// names exactly why the entity was not pivoted on, or was rejected before
+    /// ever entering the graph: `bogus_ip`, `placeholder_artifact`,
+    /// `fragment_value`, …).
     fn emit_excluded(&self, scan_id: &str, entity: &Entity, reason: &str) {
         self.emit(
             scan_id,
@@ -1252,6 +1254,7 @@ impl ScanEngine {
                     if entity.kind == crate::core::entity::EntityKind::IpAddress
                         && crate::core::validation::is_bogus_ip(&entity.value)
                     {
+                        self.emit_excluded(scan_id, &entity, "bogus_ip");
                         continue;
                     }
                     // Drop documentation / placeholder artifacts (example.com,
@@ -1262,6 +1265,16 @@ impl ScanEngine {
                     // API keys / credentials) are exempt — see
                     // `validation::is_placeholder_entity`.
                     if crate::core::validation::is_placeholder_entity(&entity.kind, &entity.value) {
+                        self.emit_excluded(scan_id, &entity, "placeholder_artifact");
+                        continue;
+                    }
+                    // Drop truncated / incomplete values (`@gmail`, a domain-less
+                    // email, a bare dotless host, a `@`-prefixed handle that
+                    // failed to normalise) at admission so the user never sees an
+                    // unverifiable fragment. The auditor independently flags any
+                    // that somehow slip through (`fragment-values`).
+                    if crate::core::validation::is_fragment_value(&entity.kind, &entity.value) {
+                        self.emit_excluded(scan_id, &entity, "fragment_value");
                         continue;
                     }
                     self.emit(

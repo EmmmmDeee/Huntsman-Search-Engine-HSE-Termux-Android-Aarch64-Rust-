@@ -597,7 +597,7 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
 /// - Everything else → trim
 pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
-        EntityKind::Email | EntityKind::Username => {
+        EntityKind::Email => {
             // Total Unicode case-fold for dedup. `str::to_lowercase` maps every
             // char through `char::to_lowercase`, so a value whose only capital is
             // non-ASCII (`Ölaf`, a Cyrillic/Greek handle, Turkish `İ`) folds the
@@ -606,6 +606,14 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             // one identity across two UIDs; it also still allocated, so it bought
             // nothing.)
             value.trim().to_lowercase()
+        }
+        EntityKind::Username => {
+            // Same total Unicode case-fold as Email, plus stripping a leading `@`
+            // handle sigil: a profile scraped as `@matthewdiegmann` and one parsed
+            // as `matthewdiegmann` are the SAME account and must dedup to one UID.
+            // Without this they fragmented into two identities, and the `@`-prefixed
+            // copy also looked like a truncated value to the fragment auditor.
+            value.trim().trim_start_matches('@').trim().to_lowercase()
         }
         EntityKind::Domain => {
             let trimmed = value.trim();
@@ -1340,6 +1348,27 @@ mod tests {
     fn normalise_username_lowercases_and_trims() {
         let result = normalise(&EntityKind::Username, "  MyUser  ");
         assert_eq!(result, "myuser");
+    }
+
+    #[test]
+    fn normalise_username_strips_leading_handle_sigil_for_dedup() {
+        // `@matthewdiegmann` and `matthewdiegmann` are the same account: both must
+        // normalise (and therefore derive the same UID) to the bare handle.
+        assert_eq!(
+            normalise(&EntityKind::Username, "@MatthewDiegmann"),
+            "matthewdiegmann"
+        );
+        assert_eq!(
+            normalise(&EntityKind::Username, "  @ matthewdiegmann "),
+            "matthewdiegmann"
+        );
+        assert_eq!(
+            derive_uid(&EntityKind::Username, &normalise(&EntityKind::Username, "@matthewdiegmann")),
+            derive_uid(&EntityKind::Username, &normalise(&EntityKind::Username, "matthewdiegmann")),
+            "@handle and handle must share a UID"
+        );
+        // Email is unaffected — a leading `@` there is a genuine fragment.
+        assert_eq!(normalise(&EntityKind::Email, "Foo@Bar.com"), "foo@bar.com");
     }
 
     #[test]

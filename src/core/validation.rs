@@ -366,10 +366,54 @@ pub fn is_placeholder_entity(kind: &EntityKind, value: &str) -> bool {
     }
 }
 
+/// True when `value` is a truncated / incomplete reference that cannot be
+/// verified without reconstruction — the `@gmail`-style fragment the user must
+/// never see in results. Centralised here so the engine (which rejects these at
+/// admission) and the auditor (which flags any that slip through) judge them
+/// identically. Conservative: only the kinds with an unambiguous "complete"
+/// shape are checked, and inherently-opaque kinds are never fragments.
+pub fn is_fragment_value(kind: &EntityKind, value: &str) -> bool {
+    let v = value.trim();
+    if v.is_empty() {
+        return true;
+    }
+    // A trailing ellipsis or a dangling `@`/`@…prefix` is a truncation artifact
+    // for ANY textual kind — except inherently-unique secrets, which may contain
+    // arbitrary bytes and must never be dropped.
+    if matches!(
+        kind,
+        EntityKind::Password | EntityKind::ApiKey | EntityKind::Credential
+    ) {
+        return false;
+    }
+    if v.ends_with('…') || v.ends_with("...") || v.ends_with('@') {
+        return true;
+    }
+    match kind {
+        EntityKind::Email => {
+            // Must be local@domain.tld — reject "@gmail", "matthew@", "a@b".
+            match v.split_once('@') {
+                Some((local, domain)) => {
+                    local.is_empty() || !domain.contains('.') || domain.starts_with('.')
+                }
+                None => true,
+            }
+        }
+        // A bare freemail PROVIDER as a "domain" finding (gmail.com) is the
+        // "@gmail"-style incomplete reference in domain form; a label with no dot
+        // (or shorter than the shortest real registrable domain) is a fragment.
+        EntityKind::Domain => v.len() < 4 || !v.contains('.'),
+        // A leading `@` is a real truncation only on non-handle kinds — usernames
+        // are normalised to strip a `@handle` prefix, so by the time a Username
+        // reaches here a leading `@` would be a genuine fragment.
+        EntityKind::Username => v.starts_with('@'),
+        _ => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Domain shape
 // ---------------------------------------------------------------------------
-
 /// Validate a domain has at least one label, contains a '.', uses only
 /// LDH characters (letter-digit-hyphen) per label, and is not a pure
 /// IP literal. Trailing dot is stripped before validation.
@@ -429,6 +473,34 @@ pub fn validate_for_kind(kind: &str, value: &str) -> ValidationReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fragment_value_rejects_truncated_and_keeps_complete() {
+        use EntityKind as K;
+        // Fragments — must be rejected.
+        assert!(is_fragment_value(&K::Email, "@gmail"));
+        assert!(is_fragment_value(&K::Email, "matthew@"));
+        assert!(is_fragment_value(&K::Email, "a@b")); // no TLD dot
+        assert!(is_fragment_value(&K::Email, "x@.com")); // leading-dot domain
+        assert!(is_fragment_value(&K::Email, "notanemail"));
+        assert!(is_fragment_value(&K::Domain, "gmail")); // no dot
+        assert!(is_fragment_value(&K::Domain, "a.b")); // < 4 chars
+        assert!(is_fragment_value(&K::Username, "@handle")); // unstripped sigil
+        assert!(is_fragment_value(&K::Person, "Matthew Dieg…")); // ellipsis
+        assert!(is_fragment_value(&K::Email, "   "));
+
+        // Complete, verifiable values — must be kept.
+        assert!(!is_fragment_value(&K::Email, "matthewdiegmann@gmail.com"));
+        assert!(!is_fragment_value(&K::Domain, "goatlegal.com.au"));
+        assert!(!is_fragment_value(&K::Domain, "x.co"));
+        assert!(!is_fragment_value(&K::Username, "matthewdiegmann"));
+        assert!(!is_fragment_value(&K::Person, "Matthew Diegmann"));
+
+        // Inherently-unique secrets are never fragments even if oddly shaped.
+        assert!(!is_fragment_value(&K::Password, "@p"));
+        assert!(!is_fragment_value(&K::ApiKey, "sk-..."));
+        assert!(!is_fragment_value(&K::Credential, "user@"));
+    }
 
     #[test]
     fn placeholder_domain_catches_reserved_and_example() {
