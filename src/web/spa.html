@@ -6,6 +6,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- Colours Chrome-on-Android's address bar to match the dark navbar. -->
   <meta name="theme-color" content="#222222">
+  <!-- Installable as a standalone fullscreen app on Chrome-for-Android (Add to
+       Home Screen): the manifest declares display:standalone, the meta is the
+       modern Chrome hint. Progressive enhancement — desktop browsers ignore it. -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="/manifest.webmanifest">
   <!-- Inline SVG favicon (hunting-crosshair, brand cyan on navbar dark). Being a
        data URI, modern Chrome uses it directly and never requests /favicon.ico —
        which would otherwise fall through to the SPA fallback and return the whole

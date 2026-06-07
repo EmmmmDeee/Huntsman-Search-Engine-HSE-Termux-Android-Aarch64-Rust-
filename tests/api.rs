@@ -641,6 +641,33 @@ async fn favicon_returns_svg_not_html() {
     );
 }
 
+#[tokio::test]
+async fn manifest_is_valid_installable_pwa() {
+    // Chrome-on-Android installability: the manifest must serve as JSON (not the
+    // SPA fallback), parse, and declare standalone display so "Add to Home Screen"
+    // launches the UI fullscreen.
+    let app = test_app("manifest");
+    let resp = app.oneshot(get("/manifest.webmanifest")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        ct.contains("application/manifest+json"),
+        "manifest must have the manifest content-type, got: {ct}"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), 100_000)
+        .await
+        .unwrap();
+    let m: serde_json::Value = serde_json::from_slice(&bytes).expect("manifest must be valid JSON");
+    assert_eq!(m["display"], "standalone");
+    assert_eq!(m["start_url"], "/");
+    assert!(m["icons"].as_array().is_some_and(|a| !a.is_empty()));
+}
+
 // ── 15. Stats ─────────────────────────────────────────────────────────────
 
 #[tokio::test]

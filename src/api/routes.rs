@@ -231,6 +231,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         //    and return the whole HTML document as an "image". Serve the same
         //    inline crosshair the SPA links, with the correct content type.
         .route("/favicon.ico", get(favicon_handler))
+        // ── web-app manifest — lets Chrome-on-Android install the UI as a
+        //    standalone fullscreen app (Add to Home Screen). Progressive
+        //    enhancement: ignored by browsers that don't support it.
+        .route("/manifest.webmanifest", get(manifest_handler))
         // ── SPA fallback — `/`, `/scan/...`, anything outside `/api` and
         //    `/static`; serves the embedded SPA for client-side routing.
         .fallback(spa_handler)
@@ -322,6 +326,48 @@ async fn favicon_handler() -> Response {
             ),
         ],
         FAVICON_SVG,
+    )
+        .into_response()
+}
+
+/// Web-app manifest — makes the UI **installable as a standalone app on
+/// Chrome-for-Android** (Add to Home Screen → launches fullscreen with no browser
+/// address bar, reclaiming ~10% of a phone's vertical space for scan results).
+/// `display: standalone` + the matching `theme_color`/`background_color` give an
+/// app-like launch on the primary target. The icon reuses the same inline
+/// crosshair SVG the favicon serves (`sizes:"any"` satisfies Chrome's
+/// installability check for a scalable icon) — zero extra binary asset. Served
+/// same-origin, so CSP `default-src 'self'` (which `manifest-src` falls back to)
+/// permits it.
+const MANIFEST_JSON: &str = r##"{
+  "name": "Huntsman Search Engine",
+  "short_name": "Huntsman",
+  "description": "OSINT/GEOINT platform — runs entirely in Termux on Android, no root.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#222222",
+  "theme_color": "#222222",
+  "icons": [
+    { "src": "/favicon.ico", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}"##;
+
+async fn manifest_handler() -> Response {
+    (
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/manifest+json"),
+            ),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=86400"),
+            ),
+        ],
+        MANIFEST_JSON,
     )
         .into_response()
 }
