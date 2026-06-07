@@ -2036,8 +2036,9 @@ async function renderEngines(v){
   const rows = engines.map(en=>{
     const p = probed[en.name];
     let status, latency, results;
+    let detail='';
     if (!en.enabled){ status='disabled'; latency='—'; results='—'; }
-    else if (p){ status=p.status; latency=esc(String(p.latency_ms))+' ms'; results=esc(String(p.results)); }
+    else if (p){ status=p.status; latency=esc(String(p.latency_ms))+' ms'; results=esc(String(p.results)); detail=esc(p.detail||''); }
     else { status='pending'; latency='—'; results='—'; }   // enabled, awaiting next sweep
     cnt[status] = (cnt[status]||0) + 1;
     const btn = en.enabled
@@ -2048,6 +2049,7 @@ async function renderEngines(v){
       <td>${dot(status)}</td>
       <td class="text-right">${latency}</td>
       <td class="text-right">${results}</td>
+      <td style="color:#999;font-size:12px">${detail}</td>
       <td class="text-right">${btn}</td>
     </tr>`;
   }).join('');
@@ -2065,8 +2067,8 @@ async function renderEngines(v){
     </div>
     <p class="text-muted" style="margin-top:8px">Free, keyless engines — probed at startup and on a periodic cycle. Last sweep: ${esc(when)}. Auto-refreshes every 30&nbsp;s. Disable a noisy/blocked engine inline — it's then skipped by the probe and every scan (manage all toggles under <a href="#/opts">Settings</a>).</p>
     <div class="table-responsive"><table class="table table-striped table-condensed">
-      <thead><tr><th>Engine</th><th>Status</th><th class="text-right">Latency</th><th class="text-right">Results</th><th class="text-right">Action</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5" class="text-center text-muted">No engines</td></tr>'}</tbody>
+      <thead><tr><th>Engine</th><th>Status</th><th class="text-right">Latency</th><th class="text-right">Results</th><th>Diagnosis</th><th class="text-right">Action</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" class="text-center text-muted">No engines</td></tr>'}</tbody>
     </table></div>`;
   wireEngineToggles();
   clearEnginesTimer();
