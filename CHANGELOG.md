@@ -10,6 +10,63 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **Full pipeline transparency — no black-box decisions.** Every pivot the
+  expansion engine *declines* to follow now emits an `entity_excluded` event with
+  a precise reason: `below_min_expand_confidence`, `roi_saturated`,
+  `identity_mismatch`, `non_routable_ip`, `incidental_infra`, and the two
+  previously-silent cases `non_pivotable_kind` and `already_dispatched_this_scan`.
+  Admission-time rejections (`bogus_ip`, `placeholder_artifact`, `fragment_value`)
+  — previously dropped silently — now emit the same event. A scan can no longer
+  discard a lead without saying why.
+
+- **`--expand-all-identities` scan flag (implied by `--full`).** Lifts the
+  wrong-identity gate so *every* discovered username/person expands, including
+  uncorroborated single-source aliases that share no handle overlap with the
+  subject — maximum recall when the operator would rather over-collect and prune
+  by hand. The gate stays on by default (focused scans), and every suppressed
+  alias is still logged as `identity_mismatch`. The decision is now a pure,
+  unit-tested `scan::is_wrong_identity_pivot`.
+
+- **Self-audit surfaces the recursion exclusion ledger.** `hse audit` and the
+  web **Audit** panel fold a scan's `entity_excluded`/`expansion_stop` events into
+  an `expansion` block (per-reason counts + stop reasons) and raise two findings:
+  `recursion-recall` (escalates to MEDIUM when the wrong-identity gate dominated
+  the kept graph — with the `--expand-all-identities` remedy) and an INFO
+  `expansion-ledger` for expected dedup/terminal-kind exclusions. A golden
+  regression benchmark (`tests/audit_regression.rs`) pins the score and finding
+  set so a scoring change must be deliberately re-blessed.
+
+### Fixed
+
+- **Truncated `@gmail`-style fragments are rejected at the source.** A new shared
+  `validation::is_fragment_value` rejects domain-less emails, dotless hosts and
+  `@`-prefixed handles at the admission boundary, so an unverifiable fragment
+  never enters the graph or reaches the UI. The auditor independently flags any
+  that slip through (`fragment-values`).
+
+- **`@handle` and `handle` are now one identity.** Username normalisation strips a
+  leading `@` sigil, so a profile scraped as `@matthewdiegmann` and one parsed as
+  `matthewdiegmann` dedup to a single UID instead of fragmenting into two — and
+  the `@`-prefixed copy no longer trips the fragment auditor.
+
+- **No false geolocation from CDN/anycast edge IPs in `ipquery`/`ip2location`.**
+  Both modules emitted Coordinates + Address for Cloudflare/Fastly edge IPs at
+  0.58–0.68 confidence — the datacenter's location, not the subject's — seeding
+  false "geolocation convergence". They now apply the same `is_cdn_edge_ip` guard
+  `ip_geo`/`ipinfo` already use, skipping the false geo while keeping the
+  legitimate ASN/ISP-org infrastructure entities. All four IP-geo modules log the
+  skip so a dropped fix is never silent.
+
+- **Search-result evidence is preserved, not silently truncated.** Title/snippet
+  preview caps were raised (200→500 / 800→4000 chars) and, when content still
+  exceeds them, `*_truncated` + `*_full_len` attributes are recorded so a finding
+  is never implied complete; the key-phrase is extracted from the full snippet,
+  not the preview. Recycled address/email/phone findings now carry full source
+  attribution (page title, snippet, originating query, surrounding-text context).
+  Email/phone extraction caps were raised 10× and the ceiling is logged.
+
 ### Performance
 
 - **Correlation rule AU-034 (handle reuse) is now linear, not quadratic.** It

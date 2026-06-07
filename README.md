@@ -230,6 +230,17 @@ Round 2: Discovered IPs → geo modules → coordinates → address.
 | `--max-entities N` | none | Stop at N total entities |
 | `--max-wall-time SECS` | none | Stop after SECS wall-time |
 | `--max-concurrent N` | `0` | Parallel module dispatch (0=sequential) |
+| `--expand-all-identities` | off | Expand every discovered username/person, even uncorroborated aliases that don't overlap the subject's handle (lifts the wrong-identity gate; implied by `--full`). Higher recall, more unrelated footprints to prune |
+
+**Nothing is a black box.** Every pivot the engine *declines* to follow — a
+below-confidence entity, a wrong-identity alias, an already-dispatched target, a
+non-pivotable kind — is recorded as an `entity_excluded` event with its reason,
+and every value rejected at intake (a `@gmail`-style fragment, a placeholder, a
+bogus IP) is logged the same way. The scored self-audit
+(`hse audit --scan-id <id>`, or the web **Audit** panel) rolls these up into an
+**expansion ledger** and raises a `recursion-recall` finding — pointing you at
+`--expand-all-identities` — when the wrong-identity gate suppressed enough
+aliases to risk a coverage blind spot.
 
 ---
 
