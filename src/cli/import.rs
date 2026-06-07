@@ -477,15 +477,24 @@ fn import_json_output(
 /// (`cmd_import_html`) and the web upload dispatcher, so the two never drift.
 fn parse_oathnet_html(body: &str, sid: &str) -> Vec<crate::core::entity::Entity> {
     use crate::core::entity::{Entity, EntityKind};
+    use regex::Regex;
     use std::collections::HashSet;
+    use std::sync::OnceLock;
+
+    // Compile the three extraction patterns once (codebase convention — see
+    // `util::html`, `address_au`, `employer_pivot`). Regex compilation is
+    // non-trivial and these are otherwise rebuilt on every import call.
+    static RES: OnceLock<(Regex, Regex, Regex)> = OnceLock::new();
+    let (ip_re, email_re, domain_re) = RES.get_or_init(|| {
+        (
+            Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap(),
+            Regex::new(r"[\w.+-]+@[\w.-]+\.\w{2,}").unwrap(),
+            Regex::new(r"(?:https?://)?([a-z0-9][-a-z0-9]*(?:\.[a-z0-9][-a-z0-9]*)+)").unwrap(),
+        )
+    });
 
     let mut entities: Vec<Entity> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-
-    let ip_re = regex::Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
-    let email_re = regex::Regex::new(r"[\w.+-]+@[\w.-]+\.\w{2,}").unwrap();
-    let domain_re =
-        regex::Regex::new(r"(?:https?://)?([a-z0-9][-a-z0-9]*(?:\.[a-z0-9][-a-z0-9]*)+)").unwrap();
 
     let lower = body.to_lowercase();
 
