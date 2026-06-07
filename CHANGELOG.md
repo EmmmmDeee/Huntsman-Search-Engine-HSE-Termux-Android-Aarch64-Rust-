@@ -323,6 +323,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`exif_geo` now extracts device + owner identity, not just GPS (code-only
+  cross-correlation).** The pure-Rust EXIF reader (`kamadak-exif`, no API)
+  previously emitted only a `Coordinates` entity and *only when the image carried
+  GPS* — discarding everything for the common metadata-stripped-of-location case.
+  It now also recovers, independently of GPS:
+  * a **`DeviceId`** when a camera **serial** is present (`BodySerialNumber`/
+    `LensSerialNumber`) — a unique cross-image anchor, so the same serial in two
+    photos links them to one physical camera (and usually owner). Make+model
+    alone is deliberately *not* an anchor (millions share `Apple iPhone 13`);
+  * a **`Person`** from `CameraOwnerName`/`Artist` — the owner named in metadata,
+    a real identity lead (kept below the expansion floor, but correlatable with
+    same-named Person entities from the search/breach modules);
+  * richer evidence (serial, lens, software, owner, shot-time) on every entity.
+  This is the cross-correlation the free search-engine scrapers feed: they surface
+  image URLs as `Url` entities, the expansion loop dispatches them here, and the
+  Coordinates/DeviceId/Person results fuse into the graph via the correlator —
+  all on-device, no external service. Tested (`device_fingerprint`, `clean_owner`).
 - **Cross-function invariant test for the domain helpers.** Beyond per-case
   examples, a generative test builds a host corpus (every base × single- and
   multi-label suffix × subdomain depth) and asserts the *relationships* between

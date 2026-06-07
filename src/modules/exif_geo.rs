@@ -10,15 +10,25 @@
 //!      `.png`, `.tif`, `.tiff`, `.webp`, `.heic`).
 //!   2. Fetch the bytes via `ctx.http` (capped at 8 MB so a
 //!      misclassified video URL doesn't drain memory).
-//!   3. Parse with `kamadak-exif`. Returns `None` if no EXIF tags or
+//!   3. Parse with `kamadak-exif`. Returns nothing if no EXIF tags or
 //!      the image is metadata-stripped (the typical case after
 //!      most social platforms re-encode).
-//!   4. Pull `GPSLatitude` / `GPSLongitude` / `GPSLatitudeRef` /
-//!      `GPSLongitudeRef` from the GPS IFD; emit a `Coordinates`
-//!      entity tagged `exif`.
-//!   5. Surface camera Make + Model + timestamp as evidence
-//!      attributes so the operator can correlate the image source
-//!      and shoot time downstream.
+//!   4. Emit, independently (an image needn't have all three):
+//!      * `Coordinates` from the GPS IFD (`GPSLatitude`/`GPSLongitude`/refs);
+//!      * `DeviceId` when a camera **serial** is present — a unique
+//!        cross-image anchor: the same serial recovered from two photos
+//!        links them to the same physical camera (and usually owner);
+//!      * `Person` from `CameraOwnerName`/`Artist` — the owner named in
+//!        metadata, a real identity lead that correlates with same-named
+//!        Person entities from search/breach modules.
+//!   5. Camera make/model/serial/lens/software/owner/shot-time ride along
+//!      as evidence attributes on every emitted entity.
+//!
+//! This is the cross-correlation the search-engine scrapers feed: those
+//! modules surface image URLs as `Url` entities, the expansion loop dispatches
+//! them here, and the resulting Coordinates/DeviceId/Person entities fuse with
+//! the rest of the graph via the correlator — all with **no external API**
+//! (pure-Rust `kamadak-exif`).
 //!
 //! Privacy: most chat apps (WhatsApp, Signal, Telegram, iOS
 //! Messages, Instagram) strip EXIF on send, so URLs to those
@@ -81,7 +91,13 @@ impl Module for ExifGeo {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
+        // Coordinates (GPS IFD), DeviceId (camera serial — a cross-image
+        // correlation anchor), and Person (the owner/artist named in metadata).
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Coordinates,
+            EntityKind::DeviceId,
+            EntityKind::Person,
+        ];
         KINDS
     }
 
@@ -140,41 +156,103 @@ impl Module for ExifGeo {
             Err(_) => return Ok(result),
         };
 
-        let Some((lat, lon)) = extract_gps(&exif) else {
+        // Gather every cross-correlation signal once — these exist even when the
+        // image has no GPS, so an EXIF-stripped-of-location photo can still yield
+        // a device serial or an owner name (the prior version emitted nothing
+        // without GPS, discarding both).
+        let make = read_str(&exif, Tag::Make);
+        let model = read_str(&exif, Tag::Model);
+        let serial = read_str(&exif, Tag::BodySerialNumber)
+            .or_else(|| read_str(&exif, Tag::LensSerialNumber));
+        let owner = read_str(&exif, Tag::CameraOwnerName).or_else(|| read_str(&exif, Tag::Artist));
+        let software = read_str(&exif, Tag::Software);
+        let lens = read_str(&exif, Tag::LensModel);
+        let shot_time =
+            read_str(&exif, Tag::DateTimeOriginal).or_else(|| read_str(&exif, Tag::DateTime));
+
+        let gps = extract_gps(&exif);
+        let person_name = clean_owner(owner.as_deref());
+        let fingerprint = device_fingerprint(make.as_deref(), model.as_deref(), serial.as_deref());
+
+        // Nothing actionable in the metadata → done (most re-encoded social images).
+        if gps.is_none() && fingerprint.is_none() && person_name.is_none() {
             return Ok(result);
+        }
+
+        // Shared evidence: every emitted entity carries the same camera/owner
+        // attribute set so the operator can correlate source, device and shot time.
+        let evidence = |summary: String| {
+            let mut ev = Evidence::new(SRC, summary).with_attr("url", url);
+            if let Some(v) = &make {
+                ev = ev.with_attr("camera_make", v);
+            }
+            if let Some(v) = &model {
+                ev = ev.with_attr("camera_model", v);
+            }
+            if let Some(v) = &serial {
+                ev = ev.with_attr("camera_serial", v);
+            }
+            if let Some(v) = &lens {
+                ev = ev.with_attr("lens_model", v);
+            }
+            if let Some(v) = &software {
+                ev = ev.with_attr("software", v);
+            }
+            if let Some(v) = &owner {
+                ev = ev.with_attr("owner_name", v);
+            }
+            if let Some(v) = &shot_time {
+                ev = ev.with_attr("shot_time", v);
+            }
+            ev
         };
 
-        // EXIF GPS is empirically reliable to ~10–50 m on the source
-        // device. Set base confidence at 0.80 — meaningfully above
-        // single-source IP-geo (now 0.55–0.60 post-recalibration)
-        // but below WiGLE WiFi consensus (0.85) which has multiple
-        // observers.
-        let coord_str = format!("{lat:.6},{lon:.6}");
-        let mut e = Entity::new(EntityKind::Coordinates, &coord_str, 0.80, &ctx.scan_id);
-        e.tag("geoint");
-        e.tag("exif");
-        e.tag("photo-derived");
-
-        let mut ev = Evidence::new(SRC, format!("EXIF GPS extracted from {url}"))
-            .with_attr("url", url)
-            .with_attr("latitude", lat.to_string())
-            .with_attr("longitude", lon.to_string());
-
-        // Camera Make / Model / DateTime — useful operator context.
-        if let Some(make) = read_str(&exif, Tag::Make) {
-            ev = ev.with_attr("camera_make", make);
-        }
-        if let Some(model) = read_str(&exif, Tag::Model) {
-            ev = ev.with_attr("camera_model", model);
-        }
-        if let Some(dt) = read_str(&exif, Tag::DateTimeOriginal) {
-            ev = ev.with_attr("shot_time", dt);
-        } else if let Some(dt) = read_str(&exif, Tag::DateTime) {
-            ev = ev.with_attr("shot_time", dt);
+        // 1. Coordinates — GPS IFD. Empirically reliable to ~10–50 m; base 0.80,
+        //    above single-source IP-geo (0.55–0.60), below WiGLE consensus (0.85).
+        if let Some((lat, lon)) = gps {
+            let coord_str = format!("{lat:.6},{lon:.6}");
+            let mut e = Entity::new(EntityKind::Coordinates, &coord_str, 0.80, &ctx.scan_id);
+            e.tag("geoint");
+            e.tag("exif");
+            e.tag("photo-derived");
+            e.add_evidence(
+                evidence(format!("EXIF GPS extracted from {url}"))
+                    .with_attr("latitude", lat.to_string())
+                    .with_attr("longitude", lon.to_string()),
+            );
+            result.push(e);
         }
 
-        e.add_evidence(ev);
-        result.push(e);
+        // 2. DeviceId — a camera serial uniquely identifies one physical device,
+        //    so the same serial across images links them to the same camera (and
+        //    usually the same person): the highest-value EXIF cross-correlation.
+        //    Authoritative (camera firmware wrote it) → 0.75.
+        if let Some(fp) = fingerprint {
+            let mut e = Entity::new(EntityKind::DeviceId, &fp, 0.75, &ctx.scan_id);
+            e.tag("exif");
+            e.tag("camera");
+            e.tag("device-fingerprint");
+            e.add_evidence(evidence(format!(
+                "Camera serial recovered from EXIF of {url}"
+            )));
+            result.push(e);
+        }
+
+        // 3. Person — the owner/artist named in metadata. CameraOwnerName is set
+        //    in-camera by the owner, so it is a real identity lead. Kept below the
+        //    0.50 expansion floor (a metadata name is a lead, not a confirmed
+        //    identity) but NOT quarantined, so it correlates with same-named
+        //    Person entities surfaced by search/breach modules.
+        if let Some(name) = person_name {
+            let mut e = Entity::new(EntityKind::Person, &name, 0.45, &ctx.scan_id);
+            e.tag("exif");
+            e.tag("photo-owner");
+            e.add_evidence(evidence(format!(
+                "Photo owner/artist named in EXIF of {url}"
+            )));
+            result.push(e);
+        }
+
         Ok(result)
     }
 }
@@ -255,6 +333,60 @@ fn dms_to_decimal(value: &Value) -> Option<f64> {
         return None;
     }
     Some(d + m / 60.0 + s / 3600.0)
+}
+
+/// Build a stable cross-image correlation anchor for a physical camera — used
+/// **only** when a serial number is present. A serial uniquely identifies one
+/// device, so the same serial recovered from two images links them to the same
+/// camera. Make+model alone is deliberately *not* an anchor: millions of devices
+/// share `Apple iPhone 13`, so clustering on it would fuse unrelated people.
+/// Returns `None` without a (non-blank) serial.
+fn device_fingerprint(
+    make: Option<&str>,
+    model: Option<&str>,
+    serial: Option<&str>,
+) -> Option<String> {
+    let serial = serial.map(str::trim).filter(|s| !s.is_empty())?;
+    let label = [make, model]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(if label.is_empty() {
+        format!("camera s/n {serial}")
+    } else {
+        format!("{label} s/n {serial}")
+    })
+}
+
+/// Sanitise an EXIF owner/artist string into a usable Person name, or `None` if
+/// it is empty or obvious non-identity boilerplate (a copyright notice, a stock
+/// agency, a software string). Conservative — a metadata name is a real lead, so
+/// only clear junk is rejected.
+fn clean_owner(raw: Option<&str>) -> Option<String> {
+    let s = raw?.trim();
+    if s.len() < 2 || s.chars().count() > 80 || !s.chars().any(char::is_alphabetic) {
+        return None;
+    }
+    let lower = s.to_ascii_lowercase();
+    const NOISE: &[&str] = &[
+        "copyright",
+        "all rights",
+        "getty",
+        "shutterstock",
+        "istock",
+        "adobe",
+        "unknown",
+        "n/a",
+        "camera owner",
+    ];
+    if lower.starts_with('©') || lower.starts_with("(c)") || NOISE.iter().any(|n| lower.contains(n))
+    {
+        return None;
+    }
+    Some(s.to_string())
 }
 
 /// Read an ASCII string field if it exists, trimming nulls and
@@ -343,8 +475,66 @@ mod tests {
     }
 
     #[test]
-    fn produces_coordinates_only() {
-        assert_eq!(ExifGeo.produces(), &[EntityKind::Coordinates]);
+    fn produces_coordinates_device_and_person() {
+        assert_eq!(
+            ExifGeo.produces(),
+            &[
+                EntityKind::Coordinates,
+                EntityKind::DeviceId,
+                EntityKind::Person
+            ]
+        );
+    }
+
+    // ── device_fingerprint ─────────────────────────────────────
+
+    #[test]
+    fn fingerprint_requires_a_serial() {
+        // No serial → no anchor (make+model alone matches millions of devices).
+        assert_eq!(
+            device_fingerprint(Some("Apple"), Some("iPhone 13"), None),
+            None
+        );
+        assert_eq!(
+            device_fingerprint(Some("Apple"), Some("iPhone 13"), Some("  ")),
+            None
+        );
+        // With a serial, include the human-readable label, else fall back.
+        assert_eq!(
+            device_fingerprint(Some("Canon"), Some("EOS R5"), Some("123456")).as_deref(),
+            Some("Canon EOS R5 s/n 123456")
+        );
+        assert_eq!(
+            device_fingerprint(None, None, Some("SN-XYZ")).as_deref(),
+            Some("camera s/n SN-XYZ")
+        );
+        // Same serial, same anchor → two images of one camera correlate.
+        assert_eq!(
+            device_fingerprint(Some("Canon"), Some("EOS R5"), Some("123456")),
+            device_fingerprint(Some("Canon"), Some("EOS R5"), Some("123456"))
+        );
+    }
+
+    // ── clean_owner ────────────────────────────────────────────
+
+    #[test]
+    fn clean_owner_accepts_names_rejects_boilerplate() {
+        assert_eq!(
+            clean_owner(Some("Jordan Meyers")).as_deref(),
+            Some("Jordan Meyers")
+        );
+        assert_eq!(
+            clean_owner(Some("  Erik Lindqvist  ")).as_deref(),
+            Some("Erik Lindqvist")
+        );
+        // Boilerplate / non-identity.
+        assert_eq!(clean_owner(None), None);
+        assert_eq!(clean_owner(Some("")), None);
+        assert_eq!(clean_owner(Some("© 2021 Getty Images")), None);
+        assert_eq!(clean_owner(Some("Copyright Acme")), None);
+        assert_eq!(clean_owner(Some("shutterstock")), None);
+        assert_eq!(clean_owner(Some("unknown")), None);
+        assert_eq!(clean_owner(Some("12345")), None); // no letters
     }
 
     #[test]
