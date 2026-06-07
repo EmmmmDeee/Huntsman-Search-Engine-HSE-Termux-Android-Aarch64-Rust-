@@ -1183,6 +1183,7 @@ async function renderAudit(host, id){
       <div class="col-sm-9 col-xs-6"><div class="stat-card" style="text-align:left">
         <div class="lab">Grade</div><div style="font-size:15px;color:${col};font-weight:600">${esc(r.grade||'')}</div>
         <div class="text-muted" style="margin-top:4px">${r.entity_total} entities · ${r.tiers.verified} verified · ${r.tiers.probable} probable · ${r.tiers.candidate} candidate · ${Math.round((r.noise_ratio||0)*100)}% noise</div>
+        ${(r.geo&&r.geo.coord_count)?`<div class="text-muted" style="margin-top:2px">geo: ${r.geo.coord_count} fix(es) / ${r.geo.source_count} source(s) · spread ${Math.round(r.geo.max_spread_km)} km · ${r.geo.has_consensus?'consensus':'no consensus'}${r.geo.outliers?` · <span style="color:#d9534f">${r.geo.outliers} outlier(s)</span>`:''}</div>`:''}
       </div></div>
     </div>
     ${kinds?`<p class="text-muted" style="margin:6px 0 12px">${kinds}</p>`:''}

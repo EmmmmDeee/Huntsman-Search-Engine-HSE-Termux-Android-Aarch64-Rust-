@@ -332,6 +332,20 @@ fn print_report(r: &AuditReport, source: &str) {
         r.entity_total, r.tiers.0, r.tiers.1, r.tiers.2
     );
     println!("noise ratio: {:.0}% candidate-tier", r.noise_ratio * 100.0);
+    if r.geo.coord_count > 0 {
+        println!(
+            "geolocation: {} fix(es) from {} source(s) · spread {:.0} km · {}{}",
+            r.geo.coord_count,
+            r.geo.source_count,
+            r.geo.max_spread_km,
+            if r.geo.has_consensus { "consensus" } else { "no consensus" },
+            if r.geo.outliers > 0 {
+                format!(" · {} outlier(s)", r.geo.outliers)
+            } else {
+                String::new()
+            },
+        );
+    }
     if !r.by_kind.is_empty() {
         let top: Vec<String> = r
             .by_kind

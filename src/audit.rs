@@ -120,6 +120,22 @@ pub struct Finding {
     pub recommendation: String,
 }
 
+/// Cross-source geolocation consistency summary — validates that the scan's
+/// geocoders agree, and quantifies disagreement when they don't.
+#[derive(Debug, Clone, Default)]
+pub struct GeoSummary {
+    /// Distinct coordinate points parsed.
+    pub coord_count: usize,
+    /// Distinct geo source modules contributing coordinates.
+    pub source_count: usize,
+    /// Largest pairwise great-circle distance between any two coordinates (km).
+    pub max_spread_km: f64,
+    /// Coordinates lying farther than the outlier threshold from the consensus.
+    pub outliers: usize,
+    /// True if a consensus cluster (≥2 nearby coordinates) was found.
+    pub has_consensus: bool,
+}
+
 /// The full scored audit.
 #[derive(Debug, Clone)]
 pub struct AuditReport {
@@ -133,6 +149,116 @@ pub struct AuditReport {
     /// 0–100 — 100 is a clean, individualised, well-sourced scan.
     pub score: u32,
     pub log: LogSignals,
+    /// Cross-source geolocation consistency.
+    pub geo: GeoSummary,
+}
+
+/// Coordinates within this radius (km) are treated as the same locality/metro —
+/// independent geocoders rarely agree tighter than a city.
+const GEO_CONSENSUS_KM: f64 = 50.0;
+/// A coordinate farther than this (km) from the consensus is a divergent fix —
+/// almost certainly a different place (a datacenter, a mis-geocode, a homograph
+/// city) rather than the subject's true location.
+const GEO_OUTLIER_KM: f64 = 150.0;
+
+/// Cross-validate the scan's coordinates: find the consensus locality (the point
+/// with the most neighbours within [`GEO_CONSENSUS_KM`]) and flag any fix farther
+/// than [`GEO_OUTLIER_KM`] from it as divergent. Returns the summary plus an
+/// optional finding. Pure; uses the same haversine the correlator does.
+fn geo_consistency(entities: &[AuditEntity]) -> (GeoSummary, Option<Finding>) {
+    // Parse distinct coordinate points, keeping each one's source labels.
+    let mut pts: Vec<(f64, f64, String, Vec<String>)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut srcs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for e in entities.iter().filter(|e| e.kind == "coordinates") {
+        if let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value) {
+            srcs.extend(e.sources.iter().cloned());
+            if seen.insert(e.value.clone()) {
+                pts.push((lat, lon, e.value.clone(), e.sources.clone()));
+            }
+        }
+    }
+    let mut summary = GeoSummary {
+        coord_count: pts.len(),
+        source_count: srcs.len(),
+        ..Default::default()
+    };
+    if pts.len() < 2 {
+        return (summary, None);
+    }
+
+    let dist = |a: &(f64, f64, String, Vec<String>), b: &(f64, f64, String, Vec<String>)| {
+        crate::util::geohash::haversine_km(a.0, a.1, b.0, b.1)
+    };
+    // Max pairwise spread.
+    for i in 0..pts.len() {
+        for j in (i + 1)..pts.len() {
+            summary.max_spread_km = summary.max_spread_km.max(dist(&pts[i], &pts[j]));
+        }
+    }
+    // Consensus medoid: the point with the most neighbours within GEO_CONSENSUS_KM.
+    let (mut best_idx, mut best_neighbours) = (0usize, 0usize);
+    for i in 0..pts.len() {
+        let n = (0..pts.len())
+            .filter(|&j| j != i && dist(&pts[i], &pts[j]) <= GEO_CONSENSUS_KM)
+            .count();
+        if n > best_neighbours {
+            best_neighbours = n;
+            best_idx = i;
+        }
+    }
+    summary.has_consensus = best_neighbours >= 1;
+
+    // Everything spread tightly already → consensus, no finding.
+    if summary.max_spread_km <= GEO_OUTLIER_KM {
+        return (summary, None);
+    }
+
+    let medoid = &pts[best_idx];
+    let mut outlier_examples: Vec<String> = Vec::new();
+    for (i, p) in pts.iter().enumerate() {
+        if i == best_idx {
+            continue;
+        }
+        let d = dist(medoid, p);
+        if d > GEO_OUTLIER_KM {
+            summary.outliers += 1;
+            let who = if p.3.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", p.3.join(","))
+            };
+            outlier_examples.push(format!("{}{who} — {:.0} km from consensus", p.2, d));
+        }
+    }
+    if summary.outliers == 0 {
+        return (summary, None);
+    }
+
+    // If there is a real consensus cluster, the outliers are noise to drop
+    // (MEDIUM). If coordinates are scattered with no agreement, geolocation is
+    // unreliable for this subject (HIGH).
+    let severity = if summary.has_consensus {
+        Severity::Medium
+    } else {
+        Severity::High
+    };
+    let finding = Finding {
+        severity,
+        category: "geo-divergence",
+        message: format!(
+            "{} geolocation fix(es) disagree by up to {:.0} km — sources do not agree on the \
+             subject's location",
+            summary.outliers + 1,
+            summary.max_spread_km
+        ),
+        examples: examples(outlier_examples),
+        recommendation: "Cross-validate geocoders: drop datacenter/CDN-IP fixes, prefer \
+            multi-source consensus (WiGLE/EXIF over coarse IP-geo), and down-rank coordinates \
+            that no other source corroborates. Investigate the divergent source above."
+            .into(),
+    };
+    (summary, Some(finding))
 }
 
 impl AuditReport {
@@ -187,6 +313,13 @@ impl AuditReport {
                 "module_errors": self.log.module_errors,
                 "http_failures": self.log.http_failures,
                 "log_lines_parsed": self.log.lines_parsed,
+            },
+            "geo": {
+                "coord_count": self.geo.coord_count,
+                "source_count": self.geo.source_count,
+                "max_spread_km": self.geo.max_spread_km,
+                "outliers": self.geo.outliers,
+                "has_consensus": self.geo.has_consensus,
             },
         })
     }
@@ -465,6 +598,12 @@ pub fn audit(entities: &[AuditEntity], log: LogSignals) -> AuditReport {
         });
     }
 
+    // ── 8. Geolocation cross-source consistency ──────────────────────────────
+    let (geo, geo_finding) = geo_consistency(entities);
+    if let Some(f) = geo_finding {
+        findings.push(f);
+    }
+
     // ── Score ────────────────────────────────────────────────────────────────
     let penalty: u32 = findings.iter().map(|f| f.severity.penalty()).sum();
     let score = 100u32.saturating_sub(penalty);
@@ -480,6 +619,7 @@ pub fn audit(entities: &[AuditEntity], log: LogSignals) -> AuditReport {
         findings,
         score,
         log,
+        geo,
     }
 }
 
@@ -594,11 +734,47 @@ mod tests {
             findings: vec![],
             score,
             log: LogSignals::default(),
+            geo: GeoSummary::default(),
         };
         assert!(mk(95).grade().starts_with("A"));
         assert!(mk(80).grade().starts_with("B"));
         assert!(mk(50).grade().starts_with("D"));
         assert!(mk(10).grade().starts_with("F"));
+    }
+
+    #[test]
+    fn geo_divergence_flags_an_outlier_against_consensus() {
+        // Three nearby fixes (a real metro) + one ~3800 km outlier (a datacenter
+        // or mis-geocode). The outlier must be flagged, consensus recognised.
+        let ents = vec![
+            ent("coordinates", "35.4137,-114.1762", 0.6, 1, &[]), // Bullhead City, AZ
+            ent("coordinates", "35.4200,-114.1800", 0.6, 1, &[]),
+            ent("coordinates", "35.4000,-114.2000", 0.6, 1, &[]),
+            ent("coordinates", "45.5019,-73.5674", 0.4, 1, &[]),   // Montreal — outlier
+        ];
+        let r = audit(&ents, LogSignals::default());
+        let f = r
+            .findings
+            .iter()
+            .find(|f| f.category == "geo-divergence")
+            .expect("must flag geo divergence");
+        assert_eq!(f.severity, Severity::Medium, "consensus exists → medium");
+        assert!(r.geo.has_consensus);
+        assert_eq!(r.geo.outliers, 1);
+        assert!(r.geo.max_spread_km > 1000.0);
+        assert!(f.examples.iter().any(|e| e.contains("45.5019")));
+    }
+
+    #[test]
+    fn geo_consensus_produces_no_finding() {
+        let ents = vec![
+            ent("coordinates", "35.4137,-114.1762", 0.6, 1, &[]),
+            ent("coordinates", "35.4200,-114.1800", 0.6, 2, &[]),
+        ];
+        let r = audit(&ents, LogSignals::default());
+        assert!(!r.findings.iter().any(|f| f.category == "geo-divergence"));
+        assert_eq!(r.geo.coord_count, 2);
+        assert!(r.geo.max_spread_km < 50.0);
     }
 
     #[test]
