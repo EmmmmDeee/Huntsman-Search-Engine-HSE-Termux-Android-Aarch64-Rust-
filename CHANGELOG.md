@@ -323,6 +323,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Typosquat / lookalike-domain discovery (`typosquat`, dnstwist-style,
+  pure-Rust).** A `Domain` target now generates lookalike permutations —
+  omission, transposition, repetition, keyboard-adjacent replacement, ASCII
+  homoglyph, hyphenation, bitsquatting, and TLD swap (with `.com.au`/`.net.au`/
+  `.org.au` AU focus) — then resolves each via the shared DNS resolver and emits
+  a `Domain` entity **only for registered (resolving) lookalikes**, tagged with
+  the technique. A registered brand lookalike is a phishing/brand-abuse lead the
+  expansion loop then enriches (WHOIS, certs, web-crawl). Pure permutation core
+  (bounded at 128, unit-tested across every class) + bounded concurrent
+  resolution; no API, no native deps (Termux-clean).
 - **CIDR netblock targeting (SpiderFoot-parity "scan a network range").** A scan
   target can now be a CIDR block — new `TargetKind::Cidr` / `EntityKind::Cidr`,
   auto-detected from `a.b.c.d/n` (and `--kind cidr`). The new `netblock` module

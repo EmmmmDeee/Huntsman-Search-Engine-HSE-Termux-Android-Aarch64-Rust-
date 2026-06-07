@@ -90,6 +90,7 @@ pub mod social_probe;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
 pub mod threatfox;
+pub mod typosquat;
 pub mod urlhaus;
 pub mod urlscan;
 pub mod username_search;
@@ -270,6 +271,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(cloud_storage::CloudStorage),
         Arc::new(bgpview::BgpView),
         Arc::new(netblock::Netblock),
+        Arc::new(typosquat::Typosquat),
         // People-centric enrichment
         Arc::new(name_intel::NameIntel),
         Arc::new(social_location::SocialLocation),

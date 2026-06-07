@@ -105,6 +105,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `dns_intel` | ip_address, domain, url | free | no | 31 | ip_address, domain, email |
 | `rdap_domain` | domain, url | free | no | 31 | domain |
 | `crtsh` | email, domain, url | free | no | 29 | domain, email, organisation |
+| `typosquat` | domain | free | no | 34 | domain |
 | `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
 | `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
 
