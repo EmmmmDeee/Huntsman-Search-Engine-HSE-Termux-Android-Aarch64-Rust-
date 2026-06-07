@@ -1748,8 +1748,14 @@ fn module_skip_reason(
     target_distinct_sources: usize,
 ) -> Option<&'static str> {
     let name = module.name();
-    if !is_expansion
-        && let Some(allow) = &opts.modules
+    // The allowlist means "ONLY these modules run" (docs/USAGE.md) — and that
+    // must hold on EVERY round, not just the seed. Gating it with `!is_expansion`
+    // let every non-allowlisted module run on discovered entities during
+    // expansion, contradicting the documented contract and (on the Termux target)
+    // turning a focused `--modules name_intel` scan into a full network sweep the
+    // moment it expanded. `--exclude` already applies in all rounds; the allowlist
+    // now matches.
+    if let Some(allow) = &opts.modules
         && !allow.iter().any(|n| n == name)
     {
         return Some("not in allowlist");
@@ -2234,6 +2240,46 @@ mod tests {
             };
             assert_eq!(norm(&once), norm(&twice), "sort must be idempotent");
         }
+    }
+
+    #[test]
+    fn allowlist_applies_on_expansion_rounds_not_just_the_seed() {
+        // Regression: the allowlist ("only these modules run", docs/USAGE.md) was
+        // gated by `!is_expansion`, so non-allowlisted modules ran on discovered
+        // entities during expansion — a real defect (focused/offline scans fanned
+        // out to every network module the moment they expanded).
+        use crate::core::scan::{ScanOptions, Target, TargetKind};
+        let reg = crate::modules::registry();
+        let hibp = reg
+            .iter()
+            .find(|m| m.name() == "hibp")
+            .expect("hibp registered");
+        let target = Target::new(TargetKind::Email, "a@b.com");
+
+        // Not in the allowlist → skipped on the seed round AND every expansion round.
+        let only_name_intel = ScanOptions {
+            modules: Some(vec!["name_intel".into()]),
+            ..Default::default()
+        };
+        for is_expansion in [false, true] {
+            assert_eq!(
+                module_skip_reason(hibp.as_ref(), &target, &only_name_intel, is_expansion, 0),
+                Some("not in allowlist"),
+                "a non-allowlisted module must be skipped (is_expansion={is_expansion})"
+            );
+        }
+
+        // In the allowlist → the allowlist gate must pass on expansion too (other
+        // gates are independent, so assert only that this reason is not returned).
+        let only_hibp = ScanOptions {
+            modules: Some(vec!["hibp".into()]),
+            ..Default::default()
+        };
+        assert_ne!(
+            module_skip_reason(hibp.as_ref(), &target, &only_hibp, true, 9),
+            Some("not in allowlist"),
+            "an allowlisted module must not be skipped for the allowlist reason"
+        );
     }
 
     #[test]
