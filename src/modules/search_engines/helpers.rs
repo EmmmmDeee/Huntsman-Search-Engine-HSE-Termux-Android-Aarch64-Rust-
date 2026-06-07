@@ -1547,6 +1547,18 @@ pub(super) fn extract_emails_from_text(text: &str) -> Vec<String> {
             domain_end -= 1;
         }
         let domain = &text[i + 1..domain_end];
+        // A local-part that contains a web-script/page extension (`viewtopic.php`,
+        // `index.html`) is not a mailbox — the `@` was glued to a forum/CMS URL
+        // fragment during HTML stripping (a real scan produced the bogus
+        // `viewtopic.phprose.cl@onet.eu`). Reject these outright.
+        let local_lower = text[local_start..i].to_lowercase();
+        const SCRIPT_EXT: &[&str] = &[
+            ".php", ".html", ".htm", ".asp", ".aspx", ".jsp", ".cgi", ".cfm", ".phtml",
+        ];
+        if SCRIPT_EXT.iter().any(|ext| local_lower.contains(ext)) {
+            i = domain_end;
+            continue;
+        }
         if domain.contains('.') && domain.len() > 3 && (domain_end - local_start) <= 254 {
             let email = text[local_start..domain_end].to_lowercase();
             if !email.ends_with(".png")

@@ -898,6 +898,21 @@ mod tests {
     }
 
     #[test]
+    fn email_extraction_skips_script_url_fragments() {
+        // A forum/CMS URL fragment glued to an address during HTML stripping must
+        // not become an email (the real-scan bug: viewtopic.phprose.cl@onet.eu).
+        let text = "see viewtopic.phprose.cl@onet.eu and index.html@x.com here";
+        let emails = extract_emails_from_text(text);
+        assert!(
+            emails.is_empty(),
+            "script-extension local parts must be rejected, got {emails:?}"
+        );
+        // A legitimate address sharing the same text still extracts.
+        let ok = extract_emails_from_text("real person jane.doe@onet.eu posted");
+        assert!(ok.contains(&"jane.doe@onet.eu".to_string()));
+    }
+
+    #[test]
     fn phone_extraction_international() {
         let text = "Call us at +1-555-123-4567 or +44 20 7946 0958 today";
         let phones = extract_phones_from_text(text);
