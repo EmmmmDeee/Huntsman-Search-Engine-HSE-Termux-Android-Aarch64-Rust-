@@ -508,6 +508,34 @@ impl Entity {
     /// assert!(a.has_tag("breach") && a.has_tag("paste-exposed")); // tags unioned
     /// assert_eq!(a.evidence.len(), 2);  // distinct evidence both kept
     /// ```
+    /// Put this entity's evidence and tags into a deterministic order so the
+    /// PERSISTED/EXPORTED result does not depend on the order modules happened to
+    /// run in. Concurrent dispatch (the default, `max_concurrent > 0`) merges
+    /// module results in completion order, which would otherwise leak into the
+    /// evidence/tags ordering of the stored entity and make two runs' dossiers
+    /// differ for no real reason (Determinism Requirement). Evidence is sorted by
+    /// its dedup key — `(source, summary)`, already unique per entity — and tags
+    /// lexicographically. Membership (`has_tag`) and the GREATEST
+    /// confidence/corroboration are unaffected; only display/serialisation order
+    /// is normalised. Called once per entity at scan finalisation, so it is not on
+    /// the per-merge hot path.
+    ///
+    /// Residual, documented non-determinism this does NOT remove: `raw_value` is
+    /// taken from whichever same-UID entity was merged first, so two modules
+    /// emitting the same value with different *original casing/spacing*
+    /// (`Foo@Bar.com` vs `foo@bar.com`, both normalising to one UID) can store
+    /// either spelling. This is display-only (the normalised `value` and UID are
+    /// identical) and rare; fixing it would require changing GREATEST-merge to
+    /// pick a canonical raw_value.
+    pub fn canonicalize_order(&mut self) {
+        self.evidence.sort_by(|a, b| {
+            a.source
+                .cmp(&b.source)
+                .then_with(|| a.summary.cmp(&b.summary))
+        });
+        self.tags.sort();
+    }
+
     pub fn merge(&mut self, other: Self) {
         debug_assert_eq!(self.uid, other.uid, "merge: UID mismatch");
         if self.uid != other.uid {
@@ -1255,6 +1283,50 @@ mod tests {
         assert!(sources.contains(&"mod-a"));
         assert!(sources.contains(&"mod-b"));
         assert!(sources.contains(&"mod-c"));
+    }
+
+    #[test]
+    fn canonicalize_order_is_merge_order_independent() {
+        // DETERMINISM REQUIREMENT (evidence): an entity built by merging the same
+        // module results in DIFFERENT orders (as concurrent completion-order
+        // dispatch does) must finalise to identical evidence + tag ordering.
+        let build = |order: &[(&str, &str)], tags: &[&str]| {
+            let mut e = email("x@y.com");
+            for (src, sum) in order {
+                e.add_evidence(Evidence::new(*src, (*sum).to_string()));
+            }
+            for t in tags {
+                e.tag(*t);
+            }
+            e.canonicalize_order();
+            e
+        };
+        let a = build(
+            &[("zmod", "z"), ("amod", "a"), ("amod", "b")],
+            &["zeta", "alpha", "mid"],
+        );
+        let b = build(
+            &[("amod", "b"), ("zmod", "z"), ("amod", "a")],
+            &["mid", "zeta", "alpha"],
+        );
+        let ev = |e: &Entity| {
+            e.evidence
+                .iter()
+                .map(|x| (x.source.clone(), x.summary.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ev(&a), ev(&b), "evidence order depends on merge order");
+        assert_eq!(a.tags, b.tags, "tag order depends on merge order");
+        // Deterministic canonical order: evidence by (source, summary), tags sorted.
+        assert_eq!(
+            ev(&a),
+            vec![
+                ("amod".to_string(), "a".to_string()),
+                ("amod".to_string(), "b".to_string()),
+                ("zmod".to_string(), "z".to_string()),
+            ]
+        );
+        assert_eq!(a.tags, vec!["alpha", "mid", "zeta"]);
     }
 
     // ── Entity merge: tags union dedup ───────────────────────────────────────

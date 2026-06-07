@@ -458,7 +458,13 @@ impl ScanEngine {
                 }
             }
         }
-        let entities: Vec<Entity> = entity_map.into_values().collect();
+        let mut entities: Vec<Entity> = entity_map.into_values().collect();
+        // Determinism: normalise each entity's evidence/tags ordering before
+        // persist, so concurrent dispatch's completion-order merging can't leak
+        // into the stored/exported result (see `Entity::canonicalize_order`).
+        for e in &mut entities {
+            e.canonicalize_order();
+        }
         let total = entities.len();
         let (persisted, first_err): (usize, Option<String>) = match self
             .store
