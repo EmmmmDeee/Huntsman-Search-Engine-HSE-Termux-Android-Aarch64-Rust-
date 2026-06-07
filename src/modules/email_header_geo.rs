@@ -140,11 +140,40 @@ fn infer_geo_from_email_domain(domain: &str) -> Option<DomainGeo> {
 
 fn detect_corporate_provider(domain: &str) -> Option<(&'static str, &'static str)> {
     for &(pattern, provider, region) in REGIONAL_PROVIDERS {
-        if domain.contains(pattern) {
+        if domain_has_label_prefix(domain, pattern) {
             return Some((provider, region));
         }
     }
     None
+}
+
+/// True if `pattern` (a provider brand token such as `bigpond` or `tpg.com`)
+/// begins a host label in `domain` — i.e. it occurs at the start, or right after
+/// a label separator. Unlike the suffix-anchored `CONSUMER_PROVIDERS` check, the
+/// regional brand tokens carry no fixed TLD (`bigpond` → `bigpond.com.au`,
+/// `bigpond.net.au`), so the match stays substring-based but must start a label.
+///
+/// The left boundary is the fix for the mid-label false positives a plain
+/// `contains` produced: `campbell.net` does not match `bell.net`, `platt.net`
+/// does not match `att.net`, while `bigpond.com.au` and `mail.bigpond.com`
+/// (subdomain) still match.
+fn domain_has_label_prefix(domain: &str, pattern: &str) -> bool {
+    let h = domain.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = domain[from..].find(pattern) {
+        let at = from + rel;
+        // Start of string, or the preceding char cannot be part of a label
+        // (`.`/`/`/`@`/… qualify; an alphanumeric or `-` means we are mid-label).
+        let starts_label = at == 0 || {
+            let p = h[at - 1];
+            !(p.is_ascii_alphanumeric() || p == b'-')
+        };
+        if starts_label {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
 }
 
 const CONSUMER_PROVIDERS: &[&str] = &[
@@ -275,6 +304,43 @@ mod tests {
     #[test]
     fn unknown_provider_returns_none() {
         assert!(detect_corporate_provider("company.com").is_none());
+    }
+
+    #[test]
+    fn corporate_provider_matches_at_label_boundary_only() {
+        // Brand token at the start of the domain, and across the provider's
+        // several TLDs, still matches.
+        assert_eq!(
+            detect_corporate_provider("bigpond.com.au").map(|(_, r)| r),
+            Some("Australia")
+        );
+        assert_eq!(
+            detect_corporate_provider("bigpond.net.au").map(|(_, r)| r),
+            Some("Australia")
+        );
+        // Subdomain (token after a `.`) matches.
+        assert_eq!(
+            detect_corporate_provider("mail.bigpond.com").map(|(_, r)| r),
+            Some("Australia")
+        );
+        assert_eq!(
+            detect_corporate_provider("tpg.com.au").map(|(_, r)| r),
+            Some("Australia")
+        );
+        // Mid-label fragments must NOT match (the false positives this fixes):
+        // these are unrelated domains that merely contain a provider token.
+        for fp in [
+            "campbell.net",  // contains bell.net
+            "platt.net",     // contains att.net
+            "foxcox.net",    // contains cox.net
+            "brisksky.com",  // contains sky.com
+            "myverizon.net", // contains verizon.net
+        ] {
+            assert!(
+                detect_corporate_provider(fp).is_none(),
+                "{fp} must not match a provider mid-label"
+            );
+        }
     }
 
     #[tokio::test]

@@ -71,6 +71,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   is now stripped before the mechanism match; the `redirect=` modifier (which
   takes no qualifier) is unchanged. Tested across all four qualifiers.
 
+- **`email_header_geo` corporate-provider detection matches at a label boundary.**
+  `detect_corporate_provider` used a plain `domain.contains(token)` over the
+  regional ISP brand tokens, so an unrelated domain containing a provider token
+  mid-label was mis-attributed a country — `campbell.net` → Bell Canada,
+  `platt.net` → AT&T, `foxcox.net` → Cox, `brisksky.com` → Sky UK. The token must
+  now *begin a host label* (start, or after a separator), so subdomains and the
+  providers' several TLDs (`bigpond.com.au`/`bigpond.net.au`, `mail.bigpond.com`)
+  still match while the mid-label fragments do not. Mirrors the existing
+  dot-boundary handling for `CONSUMER_PROVIDERS`. Tested.
+
 - **`identify_service_from_url` matches at host-label boundaries, not any
   substring.** It tagged a stealer/breach record's source service with a plain
   `url.contains(domain)`, so a host that merely *contained* a known service
