@@ -47,13 +47,17 @@ pub(super) enum FetchOutcome {
 /// decoded there. Not a full entity decoder by design — just the entities
 /// observed in real SERP output.
 pub(super) fn decode_html_entities(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
+    // `&amp;` is decoded LAST, not first: decoding it first turns the escaped
+    // text `&amp;lt;` (which must round-trip to the literal `&lt;`) into `&lt;`
+    // and then into `<` — a double-decode. Resolving every other entity before
+    // collapsing `&amp;`→`&` keeps a literal, intentionally-escaped entity intact.
+    s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&#x27;", "'")
         .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 /// Resolve an href into a clean URL, decoding engine-specific redirects.
@@ -844,6 +848,12 @@ pub(super) fn clean_snippet(s: &str) -> String {
     out.trim().to_string()
 }
 
+/// Strip HTML tags to plain text, collapsing whitespace, then decode the HTML
+/// entities that survive in the text (`&amp;`, `&#39;`, `&quot;`, …). Decoding
+/// happens AFTER tag removal — never before — so an encoded `&lt;`/`&gt;` in the
+/// page text becomes a literal `<`/`>` in the output instead of being mistaken
+/// for markup and dropped. Without this, titles/snippets reached the user as
+/// raw `Smith &amp; Sons — O&#39;Brien`, which looks garbled and unverifiable.
 pub(super) fn strip_tags(html: &str, max_len: usize) -> String {
     let mut out = String::with_capacity(max_len);
     let mut in_tag = false;
@@ -866,7 +876,7 @@ pub(super) fn strip_tags(html: &str, max_len: usize) -> String {
             _ => {}
         }
     }
-    out.trim().to_string()
+    decode_html_entities(out.trim())
 }
 
 // ─── Entity building ────────────────────────────────────────────────────────
@@ -1698,6 +1708,30 @@ pub(super) fn is_domain_char(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_tags_decodes_entities_in_titles_and_snippets() {
+        // The exact garbled-result bug: a SERP title with entities must reach the
+        // user as readable text, not raw `&amp;`/`&#39;`/`&quot;`.
+        assert_eq!(
+            strip_tags("<a>Smith &amp; Sons — O&#39;Brien &quot;Law&quot;</a>", 200),
+            "Smith & Sons — O'Brien \"Law\"",
+        );
+        // Encoded `&lt;`/`&gt;` in page text become literal angle brackets, not
+        // mistaken for markup and dropped.
+        assert_eq!(strip_tags("uses &lt;b&gt; tags", 200), "uses <b> tags");
+        // Tags are still stripped; whitespace still collapses.
+        assert_eq!(strip_tags("<p>a   <b>b</b>\n c</p>", 200), "a b c");
+    }
+
+    #[test]
+    fn decode_html_entities_does_not_double_decode_escaped_entities() {
+        // `&amp;lt;` is the ESCAPED form of the literal text `&lt;` — it must
+        // round-trip to `&lt;`, never collapse all the way to `<`.
+        assert_eq!(decode_html_entities("&amp;lt;"), "&lt;");
+        assert_eq!(decode_html_entities("a&#39;b&amp;c"), "a'b&c");
+        assert_eq!(decode_html_entities("plain text"), "plain text");
+    }
 
     #[test]
     fn search_evidence_flags_truncated_snippet_and_preserves_full_length() {
