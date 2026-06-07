@@ -1099,15 +1099,19 @@ function renderRelations(host){
   }
   const byUid = {};
   (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
-  const cell = uid => {
+  // Prefer the server-resolved value+kind (present for EVERY edge, regardless
+  // of which entities are paged into the browser); fall back to the local
+  // entity map, then to a truncated UID only if all else is missing.
+  const cell = (uid, value, kind) => {
+    if (value && value !== uid) return `${kindPill(kind)} <code>${esc(value)}</code>`;
     const e = byUid[uid];
     return e ? `${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code>`
              : `<code class="text-muted" style="font-size:10px">${esc(String(uid).slice(0,16))}…</code>`;
   };
   const rows = rels.map(r=>`<tr>
-      <td>${cell(r.from_uid)}</td>
+      <td>${cell(r.from_uid, r.from_value, r.from_kind)}</td>
       <td class="text-center"><span class="tag">${esc(r.kind)}</span></td>
-      <td>${cell(r.to_uid)}</td>
+      <td>${cell(r.to_uid, r.to_value, r.to_kind)}</td>
       <td class="text-right"><code>${r.confidence!=null?Number(r.confidence).toFixed(2):''}</code></td>
     </tr>`).join('');
   host.innerHTML = `<p class="text-muted" style="margin-bottom:8px">`

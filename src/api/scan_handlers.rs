@@ -276,10 +276,53 @@ pub async fn scan_relations(
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
-    match s.store.relations_for_scan(&id) {
-        Ok(rels) => ok_list("relations", rels),
-        Err(e) => internal_error(&e),
-    }
+    // Resolve both endpoints of every edge to their display value + kind so the
+    // SPA never has to render a raw entity UID. The Relations view previously
+    // showed opaque SHA hashes (e.g. `91cceeaccaaa11e9…`) for any endpoint whose
+    // entity hadn't been paged into the browser's entity map — on a 397-entity
+    // scan that was most of the graph. Joining here makes every edge verifiable
+    // on its own: "matthewdiegmann@gmail.com (email) → gmail.com (domain)".
+    let rels = match s.store.relations_for_scan(&id) {
+        Ok(rels) => rels,
+        Err(e) => return internal_error(&e),
+    };
+    let by_uid: std::collections::HashMap<String, (String, String)> = match s
+        .store
+        .entities_for_scan(&id)
+    {
+        Ok(ents) => ents
+            .into_iter()
+            .map(|e| (e.uid, (e.value, e.kind.to_string())))
+            .collect(),
+        Err(e) => return internal_error(&e),
+    };
+    let resolved: Vec<serde_json::Value> = rels
+        .into_iter()
+        .map(|r| {
+            let (from_value, from_kind) = by_uid
+                .get(&r.from_uid)
+                .cloned()
+                .unwrap_or_else(|| (r.from_uid.clone(), "unknown".to_string()));
+            let (to_value, to_kind) = by_uid
+                .get(&r.to_uid)
+                .cloned()
+                .unwrap_or_else(|| (r.to_uid.clone(), "unknown".to_string()));
+            json!({
+                "id": r.id,
+                "from_uid": r.from_uid,
+                "to_uid": r.to_uid,
+                "from_value": from_value,
+                "from_kind": from_kind,
+                "to_value": to_value,
+                "to_kind": to_kind,
+                "kind": r.kind.as_str(),
+                "confidence": r.confidence,
+                "scan_id": r.scan_id,
+                "observed_at": r.observed_at,
+            })
+        })
+        .collect();
+    ok_list("relations", resolved)
 }
 
 pub async fn scan_delete(
