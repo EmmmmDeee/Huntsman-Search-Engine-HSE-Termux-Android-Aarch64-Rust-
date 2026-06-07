@@ -49,6 +49,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   Covers both bare-v4 and IPv4-embedded-in-IPv6 (NAT64/6to4/compat) paths via the
   shared `is_private_v4`. Tested.
 
+- **GEXF export strips XML-illegal control characters.** `xml_escape` escaped
+  the five XML metacharacters but passed control bytes through verbatim. An entity
+  value carrying a stray C0 control char (breach dumps and scraped pages do)
+  produced a `.gexf` that Gephi/any XML parser rejects *wholesale* — one dirty
+  value breaking the entire export. The serializer now drops the C0 controls XML
+  1.0 forbids (keeping tab/LF/CR) and the U+FFFE/U+FFFF noncharacters; legal C1
+  controls are preserved. Tested.
+
 - **Saving an API key with a space no longer corrupts env-file loading.**
   `write_keys` (the web Settings "save keys" path) validated values against
   newlines/quotes but wrote them **unquoted** (`KEY=value`), and `validate_value`

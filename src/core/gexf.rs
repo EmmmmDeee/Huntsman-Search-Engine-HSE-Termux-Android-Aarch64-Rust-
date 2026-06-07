@@ -160,11 +160,26 @@ fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &
 }
 
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            // XML 1.0 §2.2 forbids the C0 control chars (except tab/LF/CR) and the
+            // noncharacters U+FFFE/U+FFFF — they are illegal even as numeric
+            // references. An entity value carrying a stray control byte (breach
+            // dumps and scraped pages do) would otherwise make the WHOLE .gexf
+            // unparseable, not just that node. Drop them at the serialization
+            // boundary. (C1 controls 0x80–0x9F are valid in XML 1.0 and kept.)
+            '\u{FFFE}' | '\u{FFFF}' => {}
+            c if (c as u32) < 0x20 && !matches!(c, '\t' | '\n' | '\r') => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -242,6 +257,30 @@ mod tests {
             xml_escape("a<b>c&d\"e'f"),
             "a&lt;b&gt;c&amp;d&quot;e&apos;f"
         );
+    }
+
+    #[test]
+    fn xml_escape_drops_illegal_control_chars() {
+        // A stray C0 control byte in an entity value must be dropped, not emitted —
+        // otherwise the whole .gexf is unparseable. tab/LF/CR are legal and kept.
+        assert_eq!(
+            xml_escape("ab\u{0}c\u{7}d\u{1b}e"),
+            "abcde",
+            "NUL/BEL/ESC must be stripped"
+        );
+        assert_eq!(
+            xml_escape("a\tb\nc\rd"),
+            "a\tb\nc\rd",
+            "tab/LF/CR preserved"
+        );
+        // C1 controls (0x80–0x9F) are valid in XML 1.0 and must be kept.
+        assert_eq!(
+            xml_escape("a\u{85}b"),
+            "a\u{85}b",
+            "C1 NEL kept (legal in XML 1.0)"
+        );
+        // Noncharacters are illegal and dropped.
+        assert_eq!(xml_escape("a\u{FFFF}b"), "ab", "U+FFFF dropped");
     }
 
     /// Characterisation golden: pins the EXACT byte output for a deterministic
