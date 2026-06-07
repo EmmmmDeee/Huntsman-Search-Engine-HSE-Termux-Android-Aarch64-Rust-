@@ -366,8 +366,11 @@ pub async fn scan_entities_csv(
 /// the column shape staying in sync.
 pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> String {
     use std::fmt::Write as _;
-    let mut body = String::with_capacity(192 + entities.len() * 128);
-    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,tags\n");
+    let mut body = String::with_capacity(192 + entities.len() * 192);
+    // `evidence_urls` + `evidence` make every row self-verifiable: the operator
+    // can follow the source links and read each module's finding without
+    // reconstructing anything from the value alone.
+    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n");
     for e in entities {
         let eff = e.c_effective();
         let tier = e.classify().to_string();
@@ -375,9 +378,31 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
         sources.sort_unstable();
         let sources = sources.join("|");
         let tags = e.tags.join("|");
+
+        // Distinct full URLs across all evidence (the verifiable links), and a
+        // per-source summary trail of what each module actually found.
+        let mut urls: Vec<&str> = Vec::new();
+        for ev in &e.evidence {
+            for key in ["url", "source_url", "profile_url", "permalink"] {
+                if let Some(u) = ev.attributes.get(key)
+                    && !u.is_empty()
+                    && !urls.contains(&u.as_str())
+                {
+                    urls.push(u.as_str());
+                }
+            }
+        }
+        let evidence_urls = urls.join(" | ");
+        let evidence = e
+            .evidence
+            .iter()
+            .map(|ev| format!("[{}] {}", ev.source, ev.summary))
+            .collect::<Vec<_>>()
+            .join(" || ");
+
         let _ = writeln!(
             body,
-            "{},{},{},{:.3},{:.3},{},{},{},{},{}",
+            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{}",
             csv_escape(&e.kind.to_string()),
             csv_escape(&e.value),
             csv_escape(&e.raw_value),
@@ -387,6 +412,8 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
             tier,
             e.observed_at,
             csv_escape(&sources),
+            csv_escape(&evidence_urls),
+            csv_escape(&evidence),
             csv_escape(&tags),
         );
     }
@@ -634,7 +661,7 @@ mod tests {
         // (the SPA download button, external tooling) parse this header row.
         assert_eq!(
             entities_to_csv(&[]).trim_end(),
-            "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,tags"
+            "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags"
         );
 
         let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.60, "src");
@@ -657,5 +684,27 @@ mod tests {
             row.ends_with(",\"plain|has,comma\""),
             "tags column not escaped through csv_escape: {row}"
         );
+    }
+
+    #[test]
+    fn csv_carries_verifiable_evidence_urls_and_summaries() {
+        use crate::core::entity::{Entity, Evidence, EntityKind};
+        let mut e = Entity::new(EntityKind::Username, "matthewdiegmann", 0.80, "src");
+        e.add_evidence(
+            Evidence::new("username_search", "@matthewdiegmann has a profile on GitHub")
+                .with_attr("url", "https://github.com/matthewdiegmann"),
+        );
+        e.add_evidence(
+            Evidence::new("github_user", "12 public events")
+                .with_attr("profile_url", "https://github.com/matthewdiegmann?tab=overview"),
+        );
+        let csv = entities_to_csv(&[e]);
+        let row = csv.lines().nth(1).unwrap();
+        // The full, clickable source URLs are present (no reconstruction needed).
+        assert!(row.contains("https://github.com/matthewdiegmann"), "evidence URL missing: {row}");
+        assert!(row.contains("?tab=overview"), "second evidence URL missing: {row}");
+        // The per-source finding summaries are present and source-attributed.
+        assert!(row.contains("[username_search]") && row.contains("[github_user]"), "evidence trail missing: {row}");
+        assert!(row.contains("has a profile on GitHub"), "evidence summary missing: {row}");
     }
 }
