@@ -1184,6 +1184,23 @@ type TimeoutResult =
 /// to `Ok(Err(Error::module(name, "panicked: …")))`, so it flows through
 /// `finalise_module_result`'s existing `errored` arm exactly like a returned
 /// error — counted in `modules_errored`, named, and non-fatal to the scan.
+/// Emit the uniform per-module dispatch trace, paired with the `ModuleStart` bus
+/// event at every dispatch site (sequential + both concurrent phases). Without it
+/// the raw debug log (`hse logs` / stderr) showed a module's outcome
+/// (done/skipped/errored/timeout) but never its *start*, so a module that hung or
+/// vanished mid-flight left no trace. Keyed by `module=<name>` (+ the target it
+/// ran against) so `grep 'module=hibp'` reconstructs that one file's entire
+/// lifecycle from the logs alone.
+#[inline]
+fn log_module_dispatch(name: &str, target: &Target) {
+    debug!(
+        module = name,
+        kind = ?target.kind,
+        value = %target.value,
+        "dispatch"
+    );
+}
+
 async fn run_module_guarded(
     timeout_ms: u64,
     name: &'static str,
@@ -1441,6 +1458,7 @@ impl ScanEngine {
                 continue;
             }
 
+            log_module_dispatch(name, target);
             self.emit(
                 scan_id,
                 EventKind::ModuleStart {
@@ -1544,6 +1562,7 @@ impl ScanEngine {
                 self.emit_skipped(scan_id, name, "already dispatched for this target");
                 continue;
             }
+            log_module_dispatch(name, target);
             self.emit(
                 scan_id,
                 EventKind::ModuleStart {
@@ -1640,6 +1659,7 @@ impl ScanEngine {
             set.spawn(async move {
                 let _permit = permit;
 
+                log_module_dispatch(name, &target);
                 emitter.emit(
                     &sid,
                     EventKind::ModuleStart {
@@ -2116,6 +2136,53 @@ mod tests {
         let (kind, val) = visit_key(&t);
         assert_eq!(kind, TargetKind::Email);
         assert_eq!(val, "alice@example.com");
+    }
+
+    #[test]
+    fn module_dispatch_is_logged_keyed_by_module_name() {
+        // OBSERVABILITY: every module's *start* must appear in the raw debug log,
+        // keyed by `module=<name>` so a single file's whole lifecycle is greppable.
+        // `log_module_dispatch` is synchronous, so a scoped capturing subscriber
+        // proves the line is emitted without touching the global subscriber.
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct VecWriter(Arc<Mutex<Vec<u8>>>);
+        impl Write for VecWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl tracing_subscriber::fmt::MakeWriter<'_> for VecWriter {
+            type Writer = VecWriter;
+            fn make_writer(&self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(VecWriter(Arc::clone(&buf)))
+            .with_max_level(tracing::Level::DEBUG)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            log_module_dispatch("hibp", &Target::new(TargetKind::Email, "a@b.com"));
+        });
+        let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert!(
+            out.contains("dispatch"),
+            "dispatch event missing; got: {out:?}"
+        );
+        assert!(
+            out.contains("module") && out.contains("hibp"),
+            "dispatch line must be keyed by module name; got: {out:?}"
+        );
     }
 
     #[test]

@@ -350,6 +350,26 @@ fn render_environment() -> String {
         "  modules     : {} registered ({cost_summary})",
         mods.len()
     );
+    // The full module-file roster, so the bundle reflects EVERY module the binary
+    // carries — including ones that never dispatched on this scan. Grouped by cost
+    // tier and sorted, so a `grep 'module=<name>'` in the SCAN SEQUENCE / logs can
+    // be cross-checked against the complete inventory.
+    {
+        let mut by_tier: std::collections::BTreeMap<&str, Vec<&str>> =
+            std::collections::BTreeMap::new();
+        for m in &mods {
+            by_tier
+                .entry(super::cost_label(m.cost()))
+                .or_default()
+                .push(m.name());
+        }
+        for names in by_tier.values_mut() {
+            names.sort_unstable();
+        }
+        for (tier, names) in &by_tier {
+            let _ = writeln!(s, "    {tier:<10} ({}) {}", names.len(), names.join(", "));
+        }
+    }
     let _ = writeln!(
         s,
         "  keys_present: {}",
@@ -686,6 +706,13 @@ mod tests {
         assert!(out.contains("── ENVIRONMENT"));
         assert!(out.contains("hse_version :"));
         assert!(out.contains("keys_present:"));
+        // The full module-file roster is present — every module-file the binary
+        // carries is accounted for, named, even if it never dispatched here.
+        assert!(out.contains("modules     :"));
+        assert!(
+            out.contains("hibp"),
+            "ENVIRONMENT module roster must name every registered module"
+        );
         assert!(out.contains("HUNTSMAN FULL DOSSIER")); // §1 embeds render_full
         assert!(out.contains("── CORRELATIONS")); // §2
         assert!(out.contains("── SCAN SEQUENCE (2 events)")); // §3
