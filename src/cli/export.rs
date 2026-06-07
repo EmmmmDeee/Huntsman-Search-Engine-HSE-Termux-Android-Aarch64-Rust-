@@ -313,11 +313,13 @@ pub(crate) fn render_debug_bundle(
         s,
         "╚═══════════════════════════════════════════════════════╝"
     );
-    let _ = writeln!(
-        s,
-        "generated_at: {} (unix)",
-        crate::core::entity::unix_now()
-    );
+    // DETERMINISM: the bundle body deliberately carries NO wall-clock generation
+    // timestamp. For an immutable (completed) scan, two exports must be
+    // byte-identical so the artifact can be `diff`ed across runs/tools/time —
+    // the reproducibility the bundle exists to serve. The scan's own immutable
+    // timestamps (event `ts`, entity `observed_at`) are already inside, and a
+    // caller that needs the generation time can take it out-of-band (HTTP
+    // `Date` header / shell). Guarded by `debug_bundle_is_deterministic`.
 
     // ── 1. Full dossier (entities/evidence/provenance/raw records) ──
     s.push_str(&render_full(store, sid)?);
@@ -582,6 +584,47 @@ mod tests {
         assert!(out.contains("── SELF-AUDIT")); // §4
         assert!(out.contains("score      :"));
         assert!(out.contains("exclusions : identity_mismatch×1")); // ledger folded in
+    }
+
+    #[test]
+    fn debug_bundle_is_deterministic() {
+        // DETERMINISM REQUIREMENT (evidence, not assertion): re-exporting the
+        // same immutable stored scan must be byte-identical, so the artifact is
+        // diffable across runs/time. This is the experiment that proves it.
+        use crate::core::entity::{Entity, EntityKind};
+        use crate::core::event::{Event, EventKind};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("det.db").to_str().unwrap()).unwrap();
+        let scan = Scan::new(
+            "scan-det",
+            Target::new(TargetKind::Email, "a@example-real.com"),
+        );
+        store.upsert_scan(&scan).unwrap();
+        // Several entities + events so any unstable iteration order would surface.
+        store
+            .upsert_entities_batch(&[
+                Entity::new(EntityKind::Email, "a@example-real.com", 0.8, "scan-det"),
+                Entity::new(EntityKind::Username, "alpha", 0.6, "scan-det"),
+                Entity::new(EntityKind::Username, "bravo", 0.6, "scan-det"),
+                Entity::new(EntityKind::Domain, "example-real.com", 0.5, "scan-det"),
+            ])
+            .unwrap();
+        for m in ["hibp", "gravatar", "crtsh"] {
+            store
+                .insert_event(&Event::new(
+                    "scan-det",
+                    EventKind::ModuleStart { module: m.into() },
+                ))
+                .unwrap();
+        }
+        let a = render_debug_bundle(&store, "scan-det").unwrap();
+        let b = render_debug_bundle(&store, "scan-det").unwrap();
+        assert_eq!(
+            a, b,
+            "debug bundle is not byte-deterministic across exports"
+        );
+        // And it carries no wall-clock generation timestamp that would break that.
+        assert!(!a.contains("generated_at"));
     }
 
     #[test]
