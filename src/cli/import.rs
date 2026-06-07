@@ -1558,7 +1558,18 @@ PASSWORDS:
         // The hash is NOT echoed into a benign attribute.
         assert!(!attrs.contains_key("hash"));
 
-        assert!(stats.persons >= 1 && stats.credentials >= 1 && stats.emails >= 3);
+        // The PASSWORDS: section's `-> <hex hash>` becomes a Credential too — a
+        // major part of the real file, distinct from the per-entry `hash:` field.
+        assert!(
+            has(
+                EntityKind::Credential,
+                "00346D91DD87C74089F3BFA88E13DE8101000000DCB6"
+            ),
+            "a PASSWORDS-section hex hash must be parsed as a Credential"
+        );
+
+        // Two distinct credentials: the entry's bcrypt hash + the PASSWORDS hex.
+        assert!(stats.persons >= 1 && stats.credentials >= 2 && stats.emails >= 3);
     }
 
     #[test]
