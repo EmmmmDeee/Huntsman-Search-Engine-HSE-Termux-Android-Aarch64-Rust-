@@ -883,10 +883,16 @@ impl ScanEngine {
                 }
             }
 
-            // Sort expansion candidates by weighted score (descending).
-            // The weight combines geo_npv with entity confidence and
-            // dampens generic mega-domains that waste expansion budget.
-            next.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            // Sort expansion candidates by weighted score (descending), with a
+            // DETERMINISTIC total tie-break. The weight combines geo_npv with
+            // entity confidence and dampens generic mega-domains. `next` is built
+            // by iterating a HashMap (random per-process seed), so without a
+            // tie-break two equal-weight candidates sorted Equal would keep that
+            // non-deterministic input order — and the ROI `truncate(keep)` below
+            // would then drop a DIFFERENT candidate run-to-run, making the very
+            // results non-reproducible (Determinism Requirement). Breaking ties by
+            // (kind, value) gives identical inputs an identical dispatch order.
+            next.sort_by(cmp_expansion_candidates);
 
             // ROI bundle: top-K gate + relative knee. Keep the leading
             // candidates by weight (budget-bounded via top-K, scaled with
@@ -1036,6 +1042,28 @@ fn visit_key(target: &Target) -> (TargetKind, String) {
     let entity_kind = target.kind.to_entity_kind();
     let normalised = normalise(&entity_kind, &target.value);
     (target.kind, normalised)
+}
+
+/// Deterministic total order for expansion candidates `(Target, weight, parent)`:
+/// highest weight first, ties broken by target kind then value. A NaN weight
+/// sorts last (treated as the lowest) rather than silently comparing Equal. This
+/// is what makes a budgeted scan reproducible — see the call site in the
+/// expansion loop for why the HashMap-iteration input order must not leak through
+/// a weight tie into which candidates a `truncate(keep)` keeps.
+fn cmp_expansion_candidates(
+    a: &(Target, f64, String),
+    b: &(Target, f64, String),
+) -> std::cmp::Ordering {
+    // Descending weight: `b` vs `a`. NaN is pushed to the bottom deterministically.
+    let by_weight = match (a.1.is_nan(), b.1.is_nan()) {
+        (false, false) => b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal),
+        (true, false) => std::cmp::Ordering::Greater, // a is NaN → a after b
+        (false, true) => std::cmp::Ordering::Less,
+        (true, true) => std::cmp::Ordering::Equal,
+    };
+    by_weight
+        .then_with(|| a.0.kind.canonical_str().cmp(b.0.kind.canonical_str()))
+        .then_with(|| a.0.value.cmp(&b.0.value))
 }
 
 /// Upper bound (ms) on any single module's timeout when running on Termux and
@@ -2082,6 +2110,46 @@ mod tests {
         let (kind, val) = visit_key(&t);
         assert_eq!(kind, TargetKind::Email);
         assert_eq!(val, "alice@example.com");
+    }
+
+    #[test]
+    fn expansion_candidate_order_is_deterministic_under_input_permutation() {
+        // DETERMINISM REQUIREMENT (evidence): the candidate ranking must not
+        // depend on the HashMap-iteration order it is built from. Three candidates
+        // share the SAME weight; whatever order they arrive in, the comparator
+        // must produce one fixed order (by kind, then value), so a budget
+        // `truncate` keeps the same set every run.
+        let mk = |k: TargetKind, v: &str, w: f64| (Target::new(k, v), w, "p".to_string());
+        let canonical = {
+            let mut v = [
+                mk(TargetKind::Email, "a@x.com", 0.5),
+                mk(TargetKind::Email, "b@x.com", 0.5),
+                mk(TargetKind::Username, "a@x.com", 0.5),
+            ];
+            v.sort_by(cmp_expansion_candidates);
+            v.iter().map(|c| c.0.value.clone()).collect::<Vec<_>>()
+        };
+        // Every permutation of the same tied candidates yields the same order.
+        for perm in [[2, 0, 1], [1, 2, 0], [0, 2, 1], [2, 1, 0]] {
+            let src = [
+                mk(TargetKind::Email, "a@x.com", 0.5),
+                mk(TargetKind::Email, "b@x.com", 0.5),
+                mk(TargetKind::Username, "a@x.com", 0.5),
+            ];
+            let mut v: Vec<_> = perm.iter().map(|&i| src[i].clone()).collect();
+            v.sort_by(cmp_expansion_candidates);
+            let got: Vec<_> = v.iter().map(|c| c.0.value.clone()).collect();
+            assert_eq!(got, canonical, "ranking depended on input order");
+        }
+        // Higher weight always wins regardless of tie-break, and NaN sorts last.
+        let mut wv = [
+            mk(TargetKind::Email, "z@x.com", 0.9),
+            mk(TargetKind::Email, "a@x.com", f64::NAN),
+            mk(TargetKind::Email, "m@x.com", 0.5),
+        ];
+        wv.sort_by(cmp_expansion_candidates);
+        assert_eq!(wv[0].0.value, "z@x.com"); // 0.9 first
+        assert_eq!(wv[2].0.value, "a@x.com"); // NaN last
     }
 
     #[test]

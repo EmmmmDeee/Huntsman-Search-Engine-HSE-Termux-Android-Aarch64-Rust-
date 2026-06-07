@@ -252,6 +252,43 @@ fn run_ranks_by_severity_times_max_child_ceff() {
     assert!((key_hit.rank - expected_key_rank).abs() < 1e-9);
 }
 
+// ── Ranking determinism ─────────────────────────────────────────────
+
+#[test]
+fn rank_and_sort_is_deterministic_for_same_rule_ties() {
+    // DETERMINISM REQUIREMENT (evidence): when one rule fires for several entity
+    // groups (same rule_id, same rank), the final order must be fixed by the
+    // (sorted) entity_uids — not by the order the groups were generated in.
+    use std::collections::HashMap;
+    let ceff: HashMap<String, f64> = [("u1".to_string(), 0.5), ("u2".to_string(), 0.5)]
+        .into_iter()
+        .collect();
+    let mk = |uids: Vec<&str>| {
+        Correlation::new(
+            "AU-034",
+            "handle reuse",
+            Severity::Medium,
+            "x".into(),
+            uids.into_iter().map(String::from).collect(),
+            "scan",
+            0,
+        )
+    };
+    // Same rule, same rank — distinguished only by entity_uids. Feed both orders.
+    let mut a = vec![mk(vec!["u2"]), mk(vec!["u1"])];
+    let mut b = vec![mk(vec!["u1"]), mk(vec!["u2"])];
+    super::rank_and_sort(&mut a, &ceff);
+    super::rank_and_sort(&mut b, &ceff);
+    let uids = |c: &[Correlation]| c.iter().map(|x| x.entity_uids.clone()).collect::<Vec<_>>();
+    assert_eq!(
+        uids(&a),
+        uids(&b),
+        "same-rule ranking depended on input order"
+    );
+    // And the fixed order is by entity_uids ascending.
+    assert_eq!(a[0].entity_uids, vec!["u1".to_string()]);
+}
+
 // ── Severity Display ────────────────────────────────────────────────
 
 #[test]

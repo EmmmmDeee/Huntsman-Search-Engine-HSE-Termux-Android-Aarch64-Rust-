@@ -112,6 +112,12 @@ pub fn rank_and_sort(corrs: &mut [Correlation], ceff: &std::collections::HashMap
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(b.severity.cmp(&a.severity))
             .then(a.rule_id.cmp(&b.rule_id))
+            // Total tie-break so the ORDER is deterministic even when one rule
+            // fires for several entity groups (same rule_id): the per-group
+            // entity_uids are already individually sorted, so comparing the lists
+            // gives identical inputs an identical correlation ordering rather than
+            // leaving same-rule ties to non-deterministic generation order.
+            .then_with(|| a.entity_uids.cmp(&b.entity_uids))
     });
 }
 
