@@ -299,11 +299,22 @@ pub(super) fn is_search_tooling_domain(domain: &str) -> bool {
         "truepeoplesearch.com",
         "usphonebook.com",
         "whitepages.com",
+        "whitepages.com.au",
         // genealogy aggregators — same shape as people-search
         "ancestry.com",
         "familysearch.org",
         "geni.com",
         "wikitree.com",
+        // obituary / funeral-notice aggregators — a name + locality search
+        // (e.g. a common name in a small town) floods these with hits for a
+        // DIFFERENT, often deceased, person; never the subject's asset.
+        "cdclarkfuneralhome.com",
+        "dignitymemorial.com",
+        "echovita.com",
+        "everloved.com",
+        "findagrave.com",
+        "legacy.com",
+        "tributearchive.com",
         // breach / leak lookup aggregators — these are the search's OWN breach
         // instruments (the email dork ladder queries them); a bare result host
         // here is noise, never the subject's asset. The specific breach hit is

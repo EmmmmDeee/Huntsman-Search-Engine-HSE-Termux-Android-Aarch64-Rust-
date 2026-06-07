@@ -1130,11 +1130,11 @@ mod tests {
     }
 
     #[test]
-    fn build_entities_suppresses_aggregator_domains_but_keeps_profiles() {
-        // Statistical-analysis upgrade: a person search dorks site:peekyou.com
-        // etc., so those aggregators flood the results as bare-domain noise. The
-        // bare domain is now suppressed, while the genuine external domain and the
-        // specific profile URL on the aggregator are still emitted.
+    fn username_seed_emits_profile_urls_not_bare_external_domains() {
+        // For a username (non-domain) seed, bare SERP-result hosts are noise — an
+        // unbounded long tail of irrelevant sites — so NONE are emitted as Domain
+        // entities. The genuinely relevant pages survive as Url entities via the
+        // path-match gate, which is what the investigator actually clicks.
         let target = Target::new(TargetKind::Username, "kylo4kylo");
         let mk = |url: &str| SearchResult {
             url: url.to_string(),
@@ -1156,12 +1156,8 @@ mod tests {
             .map(|e| e.value.as_str())
             .collect();
         assert!(
-            !domains.contains(&"peekyou.com") && !domains.contains(&"spokeo.com"),
-            "aggregator domains must be suppressed, got {domains:?}"
-        );
-        assert!(
-            domains.iter().any(|d| d.contains("kylosrealsite")),
-            "a genuine external domain must survive, got {domains:?}"
+            domains.is_empty(),
+            "no bare external domains for a username seed, got {domains:?}"
         );
         let urls: Vec<&str> = res
             .entities
@@ -1532,13 +1528,13 @@ mod tests {
     }
 
     #[test]
-    fn build_entities_suppresses_platform_freemail_and_broker_result_hosts() {
-        // A person/email/username search surfaces SERP hits whose host is a
-        // mega/social platform, a freemail provider, a data-broker, a breach
-        // aggregator, or a privacy search engine. None are the subject's own
-        // asset — they are merely where a mention appeared — so the bare Domain
-        // must be suppressed (the specific Url page is kept elsewhere). Only a
-        // genuine personal/external domain survives.
+    fn email_seed_emits_no_bare_external_domains() {
+        // An email (non-domain) seed's SERP hits — platform, freemail, broker, or
+        // even an unrelated personal blog — are all just "where a mention
+        // appeared". None are the subject's own asset, and the relevant pages are
+        // kept as Url entities by the path-match gate, so NO bare external Domain
+        // entities are emitted. (Subdomains of the email's OWN domain still would
+        // be, but freemail seeds have none.)
         let target = Target::new(TargetKind::Email, "subject@example.org");
         let mk = |url: &str| SearchResult {
             url: url.to_string(),
@@ -1550,11 +1546,9 @@ mod tests {
         let results = vec![
             mk("https://www.youtube.com/watch?v=abc"),
             mk("https://facebook.com/groups/xyz"),
-            mk("https://gmail.com/signup"),
             mk("https://neighborwho.com/person/123"),
             mk("https://snusbase.com/result"),
-            mk("https://metager.org/meta/meta.ger3"),
-            mk("https://subjects-personal-blog.com/about"),
+            mk("https://some-unrelated-blog.com/about"),
         ];
         let res = build_entities(&target, "s", &results);
         let domains: Vec<&str> = res
@@ -1563,22 +1557,9 @@ mod tests {
             .filter(|e| e.kind == EntityKind::Domain)
             .map(|e| e.value.as_str())
             .collect();
-        for noise in [
-            "youtube.com",
-            "facebook.com",
-            "gmail.com",
-            "neighborwho.com",
-            "snusbase.com",
-            "metager.org",
-        ] {
-            assert!(
-                !domains.contains(&noise),
-                "{noise} must be suppressed as a bare result host, got {domains:?}"
-            );
-        }
         assert!(
-            domains.iter().any(|d| d.contains("subjects-personal-blog")),
-            "a genuine personal domain must survive, got {domains:?}"
+            domains.is_empty(),
+            "no bare external domains for an email seed, got {domains:?}"
         );
     }
 

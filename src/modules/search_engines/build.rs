@@ -88,7 +88,16 @@ pub(super) fn build_entities(
             e.tag("search-discovered");
             e.add_evidence(build_search_evidence(r));
             result.push(e);
-        } else if target_domain.as_ref().is_none_or(|td| domain != *td)
+        } else if matches!(target.kind, TargetKind::Domain)
+            // Bare EXTERNAL registrable domains are only a meaningful finding for
+            // a DOMAIN seed (relationship/estate discovery). For a person / email
+            // / username seed, the SERP host is just where the name happened to
+            // appear — an unbounded long tail of irrelevant sites (crazygames.com,
+            // csdn.net, mathway.com, funeral notices for a different person) that
+            // no blocklist can ever fully cover. The genuinely relevant pages are
+            // already captured as Url entities by the path-match gate, so suppress
+            // bare external domains entirely for non-domain seeds.
+            && target_domain.as_ref().is_none_or(|td| domain != *td)
             && !is_generic_domain(&domain)
             && !is_search_tooling_domain(&domain)
             // A bare SERP-result host that is a mega/social PLATFORM or a freemail
@@ -99,6 +108,12 @@ pub(super) fn build_entities(
             // that buries individualised PII; drop it here.
             && !crate::util::domains::is_social_platform(&domain)
             && !crate::util::domains::is_freemail(&domain)
+            // Mega platforms and shared infrastructure (whatsapp.com, qq.com,
+            // office365.com, blog.google, fast.com, time.is, …) are the haystack
+            // a result sits in, never the subject's own asset. The util social/
+            // freemail lists miss most of them; core's is_noncentral_domain is
+            // the authoritative mega+infra set, so consult it here too.
+            && !crate::core::scan::is_noncentral_domain(&domain)
             && seen_domains.insert(domain.clone())
         {
             let mut e = Entity::new(EntityKind::Domain, &domain, 0.45, scan_id);
