@@ -266,6 +266,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **No-silent-drift guard: the TXT verification-vendor table has no shadowed
+  entries.** `verification_vendor` returns the first prefix match in declaration
+  order, so an earlier prefix that is a prefix of a later, different-vendor entry
+  shadows it (its records would mis-attribute). The table's soundness test now
+  also asserts the specific-before-generic ordering — the same check the key-prefix
+  table has, and the invariant the `ms=`-goes-last comment previously maintained
+  only by hand. Currently clean; preventive against future vendor additions.
 - **No-silent-drift guard: the API-service-domain table has no shadowed entries.**
   `identify_service_from_url` returns the first table entry whose domain is a
   *substring* of the URL, so an earlier entry that is a substring of a later,

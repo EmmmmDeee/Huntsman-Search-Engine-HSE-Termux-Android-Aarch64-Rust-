@@ -967,6 +967,31 @@ mod tests {
                 "vendor tag must be lowercase"
             );
         }
+
+        // Specific-before-generic ORDERING. `verification_vendor` returns the
+        // FIRST prefix match in declaration order, so when an earlier prefix is a
+        // prefix of a later one mapping to a DIFFERENT vendor, the later entry is
+        // shadowed and its records are mis-attributed (the same class the
+        // key-prefix table's `pattern_table_is_structurally_sound` guards, and the
+        // ordering the `ms=`-goes-last comment maintains only by hand). Move the
+        // more-specific prefix above the generic stem to fix.
+        let mut violations = Vec::new();
+        for (i, (earlier, es)) in VERIFICATION_VENDORS.iter().enumerate() {
+            for (offset, (later, ls)) in VERIFICATION_VENDORS[i + 1..].iter().enumerate() {
+                if es != ls && later.starts_with(earlier) {
+                    let j = i + 1 + offset;
+                    violations.push(format!(
+                        "#{j} ({later} → {ls}) shadowed by earlier #{i} ({earlier} → {es})"
+                    ));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "verification-vendor table has shadowed entries — move the more-specific \
+             prefix above the generic stem:\n  {}",
+            violations.join("\n  ")
+        );
     }
 
     #[test]
