@@ -442,6 +442,68 @@ fn every_defined_correlation_rule_is_dispatched() {
     );
 }
 
+/// Each `rule_au_NNN_*` function must emit the matching `"AU-NNN"` rule_id. A
+/// copy-pasted rule that keeps the source rule's id (e.g. `rule_au_037` emitting
+/// `"AU-036"`) compiles and fires, but mis-attributes the correlation — and the
+/// id is the dedup/ranking key, so two rules sharing one id collide silently.
+/// The `"AU-NNN"` string literal is the emission marker (verified never to appear
+/// quoted in a comment); both emission forms — `rule_id: "AU-NNN".into()` and
+/// `Correlation::new("AU-NNN", …)` — are covered.
+#[test]
+fn correlation_rule_ids_match_their_function_number() {
+    let src = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/core/correlator/rules.rs"
+    ))
+    .expect("rules.rs must exist");
+
+    // Digit run starting at byte `from` in `s` (empty if none).
+    fn digits_at(s: &str, from: usize) -> &str {
+        let bytes = s.as_bytes();
+        let end = (from..bytes.len())
+            .find(|&i| !bytes[i].is_ascii_digit())
+            .unwrap_or(bytes.len());
+        &s[from..end]
+    }
+
+    let mut current: Option<&str> = None;
+    let mut mismatches: Vec<String> = Vec::new();
+
+    for line in src.lines() {
+        if let Some(i) = line.find("fn rule_au_") {
+            let n = digits_at(line, i + "fn rule_au_".len());
+            if !n.is_empty() {
+                current = Some(n);
+            }
+        }
+        // Every quoted `"AU-NNN"` on the line is a rule_id emission.
+        let mut from = 0;
+        while let Some(rel) = line[from..].find("\"AU-") {
+            let at = from + rel + "\"AU-".len();
+            let n = digits_at(line, at);
+            from = at + n.len();
+            if n.is_empty() {
+                continue;
+            }
+            // Compare numerically so id zero-padding need not match the function
+            // name's (`rule_au_031` ↔ `"AU-031"`, and would still pass `"AU-31"`).
+            match current {
+                Some(fnum) if fnum.parse::<u32>().ok() == n.parse::<u32>().ok() => {}
+                Some(fnum) => mismatches.push(format!("fn rule_au_{fnum} emits \"AU-{n}\"")),
+                None => {
+                    mismatches.push(format!("\"AU-{n}\" emitted outside any rule_au_* function"))
+                }
+            }
+        }
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "correlation rule_id does not match its function number (copy-paste \
+         mis-attribution / colliding dedup key): {mismatches:?}"
+    );
+}
+
 /// The README's headline module count is hand-maintained and had drifted
 /// (stated as "60+", "63" and "89" across files while the registry held 89).
 /// Tie the authoritative "## Module Overview (N modules" figure to the live

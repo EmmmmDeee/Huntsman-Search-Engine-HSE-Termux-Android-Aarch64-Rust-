@@ -257,6 +257,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **No-silent-drift guard: each rule's `rule_id` matches its function number.**
+  A copy-pasted rule that keeps the source rule's id (e.g. `rule_au_037` emitting
+  `"AU-036"`) compiles and fires but mis-attributes the correlation; worse, the
+  id is the dedup/ranking key, so two rules sharing one id collide silently. A
+  new test (`correlation_rule_ids_match_their_function_number`) checks every
+  emitted `"AU-NNN"` against its enclosing `rule_au_NNN_*` function, covering both
+  the `rule_id: "AU-NNN".into()` and `Correlation::new("AU-NNN", …)` forms.
+  Currently clean (all 44 emissions across 43 rules match); preventive.
 - **No-silent-drift guard: every correlation rule must be dispatched.** A
   `pub(super) fn rule_au_*` defined in `correlator/rules.rs` but never added to
   the `RULES` / `RELATION_RULES` arrays in `mod.rs` compiles cleanly (the glob
