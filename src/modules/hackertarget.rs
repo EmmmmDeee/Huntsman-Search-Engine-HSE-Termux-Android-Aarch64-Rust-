@@ -134,7 +134,7 @@ impl HackerTarget {
             let ip = parts[1].trim();
 
             if !host.is_empty() && host.contains('.') && seen.insert(host.clone()) {
-                let is_sub = host.ends_with(&format!(".{domain}")) || host == domain;
+                let is_sub = crate::util::domains::is_or_subdomain_of(&host, domain);
                 let conf = if is_sub { 0.75 } else { 0.50 };
                 let mut e = Entity::new(EntityKind::Domain, &host, conf, &ctx.scan_id);
                 e.tag("hackertarget");

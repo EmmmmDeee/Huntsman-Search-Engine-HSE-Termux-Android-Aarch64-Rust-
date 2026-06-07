@@ -316,7 +316,7 @@ fn is_social_platform(domain: &str) -> bool {
     let lower = domain.to_lowercase();
     PLATFORMS
         .iter()
-        .any(|p| lower == *p || lower.ends_with(&format!(".{p}")))
+        .any(|p| crate::util::domains::is_or_subdomain_of(&lower, p))
 }
 
 // ─── Entity extraction ─────────────────────────────────────────────────────

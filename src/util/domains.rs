@@ -104,6 +104,30 @@ pub fn registrable_domain(host: &str) -> Option<String> {
     Some(labels[labels.len() - take..].join("."))
 }
 
+/// True if `host` is `domain` itself or a subdomain of it — the host-label-safe
+/// "belongs to this domain" test. **Pure**, and allocation-free: it replaces the
+/// `host == d || host.ends_with(&format!(".{d}"))` idiom that was hand-rolled
+/// (and occasionally mis-written as a bare `ends_with`, matching `notexample.com`
+/// against `example.com`) across the modules. Comparison is as-given — callers
+/// that need case-insensitivity lowercase both sides first.
+///
+/// `sub.example.com` and `example.com` belong to `example.com`; `notexample.com`
+/// and `example.com.au` do not.
+#[must_use]
+pub fn is_or_subdomain_of(host: &str, domain: &str) -> bool {
+    host == domain || is_proper_subdomain_of(host, domain)
+}
+
+/// True if `host` is a strict subdomain of `domain` (i.e. `sub.example.com` of
+/// `example.com`), but **not** `domain` itself. The label-boundary half of
+/// [`is_or_subdomain_of`], for the call sites that must exclude the apex.
+#[must_use]
+pub fn is_proper_subdomain_of(host: &str, domain: &str) -> bool {
+    host.len() > domain.len()
+        && host.ends_with(domain)
+        && host.as_bytes()[host.len() - domain.len() - 1] == b'.'
+}
+
 /// True if `domain` is a known consumer mailbox provider — modules that
 /// pivot on the assumption "domain == employer" should skip these.
 pub fn is_freemail(domain: &str) -> bool {
@@ -114,9 +138,7 @@ pub fn is_freemail(domain: &str) -> bool {
 /// subdomains (e.g. `au.linkedin.com`). Modules that follow a domain
 /// to its "contact" page should skip these.
 pub fn is_social_platform(domain: &str) -> bool {
-    SOCIAL
-        .iter()
-        .any(|s| domain == *s || domain.ends_with(&format!(".{}", s)))
+    SOCIAL.iter().any(|s| is_or_subdomain_of(domain, s))
 }
 
 #[cfg(test)]
@@ -129,6 +151,22 @@ mod tests {
         assert!(is_freemail("bigpond.com"));
         assert!(!is_freemail("acme.com.au"));
         assert!(!is_freemail(""));
+    }
+
+    #[test]
+    fn is_or_subdomain_of_respects_label_boundaries() {
+        // Equal and genuine subdomains belong.
+        assert!(is_or_subdomain_of("example.com", "example.com"));
+        assert!(is_or_subdomain_of("sub.example.com", "example.com"));
+        assert!(is_or_subdomain_of("a.b.example.com", "example.com"));
+        // Mid-label and different-TLD do NOT (the bug the helper prevents).
+        assert!(!is_or_subdomain_of("notexample.com", "example.com"));
+        assert!(!is_or_subdomain_of("example.com.au", "example.com"));
+        assert!(!is_or_subdomain_of("example.com", "sub.example.com"));
+        // Proper-subdomain excludes the apex.
+        assert!(!is_proper_subdomain_of("example.com", "example.com"));
+        assert!(is_proper_subdomain_of("sub.example.com", "example.com"));
+        assert!(!is_proper_subdomain_of("notexample.com", "example.com"));
     }
 
     #[test]

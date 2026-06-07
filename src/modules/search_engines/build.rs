@@ -75,7 +75,7 @@ pub(super) fn build_entities(
         let domain = extract_registrable(&host);
         let is_subdomain = target_domain
             .as_ref()
-            .is_some_and(|td| host != *td && host.ends_with(&format!(".{td}")));
+            .is_some_and(|td| crate::util::domains::is_proper_subdomain_of(&host, td));
 
         let n_engines = url_engine_count
             .get(&canonicalize_url(&r.url))
@@ -311,7 +311,7 @@ pub(super) fn build_entities(
             ];
             if people_hosts
                 .iter()
-                .any(|s| host == *s || host.ends_with(&format!(".{s}")))
+                .any(|s| crate::util::domains::is_or_subdomain_of(&host, s))
                 && lower_user.contains('_')
                 && lower_user.len() >= 5
             {

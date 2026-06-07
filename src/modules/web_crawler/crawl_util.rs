@@ -320,9 +320,11 @@ pub(super) fn extract_links(
             continue;
         }
 
-        if host == base_host || host.ends_with(&format!(".{base_host}")) {
+        if crate::util::domains::is_or_subdomain_of(&host, base_host) {
             state.internal_links += 1;
-            if host != base_host && host.ends_with(&format!(".{target_domain}")) {
+            if host != base_host
+                && crate::util::domains::is_proper_subdomain_of(&host, target_domain)
+            {
                 state.subdomains.insert(host.clone());
             }
             // SSRF egress guard: never enqueue a link whose host is a

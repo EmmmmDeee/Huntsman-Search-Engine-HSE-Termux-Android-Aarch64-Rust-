@@ -218,7 +218,7 @@ pub(super) const ENGINE_DOMAINS: &[&str] = &[
 pub(super) fn is_engine_domain(host: &str) -> bool {
     ENGINE_DOMAINS
         .iter()
-        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+        .any(|d| crate::util::domains::is_or_subdomain_of(host, d))
 }
 
 /// Domains that are generic infrastructure / unrelated to any target.
@@ -586,7 +586,7 @@ pub(super) fn score_username(
     // predicate used for the aggregator check above.
     if people_search
         .iter()
-        .any(|ps| host == *ps || host.ends_with(&format!(".{ps}")))
+        .any(|ps| crate::util::domains::is_or_subdomain_of(host, ps))
     {
         score += 3;
     }

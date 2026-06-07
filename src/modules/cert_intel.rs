@@ -195,8 +195,7 @@ fn parse_certificate(
         let target_lower = target_domain.to_lowercase();
         for san in &sans {
             let san_lower = san.to_lowercase();
-            let is_sub = san_lower != target_lower
-                && san_lower.ends_with(&format!(".{target_lower}"))
+            let is_sub = crate::util::domains::is_proper_subdomain_of(&san_lower, &target_lower)
                 && !san_lower.starts_with("*.");
 
             if is_sub && seen_subs.insert(san_lower.clone()) {

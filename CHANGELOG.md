@@ -582,6 +582,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Subdomain matching is centralised in `util::domains::is_or_subdomain_of` /
+  `is_proper_subdomain_of`.** The "host is `X` or a subdomain of `X`" test was
+  hand-rolled as `host == d || host.ends_with(&format!(".{d}"))` in ~9 places —
+  re-allocating a `String` per check, and the source of several recent boundary
+  bugs where a site diverged into a bare `ends_with` (matching `notexample.com`
+  against `example.com`). Both predicates now live in one tested, allocation-free
+  helper, and the call sites (`search_engines`, `oathnet_pro`, `hackertarget`,
+  `web_crawler`, `cert_intel`, `dns_axfr`, `domains::is_social_platform`) delegate
+  to it. Behaviour-preserving; the full suite is unchanged.
+
 - **Shared CKAN `datastore_search` envelope (`util::ckan`).** The two
   Australian open-data register modules (`acnc_charities` on `data.gov.au`,
   `qld_unclaimed` on `data.qld.gov.au`) had byte-identical copies of the CKAN
