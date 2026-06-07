@@ -172,6 +172,10 @@ fn build_abuse(contacts: &[String], scan_id: &str) -> Vec<Entity> {
         .iter()
         .map(|c| c.trim())
         .filter(|c| c.contains('@') && c.len() >= 5)
+        // A network abuse desk on a CDN/cloud/registrar provider (the common
+        // case — `abuse@cloudflare.com`) is infrastructure, never the subject;
+        // suppress it so it can't pollute the identity cluster.
+        .filter(|c| !crate::util::domains::is_infrastructure_email(c))
         .map(|c| {
             let mut e = Entity::new(EntityKind::Email, c, 0.50, scan_id);
             e.tag(SRC);
@@ -220,19 +224,24 @@ mod tests {
     fn build_abuse_emits_tagged_emails_and_filters_junk() {
         let es = build_abuse(
             &[
+                // Infrastructure provider desks — must be suppressed so they
+                // never enter the subject's identity cluster.
                 "network-abuse@google.com".into(),
+                "abuse@cloudflare.com".into(),
                 "not-an-email".into(),
+                // A non-provider mailbox on a private netblock survives.
                 "  ops@example.org ".into(),
             ],
             "scan",
         );
-        assert_eq!(es.len(), 2);
+        assert_eq!(es.len(), 1, "only the non-infrastructure contact survives");
         assert!(
             es.iter()
                 .all(|e| e.kind == EntityKind::Email && e.has_tag("abuse-contact"))
         );
         let vals: Vec<&str> = es.iter().map(|e| e.value.as_str()).collect();
-        assert!(vals.contains(&"network-abuse@google.com"));
+        assert!(!vals.iter().any(|v| v.contains("google.com")));
+        assert!(!vals.iter().any(|v| v.contains("cloudflare.com")));
         // Trimmed + normalised.
         assert!(vals.iter().any(|v| v.contains("ops@example.org")));
     }

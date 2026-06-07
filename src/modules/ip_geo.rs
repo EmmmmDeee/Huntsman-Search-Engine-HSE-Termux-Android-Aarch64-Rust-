@@ -103,6 +103,20 @@ impl Module for IpGeo {
             return Ok(ModuleResult::new());
         }
 
+        // A CDN/anycast edge IP (Cloudflare, Fastly, …) geolocates to whichever
+        // datacenter answered the query — Montreal, Toronto, San Francisco — NOT
+        // to the subject. Emitting those as Coordinates/Address PII produced the
+        // false "geolocation convergence" and "email + physical location" hits in
+        // a real scan of an Australian subject. Skip geo for edge IPs entirely.
+        if crate::core::validation::is_cdn_edge_ip(&target.value) {
+            tracing::debug!(
+                module = SRC,
+                ip = %target.value,
+                "skipping IP-geo — CDN/anycast edge IP, location is datacenter not subject"
+            );
+            return Ok(ModuleResult::new());
+        }
+
         let mut result = ModuleResult::new();
 
         if let (Some(lat), Some(lon)) = (data.lat, data.lon)
@@ -173,11 +187,15 @@ impl Module for IpGeo {
             result.push(e);
         }
 
-        // Emit Address entity from city/region/country
+        // Emit Address entity from city/region/country — but NOT for a
+        // hosting/datacenter or proxy IP: that "address" is the server's, never
+        // the subject's, and at 0.65 it outweighed genuine residential signals
+        // and seeded false identity-location correlations.
+        let is_datacenter = data.hosting == Some(true) || data.proxy == Some(true);
         let city = data.city.as_deref().unwrap_or("");
         let region = data.region_name.as_deref().unwrap_or("");
         let country = data.country.as_deref().unwrap_or("");
-        if !city.is_empty() && !country.is_empty() {
+        if !is_datacenter && !city.is_empty() && !country.is_empty() {
             let addr = if !region.is_empty() {
                 format!("{city}, {region}, {country}")
             } else {

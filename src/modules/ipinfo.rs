@@ -50,6 +50,13 @@ struct IpInfoResp {
 fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
+    // A CDN/anycast edge IP geolocates to the answering datacenter, not the
+    // subject — its city/coords/org are pure infrastructure. Skip them so they
+    // can't pollute identity-location correlation (see ip_geo.rs for the rule).
+    if crate::core::validation::is_cdn_edge_ip(ip) {
+        return out;
+    }
+
     if let Some(loc) = &data.loc {
         let mut parts = loc.split(',');
         if let (Some(lat_s), Some(lon_s)) = (parts.next(), parts.next())

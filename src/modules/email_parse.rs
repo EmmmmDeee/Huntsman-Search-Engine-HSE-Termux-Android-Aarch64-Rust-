@@ -94,7 +94,7 @@ impl Module for EmailParse {
             // one promotes a generic token (a real scan turned `dns@cloudflare.com`
             // into a VERIFIED multi-platform username `dns`). Skip username/person
             // derivation for them; the Domain is still extracted above.
-            if !local.is_empty() && !is_role_localpart(&local) {
+            if !local.is_empty() && !crate::util::domains::is_role_localpart(&local) {
                 let mut candidates: HashSet<String> = HashSet::with_capacity(8);
 
                 // Strip +tag suffix; also feeds the splitter below.
@@ -181,30 +181,6 @@ impl Module for EmailParse {
 
         Ok(result)
     }
-}
-
-/// True if a mailbox local-part is a generic role/automation address rather than
-/// a person's handle (`info@`, `dns@`, `noreply@`, …). Such local-parts must not
-/// seed Username/Person entities — they are not individualised PII.
-fn is_role_localpart(local: &str) -> bool {
-    // Compare the de-tagged, separator-stripped form so `no-reply`/`no_reply`
-    // also match `noreply`.
-    let base = local
-        .split('+')
-        .next()
-        .unwrap_or(local)
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect::<String>();
-    const ROLE: &[&str] = &[
-        "admin", "administrator", "info", "support", "help", "helpdesk", "contact", "sales",
-        "abuse", "postmaster", "hostmaster", "webmaster", "noreply", "donotreply", "dns", "root",
-        "mail", "mailer", "mailerdaemon", "security", "privacy", "legal", "billing", "accounts",
-        "marketing", "hello", "team", "office", "service", "services", "notifications", "notify",
-        "news", "newsletter", "robot", "automated", "system", "daemon", "feedback",
-        "enquiries", "inquiries", "careers", "jobs", "press", "media", "webmail",
-    ];
-    ROLE.contains(&base.as_str())
 }
 
 fn capitalise(s: &str) -> String {
@@ -342,6 +318,7 @@ mod tests {
                 "{addr}: role mailbox must not seed a Username/Person"
             );
         }
+        use crate::util::domains::is_role_localpart;
         assert!(is_role_localpart("dns") && is_role_localpart("no-reply"));
         assert!(!is_role_localpart("jane.doe") && !is_role_localpart("matthewdiegmann"));
     }

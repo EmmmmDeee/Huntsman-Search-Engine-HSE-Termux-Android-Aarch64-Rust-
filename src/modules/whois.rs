@@ -228,6 +228,18 @@ impl Module for Whois {
             (&abuse_email, "abuse"),
         ] {
             if let Some(addr) = email {
+                // A WHOIS contact that is an infrastructure mailbox — a role
+                // address (`abuse@`, `dns@`, `hostmaster@`) or a mailbox on a
+                // CDN/registrar/cloud provider (`abuse@cloudflare.com`) — is the
+                // registrar/provider's desk, NEVER the subject. Emitting it as a
+                // 0.78 Email entity made it a breach-checked, identity-clustered,
+                // expandable target (a real scan merged `dns@cloudflare.com` /
+                // `abuse@cloudflare.com` into the subject's identity). The address
+                // is still preserved in the parent domain's evidence attrs above;
+                // it just must not become standalone PII.
+                if crate::util::domains::is_infrastructure_email(addr) {
+                    continue;
+                }
                 let mut e = Entity::new(EntityKind::Email, addr, 0.78, &_ctx.scan_id);
                 e.tag(format!("whois-{role}"));
                 e.add_evidence(

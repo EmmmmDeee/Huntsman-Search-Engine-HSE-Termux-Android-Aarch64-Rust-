@@ -105,6 +105,12 @@ impl Module for IpWhois {
             return Ok(ModuleResult::new());
         }
 
+        // CDN/anycast edge IP → datacenter location, not the subject. Skip (see
+        // ip_geo.rs); prevents false identity-location correlations.
+        if crate::core::validation::is_cdn_edge_ip(&target.value) {
+            return Ok(ModuleResult::new());
+        }
+
         let mut result = ModuleResult::new();
 
         if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {

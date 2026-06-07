@@ -143,6 +143,96 @@ pub fn is_freemail(domain: &str) -> bool {
     FREEMAIL.contains(&domain)
 }
 
+/// True if a mailbox local-part is a generic role/automation address rather than
+/// a person's handle (`info@`, `dns@`, `noreply@`, `abuse@`, …). Such local-parts
+/// are never individualised PII — they are registrar/provider/automation desks —
+/// so they must not seed Username/Person entities nor be expanded as the subject.
+#[must_use]
+pub fn is_role_localpart(local: &str) -> bool {
+    // Compare the de-tagged, separator-stripped form so `no-reply`/`no_reply`
+    // also match `noreply`.
+    let base = local
+        .split('+')
+        .next()
+        .unwrap_or(local)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>();
+    const ROLE: &[&str] = &[
+        "admin", "administrator", "info", "support", "help", "helpdesk", "contact", "sales",
+        "abuse", "postmaster", "hostmaster", "webmaster", "noreply", "donotreply", "dns", "root",
+        "mail", "mailer", "mailerdaemon", "security", "privacy", "legal", "billing", "accounts",
+        "marketing", "hello", "team", "office", "service", "services", "notifications", "notify",
+        "news", "newsletter", "robot", "automated", "system", "daemon", "feedback", "enquiries",
+        "inquiries", "careers", "jobs", "press", "media", "webmail",
+    ];
+    ROLE.contains(&base.as_str())
+}
+
+/// True if a full email address is **infrastructure contact** rather than the
+/// subject's personal mail: a role local-part (`abuse@`, `dns@`, …) OR a mailbox
+/// on a CDN/registrar/cloud/ESP provider domain (`*.cloudflare.com`,
+/// `*.amazonaws.com`, …). WHOIS/RDAP/RIPE abuse desks resolve to exactly these,
+/// and merging them into the subject's identity is a false positive. The split is
+/// case-insensitive and tolerant of a trailing dot.
+#[must_use]
+pub fn is_infrastructure_email(email: &str) -> bool {
+    let email = email.trim().trim_end_matches('.').to_ascii_lowercase();
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    if is_role_localpart(local) {
+        return true;
+    }
+    // Provider/infra mail domains: any registrable-domain match against the
+    // curated infra set. Kept here (util) so both whois and ripestat can gate
+    // emission without depending on `core`.
+    let registrable = registrable_domain(domain).unwrap_or_else(|| domain.to_string());
+    INFRA_MAIL.iter().any(|d| {
+        registrable == *d || domain == *d || domain.ends_with(&format!(".{d}"))
+    })
+}
+
+/// Registrable domains of CDN / cloud / registrar / DNS / ESP providers whose
+/// role mailboxes (`abuse@`, `noc@`, …) surface from WHOIS/RDAP/RIPE lookups.
+/// Mirrors the `INFRA_DOMAINS` intent in `core::scan` but lives in util so the
+/// module layer can gate email emission without importing core.
+const INFRA_MAIL: &[&str] = &[
+    "cloudflare.com",
+    "amazonaws.com",
+    "amazon.com",
+    "google.com",
+    "googlemail.com",
+    "azure.com",
+    "microsoft.com",
+    "fastly.com",
+    "akamai.com",
+    "incapsula.com",
+    "imperva.com",
+    "sucuri.net",
+    "stackpath.com",
+    "godaddy.com",
+    "namecheap.com",
+    "gandi.net",
+    "ovh.net",
+    "ovh.com",
+    "digitalocean.com",
+    "linode.com",
+    "hetzner.com",
+    "hetzner.de",
+    "sendgrid.net",
+    "sendgrid.com",
+    "mailgun.net",
+    "mailgun.org",
+    "secureserver.net",
+    "markmonitor.com",
+    "csc.com",
+    "cscglobal.com",
+    "ripe.net",
+    "arin.net",
+    "apnic.net",
+];
+
 /// True if `domain` is a social platform or one of its country
 /// subdomains (e.g. `au.linkedin.com`). Modules that follow a domain
 /// to its "contact" page should skip these.
@@ -153,6 +243,34 @@ pub fn is_social_platform(domain: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn infrastructure_email_detects_role_and_provider_mailboxes() {
+        // Role local-parts on any domain.
+        assert!(is_infrastructure_email("abuse@cloudflare.com"));
+        assert!(is_infrastructure_email("dns@cloudflare.com"));
+        assert!(is_infrastructure_email("hostmaster@example.org"));
+        assert!(is_infrastructure_email("no-reply@acme.com"));
+        // Non-role mailbox but on a provider domain → still infrastructure.
+        assert!(is_infrastructure_email("network-ops@amazonaws.com"));
+        assert!(is_infrastructure_email("jdoe@sendgrid.net"));
+        // Subdomain of a provider.
+        assert!(is_infrastructure_email("noc@mail.cloudflare.com"));
+        // Trailing dot / case tolerance.
+        assert!(is_infrastructure_email("Abuse@Cloudflare.com."));
+        // Genuine personal mail is NOT infrastructure.
+        assert!(!is_infrastructure_email("matthewdiegmann@gmail.com"));
+        assert!(!is_infrastructure_email("jane.doe@example.org"));
+        // Malformed input is safely false.
+        assert!(!is_infrastructure_email("not-an-email"));
+    }
+
+    #[test]
+    fn role_localpart_basics() {
+        assert!(is_role_localpart("dns") && is_role_localpart("no-reply"));
+        assert!(is_role_localpart("postmaster") && is_role_localpart("abuse"));
+        assert!(!is_role_localpart("matthewdiegmann") && !is_role_localpart("jane.doe"));
+    }
 
     #[test]
     fn freemail_basics() {
