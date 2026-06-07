@@ -66,8 +66,11 @@ fn golden_audit_score_and_findings_are_stable() {
     // The findings the fixture must always surface, in the auditor's stable sort
     // order (most-severe first, then category). If a detector stops firing or its
     // severity changes, this vector diverges.
-    let got: Vec<(&str, Severity)> =
-        r.findings.iter().map(|f| (f.category, f.severity)).collect();
+    let got: Vec<(&str, Severity)> = r
+        .findings
+        .iter()
+        .map(|f| (f.category, f.severity))
+        .collect();
     let expected: Vec<(&str, Severity)> = vec![
         ("fragment-values", Severity::High),
         ("infrastructure-pollution", Severity::High),
@@ -77,7 +80,10 @@ fn golden_audit_score_and_findings_are_stable() {
     assert_eq!(got, expected, "audit finding set/order regressed");
 
     // Pinned score: 100 − (High 15 + High 15 + Medium 8 + Info 0) = 62.
-    assert_eq!(r.score, 62, "audit score regressed (re-bless if intentional)");
+    assert_eq!(
+        r.score, 62,
+        "audit score regressed (re-bless if intentional)"
+    );
 
     // The recall finding must carry the actionable remedy that ties it to the
     // wrong-identity gate override.

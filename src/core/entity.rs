@@ -1363,8 +1363,14 @@ mod tests {
             "matthewdiegmann"
         );
         assert_eq!(
-            derive_uid(&EntityKind::Username, &normalise(&EntityKind::Username, "@matthewdiegmann")),
-            derive_uid(&EntityKind::Username, &normalise(&EntityKind::Username, "matthewdiegmann")),
+            derive_uid(
+                &EntityKind::Username,
+                &normalise(&EntityKind::Username, "@matthewdiegmann")
+            ),
+            derive_uid(
+                &EntityKind::Username,
+                &normalise(&EntityKind::Username, "matthewdiegmann")
+            ),
             "@handle and handle must share a UID"
         );
         // Email is unaffected — a leading `@` there is a genuine fragment.

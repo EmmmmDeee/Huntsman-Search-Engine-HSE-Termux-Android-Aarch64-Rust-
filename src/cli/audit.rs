@@ -33,8 +33,8 @@ pub(super) async fn cmd_audit(
     let mut entities: Vec<AuditEntity> = Vec::new();
     let mut source_label = String::new();
     if let Some(path) = &csv {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| Error::Other(format!("read {path}: {e}")))?;
+        let text =
+            std::fs::read_to_string(path).map_err(|e| Error::Other(format!("read {path}: {e}")))?;
         entities = parse_csv(&text)?;
         source_label = format!("CSV {path} ({} entities)", entities.len());
     } else if let Some(id) = &scan_id {
@@ -266,7 +266,8 @@ fn ingest_text(s: &mut LogSignals, line: &str) {
     if low.contains("error sending request") || low.contains("failed to fetch") {
         s.http_failures += 1;
     }
-    if low.contains("expansion") && low.contains("stop")
+    if low.contains("expansion")
+        && low.contains("stop")
         && let Some(r) = field(line, "reason")
     {
         s.expansion_stops.push(r.to_string());
@@ -343,7 +344,11 @@ fn print_report(r: &AuditReport, source: &str) {
             r.geo.coord_count,
             r.geo.source_count,
             r.geo.max_spread_km,
-            if r.geo.has_consensus { "consensus" } else { "no consensus" },
+            if r.geo.has_consensus {
+                "consensus"
+            } else {
+                "no consensus"
+            },
             if r.geo.outliers > 0 {
                 format!(" · {} outlier(s)", r.geo.outliers)
             } else {
@@ -366,7 +371,12 @@ fn print_report(r: &AuditReport, source: &str) {
     } else {
         println!("\nFindings ({}):", r.findings.len());
         for f in &r.findings {
-            println!("\n  [{}] {} — {}", f.severity.as_str(), f.category, f.message);
+            println!(
+                "\n  [{}] {} — {}",
+                f.severity.as_str(),
+                f.category,
+                f.message
+            );
             for ex in &f.examples {
                 println!("        • {ex}");
             }

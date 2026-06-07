@@ -211,7 +211,12 @@ impl Module for KeyDiscovererModule {
 
         // Emit a marker entity proving this module ran.
         let mut r = ModuleResult::new();
-        let mut e = Entity::new(EntityKind::Email, "discoverer@chainmarker.io", 0.95, &ctx.scan_id);
+        let mut e = Entity::new(
+            EntityKind::Email,
+            "discoverer@chainmarker.io",
+            0.95,
+            &ctx.scan_id,
+        );
         e.tag("key-discoverer-fired");
         r.push(e);
         Ok(r)
@@ -241,7 +246,12 @@ impl Module for KeyConsumerModule {
         if let Some(key) = ctx.key_opt(CHAIN_TEST_ENV)
             && key == "test-shodan-key-chained-via-hot-inject"
         {
-            let mut e = Entity::new(EntityKind::Email, "consumer@chainmarker.io", 0.95, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Email,
+                "consumer@chainmarker.io",
+                0.95,
+                &ctx.scan_id,
+            );
             e.tag("key-consumer-saw-key");
             r.push(e);
         }

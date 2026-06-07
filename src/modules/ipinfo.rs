@@ -277,7 +277,10 @@ mod tests {
                 "loc":"37.7749,-122.4194","org":"AS13335 Cloudflare, Inc."}"#,
         );
         let ents = build_entities("104.16.1.1", &d, "s");
-        assert!(ents.is_empty(), "CDN-edge IP must yield no entities, got {ents:?}");
+        assert!(
+            ents.is_empty(),
+            "CDN-edge IP must yield no entities, got {ents:?}"
+        );
         // Sanity: the same record on a non-CDN IP DOES produce entities.
         assert!(!build_entities("8.8.8.8", &d, "s").is_empty());
     }

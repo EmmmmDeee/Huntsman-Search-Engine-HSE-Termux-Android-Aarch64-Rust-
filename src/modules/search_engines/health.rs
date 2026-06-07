@@ -155,7 +155,6 @@ fn diagnose(outcome: &FetchOutcome, results: usize, external_links: usize) -> St
     }
 }
 
-
 async fn probe_one(engine: &'static EngineSpec) -> EngineHealth {
     let url = (engine.build_url)(PROBE_QUERY);
     let post = engine.build_post.map(|f| f(PROBE_QUERY));
@@ -243,7 +242,10 @@ mod tests {
         assert!(d.contains("PARSER"), "got: {d}");
         // Reachable but few external links → soft-block/throttle, NOT parser blame.
         let d = diagnose(&body, 0, 2);
-        assert!(d.contains("soft-block") || d.contains("throttling"), "got: {d}");
+        assert!(
+            d.contains("soft-block") || d.contains("throttling"),
+            "got: {d}"
+        );
         assert!(!d.contains("PARSER"), "got: {d}");
         // Up case names the count.
         assert!(diagnose(&body, 7, 30).contains('7'));

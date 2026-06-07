@@ -174,7 +174,11 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
             visited,
         } => format!("  ↻ expansion depth={depth} queued={queued} visited={visited}"),
         E::ExpansionStop { reason } => format!("  ◼ expansion stopped: {reason}"),
-        E::EntityExcluded { kind, value, reason } => {
+        E::EntityExcluded {
+            kind,
+            value,
+            reason,
+        } => {
             format!("  ⊘ not expanded [{kind}] {value} — {reason}")
         }
         E::CorrelationFound { correlation } => format!(

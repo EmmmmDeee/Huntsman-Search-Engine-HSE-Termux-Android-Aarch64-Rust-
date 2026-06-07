@@ -302,7 +302,10 @@ pub async fn scan_audit(
 /// Fold a stored scan's expansion events into auditor signals: every
 /// `ExpansionStop` reason and every `EntityExcluded` reason (counted), so the
 /// recursion is never a black box in the web audit.
-fn fold_expansion_signals(sig: &mut crate::audit::LogSignals, events: &[crate::core::event::Event]) {
+fn fold_expansion_signals(
+    sig: &mut crate::audit::LogSignals,
+    events: &[crate::core::event::Event],
+) {
     use crate::core::event::EventKind;
     for ev in events {
         match &ev.kind {
@@ -358,16 +361,14 @@ pub async fn scan_relations(
         Ok(rels) => rels,
         Err(e) => return internal_error(&e),
     };
-    let by_uid: std::collections::HashMap<String, (String, String)> = match s
-        .store
-        .entities_for_scan(&id)
-    {
-        Ok(ents) => ents
-            .into_iter()
-            .map(|e| (e.uid, (e.value, e.kind.to_string())))
-            .collect(),
-        Err(e) => return internal_error(&e),
-    };
+    let by_uid: std::collections::HashMap<String, (String, String)> =
+        match s.store.entities_for_scan(&id) {
+            Ok(ents) => ents
+                .into_iter()
+                .map(|e| (e.uid, (e.value, e.kind.to_string())))
+                .collect(),
+            Err(e) => return internal_error(&e),
+        };
     let resolved: Vec<serde_json::Value> = rels
         .into_iter()
         .map(|r| {
@@ -696,7 +697,12 @@ mod tests {
                 },
             ),
             // An unrelated event must be ignored.
-            Event::new("s", EventKind::ModuleStart { module: "dns".into() }),
+            Event::new(
+                "s",
+                EventKind::ModuleStart {
+                    module: "dns".into(),
+                },
+            ),
         ];
         let mut sig = crate::audit::LogSignals::default();
         fold_expansion_signals(&mut sig, &evs);
@@ -847,23 +853,38 @@ mod tests {
 
     #[test]
     fn csv_carries_verifiable_evidence_urls_and_summaries() {
-        use crate::core::entity::{Entity, Evidence, EntityKind};
+        use crate::core::entity::{Entity, EntityKind, Evidence};
         let mut e = Entity::new(EntityKind::Username, "matthewdiegmann", 0.80, "src");
         e.add_evidence(
-            Evidence::new("username_search", "@matthewdiegmann has a profile on GitHub")
-                .with_attr("url", "https://github.com/matthewdiegmann"),
+            Evidence::new(
+                "username_search",
+                "@matthewdiegmann has a profile on GitHub",
+            )
+            .with_attr("url", "https://github.com/matthewdiegmann"),
         );
-        e.add_evidence(
-            Evidence::new("github_user", "12 public events")
-                .with_attr("profile_url", "https://github.com/matthewdiegmann?tab=overview"),
-        );
+        e.add_evidence(Evidence::new("github_user", "12 public events").with_attr(
+            "profile_url",
+            "https://github.com/matthewdiegmann?tab=overview",
+        ));
         let csv = entities_to_csv(&[e]);
         let row = csv.lines().nth(1).unwrap();
         // The full, clickable source URLs are present (no reconstruction needed).
-        assert!(row.contains("https://github.com/matthewdiegmann"), "evidence URL missing: {row}");
-        assert!(row.contains("?tab=overview"), "second evidence URL missing: {row}");
+        assert!(
+            row.contains("https://github.com/matthewdiegmann"),
+            "evidence URL missing: {row}"
+        );
+        assert!(
+            row.contains("?tab=overview"),
+            "second evidence URL missing: {row}"
+        );
         // The per-source finding summaries are present and source-attributed.
-        assert!(row.contains("[username_search]") && row.contains("[github_user]"), "evidence trail missing: {row}");
-        assert!(row.contains("has a profile on GitHub"), "evidence summary missing: {row}");
+        assert!(
+            row.contains("[username_search]") && row.contains("[github_user]"),
+            "evidence trail missing: {row}"
+        );
+        assert!(
+            row.contains("has a profile on GitHub"),
+            "evidence summary missing: {row}"
+        );
     }
 }

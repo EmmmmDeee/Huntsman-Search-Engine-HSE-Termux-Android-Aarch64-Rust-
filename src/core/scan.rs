@@ -1882,7 +1882,10 @@ mod tests {
         assert!(!identity_overlaps(subject, "centenario"));
         assert!(!identity_overlaps(subject, "ideasfactory009"));
         // Symmetry + email-local extraction.
-        assert!(identity_overlaps("matthewdiegmann", "matthewdiegmann@x.org"));
+        assert!(identity_overlaps(
+            "matthewdiegmann",
+            "matthewdiegmann@x.org"
+        ));
         // Short identities must match exactly.
         assert!(identity_overlaps("abc", "abc"));
         assert!(!identity_overlaps("abc", "abd"));

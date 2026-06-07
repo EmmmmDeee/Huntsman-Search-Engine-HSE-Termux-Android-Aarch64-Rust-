@@ -1713,11 +1713,25 @@ mod tests {
             query: "q".into(),
         };
         let ev = build_search_evidence(&r);
-        assert_eq!(ev.attributes.get("snippet_truncated").map(String::as_str), Some("true"));
-        assert_eq!(ev.attributes.get("snippet_full_len").map(String::as_str), Some("5000"));
+        assert_eq!(
+            ev.attributes.get("snippet_truncated").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            ev.attributes.get("snippet_full_len").map(String::as_str),
+            Some("5000")
+        );
         // The stored preview is capped but non-empty and the URL is preserved.
-        assert!(ev.attributes.get("snippet").map(|s| s.len() <= 4000).unwrap_or(false));
-        assert_eq!(ev.attributes.get("url").map(String::as_str), Some("https://example.com/page"));
+        assert!(
+            ev.attributes
+                .get("snippet")
+                .map(|s| s.len() <= 4000)
+                .unwrap_or(false)
+        );
+        assert_eq!(
+            ev.attributes.get("url").map(String::as_str),
+            Some("https://example.com/page")
+        );
     }
 
     #[test]

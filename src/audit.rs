@@ -421,7 +421,11 @@ pub fn audit(entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     if !infra.is_empty() {
         let n = infra.len();
         findings.push(Finding {
-            severity: if n >= 5 { Severity::Critical } else { Severity::High },
+            severity: if n >= 5 {
+                Severity::Critical
+            } else {
+                Severity::High
+            },
             category: "infrastructure-pollution",
             message: format!(
                 "{n} CDN/registrar/provider infrastructure entit{} are present — these map a \
@@ -520,7 +524,8 @@ pub fn audit(entities: &[AuditEntity], log: LogSignals) -> AuditReport {
         missed.push("has email(s) but no Person — name enrichment likely missed".into());
     }
     if emails + usernames > 0 && phones == 0 && addrs == 0 {
-        missed.push("identity present but no phone or location — geo/contact enrichment thin".into());
+        missed
+            .push("identity present but no phone or location — geo/contact enrichment thin".into());
     }
     if usernames > 0 && urls == 0 {
         missed.push("username(s) present but no profile URLs — social enumeration missed".into());
@@ -598,9 +603,16 @@ pub fn audit(entities: &[AuditEntity], log: LogSignals) -> AuditReport {
             .map(|(m, n)| format!("{m} ×{n}"))
             .collect();
         findings.push(Finding {
-            severity: if total >= 10 { Severity::Medium } else { Severity::Low },
+            severity: if total >= 10 {
+                Severity::Medium
+            } else {
+                Severity::Low
+            },
             category: "module-errors",
-            message: format!("{total} module error(s) across {} module(s)", log.module_errors.len()),
+            message: format!(
+                "{total} module error(s) across {} module(s)",
+                log.module_errors.len()
+            ),
             examples: examples(ex),
             recommendation: "Inspect each erroring module — API change, rate limit, or missing \
                 key. Errors silently shrink coverage."
@@ -678,7 +690,11 @@ pub fn audit(entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     let score = 100u32.saturating_sub(penalty);
 
     // Most-severe findings first, then by category for stable output.
-    findings.sort_by(|a, b| a.severity.cmp(&b.severity).then_with(|| a.category.cmp(b.category)));
+    findings.sort_by(|a, b| {
+        a.severity
+            .cmp(&b.severity)
+            .then_with(|| a.category.cmp(b.category))
+    });
 
     AuditReport {
         entity_total,
@@ -718,9 +734,15 @@ mod tests {
             ent("url", "https://gravatar.com/matthewdiegmann", 0.6, 1, &[]),
         ];
         let r = audit(&ents, LogSignals::default());
-        assert!(r.score >= 90, "clean scan should score high, got {}", r.score);
         assert!(
-            !r.findings.iter().any(|f| f.category == "infrastructure-pollution"),
+            r.score >= 90,
+            "clean scan should score high, got {}",
+            r.score
+        );
+        assert!(
+            !r.findings
+                .iter()
+                .any(|f| f.category == "infrastructure-pollution"),
             "no infra in a clean scan"
         );
     }
@@ -729,7 +751,13 @@ mod tests {
     fn infrastructure_pollution_is_flagged_critical() {
         // The exact failure from the real screenshots.
         let ents = vec![
-            ent("ip_address", "172.66.147.185", 1.0, 258, &["cloudflare", "hosting"]),
+            ent(
+                "ip_address",
+                "172.66.147.185",
+                1.0,
+                258,
+                &["cloudflare", "hosting"],
+            ),
             ent("ip_address", "104.20.37.187", 1.0, 268, &["cloudflare"]),
             ent("email", "dns@cloudflare.com", 1.0, 2, &[]),
             ent("email", "abuse@cloudflare.com", 1.0, 1, &[]),
@@ -742,7 +770,11 @@ mod tests {
             .find(|f| f.category == "infrastructure-pollution")
             .expect("must flag infra pollution");
         assert_eq!(f.severity, Severity::Critical);
-        assert!(r.score < 80, "infra pollution must hurt the score, got {}", r.score);
+        assert!(
+            r.score < 80,
+            "infra pollution must hurt the score, got {}",
+            r.score
+        );
     }
 
     #[test]
@@ -798,7 +830,8 @@ mod tests {
         // INFO context (zero score penalty), never as a recall finding.
         let ents = vec![ent("email", "x@y.com", 1.0, 2, &[])];
         let mut log = LogSignals::default();
-        log.excluded_reasons.insert("already_dispatched_this_scan".into(), 40);
+        log.excluded_reasons
+            .insert("already_dispatched_this_scan".into(), 40);
         log.excluded_reasons.insert("non_pivotable_kind".into(), 5);
         let r = audit(&ents, log);
         let f = r
@@ -822,10 +855,19 @@ mod tests {
         let ents = vec![ent("email", "dns@cloudflare.com", 1.0, 1, &[])];
         let j = audit(&ents, LogSignals::default()).to_json();
         assert!(j["score"].as_u64().is_some());
-        assert!(j["grade"].as_str().unwrap().starts_with(|c: char| c.is_ascii_uppercase()));
-        assert!(j["findings"].as_array().unwrap().iter().any(|f| {
-            f["category"] == "role-mailbox-as-pii"
-        }));
+        assert!(
+            j["grade"]
+                .as_str()
+                .unwrap()
+                .starts_with(|c: char| c.is_ascii_uppercase())
+        );
+        assert!(
+            j["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| { f["category"] == "role-mailbox-as-pii" })
+        );
         assert!(j["source_health"]["engines_down"].is_array());
     }
 
@@ -855,7 +897,7 @@ mod tests {
             ent("coordinates", "35.4137,-114.1762", 0.6, 1, &[]), // Bullhead City, AZ
             ent("coordinates", "35.4200,-114.1800", 0.6, 1, &[]),
             ent("coordinates", "35.4000,-114.2000", 0.6, 1, &[]),
-            ent("coordinates", "45.5019,-73.5674", 0.4, 1, &[]),   // Montreal — outlier
+            ent("coordinates", "45.5019,-73.5674", 0.4, 1, &[]), // Montreal — outlier
         ];
         let r = audit(&ents, LogSignals::default());
         let f = r

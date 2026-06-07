@@ -159,12 +159,52 @@ pub fn is_role_localpart(local: &str) -> bool {
         .filter(|c| c.is_ascii_alphanumeric())
         .collect::<String>();
     const ROLE: &[&str] = &[
-        "admin", "administrator", "info", "support", "help", "helpdesk", "contact", "sales",
-        "abuse", "postmaster", "hostmaster", "webmaster", "noreply", "donotreply", "dns", "root",
-        "mail", "mailer", "mailerdaemon", "security", "privacy", "legal", "billing", "accounts",
-        "marketing", "hello", "team", "office", "service", "services", "notifications", "notify",
-        "news", "newsletter", "robot", "automated", "system", "daemon", "feedback", "enquiries",
-        "inquiries", "careers", "jobs", "press", "media", "webmail",
+        "admin",
+        "administrator",
+        "info",
+        "support",
+        "help",
+        "helpdesk",
+        "contact",
+        "sales",
+        "abuse",
+        "postmaster",
+        "hostmaster",
+        "webmaster",
+        "noreply",
+        "donotreply",
+        "dns",
+        "root",
+        "mail",
+        "mailer",
+        "mailerdaemon",
+        "security",
+        "privacy",
+        "legal",
+        "billing",
+        "accounts",
+        "marketing",
+        "hello",
+        "team",
+        "office",
+        "service",
+        "services",
+        "notifications",
+        "notify",
+        "news",
+        "newsletter",
+        "robot",
+        "automated",
+        "system",
+        "daemon",
+        "feedback",
+        "enquiries",
+        "inquiries",
+        "careers",
+        "jobs",
+        "press",
+        "media",
+        "webmail",
     ];
     ROLE.contains(&base.as_str())
 }
@@ -188,9 +228,9 @@ pub fn is_infrastructure_email(email: &str) -> bool {
     // curated infra set. Kept here (util) so both whois and ripestat can gate
     // emission without depending on `core`.
     let registrable = registrable_domain(domain).unwrap_or_else(|| domain.to_string());
-    INFRA_MAIL.iter().any(|d| {
-        registrable == *d || domain == *d || domain.ends_with(&format!(".{d}"))
-    })
+    INFRA_MAIL
+        .iter()
+        .any(|d| registrable == *d || domain == *d || domain.ends_with(&format!(".{d}")))
 }
 
 /// Registrable domains of CDN / cloud / registrar / DNS / ESP providers whose

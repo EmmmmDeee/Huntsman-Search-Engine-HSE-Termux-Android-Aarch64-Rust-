@@ -30,24 +30,22 @@ pub(super) async fn fetch_and_parse(
 
     // Alt-UA retry only when the first attempt yielded no usable results and the
     // engine actually has a distinct fallback UA.
-    let (results, outcome) = if results.is_none()
-        && outcome != "unreachable"
-        && engine.ua != engine.ua_alt
-    {
-        match try_fetch(url, engine.ua_alt, post_body).await {
-            FetchOutcome::Body(body) => {
-                let r = parse_results(&body, engine.name, query);
-                if r.is_empty() {
-                    (None, outcome)
-                } else {
-                    (Some(r), "ok_retry")
+    let (results, outcome) =
+        if results.is_none() && outcome != "unreachable" && engine.ua != engine.ua_alt {
+            match try_fetch(url, engine.ua_alt, post_body).await {
+                FetchOutcome::Body(body) => {
+                    let r = parse_results(&body, engine.name, query);
+                    if r.is_empty() {
+                        (None, outcome)
+                    } else {
+                        (Some(r), "ok_retry")
+                    }
                 }
+                _ => (None, outcome),
             }
-            _ => (None, outcome),
-        }
-    } else {
-        (results, outcome)
-    };
+        } else {
+            (results, outcome)
+        };
 
     let n = results.as_ref().map_or(0, Vec::len);
     tracing::debug!(

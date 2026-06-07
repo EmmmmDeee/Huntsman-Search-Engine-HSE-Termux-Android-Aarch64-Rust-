@@ -294,7 +294,10 @@ mod tests {
         let has_domain = r.entities.iter().any(|e| e.kind == EntityKind::Domain);
         let has_username = r.entities.iter().any(|e| e.kind == EntityKind::Username);
         assert!(has_domain, "should emit a Domain entity for corp.io");
-        assert!(has_username, "should emit Username entities from local part");
+        assert!(
+            has_username,
+            "should emit Username entities from local part"
+        );
     }
 
     #[tokio::test]
