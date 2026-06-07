@@ -71,6 +71,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   is now stripped before the mechanism match; the `redirect=` modifier (which
   takes no qualifier) is unchanged. Tested across all four qualifiers.
 
+- **`riskiq.net` is tagged `riskiq`, not `passivetotal` (dead-data fix).** The
+  API-service-domain table listed `riskiq.net` twice — once in the PassiveTotal
+  cluster and once (correctly) in the RiskIQ cluster. Since `identify_service_from_url`
+  returns the first substring match, the PassiveTotal duplicate shadowed the real
+  entry, so every `riskiq.net` URL in a stealer/breach record was mis-tagged and
+  the `riskiq` entry was dead. Removed the stray duplicate; `riskiq.net` now
+  resolves to `riskiq` (its own brand), and PassiveTotal is still detected via
+  `passivetotal.org`. Regression-tested, plus a new structural guard (above).
+
 - **`url_util::host_only` keeps a bracketed IPv6 literal intact.** It dropped the
   `:port` by splitting on the first colon, which truncated an IPv6-literal
   authority (`[2606:4700::1]:443`) to `[2606` — the inner colons are part of the
@@ -257,6 +266,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **No-silent-drift guard: the API-service-domain table has no shadowed entries.**
+  `identify_service_from_url` returns the first table entry whose domain is a
+  *substring* of the URL, so an earlier entry that is a substring of a later,
+  different-service entry makes the later one dead (every matching URL is tagged
+  with the earlier service). A new test (`service_domain_table_has_no_shadowed_entries`)
+  flags any such pair — the same dead-data class the key-prefix table's
+  `pattern_table_is_structurally_sound` already guards. This is the check the
+  `riskiq.net` duplicate (below) would have failed.
 - **Coverage for `search_engines::build_entities` domain classification.** The
   orchestration that turns raw search hits into entities had direct tests for
   aggregator suppression and profile-URL corroboration, but not for the domain

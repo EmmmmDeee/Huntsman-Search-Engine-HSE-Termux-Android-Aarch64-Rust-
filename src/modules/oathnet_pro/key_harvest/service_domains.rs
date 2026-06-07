@@ -73,7 +73,10 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     ("anthropic.com", "anthropic"),
     ("api.anthropic.com", "anthropic"),
     ("passivetotal.org", "passivetotal"),
-    ("riskiq.net", "passivetotal"),
+    // `riskiq.net` is RiskIQ's own brand domain → it maps to `riskiq` in the
+    // RiskIQ cluster below; it must NOT also live here, or (first-match-wins)
+    // every riskiq.net URL would tag as `passivetotal` and the `riskiq` entry
+    // would be dead. PassiveTotal is still detected via `passivetotal.org`.
     ("onyphe.io", "onyphe"),
     ("zoomeye.org", "zoomeye"),
     ("api.zoomeye.org", "zoomeye"),

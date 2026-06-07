@@ -1188,6 +1188,53 @@ mod tests {
         assert_eq!(svc, "unknown");
     }
 
+    #[test]
+    fn riskiq_domain_resolves_to_riskiq_not_passivetotal() {
+        // Regression: `riskiq.net` (RiskIQ's own brand domain) was listed twice —
+        // once in the PassiveTotal cluster, once in the RiskIQ cluster. The helper
+        // returns the first `contains` match, so the PassiveTotal duplicate
+        // shadowed the real entry and every riskiq.net URL tagged as passivetotal.
+        assert_eq!(
+            identify_service_from_url("https://riskiq.net/login"),
+            "riskiq"
+        );
+        // PassiveTotal is still detected via its own domain.
+        assert_eq!(
+            identify_service_from_url("https://api.passivetotal.org/v2/account"),
+            "passivetotal"
+        );
+    }
+
+    #[test]
+    fn service_domain_table_has_no_shadowed_entries() {
+        use super::service_domains::API_SERVICE_DOMAINS;
+        // `identify_service_from_url` returns the FIRST table entry whose domain is
+        // a substring of the URL. So if an earlier entry's domain is a substring of
+        // a later entry's domain that maps to a DIFFERENT service, the later entry
+        // is dead — any URL that would match it matches the earlier one first and
+        // is mis-tagged. (A full domain maps to exactly one service, so unlike the
+        // key-prefix table there is no inherent-overlap exception.) Same-service
+        // overlaps are merely redundant and allowed. This is the guard the
+        // riskiq.net duplicate would have failed.
+        let mut violations = Vec::new();
+        for (i, (d1, s1)) in API_SERVICE_DOMAINS.iter().enumerate() {
+            for (offset, (d2, s2)) in API_SERVICE_DOMAINS[i + 1..].iter().enumerate() {
+                if s1 != s2 && d2.contains(d1) {
+                    let j = i + 1 + offset;
+                    violations.push(format!(
+                        "#{j} ({d2} → {s2}) shadowed by earlier #{i} ({d1} → {s1})"
+                    ));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "service-domain table has shadowed/dead entries — remove the duplicate \
+             or move the more-specific domain above the generic:\n  {}",
+            violations.join("\n  ")
+        );
+    }
+
     // ─── identify_api_key — generic-hex + URL-param + user:pass ───
 
     #[test]
