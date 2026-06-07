@@ -56,8 +56,11 @@ log_warn() { printf "  ${YELLOW}!${NC} %s\n" "$*"; }
 die()      { printf "  ${RED}✗${NC} %s\n" "$*" >&2; echo; echo "Full log: $LOG_FILE"; exit 1; }
 hint()     { printf "    ${DIM}%s${NC}\n" "$*"; }
 
+HB_PID=""
 on_exit() {
     local rc=$?
+    # Stop the build heartbeat ticker if it's still running (any exit path).
+    [[ -n "$HB_PID" ]] && kill "$HB_PID" 2>/dev/null
     if [[ $rc -ne 0 ]]; then
         printf '\n%sInstallation failed (exit %d).%s\n  Full log: %s\n' "$RED" "$rc" "$NC" "$LOG_FILE" >&2
     fi
@@ -405,6 +408,21 @@ if [[ $IS_TERMUX -eq 1 ]]; then
     mkdir -p "$TMPDIR"
 fi
 
+# Live progress so a long build never looks frozen:
+#  1. Force cargo's progress bar ON even though stdout is piped to `tee` (a pipe
+#     is not a TTY, so cargo would otherwise stay silent through the whole
+#     compile — the #1 reason people Ctrl-C thinking it hung).
+#  2. A heartbeat ticker for the final `Compiling huntsman-search-engine` step,
+#     which is a single codegen+link unit that emits no progress for minutes.
+export CARGO_TERM_PROGRESS_WHEN=always
+export CARGO_TERM_PROGRESS_WIDTH=70
+__hb_start=$(date +%s)
+( while sleep 20; do
+    printf '    %s… still compiling (%ss elapsed) — do NOT interrupt; the final huntsman-search-engine step is silent for a few minutes%s\n' \
+        "$DIM" "$(( $(date +%s) - __hb_start ))" "$NC"
+  done ) &
+HB_PID=$!
+
 # Retry the build twice — flaky mobile networks can interrupt crate downloads.
 attempts=0
 until cargo build --profile "$PROFILE" --locked; do
@@ -413,6 +431,9 @@ until cargo build --profile "$PROFILE" --locked; do
     log_warn "Build attempt $attempts failed; retrying (slow mobile network?)"
     sleep $((attempts * 3))
 done
+
+# Stop the heartbeat — build finished.
+kill "$HB_PID" 2>/dev/null; HB_PID=""
 
 # `--profile release` outputs to target/release; `--profile fast` to target/fast.
 BUILT="$CARGO_TARGET_DIR/$PROFILE/hse"

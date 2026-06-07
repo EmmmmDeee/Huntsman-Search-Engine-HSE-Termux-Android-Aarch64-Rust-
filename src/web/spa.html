@@ -297,10 +297,10 @@ const TARGET_KINDS = [
 
 const USE_CASES = {
   all: {
-    label:'All',
-    desc:'<b>Get anything and everything about the target.</b><br><br>All Huntsman modules will be enabled (slow) but every possible piece of information about the target will be obtained and analysed.',
+    label:'Complete (All)',
+    desc:'<b>Get anything and everything about the target — the no-compromise scan.</b><br><br>Every Huntsman module is enabled (slow), expansion runs to maximum depth (3) at the Probable floor, and ROI pruning is disabled so nothing is skipped. The seed kind is auto-detected. Equivalent to the CLI <code>hse scan --full</code>.',
     pick:_m=>true,
-    options:()=>({})
+    options:()=>({depth:3, min_expand_confidence:0.40, max_roi:false})
   },
   footprint: {
     label:'Footprint',

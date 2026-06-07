@@ -107,6 +107,17 @@ pub enum Command {
         /// and min_expand_confidence=0.40. Overridden by an explicit --depth.
         #[arg(short = 'R', long)]
         recursive: bool,
+        /// COMPLETE scan — the no-compromise preset. Auto-detects the seed kind,
+        /// runs EVERY module (overrides --free-only/--passive-only/--modules),
+        /// expands to MAX_DEPTH (3) at the Probable floor, and disables ROI
+        /// pruning so nothing is skipped. The single "get everything" option.
+        #[arg(
+            short = 'F',
+            long,
+            visible_alias = "complete",
+            visible_alias = "everything"
+        )]
+        full: bool,
         /// Automatically select optimal expansion depth based on seed type
         /// and available API keys. Uses expected-value analysis to determine
         /// the depth where marginal yield justifies the cost.
@@ -457,6 +468,7 @@ pub async fn run() -> Result<()> {
             timeout,
             depth,
             recursive,
+            full,
             auto,
             min_expand_confidence,
             max_entities,
@@ -471,25 +483,28 @@ pub async fn run() -> Result<()> {
             output,
         } => {
             let value = resolve_seed(value, keys::default_seed())?;
+            // `--full` is the no-compromise preset: force every module on (drop
+            // the free/passive filters and any allowlist), deep recursion, and
+            // no ROI pruning. It composes by overriding the narrowing flags.
             scan::cmd_scan(scan::ScanCmd {
                 kind,
                 value,
-                modules,
+                modules: if full { None } else { modules },
                 exclude,
                 throttle_ms: throttle,
                 min_confidence,
-                free_only,
-                passive_only,
+                free_only: free_only && !full,
+                passive_only: passive_only && !full,
                 module_timeout_ms: timeout,
                 depth,
-                recursive,
+                recursive: recursive || full,
                 auto,
                 min_expand_confidence,
                 max_entities,
                 max_wall_time_secs: max_wall_time,
                 max_concurrent,
                 adaptive,
-                max_roi,
+                max_roi: max_roi && !full,
                 regional_search,
                 min_marginal_yield,
                 expansion_strategy,

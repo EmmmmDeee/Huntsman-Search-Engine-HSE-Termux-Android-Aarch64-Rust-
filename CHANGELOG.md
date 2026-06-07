@@ -323,6 +323,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`hse scan --full` — the no-compromise complete scan (CLI + Web UI parity).**
+  One option that auto-detects the seed kind and runs EVERY module (overriding
+  `--free-only`/`--passive-only`/`--modules`), expands to MAX_DEPTH (3) at the
+  Probable floor, and disables ROI pruning so nothing is skipped. Aliases
+  `--complete`/`--everything`. The Web UI's "Complete (All)" use-case now sends
+  the identical options (`depth 3, min_expand_confidence 0.40, max_roi off`), so
+  the two front-ends are functionally equivalent for the flagship scan.
+
+- **Installer shows live build progress.** Output is piped to `tee` (not a TTY),
+  which made cargo suppress its progress bar — so the multi-minute final compile
+  looked frozen and people Ctrl-C'd it. The installer now forces
+  `CARGO_TERM_PROGRESS_WHEN=always` (live per-crate progress) and prints a
+  heartbeat ("still compiling — do NOT interrupt") every 20 s during the silent
+  final-crate codegen. The ticker is cleaned up on every exit path.
+
 - **`hse diagnostics` — one command for all health checks.** Runs `doctor`
   (environment) + `selftest` (modules/core) + `engines` (search-engine liveness)
   in a single banner-sectioned pass, exiting non-zero if any section fails.
