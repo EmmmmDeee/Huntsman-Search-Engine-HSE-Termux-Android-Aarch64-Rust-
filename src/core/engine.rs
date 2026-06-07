@@ -775,6 +775,12 @@ impl ScanEngine {
                     let candidate_is_seed =
                         seed.kind == tk && strip(&seed.value) == strip(&entity.value);
                     let is_incidental_infra = match tk {
+                        // Freemail / social / shared CDN-DNS-registrar infra is
+                        // never the subject's own estate — expanding it maps the
+                        // provider, not the target. All consolidated in the
+                        // core-side `is_noncentral_domain` (mega + infra lists,
+                        // incl. freemail and ISP webmail) so the engine stays free
+                        // of any `util` import (core → modules → util only).
                         TargetKind::Domain => {
                             crate::core::scan::is_noncentral_domain(&entity.value)
                         }

@@ -457,15 +457,23 @@ fn build_entities(
         state.result.push(e);
     }
 
-    // Email entities
-    for email in &state.emails {
-        let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.75, scan_id);
-        e.tag(tags::WEB_SCRAPED);
-        e.add_evidence(
-            Evidence::new(SRC, format!("Email found on {domain}"))
-                .with_attr("source_domain", domain),
-        );
-        state.result.push(e);
+    // Email entities. A crawl that scrapes an implausible number of distinct
+    // addresses has hit a directory / forum / comment-thread dump, not the
+    // subject's contacts — emitting them floods the graph with strangers (a real
+    // scan pulled ~100 unrelated emails off one comment page). Above the dump
+    // threshold the whole batch is co-occurrence noise, so suppress it; a normal
+    // contact/about page (a handful of addresses) passes through.
+    const CONTACT_DUMP_LIMIT: usize = 20;
+    if state.emails.len() <= CONTACT_DUMP_LIMIT {
+        for email in &state.emails {
+            let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.75, scan_id);
+            e.tag(tags::WEB_SCRAPED);
+            e.add_evidence(
+                Evidence::new(SRC, format!("Email found on {domain}"))
+                    .with_attr("source_domain", domain),
+            );
+            state.result.push(e);
+        }
     }
 
     // Tracking-ID entities (web-analytics affiliate pivot). The id is a hard
@@ -485,15 +493,18 @@ fn build_entities(
         state.result.push(e);
     }
 
-    // Phone entities
-    for phone in &state.phones {
-        let mut e = Entity::new(EntityKind::Phone, phone.as_str(), 0.75, scan_id);
-        e.tag(tags::WEB_SCRAPED);
-        e.add_evidence(
-            Evidence::new(SRC, format!("Phone found on {domain}"))
-                .with_attr("source_domain", domain),
-        );
-        state.result.push(e);
+    // Phone entities — same dump guard (a page with dozens of numbers is a
+    // directory, not the subject's).
+    if state.phones.len() <= CONTACT_DUMP_LIMIT {
+        for phone in &state.phones {
+            let mut e = Entity::new(EntityKind::Phone, phone.as_str(), 0.75, scan_id);
+            e.tag(tags::WEB_SCRAPED);
+            e.add_evidence(
+                Evidence::new(SRC, format!("Phone found on {domain}"))
+                    .with_attr("source_domain", domain),
+            );
+            state.result.push(e);
+        }
     }
 }
 

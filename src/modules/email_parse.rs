@@ -89,7 +89,12 @@ impl Module for EmailParse {
         // ── Username derivation ────────────────────────────────────────
         if let Some(local) = target.value.split('@').next() {
             let local = local.to_lowercase();
-            if !local.is_empty() {
+            // Role / generic mailbox local-parts (`dns@`, `abuse@`, `info@`,
+            // `noreply@`, …) are not a person's handle — deriving a Username from
+            // one promotes a generic token (a real scan turned `dns@cloudflare.com`
+            // into a VERIFIED multi-platform username `dns`). Skip username/person
+            // derivation for them; the Domain is still extracted above.
+            if !local.is_empty() && !is_role_localpart(&local) {
                 let mut candidates: HashSet<String> = HashSet::with_capacity(8);
 
                 // Strip +tag suffix; also feeds the splitter below.
@@ -176,6 +181,30 @@ impl Module for EmailParse {
 
         Ok(result)
     }
+}
+
+/// True if a mailbox local-part is a generic role/automation address rather than
+/// a person's handle (`info@`, `dns@`, `noreply@`, …). Such local-parts must not
+/// seed Username/Person entities — they are not individualised PII.
+fn is_role_localpart(local: &str) -> bool {
+    // Compare the de-tagged, separator-stripped form so `no-reply`/`no_reply`
+    // also match `noreply`.
+    let base = local
+        .split('+')
+        .next()
+        .unwrap_or(local)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>();
+    const ROLE: &[&str] = &[
+        "admin", "administrator", "info", "support", "help", "helpdesk", "contact", "sales",
+        "abuse", "postmaster", "hostmaster", "webmaster", "noreply", "donotreply", "dns", "root",
+        "mail", "mailer", "mailerdaemon", "security", "privacy", "legal", "billing", "accounts",
+        "marketing", "hello", "team", "office", "service", "services", "notifications", "notify",
+        "news", "newsletter", "robot", "automated", "system", "daemon", "feedback",
+        "enquiries", "inquiries", "careers", "jobs", "press", "media", "webmail",
+    ];
+    ROLE.contains(&base.as_str())
 }
 
 fn capitalise(s: &str) -> String {
@@ -283,15 +312,38 @@ mod tests {
 
     #[tokio::test]
     async fn emits_both_domain_and_usernames() {
-        let t = Target::new(TargetKind::Email, "admin@corp.io");
+        // A personal local-part yields the Domain AND derived usernames.
+        let t = Target::new(TargetKind::Email, "jane.doe@corp.io");
         let r = EmailParse.process(&t, &ctx()).await.unwrap();
         let has_domain = r.entities.iter().any(|e| e.kind == EntityKind::Domain);
         let has_username = r.entities.iter().any(|e| e.kind == EntityKind::Username);
         assert!(has_domain, "should emit a Domain entity for corp.io");
-        assert!(
-            has_username,
-            "should emit Username entities from local part"
-        );
+        assert!(has_username, "should emit Username entities from local part");
+    }
+
+    #[tokio::test]
+    async fn role_localpart_yields_domain_but_no_username_or_person() {
+        // A role mailbox (`admin@`, `dns@`, `noreply@`) is not a person's handle:
+        // emit the Domain, but never a Username/Person (the `dns@cloudflare.com`
+        // → VERIFIED username `dns` bug).
+        for addr in ["admin@corp.io", "dns@cloudflare.com", "noreply@example.org"] {
+            let r = EmailParse
+                .process(&Target::new(TargetKind::Email, addr), &ctx())
+                .await
+                .unwrap();
+            assert!(
+                r.entities.iter().any(|e| e.kind == EntityKind::Domain),
+                "{addr}: domain still extracted"
+            );
+            assert!(
+                !r.entities
+                    .iter()
+                    .any(|e| matches!(e.kind, EntityKind::Username | EntityKind::Person)),
+                "{addr}: role mailbox must not seed a Username/Person"
+            );
+        }
+        assert!(is_role_localpart("dns") && is_role_localpart("no-reply"));
+        assert!(!is_role_localpart("jane.doe") && !is_role_localpart("matthewdiegmann"));
     }
 
     #[tokio::test]
