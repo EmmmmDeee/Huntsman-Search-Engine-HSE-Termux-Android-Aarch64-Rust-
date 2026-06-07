@@ -41,67 +41,15 @@ pub(super) enum FetchOutcome {
     Unreachable,
 }
 
-/// Decode the HTML entities that show up in engine result markup and
-/// percent-encoded redirect hrefs, in a single left-to-right pass:
-///   * the named entities real SERP output uses (`&amp; &lt; &gt; &quot; &apos;
-///     &#39; &nbsp;`), and
-///   * any *numeric* character reference — decimal `&#8217;` or hex `&#x2019;`
-///     — which titles/snippets are full of (curly quotes `&#8220;`/`&#8221;`,
-///     en/em dashes `&#8211;`/`&#8212;`, `&nbsp;`). Without these a title
-///     reached the user as literal `Smith&nbsp;&amp; Sons &#8211; O&#8217;Brien`.
-///
-/// A single pass (rather than chained `replace`s) is both correct and
-/// double-decode-safe: the escaped text `&amp;lt;` decodes to the literal
-/// `&lt;`, never collapsing all the way to `<`, because each `&…;` is consumed
-/// exactly once. An unrecognised or malformed `&…;` is emitted verbatim.
+/// Decode the HTML entities in SERP result markup and percent-encoded redirect
+/// hrefs. Thin alias over the single shared decoder in
+/// [`crate::util::html::decode_entities`] (named + numeric refs, double-decode
+/// safe) so a title/snippet/URL decoded here is byte-identical to one decoded
+/// anywhere else in the codebase. Kept as a `pub(super)` name so the many
+/// search-engine call sites read in their own vocabulary.
+#[inline]
 pub(super) fn decode_html_entities(s: &str) -> String {
-    if !s.contains('&') {
-        return s.to_string();
-    }
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(amp) = rest.find('&') {
-        out.push_str(&rest[..amp]);
-        let inner = &rest[amp + 1..]; // text after the '&'
-        // Entity bodies are short and ASCII; `find(';')` lands on an ASCII byte
-        // (a char boundary), so the slice below can never split a codepoint.
-        if let Some(semi) = inner.find(';')
-            && semi <= 10
-            && let Some(ch) = decode_one_entity(&inner[..semi])
-        {
-            out.push(ch);
-            rest = &inner[semi + 1..];
-            continue;
-        }
-        out.push('&');
-        rest = inner;
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Decode a single entity body (the text between `&` and `;`) to its character,
-/// or `None` if unrecognised/malformed. Named set covers real SERP output;
-/// numeric references (`#8217`, `#x2019`) are decoded generically.
-fn decode_one_entity(body: &str) -> Option<char> {
-    match body {
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "quot" => Some('"'),
-        "apos" => Some('\''),
-        // Normalise a non-breaking space to a regular space so stored text stays
-        // clean and word-splittable (no stray U+00A0 inside names/snippets).
-        "nbsp" => Some(' '),
-        _ => {
-            let num = body.strip_prefix('#')?;
-            let cp = match num.strip_prefix(['x', 'X']) {
-                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-                None => num.parse::<u32>().ok()?,
-            };
-            char::from_u32(cp)
-        }
-    }
+    crate::util::html::decode_entities(s)
 }
 
 /// Resolve an href into a clean URL, decoding engine-specific redirects.
