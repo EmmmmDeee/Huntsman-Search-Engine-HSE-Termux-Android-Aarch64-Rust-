@@ -2173,6 +2173,14 @@ mod tests {
             ("51 824 753 556", AbnAcn), // spaced ABN
             ("+61 400 123 456", Phone),
             ("(07) 3000 1234", Phone),
+            // CIDR — checked after a bare IP, before domain.
+            ("192.0.2.0/24", Cidr),
+            ("2001:db8::/48", Cidr),
+            // Crypto wallet addresses — checked before the free-text fallback so a
+            // pasted address is never mis-bucketed as a Username.
+            ("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", CryptoAddress), // BTC P2PKH (genesis)
+            ("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", CryptoAddress), // BTC bech32
+            ("0x742d35Cc6634C0532925a3b844Bc454e4438f44e", CryptoAddress), // ETH
             ("example.com", Domain),
             ("sub.example.co.uk", Domain),
         ];
