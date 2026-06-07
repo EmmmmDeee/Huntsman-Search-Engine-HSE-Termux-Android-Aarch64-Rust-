@@ -39,6 +39,7 @@ pub(super) struct ScanCmd {
     pub min_marginal_yield: Option<f64>,
     pub expansion_strategy: String,
     pub seeknow_scan_cap: Option<u32>,
+    pub expand_all_identities: bool,
     pub output: String,
 }
 
@@ -159,6 +160,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         min_marginal_yield: cmd.min_marginal_yield,
         expansion_strategy,
         seeknow_scan_cap: cmd.seeknow_scan_cap,
+        expand_all_identities: cmd.expand_all_identities,
     }
     .clamp_depth();
     if cmd.max_roi {

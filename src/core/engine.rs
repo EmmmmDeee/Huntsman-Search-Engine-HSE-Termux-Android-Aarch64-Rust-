@@ -794,16 +794,14 @@ impl ScanEngine {
                 // for a stranger and import their footprint. Verified or
                 // multi-source identities, and anything overlapping the subject,
                 // still expand — so genuine aliases are never lost.
-                if matches!(
-                    entity.kind,
-                    crate::core::entity::EntityKind::Username
-                        | crate::core::entity::EntityKind::Person
-                )
-                    && entity.c_effective() < 0.75
-                    && entity.source_count() <= 1
-                    && !subject_identities
-                        .iter()
-                        .any(|s| crate::core::scan::identity_overlaps(s, &entity.value))
+                if !opts.expand_all_identities
+                    && crate::core::scan::is_wrong_identity_pivot(
+                        &entity.kind,
+                        entity.c_effective(),
+                        entity.source_count(),
+                        &entity.value,
+                        &subject_identities,
+                    )
                 {
                     self.emit_excluded(scan_id, entity, "identity_mismatch");
                     continue;

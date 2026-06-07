@@ -793,6 +793,24 @@ pub struct ScanOptions {
     /// session ceiling.
     #[serde(default)]
     pub seeknow_scan_cap: Option<u32>,
+
+    // ── Identity-gate override (v1.3+) ─────────────────────────────────────
+    /// Expand *every* discovered Username/Person, even an uncorroborated,
+    /// single-source one that shares no handle/name overlap with the subject's
+    /// confirmed identity.
+    ///
+    /// The default (`false`) keeps the wrong-identity gate active: such a
+    /// candidate is recorded but not pivoted on, because chasing it pulls a
+    /// stranger's whole footprint into the scan (the canonical `arizonambb`
+    /// off an `matthewdiegmann` seed). The gate is the right default for a
+    /// focused investigation, but it is by design conservative and can drop a
+    /// genuine alias whose handle looks unrelated (a pseudonym, an initials
+    /// handle, a married name). An operator who would rather over-collect and
+    /// prune by hand sets this to `true` — every excluded alias is still logged
+    /// as `identity_mismatch` when the gate is on, so the trade-off is visible
+    /// either way.
+    #[serde(default)]
+    pub expand_all_identities: bool,
 }
 
 /// How the engine orders expansion candidates within a round.
@@ -932,6 +950,7 @@ impl Default for ScanOptions {
             min_marginal_yield: None,
             expansion_strategy: ExpansionStrategy::default(),
             seeknow_scan_cap: None,
+            expand_all_identities: false,
         }
     }
 }
@@ -1366,6 +1385,39 @@ pub(crate) fn identity_overlaps(a: &str, b: &str) -> bool {
         cur.iter_mut().for_each(|v| *v = 0);
     }
     false
+}
+
+/// Decide whether a discovered identity entity is a *wrong-identity* pivot —
+/// one that should be recorded but not expanded, because pivoting on it would
+/// pull a stranger's footprint into the scan.
+///
+/// An entity is gated only when ALL of these hold:
+///   * it is a `Username` or `Person` (the kinds that fan out into a whole
+///     online footprint when searched);
+///   * it is below the Verified confidence tier (`c_effective < 0.75`) — a
+///     verified identity has earned its expansion;
+///   * it is single-source (`source_count <= 1`) — corroboration by a second
+///     independent module is itself evidence the alias is real;
+///   * its handle/name shares no [`IDENTITY_OVERLAP_MIN`]-char overlap with ANY
+///     of the subject's confirmed identities (`subject_identities`).
+///
+/// Kept as a pure function (separate from the engine loop) so the decision is
+/// unit-testable in isolation and the operator override (`expand_all_identities`)
+/// is the only thing layered on top of it.
+pub(crate) fn is_wrong_identity_pivot(
+    kind: &crate::core::entity::EntityKind,
+    c_effective: f64,
+    source_count: u32,
+    value: &str,
+    subject_identities: &[String],
+) -> bool {
+    use crate::core::entity::EntityKind;
+    matches!(kind, EntityKind::Username | EntityKind::Person)
+        && c_effective < 0.75
+        && source_count <= 1
+        && !subject_identities
+            .iter()
+            .any(|s| identity_overlaps(s, value))
 }
 
 fn domain_expansion_factor(domain: &str) -> f64 {
@@ -1837,6 +1889,67 @@ mod tests {
         // Empty / punctuation-only never matches.
         assert!(!identity_overlaps("", "matthewdiegmann"));
         assert!(!identity_overlaps("...", "matthewdiegmann"));
+    }
+
+    #[test]
+    fn wrong_identity_pivot_gates_only_unrelated_weak_single_source_identities() {
+        use crate::core::entity::EntityKind;
+        let subject = vec!["matthewdiegmann".to_string()];
+
+        // The canonical rabbit hole: an unrelated, weak, single-source handle.
+        assert!(is_wrong_identity_pivot(
+            &EntityKind::Username,
+            0.50,
+            1,
+            "arizonambb",
+            &subject
+        ));
+
+        // A genuine alias overlapping the subject is NEVER gated.
+        assert!(!is_wrong_identity_pivot(
+            &EntityKind::Username,
+            0.50,
+            1,
+            "therealfatmatt", // shares "matt"
+            &subject
+        ));
+
+        // Verified confidence earns expansion even with no overlap.
+        assert!(!is_wrong_identity_pivot(
+            &EntityKind::Person,
+            0.80,
+            1,
+            "arizonambb",
+            &subject
+        ));
+
+        // Multi-source corroboration earns expansion even with no overlap.
+        assert!(!is_wrong_identity_pivot(
+            &EntityKind::Username,
+            0.50,
+            2,
+            "arizonambb",
+            &subject
+        ));
+
+        // Non-identity kinds are never subject to the gate.
+        assert!(!is_wrong_identity_pivot(
+            &EntityKind::Domain,
+            0.10,
+            1,
+            "arizonambb",
+            &subject
+        ));
+
+        // An empty subject set (no confirmed identity yet) still gates an
+        // unrelated weak handle — there is nothing for it to overlap with.
+        assert!(is_wrong_identity_pivot(
+            &EntityKind::Username,
+            0.50,
+            1,
+            "arizonambb",
+            &[]
+        ));
     }
 
     #[test]

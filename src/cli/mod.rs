@@ -175,6 +175,13 @@ pub enum Command {
         /// quota.
         #[arg(long)]
         seeknow_scan_cap: Option<u32>,
+        /// Expand EVERY discovered username/person, including uncorroborated,
+        /// single-source aliases that share no handle/name overlap with the
+        /// subject. Disables the wrong-identity gate for maximum recall at the
+        /// cost of pulling in unrelated footprints (prune by hand). Implied by
+        /// `--full`. Default keeps the gate on; excluded aliases are logged.
+        #[arg(long)]
+        expand_all_identities: bool,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(short, long, default_value = "table")]
         output: String,
@@ -502,6 +509,7 @@ pub async fn run() -> Result<()> {
             min_marginal_yield,
             expansion_strategy,
             seeknow_scan_cap,
+            expand_all_identities,
             output,
         } => {
             let value = resolve_seed(value, keys::default_seed())?;
@@ -532,6 +540,10 @@ pub async fn run() -> Result<()> {
                 min_marginal_yield,
                 expansion_strategy,
                 seeknow_scan_cap,
+                // `--full` is the no-compromise preset: maximise recall, so the
+                // wrong-identity gate is lifted alongside the other narrowing
+                // filters it already drops.
+                expand_all_identities: expand_all_identities || full,
                 output,
             })
             .await
