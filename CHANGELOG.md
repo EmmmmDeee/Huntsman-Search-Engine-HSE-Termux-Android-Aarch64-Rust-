@@ -62,6 +62,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **SPF parsing honours mechanism qualifiers.** `spf::members` matched `ip4:` /
+  `ip6:` / `include:` with a bare `strip_prefix`, so a mechanism carrying a
+  qualifier — `+`/`-`/`~`/`?` (RFC 7208 §4.6.1), e.g. `-ip4:192.0.2.0/24` or
+  `?include:_spf.example.com` — failed the match and was silently dropped,
+  costing the DNS modules (`dns_intel`, `doh_resolver`) real IP/include pivots
+  from any record that qualifies its mechanisms. The optional leading qualifier
+  is now stripped before the mechanism match; the `redirect=` modifier (which
+  takes no qualifier) is unchanged. Tested across all four qualifiers.
+
 - **`url_util::host_only` keeps a bracketed IPv6 literal intact.** It dropped the
   `:port` by splitting on the first colon, which truncated an IPv6-literal
   authority (`[2606:4700::1]:443`) to `[2606` — the inner colons are part of the

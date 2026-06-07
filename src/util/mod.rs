@@ -185,13 +185,19 @@ pub mod spf {
             d.contains('.') && !d.contains('%')
         }
         txt.split_whitespace().filter_map(|part| {
-            if let Some(ip) = part
+            // A *mechanism* (ip4/ip6/include) may carry an optional leading
+            // qualifier — `+`/`-`/`~`/`?` (RFC 7208 §4.6.1) — e.g. `-ip4:…` or
+            // `?include:…`. Strip it before matching, or a qualified member is
+            // silently dropped. A *modifier* (`redirect=`) takes no qualifier, so
+            // it is matched on the original token.
+            let mech = part.strip_prefix(['+', '-', '~', '?']).unwrap_or(part);
+            if let Some(ip) = mech
                 .strip_prefix("ip4:")
-                .or_else(|| part.strip_prefix("ip6:"))
+                .or_else(|| mech.strip_prefix("ip6:"))
             {
                 let ip = ip.split('/').next().unwrap_or(ip);
                 (!ip.is_empty()).then_some(Member::Ip(ip))
-            } else if let Some(inc) = part.strip_prefix("include:") {
+            } else if let Some(inc) = mech.strip_prefix("include:") {
                 usable_domain(inc).then_some(Member::Include(inc))
             } else if let Some(red) = part.strip_prefix("redirect=") {
                 usable_domain(red).then_some(Member::Redirect(red))
@@ -229,6 +235,26 @@ pub mod spf {
                     Member::Include("_spf.example.com"),
                     // bare ip4:/ip6:/include: and dotless include:localhost dropped;
                     // a/mx/-all are not IP/include members.
+                ]
+            );
+        }
+
+        #[test]
+        fn members_strip_mechanism_qualifiers() {
+            // Mechanisms can carry a qualifier (`+`/`-`/`~`/`?`, RFC 7208 §4.6.1).
+            // Each qualified ip4/ip6/include must still be surfaced.
+            let got: Vec<Member> = members(
+                "v=spf1 +ip4:198.51.100.1 -ip6:2001:db8::1 ~include:_spf.a.test \
+                 ?include:_spf.b.test -all",
+            )
+            .collect();
+            assert_eq!(
+                got,
+                vec![
+                    Member::Ip("198.51.100.1"),
+                    Member::Ip("2001:db8::1"),
+                    Member::Include("_spf.a.test"),
+                    Member::Include("_spf.b.test"),
                 ]
             );
         }
