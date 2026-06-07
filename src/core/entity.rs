@@ -78,6 +78,9 @@ pub enum EntityKind {
     Domain,
     Url,
     Asn,
+    /// A CIDR network block (`192.0.2.0/24`, `2001:db8::/48`). A scannable
+    /// target that expands into its constituent host IPs (bounded).
+    Cidr,
 
     // Physical / GEOINT
     Address,
@@ -120,6 +123,7 @@ impl fmt::Display for EntityKind {
             Self::Domain => f.write_str("domain"),
             Self::Url => f.write_str("url"),
             Self::Asn => f.write_str("asn"),
+            Self::Cidr => f.write_str("cidr"),
             Self::Address => f.write_str("address"),
             Self::Coordinates => f.write_str("coordinates"),
             Self::Organisation => f.write_str("organisation"),
@@ -1503,6 +1507,7 @@ mod tests {
             EntityKind::Domain,
             EntityKind::Url,
             EntityKind::Asn,
+            EntityKind::Cidr,
             EntityKind::Address,
             EntityKind::Coordinates,
             EntityKind::Organisation,

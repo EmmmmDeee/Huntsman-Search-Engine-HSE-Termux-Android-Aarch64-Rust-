@@ -15,6 +15,7 @@ pub enum TargetKind {
     Domain,
     Url,
     Asn,
+    Cidr,
     Coordinates,
     Address,
     Organisation,
@@ -39,6 +40,7 @@ impl TargetKind {
             EntityKind::IpAddress => Some(Self::IpAddress),
             EntityKind::Domain => Some(Self::Domain),
             EntityKind::Asn => Some(Self::Asn),
+            EntityKind::Cidr => Some(Self::Cidr),
             EntityKind::Coordinates => Some(Self::Coordinates),
             EntityKind::Address => Some(Self::Address),
             EntityKind::Url => Some(Self::Url),
@@ -66,6 +68,7 @@ impl TargetKind {
             Self::Domain => EntityKind::Domain,
             Self::Url => EntityKind::Url,
             Self::Asn => EntityKind::Asn,
+            Self::Cidr => EntityKind::Cidr,
             Self::Coordinates => EntityKind::Coordinates,
             Self::Address => EntityKind::Address,
             Self::Organisation => EntityKind::Organisation,
@@ -97,6 +100,7 @@ impl TargetKind {
             Self::Domain => "domain",
             Self::Url => "url",
             Self::Asn => "asn",
+            Self::Cidr => "cidr",
             Self::Coordinates => "coordinates",
             Self::Address => "address",
             Self::Organisation => "organisation",
@@ -150,6 +154,11 @@ impl TargetKind {
         // 3. IP address (v4/v6).
         if v.parse::<std::net::IpAddr>().is_ok() {
             return Self::IpAddress;
+        }
+        // 3b. CIDR network block (`a.b.c.d/n`, `2001:db8::/48`) — checked after a
+        //     bare IP (which has no `/`) and before the domain/URL shapes.
+        if is_cidr_shaped(v) {
+            return Self::Cidr;
         }
         // 4. MAC / BSSID — six 2-hex octets separated by ':' or '-'.
         if is_mac_shaped(v) {
@@ -212,6 +221,19 @@ impl TargetKind {
 /// Six 2-hex-digit octets joined by ':' or '-' (`aa:bb:cc:dd:ee:ff`). A 6-group
 /// colon form is not a valid IPv6 address (which needs 8 groups or `::`), so the
 /// IP check ahead of this in [`TargetKind::detect`] never steals a real MAC.
+/// A CIDR network block: `IP/prefix` where `IP` parses and `prefix` is within
+/// the address family's width (≤32 for v4, ≤128 for v6). Pure.
+pub(crate) fn is_cidr_shaped(v: &str) -> bool {
+    let Some((ip, prefix)) = v.split_once('/') else {
+        return false;
+    };
+    let Ok(addr) = ip.trim().parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    let max = if addr.is_ipv4() { 32u8 } else { 128u8 };
+    matches!(prefix.trim().parse::<u8>(), Ok(p) if p <= max)
+}
+
 fn is_mac_shaped(v: &str) -> bool {
     let sep = if v.contains(':') {
         ':'
@@ -449,6 +471,11 @@ impl Target {
             TargetKind::IpAddress => {
                 v.parse::<std::net::IpAddr>()
                     .map_err(|_| "not a valid IPv4 or IPv6 address")?;
+            }
+            TargetKind::Cidr => {
+                if !is_cidr_shaped(v) {
+                    return Err("not a valid CIDR block (e.g. 192.0.2.0/24)");
+                }
             }
             TargetKind::Asn => {
                 let upper = v.to_uppercase();
@@ -961,7 +988,7 @@ fn seed_marginal_yield(kind: TargetKind, has_paid_keys: bool) -> f64 {
         TargetKind::Domain => (2.2, 1.7),
         // High-value geo pivots — one or two reliable hops to coordinates.
         TargetKind::Address => (1.9, 1.5),
-        TargetKind::IpAddress => (1.6, 1.25),
+        TargetKind::IpAddress | TargetKind::Cidr => (1.6, 1.25),
         TargetKind::MacAddress => (1.4, 1.4),
         // Mid fan-out — a handful of corroborating leads per round.
         TargetKind::Phone => (1.6, 1.15),
@@ -991,7 +1018,9 @@ fn round_retention(kind: TargetKind) -> f64 {
             0.60
         }
         TargetKind::Address | TargetKind::MacAddress => 0.55,
-        TargetKind::IpAddress | TargetKind::Asn | TargetKind::Organisation => 0.52,
+        TargetKind::IpAddress | TargetKind::Cidr | TargetKind::Asn | TargetKind::Organisation => {
+            0.52
+        }
         TargetKind::Phone | TargetKind::Url => 0.50,
         TargetKind::AbnAcn => 0.45,
         TargetKind::Coordinates | TargetKind::ApiKey | TargetKind::CryptoAddress => 0.40,
@@ -1089,7 +1118,7 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
             }
         }
         TargetKind::Domain => 32.0,
-        TargetKind::IpAddress => 18.5,
+        TargetKind::IpAddress | TargetKind::Cidr => 18.5,
         TargetKind::Username => 20.0,
         TargetKind::Phone => {
             if has_paid_keys {

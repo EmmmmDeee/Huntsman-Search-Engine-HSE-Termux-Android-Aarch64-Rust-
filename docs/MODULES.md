@@ -120,6 +120,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `ip_reputation` | ip_address, domain | free | no | 78 | ip_address |
 | `abuseipdb` | ip_address | key_gated | no | 52 | ip_address |
 | `bgpview` | ip_address, asn | free | no | 35 | ip_address, domain, asn |
+| `netblock` | cidr | free | **yes** | 60 | ip_address |
 | `censys` | ip_address | key_gated | no | 35 | ip_address, coordinates, address |
 | `greynoise` | ip_address | free | no | 30 | ip_address |
 | `ip_whois_geo` | ip_address | free | no | 27 | coordinates, address, asn, organisation |

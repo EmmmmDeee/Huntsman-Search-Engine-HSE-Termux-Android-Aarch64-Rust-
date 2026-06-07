@@ -323,6 +323,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **CIDR netblock targeting (SpiderFoot-parity "scan a network range").** A scan
+  target can now be a CIDR block — new `TargetKind::Cidr` / `EntityKind::Cidr`,
+  auto-detected from `a.b.c.d/n` (and `--kind cidr`). The new `netblock` module
+  (pure, offline, no API) expands it into host `IpAddress` entities — bounded at
+  1024 with a `truncated` flag on the parent for wider blocks — which the
+  expansion loop then sweeps through the full IP-enrichment stack (geo,
+  reputation, reverse-DNS, banner). IPv6 blocks surface only the network base
+  (host space too large to enumerate); RFC5737 documentation IPs are filtered
+  downstream as non-real. Tested (expansion, network-bit normalisation, cap +
+  truncation, `/32`, IPv6, rejection) and verified end-to-end
+  (`10.0.0.0/30` → 4 hosts).
 - **Shared web-analytics ID → common-ownership correlation (SpiderFoot-parity
   "affiliate" pivot).** `web_crawler` now extracts web-analytics / tracking
   identifiers from page HTML — Google Analytics (`UA-`/`G-`), Tag Manager

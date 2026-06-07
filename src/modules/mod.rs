@@ -63,6 +63,7 @@ pub mod local_net;
 pub mod mls;
 pub mod mylnikov;
 pub mod name_intel;
+pub mod netblock;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod opencorporates;
@@ -268,6 +269,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(waf_detect::WafDetect),
         Arc::new(cloud_storage::CloudStorage),
         Arc::new(bgpview::BgpView),
+        Arc::new(netblock::Netblock),
         // People-centric enrichment
         Arc::new(name_intel::NameIntel),
         Arc::new(social_location::SocialLocation),

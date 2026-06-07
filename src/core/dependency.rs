@@ -47,6 +47,7 @@ pub const ALL_TARGET_KINDS: &[TargetKind] = &[
     TargetKind::Domain,
     TargetKind::Url,
     TargetKind::Asn,
+    TargetKind::Cidr,
     TargetKind::Coordinates,
     TargetKind::Address,
     TargetKind::Organisation,

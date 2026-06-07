@@ -631,6 +631,7 @@ fn cmd_modules(category_filter: Option<String>, as_json: bool) -> Result<()> {
         ("domain", TargetKind::Domain),
         ("url", TargetKind::Url),
         ("ip", TargetKind::IpAddress),
+        ("cidr", TargetKind::Cidr),
         ("asn", TargetKind::Asn),
         ("name", TargetKind::FullName),
         ("coords", TargetKind::Coordinates),
@@ -683,6 +684,7 @@ pub(super) fn parse_target_kind(s: &str) -> Result<TargetKind> {
         "domain" => Ok(TargetKind::Domain),
         "url" => Ok(TargetKind::Url),
         "asn" => Ok(TargetKind::Asn),
+        "cidr" | "netblock" | "netrange" => Ok(TargetKind::Cidr),
         "coordinates" | "coords" => Ok(TargetKind::Coordinates),
         "address" => Ok(TargetKind::Address),
         "organisation" | "org" => Ok(TargetKind::Organisation),
@@ -691,7 +693,7 @@ pub(super) fn parse_target_kind(s: &str) -> Result<TargetKind> {
         "mac" | "bssid" | "mac_address" => Ok(TargetKind::MacAddress),
         "crypto" | "crypto_address" | "wallet" | "btc" | "eth" => Ok(TargetKind::CryptoAddress),
         other => Err(Error::InvalidTarget(format!(
-            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, domain, url, asn, coords, address, org, abn, apikey, mac, crypto"
+            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, cidr, domain, url, asn, coords, address, org, abn, apikey, mac, crypto"
         ))),
     }
 }
