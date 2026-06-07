@@ -344,9 +344,12 @@ async fn session_loop(
             }
         };
 
-        // Spawn a fresh scan for this iteration. scan_id() mixes unix_now()
-        // so back-to-back ticks get distinct ids. Canonical snake_case form
-        // matches CLI/API scan_id derivation.
+        // Spawn a fresh scan for this iteration. `scan_id` is collision-free per
+        // call (a process-wide monotonic counter + sub-second nanos, NOT just
+        // `unix_now()` at one-second resolution — see its doc), so back-to-back
+        // ticks and fast radar iterations within the same second still get
+        // distinct ids instead of overwriting each other. Canonical snake_case
+        // form matches CLI/API scan_id derivation.
         let sid = crate::core::entity::scan_id(target.kind.canonical_str(), &target.value);
 
         // Register the scan_id with the session BEFORE running, so the SSE
