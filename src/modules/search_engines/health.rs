@@ -45,12 +45,16 @@ impl EngineStatus {
 }
 
 /// One engine's liveness result.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct EngineHealth {
     pub(crate) name: &'static str,
     pub(crate) status: EngineStatus,
     pub(crate) latency_ms: u64,
     pub(crate) results: usize,
+    /// Actionable, human-readable reason naming the likely failing layer
+    /// (network / anti-bot / parser). The manifesto's "no black-box": every
+    /// failure explains itself so the operator knows where to look.
+    pub(crate) detail: String,
 }
 
 /// A timestamped result of one full liveness sweep.
@@ -119,26 +123,65 @@ fn classify(outcome: &FetchOutcome, results: usize) -> EngineStatus {
     }
 }
 
+/// Actionable diagnosis of a probe outcome — names the LIKELY failing layer so a
+/// failure is never opaque. `link_hint` is a cheap count of result-like anchors
+/// in the body (only meaningful for the reachable-but-empty case): a page that
+/// returned many links yet parsed to zero results points at a PARSER defect /
+/// markup change rather than a block. **Pure**, so it's unit-tested without a
+/// live fetch.
+fn diagnose(outcome: &FetchOutcome, results: usize, link_hint: usize) -> String {
+    match outcome {
+        FetchOutcome::Unreachable => {
+            "no usable response — network/TLS failure, timeout, or body < 500B".to_string()
+        }
+        FetchOutcome::Blocked => {
+            "anti-bot/CAPTCHA interstitial — needs a residential IP or HUNTSMAN_SEARCH_PROXY"
+                .to_string()
+        }
+        FetchOutcome::Body(_) if results > 0 => format!("{results} result(s) parsed"),
+        FetchOutcome::Body(_) => {
+            if link_hint >= 10 {
+                format!(
+                    "page carried ~{link_hint} links but the parser extracted 0 results — \
+                     likely a PARSER defect or markup change for this engine"
+                )
+            } else {
+                "reachable but empty (0 results, sparse markup) — soft-block / IP throttling"
+                    .to_string()
+            }
+        }
+    }
+}
+
+/// Cheap heuristic count of result-bearing anchors in an HTML body: occurrences
+/// of `href="http`. Used only to tell a parser failure (many links, 0 parsed)
+/// apart from a genuine empty/soft-block page (few links).
+fn link_hint(body: &str) -> usize {
+    body.matches("href=\"http").count() + body.matches("href='http").count()
+}
+
 async fn probe_one(engine: &'static EngineSpec) -> EngineHealth {
     let url = (engine.build_url)(PROBE_QUERY);
     let post = engine.build_post.map(|f| f(PROBE_QUERY));
     let start = Instant::now();
     let outcome = try_fetch(&url, engine.ua, post.as_deref()).await;
     let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let results = match &outcome {
-        FetchOutcome::Body(b) => parse_results(b, engine.name, PROBE_QUERY).len(),
-        _ => 0,
+    let (results, links) = match &outcome {
+        FetchOutcome::Body(b) => (parse_results(b, engine.name, PROBE_QUERY).len(), link_hint(b)),
+        _ => (0, 0),
     };
     let status = classify(&outcome, results);
+    let detail = diagnose(&outcome, results, links);
     // Structured event → captured by util::log_capture into the unified debug
     // log, tagged with a stable target so engine-health lines are greppable
-    // among other components' output.
+    // among other components' output. `detail` makes every failure self-explain.
     tracing::info!(
         target: "huntsman::engine_health",
         engine = engine.name,
         status = status.as_str(),
         latency_ms,
         results,
+        detail = %detail,
         "search engine liveness probe"
     );
     EngineHealth {
@@ -146,6 +189,7 @@ async fn probe_one(engine: &'static EngineSpec) -> EngineHealth {
         status,
         latency_ms,
         results,
+        detail,
     }
 }
 
@@ -190,6 +234,29 @@ mod tests {
             classify(&FetchOutcome::Body("x".into()), 0),
             EngineStatus::Blocked
         );
+    }
+
+    #[test]
+    fn diagnose_distinguishes_parser_failure_from_block() {
+        // Reachable page with many links but 0 parsed results → parser defect.
+        let body = FetchOutcome::Body("x".into());
+        let d = diagnose(&body, 0, 25);
+        assert!(d.contains("PARSER"), "got: {d}");
+        // Reachable but sparse → soft-block/throttle, NOT a parser blame.
+        let d = diagnose(&body, 0, 1);
+        assert!(d.contains("soft-block") || d.contains("throttling"), "got: {d}");
+        assert!(!d.contains("PARSER"), "got: {d}");
+        // Up case names the count.
+        assert!(diagnose(&body, 7, 30).contains('7'));
+        // Network + anti-bot cases name their layer.
+        assert!(diagnose(&FetchOutcome::Unreachable, 0, 0).contains("network"));
+        assert!(diagnose(&FetchOutcome::Blocked, 0, 0).contains("anti-bot"));
+    }
+
+    #[test]
+    fn link_hint_counts_http_anchors() {
+        let html = r#"<a href="http://a.com">a</a><a href='https://b.com'>b</a><a href="/rel">c</a>"#;
+        assert_eq!(link_hint(html), 2);
     }
 
     #[test]

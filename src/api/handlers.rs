@@ -234,6 +234,7 @@ pub async fn engines_health() -> Json<Value> {
                 "status": h.status.as_str(),
                 "latency_ms": h.latency_ms,
                 "results": h.results,
+                "detail": h.detail,
             })
         })
         .collect();

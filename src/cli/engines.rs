@@ -38,6 +38,7 @@ pub async fn cmd_engines(json: bool) -> Result<()> {
                         "status": h.status.as_str(),
                         "latency_ms": h.latency_ms,
                         "results": h.results,
+                        "detail": h.detail,
                         "enabled": true,
                     }),
                     _ => serde_json::json!({
@@ -70,8 +71,8 @@ pub async fn cmd_engines(json: bool) -> Result<()> {
         probed(EngineStatus::Down),
         disabled,
     );
-    println!("ENGINE           STATUS   LATENCY    RESULTS");
-    println!("{}", "-".repeat(48));
+    println!("ENGINE           STATUS   LATENCY  RESULTS  DIAGNOSIS");
+    println!("{}", "-".repeat(96));
     for (key, enabled) in &roster {
         let name = key.strip_prefix("engine.").unwrap_or(key);
         match by_name.get(name) {
@@ -82,10 +83,11 @@ pub async fn cmd_engines(json: bool) -> Result<()> {
                     EngineStatus::Down => '○',
                 };
                 println!(
-                    "{name:<14} {mark} {:<8} {:>7}ms  {}",
+                    "{name:<14} {mark} {:<8} {:>6}ms  {:>5}    {}",
                     h.status.as_str(),
                     h.latency_ms,
-                    h.results
+                    h.results,
+                    h.detail,
                 );
             }
             // Disabled (turned off in config); never queried by a scan or probe.
