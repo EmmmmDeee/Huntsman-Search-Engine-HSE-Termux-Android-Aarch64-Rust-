@@ -1507,6 +1507,74 @@ mod tests {
     }
 
     #[test]
+    fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
+        // The domain branch of `build_entities` has three couplings worth pinning:
+        // a host under the target domain is a SUBDOMAIN (conf 0.70); any other
+        // registrable domain is EXTERNAL (conf 0.45); and each carries the count
+        // of *distinct engines* that returned its URL (cross-engine corroboration,
+        // the same signal the profile-URL path uses). Uses a `.com.au` target so
+        // the multi-label-suffix registrable logic is exercised too.
+        let target = Target::new(TargetKind::Domain, "targetcorp.com.au");
+        let mk = |url: &str, engine: &'static str| SearchResult {
+            url: url.to_string(),
+            title: "result".to_string(),
+            snippet: "result body".to_string(),
+            engine,
+            query: "targetcorp.com.au".to_string(),
+        };
+        // Same subdomain URL from two independent engines → corroboration 2.
+        // One external-domain URL from a single engine → corroboration 1.
+        let results = vec![
+            mk("https://mail.targetcorp.com.au/login", "duckduckgo"),
+            mk("https://mail.targetcorp.com.au/login", "brave"),
+            mk("https://partnerfirm.com/about", "duckduckgo"),
+        ];
+        let res = build_entities(&target, "s", &results);
+
+        let sub = res
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Domain && e.value == "mail.targetcorp.com.au")
+            .expect("subdomain entity must be emitted");
+        assert!(
+            sub.has_tag("subdomain"),
+            "host under target → SUBDOMAIN tag"
+        );
+        assert!(
+            (sub.confidence - 0.70).abs() < 1e-9,
+            "subdomain base conf 0.70"
+        );
+        assert_eq!(
+            sub.corroboration, 2,
+            "two engines returned the subdomain URL"
+        );
+
+        let ext = res
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Domain && e.value == "partnerfirm.com")
+            .expect("external domain entity must be emitted");
+        assert!(
+            ext.has_tag("external"),
+            "unrelated registrable → EXTERNAL tag"
+        );
+        assert!(
+            (ext.confidence - 0.45).abs() < 1e-9,
+            "external base conf 0.45"
+        );
+        assert_eq!(ext.corroboration, 1, "one engine returned the external URL");
+
+        // The subdomain must NOT also be emitted as a bare external domain
+        // (the `if/else if` makes the two branches mutually exclusive).
+        assert!(
+            !res.entities.iter().any(|e| e.kind == EntityKind::Domain
+                && e.value == "targetcorp.com.au"
+                && e.has_tag("external")),
+            "the target's own registrable domain must not be re-emitted as external"
+        );
+    }
+
+    #[test]
     fn domain_queries_include_abn() {
         let t = Target::new(TargetKind::Domain, "acme.com");
         let q = build_queries(&t);

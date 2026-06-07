@@ -257,6 +257,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Coverage for `search_engines::build_entities` domain classification.** The
+  orchestration that turns raw search hits into entities had direct tests for
+  aggregator suppression and profile-URL corroboration, but not for the domain
+  branch: a host under the target domain → `SUBDOMAIN` (conf 0.70); any other
+  registrable domain → `EXTERNAL` (conf 0.45); each carrying the count of
+  *distinct engines* that returned its URL. A new test pins all three couplings
+  (with a `.com.au` target so the multi-label-suffix path is exercised) and that
+  the two branches stay mutually exclusive. No behaviour change — coverage for
+  previously-untested orchestration logic.
 - **No-silent-drift guard: each rule's `rule_id` matches its function number.**
   A copy-pasted rule that keeps the source rule's id (e.g. `rule_au_037` emitting
   `"AU-036"`) compiles and fires but mis-attributes the correlation; worse, the
