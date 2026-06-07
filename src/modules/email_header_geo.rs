@@ -63,12 +63,10 @@ impl Module for EmailHeaderGeo {
         let domain = domain.to_ascii_lowercase();
         let domain = domain.as_str();
 
-        if CONSUMER_PROVIDERS.iter().any(|p| {
-            domain == *p
-                || (domain.len() > p.len()
-                    && domain.ends_with(p)
-                    && domain.as_bytes()[domain.len() - p.len() - 1] == b'.')
-        }) {
+        if CONSUMER_PROVIDERS
+            .iter()
+            .any(|p| crate::util::domains::is_or_subdomain_of(domain, p))
+        {
             return Ok(result);
         }
 

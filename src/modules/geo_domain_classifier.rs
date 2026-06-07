@@ -112,9 +112,7 @@ fn classify_by_known_service(domain: &str) -> Option<GeoClassification> {
     let d = domain.strip_prefix("www.").unwrap_or(domain);
 
     for &(pattern, location, cc) in GEO_SERVICES {
-        if d == pattern
-            || d.ends_with(pattern) && d.as_bytes().get(d.len() - pattern.len() - 1) == Some(&b'.')
-        {
+        if crate::util::domains::is_or_subdomain_of(d, pattern) {
             return Some(GeoClassification {
                 location,
                 country_code: cc,
