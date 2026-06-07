@@ -176,7 +176,21 @@ impl Module for IpQuery {
         ip_entity.add_evidence(ev);
         result.push(ip_entity);
 
-        if let Some(loc) = &data.location {
+        // A CDN/anycast edge IP geolocates to the answering datacenter, not the
+        // subject — its city/coords are pure infrastructure. Skip the geo
+        // (Coordinates/Address) entities so they can't pollute identity-location
+        // correlation, consistent with the ip_geo/ipinfo rule. The IP, ASN and
+        // ISP-org entities above are still emitted (they describe the
+        // infrastructure itself, not a claimed subject location).
+        let skip_geo = crate::core::validation::is_cdn_edge_ip(ip);
+        if skip_geo {
+            tracing::debug!(
+                module = SRC,
+                %ip,
+                "skipping IP-geo Coordinates/Address — CDN/anycast edge IP, location is datacenter not subject"
+            );
+        }
+        if let Some(loc) = data.location.as_ref().filter(|_| !skip_geo) {
             if let (Some(lat), Some(lon)) = (loc.latitude, loc.longitude)
                 && crate::util::geo::is_plausible_provider_coord(lat, lon)
             {

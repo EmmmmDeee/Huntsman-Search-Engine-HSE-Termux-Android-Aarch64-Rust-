@@ -111,12 +111,26 @@ impl Module for Ip2Location {
 
         let mut result = ModuleResult::new();
 
+        // A CDN/anycast edge IP geolocates to the answering datacenter, not the
+        // subject — skip its Coordinates/Address so they can't pollute
+        // identity-location correlation, consistent with the ip_geo rule. The
+        // ASN/network entities below still describe the infrastructure itself.
+        let skip_geo = crate::core::validation::is_cdn_edge_ip(ip);
+        if skip_geo {
+            tracing::debug!(
+                module = SRC,
+                %ip,
+                "skipping IP-geo Coordinates/Address — CDN/anycast edge IP, location is datacenter not subject"
+            );
+        }
+
         let city = data.city_name.as_deref().unwrap_or("");
         let region = data.region_name.as_deref().unwrap_or("");
         let country = data.country_name.as_deref().unwrap_or("");
         let zip = data.zip_code.as_deref().unwrap_or("");
 
         if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
+            && !skip_geo
             && crate::util::geo::is_plausible_provider_coord(lat, lon)
         {
             let coords = format!("{lat:.4},{lon:.4}");
@@ -150,7 +164,7 @@ impl Module for Ip2Location {
             result.push(ce);
         }
 
-        if !city.is_empty() && !country.is_empty() {
+        if !skip_geo && !city.is_empty() && !country.is_empty() {
             let addr = if !region.is_empty() && !zip.is_empty() {
                 format!("{city}, {region} {zip}, {country}")
             } else if !region.is_empty() {

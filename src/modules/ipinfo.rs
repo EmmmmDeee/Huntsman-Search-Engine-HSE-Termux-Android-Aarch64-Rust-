@@ -54,6 +54,11 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     // subject — its city/coords/org are pure infrastructure. Skip them so they
     // can't pollute identity-location correlation (see ip_geo.rs for the rule).
     if crate::core::validation::is_cdn_edge_ip(ip) {
+        tracing::debug!(
+            module = SRC,
+            %ip,
+            "skipping IP-geo — CDN/anycast edge IP, location is datacenter not subject"
+        );
         return out;
     }
 
@@ -258,6 +263,23 @@ mod tests {
         let dom = one(&ents, EntityKind::Domain).unwrap();
         assert_eq!(dom.value, "dns.google");
         assert!(dom.has_tag(tags::PTR));
+    }
+
+    #[test]
+    fn cdn_edge_ip_yields_no_entities() {
+        // A Cloudflare anycast edge IP (104.16.0.0/13) geolocates to whichever
+        // datacenter answered — never the subject. ipinfo drops the whole record
+        // (the city/coords/org all describe infrastructure) rather than seed a
+        // false subject location into identity-location correlation.
+        let d = data(
+            r#"{"ip":"104.16.1.1","hostname":"edge.cloudflare.example",
+                "city":"San Francisco","region":"California","country":"US",
+                "loc":"37.7749,-122.4194","org":"AS13335 Cloudflare, Inc."}"#,
+        );
+        let ents = build_entities("104.16.1.1", &d, "s");
+        assert!(ents.is_empty(), "CDN-edge IP must yield no entities, got {ents:?}");
+        // Sanity: the same record on a non-CDN IP DOES produce entities.
+        assert!(!build_entities("8.8.8.8", &d, "s").is_empty());
     }
 
     #[test]
