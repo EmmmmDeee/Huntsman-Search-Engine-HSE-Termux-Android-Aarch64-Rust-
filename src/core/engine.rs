@@ -2139,6 +2139,104 @@ mod tests {
     }
 
     #[test]
+    fn cmp_expansion_candidates_is_a_consistent_total_order() {
+        // CORRECTNESS: `cmp_expansion_candidates` is handed to `sort_by`, which
+        // requires a *total order* — an inconsistent comparator can panic
+        // ("comparator violates total order") or silently mis-sort. The tricky
+        // part is f64 weights including NaN. Prove the contract generatively over
+        // a deterministic pseudo-random corpus (deterministic so the test itself
+        // is reproducible): the relation must be a total order, and sorting must
+        // be idempotent and self-consistent.
+        use std::cmp::Ordering;
+
+        // splitmix64 — a tiny deterministic PRNG (no dev-dependency, reproducible).
+        let mut state = 0x1234_5678_9abc_def0u64;
+        let mut next = || {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        };
+        // Small value/kind domains so ties (and the tie-breaks) actually occur.
+        let kinds = [
+            TargetKind::Email,
+            TargetKind::Username,
+            TargetKind::Domain,
+            TargetKind::IpAddress,
+        ];
+        let weights = [f64::NAN, 0.0, 0.5, 0.5, 0.9, -1.0, f64::INFINITY];
+        let values = ["a", "b", "c", "a"];
+        let mk = |r: &mut dyn FnMut() -> u64| {
+            let k = kinds[(r() % kinds.len() as u64) as usize];
+            let w = weights[(r() % weights.len() as u64) as usize];
+            let v = values[(r() % values.len() as u64) as usize];
+            (Target::new(k, v), w, "p".to_string())
+        };
+
+        // 1. The relation is a TOTAL ORDER over a random sample: antisymmetric,
+        //    transitive, and total (every pair is comparable, which Ordering is).
+        let sample: Vec<_> = (0..40).map(|_| mk(&mut next)).collect();
+        for a in &sample {
+            assert_eq!(
+                cmp_expansion_candidates(a, a),
+                Ordering::Equal,
+                "reflexivity"
+            );
+            for b in &sample {
+                let ab = cmp_expansion_candidates(a, b);
+                let ba = cmp_expansion_candidates(b, a);
+                assert_eq!(ab, ba.reverse(), "antisymmetry");
+                for c in &sample {
+                    let bc = cmp_expansion_candidates(b, c);
+                    // Transitivity: a<=b and b<=c ⇒ a<=c.
+                    if ab != Ordering::Greater && bc != Ordering::Greater {
+                        assert_ne!(
+                            cmp_expansion_candidates(a, c),
+                            Ordering::Greater,
+                            "transitivity"
+                        );
+                    }
+                }
+            }
+        }
+
+        // 2. Sorting many random vectors never panics, is idempotent, and the
+        //    output is non-decreasing under the comparator.
+        for _ in 0..200 {
+            let n = (next() % 30) as usize;
+            let mut v: Vec<_> = (0..n).map(|_| mk(&mut next)).collect();
+            v.sort_by(cmp_expansion_candidates);
+            for w in v.windows(2) {
+                assert_ne!(
+                    cmp_expansion_candidates(&w[0], &w[1]),
+                    Ordering::Greater,
+                    "sorted output must be non-decreasing"
+                );
+            }
+            let once: Vec<_> = v.iter().map(|c| (c.0.value.clone(), c.1)).collect();
+            v.sort_by(cmp_expansion_candidates); // idempotent
+            let twice: Vec<_> = v.iter().map(|c| (c.0.value.clone(), c.1)).collect();
+            // NaN != NaN, so compare structurally with NaN normalised.
+            let norm = |xs: &[(String, f64)]| {
+                xs.iter()
+                    .map(|(s, w)| {
+                        (
+                            s.clone(),
+                            if w.is_nan() {
+                                "nan".into()
+                            } else {
+                                w.to_string()
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(norm(&once), norm(&twice), "sort must be idempotent");
+        }
+    }
+
+    #[test]
     fn module_dispatch_is_logged_keyed_by_module_name() {
         // OBSERVABILITY: every module's *start* must appear in the raw debug log,
         // keyed by `module=<name>` so a single file's whole lifecycle is greppable.
