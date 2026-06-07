@@ -988,8 +988,18 @@ pub(super) fn extract_registrable(host: &str) -> String {
 /// Every evidence entry includes the full navigable URL so the user
 /// can click through to verify the finding.
 pub(super) fn build_search_evidence(r: &SearchResult) -> Evidence {
-    let title_clean: String = r.title.chars().take(200).collect();
-    let snippet_clean: String = r.snippet.chars().take(800).collect();
+    // Display/preview caps are deliberately generous so a finding can be
+    // verified from the evidence alone. When the source content is longer than
+    // the cap we keep the preview *and* record the true length plus a
+    // `*_truncated` flag, so the logs/UI never silently imply the snippet was
+    // complete. The key-phrase is extracted from the FULL snippet (not the
+    // truncated preview) so a relevant clause past the cap is not lost.
+    const TITLE_CAP: usize = 500;
+    const SNIPPET_CAP: usize = 4000;
+    let title_len = r.title.chars().count();
+    let snippet_len = r.snippet.chars().count();
+    let title_clean: String = r.title.chars().take(TITLE_CAP).collect();
+    let snippet_clean: String = r.snippet.chars().take(SNIPPET_CAP).collect();
 
     let summary = if !title_clean.is_empty() {
         format!("[{}] {} — {}", r.engine, title_clean.trim(), r.url)
@@ -1003,12 +1013,32 @@ pub(super) fn build_search_evidence(r: &SearchResult) -> Evidence {
         .with_attr("query", &r.query);
     if !title_clean.is_empty() {
         ev = ev.with_attr("page_title", title_clean.trim());
+        if title_len > TITLE_CAP {
+            ev = ev
+                .with_attr("page_title_truncated", "true")
+                .with_attr("page_title_full_len", title_len.to_string());
+        }
     }
     if !snippet_clean.is_empty() {
         ev = ev.with_attr("snippet", snippet_clean.trim());
+        if snippet_len > SNIPPET_CAP {
+            ev = ev
+                .with_attr("snippet_truncated", "true")
+                .with_attr("snippet_full_len", snippet_len.to_string());
+            tracing::debug!(
+                target: "hse::parser",
+                url = %r.url,
+                engine = r.engine,
+                full_len = snippet_len,
+                cap = SNIPPET_CAP,
+                "search snippet exceeded preview cap — preview stored, full length recorded"
+            );
+        }
     }
 
-    let kp = extract_key_phrase(&snippet_clean, &r.query);
+    // Extract the key phrase from the full snippet so a query-relevant clause
+    // beyond the preview cap is still surfaced.
+    let kp = extract_key_phrase(&r.snippet, &r.query);
     if !kp.is_empty() {
         ev = ev.with_attr("key_phrase", &kp);
     }
@@ -1590,7 +1620,17 @@ pub(super) fn extract_emails_from_text(text: &str) -> Vec<String> {
                 && !email.contains("@3x.")
             {
                 emails.push(email);
-                if emails.len() >= 50 {
+                // Raised from 50 → 500: a single results page can legitimately
+                // list many mailboxes (staff directories, breach dumps). When the
+                // ceiling is actually reached, warn so the logs reveal that some
+                // addresses were dropped rather than silently losing them.
+                if emails.len() >= 500 {
+                    tracing::warn!(
+                        target: "hse::parser",
+                        cap = 500,
+                        text_len = text.len(),
+                        "extract_emails_from_text hit cap — additional mailboxes in this text were not extracted"
+                    );
                     break;
                 }
             }
@@ -1628,7 +1668,15 @@ pub(super) fn extract_phones_from_text(text: &str) -> Vec<String> {
                     .filter(|c| c.is_ascii_digit() || *c == '+')
                     .collect();
                 phones.push(cleaned);
-                if phones.len() >= 30 {
+                // Raised from 30 → 300; warn on the ceiling so dropped numbers
+                // are visible in the logs rather than silently discarded.
+                if phones.len() >= 300 {
+                    tracing::warn!(
+                        target: "hse::parser",
+                        cap = 300,
+                        text_len = text.len(),
+                        "extract_phones_from_text hit cap — additional numbers in this text were not extracted"
+                    );
                     break;
                 }
             }
@@ -1650,6 +1698,40 @@ pub(super) fn is_domain_char(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_evidence_flags_truncated_snippet_and_preserves_full_length() {
+        // A snippet longer than the preview cap must keep a generous preview
+        // AND record that it was truncated plus the true length — so a finding
+        // is verifiable and the UI never implies the snippet was complete.
+        let long = "x".repeat(5000);
+        let r = SearchResult {
+            url: "https://example.com/page".into(),
+            title: "Title".into(),
+            snippet: long,
+            engine: "test",
+            query: "q".into(),
+        };
+        let ev = build_search_evidence(&r);
+        assert_eq!(ev.attributes.get("snippet_truncated").map(String::as_str), Some("true"));
+        assert_eq!(ev.attributes.get("snippet_full_len").map(String::as_str), Some("5000"));
+        // The stored preview is capped but non-empty and the URL is preserved.
+        assert!(ev.attributes.get("snippet").map(|s| s.len() <= 4000).unwrap_or(false));
+        assert_eq!(ev.attributes.get("url").map(String::as_str), Some("https://example.com/page"));
+    }
+
+    #[test]
+    fn search_evidence_does_not_flag_short_snippet() {
+        let r = SearchResult {
+            url: "https://example.com/".into(),
+            title: "T".into(),
+            snippet: "a short snippet".into(),
+            engine: "test",
+            query: "q".into(),
+        };
+        let ev = build_search_evidence(&r);
+        assert!(!ev.attributes.contains_key("snippet_truncated"));
+    }
 
     #[test]
     fn extract_orgs_does_not_panic_on_non_ascii_lowercase_divergence() {

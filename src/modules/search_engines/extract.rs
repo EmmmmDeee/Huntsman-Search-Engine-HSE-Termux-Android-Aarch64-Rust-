@@ -128,15 +128,7 @@ pub(super) async fn recycle_entities(
                 let mut e = Entity::new(EntityKind::Address, &addr, 0.45, &scan_id);
                 e.tag("search-discovered");
                 e.tag("recycled");
-                e.add_evidence(
-                    Evidence::new(
-                        "search_engines",
-                        format!("[{}] Address from recycled search — {}", r.engine, r.url),
-                    )
-                    .with_attr("url", &r.url)
-                    .with_attr("engine", r.engine)
-                    .with_attr("recycle_query", &r.query),
-                );
+                e.add_evidence(recycled_evidence(r, "Address", &addr, &combined));
                 result.push(e);
             }
         }
@@ -146,14 +138,7 @@ pub(super) async fn recycle_entities(
                 let mut e = Entity::new(EntityKind::Email, &email, 0.55, &scan_id);
                 e.tag("search-discovered");
                 e.tag("recycled");
-                e.add_evidence(
-                    Evidence::new(
-                        "search_engines",
-                        format!("[{}] Email from recycled search — {}", r.engine, r.url),
-                    )
-                    .with_attr("url", &r.url)
-                    .with_attr("engine", r.engine),
-                );
+                e.add_evidence(recycled_evidence(r, "Email", &email, &combined));
                 result.push(e);
             }
         }
@@ -163,18 +148,42 @@ pub(super) async fn recycle_entities(
                 let mut e = Entity::new(EntityKind::Phone, &phone, 0.50, &scan_id);
                 e.tag("search-discovered");
                 e.tag("recycled");
-                e.add_evidence(
-                    Evidence::new(
-                        "search_engines",
-                        format!("[{}] Phone from recycled search — {}", r.engine, r.url),
-                    )
-                    .with_attr("url", &r.url)
-                    .with_attr("engine", r.engine),
-                );
+                e.add_evidence(recycled_evidence(r, "Phone", &phone, &combined));
                 result.push(e);
             }
         }
     }
+}
+
+/// Build a fully-attributed evidence record for a finding extracted from a
+/// recycled search result. Unlike the previous URL-only evidence, this
+/// preserves the source page title, a snippet preview, the originating query,
+/// and the surrounding text where the value actually appears — so the finding
+/// can be manually verified without reconstructing the lost context.
+fn recycled_evidence(r: &SearchResult, label: &str, value: &str, combined: &str) -> Evidence {
+    let title: String = r.title.chars().take(500).collect();
+    let snippet: String = r.snippet.chars().take(4000).collect();
+    let context = extract_surrounding_text(combined, value, 240);
+    let mut ev = Evidence::new(
+        "search_engines",
+        format!(
+            "[{}] {} `{}` from recycled search — {}",
+            r.engine, label, value, r.url
+        ),
+    )
+    .with_attr("url", &r.url)
+    .with_attr("engine", r.engine)
+    .with_attr("recycle_query", &r.query);
+    if !title.trim().is_empty() {
+        ev = ev.with_attr("page_title", title.trim());
+    }
+    if !snippet.trim().is_empty() {
+        ev = ev.with_attr("snippet", snippet.trim());
+    }
+    if !context.trim().is_empty() {
+        ev = ev.with_attr("context", context.trim());
+    }
+    ev
 }
 
 /// Extract family members from search results: people who share the

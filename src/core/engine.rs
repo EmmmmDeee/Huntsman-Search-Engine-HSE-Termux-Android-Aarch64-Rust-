@@ -779,7 +779,12 @@ impl ScanEngine {
                     self.emit_excluded(scan_id, entity, "roi_saturated");
                     continue;
                 }
+                // A kind with no external search target (Credential, Password,
+                // DeviceId, TrackingId, Other) cannot be pivoted on. Previously
+                // this was a silent `continue` — a black box. Record it so the
+                // logs show exactly why the entity was not expanded.
                 let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
+                    self.emit_excluded(scan_id, entity, "non_pivotable_kind");
                     continue;
                 };
                 // Wrong-identity gate: an uncorroborated, non-verified
@@ -870,6 +875,11 @@ impl ScanEngine {
                         richness,
                     ) * crate::core::scan::corroboration_prior(entity.source_count());
                     next.push((new_target, weight, entity.uid.clone()));
+                } else {
+                    // This exact target was already dispatched (or queued) this
+                    // scan. Skipping it prevents an infinite pivot cycle, but the
+                    // decision must be visible rather than a silent drop.
+                    self.emit_excluded(scan_id, entity, "already_dispatched_this_scan");
                 }
             }
 

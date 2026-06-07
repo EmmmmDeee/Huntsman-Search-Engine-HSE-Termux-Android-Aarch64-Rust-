@@ -185,6 +185,17 @@ impl Module for IpGeo {
             }
             e.add_evidence(ev);
             result.push(e);
+        } else if data.lat.is_some() || data.lon.is_some() {
+            // ip-api returned coordinates but they failed the plausibility
+            // gate (Null Island / sentinel "no-fix" bands). Previously dropped
+            // silently — now logged so a missing geo fix is never a black box.
+            tracing::debug!(
+                module = SRC,
+                ip = %target.value,
+                lat = ?data.lat,
+                lon = ?data.lon,
+                "dropped IP-geo coordinate — failed is_plausible_provider_coord (likely Null Island / no-fix sentinel)"
+            );
         }
 
         // Emit Address entity from city/region/country — but NOT for a
