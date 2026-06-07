@@ -15,6 +15,14 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         return cmd_import_html(&body, output);
     }
     if is_txt {
+        // A breach/dossier compilation (`Entry #N:` blocks of `• key: value`
+        // fields, plus `USERNAMES:`/`EMAILS:`/`PASSWORDS:` `-> value` lists) is a
+        // different shape from the OathNet stealer-log TXT — route it to the
+        // dossier parser, which correlates each entry's fields into individualised
+        // entities carrying the full record (name, birthdate, country, hash, …).
+        if looks_like_dossier(&body) {
+            return cmd_import_dossier(&body, output);
+        }
         return cmd_import_txt(&body, output);
     }
 
@@ -529,6 +537,315 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
+/// Heuristic: does this text look like a breach/dossier compilation (the
+/// `Entry #N:` + `• key: value` + `USERNAMES:`/`EMAILS:`/`PASSWORDS:` format)
+/// rather than an OathNet stealer-log TXT? Any one strong marker is enough.
+fn looks_like_dossier(body: &str) -> bool {
+    body.contains("Entry #")
+        || body.contains('\u{2022}') // the `•` bullet that prefixes entry fields
+        || ((body.contains("USERNAMES:")
+            || body.contains("EMAILS:")
+            || body.contains("PASSWORDS:"))
+            && body.contains("->"))
+}
+
+/// Which `-> value` list a run of lines belongs to.
+#[derive(PartialEq, Clone, Copy)]
+enum DossierSection {
+    None,
+    Usernames,
+    Emails,
+    Passwords,
+}
+
+/// Parse a breach/dossier compilation into individualised, correlated entities.
+///
+/// Two structures are recognised and both preserved in full:
+///   * `Entry #N:` blocks of `• key: value` fields (username/email/name/_domain/
+///     id/created/updated/language/hash/birthdate/country/gender). Every field
+///     in an entry is attached as evidence to *each* entity the entry yields, so
+///     the email, username and person stay correlated and carry the complete,
+///     verifiable record (birthdate/country/gender included) — never a fragment.
+///   * `USERNAMES:` / `EMAILS:` / `PASSWORDS:` sections of `-> value` lines, the
+///     aggregate identifier lists. Dedup by UID folds these into the per-entry
+///     entities where they overlap.
+///
+/// Pure (no I/O) so it is unit-testable; `cmd_import_dossier` does the output.
+fn parse_dossier(body: &str, sid: &str) -> (Vec<crate::core::entity::Entity>, ImportStats) {
+    use std::collections::HashSet;
+
+    let mut entities = Vec::new();
+    let mut stats = ImportStats::default();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut section = DossierSection::None;
+    let mut entry: Vec<(String, String)> = Vec::new();
+
+    for raw in body.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        // Section header — an all-caps label ending in ':' with no value.
+        if let Some(label) = line.strip_suffix(':') {
+            let sect = match label.trim() {
+                "USERNAMES" => Some(DossierSection::Usernames),
+                "EMAILS" => Some(DossierSection::Emails),
+                "PASSWORDS" | "HASHES" => Some(DossierSection::Passwords),
+                _ => None,
+            };
+            if let Some(s) = sect {
+                emit_dossier_entry(&mut entry, sid, &mut entities, &mut stats, &mut seen);
+                section = s;
+                continue;
+            }
+        }
+
+        // `Entry #N:` header begins a fresh record.
+        if line.starts_with("Entry #") {
+            emit_dossier_entry(&mut entry, sid, &mut entities, &mut stats, &mut seen);
+            section = DossierSection::None;
+            continue;
+        }
+
+        // `-> value` list item under the current section.
+        if let Some(val) = line.strip_prefix("->").map(str::trim) {
+            if !val.is_empty() {
+                emit_dossier_list_item(section, val, sid, &mut entities, &mut stats, &mut seen);
+            }
+            continue;
+        }
+
+        // `• key: value` (or bare `key: value`) field — accumulate into the entry.
+        let field = line.trim_start_matches('\u{2022}').trim();
+        if let Some((k, v)) = field.split_once(':') {
+            let key = k.trim().trim_start_matches('_').to_ascii_lowercase();
+            let val = v.trim();
+            // Only accept the known field keys so a stray "http://…: x" or prose
+            // colon doesn't pollute the record.
+            const FIELDS: &[&str] = &[
+                "username",
+                "email",
+                "name",
+                "domain",
+                "id",
+                "created",
+                "updated",
+                "language",
+                "hash",
+                "birthdate",
+                "country",
+                "gender",
+                "phone",
+            ];
+            if !val.is_empty() && FIELDS.contains(&key.as_str()) {
+                entry.push((key, val.to_string()));
+                continue;
+            }
+        }
+
+        // A bare top-level URL (e.g. the LinkedIn profile heading the file).
+        if (line.starts_with("http://") || line.starts_with("https://"))
+            && seen.insert(format!("u:{line}"))
+        {
+            let mut e = crate::core::entity::Entity::new(
+                crate::core::entity::EntityKind::Url,
+                line,
+                0.55,
+                sid,
+            );
+            e.tag("import");
+            e.tag("dossier");
+            entities.push(e);
+            stats.urls += 1;
+        }
+    }
+    // Flush the final entry.
+    emit_dossier_entry(&mut entry, sid, &mut entities, &mut stats, &mut seen);
+
+    (entities, stats)
+}
+
+/// Emit the entities for one accumulated `Entry #N` record, attaching the FULL
+/// record as evidence to each so the data stays correlated and verifiable.
+fn emit_dossier_entry(
+    entry: &mut Vec<(String, String)>,
+    sid: &str,
+    entities: &mut Vec<crate::core::entity::Entity>,
+    stats: &mut ImportStats,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::validation::is_fragment_value;
+    if entry.is_empty() {
+        return;
+    }
+    let get = |k: &str| {
+        entry
+            .iter()
+            .find(|(kk, _)| kk == k)
+            .map(|(_, v)| v.as_str())
+    };
+    let email = get("email");
+    let username = get("username");
+    let name = get("name");
+    let hash = get("hash");
+
+    // One evidence record carrying every field of the entry — cloned onto each
+    // entity so the complete record (birthdate/country/gender/created/id/hash/…)
+    // travels with the email, the username and the person alike.
+    let label = email.or(name).or(username).unwrap_or("breach entry");
+    let mut ev = Evidence::new("import:dossier", format!("Breach dossier entry — {label}"));
+    for (k, v) in entry.iter() {
+        // Don't echo a raw password hash into a human-readable attribute under a
+        // benign name; it's surfaced as its own Credential entity below.
+        if k != "hash" {
+            ev = ev.with_attr(k, v);
+        }
+    }
+
+    let mut push = |mut e: Entity, tag: &str| {
+        e.tag("import");
+        e.tag("dossier");
+        e.tag(tag);
+        e.add_evidence(ev.clone());
+        entities.push(e);
+    };
+
+    if let Some(em) = email {
+        let em = em.to_ascii_lowercase();
+        if em.contains('@')
+            && !is_fragment_value(&EntityKind::Email, &em)
+            && seen.insert(format!("em:{em}"))
+        {
+            push(Entity::new(EntityKind::Email, &em, 0.72, sid), "breach");
+            stats.emails += 1;
+        }
+    }
+    if let Some(un) = username
+        && un.len() >= 2
+        && !un.contains('@')
+        && seen.insert(format!("un:{}", un.to_lowercase()))
+    {
+        push(Entity::new(EntityKind::Username, un, 0.60, sid), "breach");
+        stats.usernames += 1;
+    }
+    if let Some(nm) = name {
+        // A real person name: at least two words, not a placeholder.
+        if nm.split_whitespace().count() >= 2
+            && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, nm)
+            && seen.insert(format!("pn:{}", nm.to_lowercase()))
+        {
+            push(Entity::new(EntityKind::Person, nm, 0.62, sid), "breach");
+            stats.persons += 1;
+        }
+    }
+    if let Some(h) = hash {
+        // A password hash is an inherently-unique credential artifact (bcrypt
+        // `$2a$…`, hex digests). Keep it as a Credential, never a plaintext
+        // Password, and tie it to the same record.
+        if h.len() >= 8 && seen.insert(format!("cr:{h}")) {
+            push(
+                Entity::new(EntityKind::Credential, h, 0.60, sid),
+                "password-hash",
+            );
+            stats.credentials += 1;
+        }
+    }
+    entry.clear();
+}
+
+/// Emit an entity for a single `-> value` line under a `USERNAMES:`/`EMAILS:`/
+/// `PASSWORDS:` section.
+fn emit_dossier_list_item(
+    section: DossierSection,
+    val: &str,
+    sid: &str,
+    entities: &mut Vec<crate::core::entity::Entity>,
+    stats: &mut ImportStats,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::validation::is_fragment_value;
+    let mut push = |e: Entity, key: String| {
+        if seen.insert(key) {
+            let mut e = e;
+            e.tag("import");
+            e.tag("dossier");
+            e.tag("dossier-list");
+            entities.push(e);
+            return true;
+        }
+        false
+    };
+    match section {
+        DossierSection::Emails => {
+            let em = val.to_ascii_lowercase();
+            if em.contains('@') && !is_fragment_value(&EntityKind::Email, &em) {
+                let e = Entity::new(EntityKind::Email, &em, 0.55, sid);
+                if push(e, format!("em:{em}")) {
+                    stats.emails += 1;
+                }
+            }
+        }
+        DossierSection::Usernames => {
+            // A username list can contain bare emails too — classify by shape.
+            if val.contains('@') {
+                let em = val.to_ascii_lowercase();
+                if !is_fragment_value(&EntityKind::Email, &em) {
+                    let e = Entity::new(EntityKind::Email, &em, 0.50, sid);
+                    if push(e, format!("em:{em}")) {
+                        stats.emails += 1;
+                    }
+                }
+            } else if val.len() >= 2 {
+                let e = Entity::new(EntityKind::Username, val, 0.50, sid);
+                if push(e, format!("un:{}", val.to_lowercase())) {
+                    stats.usernames += 1;
+                }
+            }
+        }
+        DossierSection::Passwords => {
+            if val.len() >= 8 {
+                let e = Entity::new(EntityKind::Credential, val, 0.50, sid);
+                if push(e, format!("cr:{val}")) {
+                    stats.credentials += 1;
+                }
+            }
+        }
+        DossierSection::None => {}
+    }
+}
+
+/// Import a breach/dossier compilation (`Entry #N` + section lists). Parses,
+/// dedups, prints stats, and emits the entities (JSON or table) — same contract
+/// as the other `cmd_import_*` parsers.
+fn cmd_import_dossier(body: &str, output: &str) -> Result<()> {
+    println!("Importing breach/dossier compilation...");
+    let sid = format!("import-dossier-{}", crate::core::entity::unix_now());
+    let (mut entities, stats) = parse_dossier(body, &sid);
+    deduplicate_by_uid(&mut entities);
+    print_import_stats(&stats, entities.len());
+
+    if output == "json" {
+        let out = serde_json::json!({ "entities": entities });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    } else {
+        for e in entities.iter().take(50) {
+            println!(
+                "  [{:.2}] {:12} {}",
+                e.confidence,
+                e.kind.to_string(),
+                crate::util::str_util::truncate_safe(&e.value, 70)
+            );
+        }
+        if entities.len() > 50 {
+            println!("  ... and {} more", entities.len() - 50);
+        }
+    }
+    Ok(())
+}
+
 fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
     use crate::core::entity::{Entity, EntityKind};
     use std::collections::HashSet;
@@ -813,6 +1130,8 @@ struct ImportStats {
     admin_paths: usize,
     api_keys: usize,
     api_keys_valid: usize,
+    persons: usize,
+    credentials: usize,
     date_range: String,
 }
 
@@ -932,9 +1251,12 @@ fn create_geolocation_entities(
 fn print_import_stats(stats: &ImportStats, entity_count: usize) {
     println!("Imported {} entities:", entity_count);
     println!(
-        "  Identity:  {} emails, {} usernames, {} device users, {} Discord IDs",
-        stats.emails, stats.usernames, stats.device_users, stats.discord_ids
+        "  Identity:  {} emails, {} usernames, {} persons, {} device users, {} Discord IDs",
+        stats.emails, stats.usernames, stats.persons, stats.device_users, stats.discord_ids
     );
+    if stats.credentials > 0 {
+        println!("  Creds:     {} password hashes", stats.credentials);
+    }
     println!(
         "  Network:   {} IPs, {} domains, {} subdomains, {} URLs, {} admin paths",
         stats.ips, stats.domains, stats.subdomains, stats.urls, stats.admin_paths
@@ -966,8 +1288,93 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::deduplicate_by_uid;
+    use super::{deduplicate_by_uid, looks_like_dossier, parse_dossier};
     use crate::core::entity::{Entity, EntityKind};
+
+    // The exact shape of the user-provided "Isaac Frost.txt" dossier upload.
+    const DOSSIER: &str = "http://www.linkedin.com/in/isaac-frost-42474a122
+    Entry #82:
+       \u{2022} username: zacfrost512
+       \u{2022} email: zacfrost512@gmail.com
+       \u{2022} name: Isaac Frost
+       \u{2022} _domain: gmail.com
+       \u{2022} id: 9540629
+       \u{2022} created: 2016-02-19 15:57:12
+       \u{2022} language: en
+    Entry #85:
+       \u{2022} username: IsaacFrost6
+       \u{2022} email: frostisms@gmail.com
+       \u{2022} name: Isaac Frost
+       \u{2022} birthdate: 2002-11-17
+       \u{2022} country: GB
+       \u{2022} gender: M
+       \u{2022} hash: $2a$10$id3HAw6TcOjKvPH/RK7MS.
+USERNAMES:
+  -> isaac frost
+  -> a_frost_life
+  -> isaac@derbyrock.com
+EMAILS:
+  -> betocastillo097@gmail.com
+  -> @gmail
+PASSWORDS:
+  -> 00346D91DD87C74089F3BFA88E13DE8101000000DCB6
+";
+
+    #[test]
+    fn dossier_is_detected_and_oathnet_txt_is_not() {
+        assert!(looks_like_dossier(DOSSIER));
+        assert!(!looks_like_dossier(
+            "URL: https://x.com/login\nUsername: bob\nPassword: hunter2\n"
+        ));
+    }
+
+    #[test]
+    fn dossier_parse_yields_correlated_individualised_entities() {
+        let (mut ents, stats) = parse_dossier(DOSSIER, "sid");
+        deduplicate_by_uid(&mut ents);
+        let has = |k: EntityKind, v: &str| ents.iter().any(|e| e.kind == k && e.value == v);
+
+        // Entry-derived identity, fully parsed (not fragments).
+        assert!(has(EntityKind::Email, "zacfrost512@gmail.com"));
+        assert!(has(EntityKind::Username, "zacfrost512"));
+        assert!(has(EntityKind::Person, "Isaac Frost"));
+        assert!(has(
+            EntityKind::Url,
+            "http://www.linkedin.com/in/isaac-frost-42474a122"
+        ));
+        // Password hash is a Credential, never a Password.
+        assert!(has(EntityKind::Credential, "$2a$10$id3HAw6TcOjKvPH/RK7MS."));
+        assert!(!ents.iter().any(|e| e.kind == EntityKind::Password));
+
+        // Section lists folded in; an email appears in the USERNAMES list too.
+        assert!(has(EntityKind::Email, "betocastillo097@gmail.com"));
+        assert!(has(EntityKind::Email, "isaac@derbyrock.com"));
+        assert!(has(EntityKind::Username, "a_frost_life"));
+
+        // The `@gmail` fragment is rejected, never surfaced.
+        assert!(!ents.iter().any(|e| e.value == "@gmail"));
+        // The freemail `_domain` is NOT emitted as a bare Domain entity.
+        assert!(!has(EntityKind::Domain, "gmail.com"));
+
+        // Individualised: the per-entry evidence carries the FULL record, so
+        // birthdate/country/gender are verifiable on the finding, not lost.
+        let frost = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "frostisms@gmail.com")
+            .expect("entry #85 email");
+        let attrs = &frost.evidence[0].attributes;
+        assert_eq!(
+            attrs.get("birthdate").map(String::as_str),
+            Some("2002-11-17")
+        );
+        assert_eq!(attrs.get("country").map(String::as_str), Some("GB"));
+        assert_eq!(attrs.get("gender").map(String::as_str), Some("M"));
+        assert_eq!(attrs.get("name").map(String::as_str), Some("Isaac Frost"));
+        // The hash is NOT echoed into a benign attribute.
+        assert!(!attrs.contains_key("hash"));
+
+        assert!(stats.persons >= 1 && stats.credentials >= 1 && stats.emails >= 3);
+    }
 
     #[test]
     fn finalize_drops_bogus_ips_keeps_real_and_private_and_dedups() {
