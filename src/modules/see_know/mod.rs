@@ -846,6 +846,24 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "index",
     "score",
     "_score",
+    // Domain WHOIS/RDAP metadata — surfaced as Domain *attributes* by
+    // `rdap_domain` / `whoisxml`, not worth duplicating as standalone graph
+    // nodes (and `dns` is a record map, never an entity value).
+    "registrar",
+    "dns",
+    "nameservers",
+    "name_servers",
+    "created",
+    "created_date",
+    "creation_date",
+    "updated",
+    "updated_date",
+    "last_changed",
+    "expires",
+    "expiry",
+    "expiration_date",
+    "status",
+    "whois",
 ];
 
 /// Push a stealer/infrastructure-CONTEXT entity: tags `see-know` plus any
@@ -1023,19 +1041,21 @@ fn extract_rich_detail(
         }
     }
 
-    // ── Catch-all: EVERY remaining value-bearing scalar field becomes an
-    // `Other(field)` node, so nothing in the raw record is left un-surfaced.
-    // Nested objects/arrays are serialised compactly so they're captured too. ──
+    // ── Catch-all: every remaining value-bearing SCALAR field becomes an
+    // `Other(field)` node, so no atomic data point in the raw record is left
+    // un-surfaced. Nested objects/arrays are NOT turned into entities — a
+    // stringified JSON blob (e.g. a `dns` record map) is not a meaningful graph
+    // node and only pollutes the entity set; its atomic contents are surfaced by
+    // the typed paths above and by the dedicated DNS/RDAP modules. ──
     for (k, v) in obj {
         if RICH_DETAIL_SKIP.contains(&k.to_lowercase().as_str()) {
             continue;
         }
         let val = match v {
-            Value::Null => continue,
+            Value::Null | Value::Array(_) | Value::Object(_) => continue,
             Value::String(s) => s.clone(),
             Value::Bool(b) => b.to_string(),
             Value::Number(n) => n.to_string(),
-            Value::Array(_) | Value::Object(_) => v.to_string(),
         };
         if val.is_empty() || val.len() > 2000 {
             continue;

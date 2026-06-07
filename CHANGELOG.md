@@ -83,6 +83,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **`see_know` no longer emits raw record sub-structures as entities.** The
+  catch-all that surfaces every leftover field as an `Other(field)` node
+  stringified nested JSON objects/arrays too — so a domain record's `dns` map
+  (`{"A":[…],"AAAA":[…]}`) and WHOIS metadata (`registrar`/`created`/`updated`/
+  `expires`/`status`/`nameservers`) became junk graph nodes whose value was an
+  unusable JSON blob. The catch-all now surfaces **scalar** fields only (its
+  documented intent), and the domain WHOIS/RDAP field names are skip-listed
+  (surfaced as Domain *attributes* by `rdap_domain`/`whoisxml`). Verified live:
+  a `--full` scan that emitted 7 `Other`/blob entities now emits 0, with the real
+  breach/stealer intel (passwords, api keys, persons) surfacing cleanly.
+
 - **SPF parsing honours mechanism qualifiers.** `spf::members` matched `ip4:` /
   `ip6:` / `include:` with a bare `strip_prefix`, so a mechanism carrying a
   qualifier — `+`/`-`/`~`/`?` (RFC 7208 §4.6.1), e.g. `-ip4:192.0.2.0/24` or
