@@ -31,6 +31,32 @@ pub struct AuditEntity {
     pub tags: Vec<String>,
 }
 
+impl AuditEntity {
+    /// Normalise a stored [`Entity`](crate::core::entity::Entity) for auditing —
+    /// the shared mapping used by both the `--scan-id` CLI path and the web API
+    /// so the two can never drift. `sources` is the de-duplicated set of evidence
+    /// source names.
+    #[must_use]
+    pub fn from_entity(e: &crate::core::entity::Entity) -> Self {
+        let sources: Vec<String> = e
+            .evidence
+            .iter()
+            .map(|ev| ev.source.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Self {
+            kind: e.kind.to_string(),
+            value: e.value.clone(),
+            confidence: e.confidence,
+            c_effective: e.c_effective(),
+            corroboration: e.corroboration,
+            sources,
+            tags: e.tags.clone(),
+        }
+    }
+}
+
 /// Signals distilled from a debug-log / scan-event stream. All optional — a CSV
 /// or DB audit simply leaves these empty.
 #[derive(Debug, Default, Clone)]
@@ -107,6 +133,63 @@ pub struct AuditReport {
     /// 0–100 — 100 is a clean, individualised, well-sourced scan.
     pub score: u32,
     pub log: LogSignals,
+}
+
+impl AuditReport {
+    /// Letter grade + one-line characterisation derived from the score. Shared by
+    /// the CLI scorecard and the web panel so both speak the same language.
+    #[must_use]
+    pub fn grade(&self) -> &'static str {
+        match self.score {
+            90..=100 => "A — clean, individualised, well-sourced",
+            75..=89 => "B — solid, minor weaknesses",
+            60..=74 => "C — usable but noisy",
+            40..=59 => "D — significant weaknesses",
+            _ => "F — dominated by noise / false positives",
+        }
+    }
+
+    /// Canonical JSON form — the single serialization used by `hse audit --json`
+    /// and `GET /api/v1/scans/{id}/audit`, so the CLI and web UI never diverge.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        let findings: Vec<serde_json::Value> = self
+            .findings
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "severity": f.severity.as_str(),
+                    "category": f.category,
+                    "message": f.message,
+                    "examples": f.examples,
+                    "recommendation": f.recommendation,
+                })
+            })
+            .collect();
+        let by_kind: BTreeMap<&str, usize> =
+            self.by_kind.iter().map(|(k, n)| (k.as_str(), *n)).collect();
+        serde_json::json!({
+            "score": self.score,
+            "grade": self.grade(),
+            "entity_total": self.entity_total,
+            "tiers": {
+                "verified": self.tiers.0,
+                "probable": self.tiers.1,
+                "candidate": self.tiers.2,
+            },
+            "noise_ratio": self.noise_ratio,
+            "by_kind": by_kind,
+            "findings": findings,
+            "source_health": {
+                "engines_down": self.log.engines_down,
+                "engines_blocked": self.log.engines_blocked,
+                "engine_parser_defects": self.log.engine_parser_defects,
+                "module_errors": self.log.module_errors,
+                "http_failures": self.log.http_failures,
+                "log_lines_parsed": self.log.lines_parsed,
+            },
+        })
+    }
 }
 
 const MAX_EXAMPLES: usize = 8;
@@ -487,6 +570,35 @@ mod tests {
         let ents = vec![ent("email", "x@y.com", 1.0, 2, &[])];
         let r = audit(&ents, LogSignals::default());
         assert!(r.findings.iter().any(|f| f.category == "missed-pii"));
+    }
+
+    #[test]
+    fn to_json_is_stable_and_complete() {
+        let ents = vec![ent("email", "dns@cloudflare.com", 1.0, 1, &[])];
+        let j = audit(&ents, LogSignals::default()).to_json();
+        assert!(j["score"].as_u64().is_some());
+        assert!(j["grade"].as_str().unwrap().starts_with(|c: char| c.is_ascii_uppercase()));
+        assert!(j["findings"].as_array().unwrap().iter().any(|f| {
+            f["category"] == "role-mailbox-as-pii"
+        }));
+        assert!(j["source_health"]["engines_down"].is_array());
+    }
+
+    #[test]
+    fn grade_bands_are_monotonic() {
+        let mk = |score: u32| AuditReport {
+            entity_total: 0,
+            by_kind: vec![],
+            tiers: (0, 0, 0),
+            noise_ratio: 0.0,
+            findings: vec![],
+            score,
+            log: LogSignals::default(),
+        };
+        assert!(mk(95).grade().starts_with("A"));
+        assert!(mk(80).grade().starts_with("B"));
+        assert!(mk(50).grade().starts_with("D"));
+        assert!(mk(10).grade().starts_with("F"));
     }
 
     #[test]

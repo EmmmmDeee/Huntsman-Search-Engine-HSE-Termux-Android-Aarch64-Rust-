@@ -267,6 +267,54 @@ pub async fn scan_correlations(
     }
 }
 
+/// `GET /api/v1/scans/{id}/audit` — the scored self-audit of a stored scan
+/// (noise, infrastructure pollution, fragment values, missed PII, source
+/// health) with actionable recommendations. Same engine and JSON shape as
+/// `hse audit`, folding the latest cached search-engine liveness sweep in as the
+/// source-health signal so the web panel and CLI agree.
+pub async fn scan_audit(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let entities = match s.store.entities_for_scan(&id) {
+        Ok(e) => e,
+        Err(e) => return internal_error(&e),
+    };
+    let normalised: Vec<crate::audit::AuditEntity> = entities
+        .iter()
+        .map(crate::audit::AuditEntity::from_entity)
+        .collect();
+    let report = crate::audit::audit(&normalised, engine_health_signals());
+    Json(report.to_json()).into_response()
+}
+
+/// Translate the latest cached search-engine liveness sweep into auditor
+/// source-health signals (parser-defect vs down vs blocked), so the web audit
+/// surfaces broken providers without needing a debug-log upload.
+fn engine_health_signals() -> crate::audit::LogSignals {
+    use crate::modules::search_engines::health::{self, EngineStatus};
+    let mut sig = crate::audit::LogSignals::default();
+    if let Some(snap) = health::cached() {
+        for h in &snap.engines {
+            match h.status {
+                EngineStatus::Down => sig.engines_down.push(h.name.to_string()),
+                EngineStatus::Blocked => {
+                    if h.detail.contains("PARSER") {
+                        sig.engine_parser_defects.push(h.name.to_string());
+                    } else {
+                        sig.engines_blocked.push(h.name.to_string());
+                    }
+                }
+                EngineStatus::Up => {}
+            }
+        }
+    }
+    sig
+}
+
 /// Typed entity-relation edges for a scan (the attribution graph). Powers the
 /// SPA force-graph's relation layer.
 pub async fn scan_relations(

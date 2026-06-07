@@ -19,6 +19,7 @@
 //! | GET    | `/api/v1/scans/{id}/entities.csv` | `scan_entities_csv`      |
 //! | GET    | `/api/v1/scans/{id}/correlations` | `scan_correlations` (v0.4+) |
 //! | GET    | `/api/v1/scans/{id}/relations`    | `scan_relations`         |
+//! | GET    | `/api/v1/scans/{id}/audit`        | `scan_audit` (v1.3+)     |
 //! | GET    | `/api/v1/scans/{id}/events`       | `scan_events_sse` (SSE)  |
 //! | POST   | `/api/v1/live`                    | `live_create` (v0.5+)    |
 //! | GET    | `/api/v1/live`                    | `live_list`              |
@@ -181,6 +182,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(scan_handlers::scan_correlations),
         )
         .route("/scans/{id}/relations", get(scan_handlers::scan_relations))
+        .route("/scans/{id}/audit", get(scan_handlers::scan_audit))
         .route("/scans/{a}/diff/{b}", get(scan_handlers::scan_diff))
         .route("/scans/{id}/events", get(handlers::scan_events_sse))
         .route(

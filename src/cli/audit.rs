@@ -13,8 +13,6 @@
 //! They compose: `hse audit --scan-id latest --log debug.log` audits the stored
 //! scan AND folds in what the log reveals about engine/module health.
 
-use std::collections::BTreeMap;
-
 use crate::audit::{AuditEntity, AuditReport, LogSignals, audit};
 use crate::core::error::{Error, Result};
 
@@ -62,7 +60,10 @@ pub(super) async fn cmd_audit(
     let report = audit(&entities, signals);
 
     if json {
-        println!("{}", render_json(&report));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report.to_json()).unwrap_or_else(|_| "{}".into())
+        );
     } else {
         print_report(&report, &source_label);
     }
@@ -172,27 +173,8 @@ fn load_from_store(scan_id: &str) -> Result<Vec<AuditEntity>> {
     };
     Ok(store
         .entities_for_scan(&sid)?
-        .into_iter()
-        .map(|e| {
-            // Read borrows before moving owned fields out of `e`.
-            let c_effective = e.c_effective();
-            let sources: Vec<String> = e
-                .evidence
-                .iter()
-                .map(|ev| ev.source.clone())
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            AuditEntity {
-                kind: e.kind.to_string(),
-                value: e.value,
-                confidence: e.confidence,
-                c_effective,
-                corroboration: e.corroboration,
-                sources,
-                tags: e.tags,
-            }
-        })
+        .iter()
+        .map(AuditEntity::from_entity)
         .collect())
 }
 
@@ -339,22 +321,12 @@ fn ingest_json(s: &mut LogSignals, v: &serde_json::Value) {
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
-fn grade(score: u32) -> &'static str {
-    match score {
-        90..=100 => "A — clean, individualised, well-sourced",
-        75..=89 => "B — solid, minor weaknesses",
-        60..=74 => "C — usable but noisy",
-        40..=59 => "D — significant weaknesses",
-        _ => "F — dominated by noise / false positives",
-    }
-}
-
 fn print_report(r: &AuditReport, source: &str) {
     println!("\n══════════════════════════════════════════════════════════════");
     println!("  Huntsman scan audit");
     println!("══════════════════════════════════════════════════════════════");
     println!("source     : {source}");
-    println!("score      : {}/100   ({})", r.score, grade(r.score));
+    println!("score      : {}/100   ({})", r.score, r.grade());
     println!(
         "entities   : {}  —  {} verified · {} probable · {} candidate",
         r.entity_total, r.tiers.0, r.tiers.1, r.tiers.2
@@ -383,42 +355,6 @@ fn print_report(r: &AuditReport, source: &str) {
         }
     }
     println!();
-}
-
-fn render_json(r: &AuditReport) -> String {
-    let findings: Vec<serde_json::Value> = r
-        .findings
-        .iter()
-        .map(|f| {
-            serde_json::json!({
-                "severity": f.severity.as_str(),
-                "category": f.category,
-                "message": f.message,
-                "examples": f.examples,
-                "recommendation": f.recommendation,
-            })
-        })
-        .collect();
-    let by_kind: BTreeMap<&str, usize> =
-        r.by_kind.iter().map(|(k, n)| (k.as_str(), *n)).collect();
-    serde_json::to_string_pretty(&serde_json::json!({
-        "score": r.score,
-        "grade": grade(r.score),
-        "entity_total": r.entity_total,
-        "tiers": { "verified": r.tiers.0, "probable": r.tiers.1, "candidate": r.tiers.2 },
-        "noise_ratio": r.noise_ratio,
-        "by_kind": by_kind,
-        "findings": findings,
-        "source_health": {
-            "engines_down": r.log.engines_down,
-            "engines_blocked": r.log.engines_blocked,
-            "engine_parser_defects": r.log.engine_parser_defects,
-            "module_errors": r.log.module_errors,
-            "http_failures": r.log.http_failures,
-            "log_lines_parsed": r.log.lines_parsed,
-        },
-    }))
-    .unwrap_or_else(|_| "{}".into())
 }
 
 #[cfg(test)]
