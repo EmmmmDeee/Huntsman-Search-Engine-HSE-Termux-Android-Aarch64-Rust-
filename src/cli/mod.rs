@@ -749,8 +749,11 @@ pub(super) fn parse_target_kind(s: &str) -> Result<TargetKind> {
         "email" => Ok(TargetKind::Email),
         "username" => Ok(TargetKind::Username),
         "phone" => Ok(TargetKind::Phone),
-        "fullname" | "name" => Ok(TargetKind::FullName),
-        "ipaddress" | "ip" => Ok(TargetKind::IpAddress),
+        // Accept the canonical snake_case form (`full_name`, `ip_address`) the
+        // system itself emits (`canonical_str`, serde, API, entity `kind`) so a
+        // copied canonical kind round-trips, alongside the terse CLI aliases.
+        "full_name" | "fullname" | "name" => Ok(TargetKind::FullName),
+        "ip_address" | "ipaddress" | "ip" => Ok(TargetKind::IpAddress),
         "domain" => Ok(TargetKind::Domain),
         "url" => Ok(TargetKind::Url),
         "asn" => Ok(TargetKind::Asn),
@@ -910,6 +913,24 @@ mod tests {
     fn parse_unknown_kind_is_err() {
         assert!(parse_target_kind("foobar").is_err());
         assert!(parse_target_kind("").is_err());
+    }
+
+    #[test]
+    fn every_seed_kind_canonical_form_round_trips() {
+        // Total invariant: the canonical string the system emits for EVERY seed
+        // kind (`canonical_str` — also serde/API/entity `kind`) must parse back to
+        // that exact kind via the CLI parser. Regression: `full_name`/`ip_address`
+        // did not (only `fullname`/`ipaddress` were accepted), so a copied
+        // canonical kind failed on the CLI. Driven over the complete kind list so
+        // a newly-added kind that forgets the alias fails here.
+        for &kind in crate::core::dependency::ALL_TARGET_KINDS {
+            let canon = kind.canonical_str();
+            assert_eq!(
+                parse_target_kind(canon).ok(),
+                Some(kind),
+                "canonical form {canon:?} must round-trip through parse_target_kind"
+            );
+        }
     }
 
     // ── split_csv ───────────────────────────────────────────────────────────
