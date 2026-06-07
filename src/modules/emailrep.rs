@@ -102,6 +102,12 @@ impl Module for EmailRep {
         ModuleCategory::Email
     }
 
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        use crate::core::entity::EntityKind;
+        const KINDS: &[EntityKind] = &[EntityKind::Email];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,

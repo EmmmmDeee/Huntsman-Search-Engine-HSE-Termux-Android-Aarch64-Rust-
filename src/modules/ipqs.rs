@@ -200,6 +200,12 @@ impl Module for IpQs {
         ModuleCategory::Infrastructure
     }
 
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        use crate::core::entity::EntityKind;
+        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Email, EntityKind::Phone];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,

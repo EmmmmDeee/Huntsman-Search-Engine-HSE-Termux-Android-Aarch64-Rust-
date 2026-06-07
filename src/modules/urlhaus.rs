@@ -202,6 +202,12 @@ impl Module for UrlHaus {
         10_000
     }
 
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        use crate::core::entity::EntityKind;
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let host = target.value.trim();
         if host.is_empty() {

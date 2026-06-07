@@ -96,6 +96,13 @@ impl Module for HudsonRock {
         10_000
     }
 
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        use crate::core::entity::EntityKind;
+        const KINDS: &[EntityKind] =
+            &[EntityKind::Email, EntityKind::Domain, EntityKind::IpAddress];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let url = match target.kind {
             // `search-by-login` requires an email-shaped login (a bare handle

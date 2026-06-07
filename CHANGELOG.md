@@ -660,6 +660,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Every module now declares `produces()` (dependency-graph consistency).** 11
+  modules (`hudsonrock`, `xposed_or_not`, `dehashed`, `intelx`, `pwned_passwords`,
+  `urlhaus`, `leakix`, `ipqs`, `emailrep`, `virustotal`, `wayback`) relied on the
+  empty-default `produces()`, leaving their outputs undeclared and their
+  pivot-chain blank in the UI dependency graph. Each now declares the exact
+  `EntityKind`s it emits (read from its `process()` — the enriched re-emitted
+  target plus any children, matching the convention the other ~90 modules
+  already follow). Metadata-only — no behaviour change; the full suite is
+  unchanged. All 101 modules now declare their outputs.
+
 - **Subdomain matching is centralised in `util::domains::is_or_subdomain_of` /
   `is_proper_subdomain_of`.** The "host is `X` or a subdomain of `X`" test was
   hand-rolled as `host == d || host.ends_with(&format!(".{d}"))` in ~9 places —

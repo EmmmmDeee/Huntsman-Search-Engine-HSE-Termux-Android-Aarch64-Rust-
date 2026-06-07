@@ -146,6 +146,19 @@ impl Module for DeHashed {
         ModuleCategory::Breach
     }
 
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        use crate::core::entity::EntityKind;
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Phone,
+            EntityKind::Person,
+            EntityKind::IpAddress,
+            EntityKind::Domain,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let (user, key) = match (ctx.key_opt(USER_ENV), ctx.key_opt(KEY_ENV)) {
             (Some(u), Some(k)) => (u, k),

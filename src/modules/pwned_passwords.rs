@@ -54,6 +54,12 @@ impl Module for PwnedPasswords {
         false
     }
 
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        use crate::core::entity::EntityKind;
+        const KINDS: &[EntityKind] = &[EntityKind::Email, EntityKind::Username];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let value = target.value.trim();
         if value.is_empty() {

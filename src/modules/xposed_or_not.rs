@@ -134,6 +134,12 @@ impl Module for XposedOrNot {
         15_000
     }
 
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        use crate::core::entity::EntityKind;
+        const KINDS: &[EntityKind] = &[EntityKind::Email];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let url = format!(
             "https://api.xposedornot.com/v1/check-email/{}",

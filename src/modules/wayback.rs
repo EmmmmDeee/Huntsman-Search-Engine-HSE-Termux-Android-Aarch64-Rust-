@@ -122,6 +122,12 @@ impl Module for Wayback {
         10_000
     }
 
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        use crate::core::entity::EntityKind;
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::Url];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let domain = extract_domain(target.kind, &target.value);
         if domain.is_empty() {

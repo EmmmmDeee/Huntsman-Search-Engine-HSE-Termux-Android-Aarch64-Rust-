@@ -164,6 +164,19 @@ impl Module for IntelX {
         ModuleCategory::Breach
     }
 
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        use crate::core::entity::EntityKind;
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Phone,
+            EntityKind::Person,
+            EntityKind::Domain,
+            EntityKind::IpAddress,
+        ];
+        KINDS
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,
