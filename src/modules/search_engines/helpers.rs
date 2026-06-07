@@ -1174,6 +1174,22 @@ pub(super) fn extract_addresses_from_text(text: &str) -> Vec<String> {
             {
                 continue;
             }
+            // A "city" that is itself one or more US state names ("Arizona",
+            // "Florida and Texas") is NOT a City, State address — it's a
+            // generic-text false positive (a news headline or list enumerating
+            // states). A real scan flooded 18 such pairs and drove bogus
+            // geolocation correlations. Reject when every conjunct is a state.
+            // (Legit multi-word cities like "Kansas City" survive: "City" is not
+            // a state, so the all-states test fails and the address is kept.)
+            let all_states = city
+                .split([',', '&'])
+                .flat_map(|p| p.split(" and "))
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .all(|part| STATES.iter().any(|s| s.eq_ignore_ascii_case(part)));
+            if all_states {
+                continue;
+            }
             let addr = format!("{city}, {state}");
             addrs.push(addr);
         }

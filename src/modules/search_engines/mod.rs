@@ -1233,6 +1233,27 @@ mod tests {
     }
 
     #[test]
+    fn address_extraction_rejects_us_state_pairs() {
+        // "Arizona, Georgia" etc. are two states, not a City, State address —
+        // generic-text false positives that flooded a real scan.
+        for text in [
+            "Arizona, Georgia governors stress ties",
+            "compare Indiana, Florida and Texas, Ohio",
+        ] {
+            let addrs = extract_addresses_from_text(text);
+            assert!(
+                addrs.is_empty(),
+                "state pairs must be rejected, got {addrs:?} from {text:?}"
+            );
+        }
+        // A genuine City, State still extracts.
+        assert_eq!(
+            extract_addresses_from_text("lives in Houston, Texas now"),
+            vec!["Houston, Texas".to_string()]
+        );
+    }
+
+    #[test]
     fn navigation_path_catches_extensions() {
         assert!(is_navigation_path("login.php"));
         assert!(is_navigation_path("signin_page"));
