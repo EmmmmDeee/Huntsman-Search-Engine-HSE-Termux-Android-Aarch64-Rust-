@@ -6,6 +6,7 @@
 //! `docs/USAGE.md` for the full reference.
 
 mod config;
+mod diagnostics;
 mod diff;
 mod doctor;
 mod engines;
@@ -196,7 +197,18 @@ pub enum Command {
         /// `on` / `off` to set the toggle; omit to just show its value.
         value: Option<String>,
     },
+    /// Run ALL diagnostics in one pass: environment (doctor) + module/core
+    /// self-test (selftest) + search-engine liveness (engines). Exits non-zero
+    /// if any section fails. The one command to verify a fresh install.
+    #[command(visible_alias = "diag", visible_alias = "check")]
+    Diagnostics {
+        /// Emit machine-readable JSON for the sections that support it
+        /// (selftest, engines); doctor remains human-readable.
+        #[arg(long)]
+        json: bool,
+    },
     /// Verify environment: DB path, key file, Termux detection, module counts.
+    /// (Subsumed by `hse diagnostics`; kept for focused use and the API/UI.)
     Doctor,
     /// Validate every module and core feature, then exit (non-zero on any
     /// failure). Runs the full suite automatically; the same report is served
@@ -217,6 +229,7 @@ pub enum Command {
     /// Idempotent: existing real key values are preserved across runs;
     /// the file is backed up to `<path>.env.bak.<epoch>` before any
     /// change.
+    #[command(visible_alias = "setup")]
     Provision {
         /// Merge the env file but skip the diagnostic smoke test.
         #[arg(long, conflicts_with = "verify_only")]
@@ -488,6 +501,7 @@ pub async fn run() -> Result<()> {
         Command::Modules { category, json } => cmd_modules(category, json),
         Command::Engines { json } => engines::cmd_engines(json).await,
         Command::Config { key, value } => config::cmd_config(key, value),
+        Command::Diagnostics { json } => diagnostics::cmd_diagnostics(json).await,
         Command::Doctor => doctor::cmd_doctor().await,
         Command::Selftest { json } => selftest::cmd_selftest(json).await,
         Command::Provision {

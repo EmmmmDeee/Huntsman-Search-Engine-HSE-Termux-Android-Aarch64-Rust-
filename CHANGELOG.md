@@ -323,6 +323,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **`hse diagnostics` — one command for all health checks.** Runs `doctor`
+  (environment) + `selftest` (modules/core) + `engines` (search-engine liveness)
+  in a single banner-sectioned pass, exiting non-zero if any section fails.
+  Aliases: `diag`, `check`. The individual commands remain (the Web UI/API still
+  call them). `provision` gains a `setup` alias. Verified live: a real scan of
+  `matthewdiegmann@gmail.com` returned a breach-source correlation (AU-001) and
+  derived-handle/social pivots; a name scan surfaced breach passwords (AU-037);
+  the Web UI's scan-detail endpoints (entities/correlations/relations, CSV +
+  GEXF export) all serve real data.
 - **Typosquat / lookalike-domain discovery (`typosquat`, dnstwist-style,
   pure-Rust).** A `Domain` target now generates lookalike permutations —
   omission, transposition, repetition, keyboard-adjacent replacement, ASCII
