@@ -1367,6 +1367,56 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize) {
 mod tests {
     use super::{deduplicate_by_uid, entities_from_upload, looks_like_dossier, parse_dossier};
 
+    /// The upload dispatcher parses UNTRUSTED text from the web endpoint, so it
+    /// must never panic — not on truncation, not on a multibyte codepoint landing
+    /// next to a structural marker (`@`, `->`, `•`, `:`, a section header), not on
+    /// malformed JSON/HTML. This pins that contract: every hostile input returns
+    /// Ok/Err, never unwinds. (Panic = abort is off, but a 500 from a paste is
+    /// still a defect.)
+    #[tokio::test]
+    async fn upload_dispatcher_never_panics_on_adversarial_input() {
+        let bomb = "é".repeat(4000); // multibyte filler
+        let cases: Vec<String> = vec![
+            String::new(),
+            " \t\n ".into(),
+            "@".into(),
+            "->".into(),
+            "\u{2022}".into(),                                   // lone bullet
+            "Entry #".into(),                                    // truncated header
+            "Entry #\u{2022}:é".into(),                          // bullet+multibyte at header
+            format!("Entry #1:\n   \u{2022} email: {bomb}@"),    // dangling local@
+            format!("EMAILS:\n  -> {bomb}@{bomb}"),              // huge no-TLD email
+            "USERNAMES:\n->".into(),                             // empty list item
+            "\u{2022} : value".into(),                           // empty key
+            "URL: \nUsername: \nPassword: ".into(),              // empty TXT fields
+            "=== INFECTED MACHINES".into(),                      // section marker, no body
+            "=== OSINT ENRICHMENT\nIP: \nlat: zzz\nlon: ".into(),// bad geo numbers
+            "{".into(),                                          // truncated JSON
+            "{}".into(),
+            r#"{"searchResults":{"MULTI_SERVICE_RESULTS":{"breach":{"data":{"results":[null,1,"x"]}}}}}"#.into(),
+            r#"{"stealerData":{"victims":[{"device_ips":[1,null,"1.2.3.4"]}]}}"#.into(),
+            "<html>".into(),
+            format!("<html>{bomb}@{bomb}.com http://{bomb}</html>"),
+            // Section markers butted against multibyte text.
+            format!("PASSWORDS:é\n-> é{bomb}"),
+            "Entry #1:\n   \u{2022} name: é\n   \u{2022} hash: $2a$".into(),
+        ];
+        for (i, input) in cases.iter().enumerate() {
+            // The await completing at all is the assertion — a panic would unwind
+            // through here and fail the test.
+            let r = entities_from_upload(input, "fuzz").await;
+            // Whatever the outcome, entities (if any) must be well-formed.
+            if let Ok((ents, _)) = r {
+                for e in &ents {
+                    assert!(
+                        !e.value.is_empty(),
+                        "case {i}: produced an empty-value entity"
+                    );
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn upload_dispatcher_routes_every_format_to_its_parser() {
         use crate::core::entity::EntityKind;
