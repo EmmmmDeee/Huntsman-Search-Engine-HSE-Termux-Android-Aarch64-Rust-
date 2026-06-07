@@ -8,28 +8,58 @@ pub(super) async fn fetch_and_parse(
     query: &str,
     post_body: Option<&str>,
 ) -> Option<Vec<SearchResult>> {
-    match try_fetch(url, engine.ua, post_body).await {
-        FetchOutcome::Body(body) => {
-            scan_body_for_keys(&body);
-            let results = parse_results(&body, engine.name, query);
-            if !results.is_empty() {
-                return Some(results);
+    let started = std::time::Instant::now();
+    // `outcome` records exactly what happened to this one request so the unified
+    // debug log explains every search interaction — no black-box. One of:
+    // ok / empty (parsed 0 → likely parser/soft-block) / blocked (anti-bot) /
+    // unreachable (network) / ok_retry (succeeded only after the alt-UA retry).
+    let (results, outcome): (Option<Vec<SearchResult>>, &'static str) =
+        match try_fetch(url, engine.ua, post_body).await {
+            FetchOutcome::Body(body) => {
+                scan_body_for_keys(&body);
+                let results = parse_results(&body, engine.name, query);
+                if results.is_empty() {
+                    (None, "empty")
+                } else {
+                    (Some(results), "ok")
+                }
             }
-        }
-        FetchOutcome::Unreachable => return None,
-        FetchOutcome::Blocked => {}
-    }
+            FetchOutcome::Unreachable => (None, "unreachable"),
+            FetchOutcome::Blocked => (None, "blocked"),
+        };
 
-    if engine.ua != engine.ua_alt
-        && let FetchOutcome::Body(body) = try_fetch(url, engine.ua_alt, post_body).await
+    // Alt-UA retry only when the first attempt yielded no usable results and the
+    // engine actually has a distinct fallback UA.
+    let (results, outcome) = if results.is_none()
+        && outcome != "unreachable"
+        && engine.ua != engine.ua_alt
     {
-        let results = parse_results(&body, engine.name, query);
-        if !results.is_empty() {
-            return Some(results);
+        match try_fetch(url, engine.ua_alt, post_body).await {
+            FetchOutcome::Body(body) => {
+                let r = parse_results(&body, engine.name, query);
+                if r.is_empty() {
+                    (None, outcome)
+                } else {
+                    (Some(r), "ok_retry")
+                }
+            }
+            _ => (None, outcome),
         }
-    }
+    } else {
+        (results, outcome)
+    };
 
-    None
+    let n = results.as_ref().map_or(0, Vec::len);
+    tracing::debug!(
+        target: "huntsman::search",
+        engine = engine.name,
+        query,
+        outcome,
+        results = n,
+        latency_ms = started.elapsed().as_millis() as u64,
+        "search request"
+    );
+    results
 }
 
 pub(super) async fn try_fetch(url: &str, ua: &str, post_body: Option<&str>) -> FetchOutcome {

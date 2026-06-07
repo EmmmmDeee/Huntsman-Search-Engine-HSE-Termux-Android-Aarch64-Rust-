@@ -203,10 +203,32 @@ pub(super) fn regional_dorks(target: &Target) -> Vec<String> {
 /// The dork set for a seed: the geolocation-neutral base, plus minimal
 /// autonomous region-scoped dorks when regional searching is toggled on.
 pub(super) fn build_queries(target: &Target) -> Vec<String> {
-    let mut q = build_queries_base(target);
-    if regional_enabled() {
-        q.extend(regional_dorks(target));
+    let base = build_queries_base(target);
+    if !regional_enabled() {
+        return base;
     }
+    interleave_regional(base, regional_dorks(target))
+}
+
+/// Order the dork set so Australian regional coverage isn't starved under a tight
+/// time budget: run the single strongest base query first (the exact-match), then
+/// the AU dorks, then the remaining base queries. Previously the regional dorks
+/// were appended last and a budget-limited scan never reached them — the AU focus
+/// existed on paper but rarely dispatched. **Pure**, so the ordering is unit-tested
+/// without touching the process-global regional flag.
+fn interleave_regional(base: Vec<String>, regional: Vec<String>) -> Vec<String> {
+    if regional.is_empty() {
+        return base;
+    }
+    if base.is_empty() {
+        return regional;
+    }
+    let mut it = base.into_iter();
+    let first = it.next().expect("base non-empty");
+    let mut q = Vec::with_capacity(1 + regional.len() + it.len());
+    q.push(first);
+    q.extend(regional);
+    q.extend(it);
     q
 }
 
@@ -532,6 +554,22 @@ mod tests {
     fn short_handle_yields_no_variants() {
         // No separators, < 4 chars → nothing (too short to pivot on).
         assert!(generate_username_variants("ab").is_empty());
+    }
+
+    #[test]
+    fn interleave_runs_regional_dorks_early() {
+        let base = vec!["base0".to_string(), "base1".into(), "base2".into()];
+        let regional = vec!["au0".to_string(), "au1".into()];
+        let q = interleave_regional(base, regional);
+        // Strongest base query first, then AU dorks, then the rest.
+        assert_eq!(q, ["base0", "au0", "au1", "base1", "base2"]);
+        // AU dorks land before the tail base queries (won't be starved).
+        let au_pos = q.iter().position(|x| x == "au0").unwrap();
+        let tail_pos = q.iter().position(|x| x == "base1").unwrap();
+        assert!(au_pos < tail_pos);
+        // Degenerate inputs.
+        assert_eq!(interleave_regional(vec![], vec!["a".into()]), ["a"]);
+        assert_eq!(interleave_regional(vec!["b".into()], vec![]), ["b"]);
     }
 
     #[test]
