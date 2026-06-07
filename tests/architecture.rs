@@ -376,6 +376,72 @@ fn every_declared_module_is_registered() {
     );
 }
 
+/// Every correlation rule defined in `rules.rs` must be wired into a dispatch
+/// array in `mod.rs` (`RULES` or `RELATION_RULES`). A `pub(super) fn rule_au_*`
+/// that is never added to an array compiles cleanly (it's referenced by the
+/// glob `use rules::*;`, so it isn't even a dead-code warning) and silently
+/// never fires — the analyst simply never sees that correlation, with no error
+/// anywhere. This is the correlator analog of `every_declared_module_is_registered`
+/// (the same failure mode that left `pwned_passwords` dead at runtime).
+#[test]
+fn every_defined_correlation_rule_is_dispatched() {
+    let rules_src = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/core/correlator/rules.rs"
+    ))
+    .expect("rules.rs must exist");
+    let mod_src = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/core/correlator/mod.rs"
+    ))
+    .expect("correlator mod.rs must exist");
+
+    // Defined: the identifier after `fn ` on any line declaring a `rule_au_*`.
+    let defined: Vec<String> = rules_src
+        .lines()
+        .filter_map(|l| {
+            let at = l.find("fn rule_au_")?;
+            l[at + "fn ".len()..]
+                .split('(')
+                .next()
+                .map(|name| name.trim().to_string())
+        })
+        .collect();
+
+    // Dispatched: the leading identifier on each array-element line — every
+    // `rule_au_*` occurrence in mod.rs lives in `RULES`/`RELATION_RULES`, one
+    // per line (`    rule_au_001_multi_breach,`). Taking the identifier prefix
+    // is robust against a trailing comma or comment.
+    let dispatched: std::collections::HashSet<String> = mod_src
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("rule_au_"))
+        .map(|l| {
+            l.chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect::<String>()
+        })
+        .collect();
+
+    assert!(
+        !defined.is_empty() && !dispatched.is_empty(),
+        "parse failure: defined={} dispatched={}",
+        defined.len(),
+        dispatched.len()
+    );
+
+    let orphans: Vec<&String> = defined
+        .iter()
+        .filter(|name| !dispatched.contains(*name))
+        .collect();
+
+    assert!(
+        orphans.is_empty(),
+        "correlation rules defined in rules.rs but never added to RULES or \
+         RELATION_RULES in mod.rs (they compile but silently never fire): {orphans:?}"
+    );
+}
+
 /// The README's headline module count is hand-maintained and had drifted
 /// (stated as "60+", "63" and "89" across files while the registry held 89).
 /// Tie the authoritative "## Module Overview (N modules" figure to the live

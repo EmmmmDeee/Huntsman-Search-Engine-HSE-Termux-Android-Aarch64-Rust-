@@ -257,6 +257,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **No-silent-drift guard: every correlation rule must be dispatched.** A
+  `pub(super) fn rule_au_*` defined in `correlator/rules.rs` but never added to
+  the `RULES` / `RELATION_RULES` arrays in `mod.rs` compiles cleanly (the glob
+  `use rules::*;` references it, so it isn't even a dead-code warning) and
+  silently never fires — the analyst just never sees that correlation. A new test
+  (`every_defined_correlation_rule_is_dispatched`) parses both files and asserts
+  every defined rule is wired in. This is the correlator analog of
+  `every_declared_module_is_registered` — the same failure mode that once left
+  `pwned_passwords` dead at runtime. Currently clean (all 43 rules dispatched);
+  preventive against future additions.
 - **Well-formedness + ISO-consistency guard for the `geo_domain_classifier`
   tables.** Both lookups (`classify_by_known_service`, `classify_by_cctld`)
   compare against a *lowercased* domain, so any of the 122 `GEO_SERVICES` /
