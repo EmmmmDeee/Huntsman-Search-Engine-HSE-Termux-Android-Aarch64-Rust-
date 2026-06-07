@@ -739,12 +739,13 @@ async function renderNewScan(v){
     <hr style="margin:8px 0 14px 0">
 
     <div class="alert alert-info" style="padding:10px 12px;margin-bottom:14px">
-      <b><i class="glyphicon glyphicon-import"></i>&nbsp;Import a dossier file</b>
-      — upload a breach/dossier compilation (<code>Entry #N</code> blocks +
-      <code>USERNAMES:</code>/<code>EMAILS:</code>/<code>PASSWORDS:</code> lists)
-      to ingest it as a scan you can browse, correlate and export.
+      <b><i class="glyphicon glyphicon-import"></i>&nbsp;Import a file</b>
+      — upload a breach/dossier compilation (<code>Entry #N</code> +
+      <code>USERNAMES:</code>/<code>EMAILS:</code>/<code>PASSWORDS:</code>) or an
+      OathNet JSON/HTML/stealer-log export. It's parsed and ingested as a scan you
+      can browse, correlate and export.
       <div style="margin-top:8px">
-        <input type="file" id="dossier-file" accept=".txt,text/plain" style="display:inline-block;max-width:60%">
+        <input type="file" id="dossier-file" accept=".txt,.json,.html,text/plain,application/json,text/html" style="display:inline-block;max-width:60%">
         <button class="btn btn-primary btn-sm" type="button" onclick="uploadDossier()">Import</button>
         <span id="import-status" class="text-muted" style="margin-left:8px"></span>
       </div>

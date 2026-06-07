@@ -115,16 +115,13 @@ pub async fn scan_import(State(s): State<Arc<AppState>>, body: String) -> impl I
     if body.len() > MAX_UPLOAD {
         return bad_request("upload too large (max 16 MB)");
     }
-    if !crate::cli::import::looks_like_dossier(&body) {
-        return bad_request(
-            "unrecognised upload format. Web upload supports the breach/dossier \
-             compilation (`Entry #N:` blocks + `USERNAMES:`/`EMAILS:`/`PASSWORDS:` \
-             lists). For OathNet JSON/HTML/stealer-TXT, use the `hse import` CLI.",
-        );
-    }
-
-    let sid = scan_id("import-dossier", &unix_now().to_string());
-    let entities = crate::cli::import::import_dossier_text(&body, &sid);
+    let sid = scan_id("import-upload", &unix_now().to_string());
+    // Detect the format from content and parse via the SAME `cli::import` path
+    // the CLI uses — OathNet JSON/HTML/stealer-TXT and breach/dossier all work.
+    let (entities, format) = match crate::cli::import::entities_from_upload(&body, &sid).await {
+        Ok(pair) => pair,
+        Err(e) => return bad_request(format!("could not parse upload: {e}")),
+    };
     if entities.is_empty() {
         return bad_request("no verifiable entities were parsed from the upload");
     }
@@ -160,11 +157,12 @@ pub async fn scan_import(State(s): State<Arc<AppState>>, body: String) -> impl I
         }
     }
 
-    info!(scan_id = %sid, entities = entities.len(), "dossier imported via web");
+    info!(scan_id = %sid, format, entities = entities.len(), "file imported via web");
     (
         StatusCode::OK,
         Json(json!({
             "scan_id": sid,
+            "format": format,
             "entity_count": entities.len(),
             "correlation_count": correlation_count,
             "status": "complete",

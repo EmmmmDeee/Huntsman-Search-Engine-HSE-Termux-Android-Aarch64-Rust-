@@ -1,8 +1,6 @@
 use crate::core::error::{Error, Result};
 
 pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
-    use crate::core::entity::{Entity, EntityKind, Evidence};
-
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::Other(format!("cannot read {path}: {e}")))?;
 
@@ -42,6 +40,24 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     println!("Importing OathNet JSON export: query=\"{query}\", date={date}");
 
     let sid = format!("import-{}", &crate::core::entity::unix_now().to_string());
+    let (mut entities, stats) = parse_oathnet_json(&doc, &sid).await;
+    deduplicate_by_uid(&mut entities);
+    print_import_stats(&stats, entities.len());
+    import_json_output(&entities, &stats, query, date, path, output)
+}
+
+/// Parse an OathNet JSON API export (breach results, stealer victims, stealer
+/// docs, holehe checks, geo) into entities + stats. `async` because it
+/// opportunistically validates any API key found in stealer data. Reusable core
+/// shared by the CLI (`cmd_import`) and the web upload dispatcher, so they never
+/// drift.
+async fn parse_oathnet_json(
+    doc: &serde_json::Value,
+    sid: &str,
+) -> (Vec<crate::core::entity::Entity>, ImportStats) {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    // Keep the (verbatim) parse body's `&sid` working — it expects an owned id.
+    let sid = sid.to_string();
     let mut entities: Vec<Entity> = Vec::new();
     let mut stats = ImportStats::default();
 
@@ -410,9 +426,19 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         }
     }
 
-    deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len());
+    (entities, stats)
+}
 
+/// Render the OathNet-JSON import result (CLI side only): a machine-readable
+/// `--output json` envelope or the human entity list.
+fn import_json_output(
+    entities: &[crate::core::entity::Entity],
+    stats: &ImportStats,
+    query: &str,
+    date: &str,
+    path: &str,
+    output: &str,
+) -> Result<()> {
     match output {
         "json" => {
             let out = serde_json::json!({
@@ -429,7 +455,7 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
         }
         _ => {
-            for e in &entities {
+            for e in entities {
                 println!(
                     "  [{:.2}] {:15} {}",
                     e.confidence,
@@ -446,12 +472,13 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_import_html(body: &str, output: &str) -> Result<()> {
+/// Parse an OathNet HTML export into entities (domains/subdomains, IPs, emails)
+/// by regex over the page text. Pure — the reusable core shared by the CLI
+/// (`cmd_import_html`) and the web upload dispatcher, so the two never drift.
+fn parse_oathnet_html(body: &str, sid: &str) -> Vec<crate::core::entity::Entity> {
     use crate::core::entity::{Entity, EntityKind};
     use std::collections::HashSet;
 
-    println!("Importing OathNet HTML export...");
-    let sid = format!("import-html-{}", crate::core::entity::unix_now());
     let mut entities: Vec<Entity> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -467,7 +494,7 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
         if dom.len() > 4 && seen.insert(format!("d:{dom}")) {
             let is_sub = dom.split('.').count() >= 3;
             let conf = if is_sub { 0.45 } else { 0.50 };
-            let mut e = Entity::new(EntityKind::Domain, dom, conf, &sid);
+            let mut e = Entity::new(EntityKind::Domain, dom, conf, sid);
             e.tag("import");
             if is_sub {
                 e.tag("subdomain");
@@ -483,7 +510,7 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
             && !ip.starts_with("127.")
             && !ip.starts_with("255.")
         {
-            let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.55, &sid);
+            let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.55, sid);
             e.tag("import");
             entities.push(e);
         }
@@ -492,11 +519,21 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
     for cap in email_re.captures_iter(body) {
         let em = cap[0].to_lowercase();
         if em.len() >= 5 && seen.insert(format!("em:{em}")) {
-            let mut e = Entity::new(EntityKind::Email, &em, 0.50, &sid);
+            let mut e = Entity::new(EntityKind::Email, &em, 0.50, sid);
             e.tag("import");
             entities.push(e);
         }
     }
+
+    entities
+}
+
+fn cmd_import_html(body: &str, output: &str) -> Result<()> {
+    use crate::core::entity::EntityKind;
+
+    println!("Importing OathNet HTML export...");
+    let sid = format!("import-html-{}", crate::core::entity::unix_now());
+    let mut entities = parse_oathnet_html(body, &sid);
 
     deduplicate_by_uid(&mut entities);
 
@@ -817,21 +854,35 @@ fn emit_dossier_list_item(
     }
 }
 
-/// Import a breach/dossier compilation (`Entry #N` + section lists). Parses,
-/// dedups, prints stats, and emits the entities (JSON or table) — same contract
-/// as the other `cmd_import_*` parsers.
-/// Parse uploaded breach/dossier text into finalised entities for `sid` — the
-/// reusable, side-effect-free core of `cmd_import_dossier`, so the WEB upload
-/// endpoint and the CLI import share one parser/dedup/canonicalise path (they
-/// can never drift). Entities are deduplicated by UID and their evidence/tags
-/// canonicalised, exactly as the live scan path persists them.
-pub(crate) fn import_dossier_text(body: &str, sid: &str) -> Vec<crate::core::entity::Entity> {
-    let (mut entities, _stats) = parse_dossier(body, sid);
+/// Detect an uploaded file's format from its CONTENT and parse it into finalised
+/// (deduplicated, evidence/tag-canonicalised) entities for `sid`, returning the
+/// entities plus a format label. This is the single entry the WEB upload uses,
+/// so EVERY import format the CLI supports — OathNet JSON/HTML/stealer-TXT and
+/// the breach/dossier compilation — is reachable from the Termux UI, parsed by
+/// the exact same `parse_*` functions the CLI calls (they can never drift).
+/// `async` because the JSON path opportunistically validates discovered keys.
+pub(crate) async fn entities_from_upload(
+    body: &str,
+    sid: &str,
+) -> Result<(Vec<crate::core::entity::Entity>, &'static str)> {
+    let head = body.trim_start();
+    let (mut entities, label) = if head.starts_with("<!") || head.starts_with("<html") {
+        (parse_oathnet_html(body, sid), "oathnet-html")
+    } else if head.starts_with('{') {
+        let doc: serde_json::Value =
+            serde_json::from_str(body).map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
+        (parse_oathnet_json(&doc, sid).await.0, "oathnet-json")
+    } else if looks_like_dossier(body) {
+        (parse_dossier(body, sid).0, "dossier")
+    } else {
+        // The catch-all text format: an OathNet stealer-log TXT.
+        (parse_oathnet_txt(body, sid).0, "oathnet-txt")
+    };
     deduplicate_by_uid(&mut entities);
     for e in &mut entities {
         e.canonicalize_order();
     }
-    entities
+    Ok((entities, label))
 }
 
 fn cmd_import_dossier(body: &str, output: &str) -> Result<()> {
@@ -860,12 +911,16 @@ fn cmd_import_dossier(body: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
+/// Parse an OathNet stealer-log TXT export into entities + stats. Reusable core
+/// shared by `cmd_import_txt` and the web upload dispatcher. Discovered API keys
+/// are added to the in-memory key pool (as the CLI does); persisting the pool to
+/// disk is left to the caller.
+fn parse_oathnet_txt(body: &str, sid: &str) -> (Vec<crate::core::entity::Entity>, ImportStats) {
     use crate::core::entity::{Entity, EntityKind};
     use std::collections::HashSet;
 
-    println!("Importing OathNet TXT export...");
-    let sid = format!("import-txt-{}", crate::core::entity::unix_now());
+    // Keep the (verbatim) parse body's `&sid` working — it expects an owned id.
+    let sid = sid.to_string();
     let mut entities: Vec<Entity> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut stats = ImportStats::default();
@@ -1094,6 +1149,14 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
         }
     }
 
+    (entities, stats)
+}
+
+fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
+    println!("Importing OathNet TXT export...");
+    let sid = format!("import-txt-{}", crate::core::entity::unix_now());
+    let (mut entities, stats) = parse_oathnet_txt(body, &sid);
+
     deduplicate_by_uid(&mut entities);
     print_import_stats(&stats, entities.len());
     if stats.api_keys > 0 {
@@ -1302,7 +1365,56 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{deduplicate_by_uid, looks_like_dossier, parse_dossier};
+    use super::{deduplicate_by_uid, entities_from_upload, looks_like_dossier, parse_dossier};
+
+    #[tokio::test]
+    async fn upload_dispatcher_routes_every_format_to_its_parser() {
+        use crate::core::entity::EntityKind;
+        let has = |ents: &[crate::core::entity::Entity], k: EntityKind, v: &str| {
+            ents.iter().any(|e| e.kind == k && e.value == v)
+        };
+
+        // HTML export → regex extraction of domains/emails/IPs.
+        let (html, label) = entities_from_upload(
+            "<html><body>contact me at jo@acme-corp.com on acme-corp.com</body></html>",
+            "s",
+        )
+        .await
+        .unwrap();
+        assert_eq!(label, "oathnet-html");
+        assert!(has(&html, EntityKind::Email, "jo@acme-corp.com"));
+
+        // Dossier compilation → per-entry correlation.
+        let (dos, label) = entities_from_upload(
+            "Entry #1:\n   \u{2022} email: isaacfrost@gmail.com\n   \u{2022} name: Isaac Frost\n",
+            "s",
+        )
+        .await
+        .unwrap();
+        assert_eq!(label, "dossier");
+        assert!(has(&dos, EntityKind::Email, "isaacfrost@gmail.com"));
+        assert!(has(&dos, EntityKind::Person, "Isaac Frost"));
+
+        // OathNet stealer-log TXT → the catch-all text branch.
+        let (txt, label) = entities_from_upload(
+            "URL: https://admin.target.io/login\nUsername: victim\n",
+            "s",
+        )
+        .await
+        .unwrap();
+        assert_eq!(label, "oathnet-txt");
+        assert!(txt.iter().any(|e| e.kind == EntityKind::Url));
+
+        // JSON API export → parsed (and the label proves the branch).
+        let (_json, label) =
+            entities_from_upload(r#"{"exportInfo":{"query":"x"},"searchResults":{}}"#, "s")
+                .await
+                .unwrap();
+        assert_eq!(label, "oathnet-json");
+
+        // Malformed JSON is a clean error, not a panic.
+        assert!(entities_from_upload("{ not valid json", "s").await.is_err());
+    }
     use crate::core::entity::{Entity, EntityKind};
 
     // The exact shape of the user-provided "Isaac Frost.txt" dossier upload.
