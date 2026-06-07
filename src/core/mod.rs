@@ -250,6 +250,14 @@ pub mod event {
         ExpansionStop {
             reason: String,
         },
+        /// An entity was deliberately NOT expanded this round, with the reason
+        /// (low confidence, ROI-saturated, non-routable IP, incidental infra).
+        /// Surfaces every pruning decision so expansion is never a black box.
+        EntityExcluded {
+            kind: String,
+            value: String,
+            reason: String,
+        },
         /// Correlator rule fired post-scan (v0.4+).
         CorrelationFound {
             correlation: crate::core::correlator::Correlation,
@@ -296,6 +304,7 @@ pub mod event {
                 Self::EntityFound { .. } => "entity_found",
                 Self::ExpansionTick { .. } => "expansion_tick",
                 Self::ExpansionStop { .. } => "expansion_stop",
+                Self::EntityExcluded { .. } => "entity_excluded",
                 Self::CorrelationFound { .. } => "correlation_found",
                 Self::CorrelationsDone { .. } => "correlations_done",
                 Self::LiveStart { .. } => "live_start",
@@ -349,6 +358,31 @@ pub mod event {
                     assert_eq!(target_value, "a@b.com");
                 }
                 other => panic!("expected ScanStart, got: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn entity_excluded_json_round_trip() {
+            let kind = EventKind::EntityExcluded {
+                kind: "ip_address".into(),
+                value: "104.20.37.187".into(),
+                reason: "incidental_infra".into(),
+            };
+            let json = serde_json::to_string(&kind).unwrap();
+            assert!(json.contains("\"type\":\"entity_excluded\""));
+            assert_eq!(kind.event_type_str(), "entity_excluded");
+            let back: EventKind = serde_json::from_str(&json).unwrap();
+            match back {
+                EventKind::EntityExcluded {
+                    kind,
+                    value,
+                    reason,
+                } => {
+                    assert_eq!(kind, "ip_address");
+                    assert_eq!(value, "104.20.37.187");
+                    assert_eq!(reason, "incidental_infra");
+                }
+                other => panic!("expected EntityExcluded, got: {other:?}"),
             }
         }
 

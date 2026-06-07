@@ -247,6 +247,20 @@ impl ScanEngine {
         );
     }
 
+    /// Emit an `EntityExcluded` event — an expansion-pruning decision made
+    /// visible so recursion is never a black box (the reason names exactly why
+    /// the entity was not pivoted on this round).
+    fn emit_excluded(&self, scan_id: &str, entity: &Entity, reason: &str) {
+        self.emit(
+            scan_id,
+            EventKind::EntityExcluded {
+                kind: entity.kind.to_string(),
+                value: entity.value.clone(),
+                reason: reason.into(),
+            },
+        );
+    }
+
     pub fn modules(&self) -> &[Arc<dyn Module>] {
         &self.modules
     }
@@ -736,12 +750,14 @@ impl ScanEngine {
             let mut next: Vec<(Target, f64, String)> = Vec::new();
             for entity in entity_map.values() {
                 if entity.c_effective() < opts.min_expand_confidence {
+                    self.emit_excluded(scan_id, entity, "below_min_expand_confidence");
                     continue;
                 }
                 // ROI bundle: convergence-pruning. Once an entity has 2+
                 // corroborating sources at high confidence, further dispatch
                 // only re-confirms what we already know. Skip it.
                 if opts.max_roi && crate::core::roi::is_saturated(entity) {
+                    self.emit_excluded(scan_id, entity, "roi_saturated");
                     continue;
                 }
                 let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
@@ -755,6 +771,7 @@ impl ScanEngine {
                 if tk == TargetKind::IpAddress
                     && crate::core::validation::is_non_routable_ip(&entity.value)
                 {
+                    self.emit_excluded(scan_id, entity, "non_routable_ip");
                     continue;
                 }
                 // Don't deep-expand *incidentally-discovered* haystack
@@ -790,6 +807,7 @@ impl ScanEngine {
                         _ => false,
                     };
                     if is_incidental_infra && !candidate_is_seed {
+                        self.emit_excluded(scan_id, entity, "incidental_infra");
                         continue;
                     }
                 }
