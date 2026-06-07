@@ -48,9 +48,10 @@ pub(super) async fn cmd_export(scan_id: String, format: String, out: Option<Stri
         "gexf" => render_gexf(&store, &sid)?,
         "report" => render_report(&store, &sid)?,
         "full" => render_full(&store, &sid)?,
+        "debug" => render_debug_bundle(&store, &sid)?,
         other => {
             return Err(Error::Other(format!(
-                "unknown --format '{other}'. Valid: json, csv, gexf, report, full"
+                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug"
             )));
         }
     };
@@ -273,6 +274,175 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     Ok(s)
 }
 
+/// The **one-file debug bundle** — everything needed to understand and improve a
+/// scan from a single artifact, with no black boxes. It concatenates:
+///   1. the full dossier ([`render_full`]) — every entity, every evidence field,
+///      provenance, foreign keys, and the verbatim raw source records;
+///   2. the typed relation graph and correlator hits;
+///   3. the COMPLETE scan sequence — every event (module start/done/error,
+///      entity found, every admission/expansion exclusion with its reason,
+///      expansion ticks/stops) as loss-less JSONL plus a per-type histogram, so
+///      the exact order of operations and every decision is reconstructable;
+///   4. the scored self-audit — score, every weakness finding with its
+///      recommendation, the exclusion ledger, and the geo-consistency summary.
+///
+/// One `hse export <id> --format debug` (or the web "Debug bundle" button) yields
+/// a single text file from which the whole run — sequence, results, and every
+/// flaw — is understandable via logs alone.
+pub(crate) fn render_debug_bundle(
+    store: &dyn crate::core::port::StoragePort,
+    sid: &str,
+) -> Result<String> {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "╔═══════════════════════════════════════════════════════╗"
+    );
+    let _ = writeln!(
+        s,
+        "║  HUNTSMAN DEBUG BUNDLE — complete scan snapshot         ║"
+    );
+    let _ = writeln!(
+        s,
+        "║  Self-contained: results, sequence, and every flaw.    ║"
+    );
+    let _ = writeln!(
+        s,
+        "╚═══════════════════════════════════════════════════════╝"
+    );
+    let _ = writeln!(
+        s,
+        "generated_at: {} (unix)",
+        crate::core::entity::unix_now()
+    );
+
+    // ── 1. Full dossier (entities/evidence/provenance/raw records) ──
+    s.push_str(&render_full(store, sid)?);
+
+    // ── 2. Correlator hits ──
+    let correlations = store.correlations_for_scan(sid)?;
+    let _ = writeln!(s, "\n── CORRELATIONS ({}) ──", correlations.len());
+    if correlations.is_empty() {
+        let _ = writeln!(s, "  (no correlator rules fired)");
+    }
+    for c in &correlations {
+        let _ = writeln!(
+            s,
+            "  • [{}] {} ({}) — {}  · entities: {}",
+            c.rule_id,
+            c.rule_name,
+            c.severity,
+            c.description,
+            c.entity_uids.len()
+        );
+    }
+
+    // ── 3. Complete scan sequence (every event) ──
+    let events = store.events_for_scan(sid)?;
+    let mut histo: BTreeMap<String, usize> = BTreeMap::new();
+    for ev in &events {
+        *histo
+            .entry(ev.kind.event_type_str().to_string())
+            .or_default() += 1;
+    }
+    let _ = writeln!(s, "\n── SCAN SEQUENCE ({} events) ──", events.len());
+    let _ = writeln!(s, "  event histogram:");
+    for (typ, n) in &histo {
+        let _ = writeln!(s, "    {typ:30} {n}");
+    }
+    let _ = writeln!(
+        s,
+        "\n  full timeline (JSONL — one loss-less event per line, in order):"
+    );
+    if events.is_empty() {
+        let _ = writeln!(
+            s,
+            "  (no events recorded — event persistence disabled, or an import not a live scan)"
+        );
+    }
+    for ev in &events {
+        // Loss-less, greppable: timestamp + the entire serialised event.
+        let json = serde_json::to_string(ev).unwrap_or_else(|_| "{}".into());
+        let _ = writeln!(s, "  {} {}", ev.ts, json);
+    }
+
+    // ── 4. Scored self-audit (every weakness + recommendation) ──
+    let entities = store.entities_for_scan(sid)?;
+    let normalised: Vec<crate::audit::AuditEntity> = entities
+        .iter()
+        .map(crate::audit::AuditEntity::from_entity)
+        .collect();
+    let mut signals = crate::audit::LogSignals::default();
+    crate::audit::fold_events(&mut signals, &events);
+    let report = crate::audit::audit(&normalised, signals);
+
+    let _ = writeln!(s, "\n── SELF-AUDIT ──");
+    let _ = writeln!(
+        s,
+        "  score      : {}/100 ({})",
+        report.score,
+        report.grade()
+    );
+    let _ = writeln!(
+        s,
+        "  tiers      : {} verified · {} probable · {} candidate · {:.0}% noise",
+        report.tiers.0,
+        report.tiers.1,
+        report.tiers.2,
+        report.noise_ratio * 100.0
+    );
+    if report.geo.coord_count > 0 {
+        let _ = writeln!(
+            s,
+            "  geo        : {} fix(es) / {} source(s) · spread {:.0} km · {}{}",
+            report.geo.coord_count,
+            report.geo.source_count,
+            report.geo.max_spread_km,
+            if report.geo.has_consensus {
+                "consensus"
+            } else {
+                "NO consensus"
+            },
+            if report.geo.outliers > 0 {
+                format!(" · {} outlier(s)", report.geo.outliers)
+            } else {
+                String::new()
+            },
+        );
+    }
+    if !report.log.excluded_reasons.is_empty() {
+        let ledger: Vec<String> = report
+            .log
+            .excluded_reasons
+            .iter()
+            .map(|(r, n)| format!("{r}×{n}"))
+            .collect();
+        let _ = writeln!(s, "  exclusions : {}", ledger.join(", "));
+    }
+    let _ = writeln!(s, "\n  FINDINGS ({}):", report.findings.len());
+    if report.findings.is_empty() {
+        let _ = writeln!(s, "    ✓ no weaknesses detected");
+    }
+    for f in &report.findings {
+        let _ = writeln!(
+            s,
+            "\n    [{}] {} — {}",
+            f.severity.as_str(),
+            f.category,
+            f.message
+        );
+        for ex in &f.examples {
+            let _ = writeln!(s, "        • {ex}");
+        }
+        let _ = writeln!(s, "        → {}", f.recommendation);
+    }
+
+    Ok(s)
+}
+
 /// Comma-join an iterator of strings, or `(none)` when empty — so an empty
 /// provenance line is explicit rather than a confusing blank.
 fn join_or_dash<'a>(it: impl Iterator<Item = &'a String>) -> String {
@@ -360,6 +530,58 @@ mod tests {
         assert!(out.contains("api_key_origin = see-know.eu:seek-62650f9a…0fd0a4"));
         assert!(out.contains("via_endpoint = search"));
         assert!(out.contains("username = 3toadsloth"));
+    }
+
+    #[test]
+    fn debug_bundle_includes_dossier_sequence_and_audit() {
+        use crate::core::entity::{Entity, EntityKind};
+        use crate::core::event::{Event, EventKind};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("debug_test.db");
+        let store = Store::open(db.to_str().unwrap()).unwrap();
+
+        let target = Target::new(TargetKind::Email, "isaac@example-real.com");
+        let scan = Scan::new("scan-dbg", target);
+        store.upsert_scan(&scan).unwrap();
+        store
+            .upsert_entities_batch(&[Entity::new(
+                EntityKind::Email,
+                "isaac@example-real.com",
+                0.8,
+                "scan-dbg",
+            )])
+            .unwrap();
+        // A recorded sequence including an exclusion (so the audit ledger fires).
+        store
+            .insert_event(&Event::new(
+                "scan-dbg",
+                EventKind::ModuleStart {
+                    module: "hibp".into(),
+                },
+            ))
+            .unwrap();
+        store
+            .insert_event(&Event::new(
+                "scan-dbg",
+                EventKind::EntityExcluded {
+                    kind: "username".into(),
+                    value: "stranger".into(),
+                    reason: "identity_mismatch".into(),
+                },
+            ))
+            .unwrap();
+
+        let out = render_debug_bundle(&store, "scan-dbg").unwrap();
+        // The four pillars are all present in the single artifact.
+        assert!(out.contains("HUNTSMAN DEBUG BUNDLE"));
+        assert!(out.contains("HUNTSMAN FULL DOSSIER")); // §1 embeds render_full
+        assert!(out.contains("── CORRELATIONS")); // §2
+        assert!(out.contains("── SCAN SEQUENCE (2 events)")); // §3
+        assert!(out.contains("module_start")); // histogram + JSONL
+        assert!(out.contains("\"reason\":\"identity_mismatch\"")); // loss-less event
+        assert!(out.contains("── SELF-AUDIT")); // §4
+        assert!(out.contains("score      :"));
+        assert!(out.contains("exclusions : identity_mismatch×1")); // ledger folded in
     }
 
     #[test]

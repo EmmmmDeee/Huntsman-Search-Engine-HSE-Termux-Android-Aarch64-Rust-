@@ -178,6 +178,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(scan_handlers::scan_export_gexf),
         )
         .route(
+            "/scans/{id}/debug.txt",
+            get(scan_handlers::scan_debug_bundle),
+        )
+        .route(
             "/scans/{id}/correlations",
             get(scan_handlers::scan_correlations),
         )

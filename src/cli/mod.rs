@@ -11,7 +11,7 @@ mod diagnostics;
 mod diff;
 mod doctor;
 mod engines;
-mod export;
+pub(crate) mod export;
 mod keys_cmd;
 mod live;
 mod provision;

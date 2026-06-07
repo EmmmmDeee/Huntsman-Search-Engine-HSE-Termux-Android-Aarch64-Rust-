@@ -293,29 +293,10 @@ pub async fn scan_audit(
     // without needing a debug-log upload.
     let mut signals = engine_health_signals();
     if let Ok(events) = s.store.events_for_scan(&id) {
-        fold_expansion_signals(&mut signals, &events);
+        crate::audit::fold_events(&mut signals, &events);
     }
     let report = crate::audit::audit(&normalised, signals);
     Json(report.to_json()).into_response()
-}
-
-/// Fold a stored scan's expansion events into auditor signals: every
-/// `ExpansionStop` reason and every `EntityExcluded` reason (counted), so the
-/// recursion is never a black box in the web audit.
-fn fold_expansion_signals(
-    sig: &mut crate::audit::LogSignals,
-    events: &[crate::core::event::Event],
-) {
-    use crate::core::event::EventKind;
-    for ev in events {
-        match &ev.kind {
-            EventKind::ExpansionStop { reason } => sig.expansion_stops.push(reason.clone()),
-            EventKind::EntityExcluded { reason, .. } => {
-                *sig.excluded_reasons.entry(reason.clone()).or_default() += 1;
-            }
-            _ => {}
-        }
-    }
 }
 
 /// Translate the latest cached search-engine liveness sweep into auditor
@@ -612,6 +593,24 @@ pub async fn scan_export_gexf(
     download_response(body, "application/xml; charset=utf-8", &id, "gexf")
 }
 
+/// `GET /api/v1/scans/{id}/debug.txt` — the one-click debug bundle: the entire
+/// scan state (every entity + evidence, relations, correlations, the complete
+/// event sequence, and the scored self-audit with every weakness) in one
+/// downloadable text file. The web "Debug bundle" button and the CLI
+/// `hse export {id} --format debug` produce the same artifact.
+pub async fn scan_debug_bundle(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match crate::cli::export::render_debug_bundle(s.store.as_ref(), &id) {
+        Ok(body) => download_response(body, "text/plain; charset=utf-8", &id, "debug.txt"),
+        Err(e) => internal_error(&e),
+    }
+}
+
 fn download_response(
     body: String,
     content_type: &'static str,
@@ -705,7 +704,7 @@ mod tests {
             ),
         ];
         let mut sig = crate::audit::LogSignals::default();
-        fold_expansion_signals(&mut sig, &evs);
+        crate::audit::fold_events(&mut sig, &evs);
         assert_eq!(sig.excluded_reasons.get("identity_mismatch"), Some(&2));
         assert_eq!(sig.excluded_reasons.get("non_pivotable_kind"), Some(&1));
         assert_eq!(sig.expansion_stops, vec!["depth exhausted".to_string()]);
