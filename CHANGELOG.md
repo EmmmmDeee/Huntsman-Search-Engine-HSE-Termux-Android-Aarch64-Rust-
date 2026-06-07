@@ -71,6 +71,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
   is now stripped before the mechanism match; the `redirect=` modifier (which
   takes no qualifier) is unchanged. Tested across all four qualifiers.
 
+- **Username people-search provenance requires a host-label boundary.** The
+  `score_username` people-search signal used `host.ends_with(provider)`, so an
+  unrelated host ending with a provider string mid-label (`myspokeo.com`,
+  `notwhitepages.com`) wrongly earned the +3 provenance boost. It now matches the
+  host itself or a subdomain (`host == p || host.ends_with(".{p}")`) — the same
+  dot-boundary predicate the aggregator-suppression check in the same file
+  already used. Tested.
+
+- **AXFR subdomain harvest rejects out-of-zone names and is case-insensitive.**
+  `attempt_axfr` kept any record whose lowercased name `ends_with(domain)`, so a
+  hostile/buggy server could inject an out-of-zone name (`evilexample.com` for a
+  zone `example.com`), and a case difference between the queried zone and a
+  returned record could drop a legitimate subdomain. It now keeps a record only
+  when it is a true subdomain (`ends_with(".{zone}")` with the zone lowercased
+  once). Defensive; behaviour unchanged for well-formed transfers.
+
 - **`email_header_geo` corporate-provider detection matches at a label boundary.**
   `detect_corporate_provider` used a plain `domain.contains(token)` over the
   regional ISP brand tokens, so an unrelated domain containing a provider token

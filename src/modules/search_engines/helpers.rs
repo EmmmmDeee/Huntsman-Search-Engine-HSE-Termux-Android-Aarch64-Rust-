@@ -581,7 +581,13 @@ pub(super) fn score_username(
         "peoplefinder.com.au",
         "ancestry.com.au",
     ];
-    if people_search.iter().any(|ps| host.ends_with(ps)) {
+    // Match the host itself or a subdomain of it — `host.ends_with(ps)` alone
+    // would also fire on `myspokeo.com` / `notwhitepages.com`. Same dot-boundary
+    // predicate used for the aggregator check above.
+    if people_search
+        .iter()
+        .any(|ps| host == *ps || host.ends_with(&format!(".{ps}")))
+    {
         score += 3;
     }
 

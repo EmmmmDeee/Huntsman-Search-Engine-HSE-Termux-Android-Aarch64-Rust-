@@ -1308,6 +1308,31 @@ mod tests {
     }
 
     #[test]
+    fn people_search_provenance_requires_host_label_boundary() {
+        // With no terms and an empty title/snippet/query, only the people-search
+        // provenance signal (+3) can fire, so the score isolates it. A genuine
+        // people-search host (and a subdomain of it) scores; a domain that merely
+        // ends with the provider string mid-label (`myspokeo.com`) must not — the
+        // bare `host.ends_with(ps)` false positive this fixes.
+        let blank = SearchResult {
+            url: String::new(),
+            title: String::new(),
+            snippet: String::new(),
+            engine: "bing",
+            query: String::new(),
+        };
+        let score = |host: &str| score_username("zzqnonsense", host, &[], &blank).0;
+        assert_eq!(score("spokeo.com"), 3, "people-search host scores");
+        assert_eq!(score("api.spokeo.com"), 3, "subdomain of it scores");
+        assert_eq!(score("myspokeo.com"), 0, "mid-label match must not score");
+        assert_eq!(
+            score("notwhitepages.com"),
+            0,
+            "mid-label match must not score"
+        );
+    }
+
+    #[test]
     fn url_relevance_filtering() {
         let terms = vec!["jerome".into(), "despal".into()];
         assert!(url_matches_target(

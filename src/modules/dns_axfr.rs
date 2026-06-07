@@ -202,7 +202,12 @@ async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<Vec<String>>
         pos += 4; // QTYPE + QCLASS
     }
 
-    // Parse answer records
+    // Parse answer records. Collect only true subdomains of the zone: a record
+    // name must equal `.{zone}` as a suffix (lowercased), so a hostile or buggy
+    // server can't slip an out-of-zone name (`evilexample.com`) past a bare
+    // `ends_with(domain)`, and case differences between the queried name and the
+    // returned record don't drop legitimate records.
+    let zone = format!(".{}", domain.to_lowercase());
     for _ in 0..ancount.min(500) {
         if pos + 12 > read {
             break;
@@ -229,7 +234,7 @@ async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<Vec<String>>
 
         if let Some(name) = name {
             let lower = name.to_lowercase();
-            if lower.ends_with(domain) && lower != *domain && !records.contains(&lower) {
+            if lower.ends_with(&zone) && !records.contains(&lower) {
                 records.push(lower);
             }
         }
