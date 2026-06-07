@@ -747,6 +747,25 @@ impl ScanEngine {
             // Each candidate carries the UID of the parent entity it was
             // derived from, so a `DerivedFrom` lineage edge can be recorded
             // for whatever new entities its dispatch surfaces.
+            // Subject identity fingerprints for wrong-identity gating: the seed
+            // itself plus every VERIFIED identity entity confirmed so far. A
+            // discovered Username/Person that shares no name/handle overlap with
+            // ANY of these — and is uncorroborated — is almost certainly a
+            // different person, and pivoting on it pulls a stranger's whole
+            // footprint into the scan (a real run chased `arizonambb` —
+            // Arizona basketball — off an `matthewdiegmann` seed). Rebuilt each
+            // round so confirmed aliases widen the identity as the scan learns.
+            let subject_identities: Vec<String> = std::iter::once(seed.value.clone())
+                .chain(entity_map.values().filter_map(|e| {
+                    use crate::core::entity::EntityKind;
+                    let is_identity = matches!(
+                        e.kind,
+                        EntityKind::Username | EntityKind::Person | EntityKind::Email
+                    );
+                    (is_identity && e.c_effective() >= 0.75).then(|| e.value.clone())
+                }))
+                .collect();
+
             let mut next: Vec<(Target, f64, String)> = Vec::new();
             for entity in entity_map.values() {
                 if entity.c_effective() < opts.min_expand_confidence {
@@ -763,6 +782,27 @@ impl ScanEngine {
                 let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
                     continue;
                 };
+                // Wrong-identity gate: an uncorroborated, non-verified
+                // Username/Person whose handle shares no overlap with the
+                // subject's confirmed identity is a different person. Recording it
+                // as a candidate is fine, but pivoting on it would search the web
+                // for a stranger and import their footprint. Verified or
+                // multi-source identities, and anything overlapping the subject,
+                // still expand — so genuine aliases are never lost.
+                if matches!(
+                    entity.kind,
+                    crate::core::entity::EntityKind::Username
+                        | crate::core::entity::EntityKind::Person
+                )
+                    && entity.c_effective() < 0.75
+                    && entity.source_count() <= 1
+                    && !subject_identities
+                        .iter()
+                        .any(|s| crate::core::scan::identity_overlaps(s, &entity.value))
+                {
+                    self.emit_excluded(scan_id, entity, "identity_mismatch");
+                    continue;
+                }
                 // Never pivot on a non-routable / reserved / documentation IP
                 // (e.g. 192.0.2.1 scraped from a tutorial page, or a private
                 // 192.168.x surfaced by local sensors). No external OSINT source

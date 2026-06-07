@@ -1310,6 +1310,53 @@ pub(crate) fn is_noncentral_domain(domain: &str) -> bool {
     is_mega_domain(domain) || is_infra_domain(domain)
 }
 
+/// Identity fingerprint of a name / handle / email-local: lowercase ASCII
+/// alphanumerics only (an email's local part is taken before `@`). Used to tie a
+/// discovered alias back to the subject without a dictionary name-split.
+pub(crate) fn identity_norm(s: &str) -> String {
+    let local = s.split('@').next().unwrap_or(s);
+    local
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Minimum shared-substring length for two identities to be considered the same
+/// person. 4 ties real aliases to the subject (`matt`↔`matthewdiegmann`,
+/// `dieg`↔`diegmann`) while rejecting unrelated handles (`arizonambb`).
+pub(crate) const IDENTITY_OVERLAP_MIN: usize = 4;
+
+/// True if two identity strings share a common substring of at least
+/// [`IDENTITY_OVERLAP_MIN`] characters — a cheap, dictionary-free way to decide
+/// whether a discovered Username/Person plausibly belongs to the subject. Inputs
+/// are normalised via [`identity_norm`]. Short identities (< MIN) must match
+/// exactly. O(n·m) over the two short strings — negligible for handles/names.
+pub(crate) fn identity_overlaps(a: &str, b: &str) -> bool {
+    let (a, b) = (identity_norm(a), identity_norm(b));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a.len() < IDENTITY_OVERLAP_MIN || b.len() < IDENTITY_OVERLAP_MIN {
+        return a == b;
+    }
+    // Longest-common-substring ≥ MIN via a rolling DP row.
+    let (ab, bb) = (a.as_bytes(), b.as_bytes());
+    let mut prev = vec![0usize; bb.len() + 1];
+    let mut cur = vec![0usize; bb.len() + 1];
+    for &ca in ab {
+        for (j, &cb) in bb.iter().enumerate() {
+            cur[j + 1] = if ca == cb { prev[j] + 1 } else { 0 };
+            if cur[j + 1] >= IDENTITY_OVERLAP_MIN {
+                return true;
+            }
+        }
+        std::mem::swap(&mut prev, &mut cur);
+        cur.iter_mut().for_each(|v| *v = 0);
+    }
+    false
+}
+
 fn domain_expansion_factor(domain: &str) -> f64 {
     if is_noncentral_domain(domain) {
         0.15
@@ -1757,6 +1804,34 @@ mod tests {
         for d in 1..=MAX_DEPTH {
             assert!(auto_min_expand_confidence(d, true) <= auto_min_expand_confidence(d, false));
         }
+    }
+
+    #[test]
+    fn identity_overlap_ties_aliases_and_rejects_strangers() {
+        let subject = "matthewdiegmann@gmail.com";
+        // Real aliases share a ≥4 substring with the subject handle.
+        assert!(identity_overlaps(subject, "matthewdiegmann"));
+        assert!(identity_overlaps(subject, "therealfatmatt")); // "matt"
+        assert!(identity_overlaps(subject, "matt.diegmann")); // "diegmann"/"matt"
+        assert!(identity_overlaps("Matthew Diegmann", "diego.diegmann")); // "diegmann"
+        // Unrelated handles do NOT — the wrong-identity rabbit holes.
+        assert!(!identity_overlaps(subject, "arizonambb"));
+        assert!(!identity_overlaps(subject, "centenario"));
+        assert!(!identity_overlaps(subject, "ideasfactory009"));
+        // Symmetry + email-local extraction.
+        assert!(identity_overlaps("matthewdiegmann", "matthewdiegmann@x.org"));
+        // Short identities must match exactly.
+        assert!(identity_overlaps("abc", "abc"));
+        assert!(!identity_overlaps("abc", "abd"));
+        // Empty / punctuation-only never matches.
+        assert!(!identity_overlaps("", "matthewdiegmann"));
+        assert!(!identity_overlaps("...", "matthewdiegmann"));
+    }
+
+    #[test]
+    fn identity_norm_strips_to_email_local_and_alnum() {
+        assert_eq!(identity_norm("Matt.Diegmann@gmail.com"), "mattdiegmann");
+        assert_eq!(identity_norm("the_real-matt"), "therealmatt");
     }
 
     #[test]
