@@ -1189,6 +1189,35 @@ mod tests {
     }
 
     #[test]
+    fn identify_service_from_url_is_host_label_aware() {
+        // A service domain must match a whole host or a subdomain of it, never a
+        // fragment inside a longer label. Subdomain (left boundary `.`) matches:
+        assert_eq!(
+            identify_service_from_url("https://api.snusbase.com/v1"),
+            "snusbase"
+        );
+        // Messy breach-record forms still match: bare host, and host:port.
+        assert_eq!(identify_service_from_url("snusbase.com"), "snusbase");
+        assert_eq!(identify_service_from_url("snusbase.com:8080/x"), "snusbase");
+        // Mid-label fragment on the LEFT must NOT match (the false positive this
+        // fixes): `passwordhashes.com` is not `hashes.com`.
+        assert_eq!(
+            identify_service_from_url("https://passwordhashes.com/"),
+            "unknown"
+        );
+        // Extension on the RIGHT must NOT match: `hashes.community` and a
+        // different TLD (`*.com.au`) are distinct hosts, not the bare entry.
+        assert_eq!(
+            identify_service_from_url("https://hashes.community/"),
+            "unknown"
+        );
+        assert_eq!(
+            identify_service_from_url("https://snusbase.com.au/"),
+            "unknown"
+        );
+    }
+
+    #[test]
     fn riskiq_domain_resolves_to_riskiq_not_passivetotal() {
         // Regression: `riskiq.net` (RiskIQ's own brand domain) was listed twice —
         // once in the PassiveTotal cluster, once in the RiskIQ cluster. The helper

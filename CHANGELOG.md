@@ -71,6 +71,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   is now stripped before the mechanism match; the `redirect=` modifier (which
   takes no qualifier) is unchanged. Tested across all four qualifiers.
 
+- **`identify_service_from_url` matches at host-label boundaries, not any
+  substring.** It tagged a stealer/breach record's source service with a plain
+  `url.contains(domain)`, so a host that merely *contained* a known service
+  domain mid-label was mis-tagged — `passwordhashes.com` → `hashes`,
+  `hashes.community` → `hashes`, `snusbase.com.au` → `snusbase`. Matching is now
+  host-label-aware (left boundary must not be a label char, so subdomains like
+  `api.snusbase.com` still match; right boundary must end the host, so a longer
+  label or different TLD does not), while staying substring-based so messy
+  breach-record URLs without a scheme/port/path still resolve. Tested.
+
 - **`riskiq.net` is tagged `riskiq`, not `passivetotal` (dead-data fix).** The
   API-service-domain table listed `riskiq.net` twice — once in the PassiveTotal
   cluster and once (correctly) in the RiskIQ cluster. Since `identify_service_from_url`

@@ -185,9 +185,45 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
 pub(super) fn identify_service_from_url(url: &str) -> &'static str {
     let lower = url.to_lowercase();
     for (domain, service) in API_SERVICE_DOMAINS {
-        if lower.contains(domain) {
+        if host_label_match(&lower, domain) {
             return service;
         }
     }
     "unknown"
+}
+
+/// True if `domain` occurs in `haystack` as a whole host — or as the suffix of
+/// one, i.e. a subdomain of it — rather than as a fragment inside a longer label.
+///
+/// The caller feeds this messy breach-record URL fields (often no scheme, port,
+/// or path), so the test stays substring-based for tolerance but requires
+/// host-label boundaries on both sides of the match:
+///   * **left** — start of string, or any char that can't continue a label
+///     (not `[A-Za-z0-9-]`). A `.` qualifies, so `api.snusbase.com` still
+///     matches `snusbase.com`, but `passwordhashes.com` does **not** match
+///     `hashes.com`.
+///   * **right** — end of string, or any char that can't continue a host (not
+///     `[A-Za-z0-9-]` and not `.`). So `hashes.community` and `snusbase.com.au`
+///     do **not** match `hashes.com` / `snusbase.com`, while `snusbase.com/path`
+///     and `snusbase.com:8080` still do.
+fn host_label_match(haystack: &str, domain: &str) -> bool {
+    let h = haystack.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = haystack[from..].find(domain) {
+        let at = from + rel;
+        let end = at + domain.len();
+        let left_ok = at == 0 || {
+            let p = h[at - 1];
+            !(p.is_ascii_alphanumeric() || p == b'-')
+        };
+        let right_ok = end == h.len() || {
+            let n = h[end];
+            !(n.is_ascii_alphanumeric() || n == b'-' || n == b'.')
+        };
+        if left_ok && right_ok {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
 }
