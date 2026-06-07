@@ -329,6 +329,12 @@ fn render_environment() -> String {
     );
     let _ = writeln!(
         s,
+        "  source      : {} files, {} LOC (full manifest in the SOURCE FILES section)",
+        crate::source_manifest::SOURCE_FILES.len(),
+        crate::source_manifest::SOURCE_TOTAL_LINES,
+    );
+    let _ = writeln!(
+        s,
         "  termux      : {}",
         if crate::is_termux() {
             "detected"
@@ -568,6 +574,20 @@ pub(crate) fn render_debug_bundle(
         let _ = writeln!(s, "        → {}", f.recommendation);
     }
 
+    // ── 5. Source-file manifest (every file the binary was built from) ──
+    // Incorporates ALL files, not just runtime modules: a build fingerprint that
+    // makes the codebase the binary carries fully accountable from the artifact.
+    // Deterministic (build.rs emits it sorted by path).
+    let _ = writeln!(
+        s,
+        "\n── SOURCE FILES ({} files, {} LOC) ──",
+        crate::source_manifest::SOURCE_FILES.len(),
+        crate::source_manifest::SOURCE_TOTAL_LINES,
+    );
+    for (path, lines) in crate::source_manifest::SOURCE_FILES {
+        let _ = writeln!(s, "  {lines:>6}  {path}");
+    }
+
     Ok(s)
 }
 
@@ -713,6 +733,10 @@ mod tests {
             out.contains("hibp"),
             "ENVIRONMENT module roster must name every registered module"
         );
+        // The source-file manifest incorporates EVERY file, not just modules.
+        assert!(out.contains("── SOURCE FILES"));
+        assert!(out.contains("src/lib.rs"));
+        assert!(out.contains("src/cli/export.rs"));
         assert!(out.contains("HUNTSMAN FULL DOSSIER")); // §1 embeds render_full
         assert!(out.contains("── CORRELATIONS")); // §2
         assert!(out.contains("── SCAN SEQUENCE (2 events)")); // §3
