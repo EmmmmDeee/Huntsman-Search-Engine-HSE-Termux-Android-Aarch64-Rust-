@@ -115,7 +115,9 @@ pub async fn scan_import(State(s): State<Arc<AppState>>, body: String) -> impl I
     if body.len() > MAX_UPLOAD {
         return bad_request("upload too large (max 16 MB)");
     }
-    let sid = scan_id("import-upload", &unix_now().to_string());
+    // `scan_id` is collision-free per call, so the value just needs to be
+    // descriptive — the upload size, not a redundant timestamp.
+    let sid = scan_id("import-upload", &body.len().to_string());
     // Detect the format from content and parse via the SAME `cli::import` path
     // the CLI uses — OathNet JSON/HTML/stealer-TXT and breach/dossier all work.
     let (entities, format) = match crate::cli::import::entities_from_upload(&body, &sid).await {

@@ -783,12 +783,27 @@ pub fn unix_now() -> u64 {
 /// NOT deterministic across calls for the same target — the timestamp
 /// is mixed in so each invocation produces a fresh id.
 pub fn scan_id(kind: &str, value: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Collision-free per scan. The previous derivation mixed only `unix_now()`
+    // at ONE-SECOND resolution, so two scans created in the same second with the
+    // same (kind, value) — rapid web imports, a `/scans/batch`, a tight loop —
+    // hashed identically and the second silently overwrote the first's row +
+    // entities. Mix in a process-wide monotonic counter (guarantees uniqueness
+    // within a run, even same-nanosecond) plus the sub-second nanos (separates
+    // ids across a restart that resets the counter), keeping `unix_now()` for
+    // human-meaningful time ordering. Re-scans still get a fresh id by design.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
     let mut h = Sha256::new();
     h.update(kind.as_bytes());
     h.update(b":");
     h.update(value.as_bytes());
     h.update(b":");
     h.update(unix_now().to_be_bytes());
+    h.update(nanos.to_be_bytes());
+    h.update(SEQ.fetch_add(1, Ordering::Relaxed).to_be_bytes());
     hex::encode(h.finalize())
 }
 
@@ -1644,11 +1659,19 @@ mod tests {
     }
 
     #[test]
-    fn scan_id_different_inputs_differ() {
-        let a = scan_id("email", "a@b.com");
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        let b = scan_id("email", "a@b.com");
-        assert_ne!(a, b, "same inputs at different times must differ");
+    fn scan_id_is_collision_free_for_rapid_identical_calls() {
+        // Regression: two scans created within the SAME second with identical
+        // (kind, value) previously hashed to the same id (only `unix_now()` at
+        // 1 s resolution was mixed) and overwrote each other — a real defect for
+        // rapid web imports / batch creates. No sleep: a tight burst of identical
+        // calls must all be distinct.
+        let ids: std::collections::HashSet<String> =
+            (0..1000).map(|_| scan_id("email", "a@b.com")).collect();
+        assert_eq!(
+            ids.len(),
+            1000,
+            "scan_id must be collision-free within a second"
+        );
     }
 
     #[test]
