@@ -1,6 +1,8 @@
 use huntsman_search_engine::{MAX_BLOCKING_THREADS, WORKER_THREADS, cli};
 
 fn main() {
+    install_broken_pipe_guard();
+
     // Build the runtime by hand (instead of `#[tokio::main]`) so the blocking
     // pool can be bounded: tokio defaults to 512 blocking threads, which on a
     // low-RAM Termux/aarch64 phone lets a burst of synchronous sqlite / fs work
@@ -17,5 +19,71 @@ fn main() {
     if let Err(e) = runtime.block_on(cli::run()) {
         eprintln!("error: {e}");
         std::process::exit(1);
+    }
+}
+
+/// Exit quietly when stdout is closed by the downstream reader.
+///
+/// Rust ignores `SIGPIPE` at startup (`SIG_IGN`), so a write to a closed stdout —
+/// `hse scan | head`, `hse export … | less` then `q`, a dropped SSH pipe — makes
+/// the `print!`/`println!` machinery hit `EPIPE` and **panic** with a backtrace
+/// instead of the process ending cleanly like every other Unix tool. A scan that
+/// prints dozens of entity rows trips this constantly on a phone.
+///
+/// The obvious fix used by ripgrep/fd — resetting `SIGPIPE` to `SIG_DFL` — is
+/// **wrong for HSE**: it is network-heavy, and under `SIG_DFL` a socket write to a
+/// peer that has closed would deliver `SIGPIPE` synchronously and kill the process
+/// mid-scan, *before* tokio/reqwest could surface the `EPIPE` as a recoverable
+/// error. So `SIGPIPE` is deliberately left ignored (sockets keep returning
+/// `EPIPE` as errors) and ONLY the benign stdout-broken-pipe panic is intercepted:
+/// the hook recognises that specific panic and exits 0 (the consumer simply left
+/// early — we did our job), while every other panic flows through the default hook
+/// untouched. Installed before the runtime spawns any thread so it covers the
+/// whole process.
+fn install_broken_pipe_guard() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if is_broken_pipe_panic(info.payload()) {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
+}
+
+/// True if a panic payload is the `print!`/`println!` broken-pipe failure (and
+/// nothing else). The print machinery panics with a formatted `String` payload,
+/// e.g. `"failed printing to stdout: Broken pipe (os error 32)"`. Matching both
+/// the "failed printing to" prefix AND "Broken pipe" keeps a genuine output
+/// failure (disk full on a redirect, etc.) loud while swallowing only the benign
+/// downstream-closed-the-pipe case. Pure + payload-only, so it is unit-testable.
+fn is_broken_pipe_panic(payload: &(dyn std::any::Any + Send)) -> bool {
+    let msg = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    msg.contains("failed printing to") && msg.contains("Broken pipe")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_broken_pipe_panic;
+
+    #[test]
+    fn recognises_only_the_broken_pipe_print_panic() {
+        // The exact std print-macro panic message → swallow.
+        assert!(is_broken_pipe_panic(
+            &"failed printing to stdout: Broken pipe (os error 32)".to_string()
+        ));
+        assert!(is_broken_pipe_panic(
+            &"failed printing to stderr: Broken pipe (os error 32)"
+        ));
+        // A different output failure → must NOT be swallowed (stays loud).
+        assert!(!is_broken_pipe_panic(
+            &"failed printing to stdout: No space left on device (os error 28)".to_string()
+        ));
+        // Unrelated panics → never matched.
+        assert!(!is_broken_pipe_panic(&"index out of bounds".to_string()));
+        assert!(!is_broken_pipe_panic(&42i32));
     }
 }
