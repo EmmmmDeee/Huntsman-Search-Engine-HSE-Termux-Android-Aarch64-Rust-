@@ -73,6 +73,12 @@ pub struct LogSignals {
     pub http_failures: u32,
     /// Reasons recorded for expansion stopping early.
     pub expansion_stops: Vec<String>,
+    /// Per-reason count of entities excluded from expansion (an `EntityExcluded`
+    /// event's `reason` → how many times it fired). Surfaces *why* pivots were
+    /// pruned — e.g. a high `identity_mismatch` count means the wrong-identity
+    /// gate suppressed many aliases (a recall risk the operator can lift with
+    /// `--expand-all-identities`).
+    pub excluded_reasons: BTreeMap<String, u32>,
     /// Total log lines consumed (so an empty/garbage log is obvious).
     pub lines_parsed: usize,
 }
@@ -313,6 +319,10 @@ impl AuditReport {
                 "module_errors": self.log.module_errors,
                 "http_failures": self.log.http_failures,
                 "log_lines_parsed": self.log.lines_parsed,
+            },
+            "expansion": {
+                "stops": self.log.expansion_stops,
+                "excluded_reasons": self.log.excluded_reasons,
             },
             "geo": {
                 "coord_count": self.geo.coord_count,
@@ -598,6 +608,65 @@ pub fn audit(entities: &[AuditEntity], log: LogSignals) -> AuditReport {
         });
     }
 
+    // ── 7b. Expansion exclusions — recall risk made visible ──────────────────
+    // The wrong-identity gate keeps a focused scan on-subject, but it can also
+    // suppress genuine aliases. When it fires a lot relative to the entities we
+    // actually kept, the operator should know there's a recall/coverage trade-off
+    // in play (and that `--expand-all-identities` lifts it).
+    if let Some(&mismatch) = log.excluded_reasons.get("identity_mismatch")
+        && mismatch > 0
+    {
+        // Scale severity by how much the gate dominated the result: many
+        // suppressed identities against a small kept graph is a real blind spot.
+        let denom = entity_total.max(1) as f64;
+        let ratio = mismatch as f64 / denom;
+        let severity = if mismatch >= 10 && ratio >= 0.5 {
+            Severity::Medium
+        } else {
+            Severity::Low
+        };
+        findings.push(Finding {
+            severity,
+            category: "recursion-recall",
+            message: format!(
+                "{mismatch} username/person pivot(s) suppressed by the wrong-identity gate \
+                 ({entity_total} entities kept) — possible missed aliases"
+            ),
+            examples: vec![format!("identity_mismatch ×{mismatch}")],
+            recommendation: "If aliases were missed, re-run with `--expand-all-identities` \
+                (or `--full`) to lift the gate, then prune unrelated footprints by hand. \
+                Every suppressed alias is logged as `identity_mismatch`."
+                .into(),
+        });
+    }
+    // A large number of already-dispatched / non-pivotable exclusions is normal
+    // (dedup + terminal kinds), so it is surfaced only as INFO context — never a
+    // penalty — keeping the exclusion ledger visible without distorting the score.
+    let other_excluded: u32 = log
+        .excluded_reasons
+        .iter()
+        .filter(|(r, _)| r.as_str() != "identity_mismatch")
+        .map(|(_, n)| *n)
+        .sum();
+    if other_excluded > 0 {
+        let ex: Vec<String> = log
+            .excluded_reasons
+            .iter()
+            .filter(|(r, _)| r.as_str() != "identity_mismatch")
+            .map(|(r, n)| format!("{r} ×{n}"))
+            .collect();
+        findings.push(Finding {
+            severity: Severity::Info,
+            category: "expansion-ledger",
+            message: format!("{other_excluded} pivot(s) excluded for non-recall reasons"),
+            examples: examples(ex),
+            recommendation: "Informational: dedup (`already_dispatched_this_scan`), terminal \
+                kinds (`non_pivotable_kind`), saturation and infra gating are expected. \
+                Review only if a specific expected pivot is missing."
+                .into(),
+        });
+    }
+
     // ── 8. Geolocation cross-source consistency ──────────────────────────────
     let (geo, geo_finding) = geo_consistency(entities);
     if let Some(f) = geo_finding {
@@ -703,6 +772,42 @@ mod tests {
                 .iter()
                 .any(|f| f.category == "engine-parser-defect" && f.severity == Severity::High)
         );
+    }
+
+    #[test]
+    fn heavy_identity_gating_surfaces_recall_risk() {
+        // Few entities kept, many username/person pivots suppressed → the
+        // wrong-identity gate dominated the result. That is a recall blind spot
+        // and must be surfaced (MEDIUM) with the --expand-all-identities tip.
+        let ents = vec![ent("email", "x@y.com", 1.0, 2, &[])];
+        let mut log = LogSignals::default();
+        log.excluded_reasons.insert("identity_mismatch".into(), 12);
+        let r = audit(&ents, log);
+        let f = r
+            .findings
+            .iter()
+            .find(|f| f.category == "recursion-recall")
+            .expect("recall finding");
+        assert_eq!(f.severity, Severity::Medium);
+        assert!(f.recommendation.contains("--expand-all-identities"));
+    }
+
+    #[test]
+    fn non_recall_exclusions_are_info_only() {
+        // Dedup / terminal-kind exclusions are expected; they must appear as
+        // INFO context (zero score penalty), never as a recall finding.
+        let ents = vec![ent("email", "x@y.com", 1.0, 2, &[])];
+        let mut log = LogSignals::default();
+        log.excluded_reasons.insert("already_dispatched_this_scan".into(), 40);
+        log.excluded_reasons.insert("non_pivotable_kind".into(), 5);
+        let r = audit(&ents, log);
+        let f = r
+            .findings
+            .iter()
+            .find(|f| f.category == "expansion-ledger")
+            .expect("ledger finding");
+        assert_eq!(f.severity, Severity::Info);
+        assert!(!r.findings.iter().any(|f| f.category == "recursion-recall"));
     }
 
     #[test]

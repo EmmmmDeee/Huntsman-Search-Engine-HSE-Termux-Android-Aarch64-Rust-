@@ -299,6 +299,11 @@ fn ingest_json(s: &mut LogSignals, v: &serde_json::Value) {
                 s.expansion_stops.push(r.to_string());
             }
         }
+        "entity_excluded" => {
+            if let Some(r) = v.get("reason").and_then(|r| r.as_str()) {
+                *s.excluded_reasons.entry(r.to_string()).or_default() += 1;
+            }
+        }
         _ => {
             // Engine-health JSON: {"engine":"brave","status":"blocked","detail":"…PARSER…"}.
             if let Some(name) = module("engine") {
@@ -427,11 +432,16 @@ mod tests {
         let log = "\
 {\"type\":\"module_error\",\"module\":\"hibp\",\"error\":\"429\"}\n\
 {\"type\":\"expansion_stop\",\"reason\":\"max_entities=200 reached\"}\n\
+{\"type\":\"entity_excluded\",\"kind\":\"username\",\"value\":\"arizonambb\",\"reason\":\"identity_mismatch\"}\n\
+{\"type\":\"entity_excluded\",\"kind\":\"username\",\"value\":\"centenario\",\"reason\":\"identity_mismatch\"}\n\
+{\"type\":\"entity_excluded\",\"kind\":\"credential\",\"value\":\"x\",\"reason\":\"non_pivotable_kind\"}\n\
 {\"engine\":\"qwant\",\"status\":\"blocked\",\"detail\":\"anti-bot\"}\n";
         let s = parse_log(log);
         assert_eq!(s.module_errors.get("hibp"), Some(&1));
         assert_eq!(s.expansion_stops, vec!["max_entities=200 reached"]);
         assert_eq!(s.engines_blocked, vec!["qwant"]);
+        assert_eq!(s.excluded_reasons.get("identity_mismatch"), Some(&2));
+        assert_eq!(s.excluded_reasons.get("non_pivotable_kind"), Some(&1));
     }
 
     #[test]

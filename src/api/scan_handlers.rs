@@ -287,8 +287,32 @@ pub async fn scan_audit(
         .iter()
         .map(crate::audit::AuditEntity::from_entity)
         .collect();
-    let report = crate::audit::audit(&normalised, engine_health_signals());
+    // Source-health from the live engine sweep, enriched with this scan's own
+    // recorded expansion decisions (stop reasons + per-reason exclusion counts)
+    // so the web audit surfaces the recursion ledger — why pivots were pruned —
+    // without needing a debug-log upload.
+    let mut signals = engine_health_signals();
+    if let Ok(events) = s.store.events_for_scan(&id) {
+        fold_expansion_signals(&mut signals, &events);
+    }
+    let report = crate::audit::audit(&normalised, signals);
     Json(report.to_json()).into_response()
+}
+
+/// Fold a stored scan's expansion events into auditor signals: every
+/// `ExpansionStop` reason and every `EntityExcluded` reason (counted), so the
+/// recursion is never a black box in the web audit.
+fn fold_expansion_signals(sig: &mut crate::audit::LogSignals, events: &[crate::core::event::Event]) {
+    use crate::core::event::EventKind;
+    for ev in events {
+        match &ev.kind {
+            EventKind::ExpansionStop { reason } => sig.expansion_stops.push(reason.clone()),
+            EventKind::EntityExcluded { reason, .. } => {
+                *sig.excluded_reasons.entry(reason.clone()).or_default() += 1;
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Translate the latest cached search-engine liveness sweep into auditor
@@ -636,6 +660,50 @@ pub(crate) fn csv_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::core::scan::TargetKind;
+
+    #[test]
+    fn fold_expansion_signals_counts_exclusions_and_collects_stops() {
+        use crate::core::event::{Event, EventKind};
+        let evs = vec![
+            Event::new(
+                "s",
+                EventKind::EntityExcluded {
+                    kind: "username".into(),
+                    value: "arizonambb".into(),
+                    reason: "identity_mismatch".into(),
+                },
+            ),
+            Event::new(
+                "s",
+                EventKind::EntityExcluded {
+                    kind: "username".into(),
+                    value: "centenario".into(),
+                    reason: "identity_mismatch".into(),
+                },
+            ),
+            Event::new(
+                "s",
+                EventKind::EntityExcluded {
+                    kind: "credential".into(),
+                    value: "x".into(),
+                    reason: "non_pivotable_kind".into(),
+                },
+            ),
+            Event::new(
+                "s",
+                EventKind::ExpansionStop {
+                    reason: "depth exhausted".into(),
+                },
+            ),
+            // An unrelated event must be ignored.
+            Event::new("s", EventKind::ModuleStart { module: "dns".into() }),
+        ];
+        let mut sig = crate::audit::LogSignals::default();
+        fold_expansion_signals(&mut sig, &evs);
+        assert_eq!(sig.excluded_reasons.get("identity_mismatch"), Some(&2));
+        assert_eq!(sig.excluded_reasons.get("non_pivotable_kind"), Some(&1));
+        assert_eq!(sig.expansion_stops, vec!["depth exhausted".to_string()]);
+    }
 
     #[test]
     fn wants_candidates_parses_truthy_values_only() {
