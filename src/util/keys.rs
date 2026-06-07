@@ -466,12 +466,27 @@ fn validate_value(name: &str, value: &str) -> Result<()> {
             "invalid value for {name}: control characters not allowed"
         )));
     }
-    if value.contains('"') {
+    // The value is written double-quoted (so spaces/`#` survive — an UNquoted
+    // value with a space fails dotenvy's parser, which would break loading of the
+    // whole env file). Inside double quotes dotenvy processes escape sequences, so
+    // a literal `"` or `\` would be reinterpreted on read; reject both so the
+    // written value always round-trips byte-for-byte. (API keys, usernames and
+    // seeds never legitimately contain either.)
+    if value.contains(['"', '\\']) {
         return Err(Error::Other(format!(
-            "invalid value for {name}: double-quote not allowed"
+            "invalid value for {name}: double-quote and backslash not allowed"
         )));
     }
     Ok(())
+}
+
+/// Render one `KEY="value"` env line. The value is double-quoted so spaces and
+/// `#` survive dotenvy's parser (an unquoted spaced value fails to parse and
+/// would break loading of the whole file). [`validate_value`] guarantees the
+/// value has no `"`, `\`, or control chars, so the quoted form round-trips
+/// byte-for-byte. Caller must have validated `value` first.
+fn env_line(key: &str, value: &str) -> String {
+    format!("{key}=\"{value}\"")
 }
 
 /// Atomically update HUNTSMAN_* entries in `$HOME/.huntsman.env`.
@@ -548,7 +563,7 @@ pub fn write_keys_at(
             continue;
         }
         if let Some(new_val) = updates.get(key) {
-            out_lines.push(format!("{key}={new_val}"));
+            out_lines.push(env_line(key, new_val));
             seen.insert(key.to_string());
             continue;
         }
@@ -558,7 +573,7 @@ pub fn write_keys_at(
     // Append updates that weren't already present in the file.
     for (k, v) in updates {
         if !seen.contains(k) {
-            out_lines.push(format!("{k}={v}"));
+            out_lines.push(env_line(k, v));
         }
     }
 
@@ -689,8 +704,8 @@ mod tests {
             "template placeholder preserved"
         );
         assert!(
-            got.contains("HUNTSMAN_OATHNET_KEY=abc123"),
-            "new key appended"
+            got.contains("HUNTSMAN_OATHNET_KEY=\"abc123\""),
+            "new key appended (quoted)"
         );
     }
 
@@ -703,12 +718,43 @@ mod tests {
         write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "new")]), &[]).unwrap();
 
         let got = fs::read_to_string(&path).unwrap();
-        assert!(got.contains("HUNTSMAN_OATHNET_KEY=new"));
+        assert!(got.contains("HUNTSMAN_OATHNET_KEY=\"new\""));
         assert!(!got.contains("HUNTSMAN_OATHNET_KEY=old"));
         assert!(
             got.contains("HUNTSMAN_HIBP_KEY=stay"),
-            "untouched key preserved"
+            "untouched key preserved verbatim (unquoted)"
         );
+    }
+
+    #[test]
+    fn written_values_round_trip_through_dotenvy() {
+        // write_keys writes values unquoted (`KEY=value`). validate_value permits
+        // spaces, `#`, and `=`, so a written value must read back BYTE-IDENTICAL
+        // through the same parser the loader uses (dotenvy), or the saved key is
+        // silently corrupted (e.g. an inline-`#` truncating the value). Uses
+        // `from_path_iter` so the process env isn't mutated (test isolation).
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".huntsman.env");
+        let cases = [
+            ("HUNTSMAN_PLAIN", "abc123XYZ"),
+            ("HUNTSMAN_WITH_HASH", "abc#def"),
+            ("HUNTSMAN_WITH_SPACE", "two words"),
+            ("HUNTSMAN_EQUALS", "a=b=c"),
+        ];
+        write_keys_at(&path, &map_of(&cases), &[]).unwrap();
+
+        let mut got = BTreeMap::new();
+        for item in dotenvy::from_path_iter(&path).unwrap() {
+            let (k, v) = item.unwrap();
+            got.insert(k, v);
+        }
+        for (k, v) in cases {
+            assert_eq!(
+                got.get(k).map(String::as_str),
+                Some(v),
+                "value for {k} must round-trip unchanged through dotenvy"
+            );
+        }
     }
 
     #[test]
@@ -739,7 +785,7 @@ mod tests {
         let path = dir.path().join(".huntsman.env");
         write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[]).unwrap();
         let got = fs::read_to_string(&path).unwrap();
-        assert!(got.contains("HUNTSMAN_OATHNET_KEY=seed"));
+        assert!(got.contains("HUNTSMAN_OATHNET_KEY=\"seed\""));
     }
 
     #[test]
@@ -769,6 +815,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join(".huntsman.env");
         assert!(write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "ab\"cd")]), &[]).is_err());
+    }
+
+    #[test]
+    fn rejects_values_with_backslash() {
+        // The value is written double-quoted, and dotenvy processes escapes inside
+        // double quotes, so a literal backslash (e.g. `ab\nc`) would be reinterpreted
+        // on read. Reject it up front.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".huntsman.env");
+        assert!(write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "ab\\nc")]), &[]).is_err());
     }
 
     #[test]
@@ -851,15 +907,15 @@ mod tests {
 
         let got = fs::read_to_string(&path).unwrap();
         assert!(
-            got.contains("HUNTSMAN_OATHNET_KEY=new1"),
+            got.contains("HUNTSMAN_OATHNET_KEY=\"new1\""),
             "should update spaced key: {got}"
         );
         assert!(
-            got.contains("HUNTSMAN_HIBP_KEY=new2"),
+            got.contains("HUNTSMAN_HIBP_KEY=\"new2\""),
             "should update right-spaced key: {got}"
         );
         assert!(
-            got.contains("HUNTSMAN_HUNTER_KEY=new3"),
+            got.contains("HUNTSMAN_HUNTER_KEY=\"new3\""),
             "should update both-spaced key: {got}"
         );
         // None of the old values should remain.

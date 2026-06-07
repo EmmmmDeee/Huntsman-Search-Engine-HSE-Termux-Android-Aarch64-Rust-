@@ -49,6 +49,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   Covers both bare-v4 and IPv4-embedded-in-IPv6 (NAT64/6to4/compat) paths via the
   shared `is_private_v4`. Tested.
 
+- **Saving an API key with a space no longer corrupts env-file loading.**
+  `write_keys` (the web Settings "save keys" path) validated values against
+  newlines/quotes but wrote them **unquoted** (`KEY=value`), and `validate_value`
+  permits spaces — so saving e.g. `HUNTSMAN_DEFAULT_SEED=John Smith` produced a
+  line `dotenvy` cannot parse. Because `load()` ignores the parse Result, that one
+  bad line breaks loading of keys after it in the file. Values are now written
+  double-quoted (`KEY="value"`), which round-trips spaces and `#`; since dotenvy
+  processes escapes inside double quotes, `validate_value` additionally rejects a
+  literal backslash (alongside the existing `"`/control-char rejection) so the
+  quoted value round-trips byte-for-byte. Verified by a write→`dotenvy` round-trip
+  test across plain/space/`#`/`=` values. Existing unquoted lines are still
+  preserved verbatim; only keys the UI writes are quoted.
+
 - **Redirect SSRF guard now catches IPv6-literal hops.** The HTTP client's
   redirect policy fed `Url::host_str()` straight to `is_private_ip`, but `url`
   2.5 returns IPv6 literals *bracketed* (`[::1]`), which fails the `IpAddr`
