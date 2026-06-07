@@ -642,6 +642,58 @@ async fn favicon_returns_svg_not_html() {
 }
 
 #[tokio::test]
+async fn dossier_upload_creates_a_complete_scan_with_entities() {
+    // Wiring: a dossier file uploaded as a raw text body (the Termux/Chrome UI
+    // path) must parse via the shared cli::import path and land as a normal,
+    // viewable scan — entities included.
+    let app = test_app("import");
+    let dossier = "Entry #1:\n   \u{2022} username: isaacfrost\n   \u{2022} email: isaacfrost@gmail.com\n   \u{2022} name: Isaac Frost\n   \u{2022} country: GB\nEMAILS:\n  -> betocastillo097@gmail.com\n";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["status"], "complete");
+    let sid = json["scan_id"].as_str().expect("scan_id").to_string();
+    assert!(json["entity_count"].as_u64().unwrap() >= 3);
+
+    // The imported scan is a first-class scan: its entities are retrievable.
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/entities")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ents = body_json(resp).await;
+    let values: Vec<&str> = ents["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["value"].as_str())
+        .collect();
+    assert!(values.contains(&"isaacfrost@gmail.com"));
+    assert!(values.contains(&"Isaac Frost"));
+}
+
+#[tokio::test]
+async fn dossier_upload_rejects_unrecognised_format() {
+    let app = test_app("import-bad");
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .body(Body::from(
+            "just some random prose with no dossier structure",
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
 async fn manifest_is_valid_installable_pwa() {
     // Chrome-on-Android installability: the manifest must serve as JSON (not the
     // SPA fallback), parse, and declare standalone display so "Add to Home Screen"

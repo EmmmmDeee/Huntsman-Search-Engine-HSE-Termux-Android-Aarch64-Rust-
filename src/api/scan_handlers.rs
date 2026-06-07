@@ -96,6 +96,83 @@ pub async fn scan_batch(
         .into_response()
 }
 
+/// `POST /api/v1/scans/import` — ingest an uploaded breach/dossier compilation
+/// (the `Entry #N:` + `USERNAMES:`/`EMAILS:`/`PASSWORDS:` text format) straight
+/// from the Termux/Chrome UI, with no CLI round-trip. The file is POSTed as a raw
+/// text body (axum's `multipart` feature is intentionally off to keep the binary
+/// lean), parsed by the SAME `cli::import` path the CLI uses, then persisted as a
+/// completed scan so it appears in the scan list and every view/export
+/// (entities, dossier, debug bundle) works on it identically to a live scan.
+pub async fn scan_import(State(s): State<Arc<AppState>>, body: String) -> impl IntoResponse {
+    use crate::core::entity::{EntityKind, unix_now};
+    use crate::core::scan::{ScanStatus, TargetKind};
+
+    // Bound the upload so a hostile/huge paste can't exhaust phone memory.
+    const MAX_UPLOAD: usize = 16 * 1024 * 1024;
+    if body.trim().is_empty() {
+        return bad_request("empty upload");
+    }
+    if body.len() > MAX_UPLOAD {
+        return bad_request("upload too large (max 16 MB)");
+    }
+    if !crate::cli::import::looks_like_dossier(&body) {
+        return bad_request(
+            "unrecognised upload format. Web upload supports the breach/dossier \
+             compilation (`Entry #N:` blocks + `USERNAMES:`/`EMAILS:`/`PASSWORDS:` \
+             lists). For OathNet JSON/HTML/stealer-TXT, use the `hse import` CLI.",
+        );
+    }
+
+    let sid = scan_id("import-dossier", &unix_now().to_string());
+    let entities = crate::cli::import::import_dossier_text(&body, &sid);
+    if entities.is_empty() {
+        return bad_request("no verifiable entities were parsed from the upload");
+    }
+
+    // A readable scan label: the strongest identity in the file, else a generic.
+    let label = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .or_else(|| entities.iter().find(|e| e.kind == EntityKind::Email))
+        .map(|e| e.value.clone())
+        .unwrap_or_else(|| "uploaded dossier".to_string());
+
+    let mut scan = Scan::new(sid.clone(), Target::new(TargetKind::FullName, label));
+    scan.status = ScanStatus::Complete;
+    scan.finished_at = Some(unix_now());
+    scan.entity_count = entities.len();
+    if let Err(e) = s.store.upsert_scan(&scan) {
+        return internal_error(&e);
+    }
+    if let Err(e) = s.store.upsert_entities_batch(&entities) {
+        return internal_error(&e);
+    }
+    // Run the correlator so cross-entry handle-reuse / breach clusters surface,
+    // exactly as they would for a live scan. Best-effort — a correlator hiccup
+    // must not fail an otherwise-successful import.
+    let mut correlation_count = 0usize;
+    let correlator = crate::core::correlator::Correlator::new(Arc::clone(&s.store));
+    if let Ok(hits) = correlator.run(&sid) {
+        for c in &hits {
+            if s.store.upsert_correlation(c).is_ok() {
+                correlation_count += 1;
+            }
+        }
+    }
+
+    info!(scan_id = %sid, entities = entities.len(), "dossier imported via web");
+    (
+        StatusCode::OK,
+        Json(json!({
+            "scan_id": sid,
+            "entity_count": entities.len(),
+            "correlation_count": correlation_count,
+            "status": "complete",
+        })),
+    )
+        .into_response()
+}
+
 pub async fn scan_cancel(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

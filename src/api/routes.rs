@@ -150,6 +150,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             post(scan_handlers::scan_create).get(scan_handlers::scan_list),
         )
         .route("/scans/batch", post(scan_handlers::scan_batch))
+        .route("/scans/import", post(scan_handlers::scan_import))
         .route(
             "/scans/{id}",
             get(scan_handlers::scan_get).delete(scan_handlers::scan_delete),

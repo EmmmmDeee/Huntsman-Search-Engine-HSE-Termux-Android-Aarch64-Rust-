@@ -655,7 +655,7 @@ fn cmd_set_key(name: String, value: String) -> Result<()> {
     Ok(())
 }
 
-mod import;
+pub(crate) mod import;
 use import::cmd_import;
 
 fn cmd_modules(category_filter: Option<String>, as_json: bool) -> Result<()> {

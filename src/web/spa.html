@@ -462,6 +462,9 @@ const API = {
   relations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/relations'),
   auditScan: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/audit'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
+  // Raw-text upload (not JSON): POST a dossier file's contents to be parsed and
+  // ingested as a scan. Bypasses _req's JSON envelope.
+  importDossier: text=>fetch('/api/v1/scans/import',{method:'POST',headers:{'Content-Type':'text/plain'},body:text}).then(async r=>{ if(!r.ok){ let e='HTTP '+r.status; try{ e=(await r.json()).error||e; }catch{} throw new Error(e); } return r.json(); }),
   rerun:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/rerun',{method:'POST'}),
   cancel:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/cancel',{method:'POST'}),
   remove:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id),{method:'DELETE'}),
@@ -735,6 +738,18 @@ async function renderNewScan(v){
     <h2>New Scan</h2>
     <hr style="margin:8px 0 14px 0">
 
+    <div class="alert alert-info" style="padding:10px 12px;margin-bottom:14px">
+      <b><i class="glyphicon glyphicon-import"></i>&nbsp;Import a dossier file</b>
+      — upload a breach/dossier compilation (<code>Entry #N</code> blocks +
+      <code>USERNAMES:</code>/<code>EMAILS:</code>/<code>PASSWORDS:</code> lists)
+      to ingest it as a scan you can browse, correlate and export.
+      <div style="margin-top:8px">
+        <input type="file" id="dossier-file" accept=".txt,text/plain" style="display:inline-block;max-width:60%">
+        <button class="btn btn-primary btn-sm" type="button" onclick="uploadDossier()">Import</button>
+        <span id="import-status" class="text-muted" style="margin-left:8px"></span>
+      </div>
+    </div>
+
     <form id="scan-form" class="form" onsubmit="event.preventDefault();submitWizard();">
       <div class="row">
         <div class="col-sm-4" style="padding-bottom:10px">
@@ -959,6 +974,25 @@ function renderWizardModuleTable(){
     renderWizardModuleTable();
   }));
 }
+async function uploadDossier(){
+  const inp = $('#dossier-file');
+  const st  = $('#import-status');
+  const f = inp && inp.files && inp.files[0];
+  if (!f){ st.textContent = 'Choose a file first.'; return; }
+  st.textContent = 'Reading…';
+  try {
+    const text = await f.text();
+    st.textContent = 'Importing…';
+    const r = await API.importDossier(text);
+    st.textContent = `Imported ${r.entity_count} entities` + (r.correlation_count ? `, ${r.correlation_count} correlations.` : '.');
+    toast(`Imported ${r.entity_count} entities`);
+    nav(`#/scaninfo?id=${encodeURIComponent(r.scan_id)}`);
+  } catch(e){
+    st.textContent = 'Import failed: ' + e.message;
+    alertify.error('Import failed: ' + e.message);
+  }
+}
+
 async function submitWizard(){
   const W = S.wizard;
   const target = (W.value||'').trim();

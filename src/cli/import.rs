@@ -540,7 +540,7 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
 /// Heuristic: does this text look like a breach/dossier compilation (the
 /// `Entry #N:` + `• key: value` + `USERNAMES:`/`EMAILS:`/`PASSWORDS:` format)
 /// rather than an OathNet stealer-log TXT? Any one strong marker is enough.
-fn looks_like_dossier(body: &str) -> bool {
+pub(crate) fn looks_like_dossier(body: &str) -> bool {
     body.contains("Entry #")
         || body.contains('\u{2022}') // the `•` bullet that prefixes entry fields
         || ((body.contains("USERNAMES:")
@@ -820,6 +820,20 @@ fn emit_dossier_list_item(
 /// Import a breach/dossier compilation (`Entry #N` + section lists). Parses,
 /// dedups, prints stats, and emits the entities (JSON or table) — same contract
 /// as the other `cmd_import_*` parsers.
+/// Parse uploaded breach/dossier text into finalised entities for `sid` — the
+/// reusable, side-effect-free core of `cmd_import_dossier`, so the WEB upload
+/// endpoint and the CLI import share one parser/dedup/canonicalise path (they
+/// can never drift). Entities are deduplicated by UID and their evidence/tags
+/// canonicalised, exactly as the live scan path persists them.
+pub(crate) fn import_dossier_text(body: &str, sid: &str) -> Vec<crate::core::entity::Entity> {
+    let (mut entities, _stats) = parse_dossier(body, sid);
+    deduplicate_by_uid(&mut entities);
+    for e in &mut entities {
+        e.canonicalize_order();
+    }
+    entities
+}
+
 fn cmd_import_dossier(body: &str, output: &str) -> Result<()> {
     println!("Importing breach/dossier compilation...");
     let sid = format!("import-dossier-{}", crate::core::entity::unix_now());
@@ -1135,7 +1149,7 @@ struct ImportStats {
     date_range: String,
 }
 
-fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>) {
+pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>) {
     // Shared finalization step for all three import parsers (JSON/HTML/TXT).
     // Drop documentation/reserved IPs (192.0.2.x / 198.51.100.x / 203.0.113.x /
     // 0.x / 240.0.0.0/4 / 2001:db8::/32) lifted out of exported data — they can
