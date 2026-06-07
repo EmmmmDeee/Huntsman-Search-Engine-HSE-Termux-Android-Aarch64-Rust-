@@ -323,6 +323,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Shared web-analytics ID → common-ownership correlation (SpiderFoot-parity
+  "affiliate" pivot).** `web_crawler` now extracts web-analytics / tracking
+  identifiers from page HTML — Google Analytics (`UA-`/`G-`), Tag Manager
+  (`GTM-`), AdSense (`ca-pub-`), Facebook Pixel, Yandex Metrica, Hotjar — as a new
+  first-class `EntityKind::TrackingId` (bare-numeric IDs are provider-prefixed so
+  two providers can't collide). A new correlation rule **AU-044** fires when the
+  same id appears on ≥2 distinct sites: a shared analytics/ads id is strong
+  evidence the sites share an owner/operator. Pure-regex over already-crawled
+  bodies — no API, no native deps (Termux-clean). Tested (extractor across all
+  six providers; rule fires only across multiple sites). This closes the main
+  capability gap vs SpiderFoot's web-analytics affiliate discovery.
 - **`exif_geo` now extracts device + owner identity, not just GPS (code-only
   cross-correlation).** The pure-Rust EXIF reader (`kamadak-exif`, no API)
   previously emitted only a `Coordinates` entity and *only when the image carried

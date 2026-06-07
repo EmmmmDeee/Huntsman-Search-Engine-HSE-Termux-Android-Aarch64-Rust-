@@ -91,6 +91,12 @@ pub enum EntityKind {
     MacAddress,
     DeviceId,
 
+    // Web-analytics / tracking identifier (Google Analytics `UA-`/`G-`, GTM
+    // `GTM-`, AdSense `ca-pub-`, Facebook Pixel, Yandex Metrica, Hotjar). A shared
+    // ID across otherwise-unrelated sites is strong evidence of common ownership —
+    // the "affiliate" pivot. Not a scannable target; a correlation node only.
+    TrackingId,
+
     // Financial — cryptocurrency wallet addresses (BTC/ETH/LTC/…). A first-class
     // OSINT artifact: case-sensitive (base58 / bech32 / 0x-hex), never an API
     // key, and the pivot point for free chain-explorer enrichment.
@@ -120,6 +126,7 @@ impl fmt::Display for EntityKind {
             Self::AbnAcn => f.write_str("abn_acn"),
             Self::MacAddress => f.write_str("mac_address"),
             Self::DeviceId => f.write_str("device_id"),
+            Self::TrackingId => f.write_str("tracking_id"),
             Self::CryptoAddress => f.write_str("crypto_address"),
             Self::Other(s) => write!(f, "other:{s}"),
         }
@@ -1502,6 +1509,7 @@ mod tests {
             EntityKind::AbnAcn,
             EntityKind::MacAddress,
             EntityKind::DeviceId,
+            EntityKind::TrackingId,
             EntityKind::CryptoAddress,
             EntityKind::Other("custom".to_string()),
         ];

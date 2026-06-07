@@ -1896,3 +1896,34 @@ fn au_043_fires_on_paste_exposure() {
     assert_eq!(out[0].entity_uids.len(), 1, "only the paste url");
     assert!(out[0].description.contains("1 public paste"));
 }
+
+#[test]
+fn shared_tracking_id_fires_only_across_multiple_sites() {
+    // A TrackingId carrying source_domain evidence for two distinct sites is the
+    // affiliate signal: same analytics id ⇒ common ownership.
+    let mut shared = Entity::new(EntityKind::TrackingId, "UA-123456-1", 0.80, "scan");
+    shared.add_evidence(
+        Evidence::new("web_crawler", "ga id on a.com".to_string())
+            .with_attr("source_domain", "a.com"),
+    );
+    shared.add_evidence(
+        Evidence::new("web_crawler", "ga id on b.com".to_string())
+            .with_attr("source_domain", "b.com"),
+    );
+
+    let out = rule_au_044_shared_tracking_id(std::slice::from_ref(&shared), "scan", 0);
+    assert_eq!(out.len(), 1, "shared id across 2 sites must fire");
+    assert_eq!(out[0].rule_id, "AU-044");
+    assert!(out[0].description.contains("a.com") && out[0].description.contains("b.com"));
+
+    // A tracking id on a single site is not a correlation.
+    let mut single = Entity::new(EntityKind::TrackingId, "G-ABCDE12345", 0.80, "scan");
+    single.add_evidence(
+        Evidence::new("web_crawler", "ga4 on a.com".to_string())
+            .with_attr("source_domain", "a.com"),
+    );
+    assert!(
+        rule_au_044_shared_tracking_id(std::slice::from_ref(&single), "scan", 0).is_empty(),
+        "single-site id must not fire"
+    );
+}

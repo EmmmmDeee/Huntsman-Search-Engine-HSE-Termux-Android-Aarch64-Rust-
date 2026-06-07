@@ -412,6 +412,52 @@ const ASSET_EXTENSIONS: &[&str] = &[
     ".mjs", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".pdf",
 ];
 
+/// Extract web-analytics / tracking identifiers from page HTML. A tracking ID
+/// shared across otherwise-unrelated sites is strong evidence of common
+/// ownership — the "affiliate" pivot. **Pure regex over the page body, no API.**
+/// Collects `(canonical_id, provider)`; bare-numeric IDs are provider-prefixed so
+/// two providers can't collide on the same number. Capped so a hostile page can't
+/// flood the set.
+pub(super) fn extract_tracking_ids(body: &str, out: &mut HashSet<(String, String)>) {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    // (regex, provider, capture-group, prefix-for-bare-numeric-ids)
+    static PATS: OnceLock<Vec<(Regex, &'static str, usize, &'static str)>> = OnceLock::new();
+    let pats = PATS.get_or_init(|| {
+        let c = |re: &str| Regex::new(re).expect("valid tracking-id regex");
+        vec![
+            (c(r"\bUA-\d{4,10}-\d{1,4}\b"), "google-analytics", 0, ""),
+            (c(r"\bG-[A-Z0-9]{8,12}\b"), "google-analytics-4", 0, ""),
+            (c(r"\bGTM-[A-Z0-9]{4,10}\b"), "google-tag-manager", 0, ""),
+            (c(r"\bca-pub-\d{10,20}\b"), "google-adsense", 0, ""),
+            (
+                c(r#"fbq\(\s*['"]init['"]\s*,\s*['"](\d{6,20})['"]"#),
+                "facebook-pixel",
+                1,
+                "fb-pixel:",
+            ),
+            (c(r"ym\(\s*(\d{5,12})\s*,"), "yandex-metrica", 1, "yandex:"),
+            (c(r"hjid\s*[:=]\s*(\d{4,10})"), "hotjar", 1, "hotjar:"),
+        ]
+    });
+    const CAP: usize = 64;
+    for (re, provider, grp, prefix) in pats {
+        for caps in re.captures_iter(body) {
+            if out.len() >= CAP {
+                return;
+            }
+            if let Some(m) = caps.get(*grp) {
+                let value = if prefix.is_empty() {
+                    m.as_str().to_string()
+                } else {
+                    format!("{prefix}{}", m.as_str())
+                };
+                out.insert((value, (*provider).to_string()));
+            }
+        }
+    }
+}
+
 pub(super) fn extract_emails(body: &str, emails: &mut HashSet<String>) {
     let bytes = body.as_bytes();
     let len = bytes.len();
@@ -656,6 +702,7 @@ mod tests {
             subdomains: HashSet::new(),
             emails: HashSet::new(),
             phones: HashSet::new(),
+            tracking_ids: HashSet::new(),
             frameworks: HashSet::new(),
             page_types: HashSet::new(),
             security_headers: Vec::new(),
@@ -663,6 +710,37 @@ mod tests {
             external_links: 0,
             notable_pages: Vec::new(),
         }
+    }
+
+    #[test]
+    fn extract_tracking_ids_finds_analytics_anchors() {
+        let html = r#"
+            <script>gtag('config','UA-123456-1');</script>
+            <script async src="https://www.googletagmanager.com/gtag/js?id=G-ABCDE12345"></script>
+            <!-- GTM-XYZ12 -->
+            <ins class="adsbygoogle" data-ad-client="ca-pub-1234567890123456"></ins>
+            <script>fbq('init', '987654321098765');</script>
+            <script>ym(12345678, "init", {});</script>
+            <script>hjid:1234567,hjsv:6</script>
+        "#;
+        let mut ids = HashSet::new();
+        extract_tracking_ids(html, &mut ids);
+        let got: std::collections::BTreeSet<&str> = ids.iter().map(|(v, _)| v.as_str()).collect();
+        for want in [
+            "UA-123456-1",
+            "G-ABCDE12345",
+            "GTM-XYZ12",
+            "ca-pub-1234567890123456",
+            "fb-pixel:987654321098765",
+            "yandex:12345678",
+            "hotjar:1234567",
+        ] {
+            assert!(got.contains(want), "missing {want}: {got:?}");
+        }
+        // A page with no analytics yields nothing.
+        let mut none = HashSet::new();
+        extract_tracking_ids("<html><body>plain</body></html>", &mut none);
+        assert!(none.is_empty());
     }
 
     #[test]

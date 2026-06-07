@@ -72,6 +72,8 @@ pub(super) struct CrawlState {
     pub(super) subdomains: HashSet<String>,
     pub(super) emails: HashSet<String>,
     pub(super) phones: HashSet<String>,
+    /// `(canonical_id, provider)` web-analytics IDs seen across crawled pages.
+    pub(super) tracking_ids: HashSet<(String, String)>,
     pub(super) frameworks: HashSet<&'static str>,
     pub(super) page_types: HashSet<&'static str>,
     pub(super) security_headers: Vec<(&'static str, bool)>,
@@ -109,6 +111,7 @@ impl Module for WebCrawler {
             EntityKind::Domain,
             EntityKind::Phone,
             EntityKind::ApiKey,
+            EntityKind::TrackingId,
         ];
         KINDS
     }
@@ -166,6 +169,7 @@ impl Module for WebCrawler {
             subdomains: HashSet::new(),
             emails: HashSet::new(),
             phones: HashSet::new(),
+            tracking_ids: HashSet::new(),
             frameworks: HashSet::new(),
             page_types: HashSet::new(),
             security_headers: Vec::new(),
@@ -302,6 +306,7 @@ impl Module for WebCrawler {
 
             extract_emails(&body, &mut state.emails);
             extract_phones(&body, &mut state.phones);
+            extract_tracking_ids(&body, &mut state.tracking_ids);
             extract_api_keys_from_body(&body, &domain);
 
             if depth < max_depth {
@@ -458,6 +463,23 @@ fn build_entities(
         e.tag(tags::WEB_SCRAPED);
         e.add_evidence(
             Evidence::new(SRC, format!("Email found on {domain}"))
+                .with_attr("source_domain", domain),
+        );
+        state.result.push(e);
+    }
+
+    // Tracking-ID entities (web-analytics affiliate pivot). The id is a hard
+    // identifier, so confidence is high (0.80); the `source_domain` attr lets the
+    // correlator count how many distinct sites carry the same id (shared id ⇒
+    // common ownership). When two crawled domains share an id, both emit the same
+    // TrackingId value → it merges to one entity, raising corroboration.
+    for (id, provider) in &state.tracking_ids {
+        let mut e = Entity::new(EntityKind::TrackingId, id.as_str(), 0.80, scan_id);
+        e.tag(tags::WEB_SCRAPED);
+        e.tag("web-analytics");
+        e.add_evidence(
+            Evidence::new(SRC, format!("{provider} tracking id {id} on {domain}"))
+                .with_attr("provider", provider)
                 .with_attr("source_domain", domain),
         );
         state.result.push(e);

@@ -49,6 +49,7 @@ impl TargetKind {
             EntityKind::CryptoAddress => Some(Self::CryptoAddress),
             EntityKind::Credential
             | EntityKind::DeviceId
+            | EntityKind::TrackingId
             | EntityKind::Password
             | EntityKind::Other(_) => None,
         }

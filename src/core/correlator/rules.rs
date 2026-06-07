@@ -2109,3 +2109,48 @@ pub(super) fn rule_au_043_paste_exposure(
         ts,
     )]
 }
+
+/// AU-044 — Shared web-analytics ID ⇒ common ownership. A Google Analytics /
+/// AdSense / Tag-Manager / Facebook-Pixel id that appears on two or more
+/// otherwise-unrelated sites is strong evidence the same operator runs them — the
+/// "affiliate" pivot. `web_crawler` records the carrying site in each
+/// `TrackingId` evidence entry's `source_domain`; entities merge by value, so a
+/// shared id accumulates one evidence row per site. Fires when ≥2 distinct sites
+/// carry the same id.
+pub(super) fn rule_au_044_shared_tracking_id(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::TrackingId)
+        .filter_map(|e| {
+            let mut sites: Vec<&str> = e
+                .evidence
+                .iter()
+                .filter_map(|ev| ev.attributes.get("source_domain").map(String::as_str))
+                .collect();
+            sites.sort_unstable();
+            sites.dedup();
+            if sites.len() < 2 {
+                return None;
+            }
+            Some(Correlation::new(
+                "AU-044",
+                "Shared web-analytics ID (common ownership)",
+                Severity::High,
+                format!(
+                    "Tracking id '{}' appears on {} sites ({}) — a shared analytics/ads id \
+                     indicates the sites share an owner or operator",
+                    e.value,
+                    sites.len(),
+                    sites.join(", ")
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            ))
+        })
+        .collect()
+}
