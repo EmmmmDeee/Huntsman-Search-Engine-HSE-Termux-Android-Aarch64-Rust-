@@ -370,7 +370,20 @@ function fmtDuration(secs){
 function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
 function statusPill(s){const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending',aborted:'s-aborted'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
 function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
-function kindPill(k){return `<span class="kind-pill k-${attr(k)}">${esc(k)}</span>`;}
+// Flatten an EntityKind to a display string. Unit variants arrive as plain
+// strings; the catch-all `Other(s)` arrives as {"other":"…"} (externally-tagged
+// enum) and must become "other:…" rather than "[object Object]".
+function kindToStr(k){
+  if (k == null) return 'unknown';
+  if (typeof k === 'string') return k;
+  if (typeof k === 'object'){
+    if (k.other != null) return 'other:'+k.other;
+    const ks = Object.keys(k);
+    if (ks.length) return ks[0]+':'+k[ks[0]];
+  }
+  return String(k);
+}
+function kindPill(k){const s=kindToStr(k);return `<span class="kind-pill k-${attr(s)}">${esc(s)}</span>`;}
 // Deterministic self-enrichment passes are NOT independent intelligence and
 // must not be counted as corroboration — mirror the backend's
 // ENRICHMENT_ONLY_SOURCES so a coarse geo guess the geospatial pass touched
@@ -992,6 +1005,12 @@ async function renderScanInfo(v){
   S.entities     = entsR.status ==='fulfilled' ? (entsR.value.entities||[])      : [];
   S.correlations = corrsR.status==='fulfilled' ? (corrsR.value.correlations||[]) : [];
   S.relations    = relsR.status ==='fulfilled' ? (relsR.value.relations||[])     : [];
+  // `EntityKind::Other(s)` serializes as the object {"other":"…"} (externally
+  // tagged), unlike every unit variant which is a plain string. Left as-is it
+  // renders as "[object Object]" and, because it's used as a Map key, splits
+  // into one bogus row per entity. Normalise every kind to a flat string once,
+  // here, so all downstream views (pills, type grouping, relations) are correct.
+  S.entities.forEach(e=>{ e.kind = kindToStr(e.kind); });
 
   const dur = scan.finished_at && scan.started_at ? scan.finished_at - scan.started_at
             : scan.status==='running' ? nowSec() - (scan.started_at||nowSec()) : null;
