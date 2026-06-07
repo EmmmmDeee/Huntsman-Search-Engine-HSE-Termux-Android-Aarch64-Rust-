@@ -213,6 +213,31 @@ pub(super) fn parse_results(html: &str, engine: &'static str, query: &str) -> Ve
     results
 }
 
+/// Count *external* candidate result links in a page — `href`s that resolve to a
+/// real host which is neither the engine's own chrome ([`is_engine_domain`]) nor
+/// a tracking/redirect URL. This is the honest signal for liveness diagnosis: a
+/// genuine results page carries many such links, whereas a nav/interstitial/soft-
+/// block page carries mostly the engine's own links (which a naive `href="http"`
+/// count would wrongly inflate, falsely blaming the parser). When this count is
+/// high yet [`parse_results`] yields nothing, the parser really is at fault.
+pub(super) fn external_link_count(html: &str, engine: &str) -> usize {
+    let mut seen: HashSet<String> = HashSet::new();
+    for href in HrefIter::new(html) {
+        let Some(url) = resolve_href(href).filter(|u| !u.is_empty()) else {
+            continue;
+        };
+        let host = extract_host(&url);
+        if host.is_empty() || is_engine_domain(&host) || is_tracking_url(&url) {
+            continue;
+        }
+        // Don't count the same external host twice — a results page links many
+        // distinct hosts; chrome repeats a few.
+        let _ = engine; // engine kept for signature symmetry / future per-engine rules
+        seen.insert(host);
+    }
+    seen.len()
+}
+
 pub(super) fn add_result(
     url: &str,
     html: &str,

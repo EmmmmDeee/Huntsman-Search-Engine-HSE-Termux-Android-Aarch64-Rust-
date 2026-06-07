@@ -16,7 +16,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use futures::future::join_all;
 
 use super::engines::{ENGINES, EngineSpec};
-use super::fetch::{parse_results, try_fetch};
+use super::fetch::{external_link_count, parse_results, try_fetch};
 use super::helpers::FetchOutcome;
 
 /// Benign, region-neutral probe query — a reserved example domain, so a probe
@@ -124,12 +124,14 @@ fn classify(outcome: &FetchOutcome, results: usize) -> EngineStatus {
 }
 
 /// Actionable diagnosis of a probe outcome — names the LIKELY failing layer so a
-/// failure is never opaque. `link_hint` is a cheap count of result-like anchors
-/// in the body (only meaningful for the reachable-but-empty case): a page that
-/// returned many links yet parsed to zero results points at a PARSER defect /
-/// markup change rather than a block. **Pure**, so it's unit-tested without a
-/// live fetch.
-fn diagnose(outcome: &FetchOutcome, results: usize, link_hint: usize) -> String {
+/// failure is never opaque. `external_links` is the count of distinct *external*
+/// (non-engine, non-tracking) hosts the page links to ([`external_link_count`]),
+/// meaningful only for the reachable-but-empty case: a page linking many external
+/// hosts yet parsing to zero results points at a PARSER defect / markup change,
+/// whereas a page with few external links is a nav/interstitial soft-block. Using
+/// external (not raw) links avoids falsely blaming the parser for an engine's own
+/// navigation chrome. **Pure**, so it's unit-tested without a live fetch.
+fn diagnose(outcome: &FetchOutcome, results: usize, external_links: usize) -> String {
     match outcome {
         FetchOutcome::Unreachable => {
             "no usable response — network/TLS failure, timeout, or body < 500B".to_string()
@@ -140,25 +142,19 @@ fn diagnose(outcome: &FetchOutcome, results: usize, link_hint: usize) -> String 
         }
         FetchOutcome::Body(_) if results > 0 => format!("{results} result(s) parsed"),
         FetchOutcome::Body(_) => {
-            if link_hint >= 10 {
+            if external_links >= 8 {
                 format!(
-                    "page carried ~{link_hint} links but the parser extracted 0 results — \
-                     likely a PARSER defect or markup change for this engine"
+                    "page linked ~{external_links} external hosts but the parser extracted 0 \
+                     results — likely a PARSER defect or markup change for this engine"
                 )
             } else {
-                "reachable but empty (0 results, sparse markup) — soft-block / IP throttling"
+                "reachable but empty (0 results, sparse external links) — soft-block / IP throttling"
                     .to_string()
             }
         }
     }
 }
 
-/// Cheap heuristic count of result-bearing anchors in an HTML body: occurrences
-/// of `href="http`. Used only to tell a parser failure (many links, 0 parsed)
-/// apart from a genuine empty/soft-block page (few links).
-fn link_hint(body: &str) -> usize {
-    body.matches("href=\"http").count() + body.matches("href='http").count()
-}
 
 async fn probe_one(engine: &'static EngineSpec) -> EngineHealth {
     let url = (engine.build_url)(PROBE_QUERY);
@@ -167,7 +163,10 @@ async fn probe_one(engine: &'static EngineSpec) -> EngineHealth {
     let outcome = try_fetch(&url, engine.ua, post.as_deref()).await;
     let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     let (results, links) = match &outcome {
-        FetchOutcome::Body(b) => (parse_results(b, engine.name, PROBE_QUERY).len(), link_hint(b)),
+        FetchOutcome::Body(b) => (
+            parse_results(b, engine.name, PROBE_QUERY).len(),
+            external_link_count(b, engine.name),
+        ),
         _ => (0, 0),
     };
     let status = classify(&outcome, results);
@@ -238,12 +237,12 @@ mod tests {
 
     #[test]
     fn diagnose_distinguishes_parser_failure_from_block() {
-        // Reachable page with many links but 0 parsed results → parser defect.
+        // Reachable page linking many EXTERNAL hosts but 0 parsed → parser defect.
         let body = FetchOutcome::Body("x".into());
         let d = diagnose(&body, 0, 25);
         assert!(d.contains("PARSER"), "got: {d}");
-        // Reachable but sparse → soft-block/throttle, NOT a parser blame.
-        let d = diagnose(&body, 0, 1);
+        // Reachable but few external links → soft-block/throttle, NOT parser blame.
+        let d = diagnose(&body, 0, 2);
         assert!(d.contains("soft-block") || d.contains("throttling"), "got: {d}");
         assert!(!d.contains("PARSER"), "got: {d}");
         // Up case names the count.
@@ -254,9 +253,19 @@ mod tests {
     }
 
     #[test]
-    fn link_hint_counts_http_anchors() {
-        let html = r#"<a href="http://a.com">a</a><a href='https://b.com'>b</a><a href="/rel">c</a>"#;
-        assert_eq!(link_hint(html), 2);
+    fn external_link_count_ignores_engine_chrome() {
+        // A brave-style nav/soft-block page: links are all the engine's own
+        // chrome → 0 external hosts (so NOT falsely flagged a parser defect).
+        let nav = r#"<a href="https://search.brave.com/help">h</a>
+                     <a href="https://brave.com/download">d</a>
+                     <a href="/settings">s</a>"#;
+        assert_eq!(external_link_count(nav, "brave"), 0);
+        // A real results page links distinct external hosts → counted (deduped).
+        let results = r#"<a href="https://example.com/a">1</a>
+                         <a href="https://example.com/b">dup-host</a>
+                         <a href="https://wikipedia.org/x">2</a>
+                         <a href="https://github.com/y">3</a>"#;
+        assert_eq!(external_link_count(results, "brave"), 3);
     }
 
     #[test]
