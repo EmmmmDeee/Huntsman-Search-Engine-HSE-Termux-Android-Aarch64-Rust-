@@ -170,6 +170,70 @@ mod tests {
     }
 
     #[test]
+    fn domain_helpers_cross_function_invariants() {
+        // Generative invariant check over a constructed host corpus: example tests
+        // pin individual cases, this pins the *relationships* between the helpers,
+        // so a future change to one that desyncs from another is caught.
+        let labels = ["a", "sub", "mail", "shop", "www", "deeply", "nested"];
+        let bases = ["example", "acme", "target-co"];
+        // Single-label TLDs plus every curated multi-label suffix.
+        let mut suffixes: Vec<String> = vec!["com".into(), "org".into(), "io".into()];
+        suffixes.extend(MULTI_LABEL_SUFFIXES.iter().map(|s| (*s).to_string()));
+
+        let mut corpus: Vec<String> = Vec::new();
+        for base in bases {
+            for suf in &suffixes {
+                let apex = format!("{base}.{suf}"); // registrable form
+                corpus.push(apex.clone());
+                // Build a few subdomains of varying depth.
+                for depth in 1..=3 {
+                    let prefix = labels[..depth].join(".");
+                    corpus.push(format!("{prefix}.{apex}"));
+                }
+            }
+        }
+
+        for host in &corpus {
+            // Reflexive / irreflexive.
+            assert!(is_or_subdomain_of(host, host), "reflexive: {host}");
+            assert!(!is_proper_subdomain_of(host, host), "irreflexive: {host}");
+
+            let r = registrable_domain(host).expect("corpus hosts have >= 2 labels");
+
+            // INVARIANT 1: the registrable domain is always an equal-or-subdomain
+            // of its host (a label-aligned suffix), never an unrelated string.
+            // `registrable_domain` lowercases; the corpus is already lowercase.
+            assert!(
+                is_or_subdomain_of(host, &r),
+                "registrable {r} must be an equal-or-subdomain of host {host}"
+            );
+
+            // INVARIANT 2: idempotence — the registrable domain of a registrable
+            // domain is itself (collapsing twice changes nothing).
+            assert_eq!(
+                registrable_domain(&r).as_deref(),
+                Some(r.as_str()),
+                "registrable_domain not idempotent for {host} (r={r})"
+            );
+
+            // INVARIANT 3: proper-subdomain implies equal-or-subdomain, and the
+            // two agree except exactly at equality.
+            for other in &corpus {
+                let sub = is_proper_subdomain_of(host, other);
+                let eq_or_sub = is_or_subdomain_of(host, other);
+                if sub {
+                    assert!(eq_or_sub, "proper-subdomain must imply or-subdomain");
+                }
+                assert_eq!(
+                    eq_or_sub,
+                    host == other || sub,
+                    "or-subdomain must be exactly (equal OR proper-subdomain): {host} vs {other}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn social_includes_country_subdomains() {
         assert!(is_social_platform("linkedin.com"));
         assert!(is_social_platform("au.linkedin.com"));

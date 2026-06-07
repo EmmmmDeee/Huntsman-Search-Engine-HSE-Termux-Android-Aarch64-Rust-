@@ -302,6 +302,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Cross-function invariant test for the domain helpers.** Beyond per-case
+  examples, a generative test builds a host corpus (every base × single- and
+  multi-label suffix × subdomain depth) and asserts the *relationships* between
+  `registrable_domain`, `is_or_subdomain_of`, and `is_proper_subdomain_of`: the
+  registrable domain is always an equal-or-subdomain of its host, `registrable_domain`
+  is idempotent, proper-subdomain implies equal-or-subdomain, and equal-or-subdomain
+  is exactly `equal OR proper-subdomain`. Catches a future change to one helper
+  that silently desyncs from another.
 - **No-silent-drift guard: the TXT verification-vendor table has no shadowed
   entries.** `verification_vendor` returns the first prefix match in declaration
   order, so an earlier prefix that is a prefix of a later, different-vendor entry
