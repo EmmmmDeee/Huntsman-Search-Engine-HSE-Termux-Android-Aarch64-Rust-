@@ -5,6 +5,7 @@
 //! `live` re-runs the same scan on a fixed interval (v0.5+). See
 //! `docs/USAGE.md` for the full reference.
 
+mod audit;
 mod config;
 mod diagnostics;
 mod diff;
@@ -215,6 +216,27 @@ pub enum Command {
     Diagnostics {
         /// Emit machine-readable JSON for the sections that support it
         /// (selftest, engines); doctor remains human-readable.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Score and explain a scan's output quality: noise, infrastructure
+    /// pollution, fragment values, missed PII, and source health, with
+    /// actionable recommendations. Ingests a CSV export (`--csv`), a stored scan
+    /// (`--scan-id`, `latest` allowed), and/or a debug log (`--log`, JSONL or
+    /// tracing text). The self-audit the manifesto asks for: every scan becomes
+    /// an opportunity to expose and eliminate weaknesses.
+    #[command(visible_alias = "score")]
+    Audit {
+        /// CSV export to audit (`hse export --format csv`).
+        #[arg(long)]
+        csv: Option<String>,
+        /// Stored scan id to audit (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// Debug log / event stream to mine for source-health signals.
+        #[arg(long)]
+        log: Option<String>,
+        /// Emit the machine-readable JSON report instead of the text scorecard.
         #[arg(long)]
         json: bool,
     },
@@ -517,6 +539,12 @@ pub async fn run() -> Result<()> {
         Command::Engines { json } => engines::cmd_engines(json).await,
         Command::Config { key, value } => config::cmd_config(key, value),
         Command::Diagnostics { json } => diagnostics::cmd_diagnostics(json).await,
+        Command::Audit {
+            csv,
+            scan_id,
+            log,
+            json,
+        } => audit::cmd_audit(csv, scan_id, log, json).await,
         Command::Doctor => doctor::cmd_doctor().await,
         Command::Selftest { json } => selftest::cmd_selftest(json).await,
         Command::Provision {

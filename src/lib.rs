@@ -55,6 +55,7 @@ pub const LIVE_DEFAULT_THROTTLE_MS: u64 = 100;
 pub const LIVE_DEFAULT_CONCURRENT: usize = 4;
 
 pub mod api;
+pub mod audit;
 pub mod cli;
 pub mod core;
 pub mod modules;
