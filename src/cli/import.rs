@@ -537,6 +537,30 @@ fn parse_oathnet_html(body: &str, sid: &str) -> Vec<crate::core::entity::Entity>
     entities
 }
 
+/// Render parsed import entities to stdout for the text-import paths (HTML / TXT
+/// / breach-dossier), which all share the `{ "entities": [...] }` JSON shape: one
+/// JSON document under `--output json` (so `| jq` works), else a 50-row
+/// human-readable table with an "… and N more" footer. One definition so the
+/// JSON shape and the table format can't drift between the three callers.
+fn render_import_entities(entities: &[crate::core::entity::Entity], output: &str) {
+    if output == "json" {
+        let out = serde_json::json!({ "entities": entities });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    } else {
+        for e in entities.iter().take(50) {
+            println!(
+                "  [{:.2}] {:15} {}",
+                e.confidence,
+                e.kind.to_string(),
+                crate::util::str_util::truncate_safe(&e.value, 70)
+            );
+        }
+        if entities.len() > 50 {
+            println!("  ... and {} more", entities.len() - 50);
+        }
+    }
+}
+
 fn cmd_import_html(body: &str, output: &str) -> Result<()> {
     use crate::core::entity::EntityKind;
 
@@ -570,19 +594,7 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
         ),
     );
 
-    if output == "json" {
-        let out = serde_json::json!({ "entities": entities });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
-    } else {
-        for e in &entities {
-            println!(
-                "  [{:.2}] {:15} {}",
-                e.confidence,
-                e.kind.to_string(),
-                crate::util::str_util::truncate_safe(&e.value, 70)
-            );
-        }
-    }
+    render_import_entities(&entities, output);
     Ok(())
 }
 
@@ -941,22 +953,7 @@ fn cmd_import_dossier(body: &str, output: &str) -> Result<()> {
     deduplicate_by_uid(&mut entities);
     print_import_stats(&stats, entities.len(), output);
 
-    if output == "json" {
-        let out = serde_json::json!({ "entities": entities });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
-    } else {
-        for e in entities.iter().take(50) {
-            println!(
-                "  [{:.2}] {:12} {}",
-                e.confidence,
-                e.kind.to_string(),
-                crate::util::str_util::truncate_safe(&e.value, 70)
-            );
-        }
-        if entities.len() > 50 {
-            println!("  ... and {} more", entities.len() - 50);
-        }
-    }
+    render_import_entities(&entities, output);
     Ok(())
 }
 
@@ -1216,22 +1213,7 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
         crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
     }
 
-    if output == "json" {
-        let out = serde_json::json!({ "entities": entities });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
-    } else {
-        for e in entities.iter().take(50) {
-            println!(
-                "  [{:.2}] {:15} {}",
-                e.confidence,
-                e.kind.to_string(),
-                crate::util::str_util::truncate_safe(&e.value, 70)
-            );
-        }
-        if entities.len() > 50 {
-            println!("  ... and {} more", entities.len() - 50);
-        }
-    }
+    render_import_entities(&entities, output);
     Ok(())
 }
 
