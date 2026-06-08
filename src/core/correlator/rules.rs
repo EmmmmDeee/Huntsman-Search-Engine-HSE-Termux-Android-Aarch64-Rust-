@@ -841,6 +841,15 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
         .collect()
 }
 
+/// Approximate the absolute day gap between two `YYYY-MM-DD` strings.
+///
+/// Intentionally dependency-free (no `chrono`/`time`): days are estimated as
+/// `y*365 + m*30 + d`, so the result is **not** an exact calendar difference.
+/// Error is bounded to a few days near month/year boundaries (e.g. `2020-01-31`
+/// vs `2020-02-01` reads as 0). Every caller (AU-019 temporal clustering) uses a
+/// coarse window (≥30 days) where this noise is irrelevant — do not reuse this
+/// where exact-day precision matters. Returns `u64::MAX` if either side fails to
+/// parse, which sorts/compares as "infinitely far apart" (never clusters).
 pub(super) fn date_diff_days(a: &str, b: &str) -> u64 {
     let parse = |s: &str| -> Option<u64> {
         let parts: Vec<&str> = s.split('-').collect();
