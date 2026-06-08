@@ -311,11 +311,11 @@ fn persist_key_pool(pool: std::sync::Arc<crate::util::key_pool::KeyPool>) {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => {
             handle.spawn_blocking(move || {
-                let _ = crate::util::key_pool::save_pool(&pool);
+                crate::util::key_pool::save_pool_best_effort(&pool);
             });
         }
         Err(_) => {
-            let _ = crate::util::key_pool::save_pool(&pool);
+            crate::util::key_pool::save_pool_best_effort(&pool);
         }
     }
 }

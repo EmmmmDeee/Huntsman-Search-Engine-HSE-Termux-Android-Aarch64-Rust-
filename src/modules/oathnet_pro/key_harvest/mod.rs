@@ -742,7 +742,7 @@ fn emit_key(
         roi.label()
     ));
     pool.add(service, entry);
-    let _ = crate::util::key_pool::save_pool(&pool);
+    crate::util::key_pool::save_pool_best_effort(&pool);
 }
 
 pub fn store_api_credential_from_item(item: &Value) {
@@ -803,12 +803,12 @@ pub fn store_api_credential(item: &Value) {
         &crate::util::str_util::truncate_safe(&url, 60)
     ));
     if pool.add(service, entry) {
-        let _ = crate::util::key_pool::save_pool(&pool);
+        crate::util::key_pool::save_pool_best_effort(&pool);
     }
 
     let user_entry = crate::util::key_pool::KeyEntry::new(format!("{username}:{password}"));
     pool.add(&format!("{service}_login"), user_entry);
-    let _ = crate::util::key_pool::save_pool(&pool);
+    crate::util::key_pool::save_pool_best_effort(&pool);
 }
 
 #[cfg(test)]

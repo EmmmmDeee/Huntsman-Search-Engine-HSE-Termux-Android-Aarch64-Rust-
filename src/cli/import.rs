@@ -1173,7 +1173,7 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
             "  Pool:      {} keys stored for automatic use",
             stats.api_keys
         );
-        let _ = crate::util::key_pool::save_pool(&crate::util::key_pool::global_pool());
+        crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
     }
 
     if output == "json" {
