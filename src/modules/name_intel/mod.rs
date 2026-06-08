@@ -56,7 +56,12 @@ impl Module for NameIntel {
         matches!(t.kind, TargetKind::FullName)
     }
     fn produces(&self) -> &'static [EntityKind] {
-        &[EntityKind::Username, EntityKind::Email, EntityKind::Url]
+        &[
+            EntityKind::Person,
+            EntityKind::Username,
+            EntityKind::Email,
+            EntityKind::Url,
+        ]
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -65,6 +70,29 @@ impl Module for NameIntel {
             return Ok(result);
         };
         let sid = &ctx.scan_id;
+
+        // ── Subject anchor ──────────────────────────────────────────────────
+        // Emit the Person the operator named as the seed FIRST, so every derived
+        // username/email/pivot has an individual to attach to (without it the
+        // dossier is a pile of orphan handles, and the person-cluster correlators
+        // AU-002/AU-020 have no Person to fire on). Probable-tier: it is the
+        // operator's asserted subject, not a guess — but unverified externally.
+        // Emitted before the handle gate so non-Latin names get a subject too.
+        if !crate::core::validation::is_placeholder_entity(&EntityKind::Person, &target.value) {
+            let mut person = Entity::new(
+                EntityKind::Person,
+                name.display_full(),
+                permute::SUBJECT_CONF,
+                sid,
+            );
+            person.tag("seed");
+            person.tag("subject");
+            person.add_evidence(
+                Evidence::new(SRC, format!("Scan subject — '{}' provided as the seed", target.value))
+                    .with_attr("source_name", &target.value),
+            );
+            result.push(person);
+        }
 
         // Non-Latin names ASCII-fold to empty handle tokens; skip username/email
         // permutation (which would be meaningless) but still emit search pivots
@@ -169,12 +197,23 @@ mod tests {
             .await
             .unwrap();
 
+        let mut persons = 0;
         let mut usernames = 0;
         let mut emails = 0;
         let mut pivots = 0;
         let mut gravatar_seen = false;
         for e in &out.entities {
             match e.kind {
+                EntityKind::Person => {
+                    persons += 1;
+                    // The subject anchor: the operator's name, Probable-tier, so
+                    // derived handles have an individual to attach to.
+                    assert!(e.has_tag("subject") && e.has_tag("seed"));
+                    assert_eq!(
+                        e.classify(),
+                        crate::core::entity::Classification::Probable
+                    );
+                }
                 EntityKind::Username => {
                     usernames += 1;
                     assert!(e.has_tag("name-derived"));
@@ -198,6 +237,7 @@ mod tests {
                 ref other => panic!("unexpected kind {other}"),
             }
         }
+        assert_eq!(persons, 1, "exactly one subject Person anchor");
         assert!(usernames > 5, "expected several usernames, got {usernames}");
         assert!(emails > 0, "expected emails, got {emails}");
         assert!(pivots > 5, "expected several pivots, got {pivots}");
