@@ -38,7 +38,7 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{OriginalUri, Path},
+    extract::{DefaultBodyLimit, OriginalUri, Path},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -150,7 +150,16 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             post(scan_handlers::scan_create).get(scan_handlers::scan_list),
         )
         .route("/scans/batch", post(scan_handlers::scan_batch))
-        .route("/scans/import", post(scan_handlers::scan_import))
+        .route(
+            "/scans/import",
+            // Raise this route's body cap from axum's 2 MB default to the import
+            // handler's declared 16 MB, so a large but legitimate breach dossier
+            // isn't rejected with a bare 413 before reaching the parser. Scoped to
+            // this route only — every other endpoint keeps the conservative
+            // default. Single source of truth: scan_handlers::MAX_UPLOAD_BYTES.
+            post(scan_handlers::scan_import)
+                .layer(DefaultBodyLimit::max(scan_handlers::MAX_UPLOAD_BYTES)),
+        )
         .route(
             "/scans/{id}",
             get(scan_handlers::scan_get).delete(scan_handlers::scan_delete),

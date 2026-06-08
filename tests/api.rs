@@ -694,6 +694,43 @@ async fn dossier_upload_rejects_unrecognised_format() {
 }
 
 #[tokio::test]
+async fn dossier_upload_accepts_body_larger_than_axum_default_limit() {
+    // The import handler declares a 16 MB cap, but axum's *default* body limit is
+    // 2 MB and is enforced before the handler runs — so without a per-route
+    // override a legitimate multi-entry breach dossier between 2 and 16 MB was
+    // rejected with a bare 413, and the handler's 16 MB check was dead code. The
+    // `/scans/import` route raises the limit to scan_handlers::MAX_UPLOAD_BYTES;
+    // this proves a >2 MB upload is buffered and parsed, not 413'd.
+    let app = test_app("import-large");
+    let mut dossier = String::with_capacity(2_300_000);
+    dossier.push_str("Entry #1\n\u{2022} email: lead@frostcorp.io\n");
+    let mut i = 2u32;
+    while dossier.len() < 2_200_000 {
+        // Each entry is a valid, distinct record so the parse does real work.
+        dossier.push_str(&format!("Entry #{i}\n\u{2022} email: user{i}@frostcorp.io\n"));
+        i += 1;
+    }
+    assert!(
+        dossier.len() > 2 * 1024 * 1024,
+        "fixture must exceed axum's 2 MB default to exercise the override"
+    );
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        http::StatusCode::PAYLOAD_TOO_LARGE,
+        "a 2-16 MB dossier must not be rejected at axum's default 2 MB limit"
+    );
+    assert_eq!(resp.status(), 200, "the large dossier should import cleanly");
+}
+
+#[tokio::test]
 async fn manifest_is_valid_installable_pwa() {
     // Chrome-on-Android installability: the manifest must serve as JSON (not the
     // SPA fallback), parse, and declare standalone display so "Add to Home Screen"
