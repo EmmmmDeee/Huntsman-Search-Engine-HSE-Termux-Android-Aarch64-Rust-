@@ -164,12 +164,10 @@ impl TargetKind {
         if is_mac_shaped(v) {
             return Self::MacAddress;
         }
-        // 5. Coordinates — "lat,lon", both numeric and in range.
-        if let Some((a, b)) = v.split_once(',')
-            && let (Ok(lat), Ok(lon)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>())
-            && (-90.0..=90.0).contains(&lat)
-            && (-180.0..=180.0).contains(&lon)
-        {
+        // 5. Coordinates — "lat,lon", both numeric and in range. Delegate to the
+        //    canonical, range-validating parser so this classifier and the geo
+        //    pipeline agree on exactly what counts as a coordinate pair.
+        if crate::util::geohash::parse_coords(v).is_some() {
             return Self::Coordinates;
         }
         // 6. ASN — "AS" + digits.
