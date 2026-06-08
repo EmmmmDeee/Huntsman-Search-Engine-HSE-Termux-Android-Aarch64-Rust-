@@ -119,27 +119,28 @@ impl Module for IpGeo {
 
         let mut result = ModuleResult::new();
 
+        // Confidence scaled by IP type: hosting/proxy locations are
+        // datacenter-level (low geo value), mobile IPs are cell-tower-level.
+        // Recalibrated downward from the old 0.45 / 0.60 / 0.70 trio — free
+        // IP-geo providers routinely miss residential geolocation by 30–80 km
+        // even for "fixed" connections, which the prior confidence overstated;
+        // a single overstated IP-geo hit was outranking a corroborated WiGLE
+        // WiFi fix at 0.85.
+        let geo_conf = if data.hosting == Some(true) || data.proxy == Some(true) {
+            0.35
+        } else if data.mobile == Some(true) {
+            0.50
+        } else {
+            0.60
+        };
+        // `coarse_provider_coords` returns None for an implausible fix, so this
+        // `if` is false in exactly the same cases the old `is_plausible_provider_coord`
+        // guard made it false — the `else if` below (lat/lon present but rejected)
+        // still fires identically.
         if let (Some(lat), Some(lon)) = (data.lat, data.lon)
-            && crate::util::geo::is_plausible_provider_coord(lat, lon)
+            && let Some(mut e) =
+                crate::util::geo::coarse_provider_coords(lat, lon, geo_conf, &ctx.scan_id)
         {
-            let coords = format!("{lat:.6},{lon:.6}");
-            // Confidence scaled by IP type: hosting/proxy locations are
-            // datacenter-level (low geo value), mobile IPs are cell-tower-level.
-            // Recalibrated downward from the old 0.45 / 0.60 / 0.70 trio —
-            // free IP-geo providers routinely miss residential geolocation
-            // by 30–80 km even for "fixed" connections, which the prior
-            // confidence overstated. The engine relies on confidence to
-            // rank expansion candidates, and a single overstated IP-geo
-            // hit was outranking a corroborated WiGLE WiFi fix at 0.85.
-            let base_conf = if data.hosting == Some(true) || data.proxy == Some(true) {
-                0.35
-            } else if data.mobile == Some(true) {
-                0.50
-            } else {
-                0.60
-            };
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, base_conf, &ctx.scan_id);
-            e.tag("geoint");
             if let Some(cc) = data.country_code.as_deref() {
                 e.tag(format!("country:{}", cc.to_uppercase()));
             }
