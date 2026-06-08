@@ -635,14 +635,20 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
         // Strip the test module so a `use is_valid_coords` in a unit test
         // doesn't count against the production gate.
         let prod = src.split("mod tests").next().unwrap_or(&src);
-        if !prod.contains("is_plausible_provider_coord") {
+        // The gate is satisfied either by calling `is_plausible_provider_coord`
+        // directly OR by building the entity through `coarse_provider_coords`,
+        // which applies that exact gate internally (ipinfo/ipapi/ip2location/
+        // ipquery were consolidated onto the helper).
+        let gated = prod.contains("is_plausible_provider_coord")
+            || prod.contains("coarse_provider_coords");
+        if !gated {
             offenders.push(*provider);
         }
     }
     assert!(
         offenders.is_empty(),
         "coarse IP/WiFi-geo provider(s) {offenders:?} do not gate coordinates on \
-         is_plausible_provider_coord — a null-island placeholder could become a \
+         is_plausible_provider_coord / coarse_provider_coords — a null-island placeholder could become a \
          false geoint fix. Use crate::util::geo::is_plausible_provider_coord."
     );
 }

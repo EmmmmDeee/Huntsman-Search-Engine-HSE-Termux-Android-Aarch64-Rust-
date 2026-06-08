@@ -644,6 +644,37 @@ pub mod geo {
         is_valid_coords(lat, lon) && lat.abs() > NULL_ISLAND_BAND && lon.abs() > NULL_ISLAND_BAND
     }
 
+    /// Build the coarse IP-geolocation `geoint` Coordinates entity shared by the
+    /// IP-geo provider modules (`ipinfo` / `ipapi` / `ip2location` / `ipquery`):
+    /// the plausibility gate ([`is_plausible_provider_coord`]), the 4-decimal
+    /// (~11 m — honest for city-level IP geo, not GPS precision) formatting, and
+    /// the `geoint` tag. Born identically whichever provider returned the fix, so
+    /// the formatting and tag can't drift between four near-identical modules.
+    ///
+    /// Returns `None` for an implausible fix (null-island band / out-of-range /
+    /// non-finite), letting the caller gate its whole emit block with
+    /// `if let Some(mut ce) = coarse_provider_coords(..) { ce.tag(provider); .. }`.
+    /// The caller adds its own provider tag and evidence.
+    #[must_use]
+    pub fn coarse_provider_coords(
+        lat: f64,
+        lon: f64,
+        confidence: f64,
+        scan_id: &str,
+    ) -> Option<crate::core::entity::Entity> {
+        if !is_plausible_provider_coord(lat, lon) {
+            return None;
+        }
+        let mut e = crate::core::entity::Entity::new(
+            crate::core::entity::EntityKind::Coordinates,
+            format!("{lat:.4},{lon:.4}"),
+            confidence,
+            scan_id,
+        );
+        e.tag(crate::core::tags::GEOINT);
+        Some(e)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -688,6 +719,23 @@ pub mod geo {
         fn plausible_provider_coord_keeps_real_fixes() {
             assert!(is_plausible_provider_coord(-27.4766, 153.0166)); // Brisbane
             assert!(is_plausible_provider_coord(51.5074, -0.1278)); // London
+        }
+
+        #[test]
+        fn coarse_provider_coords_builds_a_gated_geoint_entity() {
+            use crate::core::entity::EntityKind;
+            // A real fix: 4-decimal value, Coordinates kind, geoint tag, the given
+            // confidence. This is the identical birth the four IP-geo modules share.
+            let e = coarse_provider_coords(-27.476600, 153.016601, 0.58, "scan-x")
+                .expect("a plausible fix yields an entity");
+            assert_eq!(e.kind, EntityKind::Coordinates);
+            assert_eq!(e.raw_value, "-27.4766,153.0166"); // 4-decimal coarse format
+            assert!(e.has_tag(crate::core::tags::GEOINT));
+            assert!((e.confidence - 0.58).abs() < 1e-9);
+            // An implausible fix (null-island band / out-of-range) gates the whole
+            // emit block to None.
+            assert!(coarse_provider_coords(0.001, 0.001, 0.58, "scan-x").is_none());
+            assert!(coarse_provider_coords(200.0, 10.0, 0.58, "scan-x").is_none());
         }
 
         #[test]

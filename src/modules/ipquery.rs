@@ -191,13 +191,11 @@ impl Module for IpQuery {
             );
         }
         if let Some(loc) = data.location.as_ref().filter(|_| !skip_geo) {
+            // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
             if let (Some(lat), Some(lon)) = (loc.latitude, loc.longitude)
-                && crate::util::geo::is_plausible_provider_coord(lat, lon)
+                && let Some(mut ce) =
+                    crate::util::geo::coarse_provider_coords(lat, lon, 0.58, &ctx.scan_id)
             {
-                let coords = format!("{lat:.4},{lon:.4}");
-                // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
-                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.58, &ctx.scan_id);
-                ce.tag(tags::GEOINT);
                 ce.tag("ipquery");
                 ce.add_evidence(Evidence::new(SRC, format!("Geolocation for {ip}")));
                 result.push(ce);
