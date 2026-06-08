@@ -621,7 +621,7 @@ impl Store {
                  FROM entities e
                  JOIN entity_observations o ON o.entity_uid = e.uid
                  WHERE o.scan_id = ?1
-                 ORDER BY e.confidence DESC",
+                 ORDER BY e.confidence DESC, e.uid ASC",
             )?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
             rows.filter_map(std::result::Result::ok).collect()
@@ -676,7 +676,7 @@ impl Store {
             sql.push_str(&format!(" AND e.value LIKE ?{next_param} ESCAPE '\\'"));
             let _ = next_param;
         }
-        sql.push_str(" ORDER BY e.confidence DESC LIMIT 500");
+        sql.push_str(" ORDER BY e.confidence DESC, e.uid ASC LIMIT 500");
 
         let raw: Vec<String> = {
             let conn = self.conn.lock();
@@ -751,7 +751,7 @@ impl Store {
                    FROM entities_fts f
                    JOIN entities e ON e.rowid = f.rowid
                   WHERE entities_fts MATCH ?1
-                  ORDER BY bm25(entities_fts), e.confidence DESC
+                  ORDER BY bm25(entities_fts), e.confidence DESC, e.uid ASC
                   LIMIT ?2",
             ) && let Ok(rows) =
                 stmt.query_map(params![fts_expr, limit as i64], |r| r.get::<_, String>(0))
@@ -772,7 +772,7 @@ impl Store {
         let pattern = format!("%{}%", escape_like(trimmed));
         let mut stmt = conn.prepare_cached(
             "SELECT data_json FROM entities WHERE value LIKE ?1 ESCAPE '\\' \
-             ORDER BY confidence DESC LIMIT ?2",
+             ORDER BY confidence DESC, uid ASC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![pattern, limit as i64], |r| r.get::<_, String>(0))?;
         let raw: Vec<String> = rows.filter_map(std::result::Result::ok).collect();
@@ -981,6 +981,49 @@ mod tests {
         assert_eq!(from_b.len(), 1, "scan-b should see the entity");
         assert_eq!(from_a[0].uid, from_b[0].uid);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn entities_for_scan_orders_deterministically_on_confidence_ties() {
+        // `ORDER BY confidence DESC` alone is non-deterministic when entities
+        // share a confidence (the common case — e.g. every name permutation gets
+        // the same score): SQLite returns tied rows in unspecified order, which
+        // varies with insertion/btree order and leaks into the scan's JSON/dossier
+        // output (proven end-to-end: identical scans differed only in entity
+        // order). The `, uid ASC` tie-break must make retrieval order a pure
+        // function of the data. Insert the same set in two different orders and
+        // require identical retrieval order, sorted by (confidence desc, uid asc).
+        let order_of = |insert: &[&str]| -> Vec<String> {
+            let path = tmp_db();
+            let store = Store::open(&path).unwrap();
+            insert_scan(&store, "s-tie");
+            for v in insert {
+                // Identical confidence on purpose, so uid is the only tie-break.
+                store
+                    .upsert_entity(&Entity::new(EntityKind::Username, *v, 0.5, "s-tie"))
+                    .unwrap();
+            }
+            let got: Vec<String> = store
+                .entities_for_scan("s-tie")
+                .unwrap()
+                .into_iter()
+                .map(|e| e.uid)
+                .collect();
+            let _ = std::fs::remove_file(&path);
+            got
+        };
+
+        let forward = order_of(&["alice", "bob", "carol", "dave", "erin"]);
+        let reversed = order_of(&["erin", "dave", "carol", "bob", "alice"]);
+        assert_eq!(
+            forward, reversed,
+            "retrieval order must not depend on insertion order"
+        );
+
+        // And it must be exactly ascending-by-uid (all confidences equal).
+        let mut expected = forward.clone();
+        expected.sort();
+        assert_eq!(forward, expected, "tie-break must be uid ascending");
     }
 
     #[test]
