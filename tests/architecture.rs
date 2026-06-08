@@ -603,3 +603,46 @@ fn runtime_carries_no_ai_ml_inference_dependency() {
          development-time accelerator only). See docs/RUNTIME_INDEPENDENCE.md."
     );
 }
+
+/// Every coarse IP/WiFi-geolocation provider must gate its emitted coordinates
+/// on `is_plausible_provider_coord`, not the precise `is_valid_coords`.
+///
+/// These sources resolve to a city/region centroid and emit a sub-degree
+/// null-island *jitter band* (`0.005,0.005`-style "no fix" placeholder) when
+/// they have no location. `is_valid_coords` rejects only exact `0,0`, so gating
+/// a coarse provider on it lets that placeholder through as a high-confidence
+/// `geoint` fix that poisons the AU-014/AU-017 geo-cluster correlator —
+/// precisely the drift that slipped into `ip_whois_geo` until it was corrected.
+/// Pin the categorization here so a new (or edited) coarse provider can't
+/// silently pick the wrong validator.
+#[test]
+fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
+    const COARSE_PROVIDERS: &[&str] = &[
+        "ip_geo",
+        "ipinfo",
+        "ipapi",
+        "ip2location",
+        "ipquery",
+        "ip_whois_geo",
+        "wigle",
+    ];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/modules");
+    let mut offenders = Vec::new();
+    for provider in COARSE_PROVIDERS {
+        let path = root.join(format!("{provider}.rs"));
+        let src = fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("coarse provider {provider} missing at {path:?}"));
+        // Strip the test module so a `use is_valid_coords` in a unit test
+        // doesn't count against the production gate.
+        let prod = src.split("mod tests").next().unwrap_or(&src);
+        if !prod.contains("is_plausible_provider_coord") {
+            offenders.push(*provider);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "coarse IP/WiFi-geo provider(s) {offenders:?} do not gate coordinates on \
+         is_plausible_provider_coord — a null-island placeholder could become a \
+         false geoint fix. Use crate::util::geo::is_plausible_provider_coord."
+    );
+}
