@@ -377,6 +377,58 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
     out
 }
 
+/// Derive `DerivedFrom` edges from each name-derived Username/Email back to the
+/// subject Person it was permuted from.
+///
+/// `name_intel` produces speculative usernames/emails from a Person seed in a
+/// single module call, so the engine's expansion lineage never links them — the
+/// provenance survives only as each handle's `source_name` evidence attribute.
+/// Without an edge the dossier is the subject Person plus a pile of orphan
+/// handles; this turns the recorded provenance into a graph edge so every derived
+/// handle points back at the individual it came from (a graph/report export then
+/// shows the Person as the hub — the "individualised result" the engine is for).
+///
+/// Only `name-derived`-tagged entities are considered, matched case-insensitively
+/// by their `source_name` against present Person entities, so no unrelated entity
+/// can spuriously attach. The edge carries the handle's own (speculative)
+/// confidence, so a guessed handle's lineage never inflates its weight.
+/// Deterministic: one edge per matching handle, emitted in entity order.
+pub fn derive_name_lineage(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::HashMap;
+
+    let persons: HashMap<String, &Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .map(|e| (e.value.trim().to_lowercase(), e))
+        .collect();
+    if persons.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for e in entities.iter().filter(|e| e.has_tag("name-derived")) {
+        let Some(src) = e
+            .evidence
+            .iter()
+            .find_map(|ev| ev.attributes.get("source_name"))
+        else {
+            continue;
+        };
+        if let Some(person) = persons.get(src.trim().to_lowercase().as_str())
+            && person.uid != e.uid
+        {
+            out.push(Relation::new(
+                e.uid.as_str(),
+                person.uid.as_str(),
+                RelationKind::DerivedFrom,
+                e.confidence,
+                scan_id,
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,6 +436,39 @@ mod tests {
 
     fn ent(kind: EntityKind, value: &str, conf: f64) -> Entity {
         Entity::new(kind, value, conf, "rel-scan")
+    }
+
+    #[test]
+    fn name_lineage_links_derived_handles_to_the_subject_person() {
+        use crate::core::entity::Evidence;
+        let person = ent(EntityKind::Person, "Jane Smith", 0.6);
+
+        // Two name-derived handles carrying the subject as `source_name`.
+        let mut uname = ent(EntityKind::Username, "jsmith", 0.38);
+        uname.tag("name-derived");
+        uname.add_evidence(Evidence::new("name_intel", "derived").with_attr("source_name", "Jane Smith"));
+        let mut email = ent(EntityKind::Email, "jane.smith@gmail.com", 0.30);
+        email.tag("name-derived");
+        email.add_evidence(
+            Evidence::new("name_intel", "permuted").with_attr("source_name", "jane smith"), // case-insensitive
+        );
+
+        // An unrelated handle: not name-derived → must NOT link.
+        let other = ent(EntityKind::Username, "unrelated", 0.5);
+
+        let ents = vec![person.clone(), uname.clone(), email.clone(), other];
+        let rels = derive_name_lineage(&ents, "s");
+
+        assert_eq!(rels.len(), 2, "both name-derived handles link, the orphan does not");
+        for r in &rels {
+            assert_eq!(r.kind, RelationKind::DerivedFrom);
+            assert_eq!(r.to_uid, person.uid, "edge points at the subject Person");
+        }
+        assert!(rels.iter().any(|r| r.from_uid == uname.uid));
+        assert!(rels.iter().any(|r| r.from_uid == email.uid));
+
+        // No Person present → no edges (and no panic).
+        assert!(derive_name_lineage(&[uname, email], "s").is_empty());
     }
 
     #[test]

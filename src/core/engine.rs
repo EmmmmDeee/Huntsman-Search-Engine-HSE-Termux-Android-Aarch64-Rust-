@@ -593,11 +593,13 @@ impl ScanEngine {
         let colocation = crate::core::relation::derive_colocation(entities, scan_id);
         let resolution = crate::core::relation::derive_resolution(entities, scan_id);
         let registration = crate::core::relation::derive_registration(entities, scan_id);
+        let name_lineage = crate::core::relation::derive_name_lineage(entities, scan_id);
         if lineage.is_empty()
             && structural.is_empty()
             && colocation.is_empty()
             && resolution.is_empty()
             && registration.is_empty()
+            && name_lineage.is_empty()
         {
             return;
         }
@@ -608,6 +610,7 @@ impl ScanEngine {
             .chain(colocation.iter())
             .chain(resolution.iter())
             .chain(registration.iter())
+            .chain(name_lineage.iter())
         {
             match self.store.upsert_relation(r) {
                 Ok(()) => persisted += 1,
@@ -621,6 +624,7 @@ impl ScanEngine {
             colocation = colocation.len(),
             resolution = resolution.len(),
             registration = registration.len(),
+            name_lineage = name_lineage.len(),
             persisted,
             "entity relations persisted"
         );
