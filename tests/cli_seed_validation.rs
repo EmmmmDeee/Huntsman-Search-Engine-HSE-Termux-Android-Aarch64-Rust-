@@ -1,8 +1,9 @@
-//! CLI seed-validation guards: `hse scan` / `hse live` must reject reserved /
-//! placeholder targets at the boundary, so an "example anything" can never be
-//! dispatched against every module. Spawns the real binary (the faithful test
-//! of the wiring — a unit test on `Target::validate` can't catch a missing call
-//! site, which is exactly the gap this guards).
+//! CLI contract guards (spawn the real binary — the faithful test of the wiring
+//! that a unit test can't reach):
+//!   - seed validation: `hse scan` / `hse live` must reject reserved/placeholder
+//!     targets at the boundary, so an "example anything" can never be dispatched.
+//!   - `-o json` output discipline: stdout must be a single JSON document, with
+//!     all human-readable progress/summary on stderr, so `| jq` works.
 
 use std::process::Command;
 
@@ -49,6 +50,47 @@ fn live_rejects_placeholder_domain() {
         err.contains("reserved/placeholder") || err.contains("invalid target"),
         "{err}"
     );
+}
+
+#[test]
+fn scan_json_stdout_is_pure_json() {
+    // The `-o json` contract for the most-used command: stdout is a single JSON
+    // document (scan + entities + correlations + diagnostics), with all progress
+    // and the "full dossier:" notice on stderr. Offline modules only (no network)
+    // so the test is hermetic. Guards the same stdout/stderr discipline the import
+    // fix established, across the command an operator is most likely to pipe.
+    let dir = std::env::temp_dir().join(format!("hse-scan-json-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let out = Command::new(BIN)
+        .args([
+            "scan",
+            "-v",
+            "Jane Smith",
+            "-k",
+            "name",
+            "--modules",
+            "name_intel",
+            "--throttle",
+            "0",
+            "-o",
+            "json",
+        ])
+        .env("RUST_LOG", "off")
+        .env("HOME", &dir)
+        .output()
+        .expect("spawn hse scan");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("scan -o json stdout is not pure JSON ({e}):\n{stdout}"));
+    for key in ["scan", "entities", "correlations"] {
+        assert!(
+            parsed.get(key).is_some(),
+            "scan JSON must carry `{key}`: {parsed}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
