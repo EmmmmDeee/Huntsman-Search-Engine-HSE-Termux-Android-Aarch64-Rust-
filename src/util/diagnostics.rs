@@ -890,7 +890,20 @@ fn persist_ledger(modules: &[ModulePerformance], kinds: &HashMap<String, usize>)
     }
 
     if let Ok(s) = serde_json::to_string_pretty(&ledger) {
-        let _ = std::fs::write(&path, s);
+        // Atomic write (temp + fsync + rename), not a plain truncating write: an
+        // OOM-kill mid-write — realistic on a low-RAM phone — would otherwise leave
+        // a truncated module_stats.json, which the next read here (and the adaptive
+        // scanner) discards via `unwrap_or_default()`, silently RESETTING the whole
+        // accumulated self-optimization history. Atomic rename keeps the previous
+        // valid ledger intact on a crash. Same durability the key pool / settings
+        // use. Best-effort but never silent: a failure is logged, not dropped.
+        if let Err(e) = crate::util::atomic_file::write(&path, s.as_bytes()) {
+            tracing::warn!(
+                error = %e,
+                path = %path.display(),
+                "failed to persist module-stats ledger — self-optimization history not updated this scan"
+            );
+        }
     }
 }
 
