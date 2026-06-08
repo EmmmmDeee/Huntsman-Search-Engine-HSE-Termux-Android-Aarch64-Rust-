@@ -1,19 +1,24 @@
-//! Per-target dispatch gating: decide whether a module runs against a given
-//! target this round, and how much cross-correlation a target has accumulated.
-//! Pure free functions consulted by the sequential and concurrent dispatch loops
-//! (which remain in the engine impl); split out so the gate policy reads in one
-//! place. The dispatch loops themselves and the panic-guarded module runner stay
-//! in `engine` until a later increment moves them here too.
+//! Per-target module dispatch: the sequential and concurrent loops that run a
+//! target's accepting modules, the gate that decides whether each module runs,
+//! the panic/timeout-guarded module runner, and the per-result finalize step.
+//! Split out of `engine` so the round loop (in `mod.rs`) reads as orchestration —
+//! it just calls `self.dispatch_target(..)` — while all the per-module dispatch
+//! mechanics live here. The `impl super::ScanEngine` block carries the methods;
+//! sibling engine methods (`emit`, `emit_skipped`) and free helpers are reached
+//! via `self`/`super::`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::time::timeout;
-use tracing::{debug, warn};
+use tokio::time::{sleep, timeout};
+use tracing::{debug, info, warn};
 
+use super::{DispatchLog, ModuleStats};
 use crate::core::entity::{Entity, normalise};
 use crate::core::error::{Error, Result};
-use crate::core::module::{Module, ModuleCost, ModuleResult};
+use crate::core::event::EventKind;
+use crate::core::module::{Module, ModuleContext, ModuleCost, ModuleResult};
 use crate::core::scan::{ScanOptions, Target, TargetKind};
 
 /// Dispatch-dedup key: a module is invoked at most once per `(module, normalised
@@ -57,7 +62,7 @@ pub(super) async fn run_module_guarded(
     timeout_ms: u64,
     name: &'static str,
     fut: impl std::future::Future<Output = Result<ModuleResult>>,
-) -> super::TimeoutResult {
+) -> TimeoutResult {
     use futures::FutureExt;
     match std::panic::AssertUnwindSafe(timeout(Duration::from_millis(timeout_ms), fut))
         .catch_unwind()
@@ -79,7 +84,7 @@ pub(super) async fn run_module_guarded(
 /// What a spawned per-module task returns to the consumer loop.
 pub(super) struct DispatchOutcome {
     pub(super) name: &'static str,
-    pub(super) result: super::TimeoutResult,
+    pub(super) result: TimeoutResult,
 }
 
 /// Distinct corroborating evidence-source count for the entity a `target`
@@ -196,4 +201,500 @@ pub(super) fn module_skip_reason(
         }
     }
     None
+}
+
+/// The output of one `module.process()` call after the engine wraps it
+/// in `tokio::time::timeout` — either `Elapsed` (outer timeout fired),
+/// `Err` (module returned an error), or `Ok(ModuleResult)` (success).
+pub(super) type TimeoutResult =
+    std::result::Result<Result<crate::core::module::ModuleResult>, tokio::time::error::Elapsed>;
+
+impl super::ScanEngine {
+    /// Translate one module's `process()` result into engine events
+    /// (`ModuleError` / `EntityFound` / `ModuleDone`) and merge any
+    /// emitted entities into the per-scan `entity_map`. Shared by
+    /// `dispatch_target_sequential` and `dispatch_target_concurrent`
+    /// so the event payload shape is identical between the two paths.
+    fn finalise_module_result(
+        &self,
+        scan_id: &str,
+        name: &'static str,
+        min_confidence: Option<f64>,
+        entity_map: &mut HashMap<String, Entity>,
+        result: TimeoutResult,
+        stats: &mut ModuleStats,
+    ) {
+        stats.run += 1;
+        match result {
+            Err(_) => {
+                stats.timed_out += 1;
+                warn!(module = name, "timeout");
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleError {
+                        module: name.into(),
+                        error: "timeout".into(),
+                    },
+                );
+            }
+            Ok(Err(Error::MissingKey(key))) => {
+                // An unconfigured optional provider is NOT a failure. Surface it
+                // as a clean "needs key" skip (with a free-signup hint where
+                // known) instead of a scary module error, and count it under
+                // `skipped` rather than `errored`.
+                stats.skipped += 1;
+                let reason = match crate::util::keys::signup_hint(&key) {
+                    Some(hint) => format!("needs API key {key} — {hint}"),
+                    None => format!("needs API key {key}"),
+                };
+                debug!(module = name, %key, "skipped — needs key");
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleSkipped {
+                        module: name.into(),
+                        reason,
+                    },
+                );
+            }
+            Ok(Err(e)) => {
+                stats.errored += 1;
+                warn!(module = name, error = %e, "module error");
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleError {
+                        module: name.into(),
+                        error: e.to_string(),
+                    },
+                );
+            }
+            Ok(Ok(mut mr)) => {
+                let mut found = 0usize;
+                for entity in mr.entities.drain(..) {
+                    if let Some(min) = min_confidence
+                        && entity.confidence < min
+                    {
+                        continue;
+                    }
+                    // Drop guaranteed-bogus IPs (documentation / reserved /
+                    // benchmark ranges, e.g. 192.0.2.1 scraped off a tutorial
+                    // page) at admission so they never enter the graph, fire
+                    // correlations, or appear as findings. RFC1918 private and
+                    // loopback are intentionally kept — local sensors surface
+                    // those legitimately on-device.
+                    if entity.kind == crate::core::entity::EntityKind::IpAddress
+                        && crate::core::validation::is_bogus_ip(&entity.value)
+                    {
+                        self.emit_excluded(scan_id, &entity, "bogus_ip");
+                        continue;
+                    }
+                    // Drop documentation / placeholder artifacts (example.com,
+                    // jordan@example.com, http://example.com, the `example`
+                    // username, "John Doe", …) at admission so they never enter
+                    // the graph, expand into whole infrastructure rounds, or
+                    // fire correlations. Inherently-unique secrets (passwords /
+                    // API keys / credentials) are exempt — see
+                    // `validation::is_placeholder_entity`.
+                    if crate::core::validation::is_placeholder_entity(&entity.kind, &entity.value) {
+                        self.emit_excluded(scan_id, &entity, "placeholder_artifact");
+                        continue;
+                    }
+                    // Drop truncated / incomplete values (`@gmail`, a domain-less
+                    // email, a bare dotless host, a `@`-prefixed handle that
+                    // failed to normalise) at admission so the user never sees an
+                    // unverifiable fragment. The auditor independently flags any
+                    // that somehow slip through (`fragment-values`).
+                    if crate::core::validation::is_fragment_value(&entity.kind, &entity.value) {
+                        self.emit_excluded(scan_id, &entity, "fragment_value");
+                        continue;
+                    }
+                    self.emit(
+                        scan_id,
+                        EventKind::EntityFound {
+                            entity: entity.clone(),
+                        },
+                    );
+                    super::scan_entity_for_keys(&entity);
+                    let mut entity = entity;
+                    super::enrich_geospatial(&mut entity);
+                    if let Some(existing) = entity_map.get_mut(&entity.uid) {
+                        existing.merge(entity);
+                    } else {
+                        entity_map.insert(entity.uid.clone(), entity);
+                    }
+                    found += 1;
+                }
+                self.emit(
+                    scan_id,
+                    EventKind::ModuleDone {
+                        module: name.into(),
+                        found,
+                    },
+                );
+                info!(module = name, found, "done");
+            }
+        }
+    }
+
+    /// Dispatch every accepting module against `target`. Picks the
+    /// sequential or concurrent codepath based on `opts.max_concurrent`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn dispatch_target(
+        &self,
+        scan_id: &str,
+        target: &Target,
+        ctx: &mut ModuleContext,
+        opts: &ScanOptions,
+        entity_map: &mut HashMap<String, Entity>,
+        is_expansion: bool,
+        stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
+    ) -> Result<()> {
+        if opts.max_concurrent == 0 {
+            self.dispatch_target_sequential(
+                scan_id,
+                target,
+                ctx,
+                opts,
+                entity_map,
+                is_expansion,
+                stats,
+                dispatched,
+            )
+            .await
+        } else {
+            self.dispatch_target_concurrent(
+                scan_id,
+                target,
+                ctx,
+                opts,
+                entity_map,
+                is_expansion,
+                stats,
+                dispatched,
+            )
+            .await
+        }
+    }
+
+    /// Gate check shared by the sequential path and both concurrent phases: if
+    /// `module` is filtered out for this `target` (excluded / disabled-in-config /
+    /// not-in-allowlist / free-only / passive-only / sensor / insufficient
+    /// cross-correlation), count it in `modules_skipped`, emit the `ModuleSkipped`
+    /// event, and return `true` so the caller skips to the next module.
+    ///
+    /// One definition keeps the skip tally faithful and identical across all
+    /// three dispatch loops — toggling a module off is observable in the scan
+    /// summary, not just the event stream, and the counting can't drift between
+    /// the sequential and the two concurrent phases.
+    #[allow(clippy::too_many_arguments)]
+    fn gate_skips(
+        &self,
+        scan_id: &str,
+        module: &dyn Module,
+        name: &'static str,
+        target: &Target,
+        opts: &ScanOptions,
+        is_expansion: bool,
+        target_sources: usize,
+        stats: &mut ModuleStats,
+    ) -> bool {
+        if let Some(reason) =
+            module_skip_reason(module, target, opts, is_expansion, target_sources)
+        {
+            stats.skipped += 1;
+            self.emit_skipped(scan_id, name, reason);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Sequential dispatcher (max_concurrent == 0).
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_target_sequential(
+        &self,
+        scan_id: &str,
+        target: &Target,
+        ctx: &mut ModuleContext,
+        opts: &ScanOptions,
+        entity_map: &mut HashMap<String, Entity>,
+        is_expansion: bool,
+        stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
+    ) -> Result<()> {
+        // O(1) dispatch-index lookup replaces the O(M) accepts() scan.
+        // Modules are already priority-sorted within each bucket so we
+        // walk them in the same order the legacy `for module in &self.modules`
+        // loop did. Iterating index-by-index (instead of pre-allocating
+        // a `Vec<Arc<dyn Module>>` and Arc-cloning per target) avoids
+        // a heap allocation + N atomic increments per dispatch — meaningful
+        // on the hot path that runs once per expansion candidate.
+        // Distinct-source count of the target entity (for the high-value-API
+        // cross-correlation gate); computed once per target, not per module.
+        let target_sources = target_distinct_sources(entity_map, target);
+        for &idx in self.graph.modules_for(target.kind) {
+            let Some(module) = self.modules.get(idx) else {
+                continue;
+            };
+            if ctx.cancel.is_cancelled() {
+                return Ok(());
+            }
+            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
+                return Ok(());
+            }
+            let name = module.name();
+
+            // Belt-and-braces: a module whose `consumes()` declaration
+            // diverges from its runtime `accepts()` would otherwise
+            // slip through. Cheap re-check on the hit path.
+            if !module.accepts(target) {
+                continue;
+            }
+            if self.gate_skips(scan_id, &**module, name, target, opts, is_expansion, target_sources, stats)
+            {
+                continue;
+            }
+            if !matches!(module.cost(), ModuleCost::Free)
+                && !dispatched.insert(dispatch_key(name, target))
+            {
+                stats.deduped += 1;
+                self.emit_skipped(scan_id, name, "already dispatched for this target");
+                continue;
+            }
+
+            log_module_dispatch(name, target);
+            self.emit(
+                scan_id,
+                EventKind::ModuleStart {
+                    module: name.into(),
+                },
+            );
+
+            let result = run_module_guarded(
+                super::resolve_timeout(opts, &**module),
+                name,
+                module.process(target, ctx),
+            )
+            .await;
+
+            self.finalise_module_result(
+                scan_id,
+                name,
+                opts.min_confidence,
+                entity_map,
+                result,
+                stats,
+            );
+
+            super::hot_inject_keys(&mut ctx.keys);
+
+            // Re-check the cancel flag before the throttle sleep so an
+            // operator cancel between modules doesn't pay the full
+            // `throttle_ms` latency before the next gate at the top of
+            // the loop is reached. The throttle exists to be polite to
+            // upstreams; once the operator has asked us to stop there's
+            // nothing left to be polite about.
+            if ctx.cancel.is_cancelled() {
+                return Ok(());
+            }
+            if opts.throttle_ms > 0 {
+                sleep(Duration::from_millis(opts.throttle_ms)).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Concurrent dispatcher (max_concurrent > 0). Launches up to `opts.max_concurrent`
+    /// modules at a time via a Semaphore; collects results as tasks complete.
+    ///
+    /// Paid modules run synchronously first (key-discovery-first pattern):
+    /// oathnet_pro, dehashed, intelx discover API keys that hot-inject into
+    /// ctx before the remaining modules are spawned concurrently. Without this,
+    /// all modules launch with a cloned ctx that lacks discovered keys.
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_target_concurrent(
+        &self,
+        scan_id: &str,
+        target: &Target,
+        ctx: &mut ModuleContext,
+        opts: &ScanOptions,
+        entity_map: &mut HashMap<String, Entity>,
+        is_expansion: bool,
+        stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
+    ) -> Result<()> {
+        use tokio::sync::Semaphore;
+        use tokio::task::JoinSet;
+
+        // O(1) dispatch-index lookup — only modules accepting `target.kind`
+        // are even considered. Phase 1 then filters to Paid. We iterate
+        // indices directly rather than allocating a `Vec<Arc<dyn Module>>`
+        // and Arc-cloning per target; on the hot path this saves a heap
+        // allocation + N atomic increments per dispatch.
+
+        // Phase 1: Run Paid modules synchronously so discovered keys are
+        // available via hot-inject before the concurrent phase begins.
+        let target_sources = target_distinct_sources(entity_map, target);
+        for &idx in self.graph.modules_for(target.kind) {
+            let Some(module) = self.modules.get(idx) else {
+                continue;
+            };
+            if !matches!(module.cost(), ModuleCost::Paid) {
+                continue;
+            }
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+            let name = module.name();
+            if !module.accepts(target) {
+                continue;
+            }
+            if self.gate_skips(scan_id, &**module, name, target, opts, is_expansion, target_sources, stats)
+            {
+                continue;
+            }
+            if !dispatched.insert(dispatch_key(name, target)) {
+                stats.deduped += 1;
+                self.emit_skipped(scan_id, name, "already dispatched for this target");
+                continue;
+            }
+            log_module_dispatch(name, target);
+            self.emit(
+                scan_id,
+                EventKind::ModuleStart {
+                    module: name.into(),
+                },
+            );
+            let result = run_module_guarded(
+                super::resolve_timeout(opts, &**module),
+                name,
+                module.process(target, ctx),
+            )
+            .await;
+            self.finalise_module_result(
+                scan_id,
+                name,
+                opts.min_confidence,
+                entity_map,
+                result,
+                stats,
+            );
+            // Hot-inject discovered keys so Phase 2 modules can use them.
+            // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
+            // cascade — their outputs feed web_crawler/search_engines, which
+            // discover MORE keys.
+            super::hot_inject_keys(&mut ctx.keys);
+        }
+
+        // Phase 2: Spawn remaining (Free + KeyGated) modules concurrently.
+        // ctx now contains any keys discovered in Phase 1. Same
+        // index-iteration pattern as Phase 1 — Arc::clone moves to the
+        // single spawn site below, instead of being paid for every
+        // candidate during candidate-list construction.
+        let sem = Arc::new(Semaphore::new(opts.max_concurrent));
+        let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
+        let scan_id_arc: Arc<str> = scan_id.into();
+        // Share one context across all spawned modules in this round instead of
+        // deep-cloning the keys map + scan_id per dispatch. Modules take
+        // `&ModuleContext` (read-only) and ctx is stable within a round, so an
+        // Arc bump per spawn replaces N HashMap/String clones — a real win on a
+        // low-RAM phone with ~80 modules/round.
+        let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
+
+        let target_sources = target_distinct_sources(entity_map, target);
+        for &idx in self.graph.modules_for(target.kind) {
+            let Some(module) = self.modules.get(idx) else {
+                continue;
+            };
+            if matches!(module.cost(), ModuleCost::Paid) {
+                continue;
+            }
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
+                break;
+            }
+            let name = module.name();
+
+            if !module.accepts(target) {
+                continue;
+            }
+            if self.gate_skips(scan_id, &**module, name, target, opts, is_expansion, target_sources, stats)
+            {
+                continue;
+            }
+            if !matches!(module.cost(), ModuleCost::Free)
+                && !dispatched.insert(dispatch_key(name, target))
+            {
+                stats.deduped += 1;
+                self.emit_skipped(scan_id, name, "already dispatched for this target");
+                continue;
+            }
+
+            let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
+                break;
+            };
+
+            let module_arc: Arc<dyn Module> = Arc::clone(module);
+            let target = target.clone();
+            let ctx = Arc::clone(&ctx_shared);
+            let emitter = self.emitter.clone();
+            let sid = Arc::clone(&scan_id_arc);
+            let throttle_ms = opts.throttle_ms;
+            let module_timeout_ms = super::resolve_timeout(opts, &*module_arc);
+
+            set.spawn(async move {
+                let _permit = permit;
+
+                log_module_dispatch(name, &target);
+                emitter.emit(
+                    &sid,
+                    EventKind::ModuleStart {
+                        module: name.into(),
+                    },
+                );
+
+                let result =
+                    run_module_guarded(module_timeout_ms, name, module_arc.process(&target, &ctx))
+                        .await;
+
+                if throttle_ms > 0 {
+                    sleep(Duration::from_millis(throttle_ms)).await;
+                }
+
+                DispatchOutcome { name, result }
+            });
+        }
+
+        while let Some(joined) = set.join_next().await {
+            let outcome = match joined {
+                Ok(o) => o,
+                Err(e) if e.is_cancelled() => {
+                    tracing::debug!("concurrent module task cancelled");
+                    continue;
+                }
+                Err(e) => {
+                    warn!(error = %e, "concurrent module task panicked");
+                    self.emit(
+                        scan_id,
+                        EventKind::ModuleError {
+                            module: "unknown (panicked)".into(),
+                            error: e.to_string(),
+                        },
+                    );
+                    continue;
+                }
+            };
+            self.finalise_module_result(
+                scan_id,
+                outcome.name,
+                opts.min_confidence,
+                entity_map,
+                outcome.result,
+                stats,
+            );
+        }
+        Ok(())
+    }
 }
