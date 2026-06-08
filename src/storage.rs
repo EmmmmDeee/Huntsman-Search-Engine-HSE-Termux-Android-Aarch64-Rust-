@@ -170,10 +170,28 @@ impl Store {
             .query_row("SELECT count(*) FROM entities", [], |r| r.get(0))
             .unwrap_or(0);
         if fts_count == 0 && ent_count > 0 {
-            let _ = conn.execute_batch("INSERT INTO entities_fts(entities_fts) VALUES('rebuild');");
+            // If this fails the FTS index stays empty and search silently returns
+            // nothing — the exact "search is broken with no diagnostic" failure
+            // mode HSE exists to avoid. Best-effort (a missing index must not
+            // block startup), but never silent: leave a trace to debug from.
+            if let Err(e) =
+                conn.execute_batch("INSERT INTO entities_fts(entities_fts) VALUES('rebuild');")
+            {
+                tracing::warn!(
+                    error = %e,
+                    entities = ent_count,
+                    "FTS rebuild failed at init — full-text search may return no results until the index is rebuilt"
+                );
+            } else {
+                tracing::info!(entities = ent_count, "rebuilt empty FTS index from existing rows");
+            }
         }
 
-        let _ = conn.execute_batch("PRAGMA optimize;");
+        // Query-planner statistics refresh — purely advisory; a failure costs at
+        // most a suboptimal plan, never correctness, so it stays best-effort.
+        if let Err(e) = conn.execute_batch("PRAGMA optimize;") {
+            tracing::debug!(error = %e, "PRAGMA optimize failed (non-fatal)");
+        }
 
         Ok(Self {
             conn: Mutex::new(conn),
