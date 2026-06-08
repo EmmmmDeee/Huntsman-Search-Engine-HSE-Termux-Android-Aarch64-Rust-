@@ -674,6 +674,7 @@ fn parse_dossier(body: &str, sid: &str) -> (Vec<crate::core::entity::Entity>, Im
                 "email",
                 "name",
                 "domain",
+                "ip",
                 "id",
                 "created",
                 "updated",
@@ -797,6 +798,42 @@ fn emit_dossier_entry(
             );
             stats.credentials += 1;
         }
+    }
+    // A dossier entry's `ip` / `phone` / `domain` are first-class pivotable seeds,
+    // not just evidence attributes — the whole point of expansion is to re-scan
+    // them. The JSON importer already emits IpAddress from `ip`; the text path
+    // must match, or the same breach record yields fewer leads depending only on
+    // its file format. Each is validated so malformed/placeholder values
+    // ("256.256.256.256", "+0…") don't become high-confidence false seeds.
+    if let Some(ip) = get("ip")
+        && ip.parse::<std::net::IpAddr>().is_ok()
+        && !crate::core::validation::is_bogus_ip(ip)
+        && seen.insert(format!("ip:{ip}"))
+    {
+        push(Entity::new(EntityKind::IpAddress, ip, 0.65, sid), "breach");
+        stats.ips += 1;
+    }
+    if let Some(ph) = get("phone")
+        && crate::core::validation::validate_phone_e164(ph).valid
+        && seen.insert(format!("ph:{ph}"))
+    {
+        push(Entity::new(EntityKind::Phone, ph, 0.62, sid), "breach");
+        stats.phones += 1;
+    }
+    // A dossier's `_domain` is usually the email's OWN host (gmail.com) —
+    // freemail/mega-domains are useless pivots (deep-expanding them maps a
+    // platform, not the subject), so gate them out exactly as the engine's
+    // expansion does. A genuine corporate domain still becomes a seed.
+    if let Some(dom) = get("domain").map(str::to_ascii_lowercase)
+        && dom.contains('.')
+        && !crate::util::domains::is_freemail(&dom)
+        && !crate::core::scan::is_mega_domain(&dom)
+        && !crate::core::validation::is_placeholder_domain(&dom)
+        && !is_fragment_value(&EntityKind::Domain, &dom)
+        && seen.insert(format!("dom:{dom}"))
+    {
+        push(Entity::new(EntityKind::Domain, &dom, 0.60, sid), "breach");
+        stats.domains += 1;
     }
     entry.clear();
 }
@@ -1201,6 +1238,7 @@ struct ImportStats {
     stealer_docs: usize,
     victim_records: usize,
     emails: usize,
+    phones: usize,
     ips: usize,
     domains: usize,
     subdomains: usize,
@@ -1337,8 +1375,8 @@ fn create_geolocation_entities(
 fn print_import_stats(stats: &ImportStats, entity_count: usize) {
     println!("Imported {} entities:", entity_count);
     println!(
-        "  Identity:  {} emails, {} usernames, {} persons, {} device users, {} Discord IDs",
-        stats.emails, stats.usernames, stats.persons, stats.device_users, stats.discord_ids
+        "  Identity:  {} emails, {} phones, {} usernames, {} persons, {} device users, {} Discord IDs",
+        stats.emails, stats.phones, stats.usernames, stats.persons, stats.device_users, stats.discord_ids
     );
     if stats.credentials > 0 {
         println!("  Creds:     {} password hashes", stats.credentials);
@@ -1483,6 +1521,8 @@ mod tests {
        \u{2022} email: zacfrost512@gmail.com
        \u{2022} name: Isaac Frost
        \u{2022} _domain: gmail.com
+       \u{2022} ip: 8.8.8.8
+       \u{2022} phone: +61412345678
        \u{2022} id: 9540629
        \u{2022} created: 2016-02-19 15:57:12
        \u{2022} language: en
@@ -1490,6 +1530,8 @@ mod tests {
        \u{2022} username: IsaacFrost6
        \u{2022} email: frostisms@gmail.com
        \u{2022} name: Isaac Frost
+       \u{2022} domain: derbyrock.com
+       \u{2022} ip: 203.0.113.45
        \u{2022} birthdate: 2002-11-17
        \u{2022} country: GB
        \u{2022} gender: M
@@ -1540,6 +1582,16 @@ PASSWORDS:
         assert!(!ents.iter().any(|e| e.value == "@gmail"));
         // The freemail `_domain` is NOT emitted as a bare Domain entity.
         assert!(!has(EntityKind::Domain, "gmail.com"));
+
+        // `ip`/`phone`/`domain` entry fields are first-class pivotable seeds — the
+        // text path now matches the JSON importer's coverage. Each is validated:
+        // a routable IP, a corporate domain and an E.164 phone are kept…
+        assert!(has(EntityKind::IpAddress, "8.8.8.8"));
+        assert!(has(EntityKind::Phone, "+61412345678"));
+        assert!(has(EntityKind::Domain, "derbyrock.com"));
+        // …while a documentation-range IP (RFC 5737) is rejected as bogus, never
+        // becoming a high-confidence false seed.
+        assert!(!has(EntityKind::IpAddress, "203.0.113.45"));
 
         // Individualised: the per-entry evidence carries the FULL record, so
         // birthdate/country/gender are verifiable on the finding, not lost.
