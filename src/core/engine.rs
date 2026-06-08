@@ -679,11 +679,26 @@ impl ScanEngine {
             .iter()
             .map(|e| (e.uid.clone(), e.c_effective()))
             .collect();
-        let mut fresh: Vec<crate::core::correlator::Correlation> =
+        // Contain a correlator panic exactly as module dispatch does
+        // (`run_module_guarded`): the 34 AU-rules run index/parse-heavy logic over
+        // entity data, so a single malformed value in one rule must degrade to "no
+        // new correlations this round" rather than unwind through finalize and lose
+        // the scan. Entities are already checkpointed and persisted, so nothing
+        // discovered is lost — only this round's correlation pass is skipped.
+        let produced = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::core::correlator::correlate_entities(entities, scan_id)
-                .into_iter()
-                .filter(|c| emitted.insert(correlation_key(c)))
-                .collect();
+        }))
+        .unwrap_or_else(|_| {
+            warn!(
+                scan_id,
+                "correlation pass panicked — entities preserved, correlations skipped this round"
+            );
+            Vec::new()
+        });
+        let mut fresh: Vec<crate::core::correlator::Correlation> = produced
+            .into_iter()
+            .filter(|c| emitted.insert(correlation_key(c)))
+            .collect();
         crate::core::correlator::rank_and_sort(&mut fresh, &ceff);
         for c in fresh {
             if let Err(e) = self.store.upsert_correlation(&c) {
