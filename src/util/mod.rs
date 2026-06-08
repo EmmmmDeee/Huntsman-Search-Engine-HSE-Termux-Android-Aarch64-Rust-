@@ -539,6 +539,18 @@ pub mod str_util {
 pub mod geo {
     use crate::core::error::{Error, Result};
 
+    /// Parse a `"lat,lon"` seed into a finite, in-range coordinate pair.
+    ///
+    /// Every forward-geo module (`geocode`/`photon`/`overpass`/`wigle`/
+    /// `sunrise_sunset`) feeds the result straight into an external API query via
+    /// `?`, so an out-of-range or non-finite value here would issue a nonsense
+    /// request (lat = 200, NaN, …). Rejecting at the parse boundary means no
+    /// caller can forget to validate, and matches the range gate that
+    /// [`crate::util::geohash::parse_coords`] applies on the classifier side — the
+    /// two stay byte-for-byte consistent about what a coordinate is. The
+    /// null-island (`0,0`) sentinel is intentionally *not* rejected here: that is
+    /// an output-filtering policy for provider responses ([`is_valid_coords`]),
+    /// not an input-parsing concern for a seed the operator typed deliberately.
     pub fn parse_coords(value: &str) -> Result<(f64, f64)> {
         let (a, b) = value
             .split_once(',')
@@ -551,6 +563,12 @@ pub mod geo {
             .trim()
             .parse()
             .map_err(|_| Error::module("geo", "invalid longitude"))?;
+        if !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
+            return Err(Error::module("geo", "latitude out of range (-90..=90)"));
+        }
+        if !lon.is_finite() || !(-180.0..=180.0).contains(&lon) {
+            return Err(Error::module("geo", "longitude out of range (-180..=180)"));
+        }
         Ok((lat, lon))
     }
 
@@ -626,9 +644,65 @@ pub mod geo {
         is_valid_coords(lat, lon) && lat.abs() > NULL_ISLAND_BAND && lon.abs() > NULL_ISLAND_BAND
     }
 
+    /// Build the coarse IP-geolocation `geoint` Coordinates entity shared by the
+    /// IP-geo provider modules (`ipinfo` / `ipapi` / `ip2location` / `ipquery`):
+    /// the plausibility gate ([`is_plausible_provider_coord`]), the 4-decimal
+    /// (~11 m — honest for city-level IP geo, not GPS precision) formatting, and
+    /// the `geoint` tag. Born identically whichever provider returned the fix, so
+    /// the formatting and tag can't drift between four near-identical modules.
+    ///
+    /// Returns `None` for an implausible fix (null-island band / out-of-range /
+    /// non-finite), letting the caller gate its whole emit block with
+    /// `if let Some(mut ce) = coarse_provider_coords(..) { ce.tag(provider); .. }`.
+    /// The caller adds its own provider tag and evidence.
+    #[must_use]
+    pub fn coarse_provider_coords(
+        lat: f64,
+        lon: f64,
+        confidence: f64,
+        scan_id: &str,
+    ) -> Option<crate::core::entity::Entity> {
+        if !is_plausible_provider_coord(lat, lon) {
+            return None;
+        }
+        let mut e = crate::core::entity::Entity::new(
+            crate::core::entity::EntityKind::Coordinates,
+            format!("{lat:.4},{lon:.4}"),
+            confidence,
+            scan_id,
+        );
+        e.tag(crate::core::tags::GEOINT);
+        Some(e)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn parse_coords_accepts_well_formed_pairs() {
+            assert_eq!(
+                parse_coords("-27.4766,153.0166").unwrap(),
+                (-27.4766, 153.0166)
+            );
+            assert_eq!(
+                parse_coords(" 51.5074 , -0.1278 ").unwrap(),
+                (51.5074, -0.1278)
+            );
+            // Null Island parses: it's a deliberately-typed seed, not a provider
+            // sentinel — output filtering (is_valid_coords) is a separate concern.
+            assert_eq!(parse_coords("0,0").unwrap(), (0.0, 0.0));
+        }
+
+        #[test]
+        fn parse_coords_rejects_invalid_before_any_api_call() {
+            assert!(parse_coords("not,coords").is_err()); // non-numeric
+            assert!(parse_coords("153.02").is_err()); // not a pair
+            assert!(parse_coords("200,300").is_err()); // out of range
+            assert!(parse_coords("10,181").is_err()); // lon out of range
+            assert!(parse_coords("nan,10").is_err()); // non-finite latitude
+            assert!(parse_coords("10,inf").is_err()); // non-finite longitude
+        }
 
         #[test]
         fn valid_coords_accepts_real_positions() {
@@ -651,6 +725,23 @@ pub mod geo {
         fn plausible_provider_coord_keeps_real_fixes() {
             assert!(is_plausible_provider_coord(-27.4766, 153.0166)); // Brisbane
             assert!(is_plausible_provider_coord(51.5074, -0.1278)); // London
+        }
+
+        #[test]
+        fn coarse_provider_coords_builds_a_gated_geoint_entity() {
+            use crate::core::entity::EntityKind;
+            // A real fix: 4-decimal value, Coordinates kind, geoint tag, the given
+            // confidence. This is the identical birth the four IP-geo modules share.
+            let e = coarse_provider_coords(-27.476600, 153.016601, 0.58, "scan-x")
+                .expect("a plausible fix yields an entity");
+            assert_eq!(e.kind, EntityKind::Coordinates);
+            assert_eq!(e.raw_value, "-27.4766,153.0166"); // 4-decimal coarse format
+            assert!(e.has_tag(crate::core::tags::GEOINT));
+            assert!((e.confidence - 0.58).abs() < 1e-9);
+            // An implausible fix (null-island band / out-of-range) gates the whole
+            // emit block to None.
+            assert!(coarse_provider_coords(0.001, 0.001, 0.58, "scan-x").is_none());
+            assert!(coarse_provider_coords(200.0, 10.0, 0.58, "scan-x").is_none());
         }
 
         #[test]

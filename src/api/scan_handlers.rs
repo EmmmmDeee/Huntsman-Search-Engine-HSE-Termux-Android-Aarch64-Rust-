@@ -15,6 +15,14 @@ use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target};
 
+/// Maximum size of an uploaded import body (breach dossier / OathNet export).
+/// 16 MB comfortably fits a large multi-entry compilation while bounding peak
+/// memory on a low-RAM Termux device. Single source of truth: the `/scans/import`
+/// route installs this as a `DefaultBodyLimit` (overriding axum's 2 MB default,
+/// which would otherwise 413 a valid large dossier), and `scan_import` re-checks
+/// it for a friendly error message. Keep the two in sync via this constant.
+pub const MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
+
 /// Build a validated, profile-resolved `Scan` (+ its `Target`) from a request,
 /// or a client-facing error message. Shared by `scan_create` (single) and
 /// `scan_batch` (per-item) so the validation, deterministic scan-id derivation,
@@ -108,11 +116,15 @@ pub async fn scan_import(State(s): State<Arc<AppState>>, body: String) -> impl I
     use crate::core::scan::{ScanStatus, TargetKind};
 
     // Bound the upload so a hostile/huge paste can't exhaust phone memory.
-    const MAX_UPLOAD: usize = 16 * 1024 * 1024;
+    // NOTE: this in-handler check is the friendly-message backstop; the binding
+    // limit is enforced at the route via `DefaultBodyLimit::max(MAX_UPLOAD_BYTES)`
+    // (see api::routes), because axum's *default* 2 MB body cap would otherwise
+    // reject a 2-16 MB dossier with a bare 413 before this handler ever runs —
+    // making this constant a lie. Both read the one constant, so they can't drift.
     if body.trim().is_empty() {
         return bad_request("empty upload");
     }
-    if body.len() > MAX_UPLOAD {
+    if body.len() > MAX_UPLOAD_BYTES {
         return bad_request("upload too large (max 16 MB)");
     }
     // `scan_id` is collision-free per call, so the value just needs to be

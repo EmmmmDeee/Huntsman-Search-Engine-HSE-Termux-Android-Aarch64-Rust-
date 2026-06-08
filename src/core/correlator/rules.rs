@@ -684,42 +684,36 @@ pub(super) fn rule_au_017_multi_geo_convergence(
     if coords.len() < 2 {
         return Vec::new();
     }
-    let mut clusters: Vec<Vec<&Entity>> = Vec::new();
-    for c in &coords {
-        let parts: Vec<&str> = c.value.split(',').collect();
-        let (lat, lon) = match (parts.first(), parts.get(1)) {
-            (Some(a), Some(b)) => match (a.trim().parse::<f64>(), b.trim().parse::<f64>()) {
-                (Ok(la), Ok(lo)) => (la, lo),
-                _ => continue,
-            },
-            _ => continue,
-        };
+    // Parse once through the canonical, range-validating helper so out-of-range
+    // junk ("200,300") is dropped here rather than silently clustered. Each
+    // surviving entity carries its (lat, lon) so the inner loop never re-parses.
+    let parsed: Vec<(&Entity, (f64, f64))> = coords
+        .iter()
+        .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (*c, ll)))
+        .collect();
+    let mut clusters: Vec<Vec<(&Entity, (f64, f64))>> = Vec::new();
+    for &(c, (lat, lon)) in &parsed {
         let mut found = false;
         for cluster in &mut clusters {
-            let rep = cluster[0];
-            let rp: Vec<&str> = rep.value.split(',').collect();
-            if let (Some(a), Some(b)) = (rp.first(), rp.get(1))
-                && let (Ok(rl), Ok(ro)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>())
-                && (lat - rl).abs() < 0.5
-                && (lon - ro).abs() < 0.5
-            {
-                cluster.push(c);
+            let (_, (rl, ro)) = cluster[0];
+            if (lat - rl).abs() < 0.5 && (lon - ro).abs() < 0.5 {
+                cluster.push((c, (lat, lon)));
                 found = true;
                 break;
             }
         }
         if !found {
-            clusters.push(vec![c]);
+            clusters.push(vec![(c, (lat, lon))]);
         }
     }
     clusters
         .into_iter()
         .filter(|cl| cl.len() >= 2)
         .map(|cl| {
-            let uids: Vec<String> = cl.iter().map(|e| e.uid.clone()).collect();
+            let uids: Vec<String> = cl.iter().map(|(e, _)| e.uid.clone()).collect();
             let sources: HashSet<&str> = cl
                 .iter()
-                .flat_map(|e| e.evidence.iter().map(|ev| ev.source.as_str()))
+                .flat_map(|(e, _)| e.evidence.iter().map(|ev| ev.source.as_str()))
                 .collect();
             Correlation {
                 rule_id: "AU-017".into(),
@@ -841,6 +835,15 @@ pub(super) fn rule_au_019_temporal_breach_cluster(
         .collect()
 }
 
+/// Approximate the absolute day gap between two `YYYY-MM-DD` strings.
+///
+/// Intentionally dependency-free (no `chrono`/`time`): days are estimated as
+/// `y*365 + m*30 + d`, so the result is **not** an exact calendar difference.
+/// Error is bounded to a few days near month/year boundaries (e.g. `2020-01-31`
+/// vs `2020-02-01` reads as 0). Every caller (AU-019 temporal clustering) uses a
+/// coarse window (≥30 days) where this noise is irrelevant — do not reuse this
+/// where exact-day precision matters. Returns `u64::MAX` if either side fails to
+/// parse, which sorts/compares as "infinitely far apart" (never clusters).
 pub(super) fn date_diff_days(a: &str, b: &str) -> u64 {
     let parse = |s: &str| -> Option<u64> {
         let parts: Vec<&str> = s.split('-').collect();

@@ -160,17 +160,9 @@ fn split_pipe(s: &str) -> Vec<String> {
 fn load_from_store(scan_id: &str) -> Result<Vec<AuditEntity>> {
     use crate::storage::Store;
     let store = Store::open(&crate::default_db_path())?;
-    let sid = if scan_id == "latest" {
-        store
-            .latest_completed_scan()?
-            .map(|s| s.id)
-            .ok_or_else(|| Error::Other("no completed scans in store".into()))?
-    } else {
-        if store.get_scan(scan_id)?.is_none() {
-            return Err(Error::Other(format!("scan {scan_id} not found")));
-        }
-        scan_id.to_string()
-    };
+    // `latest` → most-recent Complete scan; explicit id existence-checked.
+    // Shared with `export`/`diff` via `super::resolve_scan_id`.
+    let sid = super::resolve_scan_id(&store, scan_id)?;
     Ok(store
         .entities_for_scan(&sid)?
         .iter()

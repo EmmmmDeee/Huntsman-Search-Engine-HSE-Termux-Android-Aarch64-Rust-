@@ -1387,6 +1387,79 @@ async fn user_timeout_override_still_wins_over_module_max() {
     );
 }
 
+/// Emits several entities that all share one confidence value. The storage
+/// read-path orders `BY confidence DESC`; with every confidence equal, the
+/// `uid` tie-break is the ONLY thing that can make retrieval order a function of
+/// the data rather than of SQLite's btree/insertion order.
+struct TiedConfidenceModule;
+
+#[async_trait]
+impl Module for TiedConfidenceModule {
+    fn name(&self) -> &'static str {
+        "tied_conf"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        // Deliberately unsorted, all identical confidence → uid is the only order.
+        for v in [
+            "zeta", "alpha", "mike", "bravo", "yankee", "charlie", "delta", "oscar",
+        ] {
+            r.push(Entity::new(EntityKind::Username, v, 0.5, &ctx.scan_id));
+        }
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn persisted_entity_order_is_deterministic_on_confidence_ties() {
+    // End-to-end determinism guard. Two independent scans of the same seed —
+    // separate engines, separate stores — must persist entities in IDENTICAL
+    // order. `ORDER BY confidence DESC` alone is non-deterministic when entities
+    // tie on confidence (the common case: every permutation/derivation scores the
+    // same), so the order leaked into the scan's JSON/dossier and two identical
+    // CLI scans diffed by hundreds of lines until a `, uid ASC` tie-break was
+    // added. This locks that property in CI, where a unit test missed it.
+    async fn run(suffix: &str) -> Vec<String> {
+        let (engine, store, sid, target, ctx) = setup(
+            vec![Arc::new(TiedConfidenceModule)],
+            suffix,
+            TargetKind::Email,
+            "det@contoso.com",
+        );
+        let scan = Scan::new(sid.clone(), target.clone());
+        engine.run(scan, target, ctx).await.unwrap();
+        store
+            .entities_for_scan(&sid)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.uid)
+            .collect()
+    }
+
+    let a = run("det_run_a").await;
+    let b = run("det_run_b").await;
+    assert!(
+        a.len() >= 8,
+        "module should persist its 8 tied-confidence entities, got {}",
+        a.len()
+    );
+    assert_eq!(
+        a, b,
+        "independent scans of the same input must persist entities in identical order"
+    );
+    // Every confidence is equal, so the deterministic order must be exactly
+    // ascending-by-uid — proving it is the tie-break doing the work.
+    let mut sorted = a.clone();
+    sorted.sort();
+    assert_eq!(a, sorted, "confidence-tie order must be uid-ascending");
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]

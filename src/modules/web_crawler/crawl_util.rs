@@ -176,8 +176,13 @@ pub(super) async fn probe_config_leaks(
             if ct.contains("text/html") && !path_static.ends_with(".html") {
                 return None;
             }
-            let body = resp.text().await.ok()?;
-            if body.len() < 10 || body.len() > 1_000_000 {
+            // Cap the (untrusted) body at 1 MB while reading — `read_body_capped`
+            // streams and stops, so an oversize page is bounded in memory instead
+            // of fully buffered by `resp.text()` and then rejected. A body that
+            // hits the cap (len == 1 MB) is treated as "too big", as before.
+            const STATIC_BODY_CAP: usize = 1_000_000;
+            let body = crate::util::http::read_body_capped(resp, STATIC_BODY_CAP).await?;
+            if body.len() < 10 || body.len() >= STATIC_BODY_CAP {
                 return None;
             }
             if body.contains("<html") || body.contains("<!DOCTYPE") {
@@ -249,7 +254,12 @@ pub(super) async fn fetch_robots(http: &reqwest::Client, seed: &Url, rules: &mut
     if !resp.status().is_success() {
         return;
     }
-    let Ok(body) = resp.text().await else { return };
+    // robots.txt from an arbitrary host is untrusted; cap the read at 512 KB
+    // (orders of magnitude above any real robots file) so a hostile "robots.txt"
+    // can't OOM the device via resp.text() buffering the whole body.
+    let Some(body) = crate::util::http::read_body_capped(resp, 512 * 1024).await else {
+        return;
+    };
     let mut in_wildcard_agent = false;
     for line in body.lines() {
         let trimmed = line.trim();

@@ -37,12 +37,15 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
-    println!("Importing OathNet JSON export: query=\"{query}\", date={date}");
+    note(
+        output,
+        format!("Importing OathNet JSON export: query=\"{query}\", date={date}"),
+    );
 
     let sid = format!("import-{}", &crate::core::entity::unix_now().to_string());
     let (mut entities, stats) = parse_oathnet_json(&doc, &sid).await;
     deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len());
+    print_import_stats(&stats, entities.len(), output);
     import_json_output(&entities, &stats, query, date, path, output)
 }
 
@@ -537,10 +540,34 @@ fn parse_oathnet_html(body: &str, sid: &str) -> Vec<crate::core::entity::Entity>
     entities
 }
 
+/// Render parsed import entities to stdout for the text-import paths (HTML / TXT
+/// / breach-dossier), which all share the `{ "entities": [...] }` JSON shape: one
+/// JSON document under `--output json` (so `| jq` works), else a 50-row
+/// human-readable table with an "… and N more" footer. One definition so the
+/// JSON shape and the table format can't drift between the three callers.
+fn render_import_entities(entities: &[crate::core::entity::Entity], output: &str) {
+    if output == "json" {
+        let out = serde_json::json!({ "entities": entities });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    } else {
+        for e in entities.iter().take(50) {
+            println!(
+                "  [{:.2}] {:15} {}",
+                e.confidence,
+                e.kind.to_string(),
+                crate::util::str_util::truncate_safe(&e.value, 70)
+            );
+        }
+        if entities.len() > 50 {
+            println!("  ... and {} more", entities.len() - 50);
+        }
+    }
+}
+
 fn cmd_import_html(body: &str, output: &str) -> Result<()> {
     use crate::core::entity::EntityKind;
 
-    println!("Importing OathNet HTML export...");
+    note(output, "Importing OathNet HTML export...");
     let sid = format!("import-html-{}", crate::core::entity::unix_now());
     let mut entities = parse_oathnet_html(body, &sid);
 
@@ -559,27 +586,18 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
         .filter(|e| e.kind == EntityKind::Email)
         .count();
 
-    println!(
-        "Imported {} entities: {} domains, {} IPs, {} emails",
-        entities.len(),
-        domains,
-        ips,
-        emails
+    note(
+        output,
+        format!(
+            "Imported {} entities: {} domains, {} IPs, {} emails",
+            entities.len(),
+            domains,
+            ips,
+            emails
+        ),
     );
 
-    if output == "json" {
-        let out = serde_json::json!({ "entities": entities });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
-    } else {
-        for e in &entities {
-            println!(
-                "  [{:.2}] {:15} {}",
-                e.confidence,
-                e.kind.to_string(),
-                crate::util::str_util::truncate_safe(&e.value, 70)
-            );
-        }
-    }
+    render_import_entities(&entities, output);
     Ok(())
 }
 
@@ -674,6 +692,7 @@ fn parse_dossier(body: &str, sid: &str) -> (Vec<crate::core::entity::Entity>, Im
                 "email",
                 "name",
                 "domain",
+                "ip",
                 "id",
                 "created",
                 "updated",
@@ -798,6 +817,42 @@ fn emit_dossier_entry(
             stats.credentials += 1;
         }
     }
+    // A dossier entry's `ip` / `phone` / `domain` are first-class pivotable seeds,
+    // not just evidence attributes — the whole point of expansion is to re-scan
+    // them. The JSON importer already emits IpAddress from `ip`; the text path
+    // must match, or the same breach record yields fewer leads depending only on
+    // its file format. Each is validated so malformed/placeholder values
+    // ("256.256.256.256", "+0…") don't become high-confidence false seeds.
+    if let Some(ip) = get("ip")
+        && ip.parse::<std::net::IpAddr>().is_ok()
+        && !crate::core::validation::is_bogus_ip(ip)
+        && seen.insert(format!("ip:{ip}"))
+    {
+        push(Entity::new(EntityKind::IpAddress, ip, 0.65, sid), "breach");
+        stats.ips += 1;
+    }
+    if let Some(ph) = get("phone")
+        && crate::core::validation::validate_phone_e164(ph).valid
+        && seen.insert(format!("ph:{ph}"))
+    {
+        push(Entity::new(EntityKind::Phone, ph, 0.62, sid), "breach");
+        stats.phones += 1;
+    }
+    // A dossier's `_domain` is usually the email's OWN host (gmail.com) —
+    // freemail/mega-domains are useless pivots (deep-expanding them maps a
+    // platform, not the subject), so gate them out exactly as the engine's
+    // expansion does. A genuine corporate domain still becomes a seed.
+    if let Some(dom) = get("domain").map(str::to_ascii_lowercase)
+        && dom.contains('.')
+        && !crate::util::domains::is_freemail(&dom)
+        && !crate::core::scan::is_mega_domain(&dom)
+        && !crate::core::validation::is_placeholder_domain(&dom)
+        && !is_fragment_value(&EntityKind::Domain, &dom)
+        && seen.insert(format!("dom:{dom}"))
+    {
+        push(Entity::new(EntityKind::Domain, &dom, 0.60, sid), "breach");
+        stats.domains += 1;
+    }
     entry.clear();
 }
 
@@ -895,28 +950,13 @@ pub(crate) async fn entities_from_upload(
 }
 
 fn cmd_import_dossier(body: &str, output: &str) -> Result<()> {
-    println!("Importing breach/dossier compilation...");
+    note(output, "Importing breach/dossier compilation...");
     let sid = format!("import-dossier-{}", crate::core::entity::unix_now());
     let (mut entities, stats) = parse_dossier(body, &sid);
     deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len());
+    print_import_stats(&stats, entities.len(), output);
 
-    if output == "json" {
-        let out = serde_json::json!({ "entities": entities });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
-    } else {
-        for e in entities.iter().take(50) {
-            println!(
-                "  [{:.2}] {:12} {}",
-                e.confidence,
-                e.kind.to_string(),
-                crate::util::str_util::truncate_safe(&e.value, 70)
-            );
-        }
-        if entities.len() > 50 {
-            println!("  ... and {} more", entities.len() - 50);
-        }
-    }
+    render_import_entities(&entities, output);
     Ok(())
 }
 
@@ -1162,36 +1202,24 @@ fn parse_oathnet_txt(body: &str, sid: &str) -> (Vec<crate::core::entity::Entity>
 }
 
 fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
-    println!("Importing OathNet TXT export...");
+    note(output, "Importing OathNet TXT export...");
     let sid = format!("import-txt-{}", crate::core::entity::unix_now());
     let (mut entities, stats) = parse_oathnet_txt(body, &sid);
 
     deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len());
+    print_import_stats(&stats, entities.len(), output);
     if stats.api_keys > 0 {
-        println!(
-            "  Pool:      {} keys stored for automatic use",
-            stats.api_keys
+        note(
+            output,
+            format!(
+                "  Pool:      {} keys stored for automatic use",
+                stats.api_keys
+            ),
         );
-        let _ = crate::util::key_pool::save_pool(&crate::util::key_pool::global_pool());
+        crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
     }
 
-    if output == "json" {
-        let out = serde_json::json!({ "entities": entities });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
-    } else {
-        for e in entities.iter().take(50) {
-            println!(
-                "  [{:.2}] {:15} {}",
-                e.confidence,
-                e.kind.to_string(),
-                crate::util::str_util::truncate_safe(&e.value, 70)
-            );
-        }
-        if entities.len() > 50 {
-            println!("  ... and {} more", entities.len() - 50);
-        }
-    }
+    render_import_entities(&entities, output);
     Ok(())
 }
 
@@ -1201,6 +1229,7 @@ struct ImportStats {
     stealer_docs: usize,
     victim_records: usize,
     emails: usize,
+    phones: usize,
     ips: usize,
     domains: usize,
     subdomains: usize,
@@ -1334,40 +1363,70 @@ fn create_geolocation_entities(
     }
 }
 
-fn print_import_stats(stats: &ImportStats, entity_count: usize) {
-    println!("Imported {} entities:", entity_count);
-    println!(
-        "  Identity:  {} emails, {} usernames, {} persons, {} device users, {} Discord IDs",
-        stats.emails, stats.usernames, stats.persons, stats.device_users, stats.discord_ids
+/// Emit a human-readable progress/summary line on the stream appropriate to the
+/// output mode: stderr under `--output json` (so stdout stays pure JSON for
+/// `| jq`), stdout otherwise (where the summary IS the operator-facing output).
+fn note(output: &str, line: impl AsRef<str>) {
+    if output == "json" {
+        eprintln!("{}", line.as_ref());
+    } else {
+        println!("{}", line.as_ref());
+    }
+}
+
+fn print_import_stats(stats: &ImportStats, entity_count: usize, output: &str) {
+    // Route every line through `note` so a `--output json` run keeps stdout free
+    // of this summary (it goes to stderr); a table run prints it to stdout.
+    macro_rules! row {
+        ($($a:tt)*) => { note(output, format!($($a)*)) };
+    }
+    row!("Imported {} entities:", entity_count);
+    row!(
+        "  Identity:  {} emails, {} phones, {} usernames, {} persons, {} device users, {} Discord IDs",
+        stats.emails,
+        stats.phones,
+        stats.usernames,
+        stats.persons,
+        stats.device_users,
+        stats.discord_ids
     );
     if stats.credentials > 0 {
-        println!("  Creds:     {} password hashes", stats.credentials);
+        row!("  Creds:     {} password hashes", stats.credentials);
     }
-    println!(
+    row!(
         "  Network:   {} IPs, {} domains, {} subdomains, {} URLs, {} admin paths",
-        stats.ips, stats.domains, stats.subdomains, stats.urls, stats.admin_paths
+        stats.ips,
+        stats.domains,
+        stats.subdomains,
+        stats.urls,
+        stats.admin_paths
     );
-    println!(
+    row!(
         "  Geo:       {} coordinates, {} addresses",
-        stats.coordinates, stats.addresses
+        stats.coordinates,
+        stats.addresses
     );
-    println!(
+    row!(
         "  Device:    {} HWIDs, {} machine log IDs",
-        stats.hwids, stats.machines
+        stats.hwids,
+        stats.machines
     );
-    println!("  Keys:      {} API keys detected", stats.api_keys);
-    println!("  Verified:  {} holehe platform checks", stats.holehe);
-    println!(
+    row!("  Keys:      {} API keys detected", stats.api_keys);
+    row!("  Verified:  {} holehe platform checks", stats.holehe);
+    row!(
         "  Source:    {} breach, {} stealer docs, {} victims",
-        stats.breach_records, stats.stealer_docs, stats.victim_records
+        stats.breach_records,
+        stats.stealer_docs,
+        stats.victim_records
     );
     if !stats.date_range.is_empty() {
-        println!("  Timeline:  {}", stats.date_range);
+        row!("  Timeline:  {}", stats.date_range);
     }
     if stats.api_keys > 0 {
-        println!(
+        row!(
             "  Pool:      {} API keys detected, {} validated active",
-            stats.api_keys, stats.api_keys_valid
+            stats.api_keys,
+            stats.api_keys_valid
         );
     }
 }
@@ -1483,6 +1542,8 @@ mod tests {
        \u{2022} email: zacfrost512@gmail.com
        \u{2022} name: Isaac Frost
        \u{2022} _domain: gmail.com
+       \u{2022} ip: 8.8.8.8
+       \u{2022} phone: +61412345678
        \u{2022} id: 9540629
        \u{2022} created: 2016-02-19 15:57:12
        \u{2022} language: en
@@ -1490,6 +1551,8 @@ mod tests {
        \u{2022} username: IsaacFrost6
        \u{2022} email: frostisms@gmail.com
        \u{2022} name: Isaac Frost
+       \u{2022} domain: derbyrock.com
+       \u{2022} ip: 203.0.113.45
        \u{2022} birthdate: 2002-11-17
        \u{2022} country: GB
        \u{2022} gender: M
@@ -1540,6 +1603,16 @@ PASSWORDS:
         assert!(!ents.iter().any(|e| e.value == "@gmail"));
         // The freemail `_domain` is NOT emitted as a bare Domain entity.
         assert!(!has(EntityKind::Domain, "gmail.com"));
+
+        // `ip`/`phone`/`domain` entry fields are first-class pivotable seeds — the
+        // text path now matches the JSON importer's coverage. Each is validated:
+        // a routable IP, a corporate domain and an E.164 phone are kept…
+        assert!(has(EntityKind::IpAddress, "8.8.8.8"));
+        assert!(has(EntityKind::Phone, "+61412345678"));
+        assert!(has(EntityKind::Domain, "derbyrock.com"));
+        // …while a documentation-range IP (RFC 5737) is rejected as bogus, never
+        // becoming a high-confidence false seed.
+        assert!(!has(EntityKind::IpAddress, "203.0.113.45"));
 
         // Individualised: the per-entry evidence carries the FULL record, so
         // birthdate/country/gender are verifiable on the finding, not lost.

@@ -12,36 +12,13 @@ use crate::core::error::{Error, Result};
 use crate::default_db_path;
 use crate::storage::Store;
 
-/// Resolve the scan id requested by the user. `latest` → the most-
-/// recent Complete scan, picked at the SQL layer so the 64-row
-/// `list_scans` window can't shadow older Complete rows when many
-/// recent scans failed.
-fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
-    if raw != "latest" {
-        return Ok(raw.to_string());
-    }
-    store
-        .latest_completed_scan()?
-        .map(|s| s.id)
-        .ok_or_else(|| Error::Other("no completed scans in store".into()))
-}
-
-/// Fail loudly on a missing scan instead of emitting an empty CSV/JSON/GEXF.
-/// `entities_for_scan` returns an empty Vec for an unknown id, which is
-/// indistinguishable from a real scan that found nothing; the `report` format
-/// already errors on a missing scan, so this makes all four formats consistent.
-/// (The `latest` branch of `resolve_scan_id` already guarantees existence.)
-fn require_scan(store: &Store, sid: &str) -> Result<()> {
-    if store.get_scan(sid)?.is_none() {
-        return Err(Error::Other(format!("scan {sid} not found")));
-    }
-    Ok(())
-}
-
 pub(super) async fn cmd_export(scan_id: String, format: String, out: Option<String>) -> Result<()> {
     let store = Store::open(&default_db_path())?;
-    let sid = resolve_scan_id(&store, &scan_id)?;
-    require_scan(&store, &sid)?;
+    // `latest` → most-recent Complete scan; an explicit id is existence-checked so
+    // a typo fails loudly instead of emitting an empty CSV/JSON/GEXF (which is
+    // indistinguishable from a real scan that found nothing). Shared with
+    // `diff`/`audit` via `super::resolve_scan_id`.
+    let sid = super::resolve_scan_id(&store, &scan_id)?;
     let body = match format.to_lowercase().as_str() {
         "json" => render_json(&store, &sid)?,
         "csv" => render_csv(&store, &sid)?,
@@ -855,13 +832,14 @@ mod tests {
     }
 
     #[test]
-    fn require_scan_errors_on_missing_and_ok_on_present() {
+    fn explicit_scan_id_is_existence_checked_no_silent_empty_export() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("export_test.db");
         let store = Store::open(db.to_str().unwrap()).unwrap();
 
-        // Unknown id -> a clear "not found" error (no silent empty export).
-        let err = require_scan(&store, "no-such-scan")
+        // Unknown id -> a clear "not found" error (no silent empty export). The
+        // existence check now lives in the shared `cli::resolve_scan_id`.
+        let err = crate::cli::resolve_scan_id(&store, "no-such-scan")
             .unwrap_err()
             .to_string();
         assert!(
@@ -869,11 +847,14 @@ mod tests {
             "expected not-found error, got: {err}"
         );
 
-        // After the scan exists, the check passes.
+        // After the scan exists, resolution returns the id.
         let target = Target::new(TargetKind::Email, "x@b.com");
         store
             .upsert_scan(&Scan::new("scan-present", target))
             .unwrap();
-        assert!(require_scan(&store, "scan-present").is_ok());
+        assert_eq!(
+            crate::cli::resolve_scan_id(&store, "scan-present").unwrap(),
+            "scan-present"
+        );
     }
 }

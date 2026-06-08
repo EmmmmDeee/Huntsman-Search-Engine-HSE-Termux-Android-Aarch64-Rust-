@@ -1576,6 +1576,16 @@ fn rule_017_no_fire_for_distant_coords() {
     assert!(firings.is_empty());
 }
 
+#[test]
+fn rule_017_drops_out_of_range_coordinates() {
+    // Junk coordinates (lat/lon outside Earth's range) must be rejected by the
+    // range-validating parse_coords helper, not clustered as a convergence.
+    let junk1 = Entity::new(EntityKind::Coordinates, "200.0,300.0", 0.60, "s");
+    let junk2 = Entity::new(EntityKind::Coordinates, "201.0,301.0", 0.65, "s");
+    let firings = rule_au_017_multi_geo_convergence(&[junk1, junk2], "s", 0);
+    assert!(firings.is_empty(), "out-of-range coords must not converge");
+}
+
 // ── AU-031 (graph-aware: relation edges) ────────────────────────────
 
 #[test]

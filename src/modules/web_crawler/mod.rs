@@ -279,14 +279,14 @@ impl Module for WebCrawler {
                 continue;
             }
 
-            let body = match resp.text().await {
-                // Byte-cap the (untrusted) page body, but at a CHAR boundary:
-                // a raw `b[..BODY_CAP]` panics when byte BODY_CAP lands
-                // mid-codepoint (any UTF-8 page — emoji/CJK/accents near the cap).
-                // web_crawler runs under catch_unwind, so that panic would
-                // silently void ALL its findings for the scan rather than crash.
-                Ok(b) => crate::util::str_util::truncate_safe(&b, BODY_CAP).to_string(),
-                Err(_) => continue,
+            // Stream the (untrusted) page body and STOP at BODY_CAP. A plain
+            // `resp.text()` buffers the WHOLE body first — a hostile multi-GB page
+            // would OOM the device before any truncation. `read_body_capped` never
+            // accumulates beyond the cap, and decodes UTF-8-lossy so there's no
+            // mid-codepoint panic at the boundary (web_crawler runs under
+            // catch_unwind, where such a panic would silently void all findings).
+            let Some(body) = crate::util::http::read_body_capped(resp, BODY_CAP).await else {
+                continue;
             };
 
             state.pages_fetched += 1;

@@ -18,7 +18,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::geo::is_valid_coords;
+use crate::util::geo::is_plausible_provider_coord;
 use crate::util::http::fetch_json;
 
 const SRC: &str = "ip_whois_geo";
@@ -114,9 +114,14 @@ impl Module for IpWhois {
         let mut result = ModuleResult::new();
 
         if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
-            // Shared validator: rejects Null Island AND out-of-range / non-finite
-            // values a malformed ipwho.is payload could carry (see util::geo).
-            if !is_valid_coords(lat, lon) {
+            // Coarse-provider validator: ipwho.is is an IP-geolocation API, so
+            // alongside Null Island / out-of-range / non-finite it also emits a
+            // sub-degree jitter band around (0,0) as its "no fix" placeholder.
+            // Gate on the same is_plausible_provider_coord the other IP/WiFi-geo
+            // sources use (ip_geo/ipinfo/ipapi/ip2location/ipquery/wigle) so a
+            // 0.005,0.005 placeholder can't become a high-confidence false fix
+            // that poisons the geo-cluster correlator.
+            if !is_plausible_provider_coord(lat, lon) {
                 return Ok(result);
             }
 
@@ -295,5 +300,17 @@ mod tests {
         assert_eq!(r.success, Some(true));
         assert!(r.connection.is_none());
         assert!(r.city.is_none());
+    }
+
+    #[test]
+    fn gates_coordinates_with_coarse_provider_validator() {
+        // ipwho.is is a coarse IP-geo source: its "no fix" placeholder is a
+        // sub-degree jitter around null island, which must be rejected — but a
+        // real fix must pass. This locks the module to the coarse-provider gate
+        // (is_plausible_provider_coord), not the precise is_valid_coords.
+        use crate::util::geo::is_plausible_provider_coord;
+        assert!(!is_plausible_provider_coord(0.005, 0.005)); // no-fix jitter
+        assert!(!is_plausible_provider_coord(0.0, 153.0)); // one component in band
+        assert!(is_plausible_provider_coord(-27.4766, 153.0166)); // real Brisbane fix
     }
 }

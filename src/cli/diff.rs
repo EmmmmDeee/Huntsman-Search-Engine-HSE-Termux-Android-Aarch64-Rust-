@@ -16,21 +16,6 @@ use crate::core::error::{Error, Result};
 use crate::default_db_path;
 use crate::storage::Store;
 
-/// Resolve a scan id, accepting `latest` (most-recent completed scan) and
-/// erroring on an unknown id so a typo can't silently diff against nothing.
-fn resolve(store: &Store, raw: &str) -> Result<String> {
-    if raw == "latest" {
-        return store
-            .latest_completed_scan()?
-            .map(|s| s.id)
-            .ok_or_else(|| Error::Other("no completed scans in store".into()));
-    }
-    if store.get_scan(raw)?.is_none() {
-        return Err(Error::Other(format!("scan {raw} not found")));
-    }
-    Ok(raw.to_string())
-}
-
 /// One loaded diff side: its entities, plus the resolved scan id when the side
 /// was a store scan (`None` when it was a JSON snapshot file). The id lets
 /// `cmd_diff` detect the "diff a scan against itself" footgun.
@@ -52,7 +37,7 @@ fn load_side(store: &Store, arg: &str) -> Result<Side> {
             scan_id: None,
         });
     }
-    let sid = resolve(store, arg)?;
+    let sid = super::resolve_scan_id(store, arg)?;
     let entities = store.entities_for_scan(&sid)?;
     Ok(Side {
         entities,
@@ -165,7 +150,7 @@ mod tests {
     #[test]
     fn resolve_errors_on_unknown_scan() {
         let store = Store::open(":memory:").unwrap();
-        let err = resolve(&store, "deadbeef").unwrap_err();
+        let err = crate::cli::resolve_scan_id(&store, "deadbeef").unwrap_err();
         assert!(
             err.to_string().contains("deadbeef"),
             "error should name the missing scan: {err}"
@@ -175,7 +160,7 @@ mod tests {
     #[test]
     fn resolve_latest_errors_when_store_empty() {
         let store = Store::open(":memory:").unwrap();
-        assert!(resolve(&store, "latest").is_err());
+        assert!(crate::cli::resolve_scan_id(&store, "latest").is_err());
     }
 
     #[test]

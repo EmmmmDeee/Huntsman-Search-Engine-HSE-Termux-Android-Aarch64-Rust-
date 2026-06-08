@@ -41,6 +41,24 @@ use crate::{
     util::keys,
 };
 
+/// Resolve a scan-id selector for the read commands (`export` / `diff` / `audit`):
+/// `latest` → the most-recent completed scan, anything else → itself, but only
+/// after confirming the scan exists so a typo errors loudly instead of silently
+/// operating on an empty/absent scan. One definition shared by all three so the
+/// selector semantics can't drift (they were three near-identical copies).
+pub(crate) fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
+    if raw == "latest" {
+        return store
+            .latest_completed_scan()?
+            .map(|s| s.id)
+            .ok_or_else(|| Error::Other("no completed scans in store".into()));
+    }
+    if store.get_scan(raw)?.is_none() {
+        return Err(Error::Other(format!("scan {raw} not found")));
+    }
+    Ok(raw.to_string())
+}
+
 #[derive(Parser)]
 #[command(
     name = "hse",

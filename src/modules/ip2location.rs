@@ -129,16 +129,14 @@ impl Module for Ip2Location {
         let country = data.country_name.as_deref().unwrap_or("");
         let zip = data.zip_code.as_deref().unwrap_or("");
 
+        // Confidence recalibrated 0.72 → 0.62 — see ip_geo.rs. The ip2location
+        // commercial DB is marginally better than the freemium competitors so it
+        // stays slightly above ipinfo.
         if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
             && !skip_geo
-            && crate::util::geo::is_plausible_provider_coord(lat, lon)
+            && let Some(mut ce) =
+                crate::util::geo::coarse_provider_coords(lat, lon, 0.62, &ctx.scan_id)
         {
-            let coords = format!("{lat:.4},{lon:.4}");
-            // Confidence recalibrated 0.72 → 0.62 — see ip_geo.rs. The
-            // ip2location commercial DB is marginally better than the
-            // freemium competitors so it stays slightly above ipinfo.
-            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.62, &ctx.scan_id);
-            ce.tag(tags::GEOINT);
             ce.tag("ip2location");
             if data.is_proxy == Some(true) {
                 ce.tag(tags::PROXY);

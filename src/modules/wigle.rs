@@ -814,6 +814,12 @@ fn emit_bssid_entities(
 }
 
 /// Statistical mode: most common value in a slice.
+///
+/// Ties are broken by the lexicographically smallest value so the result is
+/// reproducible. A bare `max_by_key(count)` over a `HashMap` returns the *last*
+/// element among equal maxima, and `HashMap` iteration order is randomised — so
+/// on a tie (two values seen equally often) the chosen mode would vary run to
+/// run and leak into the stored dossier (Determinism Requirement).
 fn mode<'a>(items: &[&'a str]) -> &'a str {
     if items.is_empty() {
         return "";
@@ -824,7 +830,10 @@ fn mode<'a>(items: &[&'a str]) -> &'a str {
     }
     counts
         .into_iter()
-        .max_by_key(|&(_, count)| count)
+        // Highest count wins; on a tie the smaller value wins. `max_by` keeps the
+        // element that compares Greatest, so reverse the value comparison
+        // (`b.0.cmp(a.0)`) to make the lexicographically smaller value dominate.
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
         .map_or("", |(val, _)| val)
 }
 
@@ -980,6 +989,19 @@ mod tests {
     #[test]
     fn cost_is_key_gated() {
         assert!(matches!(Wigle.cost(), ModuleCost::KeyGated));
+    }
+
+    #[test]
+    fn mode_breaks_ties_deterministically() {
+        // "alpha" and "bravo" tie at 2 each; the smaller value must win, and the
+        // result must not depend on slice order (which would otherwise change the
+        // HashMap iteration order the old max_by_key relied on).
+        assert_eq!(mode(&["bravo", "alpha", "alpha", "bravo"]), "alpha");
+        assert_eq!(mode(&["alpha", "bravo", "bravo", "alpha"]), "alpha");
+        // A clear winner is unaffected by the tiebreak.
+        assert_eq!(mode(&["zulu", "zulu", "alpha"]), "zulu");
+        // Empty input is the empty string sentinel.
+        assert_eq!(mode(&[]), "");
     }
 
     #[test]

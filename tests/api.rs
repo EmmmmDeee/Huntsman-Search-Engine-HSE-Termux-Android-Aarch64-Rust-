@@ -694,6 +694,123 @@ async fn dossier_upload_rejects_unrecognised_format() {
 }
 
 #[tokio::test]
+async fn dossier_upload_accepts_body_larger_than_axum_default_limit() {
+    // The import handler declares a 16 MB cap, but axum's *default* body limit is
+    // 2 MB and is enforced before the handler runs — so without a per-route
+    // override a legitimate multi-entry breach dossier between 2 and 16 MB was
+    // rejected with a bare 413, and the handler's 16 MB check was dead code. The
+    // `/scans/import` route raises the limit to scan_handlers::MAX_UPLOAD_BYTES;
+    // this proves a >2 MB upload is buffered and parsed, not 413'd.
+    let app = test_app("import-large");
+    let mut dossier = String::with_capacity(2_300_000);
+    dossier.push_str("Entry #1\n\u{2022} email: lead@frostcorp.io\n");
+    let mut i = 2u32;
+    while dossier.len() < 2_200_000 {
+        // Each entry is a valid, distinct record so the parse does real work.
+        dossier.push_str(&format!(
+            "Entry #{i}\n\u{2022} email: user{i}@frostcorp.io\n"
+        ));
+        i += 1;
+    }
+    assert!(
+        dossier.len() > 2 * 1024 * 1024,
+        "fixture must exceed axum's 2 MB default to exercise the override"
+    );
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        http::StatusCode::PAYLOAD_TOO_LARGE,
+        "a 2-16 MB dossier must not be rejected at axum's default 2 MB limit"
+    );
+    assert_eq!(
+        resp.status(),
+        200,
+        "the large dossier should import cleanly"
+    );
+}
+
+#[tokio::test]
+async fn batch_endpoint_enforces_empty_and_size_limits() {
+    // The batch cap is a DoS-relevant contract: an empty batch is a 400, and more
+    // than 50 targets is rejected (so a client can't queue thousands of scans in
+    // one request). A valid small batch is Accepted. These are explicit handler
+    // checks; this pins them so a refactor can't silently drop the cap.
+    let app = test_app("batch-limits");
+
+    // Empty array → 400 "empty batch".
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/v1/scans/batch", "[]"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "empty batch must be rejected");
+
+    // 51 targets → 400 "batch too large (max 50)".
+    let over: String = {
+        let items: Vec<String> = (0..51)
+            .map(|i| format!("{{\"kind\":\"email\",\"value\":\"u{i}@x.com\"}}"))
+            .collect();
+        format!("[{}]", items.join(","))
+    };
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/v1/scans/batch", &over))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "a 51-target batch must exceed the cap");
+
+    // Exactly at the cap (50) is Accepted (202).
+    let at_cap: String = {
+        let items: Vec<String> = (0..50)
+            .map(|i| format!("{{\"kind\":\"email\",\"value\":\"v{i}@x.com\"}}"))
+            .collect();
+        format!("[{}]", items.join(","))
+    };
+    let resp = app
+        .oneshot(post_json("/api/v1/scans/batch", &at_cap))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::ACCEPTED,
+        "a 50-target batch (at the cap) must be accepted"
+    );
+}
+
+#[tokio::test]
+async fn search_endpoint_rejects_overlong_query() {
+    // The 256-char query cap bounds work per request; it fires before any FTS
+    // query, so no entities need seeding. A normal query is fine; a 300-char one
+    // is a clean 400, not a 500 or an unbounded scan.
+    let app = test_app("search-len");
+
+    let ok = app
+        .clone()
+        .oneshot(get("/api/v1/search?q=alice"))
+        .await
+        .unwrap();
+    assert_ne!(
+        ok.status(),
+        http::StatusCode::INTERNAL_SERVER_ERROR,
+        "a normal query must never 500"
+    );
+
+    let long = "x".repeat(300);
+    let resp = app
+        .oneshot(get(&format!("/api/v1/search?q={long}")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "a >256-char query must be rejected 400");
+}
+
+#[tokio::test]
 async fn manifest_is_valid_installable_pwa() {
     // Chrome-on-Android installability: the manifest must serve as JSON (not the
     // SPA fallback), parse, and declare standalone display so "Add to Home Screen"

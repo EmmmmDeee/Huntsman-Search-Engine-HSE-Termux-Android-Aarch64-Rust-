@@ -66,12 +66,9 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
         let mut parts = loc.split(',');
         if let (Some(lat_s), Some(lon_s)) = (parts.next(), parts.next())
             && let (Ok(lat), Ok(lon)) = (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>())
-            && crate::util::geo::is_plausible_provider_coord(lat, lon)
-        {
-            let coords = format!("{lat:.4},{lon:.4}");
             // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
-            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.58, scan_id);
-            ce.tag(tags::GEOINT);
+            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)
+        {
             ce.tag("ipinfo");
             let mut ev = Evidence::new(SRC, format!("IP geo for {ip}"));
             if let Some(c) = &data.city {

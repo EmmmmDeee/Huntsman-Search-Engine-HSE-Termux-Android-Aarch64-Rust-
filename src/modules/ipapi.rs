@@ -168,16 +168,13 @@ impl Module for IpApi {
             ev = ev.with_attr("timezone", tz);
         }
 
+        // Confidence recalibrated 0.70 → 0.60 — see ip_geo.rs for rationale
+        // (single-source free IP geo overstates residential precision; the
+        // corroboration boost lifts the real value at the merge step).
         if let (Some(lat), Some(lon)) = (data.lat, data.lon)
-            && crate::util::geo::is_plausible_provider_coord(lat, lon)
+            && let Some(mut ce) =
+                crate::util::geo::coarse_provider_coords(lat, lon, 0.60, &ctx.scan_id)
         {
-            let coords = format!("{lat:.4},{lon:.4}");
-            // Confidence recalibrated 0.70 → 0.60 — see ip_geo.rs for
-            // rationale (single-source free IP geo overstates
-            // residential precision; corroboration boost lifts the
-            // real value at the merge step).
-            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.60, &ctx.scan_id);
-            ce.tag(tags::GEOINT);
             if data.mobile == Some(true) {
                 ce.tag("mobile");
             }

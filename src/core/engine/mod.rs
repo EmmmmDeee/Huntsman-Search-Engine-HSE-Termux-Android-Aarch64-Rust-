@@ -26,15 +26,29 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::time::{sleep, timeout};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
+
+mod dispatch;
+mod enrich;
+mod expansion;
+mod timeout;
+// The dispatch loops now live in `dispatch`; these items are referenced only by
+// the tests that stayed in this file, so the bridge is test-only.
+#[cfg(test)]
+use dispatch::{dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded};
+use enrich::{enrich_geospatial, scan_entity_for_keys};
+use expansion::{cmp_expansion_candidates, correlation_key, visit_key};
+use timeout::resolve_timeout;
+// Used only by the dispatch-related tests retained in this file.
+#[cfg(test)]
+use crate::core::{error::Error, module::ModuleCost};
 
 use crate::core::{
     dependency::ModuleGraph,
-    entity::{Entity, normalise},
-    error::{Error, Result},
+    entity::Entity,
+    error::Result,
     event::{Event, EventBus, EventKind},
-    module::{Module, ModuleContext, ModuleCost},
+    module::{Module, ModuleContext},
     port::StoragePort,
     relation::{Relation, RelationKind},
     scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
@@ -156,12 +170,6 @@ impl DispatchLog {
     pub fn is_empty(&self) -> bool {
         self.seen.is_empty()
     }
-}
-
-fn dispatch_key(module_name: &'static str, target: &Target) -> (&'static str, TargetKind, String) {
-    let entity_kind = target.kind.to_entity_kind();
-    let normalised = normalise(&entity_kind, &target.value);
-    (module_name, target.kind, normalised)
 }
 
 impl StopReason {
@@ -593,11 +601,13 @@ impl ScanEngine {
         let colocation = crate::core::relation::derive_colocation(entities, scan_id);
         let resolution = crate::core::relation::derive_resolution(entities, scan_id);
         let registration = crate::core::relation::derive_registration(entities, scan_id);
+        let name_lineage = crate::core::relation::derive_name_lineage(entities, scan_id);
         if lineage.is_empty()
             && structural.is_empty()
             && colocation.is_empty()
             && resolution.is_empty()
             && registration.is_empty()
+            && name_lineage.is_empty()
         {
             return;
         }
@@ -608,6 +618,7 @@ impl ScanEngine {
             .chain(colocation.iter())
             .chain(resolution.iter())
             .chain(registration.iter())
+            .chain(name_lineage.iter())
         {
             match self.store.upsert_relation(r) {
                 Ok(()) => persisted += 1,
@@ -621,6 +632,7 @@ impl ScanEngine {
             colocation = colocation.len(),
             resolution = resolution.len(),
             registration = registration.len(),
+            name_lineage = name_lineage.len(),
             persisted,
             "entity relations persisted"
         );
@@ -675,11 +687,26 @@ impl ScanEngine {
             .iter()
             .map(|e| (e.uid.clone(), e.c_effective()))
             .collect();
-        let mut fresh: Vec<crate::core::correlator::Correlation> =
+        // Contain a correlator panic exactly as module dispatch does
+        // (`run_module_guarded`): the 34 AU-rules run index/parse-heavy logic over
+        // entity data, so a single malformed value in one rule must degrade to "no
+        // new correlations this round" rather than unwind through finalize and lose
+        // the scan. Entities are already checkpointed and persisted, so nothing
+        // discovered is lost — only this round's correlation pass is skipped.
+        let produced = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::core::correlator::correlate_entities(entities, scan_id)
-                .into_iter()
-                .filter(|c| emitted.insert(correlation_key(c)))
-                .collect();
+        }))
+        .unwrap_or_else(|_| {
+            warn!(
+                scan_id,
+                "correlation pass panicked — entities preserved, correlations skipped this round"
+            );
+            Vec::new()
+        });
+        let mut fresh: Vec<crate::core::correlator::Correlation> = produced
+            .into_iter()
+            .filter(|c| emitted.insert(correlation_key(c)))
+            .collect();
         crate::core::correlator::rank_and_sort(&mut fresh, &ceff);
         for c in fresh {
             if let Err(e) = self.store.upsert_correlation(&c) {
@@ -1031,87 +1058,6 @@ impl ScanEngine {
     }
 }
 
-/// Stable identity for a correlation, used to dedup live-streamed firings
-/// against the authoritative finalise pass. Order-independent in the entity
-/// set so the same rule firing over the same entities keys identically
-/// regardless of discovery order.
-fn correlation_key(c: &crate::core::correlator::Correlation) -> String {
-    let mut uids = c.entity_uids.clone();
-    uids.sort();
-    format!("{}\u{1f}{}", c.rule_id, uids.join("\u{1e}"))
-}
-
-/// Visit-key for the expansion visited-set. Normalises the value the same
-/// way `Entity::new` does, so the seed target matches entities that point
-/// back at it.
-fn visit_key(target: &Target) -> (TargetKind, String) {
-    let entity_kind = target.kind.to_entity_kind();
-    let normalised = normalise(&entity_kind, &target.value);
-    (target.kind, normalised)
-}
-
-/// Deterministic total order for expansion candidates `(Target, weight, parent)`:
-/// highest weight first, ties broken by target kind then value. A NaN weight
-/// sorts last (treated as the lowest) rather than silently comparing Equal. This
-/// is what makes a budgeted scan reproducible — see the call site in the
-/// expansion loop for why the HashMap-iteration input order must not leak through
-/// a weight tie into which candidates a `truncate(keep)` keeps.
-fn cmp_expansion_candidates(
-    a: &(Target, f64, String),
-    b: &(Target, f64, String),
-) -> std::cmp::Ordering {
-    // Descending weight: `b` vs `a`. NaN is pushed to the bottom deterministically.
-    let by_weight = match (a.1.is_nan(), b.1.is_nan()) {
-        (false, false) => b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal),
-        (true, false) => std::cmp::Ordering::Greater, // a is NaN → a after b
-        (false, true) => std::cmp::Ordering::Less,
-        (true, true) => std::cmp::Ordering::Equal,
-    };
-    by_weight
-        .then_with(|| a.0.kind.canonical_str().cmp(b.0.kind.canonical_str()))
-        .then_with(|| a.0.value.cmp(&b.0.value))
-}
-
-/// Upper bound (ms) on any single module's timeout when running on Termux and
-/// the operator hasn't pinned `--module-timeout`. On a low-power, metered,
-/// often-flaky mobile connection a 90–120 s module (search_engines, api_key_probe)
-/// can stall the whole scan; capping the worst offenders keeps a phone scan
-/// responsive. Desktop and any explicit user timeout are unaffected.
-/// Hard ceiling on any single module's `process()` on Termux (no user
-/// override). Lowered from 60 s after live device transcripts showed
-/// `search_engines` burning the full minute for zero results on a phone:
-/// 45 s still clears every legitimately-long module's happy path
-/// (social_probe ~36 s, oathnet/overpass <30 s) while reclaiming the dead
-/// tail of hung mobile requests. Per-module `termux_timeout_ms()` can trim
-/// further below this.
-const TERMUX_MODULE_TIMEOUT_CAP_MS: u64 = 45_000;
-
-fn resolve_timeout(opts: &ScanOptions, module: &dyn Module) -> u64 {
-    let user_set = opts.module_timeout_ms;
-    let is_termux = crate::is_termux();
-    // On Termux, consult the module's Termux-specific budget (defaults to
-    // max_timeout_ms, so most modules are unaffected) so phone-pathological
-    // modules self-trim; off Termux, the full desktop budget. A user-pinned
-    // --module-timeout replaces both and is honoured verbatim by the cap.
-    let base = match user_set {
-        Some(ms) => ms,
-        None if is_termux => module.termux_timeout_ms(),
-        None => module.max_timeout_ms(),
-    };
-    apply_termux_cap(base, user_set.is_some(), is_termux)
-}
-
-/// Pure timeout-capping policy (split out so it's unit-testable without env):
-/// on Termux with no user override, clamp to [`TERMUX_MODULE_TIMEOUT_CAP_MS`];
-/// otherwise pass the resolved value through unchanged.
-fn apply_termux_cap(base_ms: u64, user_set: bool, is_termux: bool) -> u64 {
-    if is_termux && !user_set {
-        base_ms.min(TERMUX_MODULE_TIMEOUT_CAP_MS)
-    } else {
-        base_ms
-    }
-}
-
 /// Pull any newly-available pooled API key into `keys` for every service that
 /// doesn't already have one. This is the key-cascade that makes recursion pay
 /// off: a key a module just discovered (oathnet breach data, api_key_probe
@@ -1167,550 +1113,6 @@ fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> O
 // stay identical regardless of dispatch mode.
 // ---------------------------------------------------------------------------
 
-/// The output of one `module.process()` call after the engine wraps it
-/// in `tokio::time::timeout` — either `Elapsed` (outer timeout fired),
-/// `Err` (module returned an error), or `Ok(ModuleResult)` (success).
-type TimeoutResult =
-    std::result::Result<Result<crate::core::module::ModuleResult>, tokio::time::error::Elapsed>;
-
-/// Run one module's `process()` under both a timeout AND a panic guard.
-///
-/// A panicking module — an `unwrap`/`expect`/out-of-bounds slice on a hostile or
-/// drifted upstream response, or a panic deep in a dependency — would otherwise
-/// unwind into the sequential dispatch loop or a `JoinSet` task and (under
-/// `panic = "abort"`) take down the whole process: a remote-DoS on a long-lived
-/// `hse serve`. This wraps the timed module future in [`std::panic::catch_unwind`]
-/// (requires `panic = "unwind"`, set for every profile) and maps a caught panic
-/// to `Ok(Err(Error::module(name, "panicked: …")))`, so it flows through
-/// `finalise_module_result`'s existing `errored` arm exactly like a returned
-/// error — counted in `modules_errored`, named, and non-fatal to the scan.
-/// Emit the uniform per-module dispatch trace, paired with the `ModuleStart` bus
-/// event at every dispatch site (sequential + both concurrent phases). Without it
-/// the raw debug log (`hse logs` / stderr) showed a module's outcome
-/// (done/skipped/errored/timeout) but never its *start*, so a module that hung or
-/// vanished mid-flight left no trace. Keyed by `module=<name>` (+ the target it
-/// ran against) so `grep 'module=hibp'` reconstructs that one file's entire
-/// lifecycle from the logs alone.
-#[inline]
-fn log_module_dispatch(name: &str, target: &Target) {
-    debug!(
-        module = name,
-        kind = ?target.kind,
-        value = %target.value,
-        "dispatch"
-    );
-}
-
-async fn run_module_guarded(
-    timeout_ms: u64,
-    name: &'static str,
-    fut: impl std::future::Future<Output = Result<crate::core::module::ModuleResult>>,
-) -> TimeoutResult {
-    use futures::FutureExt;
-    match std::panic::AssertUnwindSafe(timeout(Duration::from_millis(timeout_ms), fut))
-        .catch_unwind()
-        .await
-    {
-        Ok(timeout_result) => timeout_result,
-        Err(payload) => {
-            let msg = payload
-                .downcast_ref::<&str>()
-                .map(|s| (*s).to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "module panicked".to_string());
-            warn!(module = name, %msg, "module panic contained");
-            Ok(Err(Error::module(name, format!("panicked: {msg}"))))
-        }
-    }
-}
-
-/// What a spawned per-module task returns to the consumer loop.
-struct DispatchOutcome {
-    name: &'static str,
-    result: TimeoutResult,
-}
-
-impl ScanEngine {
-    /// Translate one module's `process()` result into engine events
-    /// (`ModuleError` / `EntityFound` / `ModuleDone`) and merge any
-    /// emitted entities into the per-scan `entity_map`. Shared by
-    /// `dispatch_target_sequential` and `dispatch_target_concurrent`
-    /// so the event payload shape is identical between the two paths.
-    fn finalise_module_result(
-        &self,
-        scan_id: &str,
-        name: &'static str,
-        min_confidence: Option<f64>,
-        entity_map: &mut HashMap<String, Entity>,
-        result: TimeoutResult,
-        stats: &mut ModuleStats,
-    ) {
-        stats.run += 1;
-        match result {
-            Err(_) => {
-                stats.timed_out += 1;
-                warn!(module = name, "timeout");
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleError {
-                        module: name.into(),
-                        error: "timeout".into(),
-                    },
-                );
-            }
-            Ok(Err(Error::MissingKey(key))) => {
-                // An unconfigured optional provider is NOT a failure. Surface it
-                // as a clean "needs key" skip (with a free-signup hint where
-                // known) instead of a scary module error, and count it under
-                // `skipped` rather than `errored`.
-                stats.skipped += 1;
-                let reason = match crate::util::keys::signup_hint(&key) {
-                    Some(hint) => format!("needs API key {key} — {hint}"),
-                    None => format!("needs API key {key}"),
-                };
-                debug!(module = name, %key, "skipped — needs key");
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleSkipped {
-                        module: name.into(),
-                        reason,
-                    },
-                );
-            }
-            Ok(Err(e)) => {
-                stats.errored += 1;
-                warn!(module = name, error = %e, "module error");
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleError {
-                        module: name.into(),
-                        error: e.to_string(),
-                    },
-                );
-            }
-            Ok(Ok(mut mr)) => {
-                let mut found = 0usize;
-                for entity in mr.entities.drain(..) {
-                    if let Some(min) = min_confidence
-                        && entity.confidence < min
-                    {
-                        continue;
-                    }
-                    // Drop guaranteed-bogus IPs (documentation / reserved /
-                    // benchmark ranges, e.g. 192.0.2.1 scraped off a tutorial
-                    // page) at admission so they never enter the graph, fire
-                    // correlations, or appear as findings. RFC1918 private and
-                    // loopback are intentionally kept — local sensors surface
-                    // those legitimately on-device.
-                    if entity.kind == crate::core::entity::EntityKind::IpAddress
-                        && crate::core::validation::is_bogus_ip(&entity.value)
-                    {
-                        self.emit_excluded(scan_id, &entity, "bogus_ip");
-                        continue;
-                    }
-                    // Drop documentation / placeholder artifacts (example.com,
-                    // jordan@example.com, http://example.com, the `example`
-                    // username, "John Doe", …) at admission so they never enter
-                    // the graph, expand into whole infrastructure rounds, or
-                    // fire correlations. Inherently-unique secrets (passwords /
-                    // API keys / credentials) are exempt — see
-                    // `validation::is_placeholder_entity`.
-                    if crate::core::validation::is_placeholder_entity(&entity.kind, &entity.value) {
-                        self.emit_excluded(scan_id, &entity, "placeholder_artifact");
-                        continue;
-                    }
-                    // Drop truncated / incomplete values (`@gmail`, a domain-less
-                    // email, a bare dotless host, a `@`-prefixed handle that
-                    // failed to normalise) at admission so the user never sees an
-                    // unverifiable fragment. The auditor independently flags any
-                    // that somehow slip through (`fragment-values`).
-                    if crate::core::validation::is_fragment_value(&entity.kind, &entity.value) {
-                        self.emit_excluded(scan_id, &entity, "fragment_value");
-                        continue;
-                    }
-                    self.emit(
-                        scan_id,
-                        EventKind::EntityFound {
-                            entity: entity.clone(),
-                        },
-                    );
-                    scan_entity_for_keys(&entity);
-                    let mut entity = entity;
-                    enrich_geospatial(&mut entity);
-                    if let Some(existing) = entity_map.get_mut(&entity.uid) {
-                        existing.merge(entity);
-                    } else {
-                        entity_map.insert(entity.uid.clone(), entity);
-                    }
-                    found += 1;
-                }
-                self.emit(
-                    scan_id,
-                    EventKind::ModuleDone {
-                        module: name.into(),
-                        found,
-                    },
-                );
-                info!(module = name, found, "done");
-            }
-        }
-    }
-
-    /// Dispatch every accepting module against `target`. Picks the
-    /// sequential or concurrent codepath based on `opts.max_concurrent`.
-    #[allow(clippy::too_many_arguments)]
-    async fn dispatch_target(
-        &self,
-        scan_id: &str,
-        target: &Target,
-        ctx: &mut ModuleContext,
-        opts: &ScanOptions,
-        entity_map: &mut HashMap<String, Entity>,
-        is_expansion: bool,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
-    ) -> Result<()> {
-        if opts.max_concurrent == 0 {
-            self.dispatch_target_sequential(
-                scan_id,
-                target,
-                ctx,
-                opts,
-                entity_map,
-                is_expansion,
-                stats,
-                dispatched,
-            )
-            .await
-        } else {
-            self.dispatch_target_concurrent(
-                scan_id,
-                target,
-                ctx,
-                opts,
-                entity_map,
-                is_expansion,
-                stats,
-                dispatched,
-            )
-            .await
-        }
-    }
-
-    /// Sequential dispatcher (max_concurrent == 0).
-    #[allow(clippy::too_many_arguments)]
-    async fn dispatch_target_sequential(
-        &self,
-        scan_id: &str,
-        target: &Target,
-        ctx: &mut ModuleContext,
-        opts: &ScanOptions,
-        entity_map: &mut HashMap<String, Entity>,
-        is_expansion: bool,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
-    ) -> Result<()> {
-        // O(1) dispatch-index lookup replaces the O(M) accepts() scan.
-        // Modules are already priority-sorted within each bucket so we
-        // walk them in the same order the legacy `for module in &self.modules`
-        // loop did. Iterating index-by-index (instead of pre-allocating
-        // a `Vec<Arc<dyn Module>>` and Arc-cloning per target) avoids
-        // a heap allocation + N atomic increments per dispatch — meaningful
-        // on the hot path that runs once per expansion candidate.
-        // Distinct-source count of the target entity (for the high-value-API
-        // cross-correlation gate); computed once per target, not per module.
-        let target_sources = target_distinct_sources(entity_map, target);
-        for &idx in self.graph.modules_for(target.kind) {
-            let Some(module) = self.modules.get(idx) else {
-                continue;
-            };
-            if ctx.cancel.is_cancelled() {
-                return Ok(());
-            }
-            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
-                return Ok(());
-            }
-            let name = module.name();
-
-            // Belt-and-braces: a module whose `consumes()` declaration
-            // diverges from its runtime `accepts()` would otherwise
-            // slip through. Cheap re-check on the hit path.
-            if !module.accepts(target) {
-                continue;
-            }
-            if let Some(reason) =
-                module_skip_reason(&**module, target, opts, is_expansion, target_sources)
-            {
-                // Count every gate-skip (excluded / disabled-in-config /
-                // not-in-allowlist / free-only / passive-only / sensor) so
-                // `modules_skipped` is a faithful, complete tally — toggling a
-                // module off is then observable in the scan summary, not just
-                // in the event stream.
-                stats.skipped += 1;
-                self.emit_skipped(scan_id, name, reason);
-                continue;
-            }
-            if !matches!(module.cost(), ModuleCost::Free)
-                && !dispatched.insert(dispatch_key(name, target))
-            {
-                stats.deduped += 1;
-                self.emit_skipped(scan_id, name, "already dispatched for this target");
-                continue;
-            }
-
-            log_module_dispatch(name, target);
-            self.emit(
-                scan_id,
-                EventKind::ModuleStart {
-                    module: name.into(),
-                },
-            );
-
-            let result = run_module_guarded(
-                resolve_timeout(opts, &**module),
-                name,
-                module.process(target, ctx),
-            )
-            .await;
-
-            self.finalise_module_result(
-                scan_id,
-                name,
-                opts.min_confidence,
-                entity_map,
-                result,
-                stats,
-            );
-
-            hot_inject_keys(&mut ctx.keys);
-
-            // Re-check the cancel flag before the throttle sleep so an
-            // operator cancel between modules doesn't pay the full
-            // `throttle_ms` latency before the next gate at the top of
-            // the loop is reached. The throttle exists to be polite to
-            // upstreams; once the operator has asked us to stop there's
-            // nothing left to be polite about.
-            if ctx.cancel.is_cancelled() {
-                return Ok(());
-            }
-            if opts.throttle_ms > 0 {
-                sleep(Duration::from_millis(opts.throttle_ms)).await;
-            }
-        }
-        Ok(())
-    }
-
-    /// Concurrent dispatcher (max_concurrent > 0). Launches up to `opts.max_concurrent`
-    /// modules at a time via a Semaphore; collects results as tasks complete.
-    ///
-    /// Paid modules run synchronously first (key-discovery-first pattern):
-    /// oathnet_pro, dehashed, intelx discover API keys that hot-inject into
-    /// ctx before the remaining modules are spawned concurrently. Without this,
-    /// all modules launch with a cloned ctx that lacks discovered keys.
-    #[allow(clippy::too_many_arguments)]
-    async fn dispatch_target_concurrent(
-        &self,
-        scan_id: &str,
-        target: &Target,
-        ctx: &mut ModuleContext,
-        opts: &ScanOptions,
-        entity_map: &mut HashMap<String, Entity>,
-        is_expansion: bool,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
-    ) -> Result<()> {
-        use tokio::sync::Semaphore;
-        use tokio::task::JoinSet;
-
-        // O(1) dispatch-index lookup — only modules accepting `target.kind`
-        // are even considered. Phase 1 then filters to Paid. We iterate
-        // indices directly rather than allocating a `Vec<Arc<dyn Module>>`
-        // and Arc-cloning per target; on the hot path this saves a heap
-        // allocation + N atomic increments per dispatch.
-
-        // Phase 1: Run Paid modules synchronously so discovered keys are
-        // available via hot-inject before the concurrent phase begins.
-        let target_sources = target_distinct_sources(entity_map, target);
-        for &idx in self.graph.modules_for(target.kind) {
-            let Some(module) = self.modules.get(idx) else {
-                continue;
-            };
-            if !matches!(module.cost(), ModuleCost::Paid) {
-                continue;
-            }
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            let name = module.name();
-            if !module.accepts(target) {
-                continue;
-            }
-            if let Some(reason) =
-                module_skip_reason(&**module, target, opts, is_expansion, target_sources)
-            {
-                // Count every gate-skip (excluded / disabled-in-config /
-                // not-in-allowlist / free-only / passive-only / sensor) so
-                // `modules_skipped` is a faithful, complete tally — toggling a
-                // module off is then observable in the scan summary, not just
-                // in the event stream.
-                stats.skipped += 1;
-                self.emit_skipped(scan_id, name, reason);
-                continue;
-            }
-            if !dispatched.insert(dispatch_key(name, target)) {
-                stats.deduped += 1;
-                self.emit_skipped(scan_id, name, "already dispatched for this target");
-                continue;
-            }
-            log_module_dispatch(name, target);
-            self.emit(
-                scan_id,
-                EventKind::ModuleStart {
-                    module: name.into(),
-                },
-            );
-            let result = run_module_guarded(
-                resolve_timeout(opts, &**module),
-                name,
-                module.process(target, ctx),
-            )
-            .await;
-            self.finalise_module_result(
-                scan_id,
-                name,
-                opts.min_confidence,
-                entity_map,
-                result,
-                stats,
-            );
-            // Hot-inject discovered keys so Phase 2 modules can use them.
-            // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
-            // cascade — their outputs feed web_crawler/search_engines, which
-            // discover MORE keys.
-            hot_inject_keys(&mut ctx.keys);
-        }
-
-        // Phase 2: Spawn remaining (Free + KeyGated) modules concurrently.
-        // ctx now contains any keys discovered in Phase 1. Same
-        // index-iteration pattern as Phase 1 — Arc::clone moves to the
-        // single spawn site below, instead of being paid for every
-        // candidate during candidate-list construction.
-        let sem = Arc::new(Semaphore::new(opts.max_concurrent));
-        let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
-        let scan_id_arc: Arc<str> = scan_id.into();
-        // Share one context across all spawned modules in this round instead of
-        // deep-cloning the keys map + scan_id per dispatch. Modules take
-        // `&ModuleContext` (read-only) and ctx is stable within a round, so an
-        // Arc bump per spawn replaces N HashMap/String clones — a real win on a
-        // low-RAM phone with ~80 modules/round.
-        let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
-
-        let target_sources = target_distinct_sources(entity_map, target);
-        for &idx in self.graph.modules_for(target.kind) {
-            let Some(module) = self.modules.get(idx) else {
-                continue;
-            };
-            if matches!(module.cost(), ModuleCost::Paid) {
-                continue;
-            }
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
-                break;
-            }
-            let name = module.name();
-
-            if !module.accepts(target) {
-                continue;
-            }
-            if let Some(reason) =
-                module_skip_reason(&**module, target, opts, is_expansion, target_sources)
-            {
-                // Count every gate-skip (excluded / disabled-in-config /
-                // not-in-allowlist / free-only / passive-only / sensor) so
-                // `modules_skipped` is a faithful, complete tally — toggling a
-                // module off is then observable in the scan summary, not just
-                // in the event stream.
-                stats.skipped += 1;
-                self.emit_skipped(scan_id, name, reason);
-                continue;
-            }
-            if !matches!(module.cost(), ModuleCost::Free)
-                && !dispatched.insert(dispatch_key(name, target))
-            {
-                stats.deduped += 1;
-                self.emit_skipped(scan_id, name, "already dispatched for this target");
-                continue;
-            }
-
-            let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
-                break;
-            };
-
-            let module_arc: Arc<dyn Module> = Arc::clone(module);
-            let target = target.clone();
-            let ctx = Arc::clone(&ctx_shared);
-            let emitter = self.emitter.clone();
-            let sid = Arc::clone(&scan_id_arc);
-            let throttle_ms = opts.throttle_ms;
-            let module_timeout_ms = resolve_timeout(opts, &*module_arc);
-
-            set.spawn(async move {
-                let _permit = permit;
-
-                log_module_dispatch(name, &target);
-                emitter.emit(
-                    &sid,
-                    EventKind::ModuleStart {
-                        module: name.into(),
-                    },
-                );
-
-                let result =
-                    run_module_guarded(module_timeout_ms, name, module_arc.process(&target, &ctx))
-                        .await;
-
-                if throttle_ms > 0 {
-                    sleep(Duration::from_millis(throttle_ms)).await;
-                }
-
-                DispatchOutcome { name, result }
-            });
-        }
-
-        while let Some(joined) = set.join_next().await {
-            let outcome = match joined {
-                Ok(o) => o,
-                Err(e) if e.is_cancelled() => {
-                    tracing::debug!("concurrent module task cancelled");
-                    continue;
-                }
-                Err(e) => {
-                    warn!(error = %e, "concurrent module task panicked");
-                    self.emit(
-                        scan_id,
-                        EventKind::ModuleError {
-                            module: "unknown (panicked)".into(),
-                            error: e.to_string(),
-                        },
-                    );
-                    continue;
-                }
-            };
-            self.finalise_module_result(
-                scan_id,
-                outcome.name,
-                opts.min_confidence,
-                entity_map,
-                outcome.result,
-                stats,
-            );
-        }
-        Ok(())
-    }
-}
-
 /// Modules that legitimately consume private IPs / local domains —
 /// sensor modules that run against the local network. Universal
 /// preflight (private-IP / local-domain rejection) skips these.
@@ -1721,246 +1123,6 @@ impl ScanEngine {
 /// loop in one edit.
 pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] =
     &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
-
-/// Returns `Some(reason)` if `module` should be skipped under `opts`.
-/// `accepts(target)` is intentionally NOT checked here — that case skips
-/// silently with no `ModuleSkipped` event, the others all emit one.
-/// Count the DISTINCT evidence sources backing the entity that `target`
-/// refers to, by re-deriving the entity UID the same way `Entity::new` does.
-/// Used to gate high-value paid modules behind "sufficient cross-correlation"
-/// on expansion rounds. Returns 0 when the target isn't (yet) in the map — the
-/// seed target itself isn't an entity, but seed dispatch (`!is_expansion`)
-/// never consults this gate, so 0 is safe there.
-fn target_distinct_sources(entity_map: &HashMap<String, Entity>, target: &Target) -> usize {
-    let entity_kind = target.kind.to_entity_kind();
-    let normalised = normalise(&entity_kind, &target.value);
-    let uid = crate::core::entity::derive_uid(&entity_kind, &normalised);
-    entity_map
-        .get(&uid)
-        .map_or(0, |e| e.evidence_sources().len())
-}
-
-fn module_skip_reason(
-    module: &dyn Module,
-    target: &Target,
-    opts: &ScanOptions,
-    is_expansion: bool,
-    target_distinct_sources: usize,
-) -> Option<&'static str> {
-    let name = module.name();
-    // The allowlist means "ONLY these modules run" (docs/USAGE.md) — and that
-    // must hold on EVERY round, not just the seed. Gating it with `!is_expansion`
-    // let every non-allowlisted module run on discovered entities during
-    // expansion, contradicting the documented contract and (on the Termux target)
-    // turning a focused `--modules name_intel` scan into a full network sweep the
-    // moment it expanded. `--exclude` already applies in all rounds; the allowlist
-    // now matches.
-    if let Some(allow) = &opts.modules
-        && !allow.iter().any(|n| n == name)
-    {
-        return Some("not in allowlist");
-    }
-    if opts.exclude_modules.iter().any(|n| n == name) {
-        return Some("excluded");
-    }
-    // Persistent per-module toggle (universal toggleability): `hse config
-    // module.<name> off` disables a module across ALL scans until re-enabled.
-    // Default on, so an unset module behaves exactly as before.
-    if !crate::util::settings::get_bool(&format!("module.{name}"), true) {
-        return Some("disabled in config");
-    }
-    if opts.free_only && !matches!(module.cost(), ModuleCost::Free) {
-        return Some("requires key/payment");
-    }
-    if opts.passive_only && !module.is_passive() {
-        return Some("not passive");
-    }
-    if is_expansion && module.is_passive() && LOCAL_PASSIVE_MODULES.contains(&name) {
-        return Some("sensor (already ran on seed round)");
-    }
-    // High-value-only modules: the heaviest paid API (oathnet_pro, priority
-    // 127, Paid, 30s) burns one query per target and a low-specificity seed
-    // fans out into a large unrelated corpus — a live `name="Onur Ada"` scan
-    // pulled 172 unrelated US-banking breach records that buried the real
-    // findings. Per the operator's rule, such a module may fire when the
-    // target is EITHER the initial seed query OR a discovered entity that has
-    // reached *sufficient cross-correlation* — i.e. corroborated by at least
-    // `CROSS_CORRELATION_MIN_SOURCES` DISTINCT evidence sources, not just a
-    // bumped corroboration counter. On the live scan this admits the genuinely
-    // on-target pivots (the breach email at 4 sources, the person at 3, the
-    // employer domain at 2) while excluding the 97 single-source banking
-    // emails that would otherwise trigger fresh fan-out. SeekNow (`see_know`)
-    // is intentionally NOT gated here: its own per-scan budget in
-    // `util::see_know` bounds the quota while letting it pivot freely.
-    const HIGH_VALUE_ONLY_MODULES: &[&str] = &["oathnet_pro"];
-    const CROSS_CORRELATION_MIN_SOURCES: usize = 2;
-    if is_expansion
-        && HIGH_VALUE_ONLY_MODULES.contains(&name)
-        && target_distinct_sources < CROSS_CORRELATION_MIN_SOURCES
-    {
-        return Some("high-value API — awaiting cross-correlation (>=2 sources)");
-    }
-    // ── Universal preflight: reject private IPs / local domains for
-    // modules that talk to external APIs. Sensor modules opt out via
-    // LOCAL_PASSIVE_MODULES — they legitimately scan the local
-    // network. Every other module is treated as "may reach an external
-    // service" so we save its quota / suppress its "HTTP 400 invalid
-    // IP" responses before the dispatch even fires.
-    //
-    // Modules with non-IP/Domain accepts (Email, Phone, Username, etc.)
-    // fall through the `_` arm and run normally — there's no concept
-    // of a "private email".
-    if !LOCAL_PASSIVE_MODULES.contains(&name) {
-        use crate::util::preflight;
-        match target.kind {
-            // Use the v6-tolerant gate — public IPv6 must pass through
-            // (shodan, censys, RDAP, abuseipdb, etc. all support v6).
-            // `should_skip_external_ipv4` rejects ANY `:`-containing
-            // string and is reserved for the small set of IPv4-only
-            // modules (ipapi, ip-api.com, ipinfo.io, ipquery.io)
-            // that route through it inside their own `process`.
-            TargetKind::IpAddress if preflight::should_skip_external_ip(&target.value) => {
-                return Some("private/reserved IP — external API would reject");
-            }
-            TargetKind::Domain if preflight::is_local_domain(&target.value) => {
-                return Some("local/reserved domain — external API would reject");
-            }
-            // SSRF gate: a URL whose host is a private IP or local
-            // domain must not reach a URL-accepting external module
-            // (dns_intel, doh_resolver, exif_geo, geo_domain_classifier,
-            // web_crawler). Without this, an autonomously-discovered
-            // `http://192.168.1.1/admin` would coerce HSE into
-            // hitting the operator's internal network.
-            TargetKind::Url if crate::util::preflight::url_host_is_private(&target.value) => {
-                return Some("URL with private host — external API would reject (SSRF gate)");
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Augment Coordinates entities with geohash + timezone, and Address
-/// entities with parsed admin-hierarchy components. Runs once per
-/// emission so downstream correlators see the enriched evidence.
-fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
-    use crate::core::entity::{EntityKind, Evidence};
-    use crate::util::geohash;
-    match entity.kind {
-        EntityKind::Coordinates => {
-            if let Some((lat, lon)) = geohash::parse_coords(&entity.value) {
-                let h = geohash::geohash(lat, lon, 7);
-                let tz = geohash::timezone_for(lat, lon);
-                let iso = geohash::reverse_country_iso(lat, lon);
-                let mut ev = Evidence::new("geo_normalize", "Geospatial enrichment");
-                if !h.is_empty() {
-                    ev = ev.with_attr("geohash", &h);
-                    // Multiple precision-tagged hashes for proximity matching
-                    // at different scales (region/city/suburb/street).
-                    ev = ev
-                        .with_attr("geohash_4", &h[..h.len().min(4)])
-                        .with_attr("geohash_5", &h[..h.len().min(5)])
-                        .with_attr("geohash_6", &h[..h.len().min(6)]);
-                    if let Ok(h9) = std::panic::catch_unwind(|| geohash::geohash(lat, lon, 9)) {
-                        ev = ev.with_attr("geohash_9", &h9);
-                    }
-                }
-                ev = ev.with_attr("timezone", tz);
-                ev = ev.with_attr("lat", format!("{lat:.6}"));
-                ev = ev.with_attr("lon", format!("{lon:.6}"));
-                let hemisphere = if lat >= 0.0 { "northern" } else { "southern" };
-                ev = ev.with_attr("hemisphere", hemisphere);
-                if let Some(iso) = iso {
-                    ev = ev.with_attr("country_iso", iso);
-                    if let Some(name) = geohash::country_name_for_iso(iso) {
-                        ev = ev.with_attr("country_name", name);
-                    }
-                    entity.tag(format!("country:{iso}"));
-                }
-                entity.add_evidence(ev);
-                entity.tag(format!("geohash:{}", &h[..h.len().min(5)]));
-                entity.tag(format!("tz:{tz}"));
-            }
-        }
-        EntityKind::Address => {
-            let parsed = geohash::parse_address(&entity.value);
-            let mut ev = Evidence::new("geo_normalize", "Address parse + normalization");
-            let mut any = false;
-            if let Some(s) = &parsed.street {
-                ev = ev.with_attr("addr_street", s);
-                any = true;
-            }
-            if let Some(c) = &parsed.city {
-                ev = ev.with_attr("addr_city", c);
-                any = true;
-            }
-            if let Some(s) = &parsed.state {
-                ev = ev.with_attr("addr_state", s);
-                any = true;
-            }
-            if let Some(p) = &parsed.postal_code {
-                ev = ev.with_attr("addr_postal", p);
-                any = true;
-            }
-            if let Some(c) = &parsed.country {
-                ev = ev.with_attr("addr_country", c);
-                any = true;
-            }
-            if let Some(iso) = &parsed.iso_country {
-                ev = ev.with_attr("addr_iso", iso);
-                entity.tag(format!("country:{iso}"));
-                any = true;
-            }
-            if any {
-                entity.add_evidence(ev);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
-    use crate::util::key_pool::{KeyEntry, KeyStatus, global_pool};
-
-    let pool = global_pool();
-    let now = crate::core::entity::unix_now();
-    // Short uid prefix for the harvest note. uids are 64-hex SHA-256 in practice,
-    // but use the panic-free `.get(..8)` form (matching entity.rs) so a future
-    // short/non-ASCII uid can never panic this out-of-`catch_unwind` scan path.
-    let entity_ref = format!(
-        "{}:{}",
-        entity.kind,
-        entity.uid.get(..8).unwrap_or(&entity.uid)
-    );
-
-    let harvest = |text: &str, source: &str, notes: Option<String>| {
-        if let Some((service, key_val)) = identify_api_key(text) {
-            let mut entry = KeyEntry::new(key_val);
-            entry.status = KeyStatus::Untested;
-            entry.discovered_at = Some(now);
-            entry.discovered_by = Some(source.to_string());
-            entry.discovered_in_scan = Some(entity.scan_id.clone());
-            entry.source_entity = Some(entity_ref.clone());
-            entry.notes = notes;
-            pool.add(service, entry);
-        }
-    };
-
-    harvest(&entity.value, "entity_value", None);
-
-    for ev in &entity.evidence {
-        for val in ev.attributes.values() {
-            if (16..=200).contains(&val.len()) {
-                harvest(
-                    val,
-                    &ev.source,
-                    Some(format!("Evidence attr from {}", ev.source)),
-                );
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -2034,106 +1196,6 @@ mod tests {
         })
         .await;
         assert!(matches!(err, Ok(Err(Error::Module { .. }))));
-    }
-
-    #[test]
-    fn termux_cap_bounds_long_modules_only_on_termux_without_override() {
-        // Desktop (not Termux): full timeout preserved, even 120 s.
-        assert_eq!(apply_termux_cap(120_000, false, false), 120_000);
-        // Termux, no user override: the worst offenders are clamped to 45 s...
-        assert_eq!(
-            apply_termux_cap(120_000, false, true),
-            TERMUX_MODULE_TIMEOUT_CAP_MS
-        );
-        assert_eq!(
-            apply_termux_cap(90_000, false, true),
-            TERMUX_MODULE_TIMEOUT_CAP_MS
-        );
-        // ...the old 60 s ceiling is now itself clamped down to the 45 s cap...
-        assert_eq!(
-            apply_termux_cap(60_000, false, true),
-            TERMUX_MODULE_TIMEOUT_CAP_MS
-        );
-        assert_eq!(TERMUX_MODULE_TIMEOUT_CAP_MS, 45_000);
-        // ...while the common short timeouts pass through unchanged.
-        assert_eq!(apply_termux_cap(8_000, false, true), 8_000);
-        assert_eq!(apply_termux_cap(20_000, false, true), 20_000);
-        // An explicit --module-timeout is honoured verbatim, even on Termux,
-        // even above the cap (the operator asked for it).
-        assert_eq!(apply_termux_cap(120_000, true, true), 120_000);
-    }
-
-    #[test]
-    fn resolve_timeout_uses_termux_budget_then_cap() {
-        // A module whose Termux budget is below the cap is honoured as-is on a
-        // phone, while its larger desktop budget is what's used off-Termux.
-        // (apply_termux_cap carries the is_termux branch; here we assert the
-        // base-selection + clamp composition for both a default and an
-        // override module, independent of the runtime environment.)
-        struct DefaultMod; // termux_timeout_ms defaults to max_timeout_ms
-        #[async_trait::async_trait]
-        impl Module for DefaultMod {
-            fn name(&self) -> &'static str {
-                "d"
-            }
-            fn priority(&self) -> u8 {
-                1
-            }
-            fn accepts(&self, _t: &Target) -> bool {
-                false
-            }
-            async fn process(
-                &self,
-                _t: &Target,
-                _c: &ModuleContext,
-            ) -> Result<crate::core::module::ModuleResult> {
-                Ok(crate::core::module::ModuleResult::new())
-            }
-            fn max_timeout_ms(&self) -> u64 {
-                120_000
-            }
-        }
-        struct TrimmedMod; // overrides termux budget down
-        #[async_trait::async_trait]
-        impl Module for TrimmedMod {
-            fn name(&self) -> &'static str {
-                "t"
-            }
-            fn priority(&self) -> u8 {
-                1
-            }
-            fn accepts(&self, _t: &Target) -> bool {
-                false
-            }
-            async fn process(
-                &self,
-                _t: &Target,
-                _c: &ModuleContext,
-            ) -> Result<crate::core::module::ModuleResult> {
-                Ok(crate::core::module::ModuleResult::new())
-            }
-            fn max_timeout_ms(&self) -> u64 {
-                120_000
-            }
-            fn termux_timeout_ms(&self) -> u64 {
-                30_000
-            }
-        }
-        // Default module: desktop budget is the full 120 s; the Termux budget
-        // defaults to the same value but is clamped by the cap to 45 s.
-        assert_eq!(DefaultMod.termux_timeout_ms(), 120_000);
-        assert_eq!(
-            apply_termux_cap(DefaultMod.termux_timeout_ms(), false, true),
-            45_000
-        );
-        // Trimmed module: its 30 s Termux budget is under the cap, so it is
-        // used verbatim on a phone and is strictly tighter than the default.
-        assert_eq!(TrimmedMod.termux_timeout_ms(), 30_000);
-        assert_eq!(
-            apply_termux_cap(TrimmedMod.termux_timeout_ms(), false, true),
-            30_000
-        );
-        assert!(TrimmedMod.termux_timeout_ms() < DefaultMod.termux_timeout_ms());
     }
 
     #[test]

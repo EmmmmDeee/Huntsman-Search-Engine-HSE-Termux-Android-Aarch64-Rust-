@@ -52,6 +52,11 @@ const W_YEAR: f64 = 0.30;
 pub(super) const EMAIL_CONF: f64 = 0.30;
 /// Investigation pivot — a lead for the operator, not a finding.
 pub(super) const PIVOT_CONF: f64 = 0.20;
+/// The scan subject itself — the Person the operator named as the seed. Lands in
+/// the Probable tier (≥ 0.40): clearly the anchor, well above the speculative
+/// derivations (0.20–0.38), but below Verified (≥ 0.75) since HSE has not yet
+/// externally corroborated that this person exists.
+pub(super) const SUBJECT_CONF: f64 = 0.60;
 
 /// NAMINT's default provider set, modernised. Overridable at runtime via the
 /// `HUNTSMAN_EMAIL_DOMAINS` environment variable (comma-separated).

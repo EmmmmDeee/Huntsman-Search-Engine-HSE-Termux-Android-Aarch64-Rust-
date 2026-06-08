@@ -350,6 +350,26 @@ pub fn save_pool(pool: &KeyPool) -> std::io::Result<()> {
     crate::util::atomic_file::write(&path, json.as_bytes())
 }
 
+/// Persist the pool, logging (not propagating) any failure.
+///
+/// Use this at the fire-and-forget sites that harvest keys during a scan: a
+/// persistence failure there must not abort the scan, but it must not be silent
+/// either. `save_pool` takes pains to write atomically so harvested keys survive
+/// a crash; dropping its error with `let _ =` would mean a disk-full / read-only
+/// `$HOME` (both realistic on a Termux device) silently discards every key
+/// harvested this run with no trace to debug from. Callers that genuinely need
+/// to surface the failure to a user (e.g. CLI key-management commands) should
+/// call [`save_pool`] directly and handle the `Result`.
+pub fn save_pool_best_effort(pool: &KeyPool) {
+    if let Err(e) = save_pool(pool) {
+        tracing::warn!(
+            error = %e,
+            path = %pool_path().display(),
+            "failed to persist harvested API keys — they will be lost when the process exits"
+        );
+    }
+}
+
 // ── Validation ───────────────────────────────────────────────────────────────
 
 /// Add a key and validate it immediately against the service endpoint.
@@ -367,7 +387,7 @@ pub async fn add_and_validate(service: &str, key_value: &str, notes: Option<Stri
             entry.last_validated = Some(crate::core::entity::unix_now());
             let added = pool.add(service, entry);
             if added {
-                let _ = save_pool(&pool);
+                save_pool_best_effort(&pool);
                 tracing::info!(service, "validated and stored API key");
             }
             true
@@ -375,13 +395,13 @@ pub async fn add_and_validate(service: &str, key_value: &str, notes: Option<Stri
             entry.status = KeyStatus::Invalid;
             entry.last_validated = Some(crate::core::entity::unix_now());
             pool.add(service, entry);
-            let _ = save_pool(&pool);
+            save_pool_best_effort(&pool);
             tracing::warn!(service, "API key failed validation — stored as invalid");
             false
         }
     } else {
         pool.add(service, entry);
-        let _ = save_pool(&pool);
+        save_pool_best_effort(&pool);
         false
     }
 }
