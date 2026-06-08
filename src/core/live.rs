@@ -205,10 +205,19 @@ impl LiveScanner {
                 .filter(|s| s.status == LiveStatus::Running)
                 .count();
             if active >= Self::MAX_SESSIONS {
+                // Evict the oldest running session. `sessions` is a HashMap, so
+                // its `values()` order is randomised; break started_at ties by
+                // session id so that *which* of two same-second sessions is
+                // dropped is predictable (and logged-then-reproducible), not a
+                // coin flip on HashMap iteration order.
                 let oldest_id = sessions
                     .values()
                     .filter(|s| s.status == LiveStatus::Running)
-                    .min_by_key(|s| s.started_at)
+                    .min_by(|a, b| {
+                        a.started_at
+                            .cmp(&b.started_at)
+                            .then_with(|| a.id.cmp(&b.id))
+                    })
                     .map(|s| s.id.clone());
                 if let Some(id) = oldest_id {
                     drop(sessions);
