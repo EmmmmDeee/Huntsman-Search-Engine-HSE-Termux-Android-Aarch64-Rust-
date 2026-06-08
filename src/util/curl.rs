@@ -44,7 +44,11 @@ pub fn pick_ua(idx: usize) -> &'static str {
 /// without a Content-Length is still bounded in practice by the outer
 /// `timeout(... + 2s)` + `kill_on_drop` (a phone's bandwidth × the few-second
 /// budget caps the accumulation). Mirrors `http::JSON_BODY_CAP`.
-const CURL_MAX_DOWNLOAD_BYTES: &str = "33554432";
+///
+/// `pub(crate)` so the keyed-API curl path (`curl_client`) applies the identical
+/// cap — a trusted API endpoint can still return a multi-GB body and OOM the
+/// device, so the bound belongs on both curl invocations, single-sourced here.
+pub(crate) const CURL_MAX_DOWNLOAD_BYTES: &str = "33554432";
 
 // SSRF residual (documented, deliberately accepted in the fallback): `--resolve`
 // pins only the *initial* host to a vetted public IP, but `curl -L` re-resolves a

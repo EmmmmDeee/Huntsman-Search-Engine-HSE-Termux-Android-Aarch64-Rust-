@@ -146,6 +146,11 @@ impl CurlClient {
             "=http,https",
             "--max-redirs",
             "5",
+            // Bound the download so even a trusted-but-misbehaving API returning
+            // a multi-GB body can't OOM a Termux device — the same cap the
+            // free-function curl path applies, single-sourced in `curl`.
+            "--max-filesize",
+            crate::util::curl::CURL_MAX_DOWNLOAD_BYTES,
         ]);
         if let Some(ref h) = auth_header {
             cmd.args(["-H", h]);
