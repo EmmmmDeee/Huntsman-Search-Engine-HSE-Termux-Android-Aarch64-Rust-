@@ -1397,6 +1397,39 @@ impl ScanEngine {
         }
     }
 
+    /// Gate check shared by the sequential path and both concurrent phases: if
+    /// `module` is filtered out for this `target` (excluded / disabled-in-config /
+    /// not-in-allowlist / free-only / passive-only / sensor / insufficient
+    /// cross-correlation), count it in `modules_skipped`, emit the `ModuleSkipped`
+    /// event, and return `true` so the caller skips to the next module.
+    ///
+    /// One definition keeps the skip tally faithful and identical across all
+    /// three dispatch loops — toggling a module off is observable in the scan
+    /// summary, not just the event stream, and the counting can't drift between
+    /// the sequential and the two concurrent phases.
+    #[allow(clippy::too_many_arguments)]
+    fn gate_skips(
+        &self,
+        scan_id: &str,
+        module: &dyn Module,
+        name: &'static str,
+        target: &Target,
+        opts: &ScanOptions,
+        is_expansion: bool,
+        target_sources: usize,
+        stats: &mut ModuleStats,
+    ) -> bool {
+        if let Some(reason) =
+            module_skip_reason(module, target, opts, is_expansion, target_sources)
+        {
+            stats.skipped += 1;
+            self.emit_skipped(scan_id, name, reason);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Sequential dispatcher (max_concurrent == 0).
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_target_sequential(
@@ -1438,16 +1471,8 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) =
-                module_skip_reason(&**module, target, opts, is_expansion, target_sources)
+            if self.gate_skips(scan_id, &**module, name, target, opts, is_expansion, target_sources, stats)
             {
-                // Count every gate-skip (excluded / disabled-in-config /
-                // not-in-allowlist / free-only / passive-only / sensor) so
-                // `modules_skipped` is a faithful, complete tally — toggling a
-                // module off is then observable in the scan summary, not just
-                // in the event stream.
-                stats.skipped += 1;
-                self.emit_skipped(scan_id, name, reason);
                 continue;
             }
             if !matches!(module.cost(), ModuleCost::Free)
@@ -1545,16 +1570,8 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) =
-                module_skip_reason(&**module, target, opts, is_expansion, target_sources)
+            if self.gate_skips(scan_id, &**module, name, target, opts, is_expansion, target_sources, stats)
             {
-                // Count every gate-skip (excluded / disabled-in-config /
-                // not-in-allowlist / free-only / passive-only / sensor) so
-                // `modules_skipped` is a faithful, complete tally — toggling a
-                // module off is then observable in the scan summary, not just
-                // in the event stream.
-                stats.skipped += 1;
-                self.emit_skipped(scan_id, name, reason);
                 continue;
             }
             if !dispatched.insert(dispatch_key(name, target)) {
@@ -1624,16 +1641,8 @@ impl ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if let Some(reason) =
-                module_skip_reason(&**module, target, opts, is_expansion, target_sources)
+            if self.gate_skips(scan_id, &**module, name, target, opts, is_expansion, target_sources, stats)
             {
-                // Count every gate-skip (excluded / disabled-in-config /
-                // not-in-allowlist / free-only / passive-only / sensor) so
-                // `modules_skipped` is a faithful, complete tally — toggling a
-                // module off is then observable in the scan summary, not just
-                // in the event stream.
-                stats.skipped += 1;
-                self.emit_skipped(scan_id, name, reason);
                 continue;
             }
             if !matches!(module.cost(), ModuleCost::Free)
