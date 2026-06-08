@@ -4,7 +4,7 @@
 
 /// Six 2-hex-digit octets joined by ':' or '-' (`aa:bb:cc:dd:ee:ff`). A 6-group
 /// colon form is not a valid IPv6 address (which needs 8 groups or `::`), so the
-/// IP check ahead of this in [`TargetKind::detect`] never steals a real MAC.
+/// IP check ahead of this in [`super::TargetKind::detect`] never steals a real MAC.
 /// A CIDR network block: `IP/prefix` where `IP` parses and `prefix` is within
 /// the address family's width (≤32 for v4, ≤128 for v6). Pure.
 pub(super) fn is_cidr_shaped(v: &str) -> bool {
