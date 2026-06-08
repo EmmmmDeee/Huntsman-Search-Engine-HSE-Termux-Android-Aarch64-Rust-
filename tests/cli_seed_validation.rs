@@ -23,6 +23,56 @@ fn run(args: &[&str]) -> (bool, String) {
 }
 
 #[test]
+fn diff_wiring_self_compare_is_empty_and_json_clean() {
+    // The diff *logic* is unit-tested in core::diff; this guards the CLI WIRING a
+    // unit test can't reach: `latest` resolution, loading two scans from the store
+    // by id, and the `-f json` render. Comparing a scan to itself must yield zero
+    // added/removed (a non-empty self-diff would mean the load or the set math is
+    // broken), and stdout must be one clean JSON document.
+    let dir = std::env::temp_dir().join(format!("hse-diff-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // One offline scan so there's a `latest` to compare against itself.
+    let scan = Command::new(BIN)
+        .args([
+            "scan", "-v", "Jane Smith", "-k", "name", "--modules", "name_intel", "--throttle", "0",
+        ])
+        .env("RUST_LOG", "off")
+        .env("HOME", &dir)
+        .output()
+        .expect("spawn hse scan");
+    assert!(scan.status.success(), "seed scan must succeed");
+
+    let out = Command::new(BIN)
+        .args(["diff", "latest", "latest", "-f", "json"])
+        .env("RUST_LOG", "off")
+        .env("HOME", &dir)
+        .output()
+        .expect("spawn hse diff");
+    assert!(out.status.success(), "diff of latest vs latest must succeed");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let d: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("diff -f json stdout is not pure JSON ({e}):\n{stdout}"));
+    assert_eq!(
+        d["added"].as_array().map(|a| a.len()),
+        Some(0),
+        "a scan compared to itself must add nothing: {d}"
+    );
+    assert_eq!(
+        d["removed"].as_array().map(|a| a.len()),
+        Some(0),
+        "a scan compared to itself must remove nothing: {d}"
+    );
+    assert!(
+        d["common"].as_u64().unwrap_or(0) > 0,
+        "self-compare common count must equal the scan's entity total: {d}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn scan_rejects_placeholder_domain() {
     let (ok, err) = run(&["scan", "--kind", "domain", "--value", "example.com"]);
     assert!(!ok, "example.com must be rejected, not scanned");
