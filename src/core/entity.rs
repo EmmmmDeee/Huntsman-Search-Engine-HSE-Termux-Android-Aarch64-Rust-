@@ -488,6 +488,7 @@ impl Entity {
     /// - `confidence`  = max(self, other)        — never decreases
     /// - `corroboration` += other.corroboration  — only increases
     /// - `observed_at`  = max(self, other)        — most recent wins
+    /// - `raw_value`    = min(self, other)        — deterministic display value
     /// - `evidence` merged, de-duplicated by `(source, summary)`
     /// - `tags` unioned (de-duplicated)
     ///
@@ -520,13 +521,11 @@ impl Entity {
     /// is normalised. Called once per entity at scan finalisation, so it is not on
     /// the per-merge hot path.
     ///
-    /// Residual, documented non-determinism this does NOT remove: `raw_value` is
-    /// taken from whichever same-UID entity was merged first, so two modules
-    /// emitting the same value with different *original casing/spacing*
-    /// (`Foo@Bar.com` vs `foo@bar.com`, both normalising to one UID) can store
-    /// either spelling. This is display-only (the normalised `value` and UID are
-    /// identical) and rare; fixing it would require changing GREATEST-merge to
-    /// pick a canonical raw_value.
+    /// `raw_value` is likewise made order-independent by [`Entity::merge`],
+    /// which keeps the lexicographically smaller spelling when two same-UID
+    /// entities differ only in original casing/spacing (`Foo@Bar.com` vs
+    /// `foo@bar.com`). Because `min` is commutative, the stored display value no
+    /// longer depends on which module's result merged first.
     pub fn canonicalize_order(&mut self) {
         self.evidence.sort_by(|a, b| {
             a.source
@@ -547,6 +546,17 @@ impl Entity {
             .saturating_add(other.corroboration)
             .max(1);
         self.observed_at = u64::max(self.observed_at, other.observed_at);
+        // Canonical display value: pick the lexicographically smaller raw_value
+        // so the stored spelling is independent of merge order. Two modules can
+        // emit the same value with different original casing/spacing
+        // ("Foo@Bar.com" vs "foo@bar.com" — both normalise to one UID); under the
+        // default concurrent dispatch, results merge in completion order, so
+        // keeping `self`'s would leak that order into the persisted dossier
+        // (Determinism Requirement). `min` is commutative, so any merge order —
+        // and any pairing — yields the same raw_value.
+        if other.raw_value < self.raw_value {
+            self.raw_value = other.raw_value;
+        }
         // Deduplicate evidence by (source, summary) to prevent accumulation
         // across live mode iterations or re-scans.
         for ev in other.evidence {
@@ -1380,6 +1390,26 @@ mod tests {
         d.observed_at = 3000;
         c.merge(d);
         assert_eq!(c.observed_at, 5000);
+    }
+
+    #[test]
+    fn merge_raw_value_is_order_independent() {
+        // Same UID (case-insensitive email), differing only in display spelling.
+        let upper = email("Foo@Bar.com");
+        let lower = email("foo@bar.com");
+        assert_eq!(upper.uid, lower.uid, "must share a UID to exercise merge");
+
+        // Merge both directions: the stored raw_value must not depend on order.
+        let mut a = upper.clone();
+        a.merge(lower.clone());
+        let mut b = lower.clone();
+        b.merge(upper.clone());
+        assert_eq!(
+            a.raw_value, b.raw_value,
+            "raw_value must be merge-order independent (Determinism Requirement)"
+        );
+        // min() semantics: "Foo@Bar.com" < "foo@bar.com" (uppercase sorts first).
+        assert_eq!(a.raw_value, "Foo@Bar.com");
     }
 
     // ── Entity merge: UID mismatch is no-op (release mode) ──────────────────
