@@ -50,3 +50,45 @@ fn live_rejects_placeholder_domain() {
         "{err}"
     );
 }
+
+#[test]
+fn import_json_stdout_is_pure_json_summary_on_stderr() {
+    // `hse import … -o json` must emit ONLY JSON on stdout so `| jq` works; the
+    // human-readable "Imported N entities" summary belongs on stderr. The summary
+    // used to be println!'d to stdout ahead of the JSON, so a consumer parsing
+    // stdout failed. Spawn the real binary and prove the contract end-to-end.
+    let dir = std::env::temp_dir().join(format!("hse-import-json-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("dossier.txt");
+    std::fs::write(
+        &file,
+        "Entry #1\n\u{2022} name: Isaac Frost\n\u{2022} email: isaac@frostcorp.io\n\
+         \u{2022} ip: 8.8.8.8\n\u{2022} phone: +61412345678\n",
+    )
+    .unwrap();
+
+    let out = Command::new(BIN)
+        .args(["import", file.to_str().unwrap(), "-o", "json"])
+        .env("RUST_LOG", "off")
+        .env("HOME", &dir) // isolate the DB/key pool from the developer's $HOME
+        .output()
+        .expect("spawn hse import");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    // Stdout parses as JSON in full — nothing else is interleaved.
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is not pure JSON ({e}):\n{stdout}"));
+    assert!(
+        parsed.get("entities").and_then(|e| e.as_array()).is_some(),
+        "JSON must carry an entities array: {parsed}"
+    );
+    // The human summary went to stderr, not stdout.
+    assert!(
+        stderr.contains("Imported") && !stdout.contains("Imported"),
+        "summary must be on stderr only; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

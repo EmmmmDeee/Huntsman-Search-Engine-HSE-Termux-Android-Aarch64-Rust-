@@ -37,12 +37,12 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
-    println!("Importing OathNet JSON export: query=\"{query}\", date={date}");
+    note(output, format!("Importing OathNet JSON export: query=\"{query}\", date={date}"));
 
     let sid = format!("import-{}", &crate::core::entity::unix_now().to_string());
     let (mut entities, stats) = parse_oathnet_json(&doc, &sid).await;
     deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len());
+    print_import_stats(&stats, entities.len(), output);
     import_json_output(&entities, &stats, query, date, path, output)
 }
 
@@ -540,7 +540,7 @@ fn parse_oathnet_html(body: &str, sid: &str) -> Vec<crate::core::entity::Entity>
 fn cmd_import_html(body: &str, output: &str) -> Result<()> {
     use crate::core::entity::EntityKind;
 
-    println!("Importing OathNet HTML export...");
+    note(output, "Importing OathNet HTML export...");
     let sid = format!("import-html-{}", crate::core::entity::unix_now());
     let mut entities = parse_oathnet_html(body, &sid);
 
@@ -559,12 +559,15 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
         .filter(|e| e.kind == EntityKind::Email)
         .count();
 
-    println!(
-        "Imported {} entities: {} domains, {} IPs, {} emails",
-        entities.len(),
-        domains,
-        ips,
-        emails
+    note(
+        output,
+        format!(
+            "Imported {} entities: {} domains, {} IPs, {} emails",
+            entities.len(),
+            domains,
+            ips,
+            emails
+        ),
     );
 
     if output == "json" {
@@ -932,11 +935,11 @@ pub(crate) async fn entities_from_upload(
 }
 
 fn cmd_import_dossier(body: &str, output: &str) -> Result<()> {
-    println!("Importing breach/dossier compilation...");
+    note(output, "Importing breach/dossier compilation...");
     let sid = format!("import-dossier-{}", crate::core::entity::unix_now());
     let (mut entities, stats) = parse_dossier(body, &sid);
     deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len());
+    print_import_stats(&stats, entities.len(), output);
 
     if output == "json" {
         let out = serde_json::json!({ "entities": entities });
@@ -1199,16 +1202,16 @@ fn parse_oathnet_txt(body: &str, sid: &str) -> (Vec<crate::core::entity::Entity>
 }
 
 fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
-    println!("Importing OathNet TXT export...");
+    note(output, "Importing OathNet TXT export...");
     let sid = format!("import-txt-{}", crate::core::entity::unix_now());
     let (mut entities, stats) = parse_oathnet_txt(body, &sid);
 
     deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len());
+    print_import_stats(&stats, entities.len(), output);
     if stats.api_keys > 0 {
-        println!(
-            "  Pool:      {} keys stored for automatic use",
-            stats.api_keys
+        note(
+            output,
+            format!("  Pool:      {} keys stored for automatic use", stats.api_keys),
         );
         crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
     }
@@ -1372,38 +1375,54 @@ fn create_geolocation_entities(
     }
 }
 
-fn print_import_stats(stats: &ImportStats, entity_count: usize) {
-    println!("Imported {} entities:", entity_count);
-    println!(
+/// Emit a human-readable progress/summary line on the stream appropriate to the
+/// output mode: stderr under `--output json` (so stdout stays pure JSON for
+/// `| jq`), stdout otherwise (where the summary IS the operator-facing output).
+fn note(output: &str, line: impl AsRef<str>) {
+    if output == "json" {
+        eprintln!("{}", line.as_ref());
+    } else {
+        println!("{}", line.as_ref());
+    }
+}
+
+fn print_import_stats(stats: &ImportStats, entity_count: usize, output: &str) {
+    // Route every line through `note` so a `--output json` run keeps stdout free
+    // of this summary (it goes to stderr); a table run prints it to stdout.
+    macro_rules! row {
+        ($($a:tt)*) => { note(output, format!($($a)*)) };
+    }
+    row!("Imported {} entities:", entity_count);
+    row!(
         "  Identity:  {} emails, {} phones, {} usernames, {} persons, {} device users, {} Discord IDs",
         stats.emails, stats.phones, stats.usernames, stats.persons, stats.device_users, stats.discord_ids
     );
     if stats.credentials > 0 {
-        println!("  Creds:     {} password hashes", stats.credentials);
+        row!("  Creds:     {} password hashes", stats.credentials);
     }
-    println!(
+    row!(
         "  Network:   {} IPs, {} domains, {} subdomains, {} URLs, {} admin paths",
         stats.ips, stats.domains, stats.subdomains, stats.urls, stats.admin_paths
     );
-    println!(
+    row!(
         "  Geo:       {} coordinates, {} addresses",
         stats.coordinates, stats.addresses
     );
-    println!(
+    row!(
         "  Device:    {} HWIDs, {} machine log IDs",
         stats.hwids, stats.machines
     );
-    println!("  Keys:      {} API keys detected", stats.api_keys);
-    println!("  Verified:  {} holehe platform checks", stats.holehe);
-    println!(
+    row!("  Keys:      {} API keys detected", stats.api_keys);
+    row!("  Verified:  {} holehe platform checks", stats.holehe);
+    row!(
         "  Source:    {} breach, {} stealer docs, {} victims",
         stats.breach_records, stats.stealer_docs, stats.victim_records
     );
     if !stats.date_range.is_empty() {
-        println!("  Timeline:  {}", stats.date_range);
+        row!("  Timeline:  {}", stats.date_range);
     }
     if stats.api_keys > 0 {
-        println!(
+        row!(
             "  Pool:      {} API keys detected, {} validated active",
             stats.api_keys, stats.api_keys_valid
         );
