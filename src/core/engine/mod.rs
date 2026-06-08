@@ -26,21 +26,24 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 mod dispatch;
 mod enrich;
 mod expansion;
 mod timeout;
-use dispatch::{module_skip_reason, target_distinct_sources};
+use dispatch::{
+    DispatchOutcome, dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded,
+    target_distinct_sources,
+};
 use enrich::{enrich_geospatial, scan_entity_for_keys};
 use expansion::{cmp_expansion_candidates, correlation_key, visit_key};
 use timeout::resolve_timeout;
 
 use crate::core::{
     dependency::ModuleGraph,
-    entity::{Entity, normalise},
+    entity::Entity,
     error::{Error, Result},
     event::{Event, EventBus, EventKind},
     module::{Module, ModuleContext, ModuleCost},
@@ -165,12 +168,6 @@ impl DispatchLog {
     pub fn is_empty(&self) -> bool {
         self.seen.is_empty()
     }
-}
-
-fn dispatch_key(module_name: &'static str, target: &Target) -> (&'static str, TargetKind, String) {
-    let entity_kind = target.kind.to_entity_kind();
-    let normalised = normalise(&entity_kind, &target.value);
-    (module_name, target.kind, normalised)
 }
 
 impl StopReason {
@@ -1119,63 +1116,6 @@ fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> O
 /// `Err` (module returned an error), or `Ok(ModuleResult)` (success).
 type TimeoutResult =
     std::result::Result<Result<crate::core::module::ModuleResult>, tokio::time::error::Elapsed>;
-
-/// Run one module's `process()` under both a timeout AND a panic guard.
-///
-/// A panicking module — an `unwrap`/`expect`/out-of-bounds slice on a hostile or
-/// drifted upstream response, or a panic deep in a dependency — would otherwise
-/// unwind into the sequential dispatch loop or a `JoinSet` task and (under
-/// `panic = "abort"`) take down the whole process: a remote-DoS on a long-lived
-/// `hse serve`. This wraps the timed module future in [`std::panic::catch_unwind`]
-/// (requires `panic = "unwind"`, set for every profile) and maps a caught panic
-/// to `Ok(Err(Error::module(name, "panicked: …")))`, so it flows through
-/// `finalise_module_result`'s existing `errored` arm exactly like a returned
-/// error — counted in `modules_errored`, named, and non-fatal to the scan.
-/// Emit the uniform per-module dispatch trace, paired with the `ModuleStart` bus
-/// event at every dispatch site (sequential + both concurrent phases). Without it
-/// the raw debug log (`hse logs` / stderr) showed a module's outcome
-/// (done/skipped/errored/timeout) but never its *start*, so a module that hung or
-/// vanished mid-flight left no trace. Keyed by `module=<name>` (+ the target it
-/// ran against) so `grep 'module=hibp'` reconstructs that one file's entire
-/// lifecycle from the logs alone.
-#[inline]
-fn log_module_dispatch(name: &str, target: &Target) {
-    debug!(
-        module = name,
-        kind = ?target.kind,
-        value = %target.value,
-        "dispatch"
-    );
-}
-
-async fn run_module_guarded(
-    timeout_ms: u64,
-    name: &'static str,
-    fut: impl std::future::Future<Output = Result<crate::core::module::ModuleResult>>,
-) -> TimeoutResult {
-    use futures::FutureExt;
-    match std::panic::AssertUnwindSafe(timeout(Duration::from_millis(timeout_ms), fut))
-        .catch_unwind()
-        .await
-    {
-        Ok(timeout_result) => timeout_result,
-        Err(payload) => {
-            let msg = payload
-                .downcast_ref::<&str>()
-                .map(|s| (*s).to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "module panicked".to_string());
-            warn!(module = name, %msg, "module panic contained");
-            Ok(Err(Error::module(name, format!("panicked: {msg}"))))
-        }
-    }
-}
-
-/// What a spawned per-module task returns to the consumer loop.
-struct DispatchOutcome {
-    name: &'static str,
-    result: TimeoutResult,
-}
 
 impl ScanEngine {
     /// Translate one module's `process()` result into engine events

@@ -6,10 +6,81 @@
 //! in `engine` until a later increment moves them here too.
 
 use std::collections::HashMap;
+use std::time::Duration;
+
+use tokio::time::timeout;
+use tracing::{debug, warn};
 
 use crate::core::entity::{Entity, normalise};
-use crate::core::module::{Module, ModuleCost};
+use crate::core::error::{Error, Result};
+use crate::core::module::{Module, ModuleCost, ModuleResult};
 use crate::core::scan::{ScanOptions, Target, TargetKind};
+
+/// Dispatch-dedup key: a module is invoked at most once per `(module, normalised
+/// target)` across the whole scan. The value is normalised the same way
+/// `Entity::new` does, so the same target reached two ways dedups to one run.
+pub(super) fn dispatch_key(
+    module_name: &'static str,
+    target: &Target,
+) -> (&'static str, TargetKind, String) {
+    let entity_kind = target.kind.to_entity_kind();
+    let normalised = normalise(&entity_kind, &target.value);
+    (module_name, target.kind, normalised)
+}
+
+/// Emit the uniform per-module dispatch trace, paired with the `ModuleStart` bus
+/// event at every dispatch site (sequential + both concurrent phases). Without it
+/// the raw debug log showed a module's outcome (done/skipped/errored/timeout) but
+/// never its *start*, so a module that hung or vanished mid-flight left no trace.
+/// Keyed by `module=<name>` (+ the target) so `grep module=hibp` reconstructs that
+/// one module's entire lifecycle from the logs alone.
+#[inline]
+pub(super) fn log_module_dispatch(name: &str, target: &Target) {
+    debug!(
+        module = name,
+        kind = ?target.kind,
+        value = %target.value,
+        "dispatch"
+    );
+}
+
+/// Run one module's `process()` under both a timeout AND a panic guard.
+///
+/// A panicking module (an `unwrap`/slice on a hostile/drifted upstream response,
+/// or a panic deep in a dependency) would otherwise unwind into the sequential
+/// loop or a `JoinSet` task and, under `panic = "abort"`, take down a long-lived
+/// `hse serve`. Wrapping the timed future in `catch_unwind` maps a caught panic to
+/// `Ok(Err(Error::module(name, "panicked: …")))`, so it flows through
+/// `finalise_module_result`'s `errored` arm exactly like a returned error —
+/// counted, named, and non-fatal to the scan.
+pub(super) async fn run_module_guarded(
+    timeout_ms: u64,
+    name: &'static str,
+    fut: impl std::future::Future<Output = Result<ModuleResult>>,
+) -> super::TimeoutResult {
+    use futures::FutureExt;
+    match std::panic::AssertUnwindSafe(timeout(Duration::from_millis(timeout_ms), fut))
+        .catch_unwind()
+        .await
+    {
+        Ok(timeout_result) => timeout_result,
+        Err(payload) => {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "module panicked".to_string());
+            warn!(module = name, %msg, "module panic contained");
+            Ok(Err(Error::module(name, format!("panicked: {msg}"))))
+        }
+    }
+}
+
+/// What a spawned per-module task returns to the consumer loop.
+pub(super) struct DispatchOutcome {
+    pub(super) name: &'static str,
+    pub(super) result: super::TimeoutResult,
+}
 
 /// Distinct corroborating evidence-source count for the entity a `target`
 /// resolves to (0 if it isn't in the working set yet). Drives the high-value-API
