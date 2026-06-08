@@ -4,7 +4,9 @@
 //! types and the scoring model read separately. Re-exported from the parent so
 //! external paths (`crate::core::scan::expansion_weight`, …) are unchanged.
 
-use super::{ExpansionStrategy, MARGINAL_YIELD_FLOOR, MAX_DEPTH, TargetKind, domain_expansion_factor};
+use super::{
+    ExpansionStrategy, MARGINAL_YIELD_FLOOR, MAX_DEPTH, TargetKind, domain_expansion_factor,
+};
 
 /// Expected marginal yield of the **first** expansion round (round 1) for a
 /// seed of `kind` at the given API tier — `m₁` in the geometric yield model

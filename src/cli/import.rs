@@ -37,7 +37,10 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
-    note(output, format!("Importing OathNet JSON export: query=\"{query}\", date={date}"));
+    note(
+        output,
+        format!("Importing OathNet JSON export: query=\"{query}\", date={date}"),
+    );
 
     let sid = format!("import-{}", &crate::core::entity::unix_now().to_string());
     let (mut entities, stats) = parse_oathnet_json(&doc, &sid).await;
@@ -1208,7 +1211,10 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
     if stats.api_keys > 0 {
         note(
             output,
-            format!("  Pool:      {} keys stored for automatic use", stats.api_keys),
+            format!(
+                "  Pool:      {} keys stored for automatic use",
+                stats.api_keys
+            ),
         );
         crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
     }
@@ -1377,28 +1383,41 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize, output: &str) {
     row!("Imported {} entities:", entity_count);
     row!(
         "  Identity:  {} emails, {} phones, {} usernames, {} persons, {} device users, {} Discord IDs",
-        stats.emails, stats.phones, stats.usernames, stats.persons, stats.device_users, stats.discord_ids
+        stats.emails,
+        stats.phones,
+        stats.usernames,
+        stats.persons,
+        stats.device_users,
+        stats.discord_ids
     );
     if stats.credentials > 0 {
         row!("  Creds:     {} password hashes", stats.credentials);
     }
     row!(
         "  Network:   {} IPs, {} domains, {} subdomains, {} URLs, {} admin paths",
-        stats.ips, stats.domains, stats.subdomains, stats.urls, stats.admin_paths
+        stats.ips,
+        stats.domains,
+        stats.subdomains,
+        stats.urls,
+        stats.admin_paths
     );
     row!(
         "  Geo:       {} coordinates, {} addresses",
-        stats.coordinates, stats.addresses
+        stats.coordinates,
+        stats.addresses
     );
     row!(
         "  Device:    {} HWIDs, {} machine log IDs",
-        stats.hwids, stats.machines
+        stats.hwids,
+        stats.machines
     );
     row!("  Keys:      {} API keys detected", stats.api_keys);
     row!("  Verified:  {} holehe platform checks", stats.holehe);
     row!(
         "  Source:    {} breach, {} stealer docs, {} victims",
-        stats.breach_records, stats.stealer_docs, stats.victim_records
+        stats.breach_records,
+        stats.stealer_docs,
+        stats.victim_records
     );
     if !stats.date_range.is_empty() {
         row!("  Timeline:  {}", stats.date_range);
@@ -1406,7 +1425,8 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize, output: &str) {
     if stats.api_keys > 0 {
         row!(
             "  Pool:      {} API keys detected, {} validated active",
-            stats.api_keys, stats.api_keys_valid
+            stats.api_keys,
+            stats.api_keys_valid
         );
     }
 }

@@ -398,8 +398,7 @@ impl super::ScanEngine {
         target_sources: usize,
         stats: &mut ModuleStats,
     ) -> bool {
-        if let Some(reason) =
-            module_skip_reason(module, target, opts, is_expansion, target_sources)
+        if let Some(reason) = module_skip_reason(module, target, opts, is_expansion, target_sources)
         {
             stats.skipped += 1;
             self.emit_skipped(scan_id, name, reason);
@@ -450,8 +449,16 @@ impl super::ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if self.gate_skips(scan_id, &**module, name, target, opts, is_expansion, target_sources, stats)
-            {
+            if self.gate_skips(
+                scan_id,
+                &**module,
+                name,
+                target,
+                opts,
+                is_expansion,
+                target_sources,
+                stats,
+            ) {
                 continue;
             }
             if !matches!(module.cost(), ModuleCost::Free)
@@ -549,8 +556,16 @@ impl super::ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if self.gate_skips(scan_id, &**module, name, target, opts, is_expansion, target_sources, stats)
-            {
+            if self.gate_skips(
+                scan_id,
+                &**module,
+                name,
+                target,
+                opts,
+                is_expansion,
+                target_sources,
+                stats,
+            ) {
                 continue;
             }
             if !dispatched.insert(dispatch_key(name, target)) {
@@ -620,8 +635,16 @@ impl super::ScanEngine {
             if !module.accepts(target) {
                 continue;
             }
-            if self.gate_skips(scan_id, &**module, name, target, opts, is_expansion, target_sources, stats)
-            {
+            if self.gate_skips(
+                scan_id,
+                &**module,
+                name,
+                target,
+                opts,
+                is_expansion,
+                target_sources,
+                stats,
+            ) {
                 continue;
             }
             if !matches!(module.cost(), ModuleCost::Free)

@@ -35,7 +35,15 @@ fn diff_wiring_self_compare_is_empty_and_json_clean() {
     // One offline scan so there's a `latest` to compare against itself.
     let scan = Command::new(BIN)
         .args([
-            "scan", "-v", "Jane Smith", "-k", "name", "--modules", "name_intel", "--throttle", "0",
+            "scan",
+            "-v",
+            "Jane Smith",
+            "-k",
+            "name",
+            "--modules",
+            "name_intel",
+            "--throttle",
+            "0",
         ])
         .env("RUST_LOG", "off")
         .env("HOME", &dir)
@@ -49,7 +57,10 @@ fn diff_wiring_self_compare_is_empty_and_json_clean() {
         .env("HOME", &dir)
         .output()
         .expect("spawn hse diff");
-    assert!(out.status.success(), "diff of latest vs latest must succeed");
+    assert!(
+        out.status.success(),
+        "diff of latest vs latest must succeed"
+    );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let d: serde_json::Value = serde_json::from_str(stdout.trim())

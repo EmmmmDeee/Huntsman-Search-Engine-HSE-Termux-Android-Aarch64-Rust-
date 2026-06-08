@@ -639,8 +639,8 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
         // directly OR by building the entity through `coarse_provider_coords`,
         // which applies that exact gate internally (ipinfo/ipapi/ip2location/
         // ipquery were consolidated onto the helper).
-        let gated = prod.contains("is_plausible_provider_coord")
-            || prod.contains("coarse_provider_coords");
+        let gated =
+            prod.contains("is_plausible_provider_coord") || prod.contains("coarse_provider_coords");
         if !gated {
             offenders.push(*provider);
         }

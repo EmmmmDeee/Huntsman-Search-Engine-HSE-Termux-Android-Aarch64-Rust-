@@ -88,8 +88,11 @@ impl Module for NameIntel {
             person.tag("seed");
             person.tag("subject");
             person.add_evidence(
-                Evidence::new(SRC, format!("Scan subject — '{}' provided as the seed", target.value))
-                    .with_attr("source_name", &target.value),
+                Evidence::new(
+                    SRC,
+                    format!("Scan subject — '{}' provided as the seed", target.value),
+                )
+                .with_attr("source_name", &target.value),
             );
             result.push(person);
         }
@@ -209,10 +212,7 @@ mod tests {
                     // The subject anchor: the operator's name, Probable-tier, so
                     // derived handles have an individual to attach to.
                     assert!(e.has_tag("subject") && e.has_tag("seed"));
-                    assert_eq!(
-                        e.classify(),
-                        crate::core::entity::Classification::Probable
-                    );
+                    assert_eq!(e.classify(), crate::core::entity::Classification::Probable);
                 }
                 EntityKind::Username => {
                     usernames += 1;

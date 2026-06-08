@@ -707,7 +707,9 @@ async fn dossier_upload_accepts_body_larger_than_axum_default_limit() {
     let mut i = 2u32;
     while dossier.len() < 2_200_000 {
         // Each entry is a valid, distinct record so the parse does real work.
-        dossier.push_str(&format!("Entry #{i}\n\u{2022} email: user{i}@frostcorp.io\n"));
+        dossier.push_str(&format!(
+            "Entry #{i}\n\u{2022} email: user{i}@frostcorp.io\n"
+        ));
         i += 1;
     }
     assert!(
@@ -727,7 +729,11 @@ async fn dossier_upload_accepts_body_larger_than_axum_default_limit() {
         http::StatusCode::PAYLOAD_TOO_LARGE,
         "a 2-16 MB dossier must not be rejected at axum's default 2 MB limit"
     );
-    assert_eq!(resp.status(), 200, "the large dossier should import cleanly");
+    assert_eq!(
+        resp.status(),
+        200,
+        "the large dossier should import cleanly"
+    );
 }
 
 #[tokio::test]

@@ -446,7 +446,9 @@ mod tests {
         // Two name-derived handles carrying the subject as `source_name`.
         let mut uname = ent(EntityKind::Username, "jsmith", 0.38);
         uname.tag("name-derived");
-        uname.add_evidence(Evidence::new("name_intel", "derived").with_attr("source_name", "Jane Smith"));
+        uname.add_evidence(
+            Evidence::new("name_intel", "derived").with_attr("source_name", "Jane Smith"),
+        );
         let mut email = ent(EntityKind::Email, "jane.smith@gmail.com", 0.30);
         email.tag("name-derived");
         email.add_evidence(
@@ -459,7 +461,11 @@ mod tests {
         let ents = vec![person.clone(), uname.clone(), email.clone(), other];
         let rels = derive_name_lineage(&ents, "s");
 
-        assert_eq!(rels.len(), 2, "both name-derived handles link, the orphan does not");
+        assert_eq!(
+            rels.len(),
+            2,
+            "both name-derived handles link, the orphan does not"
+        );
         for r in &rels {
             assert_eq!(r.kind, RelationKind::DerivedFrom);
             assert_eq!(r.to_uid, person.uid, "edge points at the subject Person");

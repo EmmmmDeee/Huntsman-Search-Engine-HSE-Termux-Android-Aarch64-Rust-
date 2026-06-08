@@ -185,7 +185,10 @@ impl Store {
                     "FTS rebuild failed at init — full-text search may return no results until the index is rebuilt"
                 );
             } else {
-                tracing::info!(entities = ent_count, "rebuilt empty FTS index from existing rows");
+                tracing::info!(
+                    entities = ent_count,
+                    "rebuilt empty FTS index from existing rows"
+                );
             }
         }
 

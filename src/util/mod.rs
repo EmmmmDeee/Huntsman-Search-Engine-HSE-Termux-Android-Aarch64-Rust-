@@ -681,8 +681,14 @@ pub mod geo {
 
         #[test]
         fn parse_coords_accepts_well_formed_pairs() {
-            assert_eq!(parse_coords("-27.4766,153.0166").unwrap(), (-27.4766, 153.0166));
-            assert_eq!(parse_coords(" 51.5074 , -0.1278 ").unwrap(), (51.5074, -0.1278));
+            assert_eq!(
+                parse_coords("-27.4766,153.0166").unwrap(),
+                (-27.4766, 153.0166)
+            );
+            assert_eq!(
+                parse_coords(" 51.5074 , -0.1278 ").unwrap(),
+                (51.5074, -0.1278)
+            );
             // Null Island parses: it's a deliberately-typed seed, not a provider
             // sentinel — output filtering (is_valid_coords) is a separate concern.
             assert_eq!(parse_coords("0,0").unwrap(), (0.0, 0.0));

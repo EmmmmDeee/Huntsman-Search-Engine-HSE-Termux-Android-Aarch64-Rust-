@@ -1113,7 +1113,6 @@ fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> O
 // stay identical regardless of dispatch mode.
 // ---------------------------------------------------------------------------
 
-
 /// Modules that legitimately consume private IPs / local domains —
 /// sensor modules that run against the local network. Universal
 /// preflight (private-IP / local-domain rejection) skips these.
