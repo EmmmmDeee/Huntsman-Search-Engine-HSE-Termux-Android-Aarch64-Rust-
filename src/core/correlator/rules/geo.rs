@@ -464,11 +464,22 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
     let Some(fp) = crate::util::geohash::geo_footprint(&points) else {
         return Vec::new(); // fewer than 3 distinct, or all collinear → no area
     };
+    // Confidence-weighted centroid: the convex combination of the sightings by
+    // each one's `c_effective`, so a GPS-exact photo pulls the centre harder than
+    // a shaky IP-geo point. Being a convex combination it always lies inside the
+    // hull. Falls back to the unweighted hull centroid only if the helper can't
+    // form one (it can, given ≥1 point).
+    let weighted: Vec<((f64, f64), f64)> = parsed
+        .iter()
+        .map(|(e, ll)| (*ll, e.c_effective()))
+        .collect();
+    let centroid = crate::util::geohash::weighted_centroid(&weighted).unwrap_or(fp.centroid);
     // The Chebyshev centre (minimum-enclosing-circle centre) is the robust
     // single-point location fix: it minimises the worst-case distance to any
     // sighting, and its radius is the honest uncertainty around it. Reported
-    // alongside the hull centroid, which the in-area tightness classification
-    // still uses. `min_enclosing_circle` returns `Some` for any non-empty set.
+    // alongside the weighted centroid, while the in-area tightness classification
+    // still uses the hull. `min_enclosing_circle` returns `Some` for any
+    // non-empty set.
     let mec = crate::util::geohash::min_enclosing_circle(&points);
     let (center, radius_km) = mec
         .map(|c| (c.center, c.radius_km))
@@ -487,15 +498,15 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
         "Geographic area of operation (convex footprint)",
         severity,
         format!(
-            "{} coordinates from {} sources bound a {}-vertex area ({}); centroid \
-             {:.4},{:.4}, diameter {:.1} km — {kind}. Best location fix (Chebyshev centre): \
-             {:.4},{:.4} ± {:.1} km",
+            "{} coordinates from {} sources bound a {}-vertex area ({}); confidence-weighted \
+             centroid {:.4},{:.4}, diameter {:.1} km — {kind}. Best location fix (Chebyshev \
+             centre): {:.4},{:.4} ± {:.1} km",
             parsed.len(),
             sources.len(),
             fp.hull.len(),
             if fp.is_tight() { "tight" } else { "dispersed" },
-            fp.centroid.0,
-            fp.centroid.1,
+            centroid.0,
+            centroid.1,
             fp.diameter_km,
             center.0,
             center.1,

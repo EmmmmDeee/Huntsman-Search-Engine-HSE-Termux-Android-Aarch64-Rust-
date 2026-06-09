@@ -629,6 +629,83 @@ pub fn min_enclosing_circle(points: &[(f64, f64)]) -> Option<EnclosingCircle> {
     Some(EnclosingCircle { center, radius_km })
 }
 
+/// Confidence-weighted centroid of observed coordinates — the **convex
+/// combination** `Σ wᵢ·pᵢ / Σ wᵢ` of the points `pᵢ` by non-negative weights
+/// `wᵢ` (each sighting's `c_effective`). Because the weights are non-negative and
+/// normalised, the result provably lies inside the convex hull of the points (a
+/// convex combination never escapes the hull), so it is always a valid interior
+/// location estimate — but, unlike the plain hull centroid, it is pulled toward
+/// the *high-confidence* sightings rather than treating a shaky IP-geo guess and
+/// a GPS-exact photo as equals.
+///
+/// Returns `None` for an empty input. If every weight is zero (or negative,
+/// which is clamped away), it degrades to the unweighted mean so a degenerate
+/// confidence set still yields a centre rather than a divide-by-zero.
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::weighted_centroid;
+///
+/// // A high-confidence point and a low-confidence one: the centre sits much
+/// // closer to the trusted sighting than a plain average (0.5) would.
+/// let c = weighted_centroid(&[((0.0, 0.0), 0.9), ((0.0, 1.0), 0.1)]).unwrap();
+/// assert!(c.1 < 0.2, "weighted toward the high-confidence point");
+/// ```
+pub fn weighted_centroid(points: &[((f64, f64), f64)]) -> Option<(f64, f64)> {
+    if points.is_empty() {
+        return None;
+    }
+    let mut sw = 0.0_f64;
+    let mut slat = 0.0_f64;
+    let mut slon = 0.0_f64;
+    for &((lat, lon), w) in points {
+        let w = w.max(0.0);
+        sw += w;
+        slat += w * lat;
+        slon += w * lon;
+    }
+    if sw <= 0.0 {
+        // All weights zero → fall back to the unweighted mean.
+        let n = points.len() as f64;
+        let lat = points.iter().map(|&((la, _), _)| la).sum::<f64>() / n;
+        let lon = points.iter().map(|&((_, lo), _)| lo).sum::<f64>() / n;
+        return Some((lat, lon));
+    }
+    Some((slat / sw, slon / sw))
+}
+
+/// Test whether point `p = (lat, lon)` lies inside (or on the boundary of) the
+/// convex polygon `hull`, whose vertices are in counter-clockwise order — the
+/// form [`geo_footprint`] returns. The check is whether `p` is left-of-or-on
+/// every directed edge (all cross products ≥ 0 in (lon, lat) space). A hull of
+/// fewer than three vertices bounds no area, so the result is `false`.
+///
+/// Use: decide whether a *candidate* location — a geocoded breach address, a
+/// claimed home — is consistent with a subject's established area of operation,
+/// without any distance threshold to tune; the polygon itself is the boundary.
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::point_in_convex_hull;
+///
+/// let square = [(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)];
+/// assert!(point_in_convex_hull(&square, (0.5, 0.5)));   // interior
+/// assert!(point_in_convex_hull(&square, (0.0, 0.5)));   // on an edge
+/// assert!(!point_in_convex_hull(&square, (2.0, 0.5)));  // outside
+/// ```
+pub fn point_in_convex_hull(hull: &[(f64, f64)], p: (f64, f64)) -> bool {
+    if hull.len() < 3 {
+        return false;
+    }
+    // Cross product of edge a→b with a→p, in (x=lon, y=lat) space — same
+    // orientation as `convex_hull_latlon` (CCW ⇒ ≥ 0 on the interior side).
+    let cross = |a: (f64, f64), b: (f64, f64)| -> f64 {
+        (b.1 - a.1) * (p.0 - a.0) - (b.0 - a.0) * (p.1 - a.1)
+    };
+    // Tiny negative slack so a point numerically on an edge counts as inside.
+    const EPS: f64 = -1e-12;
+    let n = hull.len();
+    (0..n).all(|i| cross(hull[i], hull[(i + 1) % n]) >= EPS)
+}
+
 /// Parsed components of a free-form address string.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AddressComponents {
@@ -1040,6 +1117,43 @@ mod tests {
             mec.radius_km,
             centroid_worst
         );
+    }
+
+    #[test]
+    fn weighted_centroid_pulls_toward_confidence_and_stays_in_hull() {
+        // Empty → None.
+        assert!(weighted_centroid(&[]).is_none());
+        // All-zero weights → unweighted mean (no divide-by-zero).
+        let mean = weighted_centroid(&[((0.0, 0.0), 0.0), ((0.0, 2.0), 0.0)]).unwrap();
+        assert!((mean.1 - 1.0).abs() < 1e-9);
+        // A trusted point and a shaky one: the centre is pulled toward the
+        // high-confidence sighting and remains a convex combination (inside the
+        // segment, i.e. between the two longitudes).
+        let c = weighted_centroid(&[((0.0, 0.0), 0.95), ((0.0, 1.0), 0.30)]).unwrap();
+        assert!(c.1 > 0.0 && c.1 < 0.5, "pulled toward 0.0: {}", c.1);
+    }
+
+    #[test]
+    fn point_in_convex_hull_uses_real_hull_orientation() {
+        // Build the hull the same way the footprint does, then test membership —
+        // proves the in-hull test agrees with the hull builder's CCW order.
+        let pts = [(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.5, 0.5)];
+        let fp = geo_footprint(&pts).unwrap();
+        assert!(point_in_convex_hull(&fp.hull, (0.5, 0.5)), "interior point");
+        assert!(
+            point_in_convex_hull(&fp.hull, (0.0, 0.5)),
+            "edge point counts inside"
+        );
+        assert!(
+            !point_in_convex_hull(&fp.hull, (1.5, 0.5)),
+            "point outside the square"
+        );
+        assert!(
+            !point_in_convex_hull(&fp.hull, (-0.1, -0.1)),
+            "point below-left"
+        );
+        // Degenerate hulls bound no area.
+        assert!(!point_in_convex_hull(&[(0.0, 0.0), (1.0, 1.0)], (0.5, 0.5)));
     }
 
     #[test]
