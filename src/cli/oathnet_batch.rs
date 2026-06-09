@@ -108,7 +108,10 @@ fn print_plan(plan: &[BatchQuery], kind: &str, value: &str, json: bool) {
             q.value
         );
     }
-    let breach = plan.iter().filter(|q| q.surface.label() == "breach").count();
+    let breach = plan
+        .iter()
+        .filter(|q| q.surface == oathnet::Surface::Breach)
+        .count();
     let stealer = plan.len() - breach;
     println!("\n  totals: {breach} breach, {stealer} stealer");
     println!(

@@ -32,6 +32,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Single-sourced the OathNet query vocabulary.** The surface↔path mapping
+  (`Surface`) and the target-kind↔selector-field mapping (`selector_field`,
+  `stealer_indexable`) now live once in `util::oathnet` and are consumed by both
+  the `oathnet_pro` scan module and the new `oathnet_batch` generator, instead
+  of each re-encoding the field names (`email`/`username`/`q`/`ip`/`domain`) and
+  the breach/stealer routing. As part of this, `oathnet_pro::process` lost its
+  inline kind→field `match`: the field comes from `selector_field`, and the
+  per-kind junk gates were extracted into a pure, separately-tested
+  `should_skip_preflight`. Behaviour is unchanged (a batch plan for a sample
+  email still generates the same 23 queries); the win is that adding a kind or
+  renaming a field updates both consumers at once.
+
 - **DeHashed module migrated to the v2 API.** DeHashed sunset the v1
   `GET https://api.dehashed.com/search` endpoint (HTTP Basic with an account
   email + key) — it now returns **404**, so the module was dead for everyone.

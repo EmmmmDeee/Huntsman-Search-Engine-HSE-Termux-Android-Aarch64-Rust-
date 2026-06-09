@@ -14,6 +14,10 @@
 //!      phone numbers fan out into the digit/E.164 formats breach dumps store
 //!      them in.
 //!
+//! The surface↔path and target-kind↔selector-field vocabulary is shared with
+//! the `oathnet_pro` scan module via [`crate::util::oathnet`] (single source of
+//! truth) rather than re-encoded here.
+//!
 //! The generator is **pure** (no IO, no quota) so the full plan can be previewed
 //! for free and is exhaustively unit-testable; the CLI layer is what actually
 //! dispatches it (and is what spends OathNet credits). Output is deterministic:
@@ -23,36 +27,12 @@
 use std::collections::HashSet;
 
 use crate::core::scan::TargetKind;
-use crate::util::oathnet::paths;
+use crate::util::oathnet;
 
-/// An OathNet search surface a generated query targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Surface {
-    /// Breach corpus (`/service/v2/breach/search`).
-    Breach,
-    /// Stealer-log corpus (`/service/v2/stealer/search`).
-    Stealer,
-}
-
-impl Surface {
-    /// The `util::oathnet` path constant this surface dispatches against.
-    #[must_use]
-    pub fn path(self) -> &'static str {
-        match self {
-            Self::Breach => paths::BREACH,
-            Self::Stealer => paths::STEALER,
-        }
-    }
-
-    /// Short human/JSON label.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Breach => "breach",
-            Self::Stealer => "stealer",
-        }
-    }
-}
+// The surface vocabulary (breach/stealer ↔ path) is the shared OathNet query
+// model — re-exported so `BatchQuery` and the CLI keep naming it
+// `oathnet_batch::Surface` while there is exactly one definition.
+pub use crate::util::oathnet::Surface;
 
 /// Why a query was generated — surfaced in the plan so an operator can see how
 /// each query relates to the seed, and so callers can weight derived queries
@@ -124,6 +104,15 @@ impl Default for BatchOptions {
     }
 }
 
+/// OathNet selector field for usernames — the derived field used when an email
+/// local part or a name fans out into handle searches. Named once so the magic
+/// string isn't sprinkled through the derivation logic.
+const FIELD_USERNAME: &str = "username";
+/// OathNet selector field for emails — used for synthesised candidate emails.
+const FIELD_EMAIL: &str = "email";
+/// OathNet selector field for domains — used for an email's domain pivot.
+const FIELD_DOMAIN: &str = "domain";
+
 /// Common free email providers — used both to synthesise candidate emails and
 /// to SKIP as `domain` searches (querying e.g. `gmail.com` as a domain returns
 /// the entire provider corpus, which is noise, not signal).
@@ -139,13 +128,6 @@ const FREEMAIL: &[&str] = &[
 
 /// Role local-parts crossed with a seed domain when `synthesize_emails` is set.
 const ROLE_LOCALPARTS: &[&str] = &["admin", "info", "contact", "support", "sales"];
-
-/// True for selectors the stealer corpus indexes (it is keyed on login
-/// credentials). Phone/name/domain/IP are breach-only, matching the
-/// `oathnet_pro` module's per-surface routing.
-fn stealer_indexable(field: &str) -> bool {
-    matches!(field, "email" | "username")
-}
 
 fn is_freemail(domain: &str) -> bool {
     let d = domain.trim().to_ascii_lowercase();
@@ -245,10 +227,17 @@ fn phone_formats(raw: &str) -> Vec<(String, Origin)> {
 }
 
 /// Push a breach query (and, for login-indexable fields, a stealer query) for
-/// `value`. Blank values are dropped.
-fn add(out: &mut Vec<BatchQuery>, opts: &BatchOptions, field: &'static str, value: &str, origin: Origin) {
+/// `value`. Blank values are dropped. Stealer-indexability is the shared
+/// [`oathnet::stealer_indexable`] rule.
+fn add(
+    out: &mut Vec<BatchQuery>,
+    opts: &BatchOptions,
+    field: &'static str,
+    value: &str,
+    origin: Origin,
+) {
     push_one(out, Surface::Breach, field, value, origin);
-    if opts.include_stealer && stealer_indexable(field) {
+    if opts.include_stealer && oathnet::stealer_indexable(field) {
         push_one(out, Surface::Stealer, field, value, origin);
     }
 }
@@ -277,73 +266,73 @@ fn push_one(
     });
 }
 
-fn gen_email(out: &mut Vec<BatchQuery>, opts: &BatchOptions, v: &str) {
-    add(out, opts, "email", v, Origin::Seed);
+fn gen_email(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static str, v: &str) {
+    add(out, opts, native, v, Origin::Seed);
     if let Some((local, domain)) = v.split_once('@') {
         let local = local.trim();
         let domain = domain.trim().to_ascii_lowercase();
         if local.len() >= 2 {
-            add(out, opts, "username", local, Origin::EmailLocalPart);
+            add(out, opts, FIELD_USERNAME, local, Origin::EmailLocalPart);
             if opts.permute_handles {
                 for h in handle_permutations(&name_tokens(local)) {
-                    add(out, opts, "username", &h, Origin::Handle);
+                    add(out, opts, FIELD_USERNAME, &h, Origin::Handle);
                 }
             }
         }
         // A domain search on a free provider is noise; everything else is a
         // legitimate org-wide pivot.
         if !domain.is_empty() && !is_freemail(&domain) {
-            add_breach(out, "domain", &domain, Origin::EmailDomain);
+            add_breach(out, FIELD_DOMAIN, &domain, Origin::EmailDomain);
         }
     }
 }
 
-fn gen_username(out: &mut Vec<BatchQuery>, opts: &BatchOptions, v: &str) {
-    add(out, opts, "username", v, Origin::Seed);
+fn gen_username(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static str, v: &str) {
+    add(out, opts, native, v, Origin::Seed);
     if opts.permute_handles {
         for h in handle_permutations(&name_tokens(v)) {
-            add(out, opts, "username", &h, Origin::Handle);
+            add(out, opts, native, &h, Origin::Handle);
         }
     }
     if opts.synthesize_emails {
         for d in FREEMAIL {
-            add(out, opts, "email", &format!("{v}@{d}"), Origin::EmailCandidate);
+            add(out, opts, FIELD_EMAIL, &format!("{v}@{d}"), Origin::EmailCandidate);
         }
     }
 }
 
-fn gen_name(out: &mut Vec<BatchQuery>, opts: &BatchOptions, v: &str) {
+fn gen_name(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static str, v: &str) {
     // Free-text name search is breach-only (the stealer corpus has no name index).
-    add_breach(out, "q", v, Origin::Seed);
+    add_breach(out, native, v, Origin::Seed);
     if !opts.permute_handles {
         return;
     }
     let handles = handle_permutations(&name_tokens(v));
     for h in &handles {
-        add(out, opts, "username", h, Origin::Handle);
+        add(out, opts, FIELD_USERNAME, h, Origin::Handle);
     }
     if opts.synthesize_emails {
         for h in &handles {
             for d in FREEMAIL {
-                add(out, opts, "email", &format!("{h}@{d}"), Origin::EmailCandidate);
+                add(out, opts, FIELD_EMAIL, &format!("{h}@{d}"), Origin::EmailCandidate);
             }
         }
     }
 }
 
-fn gen_domain(out: &mut Vec<BatchQuery>, opts: &BatchOptions, v: &str) {
+fn gen_domain(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static str, v: &str) {
     let d = v.trim().to_ascii_lowercase();
-    add_breach(out, "domain", &d, Origin::Seed);
+    add_breach(out, native, &d, Origin::Seed);
     if opts.synthesize_emails && !is_freemail(&d) {
         for role in ROLE_LOCALPARTS {
-            add(out, opts, "email", &format!("{role}@{d}"), Origin::EmailCandidate);
+            add(out, opts, FIELD_EMAIL, &format!("{role}@{d}"), Origin::EmailCandidate);
         }
     }
 }
 
 /// Generate the full, de-duplicated batch of OathNet queries for `value`
 /// interpreted as `kind`. Returns an empty vec for a blank value or a kind
-/// OathNet does not index.
+/// OathNet does not index (per [`oathnet::selector_field`]).
 #[must_use]
 pub fn generate(kind: TargetKind, value: &str, opts: &BatchOptions) -> Vec<BatchQuery> {
     let mut out = Vec::new();
@@ -351,18 +340,24 @@ pub fn generate(kind: TargetKind, value: &str, opts: &BatchOptions) -> Vec<Batch
     if v.is_empty() {
         return out;
     }
+    // The seed's native selector field is the single-sourced kind→field mapping;
+    // `None` means OathNet does not index this kind, so there is nothing to do.
+    let Some(native) = oathnet::selector_field(kind) else {
+        return out;
+    };
     match kind {
-        TargetKind::Email => gen_email(&mut out, opts, v),
-        TargetKind::Username => gen_username(&mut out, opts, v),
-        TargetKind::FullName => gen_name(&mut out, opts, v),
+        TargetKind::Email => gen_email(&mut out, opts, native, v),
+        TargetKind::Username => gen_username(&mut out, opts, native, v),
+        TargetKind::FullName => gen_name(&mut out, opts, native, v),
         TargetKind::Phone => {
             for (fmt, origin) in phone_formats(v) {
-                add_breach(&mut out, "phone", &fmt, origin);
+                add_breach(&mut out, native, &fmt, origin);
             }
         }
-        TargetKind::IpAddress => add_breach(&mut out, "ip", v, Origin::Seed),
-        TargetKind::Domain => gen_domain(&mut out, opts, v),
-        // OathNet has no index for the remaining kinds (URL, ASN, coords, …).
+        TargetKind::IpAddress => add_breach(&mut out, native, v, Origin::Seed),
+        TargetKind::Domain => gen_domain(&mut out, opts, native, v),
+        // `native` is `Some` only for the kinds above, so this is unreachable;
+        // it keeps the match exhaustive over `TargetKind`.
         _ => {}
     }
 
@@ -551,8 +546,29 @@ mod tests {
     }
 
     #[test]
+    fn seed_field_matches_shared_selector_vocabulary() {
+        // The seed query's field must come from the single-sourced
+        // `oathnet::selector_field`, not a private re-encoding.
+        for (kind, value) in [
+            (TargetKind::Email, "a@b.com"),
+            (TargetKind::Username, "alice"),
+            (TargetKind::FullName, "John Doe"),
+            (TargetKind::Phone, "+61412345678"),
+            (TargetKind::IpAddress, "8.8.8.8"),
+            (TargetKind::Domain, "acme.io"),
+        ] {
+            let qs = generate(kind, value, &BatchOptions::default());
+            let seed = qs
+                .iter()
+                .find(|q| q.origin == Origin::Seed)
+                .expect("every indexed kind emits a seed query");
+            assert_eq!(Some(seed.field), oathnet::selector_field(kind));
+        }
+    }
+
+    #[test]
     fn surface_paths_match_oathnet_constants() {
-        assert_eq!(Surface::Breach.path(), paths::BREACH);
-        assert_eq!(Surface::Stealer.path(), paths::STEALER);
+        assert_eq!(Surface::Breach.path(), oathnet::paths::BREACH);
+        assert_eq!(Surface::Stealer.path(), oathnet::paths::STEALER);
     }
 }

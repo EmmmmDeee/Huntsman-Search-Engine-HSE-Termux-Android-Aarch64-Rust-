@@ -100,63 +100,19 @@ impl Module for OathnetPro {
         let mut seen: HashSet<String> = HashSet::new();
         seen.insert(target.value.to_lowercase());
 
-        // Pre-flight skips for inputs that empirically waste OathNet
-        // lookups. Catching these BEFORE the cache + budget check means
-        // a junk input never burns a query nor pollutes the cache.
         let v = target.value.trim();
-        let field = match target.kind {
-            TargetKind::Email => {
-                // Skip emails on test/example/invalid TLDs — never in
-                // real breach corpora.
-                if let Some((_, host)) = v.split_once('@')
-                    && is_local_domain(host)
-                {
-                    return Ok(result);
-                }
-                "email"
-            }
-            TargetKind::Username => {
-                // Usernames under 4 chars or all-digits or "anonymous"-
-                // style placeholders are noise. The breach corpora
-                // dedupe so well on these that hits are vanishingly rare.
-                if v.len() < 4
-                    || v.chars().all(|c| c.is_ascii_digit())
-                    || is_placeholder_username(v)
-                {
-                    return Ok(result);
-                }
-                "username"
-            }
-            TargetKind::Phone => {
-                // Phone < 6 digits or all-zeros = placeholder.
-                let digits = v.chars().filter(|c| c.is_ascii_digit()).count();
-                if digits < 6 || v.chars().filter(|c| c.is_ascii_digit()).all(|c| c == '0') {
-                    return Ok(result);
-                }
-                "phone"
-            }
-            TargetKind::FullName => {
-                // Single-word "names" are noise. Real full-name breach
-                // matches require at least one space.
-                if !v.contains(' ') || v.len() < 5 {
-                    return Ok(result);
-                }
-                "q"
-            }
-            TargetKind::IpAddress => {
-                if is_private_ip(v) {
-                    return Ok(result);
-                }
-                "ip"
-            }
-            TargetKind::Domain => {
-                if is_social_platform(v) || is_local_domain(v) {
-                    return Ok(result);
-                }
-                "domain"
-            }
-            _ => return Ok(result),
+        // The selector field is the single-sourced kind→field mapping shared
+        // with the `oathnet_batch` generator; `None` means OathNet doesn't
+        // index this kind, so there is nothing to query.
+        let Some(field) = oathnet::selector_field(target.kind) else {
+            return Ok(result);
         };
+        // Pre-flight skips for inputs that empirically waste OathNet lookups.
+        // Catching these BEFORE the cache + budget check means a junk input
+        // never burns a query nor pollutes the cache.
+        if should_skip_preflight(target.kind, v) {
+            return Ok(result);
+        }
 
         // Initialise a search session so breach + stealer queries on the
         // same target consume only ONE OathNet lookup instead of two.
@@ -241,7 +197,7 @@ impl Module for OathnetPro {
         // password + URL). Only Email and Username targets have a direct
         // index match. Phone/FullName use free-text "q" which is noisy and
         // rarely productive. IP/Domain are already breach-only above.
-        if matches!(target.kind, TargetKind::Email | TargetKind::Username)
+        if oathnet::stealer_indexable(field)
             && !ctx.cancel.is_cancelled()
             && let Ok(stealer_items) =
                 oathnet::search(key, paths::STEALER, field, &target.value, 100).await
@@ -270,6 +226,38 @@ impl Module for OathnetPro {
 // oathnet_pro and see_know share the policy so a target rejected
 // by one provider is rejected by the other.
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
+
+/// True for inputs that empirically waste an OathNet lookup for `kind` — junk
+/// the breach/stealer corpora never match: test/example-TLD emails, placeholder
+/// or too-short/all-digit usernames, placeholder phones, single-word names,
+/// private IPs, and social-platform / local domains. **Pure** — extracted from
+/// the `process` dispatcher so the per-kind gates are testable on their own and
+/// kept separate from the (now single-sourced) field naming. Kinds OathNet
+/// doesn't index are skipped, though `oathnet::selector_field` already filters
+/// those upstream.
+fn should_skip_preflight(kind: TargetKind, v: &str) -> bool {
+    match kind {
+        // Emails on test/example/invalid TLDs are never in real breach corpora.
+        TargetKind::Email => v
+            .split_once('@')
+            .is_some_and(|(_, host)| is_local_domain(host)),
+        // Usernames under 4 chars, all-digits, or "anonymous"-style placeholders
+        // are noise — the corpora dedupe so well that hits are vanishingly rare.
+        TargetKind::Username => {
+            v.len() < 4 || v.chars().all(|c| c.is_ascii_digit()) || is_placeholder_username(v)
+        }
+        // Phone < 6 digits or all-zeros = placeholder.
+        TargetKind::Phone => {
+            let digits = v.chars().filter(|c| c.is_ascii_digit()).count();
+            digits < 6 || v.chars().filter(|c| c.is_ascii_digit()).all(|c| c == '0')
+        }
+        // Single-word "names" are noise; real full-name matches have a space.
+        TargetKind::FullName => !v.contains(' ') || v.len() < 5,
+        TargetKind::IpAddress => is_private_ip(v),
+        TargetKind::Domain => is_social_platform(v) || is_local_domain(v),
+        _ => true,
+    }
+}
 
 fn is_social_platform(domain: &str) -> bool {
     const PLATFORMS: &[&str] = &[
@@ -1122,5 +1110,32 @@ mod tests {
         for u in ["alice", "bob_smith", "matrix_neo", "trinity99", "jdoe2024"] {
             assert!(!is_placeholder_username(u), "should NOT skip: {u}");
         }
+    }
+
+    #[test]
+    fn should_skip_preflight_gates_each_kind_as_before() {
+        use crate::core::scan::TargetKind;
+        // Junk that must be skipped (one per kind), matching the per-kind gates
+        // the dispatcher used to inline.
+        assert!(should_skip_preflight(TargetKind::Email, "x@example.test"));
+        assert!(should_skip_preflight(TargetKind::Username, "ab")); // < 4 chars
+        assert!(should_skip_preflight(TargetKind::Username, "12345")); // all digits
+        assert!(should_skip_preflight(TargetKind::Username, "admin")); // placeholder
+        assert!(should_skip_preflight(TargetKind::Phone, "12345")); // < 6 digits
+        assert!(should_skip_preflight(TargetKind::Phone, "000 000 000")); // all zeros
+        assert!(should_skip_preflight(TargetKind::FullName, "Cher")); // single word
+        assert!(should_skip_preflight(TargetKind::IpAddress, "192.168.1.1"));
+        assert!(should_skip_preflight(TargetKind::Domain, "facebook.com"));
+        assert!(should_skip_preflight(TargetKind::Domain, "x.local"));
+        // A kind OathNet doesn't index is skipped too.
+        assert!(should_skip_preflight(TargetKind::Url, "https://x.com"));
+
+        // Real inputs that must pass through to a query.
+        assert!(!should_skip_preflight(TargetKind::Email, "jane.doe@example.com"));
+        assert!(!should_skip_preflight(TargetKind::Username, "bob_smith"));
+        assert!(!should_skip_preflight(TargetKind::Phone, "+61412345678"));
+        assert!(!should_skip_preflight(TargetKind::FullName, "John Doe"));
+        assert!(!should_skip_preflight(TargetKind::IpAddress, "8.8.8.8"));
+        assert!(!should_skip_preflight(TargetKind::Domain, "acme.io"));
     }
 }
