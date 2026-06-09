@@ -133,7 +133,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (105 modules — 80 free, 25 key-gated/paid)
+## Module Overview (106 modules — 81 free, 25 key-gated/paid)
 
 > Generated from `hse modules --json`. The full catalogue with target
 > kinds and output entities (kept honest by the
@@ -142,7 +142,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 **API-Free (no keys required):**
 - **Breach/identity**: `pwned_passwords`, `xposed_or_not`
-- **Social**: `github_user`, `hacker_news`, `reddit_user`, `npm_author`, `keybase`, `social_probe`, `username_search`, `username_variants`
+- **Social**: `github_user`, `hacker_news`, `reddit_user`, `npm_author`, `crates_io`, `keybase`, `social_probe`, `username_search`, `username_variants`
 - **People**: `contact_enrich`, `employer_pivot`, `name_intel`, `wikidata`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `shodan`, `urlscan`

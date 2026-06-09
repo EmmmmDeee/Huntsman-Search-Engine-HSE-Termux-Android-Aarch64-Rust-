@@ -17,6 +17,7 @@ pub mod cert_intel;
 pub mod chain_intel;
 pub mod cloud_storage;
 pub mod contact_enrich;
+pub mod crates_io;
 pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
@@ -236,6 +237,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(github_user::GithubUser),
         Arc::new(hacker_news::HackerNews),
         Arc::new(npm_author::NpmAuthor),
+        Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),
         Arc::new(gravatar::Gravatar),
         Arc::new(pgp::Pgp),
