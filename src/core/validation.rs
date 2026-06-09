@@ -378,6 +378,28 @@ pub fn is_placeholder_entity(kind: &EntityKind, value: &str) -> bool {
     }
 }
 
+/// True when an address string is specific enough to identify a *residence*
+/// rather than a region. Requires a street-number signal (an ASCII digit) and at
+/// least three comma/whitespace tokens, so `"123 Main St, Springfield"` qualifies
+/// while a bare `"USA"` / `"California"` does not.
+///
+/// Single-sourced here so the breach importer (which decides whether to promote
+/// an `address` field to a first-class `Address` entity) and the household
+/// correlation rules (AU-049/051, which cluster co-residents by address) apply
+/// the *same* definition. If they diverged, the importer could emit addresses
+/// the rules never group, or the rules could expect a specificity the importer
+/// never enforced. Accepts either a raw or a normalised address — the
+/// comma/whitespace split and the digit/length checks are invariant under the
+/// punctuation-stripping the household rule applies first.
+pub fn is_specific_residence(s: &str) -> bool {
+    let tokens = s
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .count();
+    let has_digit = s.bytes().any(|b| b.is_ascii_digit());
+    tokens >= 3 && has_digit && s.trim().len() >= 8
+}
+
 /// True when `value` is a truncated / incomplete reference that cannot be
 /// verified without reconstruction — the `@gmail`-style fragment the user must
 /// never see in results. Centralised here so the engine (which rejects these at
@@ -485,6 +507,25 @@ pub fn validate_for_kind(kind: &str, value: &str) -> ValidationReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn specific_residence_accepts_streets_and_rejects_regions() {
+        // Real residences (a street number + locality) — accepted.
+        assert!(is_specific_residence("123 Main St, Springfield, IL"));
+        assert!(is_specific_residence("388 George Street, Sydney NSW 2000"));
+        // Bare regions — rejected (thousands share them).
+        assert!(!is_specific_residence("USA"));
+        assert!(!is_specific_residence("California"));
+        assert!(!is_specific_residence("New York"));
+        // No street-number signal, or too short — rejected.
+        assert!(!is_specific_residence("Main Street"));
+        assert!(!is_specific_residence("12 A"));
+        // Invariant under the household rule's punctuation-stripping normalisation.
+        assert_eq!(
+            is_specific_residence("123 Main St., Apt #4"),
+            is_specific_residence("123 main st apt 4")
+        );
+    }
 
     #[test]
     fn fragment_value_rejects_truncated_and_keeps_complete() {

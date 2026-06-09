@@ -251,7 +251,7 @@ fn emit_dossier_entry(
     // region thousands of strangers share and would fabricate a household, so we
     // require a street-number signal (a digit) and ≥3 tokens before emitting.
     if let Some(addr) = get("address")
-        && is_specific_address(addr)
+        && crate::core::validation::is_specific_residence(addr)
         && seen.insert(format!("ad:{}", addr.to_ascii_lowercase()))
     {
         push(Entity::new(EntityKind::Address, addr, 0.58, sid), "breach");
@@ -273,22 +273,6 @@ fn emit_dossier_entry(
         stats.domains += 1;
     }
     entry.clear();
-}
-
-/// True when a breach-record `address` field is specific enough to identify a
-/// *residence* rather than a region. Requires a street-number signal (an ASCII
-/// digit) and at least three whitespace/comma tokens, so `"123 Main St,
-/// Springfield"` qualifies while `"USA"` / `"California"` do not. This is the
-/// same precision gate the AU-049 household rule applies — emitting a bare
-/// region as an Address would let unrelated strangers fuse into a false
-/// household downstream.
-fn is_specific_address(raw: &str) -> bool {
-    let tokens = raw
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|t| !t.is_empty())
-        .count();
-    let has_digit = raw.bytes().any(|b| b.is_ascii_digit());
-    tokens >= 3 && has_digit && raw.trim().len() >= 8
 }
 
 /// Emit an entity for a single `-> value` line under a `USERNAMES:`/`EMAILS:`/

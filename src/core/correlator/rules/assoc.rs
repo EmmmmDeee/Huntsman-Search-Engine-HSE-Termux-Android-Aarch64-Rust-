@@ -44,18 +44,14 @@ fn normalise_address(raw: &str) -> String {
     out
 }
 
-/// True when an address string is specific enough to identify a *residence*
-/// rather than a region. A bare country/state/city ("USA", "California", "New
-/// York") names a place thousands of unrelated people share — clustering on it
-/// would fuse strangers into a false household. We require a street-number
-/// signal (an ASCII digit) and at least three tokens, which admits
-/// `"123 Main St, Springfield"` while rejecting `"United States"`. Precision
-/// over recall: a missed digit-less address is far cheaper than a fabricated
-/// link between unrelated people.
+/// True when a normalised address is specific enough to identify a *residence*
+/// rather than a region — a bare country/state ("USA", "California") names a
+/// place thousands of unrelated people share, and clustering on it would fuse
+/// strangers into a false household. The definition is single-sourced with the
+/// breach importer's Address-promotion gate (see
+/// [`crate::core::validation::is_specific_residence`]) so the two never drift.
 fn is_residence_address(normalised: &str) -> bool {
-    let tokens = normalised.split(' ').filter(|t| !t.is_empty()).count();
-    let has_digit = normalised.bytes().any(|b| b.is_ascii_digit());
-    tokens >= 3 && has_digit && normalised.len() >= 8
+    crate::core::validation::is_specific_residence(normalised)
 }
 
 /// Pull every specific residence address attached to an entity's evidence

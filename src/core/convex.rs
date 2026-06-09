@@ -30,7 +30,7 @@ use crate::core::scan::TargetKind;
 /// has its weight doubled before the cost divide; a fully-explored lead
 /// (`tail = 0`) gets no premium. Chosen at 1.0 so the premium is meaningful but
 /// never dominates the base expected-value signal (it can at most double it).
-pub const CONVEXITY_LAMBDA: f64 = 1.0;
+const CONVEXITY_LAMBDA: f64 = 1.0;
 
 /// Coefficient on the log-dampening of upside by exploration. Each additional
 /// independent source that has already confirmed a lead shrinks its remaining
@@ -47,7 +47,7 @@ const TAIL_EXPLORATION_COEFF: f64 = 0.5;
 /// This is the lever that makes a convex scan resist infrastructure skew — an
 /// ASN or a mega-domain must clear a higher optionality bar than an Email to win
 /// the same slice of budget.
-pub fn dispatch_cost(kind: TargetKind) -> f64 {
+fn dispatch_cost(kind: TargetKind) -> f64 {
     match kind {
         // Cheap, identity-bearing, high-yield-per-dispatch, plus the terminal
         // geo / registry leads (bounded, a hop or two from done).
@@ -81,7 +81,7 @@ pub fn dispatch_cost(kind: TargetKind) -> f64 {
 /// to give).
 ///
 /// `tail = richness · (1 − c_eff) / (1 + β·ln(source_count))`, clamped to `[0,1]`.
-pub fn upside_tail(source_count: u32, c_eff: f64, richness: f64) -> f64 {
+fn upside_tail(source_count: u32, c_eff: f64, richness: f64) -> f64 {
     let r = richness.clamp(0.0, 1.0);
     let uncertainty = (1.0 - c_eff.clamp(0.0, 1.0)).max(0.0);
     let explored = TAIL_EXPLORATION_COEFF.mul_add(f64::from(source_count.max(1)).ln(), 1.0);
