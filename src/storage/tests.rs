@@ -107,6 +107,68 @@ fn entities_for_scan_orders_deterministically_on_confidence_ties() {
 }
 
 #[test]
+fn entities_for_scan_ranks_by_corroboration_and_demotes_shared_infra() {
+    // Operator-facing ranking must surface the needle, not the haystack:
+    //   * a finding confirmed by several DISTINCT sources outranks an
+    //     equally-(raw)-confident single-source one — the corroboration signal
+    //     `c_effective()` carries, which ordering by the stored `confidence`
+    //     column discarded;
+    //   * a CDN/anycast edge IP is legitimately high-confidence (every infra
+    //     probe agrees it exists) but it's shared infrastructure, so it sinks
+    //     below subject-relevant findings regardless of how corroborated its
+    //     mere existence is.
+    use crate::core::entity::Evidence;
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "s-rank");
+
+    // Multi-source identity: same RAW confidence as the single-source one below,
+    // but three distinct corroborating sources lift its c_effective.
+    let mut subject = Entity::new(EntityKind::Email, "subject@corp.example", 0.60, "s-rank");
+    for src in ["hibp", "oathnet_pro", "smtp_vrfy"] {
+        subject.add_evidence(Evidence::new(src, "breach hit"));
+    }
+    // Single-source identity at the identical raw confidence.
+    let mut single = Entity::new(EntityKind::Email, "lonely@corp.example", 0.60, "s-rank");
+    single.add_evidence(Evidence::new("oathnet_pro", "breach hit"));
+    // Shared infrastructure: a Cloudflare edge IP, maximally corroborated.
+    let mut cdn = Entity::new(EntityKind::IpAddress, "104.20.37.187", 0.95, "s-rank");
+    for src in [
+        "dns_intel",
+        "shodan",
+        "greynoise",
+        "urlscan",
+        "hackertarget",
+    ] {
+        cdn.add_evidence(Evidence::new(src, "resolves here"));
+    }
+
+    // Insert in an order that the OLD `confidence DESC` rule would have led with
+    // the CDN IP (0.95) — proving the new ranking overrides raw confidence.
+    store.upsert_entity(&cdn).unwrap();
+    store.upsert_entity(&single).unwrap();
+    store.upsert_entity(&subject).unwrap();
+
+    let order: Vec<String> = store
+        .entities_for_scan("s-rank")
+        .unwrap()
+        .into_iter()
+        .map(|e| e.value)
+        .collect();
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(
+        order,
+        vec![
+            "subject@corp.example".to_string(), // corroborated identity first
+            "lonely@corp.example".to_string(),  // single-source identity next
+            "104.20.37.187".to_string(),        // shared infra demoted last
+        ],
+        "ranking must be (subject-relevant, then c_effective desc); got {order:?}"
+    );
+}
+
+#[test]
 fn scan_ids_for_entity_returns_all_observers() {
     let path = tmp_db();
     let store = Store::open(&path).unwrap();
