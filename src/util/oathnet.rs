@@ -318,6 +318,21 @@ impl Surface {
     }
 }
 
+/// OathNet selector field names — the single source for the wire field strings,
+/// referenced by both [`selector_field`] and the batch generator's derived-query
+/// logic so a selector rename can't let the seed and derived queries drift apart.
+pub const FIELD_EMAIL: &str = "email";
+/// OathNet `username` selector. See [`FIELD_EMAIL`].
+pub const FIELD_USERNAME: &str = "username";
+/// OathNet `phone` selector. See [`FIELD_EMAIL`].
+pub const FIELD_PHONE: &str = "phone";
+/// OathNet free-text `q` selector (used by `FullName` seeds). See [`FIELD_EMAIL`].
+pub const FIELD_QUERY: &str = "q";
+/// OathNet `ip` selector. See [`FIELD_EMAIL`].
+pub const FIELD_IP: &str = "ip";
+/// OathNet `domain` selector. See [`FIELD_EMAIL`].
+pub const FIELD_DOMAIN: &str = "domain";
+
 /// The OathNet selector field a target kind searches on, or `None` for a kind
 /// OathNet does not index. The breach corpus indexes all of these; the stealer
 /// corpus only those for which [`stealer_indexable`] is true.
@@ -334,12 +349,12 @@ impl Surface {
 pub fn selector_field(kind: crate::core::scan::TargetKind) -> Option<&'static str> {
     use crate::core::scan::TargetKind;
     Some(match kind {
-        TargetKind::Email => "email",
-        TargetKind::Username => "username",
-        TargetKind::Phone => "phone",
-        TargetKind::FullName => "q",
-        TargetKind::IpAddress => "ip",
-        TargetKind::Domain => "domain",
+        TargetKind::Email => FIELD_EMAIL,
+        TargetKind::Username => FIELD_USERNAME,
+        TargetKind::Phone => FIELD_PHONE,
+        TargetKind::FullName => FIELD_QUERY,
+        TargetKind::IpAddress => FIELD_IP,
+        TargetKind::Domain => FIELD_DOMAIN,
         _ => return None,
     })
 }

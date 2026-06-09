@@ -924,8 +924,10 @@ fn status_from_profile(body: ProfileUserResp, polled_ts: u64) -> WigleAccountSta
 }
 
 /// One-shot poll of `profile/user`, caching the result in
-/// `ACCOUNT_STATUS_CACHE`. Failures are silent — the cache stays empty
-/// (`verified: None`) and callers treat that as "unknown, keep going".
+/// `ACCOUNT_STATUS_CACHE`. Failures are silent — the status fields stay empty
+/// (`verified: None`) so callers treat it as "unknown, keep going", while
+/// `last_polled_ts` still records the attempt (the cache reflects that a poll
+/// was made, not that it succeeded).
 ///
 /// Does NOT consume any of the four observation-type budgets.
 pub async fn refresh_account_status(

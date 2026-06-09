@@ -33,6 +33,13 @@ pub async fn cmd_oathnet_batch(cmd: BatchCmd) -> Result<()> {
             "oathnet-batch: --value must not be empty".into(),
         ));
     }
+    // A zero page size would dispatch `page_size=0` requests that OathNet rejects
+    // — reject it up front rather than spending the round-trip to find out.
+    if cmd.page_size == 0 {
+        return Err(Error::Other(
+            "oathnet-batch: --page-size must be at least 1".into(),
+        ));
+    }
 
     // Resolve the seed kind: explicit `--kind`, else auto-detect from the value.
     let kind = match cmd

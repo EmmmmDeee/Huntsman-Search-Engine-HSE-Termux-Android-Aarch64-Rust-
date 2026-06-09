@@ -50,6 +50,9 @@ use std::collections::HashSet;
 
 use crate::core::scan::TargetKind;
 use crate::util::oathnet;
+// Derived-query selector fields come from the single OathNet vocabulary, so a
+// selector rename in `oathnet` can't let these drift from `selector_field`.
+use crate::util::oathnet::{FIELD_DOMAIN, FIELD_EMAIL, FIELD_USERNAME};
 
 // The surface vocabulary (breach/stealer ↔ path) is the shared OathNet query
 // model — re-exported so `BatchQuery` and the CLI keep naming it
@@ -143,15 +146,6 @@ impl Default for BatchOptions {
         }
     }
 }
-
-/// OathNet selector field for usernames — the derived field used when an email
-/// local part or a name fans out into handle searches. Named once so the magic
-/// string isn't sprinkled through the derivation logic.
-const FIELD_USERNAME: &str = "username";
-/// OathNet selector field for emails — used for synthesised candidate emails.
-const FIELD_EMAIL: &str = "email";
-/// OathNet selector field for domains — used for an email's domain pivot.
-const FIELD_DOMAIN: &str = "domain";
 
 /// Common free email providers — used both to synthesise candidate emails and
 /// to SKIP as `domain` searches (querying e.g. `gmail.com` as a domain returns
