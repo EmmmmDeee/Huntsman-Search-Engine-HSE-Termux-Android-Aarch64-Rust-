@@ -80,6 +80,7 @@ pub mod psbdmp;
 pub mod pwned_passwords;
 pub mod qld_unclaimed;
 pub mod rdap_domain;
+pub mod reddit_user;
 pub mod ripestat;
 pub mod search_engines;
 pub mod securitytrails;
@@ -233,6 +234,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(username_variants::UsernameVariants),
         Arc::new(github_user::GithubUser),
         Arc::new(hacker_news::HackerNews),
+        Arc::new(reddit_user::RedditUser),
         Arc::new(gravatar::Gravatar),
         Arc::new(pgp::Pgp),
         Arc::new(psbdmp::Psbdmp),

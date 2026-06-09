@@ -25,6 +25,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `social_probe` | username, full_name | free | no | 108 | url, username, person, domain |
 | `github_user` | username | free | no | 107 | person, email, username, domain, url, organisation, address |
 | `hacker_news` | username | free | no | 106 | username, email, url |
+| `reddit_user` | username | free | no | 105 | username, email, url |
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
