@@ -338,6 +338,7 @@ mod crypto;
 mod geo;
 mod identity;
 mod infra;
+mod location;
 mod org;
 
 pub(super) use assoc::*;
@@ -346,4 +347,5 @@ pub(super) use crypto::*;
 pub(super) use geo::*;
 pub(super) use identity::*;
 pub(super) use infra::*;
+pub(super) use location::*;
 pub(super) use org::*;
